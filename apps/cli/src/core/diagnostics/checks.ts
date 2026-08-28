@@ -13,14 +13,14 @@ import {
   agentRuntimeUpgradeFix,
   type DoctorFix,
   imCliInstallFix,
+  imCliRepairFix,
   imCliTitle,
-  imCliUpgradeFix,
 } from "./fixes.js";
 
 /**
  * The Client Runtime abandons a provider probe after this long and reports the provider as
- * unavailable. Doctor uses the same deadline so that it never claims a readiness the daemon would
- * never publish.
+ * unavailable. Doctor uses the same deadline so that it never calls a provider ready on evidence the
+ * daemon would have thrown away.
  */
 export const DOCTOR_PROBE_DEADLINE_MS = 10_000;
 
@@ -51,7 +51,6 @@ export interface AgentRuntimeCheckOptions {
 }
 
 export interface ImCliCheckOptions {
-  readonly commands?: Partial<Record<ImCliProvider, string>>;
   readonly environment: NodeJS.ProcessEnv;
   readonly probe?: ImCliProbe;
   readonly probeDeadlineMs?: number;
@@ -59,7 +58,15 @@ export interface ImCliCheckOptions {
   readonly signal?: AbortSignal;
 }
 
-const DEFAULT_IM_CLI_COMMANDS: Readonly<Record<ImCliProvider, string>> = { feishu: "lark-cli", slack: "slack" };
+const IM_CLI_COMMANDS: Readonly<Record<ImCliProvider, string>> = { feishu: "lark-cli", slack: "slack" };
+
+/** The bare command each check resolves through PATH, keyed by check id. */
+export const DOCTOR_PROBE_COMMANDS: Readonly<Record<string, string | undefined>> = {
+  "im:feishu": IM_CLI_COMMANDS.feishu,
+  "im:slack": IM_CLI_COMMANDS.slack,
+  "runtime:claude-code": "claude",
+  "runtime:codex": "codex",
+};
 
 export async function checkAgentRuntimes(options: AgentRuntimeCheckOptions): Promise<DoctorCheck[]> {
   const deadlineMs = options.probeDeadlineMs ?? DOCTOR_PROBE_DEADLINE_MS;
@@ -75,7 +82,7 @@ export async function checkAgentRuntimes(options: AgentRuntimeCheckOptions): Pro
     } catch (error) {
       options.signal?.throwIfAborted();
       checks.push({
-        detail: deadline.aborted ? `readiness probe timed out after ${deadlineMs}ms` : failureDetail(error),
+        detail: deadline.aborted ? timedOutDetail(deadlineMs) : failureDetail(error),
         fix: agentRuntimeUpgradeFix(provider),
         id,
         status: deadline.aborted ? "unavailable" : "error",
@@ -100,12 +107,7 @@ export async function checkImClis(options: ImCliCheckOptions): Promise<DoctorChe
   const probe =
     options.probe ??
     ((provider: ImCliProvider, signal: AbortSignal) =>
-      probeImCliReadiness(
-        provider,
-        options.commands?.[provider] ?? DEFAULT_IM_CLI_COMMANDS[provider],
-        options.environment,
-        signal,
-      ));
+      probeImCliReadiness(provider, IM_CLI_COMMANDS[provider], options.environment, signal));
   const checks: DoctorCheck[] = [];
   for (const provider of options.providers) {
     const id = `im:${provider}`;
@@ -117,19 +119,22 @@ export async function checkImClis(options: ImCliCheckOptions): Promise<DoctorChe
     } catch (error) {
       options.signal?.throwIfAborted();
       checks.push({
-        detail: deadline.aborted ? `readiness probe timed out after ${deadlineMs}ms` : failureDetail(error),
-        fix: imCliUpgradeFix(provider),
+        detail: deadline.aborted ? timedOutDetail(deadlineMs) : failureDetail(error),
+        fix: imCliRepairFix(provider),
         id,
         status: deadline.aborted ? "unavailable" : "error",
         title,
       });
       continue;
     }
+    // The messaging CLI probe reports a spent deadline as "unavailable" instead of throwing, so the
+    // timed-out wording has to be recovered here to stay accurate.
+    const timedOut = status !== "ready" && deadline.aborted;
     checks.push({
-      detail: imCliDetail(status),
+      detail: timedOut ? timedOutDetail(deadlineMs) : imCliDetail(status),
       ...(status === "ready"
         ? {}
-        : { fix: status === "install" ? imCliInstallFix(provider) : imCliUpgradeFix(provider) }),
+        : { fix: status === "install" ? imCliInstallFix(provider) : imCliRepairFix(provider) }),
       id,
       status: status === "ready" ? "ok" : status,
       title,
@@ -143,6 +148,8 @@ function createAgentRuntimeProbe(options: AgentRuntimeCheckOptions): AgentRuntim
   return async (provider, signal) => {
     composition ??= resolveAgentRuntimeProviders({
       clientVersion: options.clientVersion,
+      // Doctor observes a Computer; it must not create the provider homes it is reporting on.
+      ensureProviderHomes: false,
       environment: options.environment,
       ...(options.signal ? { signal: options.signal } : {}),
     }).then((resolved) => new Map(resolved.factories.map((factory) => [factory.manifest.providerId, factory])));
@@ -163,12 +170,19 @@ function agentRuntimeStatus(
 }
 
 function agentRuntimeDetail(status: Exclude<DoctorCheckStatus, "error">, result: AgentRuntimeProbeResult): string {
-  const version = result.version ? ` (${result.version})` : "";
+  const version = formatVersion(result.version);
   if (status === "ok") return `ready${version}`;
-  if (status === "install") return "not installed, or not on the PATH this computer runs OpenTag with";
+  if (status === "install") return "not installed, or not on this shell's PATH";
   if (status === "sign-in") return `installed${version} but not signed in`;
   const issues = result.issues.map((issue) => issue.message).join("; ");
   return issues || "installed but not usable";
+}
+
+/** `claude --version` prints `2.1.248 (Claude Code)`, which would otherwise nest parentheses. */
+function formatVersion(version: string | undefined): string {
+  if (!version) return "";
+  const trimmed = version.replace(/\s*\([^()]*\)\s*$/u, "").trim();
+  return ` (${trimmed || version})`;
 }
 
 function agentRuntimeFix(
@@ -182,8 +196,12 @@ function agentRuntimeFix(
 
 function imCliDetail(status: "install" | "ready" | "unavailable"): string {
   if (status === "ready") return "ready";
-  if (status === "install") return "not installed, or not on the PATH this computer runs OpenTag with";
-  return "installed but not usable";
+  if (status === "install") return "not installed, or not on this shell's PATH";
+  return "installed but does not answer OpenTag's probe";
+}
+
+function timedOutDetail(deadlineMs: number): string {
+  return `readiness probe timed out after ${deadlineMs}ms`;
 }
 
 function failureDetail(error: unknown): string {

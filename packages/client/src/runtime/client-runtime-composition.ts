@@ -227,8 +227,23 @@ export interface ResolveAgentRuntimeProvidersOptions {
   readonly clientVersion: string;
   readonly codexCommand?: string;
   readonly codexHome?: string;
+  /**
+   * Create the provider homes when they are missing. The Client Runtime owns them and needs them to
+   * exist; a read-only caller passes `false` so that observing a Computer never changes it.
+   */
+  readonly ensureProviderHomes?: boolean;
   readonly environment?: NodeJS.ProcessEnv;
   readonly signal?: AbortSignal;
+}
+
+/** A provider home that does not exist yet still names the path the Client Runtime would use. */
+async function canonicalProviderHome(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return path;
+  }
 }
 
 export async function resolveAgentRuntimeProviders(
@@ -241,10 +256,12 @@ export async function resolveAgentRuntimeProviders(
   const configuredClaudeCodeHome = resolve(
     options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? join(defaultHome, ".claude"),
   );
-  await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
-  await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
-  const codexHome = await realpath(configuredCodexHome);
-  const claudeCodeHome = await realpath(configuredClaudeCodeHome);
+  if (options.ensureProviderHomes !== false) {
+    await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
+    await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
+  }
+  const codexHome = await canonicalProviderHome(configuredCodexHome);
+  const claudeCodeHome = await canonicalProviderHome(configuredClaudeCodeHome);
   const codexCommand = options.codexCommand ?? "codex";
   const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
   options.signal?.throwIfAborted();

@@ -2,11 +2,13 @@ import type { AgentRuntimeProvider, ImCliProvider } from "@opentag/shared";
 
 /**
  * A repair a person or their coding agent can run directly. Commands are printed, never executed
- * silently: installing software and signing in are the operator's decisions, not the CLI's.
+ * silently: installing software and signing in are the operator's decisions, not the CLI's. A fix
+ * with no command needs a human to follow the documentation instead.
  */
 export interface DoctorFix {
   readonly commands: readonly string[];
   readonly docsUrl?: string;
+  readonly note?: string;
   readonly summary: string;
 }
 
@@ -34,6 +36,9 @@ const AGENT_RUNTIME_FIXES: Readonly<
     signIn: {
       commands: ["claude auth login"],
       docsUrl: "https://docs.claude.com/en/docs/claude-code/setup",
+      // Known defect: OpenTag always sets CLAUDE_CONFIG_DIR, and Claude Code then cannot see an
+      // ordinary macOS Keychain login, so this sign-in can report the same failure afterwards.
+      note: "If this reports the same failure after a successful sign-in, you are hitting first-tree-ai/opentag#236",
       summary: "Sign in to Claude Code on this computer",
     },
   },
@@ -46,10 +51,18 @@ const IM_CLI_INSTALL_FIXES: Readonly<Record<ImCliProvider, DoctorFix>> = {
     summary: "Install the Feishu (Lark) CLI so that OpenTag can deliver messages",
   },
   slack: {
-    commands: ["curl -fsSL https://downloads.slack-edge.com/slack-cli/install.sh | bash"],
+    // The Slack CLI ships as a shell installer rather than a package. Printing a piped installer for
+    // an Agent to run is a different risk class from `npm install -g`, so this one stays human-only.
+    commands: [],
     docsUrl: "https://docs.slack.dev/tools/slack-cli",
+    note: "Install it yourself from the documentation; OpenTag does not print an installer to pipe into a shell",
     summary: "Install the Slack CLI so that OpenTag can deliver messages",
   },
+};
+
+const IM_CLI_REQUIREMENTS: Readonly<Record<ImCliProvider, string>> = {
+  feishu: "`lark-cli --version` and `lark-cli im --help` must both succeed quickly",
+  slack: "`slack version` and `slack api --help` must both succeed quickly",
 };
 
 export function agentRuntimeInstallFix(provider: AgentRuntimeProvider): DoctorFix {
@@ -72,9 +85,17 @@ export function imCliInstallFix(provider: ImCliProvider): DoctorFix {
   return IM_CLI_INSTALL_FIXES[provider];
 }
 
-export function imCliUpgradeFix(provider: ImCliProvider): DoctorFix {
+/**
+ * An installed messaging CLI can also be broken, hung, or too old. Naming what OpenTag needs beats
+ * guessing at a remedy, because reinstalling does not fix a command that hangs.
+ */
+export function imCliRepairFix(provider: ImCliProvider): DoctorFix {
   const install = IM_CLI_INSTALL_FIXES[provider];
-  return { ...install, summary: `Reinstall or upgrade the ${imCliTitle(provider)}` };
+  return {
+    ...install,
+    note: `OpenTag needs it to answer its own probe: ${IM_CLI_REQUIREMENTS[provider]}`,
+    summary: `Repair the ${imCliTitle(provider)}: it is installed but does not answer OpenTag's probe`,
+  };
 }
 
 export function agentRuntimeTitle(provider: AgentRuntimeProvider): string {

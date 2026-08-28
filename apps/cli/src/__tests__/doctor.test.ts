@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -6,10 +6,21 @@ import {
   ServerHealthConfigurationError,
   ServerHealthNetworkError,
 } from "@opentag/client";
-import type { AgentRuntimeProvider, ImCliProvider } from "@opentag/shared";
+import {
+  AGENT_RUNTIME_PROVIDERS,
+  type AgentRuntimeProvider,
+  IM_CLI_PROVIDERS,
+  type ImCliProvider,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
+import type { DaemonServiceManager } from "../core/daemon/service/index.js";
+import { renderLaunchdPlist } from "../core/daemon/service/launchd.js";
+import { renderSystemdUnit } from "../core/daemon/service/systemd.js";
+import type { DaemonServiceState } from "../core/daemon/service/types.js";
+import { checkAgentRuntimes, checkImClis } from "../core/diagnostics/checks.js";
 import { type DoctorOptions, renderDoctorJson, resolveServerUrl, runDoctor } from "../core/diagnostics/doctor.js";
+import { readDaemonServiceEnvironment } from "../core/diagnostics/service-environment.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -47,13 +58,16 @@ describe("runDoctor", () => {
     expect(result.exitCode).toBe(0);
     expect(result.checks.map((check) => [check.id, check.status])).toEqual([
       ["server", "ok"],
+      ["daemon-service", "ok"],
       ["runtime:codex", "ok"],
       ["runtime:claude-code", "ok"],
       ["im:feishu", "ok"],
       ["im:slack", "ok"],
     ]);
     expect(result.message).toContain("Codex CLI: ready (1.2.3)");
-    expect(result.message).toContain("This computer is ready to run an OpenTag agent.");
+    expect(result.message).toContain("run an OpenTag agent on Codex or Claude Code");
+    expect(result.message).toContain("delivering through Feishu or Slack");
+    expect(result.message).toContain("It does not know which of those");
   });
 
   it("accepts one ready Agent Runtime and one ready messaging CLI when the caller selects none", async () => {
@@ -66,6 +80,8 @@ describe("runDoctor", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.message).toContain("Claude Code CLI: not installed");
+    expect(result.message).toContain("run an OpenTag agent on Codex,");
+    expect(result.message).toContain("delivering through Feishu.");
     expect(result.message).not.toContain("Fix 1/");
   });
 
@@ -78,10 +94,17 @@ describe("runDoctor", () => {
     );
 
     expect(result.exitCode).toBe(1);
-    expect(result.checks.map((check) => check.id)).toEqual(["server", "runtime:claude-code", "im:feishu", "im:slack"]);
+    expect(result.checks.map((check) => check.id)).toEqual([
+      "server",
+      "daemon-service",
+      "runtime:claude-code",
+      "im:feishu",
+      "im:slack",
+    ]);
     expect(result.message).toContain("Claude Code CLI: installed (1.2.3) but not signed in");
     expect(result.message).toContain("Fix 1/1 — Sign in to Claude Code on this computer");
     expect(result.message).toContain("  claude auth login");
+    expect(result.message).toContain("first-tree-ai/opentag#236");
   });
 
   it("blocks and prints one fix per failure when no Agent Runtime and no messaging CLI is ready", async () => {
@@ -98,7 +121,7 @@ describe("runDoctor", () => {
     expect(result.message).toContain("  npm install -g @openai/codex");
     expect(result.message).toContain("Fix 2/4 — Sign in to Claude Code on this computer");
     expect(result.message).toContain("Fix 3/4 — Install the Feishu (Lark) CLI");
-    expect(result.message).toContain("Fix 4/4 — Reinstall or upgrade the Slack CLI");
+    expect(result.message).toContain("Fix 4/4 — Repair the Slack CLI");
   });
 
   it("reports an unreachable server as a blocking check", async () => {
@@ -158,7 +181,7 @@ describe("runDoctor", () => {
     expect(JSON.parse(renderDoctorJson(result))).toMatchObject({
       checks: expect.arrayContaining([
         {
-          detail: "not installed, or not on the PATH this computer runs OpenTag with",
+          detail: "not installed, or not on this shell's PATH",
           fix: {
             commands: ["npm install -g @openai/codex"],
             docsUrl: "https://developers.openai.com/codex/cli",
@@ -174,20 +197,224 @@ describe("runDoctor", () => {
   });
 });
 
+describe("readDaemonServiceEnvironment", () => {
+  it("reads the PATH out of a systemd unit", async () => {
+    const home = await temporaryDirectory("opentag-service-systemd-");
+    const definitionPath = resolve(home, "opentag.service");
+    await writeFile(
+      definitionPath,
+      renderSystemdUnit({
+        home,
+        invocation: { args: [], program: "/usr/local/bin/opentag" },
+        path: "/opt/tools/bin:/usr/bin",
+        serviceId: "opentag-test",
+      }),
+      "utf8",
+    );
+
+    await expect(
+      readDaemonServiceEnvironment({
+        manager: statusManager({ definitionPath, platform: "systemd", state: "active" }),
+        platform: "linux",
+      }),
+    ).resolves.toEqual({ definitionPath, kind: "installed", path: "/opt/tools/bin:/usr/bin", state: "active" });
+  });
+
+  it("fails closed when an installed definition declares no PATH", async () => {
+    const home = await temporaryDirectory("opentag-service-broken-");
+    const definitionPath = resolve(home, "opentag.plist");
+    await writeFile(definitionPath, "<plist><dict></dict></plist>\n", "utf8");
+
+    await expect(
+      readDaemonServiceEnvironment({
+        manager: statusManager({ definitionPath, platform: "launchd", state: "active" }),
+        platform: "darwin",
+      }),
+    ).resolves.toEqual({
+      definitionPath,
+      kind: "unreadable",
+      reason: "the installed service definition declares no PATH",
+    });
+  });
+
+  it("reports an unsupported platform instead of guessing", async () => {
+    await expect(readDaemonServiceEnvironment({ platform: "win32" })).resolves.toEqual({
+      kind: "unsupported",
+      platform: "win32",
+    });
+  });
+});
+
+describe("daemon service environment", () => {
+  it("refuses to call a computer ready when no daemon service is installed", async () => {
+    const result = await runDoctor(await doctorOptions({ service: "not-installed" }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.checks.find((check) => check.id === "daemon-service")).toMatchObject({
+      detail: "not installed, so nothing runs Agents or publishes readiness from this computer",
+      status: "install",
+    });
+    expect(result.message).toContain("Install the OpenTag daemon service");
+    expect(result.message).not.toContain("can run an OpenTag agent on");
+    expect(result.message).toContain("CLI checks used this shell's PATH");
+  });
+
+  it("blocks on an installed service that is not running", async () => {
+    const result = await runDoctor(await doctorOptions({ service: { state: "inactive" } }));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.message).toContain("installed but inactive, so nothing runs Agents");
+    expect(result.message).toContain("daemon restart");
+  });
+
+  it("names the definition its CLI checks came from", async () => {
+    const result = await runDoctor(await doctorOptions({}));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.checks.find((check) => check.id === "daemon-service")?.detail).toBe(
+      "active; checks below use the PATH it runs with",
+    );
+    expect(result.message).toMatch(/CLI checks used the PATH declared by .*opentag\.plist/u);
+  });
+
+  it("explains a CLI the operator can run but the daemon cannot", async () => {
+    const shell = await temporaryDirectory("opentag-doctor-shell-path-");
+    await writeFile(resolve(shell, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const result = await runDoctor(
+      await doctorOptions({
+        env: { PATH: shell },
+        runtimeResults: { codex: NOT_INSTALLED, "claude-code": NOT_INSTALLED },
+        service: { path: "/usr/bin:/bin" },
+      }),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.checks.find((check) => check.id === "runtime:codex")).toMatchObject({
+      detail: "on this shell's PATH, but not on the PATH the daemon service runs with",
+    });
+    expect(result.message).toContain("Give the daemon the same PATH this shell has");
+    expect(result.message).toContain("daemon install");
+    // The runtime the shell cannot resolve either keeps the ordinary install fix.
+    expect(result.message).toContain("Install the Claude Code CLI");
+  });
+});
+
+describe("default probe wiring", () => {
+  it("resolves the real provider factories and messaging commands without touching the computer", async () => {
+    const home = await temporaryDirectory("opentag-doctor-wiring-");
+    // An empty PATH is the honest "nothing is installed" case: it exercises the real factories and
+    // the real messaging CLI commands without spawning anything.
+    const environment = { HOME: home, PATH: "" };
+
+    const [runtimeChecks, imChecks] = await Promise.all([
+      checkAgentRuntimes({ clientVersion: "0.0.0-test", environment, providers: AGENT_RUNTIME_PROVIDERS }),
+      checkImClis({ environment, providers: IM_CLI_PROVIDERS }),
+    ]);
+
+    expect([...runtimeChecks, ...imChecks].map((check) => [check.id, check.status])).toEqual([
+      ["runtime:codex", "install"],
+      ["runtime:claude-code", "install"],
+      ["im:feishu", "install"],
+      ["im:slack", "install"],
+    ]);
+    // Observing a Computer must not create the provider homes the report is about.
+    await expect(stat(resolve(home, ".codex"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(resolve(home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reports an installed messaging CLI that answers the probe", async () => {
+    const home = await temporaryDirectory("opentag-doctor-lark-");
+    const lark = resolve(home, "lark-cli");
+    await writeFile(
+      lark,
+      '#!/bin/sh\nif [ "$1" = "--version" ] || { [ "$1" = "im" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
+      { mode: 0o755 },
+    );
+
+    const checks = await checkImClis({ environment: { PATH: home }, providers: ["feishu"] });
+
+    expect(checks).toEqual([{ detail: "ready", id: "im:feishu", status: "ok", title: "Feishu CLI (lark-cli)" }]);
+  });
+});
+
 async function doctorOptions(overrides: {
+  env?: NodeJS.ProcessEnv;
   imStatuses?: Partial<Record<ImCliProvider, "install" | "ready" | "unavailable">>;
   runtimeResults?: Partial<Record<AgentRuntimeProvider, AgentRuntimeProbeResult>>;
   runtimes?: readonly AgentRuntimeProvider[];
+  service?: { path?: string; state?: DaemonServiceState } | "not-installed";
 }): Promise<DoctorOptions> {
+  const home = await temporaryDirectory("opentag-doctor-");
   return {
-    env: {},
+    env: overrides.env ?? {},
     healthChecker: vi.fn().mockResolvedValue({ service: "opentag-server", status: "ok" }),
-    home: await temporaryDirectory("opentag-doctor-"),
+    home,
     imProbe: async (provider) => overrides.imStatuses?.[provider] ?? "ready",
+    platform: "darwin",
     runtimeProbe: async (provider) => overrides.runtimeResults?.[provider] ?? READY,
     serverUrl: "http://server.example",
+    serviceManager: await fakeServiceManager(home, overrides.service),
     ...(overrides.runtimes ? { runtimes: overrides.runtimes } : {}),
   };
+}
+
+function statusManager(info: {
+  definitionPath: string;
+  platform: "launchd" | "systemd";
+  state: DaemonServiceState;
+}): DaemonServiceManager {
+  return {
+    status: async () => ({
+      currentHome: "/unused",
+      definitionPath: info.definitionPath,
+      logHint: "/unused",
+      platform: info.platform,
+      serviceId: "opentag-test",
+      state: info.state,
+    }),
+  } as unknown as DaemonServiceManager;
+}
+
+/** Stands in for launchd: a real plist on disk, so the PATH parser is exercised for real. */
+async function fakeServiceManager(
+  home: string,
+  service: { path?: string; state?: DaemonServiceState } | "not-installed" = {},
+): Promise<DaemonServiceManager> {
+  const definitionPath = resolve(home, "opentag.plist");
+  const state: DaemonServiceState = service === "not-installed" ? "not-installed" : (service.state ?? "active");
+  if (service !== "not-installed") {
+    await writeFile(
+      definitionPath,
+      renderLaunchdPlist({
+        home,
+        label: "opentag-test",
+        path: service.path ?? "/usr/bin:/bin",
+        stderrPath: resolve(home, "err.log"),
+        stdoutPath: resolve(home, "out.log"),
+        wrapperPath: resolve(home, "wrapper"),
+      }),
+      "utf8",
+    );
+  }
+  const info = {
+    currentHome: home,
+    definitionPath,
+    logHint: resolve(home, "logs"),
+    platform: "launchd",
+    serviceId: "opentag-test",
+    state,
+  } as const;
+  const unsupported = () => Promise.reject(new Error("not used by doctor"));
+  return {
+    installAndStart: unsupported,
+    preflight: unsupported,
+    restart: unsupported,
+    start: unsupported,
+    status: async () => info,
+    stop: unsupported,
+    uninstall: unsupported,
+  } as unknown as DaemonServiceManager;
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {

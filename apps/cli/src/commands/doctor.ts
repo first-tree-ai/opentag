@@ -56,6 +56,8 @@ function collectChoice<Choice extends string>(
     if (!choice) {
       throw new InvalidArgumentError(`Unknown ${label} provider: ${value}. Choose one of ${choices.join(", ")}.`);
     }
-    return [...(previous ?? []), choice];
+    const selected = previous ?? [];
+    // Repeating a value must not probe the same provider twice or duplicate an id in --json.
+    return selected.includes(choice) ? selected : [...selected, choice];
   };
 }

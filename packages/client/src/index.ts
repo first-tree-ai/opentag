@@ -173,6 +173,7 @@ export {
   resolveAgentRuntimeProviders,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
+  resolveExecutable,
 } from "./runtime/client-runtime-composition.js";
 export {
   COMPUTER_IDENTITY_FILE_NAME,

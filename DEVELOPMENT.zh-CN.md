@@ -377,8 +377,16 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
 
 `doctor` 会逐项输出检查结果：OpenTag Server、各 Agent Runtime CLI、各消息 CLI。Agent Runtime 与消息 CLI 检查
-复用 daemon 的探测逻辑，并使用 daemon 所用的同一份环境，因此不会给出 daemon 不会上报的 readiness。每个失败检查
-都会打印可直接执行的修复命令，其措辞便于用户自己的 coding agent 直接执行。
+复用 daemon 的探测逻辑，并使用同一套 readiness 词汇，因此 `install` 和 `sign-in` 与 Server 看到的含义一致。每个
+失败检查都会打印可直接执行的修复命令，其措辞便于用户自己的 coding agent 直接执行。
+
+readiness 是由已安装的 daemon service 上报的，所以 `doctor` 回答的是那个 service 的处境，而不是敲命令的这个 shell 的。
+它会读取已安装的 service 定义，用定义里声明的 `PATH` 做探测，并在每次报告末尾点名用的是哪个定义文件。当某个 CLI 在
+调用方 shell 的 `PATH` 上能解析、在 service 的 `PATH` 上不能时——这正是「连上 computer 之后才装 runtime」的典型结果
+——`doctor` 会直接这么说，并让用户从当前 shell 重装 service，而不是让他去装一个他已经装过的东西。
+
+`doctor` 宁可 fail closed 也不猜：没有安装 service、service 没在运行、定义读不出来、平台不支持，这四种情况都会变成
+blocking 检查，任何一种都不会给出「这台机器已就绪」的结论。
 
 不带 `--runtime` 或 `--im` 时，只要有一个可用的 Agent Runtime 和一个可用的消息 CLI 即可通过。可用 `--runtime codex`
 或 `--im feishu`（均可重复）指定必须可用的实现，用 `--json` 输出机器可读结果。

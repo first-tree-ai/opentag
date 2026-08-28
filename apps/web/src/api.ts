@@ -46,8 +46,6 @@ import {
   ListWorkspaceComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
-  type OnboardingLabAccess,
-  OnboardingLabAccessSchema,
   PROVIDER_READINESS_V1_HEADER,
   type SlackAppConfiguration,
   SlackAppConfigurationSchema,
@@ -251,15 +249,15 @@ export class BrowserApi {
   }
 
   /**
-   * Reports what this Account may do in the staging Onboarding Lab, and `undefined` outside staging,
-   * where the interface is absent rather than merely closed.
+   * Whether this deployment offers the staging Onboarding Lab. Outside staging the interface is
+   * absent rather than closed, and both halves are open to any authenticated Account where it is
+   * present, so reachability is the whole answer.
    */
-  async onboardingLabAccess(): Promise<OnboardingLabAccess | undefined> {
+  async onboardingLabOffered(): Promise<boolean> {
     const response = await this.fetchWithRefresh(HTTP_PATHS.internalOnboardingLab);
-    if (response.status === 404) return undefined;
-    const body = await response.json().catch(() => undefined);
-    if (!response.ok) throw this.apiError(response, body);
-    return OnboardingLabAccessSchema.parse(body);
+    if (response.status === 204) return true;
+    if (response.status === 404) return false;
+    throw this.apiError(response, await response.json().catch(() => undefined));
   }
 
   /** Resets the authenticated staging Lab Account; it accepts no client-selected Account. */

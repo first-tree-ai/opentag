@@ -65,20 +65,6 @@ const EncryptionKeySchema = z
     return new Uint8Array(decoded);
   });
 
-/** An empty value means the staging Onboarding Lab stays unconfigured; any other value must be an Account UUID. */
-const StagingOnboardingAccountIdSchema = z
-  .string()
-  .trim()
-  .default("")
-  .transform((value, context) => {
-    if (value === "") return undefined;
-    if (!z.string().uuid().safeParse(value).success) {
-      context.addIssue({ code: "custom", message: "Must be an Account UUID" });
-      return z.NEVER;
-    }
-    return value;
-  });
-
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
 }
@@ -113,7 +99,6 @@ const ServerEnvironmentSchema = z
       .int()
       .positive()
       .default(60 * 60 * 24 * 30),
-    OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: StagingOnboardingAccountIdSchema,
   })
   .strict()
   .superRefine((value, context) => {
@@ -158,12 +143,6 @@ const ServerEnvironmentSchema = z
       context.addIssue({
         code: "custom",
         message: "BETTER_AUTH_SECRET must differ from OPENTAG_JWT_SECRET",
-      });
-    }
-    if (value.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID && value.OPENTAG_ENV !== "staging") {
-      context.addIssue({
-        code: "custom",
-        message: "OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID requires OPENTAG_ENV=staging",
       });
     }
     const devAuthConfigured = value.OPENTAG_DEV_AUTH_BYPASS_ENABLED || Boolean(value.OPENTAG_DEV_AUTH_EMAIL);
@@ -243,11 +222,10 @@ export interface ServerConfig {
   publicUrl: string;
   refreshTokenTtlSeconds: number;
   /**
-   * Present on every staging deployment. Scenario Preview is fixed client-side fixtures, so it needs
-   * no Account configuration; `accountId` names the one Account that additionally owns the reset,
-   * and stays absent until a deployment configures it.
+   * Whether this deployment offers the staging Onboarding Lab. It takes no configuration: Scenario
+   * Preview is fixed client-side fixtures, and the reset acts only on the Account that asks for it.
    */
-  stagingOnboardingLab?: { accountId?: string };
+  stagingOnboardingLab: boolean;
 }
 
 export interface DatabaseConfig {
@@ -298,7 +276,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_REFRESH_TOKEN_TTL_SECONDS: environment.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
-    OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: environment.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID,
   });
 
   return {
@@ -342,12 +319,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     refreshTokenTtlSeconds: parsed.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
-    ...(parsed.OPENTAG_ENV === "staging"
-      ? {
-          stagingOnboardingLab: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID
-            ? { accountId: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID }
-            : {},
-        }
-      : {}),
+    stagingOnboardingLab: parsed.OPENTAG_ENV === "staging",
   };
 }

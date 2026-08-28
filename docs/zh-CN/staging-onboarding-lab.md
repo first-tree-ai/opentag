@@ -2,50 +2,38 @@
 
 [English](../staging-onboarding-lab.md)
 
-Onboarding Lab 是仅限 staging 的页面，用于迭代首次使用体验。它为一个共享的 staging Account 提供两件事：用于快速设计评审的
-固定 onboarding 界面状态，以及可重复的 reset——把该 Account 恢复到真实的首次使用状态，从而可以再次走完整条 staging 路径。
+Onboarding Lab 是仅限 staging 的页面，用于迭代首次使用体验。它为每一个已登录的 staging Account 提供两件事：用于快速设计评审的
+固定 onboarding 界面状态，以及可重复的 reset——把**该 Account 自己**恢复到真实的首次使用状态，从而可以从头再走一遍完整路径。
 
 之所以需要它，是因为仅清除 setup 完成时间戳并不够。已有的 Computer enrollment、Agent、runtime readiness 和 IM binding 会立即
 推进由事实推导出的 onboarding 流程，因此一个已完成的 Account 无法自行回到首次使用状态。
 
-Lab 在 production 不可用，也永远不会 reset 除已认证 Account 之外的任何 Account。它的两半门禁不同：Scenario Preview 不读取也不
-写入任何内容，因此在任何 staging 部署上，任何已登录 Account 都可以打开，且不需要任何配置；破坏性的 reset 仍然只属于那个被配置的
-Lab Account，在部署指定之前没有任何 Account 拥有它。
+Lab 在 production 不可用，reset 也永远不会触及已认证 Account 之外的任何 Account。
 
-## 共享 staging Account
+## 每个测试者使用自己的 Account
 
-准备一个企业管理的 Google 测试身份，例如 `onboarding-test@company.example`，并把登录凭据保存在团队密码管理器中。禁止写入本仓库
-或部署配置。
+用你自己的身份登录 staging。新建的 Account 本身就处于首次使用状态，所以第一次完整体验不需要任何额外东西；Lab 解决的是第二次。
 
-该 Account 是共享且串行使用的沙箱。页面会给出提示，但并发只是团队约定：reset 之前先确认当前谁在测试。任何浏览器都可以使用；
-隐私窗口或独立浏览器 profile 只是为了同时保留个人 staging 登录的便利手段。
+不存在需要轮流使用的共享测试 Account，也没有任何配置。两个人可以同时跑 onboarding：各自只 reset 自己的 Account，各自注册自己的
+Computer，而每一次飞书授权都会在测试租户中创建属于自己的应用，因此绑定之间不会冲突。
+
+只剩一项共享成本。reset 会停用 OpenTag 这一侧的绑定，但无法删除它在飞书租户中创建的应用，因此重复运行会在租户里累积应用，需要
+定期手工清理。
 
 ## 配置
 
-Scenario Preview 不需要任何配置。staging 部署一运行就提供它，因为场景是固定的客户端 fixture。
-
-reset 需要一个可选的 Server 设置：
-
-```bash
-OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
-```
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | 空 | 允许使用 staging Onboarding Lab 的 Account UUID |
+无需配置。任何以 `OPENTAG_ENV=staging` 运行的部署都提供 Lab，其他环境一律拒绝。
 
 Server 强制执行的规则：
 
-- 取值必须是 Account UUID；空值表示 reset 无人拥有，不影响 Preview；
-- 该设置只在 `OPENTAG_ENV=staging` 时有效，因此在 production 配置会导致 Server 启动失败；
-- 每个请求都必须完成认证；在 staging 部署上，任何 Account 都可以读取 Lab 并查看 Scenario Preview，响应会说明该 Account 是否
-  拥有 reset；
-- staging 之外的任何部署，对两种请求的响应都与页面不存在完全一致；
-- 只有被配置的 Account 可以 reset；其他 Account，以及尚未配置时的所有 Account，得到的拒绝与页面不存在完全一致；
+- 每个请求都必须完成认证；
+- staging 之外的任何部署，对两种请求的响应都与页面不存在完全一致，且环境会在每个请求上重新确认，而不是信任路由注册这一事实；
 - reset 始终作用于已认证 Account，不接受客户端选择的 Account；
+- 除非该 Account 恰好独占一个活跃资源域，否则 reset 拒绝执行，因此它只可能作用于调用者自己的资源；
 - reset 需要常规的浏览器 CSRF 保护。
 
-获取 Account UUID 的方法：用测试身份登录一次 staging，从 `GET /api/v1/me` 读取 `user.id`，然后带上该设置重启 Server。
+`OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` 过去用于指定唯一允许 reset 的 Account，现已废弃：仍然设置它的部署可以正常启动，该值被
+忽略。
 
 ## 使用 Lab
 
@@ -73,7 +61,7 @@ Feishu 协议或伪造 Server，因此需要点击验证时请使用下面的真
 
 ### 真实 reset
 
-`Reset shared account and start onboarding` 会要求一次确认，然后 reset 共享 Account 并进入常规 `/onboarding` 路由。
+`Reset my account and start onboarding` 会要求一次确认，然后 reset 你自己的 Account 并进入常规 `/onboarding` 路由。
 reset 分阶段执行且幂等：
 
 1. 通过既有 Agent 生命周期挂起并删除每个未删除的 Agent，这会禁用 IM binding、清除加密的 IM 与 setup 凭据、结束活跃 Session
@@ -85,7 +73,7 @@ reset 分阶段执行且幂等：
 6. 只有在校验通过后才清除 setup 完成时间戳。
 
 由于该时间戳是最终提交标记，在校验之前失败的 reset 会让 Account 停留在 onboarding 之外，可以直接重跑——页面会停留在 Lab 并提供
-重试。两名测试者同时 reset 可能导致其中一个请求失败；重试即可收敛。
+重试。两名测试者同时 reset 作用于不同 Account、锁的是不同资源域，因此互不阻塞。
 
 历史与身份数据会被保留：Account 及其 Google identity、已删除的 Agent 行、已禁用的 IM binding、已结束的 Session 与消息、
 稳定的 Computer 身份，以及外部 Feishu Bot。这些数据之后都不会满足 onboarding 的活跃事实。
@@ -114,7 +102,7 @@ App，因为目前没有可靠的 provider 删除接口。
 ## 人工 staging 验收
 
 ```text
-reset 共享 Account
+reset 你自己的 Account
 → 进入常规 onboarding
 → 使用既有本地 home 执行生成的 Computer connect 命令
 → 观察 Computer readiness

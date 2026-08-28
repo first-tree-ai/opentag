@@ -7,8 +7,6 @@ import { findOnboardingScenario, ONBOARDING_LAB_ACCOUNT_ID, ONBOARDING_SCENARIOS
 
 export interface OnboardingLabPageProps {
   readonly onScenarioChange: (scenarioId: string) => void;
-  /** Whether this Account owns the Lab's destructive half; Preview is open to every signed-in Account. */
-  readonly resetAvailable: boolean;
   /** Runs after a verified reset: refresh authoritative `/me` state, then enter ordinary onboarding. */
   readonly onResetSucceeded: () => Promise<void> | void;
   readonly scenarioId: string | null;
@@ -24,13 +22,7 @@ const noop = () => undefined;
  * onboarding presentation and writes nothing, so it is shown to every signed-in Account; the reset
  * action is the only Server mutation, and it always targets the authenticated Account.
  */
-export function OnboardingLabPage({
-  onResetSucceeded,
-  onScenarioChange,
-  resetAvailable,
-  scenarioId,
-  user,
-}: OnboardingLabPageProps) {
+export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenarioId, user }: OnboardingLabPageProps) {
   const scenario = findOnboardingScenario(scenarioId);
   const [confirming, setConfirming] = useState(false);
   const [resetState, setResetState] = useState<ResetState>({ kind: "idle" });
@@ -48,7 +40,7 @@ export function OnboardingLabPage({
     } catch (cause) {
       setResetState({
         kind: "error",
-        error: cause instanceof Error ? cause : new Error("The shared staging Account could not be reset"),
+        error: cause instanceof Error ? cause : new Error("This Account could not be reset"),
       });
     } finally {
       resetInFlight.current = false;
@@ -62,9 +54,8 @@ export function OnboardingLabPage({
           <span className="eyebrow">Staging only</span>
           <h1>Onboarding Lab</h1>
           <p>
-            {resetAvailable
-              ? "Review fixed onboarding states without touching the Server, or reset the shared staging Account and run the real first-run flow end to end."
-              : "Review fixed onboarding states without touching the Server. Running the real first-run flow needs the Account this deployment configures for the Lab."}
+            Review fixed onboarding states without touching the Server, or reset this Account and run the real first-run
+            flow end to end.
           </p>
         </div>
       </header>
@@ -108,54 +99,44 @@ export function OnboardingLabPage({
         </figure>
       </section>
 
-      {resetAvailable ? (
-        <section aria-labelledby="onboarding-lab-reset-title" className="onboarding-lab-section">
-          <h2 id="onboarding-lab-reset-title">Real reset</h2>
-          <p>
-            Reset returns this Account to a first-run state and then enters the ordinary onboarding route. Your local
-            OpenTag home and Computer identity are reused, so the next run only needs a fresh Computer connect command.
-          </p>
-          <p className="notice" role="status">
-            <strong>Shared staging test account.</strong> Every tester signs in as the same Account. Resetting it
-            disables the current Agents, Computer enrollments and messaging connections, and can interrupt another
-            tester who is already running onboarding.
-          </p>
-          <div className="actions">
-            <Button
-              disabled={resetState.kind === "pending"}
-              ref={resetTriggerRef}
-              variant="danger"
-              onClick={() => setConfirming(true)}
-            >
-              {resetState.kind === "pending" ? "Resetting…" : "Reset shared account and start onboarding"}
+      <section aria-labelledby="onboarding-lab-reset-title" className="onboarding-lab-section">
+        <h2 id="onboarding-lab-reset-title">Real reset</h2>
+        <p>
+          Reset returns this Account to a first-run state and then enters the ordinary onboarding route. Your local
+          OpenTag home and Computer identity are reused, so the next run only needs a fresh Computer connect command.
+        </p>
+        <p className="notice" role="status">
+          <strong>This resets your own Account.</strong> It disables the Agents, Computer enrollments and messaging
+          connections belonging to {user.email}, and reaches nothing of anyone else's. Another tester signed in as
+          themselves is unaffected.
+        </p>
+        <div className="actions">
+          <Button
+            disabled={resetState.kind === "pending"}
+            ref={resetTriggerRef}
+            variant="danger"
+            onClick={() => setConfirming(true)}
+          >
+            {resetState.kind === "pending" ? "Resetting…" : "Reset my account and start onboarding"}
+          </Button>
+        </div>
+        {resetState.kind === "error" ? (
+          <div className="notice error" role="alert">
+            <p>{resetState.error.message}</p>
+            <Button size="compact" variant="secondary" onClick={() => setConfirming(true)}>
+              Retry
             </Button>
           </div>
-          {resetState.kind === "error" ? (
-            <div className="notice error" role="alert">
-              <p>{resetState.error.message}</p>
-              <Button size="compact" variant="secondary" onClick={() => setConfirming(true)}>
-                Retry
-              </Button>
-            </div>
-          ) : null}
-        </section>
-      ) : (
-        <section aria-labelledby="onboarding-lab-reset-title" className="onboarding-lab-section">
-          <h2 id="onboarding-lab-reset-title">Real reset</h2>
-          <p>
-            Resetting the shared staging Account to a first-run state is limited to the one Account this deployment
-            configures for the Lab. Sign in as that Account to run it; Scenario Preview above needs no such access.
-          </p>
-        </section>
-      )}
+        ) : null}
+      </section>
 
-      {resetAvailable && confirming ? (
+      {confirming ? (
         <Dialog
           busy={resetState.kind === "pending"}
-          description="This disables the current Agents, Computer enrollments and messaging connections for the shared staging Account. Another tester using it right now will be interrupted."
+          description="This disables your current Agents, Computer enrollments and messaging connections on staging. Nobody else's Account is touched."
           eyebrow="Staging only"
           returnFocusRef={resetTriggerRef}
-          title="Reset the shared staging Account?"
+          title="Reset your staging Account?"
           onClose={() => setConfirming(false)}
         >
           <div className="actions">

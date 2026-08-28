@@ -11,21 +11,13 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-function fixture(
-  options: {
-    environment?: "dev" | "staging" | "prod";
-    labAccountId?: string | "unconfigured";
-    registered?: boolean;
-  } = {},
-) {
+function fixture(options: { environment?: "dev" | "staging" | "prod"; registered?: boolean } = {}) {
   const accountId = randomUUID();
-  const labAccountId = options.labAccountId ?? accountId;
   const resetOnboarding = vi.fn().mockResolvedValue(undefined);
   const reset = new OnboardingResetService({
     agents: { suspendById: vi.fn(), deleteById: vi.fn() },
     database: {} as never,
     environment: options.environment ?? "staging",
-    ...(labAccountId === "unconfigured" ? {} : { labAccountId }),
     workspaceAdmins: {} as never,
   });
   vi.spyOn(reset, "resetOnboarding").mockImplementation(resetOnboarding);
@@ -68,7 +60,7 @@ describe("internal Onboarding Lab interface", () => {
     expect(value.resetOnboarding).not.toHaveBeenCalled();
   });
 
-  it("reports the reset half as available to the configured staging Lab Account", async () => {
+  it("answers any authenticated staging Account, since both halves are open to it", async () => {
     const value = fixture();
 
     const read = await value.app.inject({
@@ -77,22 +69,8 @@ describe("internal Onboarding Lab interface", () => {
       headers: browserHeaders(),
     });
 
-    expect(read.statusCode).toBe(200);
-    expect(read.json()).toEqual({ reset: true });
-  });
-
-  it("offers Preview but no reset owner where staging configures no Lab Account", async () => {
-    const value = fixture({ labAccountId: "unconfigured" });
-
-    const [read, reset] = await Promise.all([
-      value.app.inject({ method: "GET", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
-      value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
-    ]);
-
-    expect(read.statusCode).toBe(200);
-    expect(read.json()).toEqual({ reset: false });
-    expect(reset.statusCode).toBe(404);
-    expect(value.resetOnboarding).not.toHaveBeenCalled();
+    expect(read.statusCode).toBe(204);
+    expect(read.body).toBe("");
   });
 
   it("resets the authenticated Account and never a client-selected Account", async () => {
@@ -109,18 +87,23 @@ describe("internal Onboarding Lab interface", () => {
     expect(value.resetOnboarding).toHaveBeenCalledExactlyOnceWith(value.accountId);
   });
 
-  it("opens the read half to another Account while refusing that Account the reset", async () => {
-    const value = fixture({ labAccountId: randomUUID() });
+  it("passes each caller its own Account, so one tester's reset can never name another's", async () => {
+    const first = fixture();
+    const second = fixture();
 
-    const [read, reset] = await Promise.all([
-      value.app.inject({ method: "GET", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
-      value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+    await Promise.all([
+      first.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+      second.app.inject({
+        method: "POST",
+        url: INTERNAL_ONBOARDING_LAB_PATH,
+        headers: { ...browserHeaders(), "content-type": "application/json" },
+        payload: { accountId: first.accountId },
+      }),
     ]);
 
-    expect(read.statusCode).toBe(200);
-    expect(read.json()).toEqual({ reset: false });
-    expect(reset.statusCode).toBe(404);
-    expect(value.resetOnboarding).not.toHaveBeenCalled();
+    expect(first.resetOnboarding).toHaveBeenCalledExactlyOnceWith(first.accountId);
+    expect(second.resetOnboarding).toHaveBeenCalledExactlyOnceWith(second.accountId);
+    expect(second.resetOnboarding).not.toHaveBeenCalledWith(first.accountId);
   });
 
   it("hides the Lab outside staging even when a route is registered", async () => {

@@ -1,4 +1,4 @@
-import { INTERNAL_ONBOARDING_LAB_PATH, OnboardingLabAccessSchema } from "@opentag/shared";
+import { INTERNAL_ONBOARDING_LAB_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
@@ -12,10 +12,12 @@ function accountId(request: FastifyRequest): string {
 
 /**
  * The staging-only Onboarding Lab interface. Any staging deployment registers it, and every
- * deployment outside staging stays indistinguishable from one that never had the feature. Reading
- * access is open to any authenticated Account, because Scenario Preview is client-side fixtures that
- * read nothing and write nothing; the destructive reset stays closed, is refused until a deployment
- * configures the Account that owns it, and never accepts a client-selected Account.
+ * deployment outside staging stays indistinguishable from one that never had the feature.
+ *
+ * Both halves are open to every authenticated Account, for different reasons. Scenario Preview is
+ * client-side fixtures that read nothing and write nothing. The reset is destructive but reflexive:
+ * it acts on the authenticated Account and never accepts a client-selected one, so each tester
+ * returns their own onboarding to a first-run state and can reach nothing of anyone else's.
  */
 export function registerInternalOnboardingLabRoutes(
   app: FastifyInstance,
@@ -24,20 +26,18 @@ export function registerInternalOnboardingLabRoutes(
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
-  const requireLabAccount = (request: FastifyRequest): string => {
-    const account = accountId(request);
-    if (!reset.allows(account)) throw labNotFound();
-    return account;
+  const requireLab = (request: FastifyRequest): string => {
+    if (!reset.enabled) throw labNotFound();
+    return accountId(request);
   };
 
   app.get(INTERNAL_ONBOARDING_LAB_PATH, { preHandler }, async (request, reply) => {
-    if (!reset.enabled) throw labNotFound();
-    const access = OnboardingLabAccessSchema.parse({ reset: reset.allows(accountId(request)) });
-    return reply.code(200).send(access);
+    requireLab(request);
+    return reply.code(204).send();
   });
 
   app.post(INTERNAL_ONBOARDING_LAB_PATH, { preHandler }, async (request, reply) => {
-    await reset.resetOnboarding(requireLabAccount(request));
+    await reset.resetOnboarding(requireLab(request));
     return reply.code(204).send();
   });
 }

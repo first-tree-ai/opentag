@@ -2,57 +2,44 @@
 
 [简体中文](./zh-CN/staging-onboarding-lab.md)
 
-The Onboarding Lab is a staging-only page for iterating on the first-run experience. It gives one shared staging Account
-two things: fixed onboarding screen states for fast design review, and a repeatable reset that returns the Account to a
-real first-run state so the whole staging path can be walked again.
+The Onboarding Lab is a staging-only page for iterating on the first-run experience. It gives every signed-in staging
+Account two things: fixed onboarding screen states for fast design review, and a repeatable reset that returns **that
+Account** to a real first-run state, so the whole staging path can be walked again from the beginning.
 
 It exists because clearing the setup-completion timestamp alone is not enough. Existing Computer enrollments, Agents,
 runtime readiness and IM bindings immediately advance the fact-derived onboarding flow, so a completed Account cannot
 return to a first-run state on its own.
 
-The Lab is not available in production and it never resets an Account other than the authenticated one. Its two halves
-are gated differently: Scenario Preview reads nothing and writes nothing, so every signed-in Account on any staging
-deployment may open it, with no configuration at all; the destructive reset stays limited to the single configured Lab
-Account, and no Account owns it until a deployment names one.
+The Lab is not available in production, and the reset never touches an Account other than the authenticated one.
 
-## Shared staging Account
+## Each tester uses their own Account
 
-Provision one enterprise-managed Google test identity, for example `onboarding-test@company.example`, and store its
-login credentials in the team password manager. Never put them in this repository or in deployment configuration.
+Sign in to staging with your own identity. A new Account starts in a first-run state, so the first complete run needs
+nothing else; the Lab is what lets you do it a second time.
 
-The Account is a shared, serially used sandbox. The page warns about this, but concurrency is a team convention: agree
-who is testing before you reset. Any browser works; a private window or a separate browser profile is only a convenience
-for keeping a personal staging login signed in at the same time.
+There is no shared test Account to take turns on, and nothing to configure. Two people can run onboarding at the same
+time: each resets only their own Account, each enrols their own Computer, and each Feishu authorization creates its own
+application in the test tenant, so their bindings do not contend.
+
+One shared cost remains. Reset disables OpenTag's binding but cannot delete the application it created in the Feishu
+tenant, so repeated runs accumulate applications there. Clear them out by hand from time to time.
 
 ## Configuration
 
-Scenario Preview needs none. A staging deployment offers it as soon as it runs, because the scenarios are fixed
-client-side fixtures.
-
-The reset needs one optional Server setting:
-
-```bash
-OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
-```
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Account UUID allowed to reset the staging Onboarding Lab Account |
+None. The Lab is offered on any deployment running with `OPENTAG_ENV=staging`, and refused everywhere else.
 
 Rules the Server enforces:
 
-- the value must be an Account UUID; an empty value leaves the reset unowned, and Preview unaffected;
-- the setting is valid only with `OPENTAG_ENV=staging`, so configuring it in production fails Server startup;
-- every request must be authenticated; on a staging deployment any Account may read the Lab and see Scenario Preview,
-  and the response reports whether that Account owns the reset;
-- any deployment outside staging answers both requests like a page that does not exist;
-- only the configured Account may reset; every other Account, and every Account while none is configured, is refused
-  exactly like a page that does not exist;
+- every request must be authenticated;
+- any deployment outside staging answers both requests like a page that does not exist, and the environment is
+  re-confirmed on each request rather than trusted from route registration;
 - reset always targets the authenticated Account and accepts no client-selected Account;
+- reset refuses unless that Account owns exactly one active resource scope, exclusively, so it can only ever act on
+  resources that belong to the caller;
 - reset requires the normal browser CSRF protection.
 
-Find the Account UUID by signing in to staging as the test identity once and reading `user.id` from `GET /api/v1/me`,
-then restart the Server with the setting in place.
+`OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` used to name the one Account allowed to reset. It is retired: a deployment that
+still sets it starts normally and the value is ignored.
 
 ## Using the Lab
 
@@ -84,7 +71,7 @@ use the real reset below for anything you need to click through.
 
 ### Real reset
 
-`Reset shared account and start onboarding` asks for one confirmation, then resets the shared Account and enters the
+`Reset my account and start onboarding` asks for one confirmation, then resets your own Account and enters the
 ordinary `/onboarding` route. The reset is staged and idempotent:
 
 1. every non-deleted Agent is suspended and deleted through the existing Agent lifecycle, which disables IM bindings,
@@ -97,7 +84,7 @@ ordinary `/onboarding` route. The reset is staged and idempotent:
 
 Because the timestamp is the final commit marker, a reset that fails before verification leaves the Account outside
 onboarding and can simply be run again — the page keeps you on the Lab with a retry. Two testers resetting at the same
-time may make one request fail; retry converges.
+time take different Accounts and different scope locks, so neither delays the other.
 
 Historical and identity data is kept: the Account and its Google identity, deleted Agent rows, disabled IM bindings,
 ended Sessions and messages, the stable Computer identity, and the external Feishu Bot. None of it satisfies onboarding's
@@ -128,7 +115,7 @@ completion. To test a genuinely new tenant App, pick a different test Bot or rem
 ## Manual staging acceptance
 
 ```text
-Reset shared Account
+Reset your own Account
 → enter ordinary onboarding
 → run the generated Computer connect command using the existing local home
 → observe Computer readiness

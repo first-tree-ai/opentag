@@ -49,18 +49,13 @@ export interface OnboardingResetServiceOptions {
   agents: OnboardingResetAgentLifecycle;
   database: DatabaseClient;
   environment: ChannelName;
-  /**
-   * The single staging Account this deployment may reset. Absent where no Account is configured:
-   * the Lab then offers Scenario Preview alone, and no Account owns the reset.
-   */
-  labAccountId?: string;
   now?: () => Date;
   registry?: OnboardingResetConnectionRegistry;
   workspaceAdmins?: WorkspaceAdminAccess;
 }
 
 /**
- * Staging-only orchestration that returns one configured Account to a first-run state.
+ * Staging-only orchestration that returns the authenticated Account to a first-run state.
  *
  * It is deliberately separate from the production setup-completion module, whose transition
  * stays one-way. Every step is idempotent: a failed reset can simply be run again and continues
@@ -77,7 +72,6 @@ export class OnboardingResetService {
   readonly #agents: OnboardingResetAgentLifecycle;
   readonly #database: DatabaseClient;
   readonly #environment: ChannelName;
-  readonly #labAccountId: string | undefined;
   readonly #now: () => Date;
   readonly #registry: OnboardingResetConnectionRegistry | undefined;
   readonly #workspaceAdmins: WorkspaceAdminAccess;
@@ -88,7 +82,6 @@ export class OnboardingResetService {
     this.#agents = options.agents;
     this.#database = options.database;
     this.#environment = options.environment;
-    this.#labAccountId = options.labAccountId;
     this.#now = options.now ?? (() => new Date());
     this.#registry = options.registry;
     this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(options.database, { now: options.now });
@@ -98,19 +91,20 @@ export class OnboardingResetService {
    * Whether this deployment offers the Lab at all. The environment is re-confirmed here rather than
    * trusted from route registration, so a misconfigured deployment outside staging still exposes
    * nothing — not even the read-only Scenario Preview.
+   *
+   * Staging offers the reset to every authenticated Account, because the operation only ever acts on
+   * the Account that asks: the caller is the authenticated Account, no Account may be named by a
+   * client, and `#resolveOwnedScope` refuses unless that Account owns exactly one active resource
+   * scope, exclusively. A tester returns their own onboarding to a first-run state without a shared
+   * Account to take turns on, and without reaching anything of anyone else's.
    */
   get enabled(): boolean {
     return this.#environment === "staging";
   }
 
-  /** Whether this Account owns the Lab's destructive half; no Account does until one is configured. */
-  allows(accountId: string): boolean {
-    return this.enabled && this.#labAccountId !== undefined && accountId === this.#labAccountId;
-  }
-
   async resetOnboarding(accountId: string): Promise<void> {
-    // Re-confirm the configured environment and Account before any mutation.
-    if (!this.allows(accountId)) throw resourceNotFound();
+    // Re-confirm the environment before any mutation rather than trusting route registration.
+    if (!this.enabled) throw resourceNotFound();
     const scope = await this.#resolveOwnedScope(accountId);
 
     await this.#deleteOwnedAgents(accountId, scope);

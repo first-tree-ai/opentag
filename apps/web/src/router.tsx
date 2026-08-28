@@ -670,20 +670,19 @@ function OnboardingRoute() {
 
 /**
  * The staging-only Onboarding Lab. A deployment outside staging is answered exactly like a page that
- * does not exist; on staging every signed-in Account may read the Scenario Preview, and the Server
- * still decides which single Account, if any, may run the reset.
+ * does not exist; on staging every signed-in Account may read the Scenario Preview and reset its own
+ * onboarding, so reachability is the only question the Server answers here.
  */
 function OnboardingLabRoute() {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const access = useResource(() => browserApi.onboardingLabAccess(), "onboarding-lab");
+  const offered = useResource(() => browserApi.onboardingLabOffered(), "onboarding-lab");
   return (
-    <AsyncState state={access}>
+    <AsyncState state={offered}>
       {(value) =>
         value ? (
           <OnboardingLabPage
-            resetAvailable={value.reset}
             scenarioId={searchParams.get("scenario")}
             user={me.user}
             onScenarioChange={(scenarioId) => {

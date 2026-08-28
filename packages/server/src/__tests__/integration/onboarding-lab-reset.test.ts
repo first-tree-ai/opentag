@@ -87,7 +87,6 @@ async function fixture(
     agents: agentService,
     database: client.database,
     environment: "staging",
-    labAccountId: lab.accountId,
     registry: { closeEnrollment },
   });
   return { ...client, agentService, closeEnrollment, lab, machineAuth, registry, reset };
@@ -456,11 +455,21 @@ describe("staging Onboarding Lab reset", () => {
     });
   });
 
-  it("refuses an Account that is not the configured Lab Account", async () => {
+  it("refuses outside staging, whichever Account asks", async () => {
     const value = await fixture();
     const other = await seedOtherAccount(value.database, value.agentService, value.machineAuth);
+    for (const environment of ["dev", "prod"] as const) {
+      const guarded = new OnboardingResetService({
+        agents: value.agentService,
+        database: value.database,
+        environment,
+      });
 
-    await expect(value.reset.resetOnboarding(other.accountId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(guarded.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(guarded.resetOnboarding(other.accountId)).rejects.toMatchObject({ statusCode: 404 });
+    }
+
+    expect((await facts(value.database, value.lab)).activeAgents).toBe(1);
     expect((await facts(value.database, other)).activeAgents).toBe(1);
   });
 
@@ -485,6 +494,39 @@ describe("staging Onboarding Lab reset", () => {
     });
     expect(await facts(value.database, value.lab)).toMatchObject({ activeAgents: 1, activeEnrollments: 1 });
     expect((await facts(value.database, value.lab)).setupCompletedAt).not.toBeNull();
+  });
+
+  it("leaves another tester's Account untouched, so two testers never collide", async () => {
+    const value = await fixture();
+    const [other] = await value.database
+      .insert(users)
+      .values({ displayName: "Other tester", email: "other-tester@company.example" })
+      .returning({ id: users.id });
+    if (!other) throw new Error("Second tester fixture was not created");
+    const [otherWorkspace] = await value.database
+      .insert(workspaces)
+      .values({ name: "other", displayName: "Other" })
+      .returning({ id: workspaces.id });
+    if (!otherWorkspace) throw new Error("Second tester scope fixture was not created");
+    await value.database
+      .insert(workspaceAdminGrants)
+      .values({ workspaceId: otherWorkspace.id, userId: other.id, grantedByUserId: other.id });
+    const second = await seedAccount(value.database, value.agentService, value.machineAuth, {
+      accountId: other.id,
+      workspaceId: otherWorkspace.id,
+      agentName: "other-agent",
+      externalAppId: "cli_other",
+    });
+    const before = await facts(value.database, second);
+
+    await value.reset.resetOnboarding(value.lab.accountId);
+
+    expect(await facts(value.database, value.lab)).toMatchObject({ activeAgents: 0, activeEnrollments: 0 });
+    expect(await facts(value.database, second)).toEqual(before);
+
+    // And the second tester resets their own Account without disturbing the first, in either order.
+    await value.reset.resetOnboarding(other.id);
+    expect(await facts(value.database, second)).toMatchObject({ activeAgents: 0, activeEnrollments: 0 });
   });
 
   it("refuses to proceed when the Lab Account owns more than one active scope", async () => {

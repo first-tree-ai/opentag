@@ -271,7 +271,6 @@ export async function startServer(): Promise<void> {
             agents: agentService,
             database,
             environment: config.environment,
-            ...(config.stagingOnboardingLab.accountId ? { labAccountId: config.stagingOnboardingLab.accountId } : {}),
             registry,
             workspaceAdmins,
           }),

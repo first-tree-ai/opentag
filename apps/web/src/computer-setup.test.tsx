@@ -481,4 +481,28 @@ describe("ComputerSetup", () => {
     expect(onConnected).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(2);
   });
+
+  it("answers the primary action in preview without issuing a code or polling", async () => {
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
+    const computers = vi.spyOn(browserApi, "computers");
+    render(<ComputerSetup preview />);
+
+    await clickGenerate();
+
+    // Review has to see the step this action opens, so the command, its copy affordance and a
+    // running validity are all rendered — from a fixed command, with no Server reached.
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
+    expect(screen.getByText(/^Expires in /)).toBeTruthy();
+    expect(issue).not.toHaveBeenCalled();
+    expect(computers).not.toHaveBeenCalled();
+
+    // No poll cycle started, so nothing can expire the command out from under a reviewer.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30 * 60_000);
+    });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(computers).not.toHaveBeenCalled();
+  });
 });

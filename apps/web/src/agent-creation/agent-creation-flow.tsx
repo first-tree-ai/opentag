@@ -32,7 +32,17 @@ export interface AgentCreationFacts {
   readonly runtimeEvidenceAvailable: boolean;
 }
 
+/**
+ * When the derived Agent name is put in front of the Account. `always` keeps it visible, which is
+ * what a Workspace that already holds Agents needs: the name carries a uniqueness constraint, so
+ * seeing the derivation is how a collision gets avoided before it is submitted. `when-required`
+ * shows it only once a display name derives to nothing and the Account has to choose one — the
+ * onboarding case, where this is the Account's first Agent and no collision is possible.
+ */
+export type AgentNameDisclosure = "always" | "when-required";
+
 export interface AgentCreationFlowProps {
+  readonly agentNameDisclosure?: AgentNameDisclosure;
   readonly facts: AgentCreationFacts;
   readonly initialDisplayName?: string;
   readonly onCancel?: () => void;
@@ -81,6 +91,7 @@ export function deriveAgentName(displayName: string): string {
 }
 
 export function AgentCreationFlow({
+  agentNameDisclosure = "always",
   facts,
   initialDisplayName = "",
   onCancel,
@@ -122,6 +133,14 @@ export function AgentCreationFlow({
   const restoreComputerSetupFocusRef = useRef(false);
   const computerRefreshStartedRef = useRef(false);
 
+  /**
+   * A display name carrying no Latin letters or digits — a Chinese one, most often — derives to an
+   * empty Agent name, which submit refuses. That is the one case where the Account has to act on
+   * the name, so it is the one case `when-required` reveals it: hiding it here would let the first
+   * mention of the field be the error that rejects the form.
+   */
+  const nameUnderivable = name.trim() === "";
+  const agentNameVisible = agentNameDisclosure === "always" || nameUnderivable;
   const readyRoutes = useMemo(() => resolveReadyRoutes(facts), [facts]);
   const defaultReadyRoute = readyRoutes[0];
   const displayedComputer =
@@ -285,8 +304,11 @@ export function AgentCreationFlow({
             }}
           />
         </Field>
-        {!editingName ? (
+        {!editingName && agentNameVisible ? (
           <div className="agent-name-summary">
+            {nameUnderivable ? (
+              <p className="agent-name-required">This display name cannot produce an @ name. Set one to continue.</p>
+            ) : null}
             <Button
               aria-label="Edit Agent name"
               aria-controls="agent-name-editor"
@@ -459,12 +481,15 @@ function RuntimeRouteSection({
     .filter((provider) => provider.computerId === displayedComputer?.id)
     .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
   const computerOptions = [...facts.computers].sort((left, right) => left.displayName.localeCompare(right.displayName));
+  // The heading names the section and everything under it answers it: the route rows label
+  // themselves Computer and Runtime, and where there is no Computer yet the setup panel names the
+  // task. A sentence here would only say those labels again, which is one more line between the
+  // Account and the single action this step asks for.
   return (
     <section aria-labelledby="agent-runtime-heading" className="agent-create-runtime">
       <header className="agent-create-runtime-header">
         <div>
           <h3 id="agent-runtime-heading">Where it runs</h3>
-          <p>Choose the Computer and Runtime for this Agent.</p>
         </div>
       </header>
 

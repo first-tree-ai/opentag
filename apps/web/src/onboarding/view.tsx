@@ -7,6 +7,7 @@ import type {
 import { type ReactNode, useMemo, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
+import feishuIconUrl from "../assets/feishu.svg";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
 import { Button, buttonClassName } from "../ui/design-system.js";
 import {
@@ -137,10 +138,19 @@ interface JourneyFact {
   readonly value: string;
 }
 
+/**
+ * The state of the link between the Agent and Feishu, as the connection strip reports it. This is
+ * finer than the step status: a step that is merely "current" covers a binding that has not been
+ * started, one being provisioned, and one that has broken, and those ask different things of the
+ * Account.
+ */
+type MessagingLink = "none" | "connecting" | "not-ready" | "attention" | "connected";
+
 interface OnboardingJourneyState {
   readonly activeStep: 1 | 2;
   readonly agentName: string;
   readonly messaging: JourneyStatus;
+  readonly messagingLink: MessagingLink;
   readonly prepareFacts: readonly JourneyFact[];
   readonly prepare: JourneyStatus;
   readonly stageDescription: string;
@@ -152,9 +162,9 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
   return (
     <aside className="onboarding-journey">
       <div className="onboarding-journey-intro">
-        <span className="eyebrow">Agent setup</span>
+        <span className="eyebrow">Getting started</span>
         <h1>Set up OpenTag</h1>
-        <p>Prepare one Agent, then bring it into a shared conversation.</p>
+        <p>An AI teammate your team mentions in Feishu, working on a Computer you connect.</p>
       </div>
       <nav aria-label="Onboarding steps">
         <ol className="onboarding-steps">
@@ -172,9 +182,7 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
           />
         </ol>
       </nav>
-      <p className="onboarding-journey-note">
-        Progress is saved from live server state. You can leave and return at any time.
-      </p>
+      <p className="onboarding-journey-note">You can leave and return at any time.</p>
     </aside>
   );
 }
@@ -235,16 +243,20 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
     );
   }
 
-  const connected = journey.messaging === "complete";
+  const link = MESSAGING_LINK_COPY[journey.messagingLink];
   return (
     <section
-      aria-label={`${journey.agentName} Agent ${connected ? "connected to" : "awaiting connection to"} Feishu`}
+      aria-label={`${journey.agentName} Agent ${link.description} Feishu`}
       className="onboarding-messaging-connection"
-      data-status={connected ? "complete" : "current"}
+      data-status={link.status}
     >
       <div className="onboarding-connection-endpoint">
+        {/*
+          This endpoint is the Agent, whose name the Account chose, so the mark is derived from that
+          name rather than stamped with the product's own initials — an Agent named 小助手 is not OT.
+        */}
         <span aria-hidden="true" className="onboarding-endpoint-mark">
-          OT
+          {[...journey.agentName.trim()][0] ?? "?"}
         </span>
         <span>
           <small>Agent</small>
@@ -252,12 +264,11 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
         </span>
       </div>
       <div className="onboarding-messaging-bridge">
-        <span>{connected ? "Connected" : "Authorization"}</span>
+        <span>{link.label}</span>
       </div>
       <div className="onboarding-connection-endpoint onboarding-connection-endpoint-feishu">
-        <span aria-hidden="true" className="onboarding-endpoint-mark">
-          FS
-        </span>
+        {/* Feishu's own mark is what the Account recognises here; "FS" is an abbreviation nobody uses. */}
+        <img alt="" className="onboarding-endpoint-mark onboarding-endpoint-mark-image" src={feishuIconUrl} />
         <span>
           <small>Team chat</small>
           <strong>Feishu</strong>
@@ -265,6 +276,40 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
       </div>
     </section>
   );
+}
+
+/**
+ * Every label is a state of the link itself, on one axis — whether work can be handed through it —
+ * so the strip reads as one value changing rather than as unrelated words taking turns. What has to
+ * happen to advance it is named by the action below, which is where the Account acts on it.
+ *
+ * Each label is held to the evidence the page actually has. `handoffReady` is a single combined
+ * gate: the Server clears it when the Agent runtime is not ready, when the Feishu CLI is not ready,
+ * or when the connection lease has lapsed, and it reports which of those only as one false. An
+ * active binding that fails that gate is therefore not progress and not a severed transport; it is
+ * a link the page cannot confirm, and it says exactly that.
+ */
+const MESSAGING_LINK_COPY: Record<
+  MessagingLink,
+  { label: string; description: string; status: "current" | "working" | "attention" | "complete" }
+> = {
+  none: { label: "Not connected", description: "not yet connected to", status: "current" },
+  connecting: { label: "Connecting…", description: "connecting to", status: "working" },
+  "not-ready": { label: "Not ready", description: "not confirmed ready to reach", status: "current" },
+  attention: { label: "Needs attention", description: "needs attention on its link to", status: "attention" },
+  connected: { label: "Connected", description: "connected to", status: "complete" },
+};
+
+function messagingLink(current: OnboardingCurrentState | undefined, messaging: JourneyStatus): MessagingLink {
+  if (messaging === "complete") return "connected";
+  if (current?.kind !== "handoff") return "none";
+  // `provisioning` is the one state the Server states as an act in progress. `active-not-ready`
+  // names no cause, and `attention` covers an expired authorization as much as a failure, so
+  // neither is reported as movement or as a disconnection.
+  if (current.progress.kind === "provisioning") return "connecting";
+  if (current.progress.kind === "active-not-ready") return "not-ready";
+  if (current.progress.kind === "attention") return "attention";
+  return "none";
 }
 
 function onboardingJourney(
@@ -276,6 +321,7 @@ function onboardingJourney(
       activeStep: 1,
       agentName: snapshot?.targetAgent?.displayName ?? "OpenTag",
       messaging: "upcoming",
+      messagingLink: "none",
       prepareFacts: [
         { label: "Computer", status: "current", value: "Checking" },
         { label: "Runtime", status: "waiting", value: "Waiting" },
@@ -324,8 +370,9 @@ function onboardingJourney(
       activeStep: 1,
       agentName: "OpenTag",
       messaging: "upcoming",
+      messagingLink: "none",
       prepare: "current",
-      prepareFacts: [computerFact, runtimeFact, { label: "Agent", status: "current", value: "Name pending" }],
+      prepareFacts: [computerFact, runtimeFact, { label: "Agent", status: "current", value: "Not created" }],
       stageDescription: "Name your Agent, then confirm its ready runtime.",
       stageStatus: readyRoute
         ? "Ready to create"
@@ -352,6 +399,8 @@ function onboardingJourney(
         (current.kind === "handoff" || current.kind === "ready" || current.kind === "agent-runtime"
           ? current.agent.runtimeProvider
           : undefined));
+  const messaging: JourneyStatus =
+    setupReady || messagingReady ? "complete" : messagingCurrent ? "current" : "upcoming";
   const computerFact = journeyComputerFact(current, snapshot);
   const runtimeFact: JourneyFact =
     current.kind === "workspace" || current.kind === "computer"
@@ -364,7 +413,7 @@ function onboardingJourney(
   const agentFact: JourneyFact = snapshot?.targetAgent
     ? { label: "Agent", status: agentNeedsAttention ? "attention" : "ready", value: snapshot.targetAgent.displayName }
     : current.kind === "agent"
-      ? { label: "Agent", status: "current", value: "Name pending" }
+      ? { label: "Agent", status: "current", value: "Not created" }
       : prepareComplete
         ? { label: "Agent", status: "ready", value: "Prepared" }
         : { label: "Agent", status: "waiting", value: "Not created" };
@@ -374,11 +423,12 @@ function onboardingJourney(
     agentName: snapshot?.targetAgent?.displayName ?? "OpenTag",
     prepare: prepareComplete ? "complete" : "current",
     prepareFacts: [computerFact, runtimeFact, agentFact],
-    messaging: setupReady || messagingReady ? "complete" : messagingCurrent ? "current" : "upcoming",
+    messaging,
+    messagingLink: messagingLink(current, messaging),
     stageDescription: prepareComplete
       ? setupReady
         ? "Your Agent is ready for the first conversation in Feishu."
-        : "Authorize the bot people will mention in conversations."
+        : ""
       : "Confirm where your Agent runs, then give it a clear identity.",
     stageStatus: onboardingStageStatus(current),
     stageTitle: prepareComplete
@@ -519,6 +569,10 @@ function OnboardingContent({
     return (
       <section className="onboarding-action">
         <AgentCreationFlow
+          // This branch is only reached with no Agent to continue, so the derived name cannot
+          // collide with one. It stays out of the first run unless the display name derives to
+          // nothing and the Account has to choose a name itself.
+          agentNameDisclosure="when-required"
           facts={onboardingAgentCreationFacts(snapshot)}
           initialDisplayName="OpenTag"
           preview={mode === "preview"}
@@ -551,11 +605,11 @@ function OnboardingContent({
     const copy = attention ? runtimeAttentionCopy(attention, agent?.computer.displayName ?? "its Computer") : undefined;
     return (
       <ActionSection
-        title={copy?.title ?? `${agent?.displayName ?? "Your Agent"} needs its runtime route`}
+        title={copy?.title ?? `${agent?.displayName ?? "Your Agent"} needs a Runtime`}
         description={
           copy
             ? `${copy.description} The Agent identity and Feishu setup are unchanged.`
-            : "The Agent identity and Feishu setup are unchanged. Restore its bound Computer and Provider, then check again."
+            : "The Agent identity and Feishu setup are unchanged. Restore its bound Computer and Runtime, then check again."
         }
       >
         <ReloadButton pending={refreshPending} onReload={onReload} />
@@ -564,7 +618,7 @@ function OnboardingContent({
   }
   if (current.kind === "handoff") {
     return (
-      <ActionSection title={handoffTitle(current)} description="Authorize the Feishu Bot people will mention.">
+      <ActionSection title={handoffTitle(current)} description="Authorize the Feishu bot people will mention.">
         {mode === "preview" ? (
           <FeishuAction control={INERT_FEISHU_SETUP} progress={current.progress} />
         ) : (
@@ -588,7 +642,7 @@ function OnboardingContent({
   return (
     <ActionSection
       title="OpenTag is ready"
-      description="Add the Bot to a Feishu group, then mention OpenTag with your first task."
+      description="Add the bot to a Feishu group, then mention OpenTag with your first task."
     >
       <div className="actions">
         <a className={buttonClassName()} href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
@@ -661,7 +715,7 @@ function FeishuAction({
     progress.kind === "attention" && progress.bindingState === "reauthorization_required" ? "reauthorize" : "create";
   const label =
     progress.kind === "none"
-      ? "Connect existing or new Feishu Bot"
+      ? "Connect a Feishu bot"
       : progress.kind === "attention" && progress.bindingState === "reauthorization_required"
         ? "Reauthorize Feishu"
         : "Resume Feishu setup";

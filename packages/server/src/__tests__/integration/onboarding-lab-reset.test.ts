@@ -388,7 +388,7 @@ describe("staging Onboarding Lab reset", () => {
   });
 
   it("refuses to clear setup completion when a writer interleaves before the commit", async () => {
-    // Another tester on the shared Account asks for a Computer connect command mid-reset.
+    // The same Account asks for a Computer connect command mid-reset, from another session or tab.
     let interleaved = false;
     const value = await fixture({
       afterCleanup: async ({ lab, machineAuth }) => {

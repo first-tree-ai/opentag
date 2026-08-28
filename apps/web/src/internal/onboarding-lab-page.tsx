@@ -20,7 +20,7 @@ const noop = () => undefined;
 /**
  * The staging-only Onboarding Lab. The page *is* the onboarding page: the same presentation, at the
  * same size, with no frame or chrome of its own, so what a reviewer judges is what production
- * renders. Everything the Lab adds — choosing a scenario and resetting the shared staging Account —
+ * renders. Everything the Lab adds — choosing a scenario and resetting the authenticated Account —
  * lives in one floating control that production never shows.
  *
  * Scenario Preview renders fixed states through the production onboarding presentation and writes

@@ -109,24 +109,13 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
               <ExecutionHeading id="execution-heading">
                 {section === "execution" ? "Model & reasoning" : "Execution"}
               </ExecutionHeading>
-              <p>
-                {section === "execution"
-                  ? "Choose how this Agent handles new work."
-                  : "Choose the provider, model, and reasoning level used for new work."}
-              </p>
             </div>
           </header>
           {section !== "execution" ? <p className="agent-runtime-provider">Provider: {providerName}</p> : null}
           <form className="agent-runtime-edit-form" onSubmit={saveRuntime}>
             <div className="agent-runtime-field-grid">
-              <Field
-                hint="Choose a common model or enter a custom model ID."
-                hintId={fieldId("model-help")}
-                htmlFor={fieldId("model")}
-                label="Model"
-              >
+              <Field htmlFor={fieldId("model")} label="Model">
                 <select
-                  aria-describedby={fieldId("model-help")}
                   id={fieldId("model")}
                   value={modelSelection}
                   onChange={(event) => {
@@ -154,7 +143,6 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                       Custom model ID
                     </label>
                     <input
-                      aria-describedby={fieldId("model-help")}
                       autoComplete="off"
                       id={fieldId("custom-model")}
                       required
@@ -168,14 +156,8 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                 ) : null}
                 <input name="model" readOnly type="hidden" value={modelDraft} />
               </Field>
-              <Field
-                hint="Provider default lets the runtime choose."
-                hintId={fieldId("reasoning-help")}
-                htmlFor={fieldId("reasoning-effort")}
-                label="Reasoning level"
-              >
+              <Field htmlFor={fieldId("reasoning-effort")} label="Reasoning level">
                 <select
-                  aria-describedby={fieldId("reasoning-help")}
                   id={fieldId("reasoning-effort")}
                   name="reasoningEffort"
                   value={reasoningDraft}
@@ -228,24 +210,13 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
           <header className="agent-runtime-section__header">
             <div>
               <InstructionsHeading id="agent-instructions-heading">
-                {section === "instructions" ? "Instructions & behavior" : "Agent instructions"}
+                {section === "instructions" ? "Instructions" : "Agent instructions"}
               </InstructionsHeading>
-              <p>
-                {section === "instructions"
-                  ? "Tell this Agent how it should work in plain language."
-                  : "Set the guidance applied to every request this Agent handles."}
-              </p>
             </div>
           </header>
           <form className="agent-instructions-form" onSubmit={saveInstructions}>
-            <Field
-              hint="Be concise and specific. These instructions apply in addition to OpenTag's platform guidance."
-              hintId={fieldId("instructions-help")}
-              htmlFor={fieldId("instructions")}
-              label="Instructions"
-            >
+            <Field htmlFor={fieldId("instructions")} label="Instructions">
               <textarea
-                aria-describedby={fieldId("instructions-help")}
                 id={fieldId("instructions")}
                 name="instructions"
                 rows={8}

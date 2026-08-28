@@ -139,14 +139,12 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
         <section aria-labelledby="agent-usage-trend-heading">
           <header className="agent-usage-subheading">
             <h3 id="agent-usage-trend-heading">Token usage over time</h3>
-            <p>Total Tokens recorded each day.</p>
           </header>
           <TokenTrendChart usage={usage} />
         </section>
         <section aria-labelledby="agent-usage-breakdown-heading">
           <header className="agent-usage-subheading">
             <h3 id="agent-usage-breakdown-heading">Token breakdown</h3>
-            <p>Input and output within the selected period.</p>
           </header>
           <TokenBreakdown usage={usage} />
         </section>

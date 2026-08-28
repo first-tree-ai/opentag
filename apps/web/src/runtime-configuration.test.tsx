@@ -54,6 +54,13 @@ describe("RuntimeConfigurationForm", () => {
       "Provider default",
     );
     expect(screen.getByRole("heading", { name: "Agent instructions" })).toBeTruthy();
+    expect(screen.queryByText("Choose a common model or enter a custom model ID.")).toBeNull();
+    expect(screen.queryByText("Provider default lets the runtime choose.")).toBeNull();
+    expect(
+      screen.queryByText(
+        "Be concise and specific. These instructions apply in addition to OpenTag's platform guidance.",
+      ),
+    ).toBeNull();
     expect(screen.queryByText(/timeout/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
   });

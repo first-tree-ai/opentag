@@ -1313,7 +1313,12 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("does not consume a connect code when token issuance fails", async () => {
+  it("spends a connect code before issuing, so a failure cannot leave it reusable", async () => {
+    /*
+     * Issuing first left a live session behind whenever the consume or the commit failed, with the code still
+     * unconsumed — one code buying a second credential. Consuming first inverts the failure: the code is spent and no
+     * session exists, which for a one-time credential is the direction to fail in.
+     */
     const now = new Date("2026-08-18T00:00:00.000Z");
     const client = createDatabaseClient(databaseUrl);
     const delegate = new BetterAuthSessionTokens(sessionAuth(client.database), client.database, { now: () => now });
@@ -1322,7 +1327,7 @@ describe("authentication persistence", () => {
       issuePairForUser: async (userId) => {
         if (shouldFail) {
           shouldFail = false;
-          throw new Error("Injected token signing failure");
+          throw new Error("Injected session issuance failure");
         }
         return delegate.issuePairForUser(userId);
       },
@@ -1334,16 +1339,41 @@ describe("authentication persistence", () => {
 
     try {
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toThrow(
-        "Injected token signing failure",
+        "Injected session issuance failure",
       );
-      const [afterFailure] = await fixture.database.select().from(accountCliLoginCodes);
-      expect(afterFailure?.consumedAt).toBeNull();
 
-      await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).resolves.toMatchObject({
-        tokenType: "Bearer",
+      // Spent, and with nothing issued against it — not reusable, and not paired with an orphan session.
+      const [afterFailure] = await fixture.database.select().from(accountCliLoginCodes);
+      expect(afterFailure?.consumedAt).not.toBeNull();
+      expect(await fixture.database.select().from(authSessions)).toHaveLength(0);
+
+      await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toMatchObject({
+        code: "AUTH_CODE_CONSUMED",
       });
-      const [afterRetry] = await fixture.database.select().from(accountCliLoginCodes);
-      expect(afterRetry?.consumedAt).not.toBeNull();
+      expect(await fixture.database.select().from(authSessions)).toHaveLength(0);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("lets one of several concurrent exchanges of the same code win", async () => {
+    /*
+     * The consume is conditional, so the code is redeemed exactly once however many callers reach it together. It also
+     * has to hold no lock across issuance: waiters would occupy transaction connections while the winner needed
+     * another from the same pool to create its session.
+     */
+    const fixture = await createAuthFixture();
+
+    try {
+      const attempts = await Promise.allSettled(
+        Array.from({ length: 12 }, () => fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)),
+      );
+
+      expect(attempts.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+      for (const rejected of attempts.filter((outcome) => outcome.status === "rejected")) {
+        expect(rejected.reason).toMatchObject({ code: "AUTH_CODE_CONSUMED" });
+      }
+      expect(await fixture.database.select().from(authSessions)).toHaveLength(1);
     } finally {
       await fixture.sql.end();
     }

@@ -259,9 +259,11 @@ That issuer now hands out a Better Auth session rather than a signed access/refr
 the server can withdraw instead of a signature it can only wait out. The exchange response keeps its four fields and
 `accessToken` and `refreshToken` carry the same session token, which is why a CLI built before the cutover keeps working
 unchanged. `OPENTAG_SESSION_TTL_SECONDS` is that credential's whole lifetime, defaulted to what the refresh token's was
-because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates — the
-replacement is issued, then the presented token is withdrawn — so a copy taken before the last refresh stops working
-rather than running to its own expiry.
+because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates: the
+presented token is withdrawn first, and only the caller whose withdrawal succeeded gets a replacement. That ordering is
+what makes it safe to race — two refreshes of one credential cannot both mint, and a revocation landing first is not
+undone — and it means a failure in between signs the client out rather than leaving alive a credential something
+already decided to end. A copy taken before the last refresh stops working rather than running to its own expiry.
 
 One consequence is worth stating plainly: a disclosed credential is now usable for the session lifetime rather than the
 old fifteen-minute access window. What made that window necessary was that its thirty-day refresh partner could not be

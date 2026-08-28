@@ -12,7 +12,7 @@ import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, users, workspaceAdminGrants, workspaceComputers, workspaces } from "../../db/schema/index.js";
+import { computers, workspaceAdminGrants, workspaceComputers, workspaces } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, AuthTokenService } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
@@ -458,32 +458,6 @@ describe("Computer enrollment persistence", () => {
       } finally {
         await app.close();
       }
-    } finally {
-      await value.sql.end();
-    }
-  });
-  it("lists only the Computers the requesting Account enrolled", async () => {
-    const value = await fixture();
-    try {
-      const mine = await enroll(value);
-      const [other] = await value.database
-        .insert(users)
-        .values({ displayName: "Other", email: "other@example.com" })
-        .returning();
-      if (!other) throw new Error("Other Account fixture was not created");
-      await value.database.insert(workspaceAdminGrants).values({
-        workspaceId: value.bootstrap.workspaceId,
-        userId: other.id,
-        grantedByUserId: other.id,
-      });
-      const theirs = await enroll(value, value.bootstrap.workspaceId, other.id);
-
-      await expect(
-        value.workspaceService.listComputers(value.bootstrap.userId, value.bootstrap.workspaceId),
-      ).resolves.toEqual({ computers: [expect.objectContaining({ computerId: mine.computerId })] });
-      await expect(value.workspaceService.listComputers(other.id, value.bootstrap.workspaceId)).resolves.toEqual({
-        computers: [expect.objectContaining({ computerId: theirs.computerId })],
-      });
     } finally {
       await value.sql.end();
     }

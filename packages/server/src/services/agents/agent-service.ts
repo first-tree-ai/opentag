@@ -307,9 +307,6 @@ export class AgentService {
           );
           if (replay) return replay;
         }
-        // An Agent runs on a physical host its creator must be able to reach, and enrollment is the
-        // only record of who reached it. A Computer another Account enrolled is therefore not a
-        // valid target, and reads as absent rather than forbidden so the collection stays private.
         const [computerEnrollment] = await transaction
           .select({ id: workspaceComputers.id })
           .from(workspaceComputers)
@@ -317,7 +314,6 @@ export class AgentService {
             and(
               eq(workspaceComputers.workspaceId, workspaceId),
               eq(workspaceComputers.computerId, input.computerId),
-              eq(workspaceComputers.enrolledByUserId, callerUserId),
               isNull(workspaceComputers.revokedAt),
             ),
           )

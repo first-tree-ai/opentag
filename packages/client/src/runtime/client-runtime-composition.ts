@@ -460,6 +460,8 @@ export async function createClientRuntime(
   const custody = new TurnCustodyOwner({
     admission,
     bindingStore,
+    imDeliveryVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imDelivery),
+    imSteerVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imSteer),
     reconciler,
     preflight,
     /* v8 ignore next -- late binding is required because custody and runner own each other. */

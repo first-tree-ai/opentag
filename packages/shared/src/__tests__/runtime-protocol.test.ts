@@ -30,6 +30,20 @@ describe("runtime protocol", () => {
     ).toEqual({ [RUNTIME_CAPABILITY.imCredentialGrant]: 1 });
   });
 
+  it("negotiates observer-safe IM delivery and steer independently from owner-compatible v1", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imDelivery]).toEqual({ min: 1, max: 2 });
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imSteer]).toEqual({ min: 1, max: 2 });
+    expect(
+      negotiateRuntimeCapabilities(
+        {
+          [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 1 },
+          [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 1 },
+        },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.imDelivery]: 1, [RUNTIME_CAPABILITY.imSteer]: 1 });
+  });
+
   it("keeps the v1 handshake strict after the credential-grant capability replacement", () => {
     expect(
       ServerRuntimeFrameSchema.parse({
@@ -152,7 +166,8 @@ describe("runtime protocol", () => {
     expect(missingRuntimeCapabilities(["runtime.imDelivery"], negotiated)).toEqual([]);
     expect(missingRuntimeCapabilities(["future.requiredFeature"], negotiated)).toEqual(["future.requiredFeature"]);
     expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(2);
-    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(1);
+    expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(2);
+    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(2);
     expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
     expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
   });

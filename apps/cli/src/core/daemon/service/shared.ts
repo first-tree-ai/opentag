@@ -95,14 +95,36 @@ export const defaultServiceRunner: ServiceRunner = {
  * variables that address the user manager, so stripping them would break the call rather than
  * secure it; the executable is what had to stop being the caller's choice.
  */
-const SERVICE_MANAGER_PATHS: Readonly<Record<string, readonly string[]>> = {
+/**
+ * Where each service manager lives, by absolute path.
+ *
+ * A candidate qualifies only if the system owns it: an FHS system directory, or a distribution's
+ * root-managed equivalent. That is the whole rule — the list exists because the caller's `PATH` must
+ * not choose the binary, so anything a caller can write to would defeat it.
+ *
+ * The list is therefore also the supported-platform contract. A Linux layout that keeps systemd
+ * somewhere else needs an entry here; omitting one does not degrade the daemon service, it stops it
+ * from resolving at all.
+ */
+export const SERVICE_MANAGER_PATHS = {
   launchctl: ["/bin/launchctl", "/usr/bin/launchctl"],
-  loginctl: ["/usr/bin/loginctl", "/bin/loginctl"],
-  systemctl: ["/usr/bin/systemctl", "/bin/systemctl"],
-};
+  // NixOS keeps the root-managed systemd outside the FHS locations, and both tools ship together.
+  loginctl: ["/usr/bin/loginctl", "/bin/loginctl", "/run/current-system/systemd/bin/loginctl"],
+  systemctl: ["/usr/bin/systemctl", "/bin/systemctl", "/run/current-system/systemd/bin/systemctl"],
+} as const satisfies Record<string, readonly string[]>;
 
-/** Every program name this runner is allowed to execute, for the drift guard that enforces it. */
+export type ServiceManagerProgram = keyof typeof SERVICE_MANAGER_PATHS;
+
+/** Every program name this runner is allowed to execute. */
 export const SERVICE_MANAGER_PROGRAMS: readonly string[] = Object.keys(SERVICE_MANAGER_PATHS).sort();
+
+/**
+ * Name a program for the runner. Passing a name through here is what makes registration a compile
+ * error rather than a runtime degradation: a manager added without an entry above cannot be named.
+ */
+export function serviceManagerProgram(program: ServiceManagerProgram): string {
+  return program;
+}
 
 type ServiceManagerResolution =
   /** A program this runner governs, present on this host. */
@@ -114,7 +136,7 @@ type ServiceManagerResolution =
 
 async function resolveServiceManagerCommand(program: string): Promise<ServiceManagerResolution> {
   if (isAbsolute(program)) return { kind: "resolved", path: program };
-  const candidates = SERVICE_MANAGER_PATHS[program];
+  const candidates = (SERVICE_MANAGER_PATHS as Record<string, readonly string[] | undefined>)[program];
   if (!candidates) return { kind: "ungoverned" };
   for (const candidate of candidates) {
     try {

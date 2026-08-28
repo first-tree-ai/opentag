@@ -10,6 +10,7 @@ import {
   quoteSystemdToken,
   readRegularFile,
   runRequired,
+  serviceManagerProgram,
   writeFileAtomically,
 } from "./shared.js";
 import type { ResolvedCliInvocation, ServiceRunner } from "./types.js";
@@ -75,7 +76,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
     "user",
     identity.systemdUnitName,
   );
-  const systemctl = options.systemctl ?? "systemctl";
+  const systemctl = options.systemctl ?? serviceManagerProgram("systemctl");
   const servicePath = buildServicePath(options.invocation, "linux", options.sourcePath);
   const expected = renderSystemdUnit({
     home: options.home,
@@ -208,7 +209,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
       } else if (previous.state !== "active") {
         await runRequired(options.runner, systemctl, ["--user", "start", identity.systemdUnitName], "systemd start");
       }
-      const linger = await options.runner.run("loginctl", ["enable-linger", username], {
+      const linger = await options.runner.run(serviceManagerProgram("loginctl"), ["enable-linger", username], {
         timeoutMs: SYSTEMD_TIMEOUT_MS,
       });
       const current = await status();

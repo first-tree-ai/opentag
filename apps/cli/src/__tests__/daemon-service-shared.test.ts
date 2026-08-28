@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { getChannelConfig } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadDaemonEnvironment } from "../core/daemon/environment.js";
@@ -23,6 +23,7 @@ import {
   quoteSystemdToken,
   resolveCliInvocation,
   runRequired,
+  SERVICE_MANAGER_PATHS,
   SERVICE_MANAGER_PROGRAMS,
   writeFileAtomically,
 } from "../core/daemon/service/shared.js";
@@ -387,22 +388,41 @@ describe("defaultServiceRunner", () => {
     });
   });
 
-  it("governs every program the service backends hand it", async () => {
+  it("registers every program name the backends can hand the runner", async () => {
     // The omission this guards against already happened once: moving resolution into the runner put
     // every program behind this list, and `loginctl` was not on it, so Linux installs silently
-    // stopped enabling lingering.
+    // stopped enabling lingering. Naming a program through `serviceManagerProgram` makes that a
+    // compile error; this catches the two shapes a type cannot — a bare literal handed to the
+    // runner, and a bare default for an injectable manager option.
     const sources = await Promise.all(
       ["launchd.ts", "systemd.ts"].map((file) =>
         readFile(new URL(`../core/daemon/service/${file}`, import.meta.url), "utf8"),
       ),
     );
-    const invoked = new Set(
-      sources.flatMap((source) => [...source.matchAll(/runner\.run\(\s*"([a-z][a-z-]*)"/gu)].map((match) => match[1])),
+    const named = new Set(
+      sources.flatMap((source) =>
+        [
+          ...source.matchAll(/runner\.run\(\s*"([a-z][a-z-]*)"/gu),
+          ...source.matchAll(/\?\?\s*"([a-z][a-z-]*)"/gu),
+          ...source.matchAll(/serviceManagerProgram\("([a-z][a-z-]*)"\)/gu),
+        ].map((match) => match[1]),
+      ),
     );
 
-    expect(invoked.size).toBeGreaterThan(0);
-    for (const program of invoked) {
+    // All three managers in use must be visible here, not just the one introduced as a literal.
+    expect([...named].sort()).toEqual(["launchctl", "loginctl", "systemctl"]);
+    for (const program of named) {
       expect(SERVICE_MANAGER_PROGRAMS).toContain(program);
+    }
+  });
+
+  it("looks for a service manager where a distribution's root actually keeps it", () => {
+    // The absolute-path rule replaced a PATH search, so this list is the supported-platform
+    // contract: a layout missing from it cannot resolve at all rather than degrading.
+    expect(SERVICE_MANAGER_PATHS.systemctl).toContain("/run/current-system/systemd/bin/systemctl");
+    expect(SERVICE_MANAGER_PATHS.loginctl).toContain("/run/current-system/systemd/bin/loginctl");
+    for (const candidates of Object.values(SERVICE_MANAGER_PATHS)) {
+      for (const candidate of candidates) expect(isAbsolute(candidate)).toBe(true);
     }
   });
 });

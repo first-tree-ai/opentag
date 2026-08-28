@@ -12,6 +12,7 @@ import {
   quotePosix,
   readRegularFile,
   runRequired,
+  serviceManagerProgram,
   sleep,
   writeFileAtomically,
 } from "./shared.js";
@@ -91,7 +92,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const userHome = options.userHome ?? homedir();
   const domain = `gui/${uid}`;
   const target = `${domain}/${identity.launchdLabel}`;
-  const launchctl = options.launchctl ?? "launchctl";
+  const launchctl = options.launchctl ?? serviceManagerProgram("launchctl");
   const plistPath = join(userHome, "Library", "LaunchAgents", identity.launchdPlistName);
   const paths = resolveDaemonPaths(options.home);
   const wrapperPath = paths.serviceWrapper(identity.launchdWrapperName);

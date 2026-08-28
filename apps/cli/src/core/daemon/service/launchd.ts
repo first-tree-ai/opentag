@@ -117,7 +117,9 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const readStatus = async (failOnTimeout = false): Promise<DaemonServiceInfo> => {
     const plist = await readRegularFile(plistPath);
     if (plist === undefined) {
-      const orphaned = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+      const orphaned = await options.runner.run(launchctl, ["print", target], {
+        timeoutMs: LAUNCHD_TIMEOUT_MS,
+      });
       if (orphaned.timedOut) {
         if (failOnTimeout) {
           throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
@@ -148,7 +150,9 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
         drifted: true,
       });
     }
-    const result = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+    const result = await options.runner.run(launchctl, ["print", target], {
+      timeoutMs: LAUNCHD_TIMEOUT_MS,
+    });
     const drifted = plist !== expectedPlist || wrapper !== expectedWrapper;
     if (result.timedOut) {
       if (failOnTimeout) {
@@ -183,7 +187,9 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const status = (): Promise<DaemonServiceInfo> => readStatus();
 
   const preflight = async (): Promise<void> => {
-    const result = await options.runner.run(launchctl, ["print", domain], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+    const result = await options.runner.run(launchctl, ["print", domain], {
+      timeoutMs: LAUNCHD_TIMEOUT_MS,
+    });
     if (result.code !== 0 || result.timedOut) {
       throw new DaemonServiceError(
         "MANAGER_UNAVAILABLE",
@@ -193,7 +199,9 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   };
 
   const bootout = async (): Promise<void> => {
-    const result = await options.runner.run(launchctl, ["bootout", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+    const result = await options.runner.run(launchctl, ["bootout", target], {
+      timeoutMs: LAUNCHD_TIMEOUT_MS,
+    });
     if (result.code !== 0 && !isManagerNotLoaded(result)) {
       throw new DaemonServiceError("OPERATION_FAILED", `launchd bootout failed: ${result.stderr || "unknown error"}`);
     }
@@ -201,7 +209,9 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
 
   const waitForEviction = async (): Promise<void> => {
     for (let attempt = 0; attempt < evictionAttempts; attempt += 1) {
-      const result = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+      const result = await options.runner.run(launchctl, ["print", target], {
+        timeoutMs: LAUNCHD_TIMEOUT_MS,
+      });
       if (isManagerNotLoaded(result)) return;
       if (result.timedOut) throw new DaemonServiceError("OPERATION_FAILED", "launchd eviction check timed out");
       await wait(evictionDelayMs);
@@ -215,7 +225,9 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     });
     if (result.code !== 0 || result.timedOut) {
       await wait(evictionDelayMs);
-      result = await options.runner.run(launchctl, ["bootstrap", domain, plistPath], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+      result = await options.runner.run(launchctl, ["bootstrap", domain, plistPath], {
+        timeoutMs: LAUNCHD_TIMEOUT_MS,
+      });
     }
     if (result.code !== 0 || result.timedOut) {
       throw new DaemonServiceError(
@@ -260,7 +272,9 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       }
       const current = await status();
       if (current.state === "active") return current;
-      const loaded = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+      const loaded = await options.runner.run(launchctl, ["print", target], {
+        timeoutMs: LAUNCHD_TIMEOUT_MS,
+      });
       if (loaded.timedOut) {
         throw new DaemonServiceError("OPERATION_FAILED", "launchd start state check timed out");
       }

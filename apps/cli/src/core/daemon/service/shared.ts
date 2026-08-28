@@ -40,10 +40,22 @@ export interface ServiceIdentity {
 }
 
 export const defaultServiceRunner: ServiceRunner = {
-  run(program, args, options) {
+  async run(program, args, options) {
+    // Resolution happens here rather than in the backends because this is where a name becomes a
+    // running process. A service manager reached through the caller's PATH would let an executable
+    // placed earlier there decide what OpenTag believes about its own daemon.
+    const resolved = await resolveServiceManagerCommand(program);
+    if (!resolved) {
+      return {
+        code: null,
+        stderr: `${program} was not found at a known system location`,
+        stdout: "",
+        timedOut: false,
+      };
+    }
     return new Promise<CommandResult>((complete) => {
       execFile(
-        program,
+        resolved,
         [...args],
         {
           encoding: "utf8",
@@ -64,6 +76,38 @@ export const defaultServiceRunner: ServiceRunner = {
     });
   },
 };
+
+/**
+ * Absolute locations for the service managers OpenTag drives.
+ *
+ * A service manager is an authority about the installed service, so it must not be reachable through
+ * the caller's `PATH`: an executable placed earlier there would decide what OpenTag believes about
+ * its own daemon. Resolution is by absolute path only, and an unresolvable manager fails closed
+ * rather than falling back to a name lookup.
+ *
+ * The inherited environment is deliberately left alone. `systemctl --user` needs the session
+ * variables that address the user manager, so stripping them would break the call rather than
+ * secure it; the executable is what had to stop being the caller's choice.
+ */
+const SERVICE_MANAGER_PATHS: Readonly<Record<"launchctl" | "systemctl", readonly string[]>> = {
+  launchctl: ["/bin/launchctl", "/usr/bin/launchctl"],
+  systemctl: ["/usr/bin/systemctl", "/bin/systemctl"],
+};
+
+async function resolveServiceManagerCommand(program: string): Promise<string | undefined> {
+  if (isAbsolute(program)) return program;
+  const candidates = SERVICE_MANAGER_PATHS[program as "launchctl" | "systemctl"];
+  if (!candidates) return undefined;
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Try the next well-known location.
+    }
+  }
+  return undefined;
+}
 
 export function deriveServiceIdentity(serviceId: string): ServiceIdentity {
   return {

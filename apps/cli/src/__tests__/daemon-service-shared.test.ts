@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { getChannelConfig } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadDaemonEnvironment } from "../core/daemon/environment.js";
@@ -15,6 +15,7 @@ import {
   acquireServiceTargetLease,
   buildServicePath,
   canonicalizeServiceHome,
+  defaultServiceRunner,
   deriveServiceIdentity,
   escapeXml,
   quotePosix,
@@ -348,6 +349,37 @@ describe("daemon service primitives", () => {
         12,
       ),
     ).rejects.toThrow("timed out after 12ms");
+  });
+});
+
+describe("defaultServiceRunner", () => {
+  it("cannot be redirected to a service manager on the caller's PATH", async () => {
+    const directory = await temporaryDirectory("opentag-fake-launchctl-");
+    await writeFile(join(directory, "launchctl"), "#!/bin/sh\necho FAKE-LAUNCHCTL\n", { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${directory}${delimiter}${originalPath ?? ""}`;
+    try {
+      // A hostile launchctl first on PATH decides what OpenTag believes about its own daemon.
+      const result = await defaultServiceRunner.run("launchctl", ["print", "gui/0/opentag-absent"], {
+        timeoutMs: 5_000,
+      });
+
+      expect(result.stdout).not.toContain("FAKE-LAUNCHCTL");
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+  });
+
+  it("refuses a program it cannot place at a known system location", async () => {
+    await expect(
+      defaultServiceRunner.run("definitely-not-a-service-manager", [], { timeoutMs: 1_000 }),
+    ).resolves.toEqual({
+      code: null,
+      stderr: "definitely-not-a-service-manager was not found at a known system location",
+      stdout: "",
+      timedOut: false,
+    });
   });
 });
 

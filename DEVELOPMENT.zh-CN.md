@@ -390,7 +390,8 @@ readiness 是由已安装的 daemon service 上报的，所以 `doctor` 回答�
 他去装一个他已经装过的东西。
 
 `doctor` 宁可 fail closed 也不猜：没有安装 service、service 没在运行、定义读不出来、平台不支持，这四种情况都会变成
-blocking 检查，任何一种都不会给出「这台机器已就绪」的结论。
+blocking 检查，任何一种都不会给出「这台机器已就绪」的结论。这些路径同样会做账户重建，因此单条检查结果在任何路径下
+含义一致；只有可执行搜索路径会回落到调用方 shell——没有 definition 时本来也没有别的可读。
 
 不带 `--runtime` 或 `--im` 时，只要有一个可用的 Agent Runtime 和一个可用的消息 CLI 即可通过。可用 `--runtime codex`
 或 `--im feishu`（均可重复）指定必须可用的实现，用 `--json` 输出机器可读结果。

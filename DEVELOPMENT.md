@@ -418,7 +418,9 @@ operator to re-install the service from the current shell, instead of telling th
 
 `doctor` fails closed rather than guessing: no installed service, a service that is not running, an unreadable
 definition, or an unsupported platform each become a blocking check, and none of them can produce a
-computer-is-ready verdict.
+computer-is-ready verdict. Those paths still apply the same account reconstruction, so an individual check line means
+the same thing everywhere; only the executable search path falls back to the invoking shell, because without a
+definition there is no other one to read.
 
 Without `--runtime` or `--im`, one ready Agent Runtime and one ready messaging CLI are enough. Pass `--runtime codex`
 or `--im feishu` (both repeatable) to require a specific one, and `--json` for machine-readable output.

@@ -335,7 +335,34 @@ describe("daemon service environment", () => {
     });
     expect(result.message).toContain("Install the OpenTag daemon service");
     expect(result.message).not.toContain("can run an OpenTag agent on");
-    expect(result.message).toContain("CLI checks used this shell's PATH");
+    expect(result.message).toContain("used this account and this shell's PATH");
+  });
+
+  it("keeps shell authority out of the check lines even when no service can be read", async () => {
+    const captured: NodeJS.ProcessEnv[] = [];
+    const options = await doctorOptions({
+      env: { ANTHROPIC_API_KEY: "shell-only", CODEX_HOME: "/shell/codex", HOME: "/tmp/pretend", PATH: "/shell/bin" },
+      service: "not-installed",
+    });
+
+    const result = await runDoctor({
+      ...options,
+      runtimeProbe: async (_provider, _signal, environment) => {
+        captured.push(environment);
+        return NOT_INSTALLED;
+      },
+    });
+
+    expect(result.exitCode).toBe(1);
+    for (const environment of captured) {
+      // Without a definition there is no service PATH to borrow, but the rest must not become a
+      // shell-authority claim wearing a service-authority shape.
+      expect(environment.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(environment.CODEX_HOME).toBeUndefined();
+      expect(environment.HOME).not.toBe("/tmp/pretend");
+      expect(environment.PATH).toBe("/shell/bin");
+    }
+    expect(result.message).toContain("used this account and this shell's PATH");
   });
 
   it("blocks on an installed service that is not running", async () => {

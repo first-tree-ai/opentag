@@ -76,7 +76,9 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
   const serviceCheck = daemonServiceCheck(service);
   const environmentChecks: DoctorCheck[] = [];
   const serviceEnvironment =
-    service.kind === "installed" ? serviceProcessEnvironment(baseEnvironment, service) : { ...baseEnvironment };
+    service.kind === "installed"
+      ? serviceProcessEnvironment(baseEnvironment, service)
+      : unmanagedProbeEnvironment(baseEnvironment, options.platform ?? process.platform);
   let probeEnvironment = serviceEnvironment;
   try {
     // The daemon layers daemon.env over its service environment, filling only unset keys.
@@ -197,17 +199,43 @@ export function serviceProcessEnvironment(
   service: { readonly environment: Readonly<Record<string, string>>; readonly platform: "launchd" | "systemd" },
   account: ServiceAccount = userInfo(),
 ): NodeJS.ProcessEnv {
+  return { ...accountEnvironment(base, service.platform, account), ...service.environment };
+}
+
+/**
+ * What to probe with when no service definition can be read. The account reconstruction still
+ * applies, so a check line means the same thing on every path; only the executable search path falls
+ * back to the invoking shell, because nothing else has one to offer. A service installed later
+ * captures its own, and inherits none of this shell's credentials either — so dropping them here
+ * predicts that service rather than flattering the current terminal.
+ */
+export function unmanagedProbeEnvironment(
+  base: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+  account: ServiceAccount = userInfo(),
+): NodeJS.ProcessEnv {
+  const manager = platform === "linux" ? "systemd" : platform === "darwin" ? "launchd" : undefined;
+  const environment = accountEnvironment(base, manager, account);
+  if (base.PATH !== undefined) environment.PATH = base.PATH;
+  return environment;
+}
+
+function accountEnvironment(
+  base: NodeJS.ProcessEnv,
+  manager: "launchd" | "systemd" | undefined,
+  account: ServiceAccount,
+): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     HOME: account.homedir,
     LOGNAME: account.username,
     USER: account.username,
     ...(account.shell ? { SHELL: account.shell } : {}),
   };
-  for (const key of SERVICE_MANAGER_VARIABLES[service.platform]) {
+  for (const key of manager ? SERVICE_MANAGER_VARIABLES[manager] : []) {
     const value = base[key];
     if (value !== undefined) environment[key] = value;
   }
-  return { ...environment, ...service.environment };
+  return environment;
 }
 
 /**
@@ -410,7 +438,7 @@ function pathSource(service: DaemonServiceEnvironment): string {
   if (service.kind === "installed") {
     return `CLI checks used the PATH declared by ${service.definitionPath}, which is what the daemon service runs with.`;
   }
-  return "CLI checks used this shell's PATH, because no installed daemon service could be read; the daemon may resolve a different one.";
+  return "CLI checks used this account and this shell's PATH, because no installed daemon service could be read. A service installed later resolves its own PATH and inherits nothing else from this shell.";
 }
 
 function isReady(checks: readonly DoctorCheck[], id: string): boolean {

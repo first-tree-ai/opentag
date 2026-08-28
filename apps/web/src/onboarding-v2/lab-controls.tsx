@@ -1,0 +1,97 @@
+import { useId, useState } from "react";
+import { Button } from "../ui/design-system.js";
+import type { MockBackend, MockScenario, MockSpeed } from "./mock-backend.js";
+import { SCENARIOS } from "./mock-backend.js";
+
+/**
+ * The only thing on this page production would never show. It drives the mock so an interaction
+ * can be judged without waiting for it: pick the outcome the readiness probe should return, run
+ * the flow at real speed or quickly, and force the events a real Computer or phone would produce.
+ *
+ * Note what is *not* here as a page control: there is no "check again" button on the flow itself.
+ * Repair happens in the terminal and the page is expected to notice on its own, so the equivalent
+ * action lives in the lab where it belongs.
+ */
+export function LabControls({
+  backend,
+  onScenarioChange,
+  onSpeedChange,
+  scenario,
+  speed,
+}: {
+  backend: MockBackend;
+  onScenarioChange: (scenario: MockScenario) => void;
+  onSpeedChange: (speed: MockSpeed) => void;
+  scenario: MockScenario;
+  speed: MockSpeed;
+}) {
+  const [open, setOpen] = useState(false);
+  const scenarioId = useId();
+  const panelId = useId();
+
+  return (
+    <div className="otv2-lab" data-open={open ? "true" : undefined}>
+      <button
+        aria-controls={panelId}
+        aria-expanded={open}
+        className="otv2-lab__toggle"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        Mock controls
+      </button>
+      <div className="otv2-lab__panel" hidden={!open} id={panelId}>
+        <label className="otv2-lab__label" htmlFor={scenarioId}>
+          Readiness outcome
+        </label>
+        <select
+          className="ds-control"
+          id={scenarioId}
+          onChange={(event) => {
+            const next = SCENARIOS.find((candidate) => candidate.id === event.target.value);
+            if (next) onScenarioChange(next);
+          }}
+          value={scenario.id}
+        >
+          {SCENARIOS.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {candidate.title}
+            </option>
+          ))}
+        </select>
+        <p className="otv2-lab__hint">{scenario.description}</p>
+
+        <div className="otv2-lab__row">
+          <span className="otv2-lab__label">Speed</span>
+          <div className="otv2-lab__segmented">
+            {(["realistic", "fast"] as const).map((candidate) => (
+              <button
+                aria-pressed={speed === candidate}
+                key={candidate}
+                onClick={() => onSpeedChange(candidate)}
+                type="button"
+              >
+                {candidate}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="otv2-lab__actions">
+          <Button onClick={backend.connectNow} size="compact" variant="outline">
+            Connect computer
+          </Button>
+          <Button onClick={backend.expireNow} size="compact" variant="outline">
+            Expire code
+          </Button>
+          <Button onClick={backend.repairNow} size="compact" variant="outline">
+            Ran doctor --fix
+          </Button>
+          <Button onClick={backend.scanNow} size="compact" variant="outline">
+            Scan QR
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

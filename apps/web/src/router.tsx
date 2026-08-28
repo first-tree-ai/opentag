@@ -48,6 +48,7 @@ import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackConfiguration } from "./im/slack-configuration.js";
 import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
 import { OnboardingPage } from "./onboarding/page.js";
+import { OnboardingV2Page } from "./onboarding-v2/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
   Button,
@@ -461,6 +462,12 @@ export function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/*
+        The redesigned onboarding flow, built against an in-page mock. It sits outside every gate
+        on purpose: it reaches no Server, so requiring an Account to look at it would only slow
+        down the page and interaction work it exists for.
+      */}
+      <Route path="/internal/onboarding-v2" element={<OnboardingV2Page />} />
       <Route element={<AuthenticatedAccountGate />}>
         {/*
           Outside AppShell because the Lab renders the onboarding surface verbatim, and onboarding

@@ -1,0 +1,729 @@
+/*
+ * Styles for the redesigned onboarding flow. Everything here is namespaced `otv2-` so this surface
+ * can be developed, and later replaced, without touching the styles the current pages rely on.
+ */
+
+.otv2-shell {
+  --otv2-frame: 720px;
+
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.otv2-shell__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-6) var(--space-8);
+}
+
+.otv2-brand {
+  font-family: var(--font-display);
+  font-size: var(--text-brand);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-tight);
+}
+
+.otv2-restart {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: var(--text-ui);
+  cursor: pointer;
+}
+
+.otv2-restart:hover {
+  color: var(--foreground);
+}
+
+.otv2-shell__main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-8);
+  align-items: center;
+  width: min(100%, var(--otv2-frame));
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-8) 96px;
+}
+
+.otv2-shell__content {
+  width: 100%;
+}
+
+/* Progress rail ---------------------------------------------------------- */
+
+.otv2-rail {
+  width: 100%;
+}
+
+.otv2-rail ol {
+  display: flex;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.otv2-rail__step {
+  display: flex;
+  flex: 1;
+  gap: var(--space-2);
+  align-items: center;
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 2px solid var(--border);
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.otv2-rail__step[data-status="current"] {
+  border-top-color: var(--brand);
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+}
+
+.otv2-rail__step[data-status="complete"] {
+  border-top-color: var(--brand);
+}
+
+.otv2-rail__marker {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface-soft);
+  font-size: var(--text-micro);
+  line-height: 1;
+}
+
+.otv2-rail__step[data-status="current"] .otv2-rail__marker {
+  background: var(--brand);
+  color: var(--color-on-accent);
+}
+
+.otv2-rail__step[data-status="complete"] .otv2-rail__marker {
+  background: var(--brand-light);
+  color: var(--brand-ink);
+}
+
+.otv2-rail__label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Step scaffolding ------------------------------------------------------- */
+
+.otv2-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.otv2-step__header h1 {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-tight);
+  line-height: var(--lh-tight);
+}
+
+.otv2-step__header p {
+  max-width: 56ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
+}
+
+.otv2-step__header .otv2-privacy {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-3);
+  color: var(--secondary-foreground);
+}
+
+.otv2-step__header .otv2-privacy .ds-icon {
+  flex: 0 0 auto;
+  color: var(--brand);
+}
+
+.otv2-muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
+}
+
+.otv2-footnote {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.otv2-footnote--warn {
+  color: var(--warning);
+}
+
+.otv2-badge {
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: var(--text-micro);
+  font-style: normal;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+
+/* Choice cards ----------------------------------------------------------- */
+
+.otv2-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.otv2-choices--grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.otv2-choice {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  width: 100%;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.otv2-choice:hover:not(:disabled) {
+  border-color: var(--strong-border);
+  background: var(--color-bg-hover);
+}
+
+.otv2-choice:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.otv2-choice:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.otv2-choice[aria-pressed="true"] {
+  border-color: var(--brand);
+  background: var(--brand-light);
+}
+
+.otv2-choice__icon {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  color: var(--brand);
+}
+
+.otv2-choice__copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.otv2-choice__copy strong {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-medium);
+}
+
+.otv2-choice__copy > span {
+  color: var(--muted);
+  font-size: var(--text-body);
+  line-height: var(--lh-ui);
+}
+
+.otv2-choice__go {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.otv2-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-control);
+  background: var(--surface-soft);
+  font-family: var(--font-display);
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
+}
+
+/* Form ------------------------------------------------------------------- */
+
+.otv2-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.otv2-name {
+  width: 100%;
+  font-family: var(--font-mono);
+}
+
+.otv2-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.otv2-fieldset legend {
+  padding: 0;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-medium);
+}
+
+.otv2-fieldset__hint {
+  margin: 2px 0 var(--space-3);
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.otv2-fieldset .otv2-footnote {
+  margin-top: var(--space-3);
+}
+
+.otv2-actions {
+  display: flex;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+.otv2-actions--split {
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-2);
+}
+
+/* Panels ----------------------------------------------------------------- */
+
+.otv2-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+}
+
+.otv2-panel--checks h2 {
+  margin: 0;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-medium);
+}
+
+.otv2-panel--qr {
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* Command block ---------------------------------------------------------- */
+
+.otv2-command {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.otv2-command--placeholder {
+  height: 92px;
+  border-radius: var(--radius-control);
+  background: var(--surface-soft);
+}
+
+.otv2-command__body {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  border: 1px solid var(--strong-border);
+  border-radius: var(--radius-control);
+  background: var(--dark-surface);
+  transition: opacity 160ms ease;
+}
+
+.otv2-command[data-muted="true"] .otv2-command__body {
+  opacity: 0.45;
+}
+
+.otv2-command__code {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-x: auto;
+  color: #e6e9e0;
+  font-family: var(--font-mono);
+  font-size: var(--text-ui);
+  line-height: var(--lh-ui);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.otv2-command__comment {
+  color: #8fa08c;
+}
+
+.otv2-command__copy {
+  flex: 0 0 auto;
+}
+
+.otv2-command__copy[data-copied="true"] {
+  border-color: var(--color-status-success);
+  color: var(--color-status-success);
+  animation: otv2-copy-pop 320ms ease;
+}
+
+@keyframes otv2-copy-pop {
+  0% {
+    transform: scale(1);
+  }
+
+  45% {
+    transform: scale(0.94);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+.otv2-command__footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.otv2-command__expiry {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.otv2-command__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+/* Waiting and status ----------------------------------------------------- */
+
+.otv2-waiting {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body);
+}
+
+.otv2-pulse {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: otv2-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes otv2-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.otv2-status {
+  align-self: flex-start;
+}
+
+/* Checks ----------------------------------------------------------------- */
+
+.otv2-checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.otv2-check {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.otv2-check__marker {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border: 1px solid var(--strong-border);
+  border-radius: 50%;
+  color: var(--muted);
+}
+
+.otv2-check[data-state="passed"] .otv2-check__marker {
+  border-color: var(--color-status-success);
+  background: var(--color-status-success-surface);
+  color: var(--color-status-success);
+}
+
+.otv2-check[data-state="failed"] .otv2-check__marker {
+  border-color: var(--color-status-warning);
+  background: var(--color-status-warning-surface);
+  color: var(--color-status-warning);
+}
+
+.otv2-check[data-state="pending"] .otv2-check__marker {
+  border-style: dashed;
+  animation: otv2-fade 1.4s ease-in-out infinite;
+}
+
+@keyframes otv2-fade {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.otv2-check__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.otv2-check__copy strong {
+  font-size: var(--text-body);
+  font-weight: var(--fw-medium);
+}
+
+.otv2-check[data-state="blocked"] .otv2-check__copy strong,
+.otv2-check[data-state="pending"] .otv2-check__copy strong {
+  color: var(--muted);
+  font-weight: var(--fw-regular);
+}
+
+.otv2-check__copy > span {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  line-height: var(--lh-ui);
+}
+
+.otv2-repair {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.otv2-repair__intro {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: var(--fw-medium);
+}
+
+/* QR --------------------------------------------------------------------- */
+
+.otv2-qr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: #fff;
+}
+
+.otv2-qr__image,
+.otv2-qr__placeholder {
+  display: block;
+  width: 208px;
+  height: 208px;
+}
+
+.otv2-qr__placeholder {
+  border-radius: var(--radius-control);
+  background: var(--surface-soft);
+  animation: otv2-fade 1.4s ease-in-out infinite;
+}
+
+/* Done ------------------------------------------------------------------- */
+
+.otv2-step--done {
+  align-items: center;
+  padding-top: 48px;
+  text-align: center;
+}
+
+.otv2-done-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--color-status-success-surface);
+  color: var(--color-status-success);
+}
+
+/* Mock controls ---------------------------------------------------------- */
+
+.otv2-lab {
+  position: fixed;
+  right: var(--space-6);
+  bottom: var(--space-6);
+  z-index: var(--layer-sidebar);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+.otv2-lab__toggle {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--strong-border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--secondary-foreground);
+  font-family: inherit;
+  font-size: var(--text-meta);
+  box-shadow: 0 6px 20px rgb(22 33 27 / 12%);
+  cursor: pointer;
+}
+
+/* `display: flex` below would otherwise defeat the `hidden` attribute's own `display: none`. */
+.otv2-lab__panel[hidden] {
+  display: none;
+}
+
+.otv2-lab__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 280px;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(22 33 27 / 16%);
+}
+
+.otv2-lab__label {
+  color: var(--secondary-foreground);
+  font-size: var(--text-meta);
+  font-weight: var(--fw-medium);
+}
+
+.otv2-lab__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  line-height: var(--lh-ui);
+}
+
+.otv2-lab__row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.otv2-lab__segmented {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+.otv2-lab__segmented button {
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  background: var(--surface);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: var(--text-micro);
+  cursor: pointer;
+}
+
+.otv2-lab__segmented button[aria-pressed="true"] {
+  background: var(--brand-light);
+  color: var(--brand-ink);
+}
+
+.otv2-lab__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+@media (width <= 640px) {
+  .otv2-rail__label {
+    display: none;
+  }
+
+  .otv2-shell__main {
+    padding-inline: var(--space-4);
+  }
+}

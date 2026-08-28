@@ -7,6 +7,7 @@ import {
   agents,
   computers,
   imBindings,
+  sessions,
   slackInstallations,
   slackOAuthNonces,
   workspaceComputers,
@@ -111,7 +112,7 @@ async function fixture() {
     slack,
     state: new SlackOAuthStateService(jwtSecret, { now: () => now }),
   });
-  return { ...client, api, bootstrap, first, oauth, second, slack };
+  return { ...client, api, bootstrap, first, imBindingService, oauth, second, slack };
 }
 
 describe("Slack distributed OAuth adapter", () => {
@@ -216,7 +217,84 @@ describe("Slack distributed OAuth adapter", () => {
     }
   });
 
-  it("installs one workspace Slack installation and can select a second Agent as the default route", async () => {
+  it("replaces a migrated customer-owned App with the first-party installation during reauthorization", async () => {
+    const value = await fixture();
+    try {
+      const migrated = await value.imBindingService.activateSlack(
+        {
+          intent: "create",
+          agentId: value.first.id,
+          appId: "A_CUSTOMER",
+          teamId: "T_CUSTOMER",
+          botUserId: "U_CUSTOMER",
+          grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+          botAccessToken: "xoxb-customer",
+          signingSecret: "customer-signing-secret",
+          installedAt: now,
+        },
+        "B_CUSTOMER",
+      );
+      const [migratedInstallation] = await value.database.select().from(slackInstallations);
+      if (!migratedInstallation) throw new Error("Migrated installation fixture was not created");
+      const [session] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: migrated.imBindingId,
+          channelId: "C_MIGRATED_OAUTH",
+          conversationKind: "channel",
+          kind: "channel",
+        })
+        .returning();
+      if (!session) throw new Error("Migrated Session fixture was not created");
+
+      const started = await value.oauth.start(value.bootstrap.userId, value.first.id, "reauthorize");
+      const state = new URL(started.authorizationUrl).searchParams.get("state");
+      if (!state) throw new Error("OAuth start did not return state");
+      const completed = await value.oauth.callback({
+        accessToken: "browser-access",
+        code: "slack-oauth-code",
+        sessionBinding: started.sessionBinding,
+        state,
+      });
+      expect(completed.result).toMatchObject({
+        agentId: value.first.id,
+        appId: "A_OPENTAG",
+        teamId: "T_TEAM",
+        botUserId: "U_BOT",
+        credentialGeneration: 1,
+      });
+      expect(completed.result.imBindingId).not.toBe(migrated.imBindingId);
+
+      const installations = await value.database.select().from(slackInstallations);
+      const replacement = installations.find((row) => row.status === "active");
+      expect(installations.find((row) => row.id === migratedInstallation.id)).toMatchObject({
+        status: "disabled",
+        encryptedCredential: null,
+        replacementSlackInstallationId: replacement?.id,
+      });
+      expect(replacement).toMatchObject({
+        externalAppId: "A_OPENTAG",
+        externalTeamId: "T_TEAM",
+        externalBotId: "U_BOT",
+      });
+      const bindings = await value.database.select().from(imBindings);
+      expect(bindings.find((row) => row.id === migrated.imBindingId)).toMatchObject({
+        status: "disabled",
+        replacementImBindingId: completed.result.imBindingId,
+      });
+      expect(bindings.find((row) => row.id === completed.result.imBindingId)).toMatchObject({
+        status: "active",
+        slackRouteKind: "default",
+        slackInstallationId: replacement?.id,
+      });
+      const [endedSession] = await value.database.select().from(sessions).where(eq(sessions.id, session.id));
+      expect(endedSession).toMatchObject({ endedAt: expect.any(Date), revision: 2 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("installs one workspace Slack installation and transfers its only current route to a second Agent", async () => {
     const value = await fixture();
     try {
       await value.slack.configure(value.bootstrap.userId, value.first.id, {
@@ -245,8 +323,8 @@ describe("Slack distributed OAuth adapter", () => {
       const rows = await value.database.select().from(imBindings);
       expect(rows).toHaveLength(2);
       expect(rows.find((row) => row.agentId === value.first.id)).toMatchObject({
-        status: "active",
-        slackRouteKind: "explicit",
+        status: "disabled",
+        replacementImBindingId: completed.result.imBindingId,
         credentialGeneration: 2,
         encryptedCredential: null,
       });
@@ -256,6 +334,7 @@ describe("Slack distributed OAuth adapter", () => {
         credentialGeneration: 2,
         encryptedCredential: null,
       });
+      expect(rows.filter((row) => row.status !== "disabled")).toHaveLength(1);
       expect(new Set(rows.map((row) => row.slackInstallationId)).size).toBe(1);
       const installations = await value.database.select().from(slackInstallations);
       expect(installations).toHaveLength(1);

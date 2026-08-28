@@ -1,4 +1,4 @@
-CREATE TYPE "public"."slack_route_kind" AS ENUM('default', 'explicit');--> statement-breakpoint
+CREATE TYPE "public"."slack_route_kind" AS ENUM('default');--> statement-breakpoint
 CREATE TYPE "public"."slack_installation_status" AS ENUM('active', 'reauthorization_required', 'disabled');--> statement-breakpoint
 CREATE TABLE "slack_installations" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -45,6 +45,7 @@ CREATE UNIQUE INDEX "slack_installations_workspace_current_unique" ON "slack_ins
 CREATE INDEX "slack_installations_workspace_id_idx" ON "slack_installations" USING btree ("workspace_id");--> statement-breakpoint
 CREATE INDEX "slack_installations_app_team_idx" ON "slack_installations" USING btree ("external_app_id","external_team_id");--> statement-breakpoint
 ALTER TABLE "im_bindings" ADD CONSTRAINT "im_bindings_slack_installation_id_slack_installations_id_fk" FOREIGN KEY ("slack_installation_id") REFERENCES "public"."slack_installations"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+WITH "disabled_bindings" AS (
 UPDATE "im_bindings"
 SET
 	"status" = 'disabled',
@@ -69,7 +70,15 @@ WHERE "provider" = 'slack'
 		OR "credential_generation" < 1
 		OR "encrypted_credential" IS NULL
 		OR "activated_at" IS NULL
-	);--> statement-breakpoint
+	)
+RETURNING "id"
+)
+UPDATE "sessions"
+SET
+	"ended_at" = now(),
+	"revision" = "sessions"."revision" + 1
+WHERE "ended_at" IS NULL
+	AND "im_binding_id" IN (SELECT "id" FROM "disabled_bindings");--> statement-breakpoint
 INSERT INTO "slack_installations" (
 	"id",
 	"workspace_id",
@@ -135,10 +144,7 @@ INNER JOIN (
 UPDATE "im_bindings"
 SET
 	"slack_installation_id" = "slack_installations"."id",
-	"slack_route_kind" = CASE
-		WHEN "im_bindings"."id" = "first_route"."binding_id" THEN 'default'::"slack_route_kind"
-		ELSE 'explicit'::"slack_route_kind"
-	END,
+	"slack_route_kind" = 'default'::"slack_route_kind",
 	"encrypted_credential" = NULL,
 	"updated_at" = now()
 FROM "slack_installations"
@@ -159,8 +165,10 @@ INNER JOIN (
 ) AS "first_route" ON "first_route"."installation_id" = "slack_installations"."id"
 WHERE "im_bindings"."provider" = 'slack'
 	AND "im_bindings"."status" in ('active', 'reauthorization_required')
+	AND "im_bindings"."id" = "first_route"."binding_id"
 	AND "im_bindings"."external_app_id" = "slack_installations"."external_app_id"
 	AND "im_bindings"."external_team_id" = "slack_installations"."external_team_id";--> statement-breakpoint
+WITH "disabled_bindings" AS (
 UPDATE "im_bindings"
 SET
 	"status" = 'disabled',
@@ -177,7 +185,15 @@ SET
 	"updated_at" = now()
 WHERE "provider" = 'slack'
 	AND "status" <> 'disabled'
-	AND "slack_installation_id" IS NULL;--> statement-breakpoint
+	AND "slack_installation_id" IS NULL
+RETURNING "id"
+)
+UPDATE "sessions"
+SET
+	"ended_at" = now(),
+	"revision" = "sessions"."revision" + 1
+WHERE "ended_at" IS NULL
+	AND "im_binding_id" IN (SELECT "id" FROM "disabled_bindings");--> statement-breakpoint
 UPDATE "im_bindings"
 SET
 	"encrypted_credential" = NULL,
@@ -217,8 +233,7 @@ BEGIN
 		RAISE EXCEPTION 'Slack installation cutover created a cross-workspace route';
 	END IF;
 END $$;--> statement-breakpoint
-CREATE UNIQUE INDEX "im_bindings_slack_installation_default_unique" ON "im_bindings" USING btree ("slack_installation_id") WHERE "im_bindings"."provider" = 'slack' and "im_bindings"."status" <> 'disabled' and "im_bindings"."slack_route_kind" = 'default';--> statement-breakpoint
-CREATE UNIQUE INDEX "im_bindings_slack_installation_agent_current_unique" ON "im_bindings" USING btree ("slack_installation_id","agent_id") WHERE "im_bindings"."provider" = 'slack' and "im_bindings"."status" <> 'disabled';--> statement-breakpoint
+CREATE UNIQUE INDEX "im_bindings_slack_installation_current_unique" ON "im_bindings" USING btree ("slack_installation_id") WHERE "im_bindings"."provider" = 'slack' and "im_bindings"."status" <> 'disabled';--> statement-breakpoint
 CREATE INDEX "im_bindings_slack_installation_id_idx" ON "im_bindings" USING btree ("slack_installation_id");--> statement-breakpoint
 ALTER TABLE "im_bindings" ADD CONSTRAINT "im_bindings_slack_route_fields" CHECK ("im_bindings"."provider" = 'slack' or (
         "im_bindings"."slack_installation_id" is null and "im_bindings"."slack_route_kind" is null

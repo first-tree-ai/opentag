@@ -7,6 +7,7 @@ import {
   agents,
   computers,
   imBindings,
+  sessions,
   slackInstallations,
   users,
   workspaceAdminGrants,
@@ -102,10 +103,20 @@ async function activate(
 }
 
 describe("Slack workspace installation routing", () => {
-  it("keeps one installation for multiple workspace Agents with a single default route", async () => {
+  it("atomically transfers the one current workspace route to the selected Agent", async () => {
     const value = await fixture();
     try {
       const first = await activate(value.imBindingsService, value.first.id, "create");
+      const [firstSession] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: first.imBindingId,
+          channelId: "C_FIRST_ROUTE",
+          conversationKind: "channel",
+          kind: "channel",
+        })
+        .returning();
+      if (!firstSession) throw new Error("First route Session fixture was not created");
       const second = await activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" });
       expect(second.credentialGeneration).toBe(2);
       const installations = await value.database.select().from(slackInstallations);
@@ -119,8 +130,23 @@ describe("Slack workspace installation routing", () => {
       expect(installations[0]?.encryptedCredential).not.toContain("signing-secret");
       const routes = await value.database.select().from(imBindings);
       expect(routes.every((row) => row.encryptedCredential === null)).toBe(true);
-      expect(routes.find((row) => row.agentId === value.first.id)?.slackRouteKind).toBe("explicit");
-      expect(routes.find((row) => row.agentId === value.second.id)?.slackRouteKind).toBe("default");
+      expect(routes.find((row) => row.agentId === value.first.id)).toMatchObject({
+        status: "disabled",
+        replacementImBindingId: second.imBindingId,
+      });
+      expect(routes.find((row) => row.agentId === value.second.id)).toMatchObject({
+        status: "active",
+        slackRouteKind: "default",
+      });
+      expect(routes.filter((row) => row.status !== "disabled")).toHaveLength(1);
+      const [endedSession] = await value.database.select().from(sessions).where(eq(sessions.id, firstSession.id));
+      expect(endedSession).toMatchObject({ endedAt: now, revision: 2 });
+      await expect(
+        value.imBindingsService.getForAgent(value.bootstrap.userId, value.first.id),
+      ).resolves.toBeUndefined();
+      await expect(
+        value.imBindingsService.getHandoffForAgent(value.bootstrap.userId, value.first.id),
+      ).resolves.toBeUndefined();
       await expect(value.imBindingsService.findSlackIngressBinding("A_OPENTAG", "T_TEAM")).resolves.toMatchObject({
         imBindingId: second.imBindingId,
         installationId: installations[0]?.id,
@@ -199,7 +225,7 @@ describe("Slack workspace installation routing", () => {
       );
       await expect(value.imBindingsService.resolveSlackDefaultRoute(installation.id)).resolves.toBeUndefined();
       const remaining = await value.database.select().from(slackInstallations);
-      expect(remaining[0]).toMatchObject({ status: "active", id: installation.id });
+      expect(remaining[0]).toMatchObject({ status: "disabled", id: installation.id, encryptedCredential: null });
     } finally {
       await value.sql.end();
     }
@@ -250,6 +276,145 @@ describe("Slack workspace installation routing", () => {
         .from(imBindings)
         .where(eq(imBindings.id, created.imBindingId));
       expect(disabledRoute).toMatchObject({ status: "disabled", encryptedCredential: null });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("atomically replaces a migrated Slack installation and ends every old route Session", async () => {
+    const value = await fixture();
+    try {
+      const migrated = await activate(value.imBindingsService, value.first.id, "create", {
+        appId: "A_CUSTOMER",
+        teamId: "T_CUSTOMER",
+        botUserId: "U_CUSTOMER",
+        botId: "B_CUSTOMER",
+        token: "xoxb-customer",
+      });
+      const [migratedInstallation] = await value.database.select().from(slackInstallations);
+      if (!migratedInstallation) throw new Error("Migrated installation fixture was not created");
+      const [session] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: migrated.imBindingId,
+          channelId: "C_MIGRATED",
+          conversationKind: "channel",
+          kind: "channel",
+        })
+        .returning();
+      if (!session) throw new Error("Migrated Session fixture was not created");
+
+      const replacement = await activate(value.imBindingsService, value.first.id, "reauthorize", {
+        appId: "A_OPENTAG",
+        teamId: "T_OPENTAG",
+        botUserId: "U_OPENTAG",
+        botId: "B_OPENTAG",
+        token: "xoxb-opentag",
+      });
+      expect(replacement).toMatchObject({ credentialGeneration: 1, agentId: value.first.id });
+      expect(replacement.imBindingId).not.toBe(migrated.imBindingId);
+
+      const installations = await value.database.select().from(slackInstallations);
+      const disabledInstallation = installations.find((row) => row.id === migratedInstallation.id);
+      const currentInstallation = installations.find((row) => row.id !== migratedInstallation.id);
+      expect(disabledInstallation).toMatchObject({
+        status: "disabled",
+        encryptedCredential: null,
+        replacementSlackInstallationId: currentInstallation?.id,
+      });
+      expect(currentInstallation).toMatchObject({
+        status: "active",
+        externalAppId: "A_OPENTAG",
+        externalTeamId: "T_OPENTAG",
+        externalBotId: "U_OPENTAG",
+      });
+
+      const routes = await value.database.select().from(imBindings);
+      expect(routes.find((row) => row.id === migrated.imBindingId)).toMatchObject({
+        status: "disabled",
+        replacementImBindingId: replacement.imBindingId,
+      });
+      expect(routes.find((row) => row.id === replacement.imBindingId)).toMatchObject({
+        status: "active",
+        slackRouteKind: "default",
+        slackInstallationId: currentInstallation?.id,
+      });
+      const [endedSession] = await value.database.select().from(sessions).where(eq(sessions.id, session.id));
+      expect(endedSession).toMatchObject({ endedAt: now, revision: 2 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("releases the installation on last-route disconnect so a different Slack workspace can be installed", async () => {
+    const value = await fixture();
+    try {
+      const created = await activate(value.imBindingsService, value.first.id, "create");
+      const [originalInstallation] = await value.database.select().from(slackInstallations);
+      if (!originalInstallation) throw new Error("Original installation fixture was not created");
+
+      await value.imBindingsService.disable(value.bootstrap.userId, created.imBindingId);
+      const [disabledInstallation] = await value.database
+        .select()
+        .from(slackInstallations)
+        .where(eq(slackInstallations.id, originalInstallation.id));
+      expect(disabledInstallation).toMatchObject({ status: "disabled", encryptedCredential: null, disabledAt: now });
+
+      const reinstalled = await activate(value.imBindingsService, value.first.id, "create", {
+        appId: "A_OPENTAG_NEW",
+        teamId: "T_TEAM_NEW",
+        botUserId: "U_BOT_NEW",
+        botId: "B_BOT_NEW",
+        token: "xoxb-new",
+      });
+      expect(reinstalled).toMatchObject({ credentialGeneration: 1, agentId: value.first.id });
+      const currentInstallations = (await value.database.select().from(slackInstallations)).filter(
+        (row) => row.status !== "disabled",
+      );
+      expect(currentInstallations).toEqual([
+        expect.objectContaining({
+          externalAppId: "A_OPENTAG_NEW",
+          externalTeamId: "T_TEAM_NEW",
+          externalBotId: "U_BOT_NEW",
+        }),
+      ]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("cuts over a stranded installation that has no current route", async () => {
+    const value = await fixture();
+    try {
+      const [stranded] = await value.database
+        .insert(slackInstallations)
+        .values({
+          workspaceId: value.bootstrap.workspaceId,
+          status: "active",
+          externalAppId: "A_STRANDED",
+          externalTeamId: "T_STRANDED",
+          externalBotId: "U_STRANDED",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "encrypted-stranded",
+          grantedCapabilities: scopes,
+          activatedAt: now,
+        })
+        .returning();
+      if (!stranded) throw new Error("Stranded installation fixture was not created");
+
+      await activate(value.imBindingsService, value.first.id, "create", {
+        appId: "A_OPENTAG",
+        teamId: "T_TEAM",
+      });
+      const installations = await value.database.select().from(slackInstallations);
+      const replacement = installations.find((row) => row.status === "active");
+      expect(installations.find((row) => row.id === stranded.id)).toMatchObject({
+        status: "disabled",
+        encryptedCredential: null,
+        replacementSlackInstallationId: replacement?.id,
+      });
+      expect(replacement).toMatchObject({ externalAppId: "A_OPENTAG", externalTeamId: "T_TEAM" });
     } finally {
       await value.sql.end();
     }

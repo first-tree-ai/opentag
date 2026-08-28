@@ -1776,33 +1776,11 @@
           "method": "btree",
           "with": {}
         },
-        "im_bindings_slack_installation_default_unique": {
-          "name": "im_bindings_slack_installation_default_unique",
+        "im_bindings_slack_installation_current_unique": {
+          "name": "im_bindings_slack_installation_current_unique",
           "columns": [
             {
               "expression": "slack_installation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"im_bindings\".\"provider\" = 'slack' and \"im_bindings\".\"status\" <> 'disabled' and \"im_bindings\".\"slack_route_kind\" = 'default'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "im_bindings_slack_installation_agent_current_unique": {
-          "name": "im_bindings_slack_installation_agent_current_unique",
-          "columns": [
-            {
-              "expression": "slack_installation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -3683,8 +3661,7 @@
       "name": "slack_route_kind",
       "schema": "public",
       "values": [
-        "default",
-        "explicit"
+        "default"
       ]
     },
     "public.im_author_kind": {

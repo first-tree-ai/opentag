@@ -113,7 +113,7 @@ export class SlackConfigurationService {
           "The Slack binding changed since authorization started",
         );
       }
-      this.#validateIntent(input, installation, configuredCurrent);
+      this.#validateIntent(input, configuredCurrent);
 
       const activation: SlackBindingActivation = {
         intent: input.intent,
@@ -163,11 +163,7 @@ export class SlackConfigurationService {
     }
   }
 
-  #validateIntent(
-    input: SlackOAuthActivationInput,
-    installation: SlackInstallationInspection,
-    current: typeof imBindings.$inferSelect | undefined,
-  ): void {
+  #validateIntent(input: SlackOAuthActivationInput, current: typeof imBindings.$inferSelect | undefined): void {
     if (input.intent === "create") {
       if (current) {
         throw new SlackConfigurationServiceError(
@@ -183,18 +179,6 @@ export class SlackConfigurationService {
         "SLACK_CONFIGURATION_CONFLICT",
         409,
         "Slack reauthorize requires a current configured binding",
-      );
-    }
-    if (
-      input.appId !== current.externalAppId ||
-      installation.teamId !== current.externalTeamId ||
-      installation.botUserId !== current.externalBotId
-    ) {
-      throw new SlackConfigurationServiceError(
-        "SLACK_BINDING_IDENTITY_MISMATCH",
-        409,
-        "Reauthorization must preserve the current Slack App, Team, and Bot identity",
-        "credential",
       );
     }
   }

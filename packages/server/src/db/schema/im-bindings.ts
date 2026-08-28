@@ -32,7 +32,7 @@ export const feishuSetupState = pgEnum("feishu_setup_state", [
   "expired",
   "canceled",
 ]);
-export const slackRouteKind = pgEnum("slack_route_kind", ["default", "explicit"]);
+export const slackRouteKind = pgEnum("slack_route_kind", ["default"]);
 
 export const imBindings = pgTable(
   "im_bindings",
@@ -91,13 +91,8 @@ export const imBindings = pgTable(
     uniqueIndex("im_bindings_feishu_app_current_unique")
       .on(table.externalAppId)
       .where(sql`${table.provider} = 'feishu' and ${table.status} <> 'disabled'`),
-    uniqueIndex("im_bindings_slack_installation_default_unique")
+    uniqueIndex("im_bindings_slack_installation_current_unique")
       .on(table.slackInstallationId)
-      .where(
-        sql`${table.provider} = 'slack' and ${table.status} <> 'disabled' and ${table.slackRouteKind} = 'default'`,
-      ),
-    uniqueIndex("im_bindings_slack_installation_agent_current_unique")
-      .on(table.slackInstallationId, table.agentId)
       .where(sql`${table.provider} = 'slack' and ${table.status} <> 'disabled'`),
     index("im_bindings_slack_installation_id_idx").on(table.slackInstallationId),
     check("im_bindings_credential_generation_nonnegative", sql`${table.credentialGeneration} >= 0`),

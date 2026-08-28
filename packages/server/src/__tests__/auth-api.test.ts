@@ -170,6 +170,7 @@ describe("auth HTTP API", () => {
       browserAuth: {
         publicOrigin: "https://dev.example.com",
         refreshTokenTtlSeconds: 3600,
+        sessionTtlSeconds: 3600,
         secureCookies: true,
       },
     });
@@ -245,6 +246,7 @@ describe("auth HTTP API", () => {
       browserAuth: {
         publicOrigin: "https://dev.example.com",
         refreshTokenTtlSeconds: 3600,
+        sessionTtlSeconds: 3600,
         secureCookies: true,
       },
       connectCode: { environment: "staging", issuer, publicUrl: "https://dev.example.com" },

@@ -26,7 +26,11 @@ export interface SlackOAuthStartResult extends StartSlackOAuthResponse {
 }
 
 export interface SlackOAuthCallbackInput {
-  accessToken?: string;
+  /**
+   * Resolved by the route, which is the only place that understands every credential a browser may present. Passing
+   * an identity rather than a token keeps this service out of the business of authenticating one.
+   */
+  authenticatedUserId?: string;
   code?: string;
   error?: string;
   sessionBinding?: string;
@@ -45,7 +49,6 @@ function oauthFailed(message = "The Slack authorization flow is invalid or expir
 export class SlackOAuthService {
   readonly #api: SlackApiClient;
   readonly #app: SlackOAuthAppConfig;
-  readonly #authenticateUser: (accessToken: string) => Promise<{ userId: string }>;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #slack: SlackConfigurationService;
@@ -54,7 +57,6 @@ export class SlackOAuthService {
   constructor(input: {
     api: SlackApiClient;
     app: SlackOAuthAppConfig;
-    authenticateUser: (accessToken: string) => Promise<{ userId: string }>;
     database: DatabaseClient;
     slack: SlackConfigurationService;
     state: SlackOAuthStateService;
@@ -62,7 +64,6 @@ export class SlackOAuthService {
   }) {
     this.#api = input.api;
     this.#app = input.app;
-    this.#authenticateUser = input.authenticateUser;
     this.#database = input.database;
     this.#now = input.now ?? (() => new Date());
     this.#slack = input.slack;
@@ -156,11 +157,10 @@ export class SlackOAuthService {
     payload: Awaited<ReturnType<SlackOAuthStateService["verify"]>>,
     input: SlackOAuthCallbackInput,
   ): Promise<SlackOAuthCallbackSuccess> {
-    if (!input.accessToken) {
+    if (!input.authenticatedUserId) {
       throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "Authentication is required", 401);
     }
-    const authenticated = await this.#authenticateUser(input.accessToken);
-    if (authenticated.userId !== payload.userId) {
+    if (input.authenticatedUserId !== payload.userId) {
       throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "Authentication is required", 401);
     }
 

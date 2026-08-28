@@ -1,26 +1,24 @@
-import type { RefreshTokenResponse } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { users } from "../../db/schema/index.js";
 import { AuthServiceError } from "./errors.js";
 
-export interface DevBrowserTokenIssuer {
-  issueTokensForUser(userId: string): Promise<RefreshTokenResponse>;
-}
-
-/** Resolves an explicitly configured existing user without creating identity or Workspace records. */
+/**
+ * Resolves an explicitly configured existing user without creating identity or Workspace records.
+ *
+ * It answers only *who* development sign-in is for. Minting the credential belongs to Better Auth, so a development
+ * session is the same revocable thing every other sign-in produces.
+ */
 export class DevBrowserAuthService {
   readonly #database: DatabaseClient;
   readonly #email: string;
-  readonly #tokenIssuer: DevBrowserTokenIssuer;
 
-  constructor(database: DatabaseClient, tokenIssuer: DevBrowserTokenIssuer, email: string) {
+  constructor(database: DatabaseClient, email: string) {
     this.#database = database;
-    this.#tokenIssuer = tokenIssuer;
     this.#email = email;
   }
 
-  async signIn(): Promise<RefreshTokenResponse> {
+  async resolveUserId(): Promise<string> {
     const matches = await this.#database
       .select({ id: users.id })
       .from(users)
@@ -34,6 +32,6 @@ export class DevBrowserAuthService {
         503,
       );
     }
-    return this.#tokenIssuer.issueTokensForUser(matches[0].id);
+    return matches[0].id;
   }
 }

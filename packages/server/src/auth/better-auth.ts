@@ -1,9 +1,9 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
-import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
+import { devSignInPlugin, type LegacyUpgradeOptions, legacyUpgradePlugin } from "./internal-sign-in.js";
 
 /**
  * Where the instance will be mounted, under the repository's `/api/v1` versioning convention rather than Better Auth's
@@ -16,11 +16,43 @@ import { authIdentities, authSessions, authVerifications, users } from "../db/sc
 export const BETTER_AUTH_BASE_PATH = "/api/v1/auth";
 
 export interface BetterAuthConfig {
+  /**
+   * Runs before any session row exists, and must throw to prevent one.
+   *
+   * Better Auth owns account creation on its own sign-in paths, so this is where OpenTag decides whether an Account
+   * may hold a session at all — which is a question about identity, not authority. A suspended Account is refused, and
+   * an Account that has never been provisioned gets its default Workspace before it can sign in.
+   *
+   * It deliberately does not require an *active* Workspace grant. Revoking every grant removes an Account's authority,
+   * not its ability to sign in: it can still authenticate and see that it has no Workspace, and re-provisioning it
+   * here would hand the revoked authority straight back. Routes derive authority from grants read live per request.
+   */
+  onSessionCreating: (userId: string) => Promise<void>;
   /** Origin the browser reaches the server on; also the only trusted origin. */
   publicUrl: string;
   secret: string;
   secureCookies: boolean;
+  /**
+   * How long an issued session lives, and therefore how long a client may be idle and still be signed in.
+   *
+   * Left to the library this would default to seven days and quietly shorten what a CLI was promised, so it is
+   * required rather than optional: a lifetime this visible should not be something a caller can forget to state.
+   */
+  sessionTtlSeconds: number;
+  /**
+   * Resolves the single Account development sign-in may issue a session for.
+   *
+   * Supplied only when development sign-in is configured, so the endpoint does not exist on a server without it.
+   */
+  devSignIn?: () => Promise<string>;
   google?: { clientId: string; clientSecret: string };
+  /**
+   * Verifies a refresh credential the previous revision issued and answers whose it is.
+   *
+   * Supplied while the compatibility window is open. It must reject anything it cannot verify: it is the only thing
+   * standing between the upgrade endpoint and an unauthenticated session.
+   */
+  legacyUpgrade?: LegacyUpgradeOptions;
 }
 
 export type OpenTagBetterAuth = ReturnType<typeof createBetterAuth>;
@@ -57,6 +89,12 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
       },
       useSecureCookies: config.secureCookies,
     },
+    /*
+     * One credential replaces a pair, so this single lifetime has to carry what the refresh token's did: how long a
+     * client may go unused and still be signed in. Inheriting the library's seven days would have shortened that from
+     * thirty without anyone choosing it, and left an idle CLI unable to refresh.
+     */
+    session: { expiresIn: config.sessionTtlSeconds },
     user: { fields: { name: "displayName" } },
     account: {
       fields: { accountId: "subject", providerId: "provider" },
@@ -87,17 +125,10 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
       },
       session: {
         create: {
-          /*
-           * Suspension is the only kill switch this system has for an Account, and the legacy path re-checks it on
-           * every authenticated request. A session must not come into existence for a suspended Account.
-           */
+          // Throwing here aborts the sign-in that asked for the session, so the caller sees why rather than a
+          // session that silently failed to appear.
           before: async (session) => {
-            const [account] = await database
-              .select({ suspendedAt: users.suspendedAt })
-              .from(users)
-              .where(eq(users.id, session.userId))
-              .limit(1);
-            return account && !account.suspendedAt ? undefined : false;
+            await config.onSessionCreating(session.userId);
           },
         },
       },
@@ -109,8 +140,12 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
           },
         }
       : {}),
-    // The CLI authenticates with `Authorization: Bearer <session token>`; the browser keeps using cookies.
-    plugins: [bearer()],
+    plugins: [
+      // The CLI authenticates with `Authorization: Bearer <session token>`; the browser keeps using cookies.
+      bearer(),
+      ...(config.devSignIn ? [devSignInPlugin(config.devSignIn)] : []),
+      ...(config.legacyUpgrade ? [legacyUpgradePlugin(config.legacyUpgrade)] : []),
+    ],
   });
 }
 

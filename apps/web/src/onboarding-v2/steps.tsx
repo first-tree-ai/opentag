@@ -1,5 +1,5 @@
 import { toString as qrToString } from "qrcode";
-import { type FormEvent, useEffect, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
 import { Button, Field, Icon, StatusIndicator } from "../ui/design-system.js";
 import { CommandBlock } from "./command-block.js";
 import { CHECK_COPY, COPY, DESTINATION_COPY, RUNTIME_COPY, STEP_LABELS } from "./copy.js";
@@ -39,7 +39,38 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   );
 }
 
-export function DestinationStep({ onChoose }: { onChoose: (destination: Destination) => void }) {
+/**
+ * The footer every step shares: Go back on the left, the step's forward action on the right.
+ *
+ * Steps the system advances on its own — waiting for a Computer, waiting for a scan — pass no
+ * forward action, because a button that cannot be pressed until something external happens is
+ * worse than no button at all. Go back still sits where it always does.
+ */
+function StepNav({ back, children }: { back?: () => void; children?: ReactNode }) {
+  return (
+    <div className="otv2-nav">
+      <div className="otv2-nav__back">
+        {back ? (
+          <Button onClick={back} variant="ghost">
+            <Icon name="arrow-left" />
+            <span>{COPY.nav.back}</span>
+          </Button>
+        ) : null}
+      </div>
+      <div className="otv2-nav__next">{children}</div>
+    </div>
+  );
+}
+
+export function DestinationStep({
+  draft,
+  onChoose,
+  onSubmit,
+}: {
+  draft: AgentDraft;
+  onChoose: (destination: Destination) => void;
+  onSubmit: () => void;
+}) {
   const destinations: readonly { id: Destination; icon: "laptop" | "model"; enabled: boolean }[] = [
     { id: "local", icon: "laptop", enabled: true },
     { id: "cloud", icon: "model", enabled: false },
@@ -48,7 +79,6 @@ export function DestinationStep({ onChoose }: { onChoose: (destination: Destinat
     <section className="otv2-step">
       <header className="otv2-step__header">
         <h1>{COPY.destination.title}</h1>
-        <p>{COPY.destination.description}</p>
       </header>
       <ul className="otv2-choices">
         {destinations.map((destination) => {
@@ -56,7 +86,8 @@ export function DestinationStep({ onChoose }: { onChoose: (destination: Destinat
           return (
             <li key={destination.id}>
               <button
-                className="otv2-choice otv2-choice--wide"
+                aria-pressed={draft.destination === destination.id}
+                className="otv2-choice"
                 disabled={!destination.enabled}
                 onClick={() => onChoose(destination.id)}
                 type="button"
@@ -69,22 +100,28 @@ export function DestinationStep({ onChoose }: { onChoose: (destination: Destinat
                   </strong>
                   <span>{copy.description}</span>
                 </span>
-                {destination.enabled ? <Icon className="otv2-choice__go" name="arrow-right" /> : null}
               </button>
             </li>
           );
         })}
       </ul>
+      <StepNav>
+        <Button disabled={!draft.destination} onClick={onSubmit}>
+          {COPY.nav.next}
+        </Button>
+      </StepNav>
     </section>
   );
 }
 
 export function AgentStep({
   draft,
+  onBack,
   onChange,
   onSubmit,
 }: {
   draft: AgentDraft;
+  onBack: () => void;
   onChange: (draft: AgentDraft) => void;
   onSubmit: () => void;
 }) {
@@ -159,14 +196,13 @@ export function AgentStep({
             ))}
           </ul>
           <p className="otv2-footnote">{COPY.agent.runtimeFootnote}</p>
-          {draft.runtime ? <p className="otv2-footnote otv2-footnote--warn">{COPY.agent.runtimeLocked}</p> : null}
         </fieldset>
 
-        <div className="otv2-actions">
+        <StepNav back={onBack}>
           <Button disabled={!draft.runtime} type="submit">
-            {COPY.agent.continue}
+            {COPY.nav.next}
           </Button>
-        </div>
+        </StepNav>
       </form>
     </section>
   );
@@ -184,102 +220,83 @@ function RuntimeMark({ runtime }: { runtime: Runtime }) {
   );
 }
 
-export function SetupStep({
+export function ConnectStep({
   connect,
-  creation,
-  draft,
-  onCreate,
+  onBack,
   onRefreshCommand,
-  readiness,
 }: {
   connect: ConnectState;
-  creation: CreationState;
-  draft: AgentDraft;
-  onCreate: () => void;
+  onBack: () => void;
   onRefreshCommand: () => void;
-  readiness: ReadinessFacts | undefined;
 }) {
-  const connected = connect.kind === "connected";
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
-        <h1>{COPY.setup.title}</h1>
-        <p>{COPY.setup.description}</p>
-        <p className="otv2-privacy">
-          <Icon name="shield" />
-          <span>
-            {COPY.setup.privacy}
-            <small>{COPY.setup.privacyProvider}</small>
-          </span>
-        </p>
+        <h1>{COPY.connect.title}</h1>
       </header>
-
-      <ConnectPanel connect={connect} onRefreshCommand={onRefreshCommand} />
-
-      {connected ? (
-        <ReadinessPanel creation={creation} draft={draft} onCreate={onCreate} readiness={readiness} />
-      ) : null}
+      <div className="otv2-panel">
+        {/* The command's own preamble: what it does, what it means for your data, how to run it. */}
+        <div className="otv2-lead">
+          <p>{COPY.connect.lead}</p>
+          <p className="otv2-privacy">
+            <Icon name="shield" />
+            {COPY.connect.privacy}
+          </p>
+          <p>{COPY.connect.commandIntro}</p>
+        </div>
+        <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
+        <ConnectStatus connect={connect} />
+      </div>
+      <StepNav back={onBack} />
     </section>
   );
 }
 
-function ConnectPanel({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
+function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
   if (connect.kind === "idle" || connect.kind === "issuing") {
-    return (
-      <div className="otv2-panel">
-        <p className="otv2-muted">{COPY.setup.commandIntro}</p>
-        <div aria-hidden="true" className="otv2-command otv2-command--placeholder" />
-      </div>
-    );
+    return <div aria-hidden="true" className="otv2-command otv2-command--placeholder" />;
   }
-
   const expired = connect.kind === "expired";
   return (
-    <div className="otv2-panel">
-      <p className="otv2-muted">{COPY.setup.commandIntro}</p>
-      <CommandBlock
-        key={connect.command}
-        command={connect.command}
-        comment={COPY.setup.commandComment}
-        copiedLabel={COPY.setup.copied}
-        copyLabel={COPY.setup.copy}
-        fallbackHint={COPY.setup.copyFallback}
-        muted={expired}
-        footer={
-          connect.kind === "issued" ? (
-            <Countdown expiresAt={connect.expiresAt} />
-          ) : expired ? (
-            <span className="otv2-command__expiry">
-              <span>{COPY.setup.expired}</span>
-              <Button onClick={onRefreshCommand} variant="inline">
-                {COPY.setup.refresh}
-              </Button>
-            </span>
-          ) : null
-        }
-      />
-      <ConnectStatus connect={connect} />
-    </div>
+    <CommandBlock
+      key={connect.command}
+      command={connect.command}
+      comment={COPY.connect.commandComment}
+      copiedLabel={COPY.connect.copied}
+      copyLabel={COPY.connect.copy}
+      fallbackHint={COPY.connect.copyFallback}
+      muted={expired}
+      footer={
+        connect.kind === "issued" ? (
+          <Countdown expiresAt={connect.expiresAt} />
+        ) : expired ? (
+          <span className="otv2-command__expiry">
+            <span>{COPY.connect.expired}</span>
+            <Button onClick={onRefreshCommand} variant="inline">
+              {COPY.connect.refresh}
+            </Button>
+          </span>
+        ) : null
+      }
+    />
   );
 }
 
 function ConnectStatus({ connect }: { connect: ConnectState }) {
   if (connect.kind === "connected") {
-    return (
-      <StatusIndicator className="otv2-status" label={COPY.setup.connected(connect.computerName)} tone="success" />
-    );
+    return <StatusIndicator className="otv2-status" label={COPY.connect.connected} tone="success" />;
   }
   return (
     <p className="otv2-waiting" role="status">
       <span aria-hidden="true" className="otv2-pulse" />
-      {COPY.setup.waiting}
+      {COPY.connect.waiting}
     </p>
   );
 }
 
 function Countdown({ expiresAt }: { expiresAt: number }) {
   const remaining = useRemaining(expiresAt);
-  return <span className="otv2-command__expiry">{COPY.setup.expiresIn(formatRemaining(remaining))}</span>;
+  return <span className="otv2-command__expiry">{COPY.connect.expiresIn(formatRemaining(remaining))}</span>;
 }
 
 /** Ticks once a second and settles at zero, so an expired code never shows a negative duration. */
@@ -297,14 +314,21 @@ function useRemaining(expiresAt: number): number {
   return remaining;
 }
 
-function ReadinessPanel({
+/**
+ * The report on what the Computer found. The user's attention is assumed to be in the terminal or
+ * with their agent — that is where a repair actually happens — so this page is a second, calmer
+ * view of the same state rather than somewhere work gets done.
+ */
+export function CheckStep({
   creation,
   draft,
+  onBack,
   onCreate,
   readiness,
 }: {
   creation: CreationState;
   draft: AgentDraft;
+  onBack: () => void;
   onCreate: () => void;
   readiness: ReadinessFacts | undefined;
 }) {
@@ -315,47 +339,43 @@ function ReadinessPanel({
   const failures = checks.filter((check) => check.state === "failed");
 
   return (
-    <div className="otv2-panel otv2-panel--checks">
-      <h2>{resolving ? COPY.setup.checksTitle : COPY.setup.checksTitleResolved}</h2>
-      {resolving ? <p className="otv2-muted">{COPY.setup.checksDescription}</p> : null}
-      <ul className="otv2-checks">
-        {checks.map((check) => (
-          <CheckLine check={check} key={check.id} runtimeLabel={runtimeLabel} />
-        ))}
-      </ul>
+    <section className="otv2-step">
+      <header className="otv2-step__header">
+        <h1>{COPY.check.title}</h1>
+      </header>
+      <div className="otv2-panel otv2-panel--checks">
+        <h2>{resolving ? COPY.check.checkingHeading : COPY.check.resolvedHeading}</h2>
+        {resolving ? <p className="otv2-muted">{COPY.check.checkingDescription}</p> : null}
+        <ul className="otv2-checks">
+          {checks.map((check) => (
+            <CheckLine check={check} key={check.id} runtimeLabel={runtimeLabel} />
+          ))}
+        </ul>
 
-      {!resolving && failures.length > 0 ? (
-        <div className="otv2-repair">
-          <p className="otv2-repair__intro">
-            {failures.length > 1 ? COPY.setup.checksFailedIntro : COPY.setup.checksFailedIntroSingular}
-          </p>
-          <p className="otv2-muted">{COPY.setup.doctorIntro}</p>
-          <CommandBlock
-            command="opentag doctor --fix"
-            comment={COPY.setup.doctorComment}
-            copiedLabel={COPY.setup.copied}
-            copyLabel={COPY.setup.copy}
-            fallbackHint={COPY.setup.copyFallback}
-            footer={
-              <span className="otv2-waiting" role="status">
-                <span aria-hidden="true" className="otv2-pulse" />
-                {COPY.setup.doctorWaiting}
-              </span>
-            }
-          />
-          <p className="otv2-pending">{COPY.setup.doctorPending}</p>
-        </div>
-      ) : null}
+        {!resolving && failures.length > 0 ? (
+          <div className="otv2-repair">
+            <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
+            <p className="otv2-muted">{COPY.check.commandIntro}</p>
+            <CommandBlock
+              command={COPY.check.command}
+              comment={COPY.check.commandComment}
+              copiedLabel={COPY.connect.copied}
+              copyLabel={COPY.connect.copy}
+              fallbackHint={COPY.connect.copyFallback}
+            />
+          </div>
+        ) : null}
 
-      {passed ? (
-        <div className="otv2-actions otv2-actions--split">
-          <StatusIndicator label={COPY.setup.checksPassed} tone="success" />
+        {passed ? <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" /> : null}
+      </div>
+      <StepNav back={onBack}>
+        {passed ? (
           <Button disabled={creation === "creating"} onClick={onCreate}>
-            {creation === "creating" ? COPY.setup.creating : COPY.setup.finish}
+            {creation === "creating" ? COPY.check.creating : COPY.check.finish}
           </Button>
-        </div>
-      ) : null}
-    </div>
+        ) : null}
+      </StepNav>
+    </section>
   );
 }
 
@@ -369,7 +389,7 @@ function CheckLine({ check, runtimeLabel }: { check: CheckRow; runtimeLabel: str
       <span className="otv2-check__copy">
         <strong>{copy.title(runtimeLabel)}</strong>
         {check.state === "failed" ? <span>{copy.failure(runtimeLabel)}</span> : null}
-        {check.state === "blocked" ? <span>{COPY.setup.blockedNote}</span> : null}
+        {check.state === "blocked" ? <span>{COPY.check.blockedNote}</span> : null}
       </span>
     </li>
   );

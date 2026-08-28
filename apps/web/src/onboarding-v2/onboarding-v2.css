@@ -145,36 +145,30 @@
   line-height: var(--lh-prose);
 }
 
-.otv2-step__header .otv2-privacy {
+/* The command's preamble: three lines that belong to the command, not to the page title. */
+.otv2-lead {
   display: flex;
+  flex-direction: column;
   gap: var(--space-2);
-  align-items: center;
-  margin-top: var(--space-3);
-  color: var(--secondary-foreground);
 }
 
-.otv2-step__header .otv2-privacy {
+.otv2-lead p {
+  margin: 0;
+  color: var(--secondary-foreground);
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
+}
+
+.otv2-privacy {
+  display: flex;
+  gap: var(--space-2);
   align-items: flex-start;
 }
 
-.otv2-step__header .otv2-privacy .ds-icon {
+.otv2-privacy .ds-icon {
   flex: 0 0 auto;
   margin-top: 3px;
   color: var(--brand);
-}
-
-.otv2-step__header .otv2-privacy small {
-  display: block;
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-/* Says out loud that a command on this surface is a design intent, not shipped behaviour. */
-.otv2-pending {
-  margin: 0;
-  color: var(--warning);
-  font-size: var(--text-meta);
-  line-height: var(--lh-ui);
 }
 
 .otv2-muted {
@@ -349,16 +343,23 @@
   margin-top: var(--space-3);
 }
 
-.otv2-actions {
+/* Every step's footer: Go back on the left, the forward action on the right, in the same place. */
+.otv2-nav {
   display: flex;
   gap: var(--space-3);
-  justify-content: flex-end;
-}
-
-.otv2-actions--split {
   align-items: center;
   justify-content: space-between;
+  min-height: 40px;
   margin-top: var(--space-2);
+}
+
+.otv2-nav__back .ds-button {
+  padding-inline: var(--space-2);
+  color: var(--muted);
+}
+
+.otv2-nav__back .ds-button:hover {
+  color: var(--foreground);
 }
 
 /* Panels ----------------------------------------------------------------- */

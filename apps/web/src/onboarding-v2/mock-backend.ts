@@ -88,8 +88,22 @@ function connectCommand(code: string): string {
   return `npm i -g open-tag && opentag computer connect --server ${SERVER_URL} -- ${code}`;
 }
 
+/**
+ * Matches the Server's connect code: `generateSecret(24)`, so 24 random bytes rendered base64url,
+ * which is 32 characters. The exact shape matters here because it is what sets the length of the
+ * command block the whole step is built around.
+ */
 function randomCode(): string {
-  return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function randomId(): string {
+  return randomCode().slice(0, 16);
 }
 
 export interface MockBackend {
@@ -192,7 +206,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       if (current.kind !== "idle") return current;
       queueMicrotask(() => {
         later(() => {
-          setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/feishu/${randomCode()}` });
+          setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/feishu/${randomId()}` });
           later(() => setMessaging({ kind: "connected" }), timings.scanMs);
         }, timings.issueMs);
       });

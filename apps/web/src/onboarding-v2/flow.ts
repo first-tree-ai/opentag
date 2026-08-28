@@ -54,23 +54,32 @@ export type CreationState = "idle" | "creating" | "created";
 export interface FlowFacts {
   readonly draft: AgentDraft;
   /**
-   * Whether the draft has been explicitly confirmed. Step 1 advances on the choice itself, because
-   * choosing *is* the action there. Step 2 collects two fields, so leaving it has to be deliberate
-   * — otherwise the page would slide out from under someone the moment their name happened to
-   * parse.
+   * Every step the user drives is left deliberately, by its own Continue button, rather than the
+   * moment its fields happen to be valid. Otherwise a page would slide out from under someone
+   * mid-edit, and Go back would have nothing to return to.
    */
+  readonly destinationConfirmed: boolean;
   readonly draftConfirmed: boolean;
   readonly connect: ConnectState;
+  /**
+   * Whether the arrival has been shown. The connect step advances on its own, but only after
+   * "Your computer is connected." has been on screen long enough to read; without this the page
+   * would jump the instant the Computer appears and the outcome would never be seen.
+   */
+  readonly connectAcknowledged: boolean;
   readonly readiness: ReadinessFacts | undefined;
   readonly creation: CreationState;
   readonly messaging: MessagingState;
 }
 
-/** The four rendered pages. Steps 3 and 4 deliberately share the `setup` page — no navigation. */
-export type PageId = "destination" | "agent" | "setup" | "messaging";
+/**
+ * One page per step. Connecting the Computer and checking it were once one page, but they hold
+ * entirely different content — a command to run versus a report on what came back — so they read
+ * better as separate screens with an automatic advance between them.
+ */
+export type PageId = StepId;
 
-/** The five steps the progress rail names, which is one more than the number of pages. */
-export const STEP_IDS = ["destination", "agent", "connect", "runtime", "messaging"] as const;
+export const STEP_IDS = ["destination", "agent", "connect", "check", "messaging"] as const;
 export type StepId = (typeof STEP_IDS)[number];
 
 export type StepStatus = "complete" | "current" | "upcoming";
@@ -89,8 +98,10 @@ export function emptyDraft(): AgentDraft {
 export function initialFacts(): FlowFacts {
   return {
     draft: emptyDraft(),
+    destinationConfirmed: false,
     draftConfirmed: false,
     connect: { kind: "idle" },
+    connectAcknowledged: false,
     readiness: undefined,
     creation: "idle",
     messaging: { kind: "idle" },
@@ -173,20 +184,29 @@ export function readinessIsResolving(readiness: ReadinessFacts | undefined): boo
 }
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
-  const { draft, draftConfirmed, connect, readiness, creation, messaging } = facts;
-  const destinationDone = draft.destination !== undefined;
+  const { draft, destinationConfirmed, draftConfirmed, connect, connectAcknowledged, readiness, creation, messaging } =
+    facts;
+  const destinationDone = draft.destination !== undefined && destinationConfirmed;
   const agentDone = destinationDone && draftIsSubmittable(draft) && draftConfirmed;
-  const connectDone = agentDone && computerIsConnected(connect);
-  const runtimeDone = connectDone && readinessPassed(readiness) && creation === "created";
-  const messagingDone = runtimeDone && messaging.kind === "connected";
+  const connectDone = agentDone && computerIsConnected(connect) && connectAcknowledged;
+  const checkDone = connectDone && readinessPassed(readiness) && creation === "created";
+  const messagingDone = checkDone && messaging.kind === "connected";
 
-  const page: PageId = !destinationDone ? "destination" : !agentDone ? "agent" : !runtimeDone ? "setup" : "messaging";
+  const page: PageId = !destinationDone
+    ? "destination"
+    : !agentDone
+      ? "agent"
+      : !connectDone
+        ? "connect"
+        : !checkDone
+          ? "check"
+          : "messaging";
 
   const done: Record<StepId, boolean> = {
     destination: destinationDone,
     agent: agentDone,
     connect: connectDone,
-    runtime: runtimeDone,
+    check: checkDone,
     messaging: messagingDone,
   };
   const currentIndex = STEP_IDS.findIndex((id) => !done[id]);

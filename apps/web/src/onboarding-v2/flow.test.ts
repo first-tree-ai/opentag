@@ -12,6 +12,8 @@ import {
 } from "./flow.js";
 
 const draft: AgentDraft = { destination: "local", name: "opentag", runtime: "codex" };
+/** The facts of a user who has confirmed both of the steps they drive themselves. */
+const confirmed = { draft, destinationConfirmed: true, draftConfirmed: true } as const;
 const connected: ConnectState = { kind: "connected", command: "npm i -g open-tag", computerName: "MacBook Pro" };
 const ready: ReadinessFacts = { runtime: "ready", messagingCli: "ready" };
 
@@ -49,41 +51,50 @@ describe("deriveFlowState", () => {
     expect(state.steps.map((step) => step.status)).toEqual(["current", "upcoming", "upcoming", "upcoming", "upcoming"]);
   });
 
+  it("stays on the destination page until the choice is confirmed", () => {
+    expect(deriveFlowState(facts({ draft })).page).toBe("destination");
+    expect(deriveFlowState(facts({ draft, destinationConfirmed: true })).page).toBe("agent");
+  });
+
   it("stays on the agent page until the draft is explicitly confirmed", () => {
-    expect(deriveFlowState(facts({ draft })).page).toBe("agent");
-    expect(deriveFlowState(facts({ draft, draftConfirmed: true })).page).toBe("setup");
+    expect(deriveFlowState(facts({ draft, destinationConfirmed: true })).page).toBe("agent");
+    expect(deriveFlowState(facts(confirmed)).page).toBe("connect");
   });
 
   it("stays on the agent page while the name is invalid, even once confirmed", () => {
     const invalid = { ...draft, name: "Open Tag" };
-    expect(deriveFlowState(facts({ draft: invalid, draftConfirmed: true })).page).toBe("agent");
+    expect(deriveFlowState(facts({ ...confirmed, draft: invalid })).page).toBe("agent");
   });
 
-  it("keeps steps 3 and 4 on the same page", () => {
-    const connecting = deriveFlowState(facts({ draft, draftConfirmed: true }));
-    const checking = deriveFlowState(facts({ draft, draftConfirmed: true, connect: connected }));
-    expect(connecting.page).toBe("setup");
-    expect(checking.page).toBe("setup");
+  it("holds the connect page until the arrival has been seen", () => {
+    const arrived = facts({ ...confirmed, connect: connected });
+    expect(deriveFlowState(arrived).page).toBe("connect");
+    expect(deriveFlowState({ ...arrived, connectAcknowledged: true }).page).toBe("check");
   });
 
-  it("completes the connect step once the Computer arrives, without leaving the page", () => {
-    const state = deriveFlowState(facts({ draft, draftConfirmed: true, connect: connected }));
+  it("gives the check its own step once the connect step completes", () => {
+    const state = deriveFlowState(facts({ ...confirmed, connect: connected, connectAcknowledged: true }));
     expect(state.steps.find((step) => step.id === "connect")?.status).toBe("complete");
-    expect(state.steps.find((step) => step.id === "runtime")?.status).toBe("current");
-    expect(state.page).toBe("setup");
+    expect(state.steps.find((step) => step.id === "check")?.status).toBe("current");
+    expect(state.page).toBe("check");
   });
 
-  it("holds the setup page until the Agent is actually created", () => {
-    const passing = facts({ draft, draftConfirmed: true, connect: connected, readiness: ready });
-    expect(deriveFlowState(passing).page).toBe("setup");
+  it("holds the check page until the Agent is actually created", () => {
+    const passing = facts({
+      ...confirmed,
+      connect: connected,
+      connectAcknowledged: true,
+      readiness: ready,
+    });
+    expect(deriveFlowState(passing).page).toBe("check");
     expect(deriveFlowState({ ...passing, creation: "created" }).page).toBe("messaging");
   });
 
   it("is complete only once messaging is connected", () => {
     const base = facts({
-      draft,
-      draftConfirmed: true,
+      ...confirmed,
       connect: connected,
+      connectAcknowledged: true,
       readiness: ready,
       creation: "created",
     });

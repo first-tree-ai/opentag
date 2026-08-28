@@ -11,9 +11,11 @@ import {
 import { LabControls } from "./lab-controls.js";
 import { type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
-import { AgentStep, DestinationStep, DoneStep, MessagingStep, SetupStep, StepRail } from "./steps.js";
+import { AgentStep, CheckStep, ConnectStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
 const CREATE_AGENT_MS = 900;
+/** Long enough to read "Your computer is connected." before the flow moves on by itself. */
+const CONNECTED_DWELL_MS = 1_400;
 
 /**
  * The redesigned onboarding flow, running entirely against the in-page mock. It talks to no
@@ -24,14 +26,18 @@ export function OnboardingV2Page() {
   const [scenario, setScenario] = useState<MockScenario>(SCENARIOS[0] as MockScenario);
   const [speed, setSpeed] = useState<MockSpeed>("realistic");
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
+  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
+  const [connectAcknowledged, setConnectAcknowledged] = useState(false);
   const [creation, setCreation] = useState<CreationState>("idle");
   const backend = useMockBackend(scenario, speed);
 
   const facts: FlowFacts = {
     draft,
+    destinationConfirmed,
     draftConfirmed,
     connect: backend.connect,
+    connectAcknowledged,
     readiness: backend.readiness,
     creation,
     messaging: backend.messaging,
@@ -41,8 +47,17 @@ export function OnboardingV2Page() {
   // The connect code is issued when the page that shows it is first reached, not before: an
   // unseen code would spend its validity in the background.
   useEffect(() => {
-    if (flow.page === "setup") backend.issueConnectCode();
+    if (flow.page === "connect") backend.issueConnectCode();
   }, [backend.issueConnectCode, flow.page]);
+
+  // The arrival is shown before the flow advances, so the user sees the outcome of the command
+  // they ran rather than a screen that changes underneath them.
+  const connected = backend.connect.kind === "connected";
+  useEffect(() => {
+    if (!connected || connectAcknowledged) return;
+    const id = window.setTimeout(() => setConnectAcknowledged(true), CONNECTED_DWELL_MS);
+    return () => window.clearTimeout(id);
+  }, [connectAcknowledged, connected]);
 
   // Held so a restart or an unmount can cancel a creation that is still in flight; otherwise the
   // stale timer lands on the next run and skips its confirmation step.
@@ -55,10 +70,24 @@ export function OnboardingV2Page() {
     creationTimer.current = window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
   }, [creation]);
 
+  /**
+   * Going back undoes the decision that advanced you, rather than moving a separate cursor. That
+   * keeps the page a pure function of the facts, and it means Go back does what it says: leaving
+   * the check step really is asking to connect a Computer again, so the code is reissued.
+   */
+  const backToDestination = useCallback(() => setDestinationConfirmed(false), []);
+  const backToAgent = useCallback(() => setDraftConfirmed(false), []);
+  const backToConnect = useCallback(() => {
+    setConnectAcknowledged(false);
+    backend.reset();
+  }, [backend]);
+
   const startOver = useCallback(() => {
     window.clearTimeout(creationTimer.current);
     setDraft(emptyDraft());
+    setDestinationConfirmed(false);
     setDraftConfirmed(false);
+    setConnectAcknowledged(false);
     setCreation("idle");
     backend.reset();
   }, [backend]);
@@ -78,16 +107,26 @@ export function OnboardingV2Page() {
           {flow.complete ? (
             <DoneStep name={draft.name} />
           ) : flow.page === "destination" ? (
-            <DestinationStep onChoose={(destination: Destination) => setDraft({ ...draft, destination })} />
+            <DestinationStep
+              draft={draft}
+              onChoose={(destination: Destination) => setDraft({ ...draft, destination })}
+              onSubmit={() => setDestinationConfirmed(true)}
+            />
           ) : flow.page === "agent" ? (
-            <AgentStep draft={draft} onChange={setDraft} onSubmit={() => setDraftConfirmed(true)} />
-          ) : flow.page === "setup" ? (
-            <SetupStep
-              connect={backend.connect}
+            <AgentStep
+              draft={draft}
+              onBack={backToDestination}
+              onChange={setDraft}
+              onSubmit={() => setDraftConfirmed(true)}
+            />
+          ) : flow.page === "connect" ? (
+            <ConnectStep connect={backend.connect} onBack={backToAgent} onRefreshCommand={backend.refreshConnectCode} />
+          ) : flow.page === "check" ? (
+            <CheckStep
               creation={creation}
               draft={draft}
+              onBack={backToConnect}
               onCreate={createAgent}
-              onRefreshCommand={backend.refreshConnectCode}
               readiness={backend.readiness}
             />
           ) : (

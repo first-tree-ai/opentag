@@ -189,7 +189,10 @@ describe("ConnectionRegistry", () => {
         computerId,
         instanceId: verifiedInstanceId,
         lastHeartbeatAt: 2,
-        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionCollaboration]: 1 },
+        negotiatedCapabilities: {
+          [RUNTIME_CAPABILITY.imCredentialGrant]: 2,
+          [RUNTIME_CAPABILITY.sessionCollaboration]: 1,
+        },
         providerReadiness: [{ provider: "codex", status: "ready" }],
         providerReadinessObservedAt: 2,
         providerReadinessProviders: ["codex"],
@@ -204,6 +207,7 @@ describe("ConnectionRegistry", () => {
     expect(registry.supportsCapability(computerId, verifiedInstanceId, RUNTIME_CAPABILITY.sessionCollaboration)).toBe(
       true,
     );
+    expect(registry.capabilityVersion(computerId, verifiedInstanceId, RUNTIME_CAPABILITY.imCredentialGrant, 2)).toBe(2);
     expect(registry.supportsCapability(computerId, firstInstanceId, RUNTIME_CAPABILITY.sessionCollaboration)).toBe(
       false,
     );

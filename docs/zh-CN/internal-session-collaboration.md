@@ -1,7 +1,7 @@
 # Internal Session 协作
 
 > Canonical source: [internal-session-collaboration.md](../internal-session-collaboration.md)
-> Last synced with: 2026-08-27
+> Last synced with: 2026-08-28
 
 OpenTag Agent 在每个 managed Session 内通过 CLI 委派工作：
 
@@ -33,12 +33,24 @@ reasoning effort 和最长 Run duration。Internal Session 不接收 IM delivery
 `OPENTAG_PROVIDER_ENV_FILE`，而是通过 `opentag session send` 回报。两类 Session 都收到角色化 managed instructions，
 也都可以继续创建下一层 internal Session。
 
+OpenTag Internal Session 与 Provider 原生 subagent 是两种不同机制。人明确要求使用 OpenTag Internal Session 时，
+可见 Session 必须调用 `opentag session create`，不能以 Provider 原生 subagent 代替。除此之外，OpenTag 本次不强制规定
+直接处理、Provider 原生 subagent 与 Internal Session 之间的自动选路策略。
+
+SessionMessage 回传到可见的 channel/thread Session 时，该 callback Run 继续拥有可见 Session 的 IM 权限。credential
+grant v2 会原子提供临时 provider 凭证环境，以及由 Server 从 Session 既有 conversation scope 派生的非敏感默认
+outbox context。可见 Session 在同一 callback Run 中整理用户可见结果，再通过官方 provider CLI 发布；OpenTag 不会自动
+原样转发子 Session 文本。channel callback 使用既有 chat/channel，thread callback 保持既有 thread scope。Internal
+Session 目标始终拿不到 provider 凭证或 outbox context。
+
 Session 协作是实时 best-effort 通道，不是持久 job queue。Server 保存已授权逻辑消息及最近结果用于幂等和冲突检测，
 目标投递仍使用有界内存 FIFO，不自动 replay。Agent-facing Session 命令刻意不提供 `end`；管理生命周期失效流程仍可设置
 既有 `sessions.ended_at`。Retention 不在本功能范围。
 
-CLI surface 仅协商 `runtime.sessionCollaboration` capability v2；旧 Client 不会协商该 capability，也不会收到 Session
-proof。
+CLI surface 仅协商 `runtime.sessionCollaboration` capability v2。可见 callback 投递还要求
+`runtime.imCredentialGrant` v2：新 Server 面对旧 Client 时会在投递前返回 `outbox_unavailable`；新 Client 连接旧 Server
+时会在 ACK 前拒绝投递，让同一逻辑消息仍可重试。两种升级方向都会在 callback Run 启动前 fail closed，不会静默移除
+IM outbox。
 
 OpenTag 当前仅在单 Server replica 下支持这条路径。proof-authenticated Session CLI HTTP 与 source/target
 SessionMessage Runtime 投递都依赖该 replica 本地的 WebSocket owner。当前不支持普通多 replica 负载均衡、sticky

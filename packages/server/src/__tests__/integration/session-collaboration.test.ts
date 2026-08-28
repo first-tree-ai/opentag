@@ -950,6 +950,7 @@ async function createCollaborationFixture(
       assembler: { assembleForSession: options.assemble ?? (async () => runtimeSnapshot(fixture.agentId)) },
       domain,
       registry: {
+        capabilityVersion: () => 2,
         currentInstanceId: () => instanceId,
         supportsCapability: () => true,
       },

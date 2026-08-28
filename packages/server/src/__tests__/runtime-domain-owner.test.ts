@@ -4,6 +4,7 @@ import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  RUNTIME_CAPABILITY,
   type RuntimeImSteerRequest,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
@@ -28,6 +29,29 @@ import {
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 
 describe("RuntimeDomainOwner", () => {
+  it("passes the negotiated credential grant version to the authority callback", async () => {
+    const onImCredentialGrant = vi.fn(async (request) => ({
+      type: "im:credential:result" as const,
+      requestId: request.requestId,
+      status: "rejected" as const,
+      code: "binding_inactive" as const,
+    }));
+    const fixture = await ownerFixture(1_000, { onImCredentialGrant });
+    const request = {
+      type: "im:credential" as const,
+      requestId: randomUUID(),
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 1,
+    };
+
+    await expect(fixture.owner.handle(request, fixture.context)).resolves.toMatchObject({
+      type: "im:credential:result",
+      requestId: request.requestId,
+    });
+    expect(onImCredentialGrant).toHaveBeenCalledWith(request, expect.objectContaining({ imCredentialGrantVersion: 2 }));
+  });
+
   it("B-19 joins identical requests and rejects a reused request ID with different payload", async () => {
     const fixture = await ownerFixture();
     const request = reconcileRequest(fixture.computerId);
@@ -524,7 +548,7 @@ async function waitForDeliveryFrame(frames: unknown[], requestId: string): Promi
 
 async function ownerFixture(
   requestTimeoutMs = 1_000,
-  options: Pick<RuntimeDomainOwnerOptions, "prepareReconcile"> = {},
+  options: Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "prepareReconcile"> = {},
 ) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
@@ -538,6 +562,7 @@ async function ownerFixture(
       workspaceId,
       instanceId,
       lastHeartbeatAt: 1,
+      negotiatedCapabilities: { [RUNTIME_CAPABILITY.imCredentialGrant]: 2 },
       socket: socketFixture(frames),
     },
     async () => undefined,

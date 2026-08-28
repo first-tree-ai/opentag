@@ -74,6 +74,7 @@ describe("SessionRuntimeManager", () => {
 
     expect(manager.requiresSessionPreparation(request)).toBe(false);
     await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    expect(manager.sessionKind(request.sessionId)).toBe("internal");
     await manager.ensureRuntime(request.sessionId);
 
     expect(proofManager.materialize).toHaveBeenCalledWith(request.sessionId, request.sessionCliProof);
@@ -83,6 +84,10 @@ describe("SessionRuntimeManager", () => {
     });
     expect(factory.created[0]?.hostedTools).toBeUndefined();
     expect(factory.created[0]?.systemPrompt).toContain("opentag-dev session send");
+    expect(factory.created[0]?.systemPrompt).toContain(
+      "OpenTag internal Sessions and Provider-native subagents are separate mechanisms",
+    );
+    expect(factory.created[0]?.systemPrompt).toContain("do not substitute a Provider-native subagent");
     expect(factory.created[0]?.systemPrompt).toContain(request.creatorSessionId);
     expect(manager.requiresSessionPreparation(request)).toBe(false);
     const rotated = {
@@ -135,7 +140,9 @@ describe("SessionRuntimeManager", () => {
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
     const first = reconcile(computerId, snapshot(1));
 
+    expect(() => manager.sessionKind(first.sessionId)).toThrow("has not been prepared");
     await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
+    expect(manager.sessionKind(first.sessionId)).toBe("visible");
     await manager.ensureRuntime("session-1");
     await manager.ensureRuntime("session-1", new AbortController().signal);
     expect(manager.runtime("session-1")).toBe(factory.runtimes[0]);

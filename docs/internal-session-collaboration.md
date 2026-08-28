@@ -36,13 +36,27 @@ override the model, reasoning effort, or maximum Run duration. Internal Sessions
 temporary `OPENTAG_PROVIDER_ENV_FILE`; they report through `opentag session send`. Both visible and internal Sessions
 receive role-aware managed instructions and may create further internal Sessions.
 
+OpenTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an OpenTag
+internal Session, the visible Session uses `opentag session create` rather than substituting a Provider-native subagent.
+OpenTag does not otherwise impose one automatic routing policy between direct work, Provider-native subagents, and
+internal Sessions.
+
+When a SessionMessage returns to a visible channel or thread Session, that callback Run retains the visible Session's IM
+authority. Credential grant v2 atomically supplies a temporary provider credential environment and a non-secret default
+outbox context derived by the Server from the Session's existing conversation scope. The visible Session synthesizes and
+publishes any user-facing result through the official provider CLI during that callback Run; OpenTag does not forward the
+child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
+existing thread scope. Internal targets never receive provider credentials or outbox context.
+
 Session collaboration is real-time and best-effort, not a persistent job queue. The Server stores authorized logical
 messages and their latest observed outcome for idempotency and conflict detection, while target delivery remains an
 in-memory bounded FIFO with no automatic replay. Agent-facing Session operations intentionally provide no `end`;
 administrative lifecycle invalidation may still set the existing `sessions.ended_at` field. Retention is out of scope.
 
-This CLI surface requires `runtime.sessionCollaboration` capability version 2. Older Clients do not negotiate the
-capability and do not receive a Session proof.
+This CLI surface requires `runtime.sessionCollaboration` capability version 2. Visible callback delivery also requires
+`runtime.imCredentialGrant` version 2. A new Server reports `outbox_unavailable` before delivery when the target Client is
+older; a new Client connected to an older Server rejects the delivery before acknowledging it so the same logical message
+remains retryable. Both upgrade directions fail closed before the callback Run instead of silently removing its IM outbox.
 
 OpenTag currently supports this path only with a single Server replica. Proof-authenticated Session CLI HTTP and
 source/target SessionMessage Runtime delivery both use that replica's local WebSocket owner. Ordinary multi-replica

@@ -602,7 +602,7 @@ function steerRequest(): RuntimeImSteerRequest {
 
 function credentialEnvironment() {
   return {
-    prepare: vi.fn(async () => "/tmp/provider-env.sh"),
+    prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "slack" as const })),
     cleanup: vi.fn(async () => undefined),
   };
 }

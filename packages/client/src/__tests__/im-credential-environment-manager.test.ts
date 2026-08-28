@@ -32,7 +32,7 @@ describe("ImCredentialEnvironmentManager", () => {
       const manager = new ImCredentialEnvironmentManager({ connection, home, platform: "linux" });
       const request = delivery(attention);
 
-      const path = await manager.prepare(request);
+      const { path } = await manager.prepare(request);
       expect(await readFile(path, "utf8")).toBe(
         `export SLACK_BOT_TOKEN='xoxb-${attention}'\nunset SLACK_USER_TOKEN\nunset SLACK_APP_TOKEN\n`,
       );
@@ -79,7 +79,7 @@ describe("ImCredentialEnvironmentManager", () => {
       platform: "linux",
     });
 
-    const path = await manager.prepare(delivery("ambient"));
+    const { path } = await manager.prepare(delivery("ambient"));
     expect(await readFile(path, "utf8")).toContain("export LARKSUITE_CLI_APP_SECRET='secret-1'");
     await manager.prepare(delivery("ambient"));
     const rotated = await readFile(path, "utf8");
@@ -105,7 +105,7 @@ describe("ImCredentialEnvironmentManager", () => {
       grant: { provider: "slack", botAccessToken: "xoxb-ambient-cli" },
     }));
     const manager = new ImCredentialEnvironmentManager({ connection, home, platform: "linux" });
-    const environmentPath = await manager.prepare(delivery("ambient"));
+    const { path: environmentPath } = await manager.prepare(delivery("ambient"));
 
     const result = await execFileAsync(
       "/bin/sh",
@@ -143,21 +143,7 @@ describe("ImCredentialEnvironmentManager", () => {
       home,
       platform: "linux",
     });
-    const environmentPath = await manager.prepare({
-      ...delivery("direct"),
-      content: {
-        kind: "text",
-        text: "hello",
-        providerRef: {
-          provider: "feishu",
-          teamBrand: "feishu",
-          appId: "cli-direct",
-          botOpenId: "bot-1",
-          chatId: "chat-1",
-          messageId: "message-1",
-        },
-      },
-    });
+    const { path: environmentPath } = await manager.prepare(delivery("direct"));
 
     const result = await execFileAsync(
       "/bin/sh",
@@ -226,7 +212,7 @@ describe("ImCredentialEnvironmentManager", () => {
         await rm(path, options);
       },
     });
-    const path = await manager.prepare(delivery("direct"));
+    const { path } = await manager.prepare(delivery("direct"));
 
     await expect(manager.cleanup("session-1")).rejects.toMatchObject({ code: "cleanup_failed" });
     await expect(stat(path)).resolves.toBeDefined();

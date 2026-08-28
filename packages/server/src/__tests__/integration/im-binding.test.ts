@@ -667,6 +667,19 @@ describe("IM binding persistence", () => {
         grant: { provider: "slack", botAccessToken: "xoxb-secret" },
       });
       expect(ambient).toMatchObject({ status: "succeeded", grant: { provider: "slack" } });
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(request, {
+          ...computerAuthFor(value),
+          imCredentialGrantVersion: 2,
+        }),
+      ).resolves.toMatchObject({
+        status: "succeeded",
+        outboxContext: {
+          provider: "slack",
+          sessionKind: "channel",
+          channelId: session.channelId,
+        },
+      });
       expect(JSON.stringify(direct)).not.toContain("signing-secret");
       expect(JSON.stringify(direct)).not.toContain("attention");
 
@@ -683,9 +696,18 @@ describe("IM binding persistence", () => {
       await expect(
         value.imBindingService.issueRuntimeCredentialGrant(
           { ...request, requestId: crypto.randomUUID(), sessionId: thread.session.id },
-          computerAuthFor(value),
+          { ...computerAuthFor(value), imCredentialGrantVersion: 2 },
         ),
-      ).resolves.toMatchObject({ status: "succeeded", grant: { provider: "slack" } });
+      ).resolves.toMatchObject({
+        status: "succeeded",
+        grant: { provider: "slack" },
+        outboxContext: {
+          provider: "slack",
+          sessionKind: "thread",
+          channelId: session.channelId,
+          threadTs: "credential-thread",
+        },
+      });
       const sourceConnectionInstanceId = crypto.randomUUID();
       await value.database
         .update(workspaceComputers)

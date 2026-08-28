@@ -196,6 +196,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return waitForStart(start, signal);
   }
 
+  sessionKind(sessionId: string): "visible" | "internal" {
+    const managed = this.#sessions.get(sessionId);
+    if (!managed) throw new Error("The Session Agent Runtime has not been prepared");
+    return managed.sessionKind;
+  }
+
   async #startRuntime(managed: ManagedSessionRuntime): Promise<AgentRuntime> {
     const provider = this.#providers.registration(managed.providerId);
     /* v8 ignore next -- registrations are immutable for the lifetime of a managed Session. */

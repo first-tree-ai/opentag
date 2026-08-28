@@ -13,6 +13,7 @@ import {
   EffectiveRuntimeSnapshotSchema,
   ImMessageDeliveryResultSchema,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
+  RuntimeImCredentialGrantResultSchema,
   RuntimeImSteerRequestSchema,
   RuntimeImSteerResultSchema,
   runtimeUsageTotalTokens,
@@ -354,6 +355,41 @@ describe("runtime domain contract", () => {
       SessionMessageDeliveryRequestSchema.parse({
         ...delivery,
         content: { kind: "text", text: `${"你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3))}你` },
+      }),
+    ).toThrow();
+  });
+
+  it("validates optional v2 outbox context without weakening v1 credential grants", () => {
+    const requestId = randomUUID();
+    const base = {
+      type: "im:credential:result" as const,
+      requestId,
+      status: "succeeded" as const,
+      credentialGeneration: 1,
+      grant: { provider: "slack" as const, botAccessToken: "xoxb-secret" },
+    };
+    expect(RuntimeImCredentialGrantResultSchema.parse(base)).toEqual(base);
+    expect(
+      RuntimeImCredentialGrantResultSchema.parse({
+        ...base,
+        outboxContext: {
+          provider: "slack",
+          sessionKind: "thread",
+          channelId: "C1",
+          threadTs: "1710000000.000001",
+        },
+      }),
+    ).toMatchObject({ outboxContext: { sessionKind: "thread", channelId: "C1" } });
+    expect(() =>
+      RuntimeImCredentialGrantResultSchema.parse({
+        ...base,
+        outboxContext: { provider: "slack", sessionKind: "thread", channelId: "C1" },
+      }),
+    ).toThrow();
+    expect(() =>
+      RuntimeImCredentialGrantResultSchema.parse({
+        ...base,
+        outboxContext: { provider: "feishu", sessionKind: "channel", chatId: "oc_1" },
       }),
     ).toThrow();
   });

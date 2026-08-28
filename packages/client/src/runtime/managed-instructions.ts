@@ -20,11 +20,13 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
         ...(context.sessionKind === "internal"
           ? [
               "You are an internal Session. Focus on the delegated task, report progress, questions, and the final result to the creating or coordinating Session, and do not publish directly to IM.",
-              "You may create further internal Sessions when the work benefits from delegation or parallelism.",
+              "You may create further internal Sessions when platform-level Session collaboration is useful.",
             ]
           : [
-              "You are a visible Session. Handle simple work directly; delegate complex, parallel, or context-isolated work to internal Sessions, then synthesize their results before deciding what to publish to IM.",
+              "You are a visible Session. You may handle work directly, use Provider-native subagents when available, or create OpenTag internal Sessions when platform-level Session collaboration is useful.",
             ]),
+        "OpenTag internal Sessions and Provider-native subagents are separate mechanisms and are not interchangeable.",
+        `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
         "",
         ...(context.sessionCliAvailable
           ? [

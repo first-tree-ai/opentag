@@ -233,6 +233,8 @@ export {
   RuntimeImDeliveryContentSchema,
   type RuntimeImHistoryItem,
   RuntimeImHistoryItemSchema,
+  type RuntimeImOutboxContext,
+  RuntimeImOutboxContextSchema,
   type RuntimeImResourceReference,
   RuntimeImResourceReferenceSchema,
   type RuntimeImSteerRequest,

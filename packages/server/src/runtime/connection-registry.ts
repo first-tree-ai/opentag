@@ -1,6 +1,7 @@
 import {
   type AgentRuntimeProvider,
   type ImCliProvider,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
@@ -89,6 +90,26 @@ export class ConnectionRegistry {
       current.active !== false &&
       current.negotiatedCapabilities?.[capability] !== undefined
     );
+  }
+
+  capabilityVersion(
+    workspaceComputerId: string,
+    instanceId: string,
+    capability: string,
+    now = Date.now(),
+  ): number | undefined {
+    const current = this.#entries.get(workspaceComputerId);
+    if (!current || current.instanceId !== instanceId || current.active === false) return undefined;
+    const negotiated = current.negotiatedCapabilities?.[capability];
+    if (negotiated !== undefined) return negotiated;
+    if (
+      capability === RUNTIME_CAPABILITY.imCredentialGrant &&
+      now - (current.capabilitiesUpdatedAt ?? Number.NEGATIVE_INFINITY) <= RUNTIME_CLIENT_CAPABILITY_TTL_MS &&
+      current.capabilities?.imCredentialGrant === 1
+    ) {
+      return 1;
+    }
+    return undefined;
   }
 
   supports(

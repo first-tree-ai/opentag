@@ -18,6 +18,7 @@ import {
   type ImCredentialEnvironmentManager,
 } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
+import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "./session-runtime-manager.js";
@@ -294,34 +295,6 @@ export function buildAgentInput(
   if (!runtime) throw new Error("A steer input requires the root runtime snapshot");
   const sessionInstructions = runtime.instructions.session?.trim() || "No additional Session instructions.";
   const provider = request.content.providerRef.provider;
-  const providerCommand = provider === "feishu" ? "lark-cli" : "slack api";
-  const providerBodyInstructions =
-    provider === "feishu"
-      ? [
-          "For lark-cli text and Markdown bodies, intended line breaks must reach the CLI as real newline characters; never write literal `\\n` sequences for layout.",
-          "Before sending, inspect the body: if it has no real newline and contains two or more literal `\\n` sequences, treat it as malformed and rebuild it instead of sending. Do not blindly replace `\\n`, because code or prose may intentionally discuss that token.",
-          "Keep rich or multiline bodies out of ordinary inline shell quoting. Populate a task-specific variable with shell-native, non-interpolating multiline syntax, then pass the variable as one quoted `--text` or `--markdown` argument.",
-          "POSIX shell pattern:",
-          "```bash",
-          "IFS= read -r -d '' OPENTAG_LARK_BODY <<'EOF' || true",
-          "first line",
-          "",
-          'second line with `code`, $variables, "quotes", and apostrophes',
-          "EOF",
-          'lark-cli ... --markdown "$OPENTAG_LARK_BODY"',
-          "```",
-          "PowerShell pattern:",
-          "```powershell",
-          "$OpenTagLarkBody = @'",
-          "first line",
-          "",
-          'second line with `code`, $variables, "quotes", and apostrophes',
-          "'@",
-          "lark-cli ... --markdown $OpenTagLarkBody",
-          "```",
-          "Replace `...` with the version-specific lark-cli subcommand and provider-native target options before running it.",
-        ]
-      : [];
   const attentionMeaning =
     request.attention === "direct"
       ? "A human explicitly addressed this Agent/Session. Handle the message normally, then choose whether to reply, react, send proactively, or take no provider action."
@@ -335,20 +308,16 @@ export function buildAgentInput(
     `Session: ${request.sessionId}`,
     `Agent revision: ${runtime.revision.agent.sequence}/${runtime.revision.agent.id}`,
     `Session revision: ${runtime.revision.session.sequence}/${runtime.revision.session.id}`,
-    'Who reads your output: inside OpenTag, the "user" your underlying agent addresses — the reader of everything you produce apart from running a provider CLI command, including the text that closes this Turn — is the OpenTag runtime. This is your runtime console; ordinary output is not delivered to the IM participant.',
-    `The IM participant is a separate audience. The official ${providerCommand} CLI is your outbox and the only path from this Turn to that audience.`,
-    "The console addresses OpenTag; running the provider CLI performs the provider action. Describing a reply, reaction, or proactive message in your output only records it in OpenTag; it does not deliver it.",
-    "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
-    `To write to this ${provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
-    ...providerBodyInstructions,
-    "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",
-    "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",
-    "If a provider result is unknown, query the provider before deciding whether to retry.",
+    ...buildProviderOutboxInstructions({
+      actionInstruction:
+        "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
+      provider,
+      target: request.content.providerRef,
+      targetLabel: "Current provider reference",
+    }),
     `Attention: ${request.attention}`,
     `Attention meaning: ${attentionMeaning}`,
     "Attention does not change provider CLI or credential availability for this Turn.",
-    `Current provider reference: ${JSON.stringify(request.content.providerRef)}`,
-    `For version-specific commands and native formats, run ${provider === "feishu" ? "lark-cli im --help" : "slack api --help"}.`,
     "Session instructions:",
     sessionInstructions,
     "</opentag-im-context>",

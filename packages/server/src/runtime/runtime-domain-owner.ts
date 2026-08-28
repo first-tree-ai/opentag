@@ -9,6 +9,7 @@ import {
   type DirectImMessageDeliveryRequest,
   hashTuple,
   type ImMessageDeliveryResult,
+  RUNTIME_CAPABILITY,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
   type RuntimeImSteerRequest,
@@ -62,7 +63,7 @@ export interface RuntimeDomainOwnerOptions {
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
   onImCredentialGrant?(
     request: RuntimeImCredentialGrantRequest,
-    context: RuntimeBusinessContext,
+    context: RuntimeBusinessContext & { imCredentialGrantVersion: 1 | 2 },
   ): Promise<RuntimeImCredentialGrantResult>;
   prepareReconcile?(
     workspaceComputerId: string,
@@ -585,7 +586,13 @@ export class RuntimeDomainOwner {
     }
     if (frame.type === "im:credential") {
       if (!this.#options.onImCredentialGrant) return businessFailureResult(frame);
-      return this.#options.onImCredentialGrant(frame, context);
+      const version = this.#registry.capabilityVersion(
+        context.workspaceComputerId,
+        context.instanceId,
+        RUNTIME_CAPABILITY.imCredentialGrant,
+      );
+      if (version !== 1 && version !== 2) return businessFailureResult(frame);
+      return this.#options.onImCredentialGrant(frame, { ...context, imCredentialGrantVersion: version });
     }
     return withSpan(
       "runtime.report",

@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import {
   type AgentRuntimeProvider,
   computeRuntimeSnapshotHashes,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   type RuntimeImCliReadinessObservation,
   type RuntimeProviderReadinessObservation,
@@ -435,6 +436,8 @@ export async function createClientRuntime(
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
     cliCommand: options.cliCommand ?? "opentag",
+    credentialEnvironment,
+    imCredentialGrantVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imCredentialGrant),
     reconciler,
     runtimeManager,
   });

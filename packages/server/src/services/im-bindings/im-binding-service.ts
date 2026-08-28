@@ -276,13 +276,20 @@ export class ImBindingService {
 
   async issueRuntimeCredentialGrant(
     request: RuntimeImCredentialGrantRequest,
-    computerAuth: { computerId: string; workspaceComputerId: string; workspaceId: string },
+    computerAuth: {
+      computerId: string;
+      workspaceComputerId: string;
+      workspaceId: string;
+      imCredentialGrantVersion?: 1 | 2;
+    },
   ): Promise<RuntimeImCredentialGrantResult> {
     const [row] = await this.#database
       .select({
         sessionId: sessions.id,
         sessionKind: sessions.kind,
         sessionEndedAt: sessions.endedAt,
+        channelId: sessions.channelId,
+        threadKey: sessions.threadKey,
         binding: imBindings,
         boundAgentId: imBindings.agentId,
         agentWorkspaceComputerId: agents.workspaceComputerId,
@@ -351,6 +358,16 @@ export class ImBindingService {
           appSecret: credential.appSecret,
           teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",
         },
+        ...(computerAuth.imCredentialGrantVersion === 2
+          ? {
+              outboxContext: {
+                provider: "feishu" as const,
+                sessionKind: row.sessionKind,
+                chatId: row.channelId,
+                ...(row.threadKey ? { threadId: row.threadKey } : {}),
+              },
+            }
+          : {}),
       };
     }
     if (!binding.observedConnectedAt) return rejected("binding_inactive");
@@ -362,6 +379,16 @@ export class ImBindingService {
       status: "succeeded",
       credentialGeneration: binding.credentialGeneration,
       grant: { provider: "slack", botAccessToken: credential.botAccessToken },
+      ...(computerAuth.imCredentialGrantVersion === 2
+        ? {
+            outboxContext: {
+              provider: "slack" as const,
+              sessionKind: row.sessionKind,
+              channelId: row.channelId,
+              ...(row.threadKey ? { threadTs: row.threadKey } : {}),
+            },
+          }
+        : {}),
     };
   }
 

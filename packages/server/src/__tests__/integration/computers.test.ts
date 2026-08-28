@@ -12,7 +12,7 @@ import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, workspaceAdminGrants, workspaceComputers, workspaces } from "../../db/schema/index.js";
+import { computers, users, workspaceAdminGrants, workspaceComputers, workspaces } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, AuthTokenService } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
@@ -105,9 +105,19 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
-  it("isolates two Workspace enrollments for the same physical Computer", async () => {
+  /**
+   * A Workspace holds one Admin, so a Computer shared by two people is two Accounts enrolling the same
+   * physical machine, each with its own enrollment and its own credential. That is the shape a machine
+   * nobody owns alone has to take, and neither side's credential may serve the other's enrollment.
+   */
+  it("isolates two Account enrollments for the same physical Computer", async () => {
     const value = await fixture();
     try {
+      const [secondAccount] = await value.database
+        .insert(users)
+        .values({ displayName: "Second", email: "second@example.com" })
+        .returning();
+      if (!secondAccount) throw new Error("Second Account was not created");
       const [secondWorkspace] = await value.database
         .insert(workspaces)
         .values({ name: "second", displayName: "Second" })
@@ -115,12 +125,12 @@ describe("Computer enrollment persistence", () => {
       if (!secondWorkspace) throw new Error("Second Workspace was not created");
       await value.database.insert(workspaceAdminGrants).values({
         workspaceId: secondWorkspace.id,
-        userId: value.bootstrap.userId,
-        grantedByUserId: value.bootstrap.userId,
+        userId: secondAccount.id,
+        grantedByUserId: secondAccount.id,
       });
       const computerId = crypto.randomUUID();
       const first = await enroll(value, value.bootstrap.workspaceId, value.bootstrap.userId, computerId);
-      const second = await enroll(value, secondWorkspace.id, value.bootstrap.userId, computerId);
+      const second = await enroll(value, secondWorkspace.id, secondAccount.id, computerId);
       expect(second.workspaceComputerId).not.toBe(first.workspaceComputerId);
       expect(second.machineToken).not.toBe(first.machineToken);
 

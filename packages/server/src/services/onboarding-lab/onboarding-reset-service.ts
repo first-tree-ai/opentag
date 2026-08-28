@@ -124,6 +124,12 @@ export class OnboardingResetService {
    * Selection alone is not enough for a destructive staging reset, so two fail-closed checks stay
    * on top of it: the Lab Account must have exactly one active scope, and that scope must have
    * exactly one active admin. Neither check picks a scope; both only refuse.
+   *
+   * Both shapes are now also refused by storage, by the pair of partial unique indexes on
+   * `workspace_admin_grants`. These checks are kept rather than deleted because what stands behind
+   * them deletes Agents: they are the second line, and the only one left if those indexes are ever
+   * relaxed to let a Workspace hold several Admins again. The reachable case they still answer is
+   * an Account with no active scope at all, which no index can prevent.
    */
   async #resolveOwnedScope(accountId: string): Promise<{ workspaceId: string }> {
     const workspaceId = await this.#selectScope(accountId);

@@ -19,7 +19,7 @@ import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AgentService } from "../../services/agents/index.js";
 import { AuthServiceError } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
-import { OnboardingResetError, OnboardingResetService } from "../../services/onboarding-lab/index.js";
+import { OnboardingResetService } from "../../services/onboarding-lab/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -527,40 +527,6 @@ describe("staging Onboarding Lab reset", () => {
     // And the second tester resets their own Account without disturbing the first, in either order.
     await value.reset.resetOnboarding(other.id);
     expect(await facts(value.database, second)).toMatchObject({ activeAgents: 0, activeEnrollments: 0 });
-  });
-
-  it("refuses to proceed when the Lab Account owns more than one active scope", async () => {
-    const value = await fixture();
-    const [second] = await value.database
-      .insert(workspaces)
-      .values({ name: "second", displayName: "Second" })
-      .returning({ id: workspaces.id });
-    if (!second) throw new Error("Second scope fixture was not created");
-    await value.database
-      .insert(workspaceAdminGrants)
-      .values({ workspaceId: second.id, userId: value.lab.accountId, grantedByUserId: value.lab.accountId });
-
-    // The canonical seam would still pick one scope; reset must refuse rather than reset whichever
-    // one selection happens to return.
-    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({
-      code: "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
-    });
-    expect((await facts(value.database, value.lab)).activeAgents).toBe(1);
-  });
-
-  it("refuses to proceed when the Lab Account scope is not owned exclusively", async () => {
-    const value = await fixture();
-    const [intruder] = await value.database
-      .insert(users)
-      .values({ displayName: "Intruder", email: "intruder@example.com" })
-      .returning({ id: users.id });
-    if (!intruder) throw new Error("Intruder fixture was not created");
-    await value.database
-      .insert(workspaceAdminGrants)
-      .values({ workspaceId: value.lab.workspaceId, userId: intruder.id, grantedByUserId: intruder.id });
-
-    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toBeInstanceOf(OnboardingResetError);
-    expect((await facts(value.database, value.lab)).activeAgents).toBe(1);
   });
 
   it("closes the live Computer connection in the registry", async () => {

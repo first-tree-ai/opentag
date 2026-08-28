@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
+import { isUniqueViolation } from "../../db/unique-violation.js";
 import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -61,46 +62,62 @@ async function grantWorkspace(
 }
 
 /**
- * The Account-native facade resolves every management call through this single compatibility fact, so the
- * order is pinned here: setup-completed Workspace first, then earliest grant, then Workspace UUID.
+ * The Account-native facade resolves every management call through this single compatibility fact. Two
+ * partial unique indexes make it a fact rather than a selection: an Account holds one active grant and a
+ * Workspace holds one active Admin, so the resolver has exactly one candidate and `workspace_id = ?`
+ * means "belongs to this Account". The ordering the resolver still carries is unreachable, so what is
+ * pinned here is the pair of constraints plus the revoke-and-replace path they leave open.
  */
 describe("Account compatibility scope resolution", () => {
-  it("prefers a setup-completed Workspace over an earlier grant", async () => {
+  it("rejects a second active grant for one Account", async () => {
     await withClient(async (client) => {
-      const accountId = await createAccount(client, "ordering@example.com");
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: LOWER_UUID, name: "incomplete-earlier" });
-      await grantWorkspace(client, {
+      const accountId = await createAccount(client, "second-grant@example.com");
+      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: LOWER_UUID, name: "first" });
+
+      const thrown = await grantWorkspace(client, {
         accountId,
         grantedAt: LATE,
         id: HIGHER_UUID,
-        name: "completed-later",
-        setupCompletedAt: LATE,
+        name: "second",
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(isUniqueViolation(thrown, "workspace_admin_grants_active_user_unique")).toBe(true);
+    });
+  });
+
+  it("rejects a second active Admin on one Workspace", async () => {
+    await withClient(async (client) => {
+      const first = await createAccount(client, "first-admin@example.com");
+      const second = await createAccount(client, "second-admin@example.com");
+      await grantWorkspace(client, { accountId: first, grantedAt: EARLY, id: LOWER_UUID, name: "shared" });
+
+      const thrown = await client.database
+        .insert(workspaceAdminGrants)
+        .values({ workspaceId: LOWER_UUID, userId: second, grantedByUserId: first, grantedAt: LATE })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(isUniqueViolation(thrown, "workspace_admin_grants_active_workspace_unique")).toBe(true);
+    });
+  });
+
+  it("resolves the replacement once the previous grant is revoked", async () => {
+    await withClient(async (client) => {
+      const accountId = await createAccount(client, "replace@example.com");
+      await grantWorkspace(client, {
+        accountId,
+        grantedAt: EARLY,
+        id: LOWER_UUID,
+        name: "revoked-first",
+        revoked: true,
       });
+      await grantWorkspace(client, { accountId, grantedAt: LATE, id: HIGHER_UUID, name: "current" });
 
       const access = new WorkspaceAdminAccess(client.database);
       expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(HIGHER_UUID);
-    });
-  });
-
-  it("falls back to the earliest grant when no Workspace completed setup", async () => {
-    await withClient(async (client) => {
-      const accountId = await createAccount(client, "earliest@example.com");
-      await grantWorkspace(client, { accountId, grantedAt: LATE, id: LOWER_UUID, name: "granted-later" });
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: HIGHER_UUID, name: "granted-earlier" });
-
-      const access = new WorkspaceAdminAccess(client.database);
-      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(HIGHER_UUID);
-    });
-  });
-
-  it("breaks a full tie on Workspace UUID", async () => {
-    await withClient(async (client) => {
-      const accountId = await createAccount(client, "tie@example.com");
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: HIGHER_UUID, name: "higher" });
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: LOWER_UUID, name: "lower" });
-
-      const access = new WorkspaceAdminAccess(client.database);
-      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(LOWER_UUID);
     });
   });
 

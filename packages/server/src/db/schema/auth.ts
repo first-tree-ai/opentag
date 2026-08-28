@@ -54,6 +54,20 @@ export const workspaceAdminGrants = pgTable(
     uniqueIndex("workspace_admin_grants_active_workspace_user_unique")
       .on(table.workspaceId, table.userId)
       .where(sql`${table.revokedAt} is null`),
+    /**
+     * The next two indexes bind Account and Workspace one to one, in both directions, so that a
+     * Workspace is a shadow of exactly one Account rather than a scope anything could have to choose
+     * between or share. `workspace_id = ?` therefore means "belongs to this Account", which is what
+     * every management read already assumes.
+     *
+     * They are the pair to drop, and only them, if a Workspace ever has to hold several Admins again.
+     * The composite index above survives that relaxation and states the property that still holds: one
+     * active grant per Workspace and Account pair.
+     */
+    uniqueIndex("workspace_admin_grants_active_user_unique").on(table.userId).where(sql`${table.revokedAt} is null`),
+    uniqueIndex("workspace_admin_grants_active_workspace_unique")
+      .on(table.workspaceId)
+      .where(sql`${table.revokedAt} is null`),
     index("workspace_admin_grants_active_user_workspace_idx")
       .on(table.userId, table.workspaceId)
       .where(sql`${table.revokedAt} is null`),

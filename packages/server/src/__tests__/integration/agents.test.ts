@@ -523,31 +523,6 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("replays one Workspace creation intent across different Admins", async () => {
-    const value = await fixture();
-    try {
-      const otherAdmin = await createUser(
-        value.database,
-        value.bootstrap.workspaceId,
-        "creation-intent-admin@example.com",
-        "admin",
-      );
-      const computer = await createComputer(value.database, otherAdmin.id, value.bootstrap.workspaceId);
-      const input = {
-        ...createInput(computer.id),
-        creationIntentId: "d2af68d9-9017-4584-a29d-c4c00f5e5b6d",
-      };
-      const [left, right] = await Promise.all([
-        value.service.createForWorkspace(value.bootstrap.userId, value.bootstrap.workspaceId, input),
-        value.service.createForWorkspace(otherAdmin.id, value.bootstrap.workspaceId, input),
-      ]);
-      expect(right.id).toBe(left.id);
-      expect(await value.database.select({ id: agents.id }).from(agents)).toHaveLength(1);
-    } finally {
-      await value.sql.end();
-    }
-  });
-
   it("replays the original intent after the Agent changes", async () => {
     const value = await fixture();
     try {
@@ -759,49 +734,16 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("allows an Admin to use another Account's active Workspace Computer enrollment", async () => {
+  it("rejects legacy members, hides resources across Workspaces, and holds the delete lifecycle", async () => {
     const value = await fixture();
     try {
-      const other = await createUser(value.database, value.bootstrap.workspaceId, "other@example.com", "admin");
-      const computer = await createComputer(value.database, other.id, value.bootstrap.workspaceId);
-      await expect(
-        value.service.createForWorkspace(value.bootstrap.userId, value.bootstrap.workspaceId, createInput(computer.id)),
-      ).resolves.toMatchObject({
-        computerId: computer.id,
-        createdByUserId: value.bootstrap.userId,
-      });
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("allows all Workspace Admins, rejects legacy members, and hides resources across Workspaces", async () => {
-    const value = await fixture();
-    try {
-      const manager = await createUser(value.database, value.bootstrap.workspaceId, "manager@example.com", "admin");
       const member = await createUser(value.database, value.bootstrap.workspaceId, "member@example.com");
-      const managerComputer = await createComputer(value.database, manager.id, value.bootstrap.workspaceId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.workspaceId);
       const created = await value.service.createForWorkspace(
-        manager.id,
+        value.bootstrap.userId,
         value.bootstrap.workspaceId,
-        createInput(managerComputer.id),
+        createInput(computer.id),
       );
-      await value.database
-        .update(workspaceAdminGrants)
-        .set({ revokedByUserId: manager.id, revokedAt: new Date() })
-        .where(
-          and(
-            eq(workspaceAdminGrants.workspaceId, value.bootstrap.workspaceId),
-            eq(workspaceAdminGrants.userId, manager.id),
-          ),
-        );
-      await expect(
-        value.service.createForWorkspace(
-          manager.id,
-          value.bootstrap.workspaceId,
-          createInput(managerComputer.id, "forbidden"),
-        ),
-      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
 
       await expect(value.service.getById(member.id, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
@@ -815,22 +757,22 @@ describe("Agent persistence and authorization", () => {
         value.service.updateById(member.id, created.id, { displayName: "No", expectedRevision: 1 }),
       ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
       await expect(
-        value.service.updateById(manager.id, created.id, { displayName: "Manager cannot write", expectedRevision: 1 }),
-      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
-      await expect(
         value.service.updateById(value.bootstrap.userId, created.id, {
           displayName: "Admin Updated",
           expectedRevision: 1,
         }),
       ).resolves.toMatchObject({ displayName: "Admin Updated", revision: 2 });
 
+      /**
+       * A Workspace holds one Admin, so the only other Account that can hold management authority at all
+       * holds it somewhere else. It must not reach this Agent, nor create one here.
+       */
       const [otherWorkspace] = await value.database
         .insert(workspaces)
         .values({ displayName: "Other", name: "other" })
         .returning();
       if (!otherWorkspace) throw new Error("Other Workspace fixture was not created");
       const outsider = await createUser(value.database, otherWorkspace.id, "outsider@example.com", "admin");
-      const outsiderComputer = await createComputer(value.database, outsider.id, value.bootstrap.workspaceId);
       await expect(value.service.getById(outsider.id, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
@@ -849,7 +791,7 @@ describe("Agent persistence and authorization", () => {
         value.service.createForWorkspace(
           outsider.id,
           value.bootstrap.workspaceId,
-          createInput(outsiderComputer.id, "outsider-agent"),
+          createInput(computer.id, "outsider-agent"),
         ),
       ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
 
@@ -867,13 +809,39 @@ describe("Agent persistence and authorization", () => {
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
       });
-      await expect(value.service.deleteById(manager.id, created.id)).rejects.toMatchObject({
+      await expect(value.service.deleteById(outsider.id, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
       });
       await expect(value.service.deleteById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
       });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("stops serving an Account whose Workspace grant is revoked", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.workspaceId);
+      await value.database
+        .update(workspaceAdminGrants)
+        .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
+        .where(
+          and(
+            eq(workspaceAdminGrants.workspaceId, value.bootstrap.workspaceId),
+            eq(workspaceAdminGrants.userId, value.bootstrap.userId),
+          ),
+        );
+
+      await expect(
+        value.service.createForWorkspace(
+          value.bootstrap.userId,
+          value.bootstrap.workspaceId,
+          createInput(computer.id, "forbidden"),
+        ),
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
     } finally {
       await value.sql.end();
     }
@@ -1076,13 +1044,9 @@ describe("Agent persistence and authorization", () => {
         .values({ displayName: "Other", name: "other" })
         .returning();
       if (!otherWorkspace) throw new Error("Other Workspace fixture was not created");
-      await value.database.insert(workspaceAdminGrants).values({
-        workspaceId: otherWorkspace.id,
-        userId: value.bootstrap.userId,
-        grantedByUserId: value.bootstrap.userId,
-      });
+      const otherAdmin = await createUser(value.database, otherWorkspace.id, "other-scope@example.com", "admin");
       await expect(
-        value.service.createForWorkspace(value.bootstrap.userId, otherWorkspace.id, {
+        value.service.createForWorkspace(otherAdmin.id, otherWorkspace.id, {
           ...createInput(computer.id, "assistant"),
           runtimeProvider: "claude-code",
         }),
@@ -1094,9 +1058,9 @@ describe("Agent persistence and authorization", () => {
         platform: computer.platform,
         arch: computer.arch,
         clientVersion: computer.clientVersion,
-        enrolledByUserId: value.bootstrap.userId,
+        enrolledByUserId: otherAdmin.id,
       });
-      const created = await value.service.createForWorkspace(value.bootstrap.userId, otherWorkspace.id, {
+      const created = await value.service.createForWorkspace(otherAdmin.id, otherWorkspace.id, {
         ...createInput(computer.id, "assistant"),
         runtimeProvider: "claude-code",
       });

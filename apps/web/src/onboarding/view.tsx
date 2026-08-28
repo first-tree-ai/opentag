@@ -144,7 +144,14 @@ interface JourneyFact {
  * started, one being provisioned, and one that has broken, and those ask different things of the
  * Account.
  */
-type MessagingLink = "none" | "connecting" | "not-ready" | "attention" | "connected";
+type MessagingLink =
+  | "none"
+  | "connecting"
+  | "not-ready"
+  | "authorization-required"
+  | "connection-error"
+  | "disabled"
+  | "connected";
 
 interface OnboardingJourneyState {
   readonly activeStep: 1 | 2;
@@ -296,7 +303,17 @@ const MESSAGING_LINK_COPY: Record<
   none: { label: "Not connected", description: "not yet connected to", status: "current" },
   connecting: { label: "Connecting…", description: "connecting to", status: "working" },
   "not-ready": { label: "Not ready", description: "not confirmed ready to reach", status: "current" },
-  attention: { label: "Needs attention", description: "needs attention on its link to", status: "attention" },
+  "authorization-required": {
+    label: "Authorization required",
+    description: "requires authorization for its link to",
+    status: "attention",
+  },
+  "connection-error": {
+    label: "Connection error",
+    description: "has a connection error on its link to",
+    status: "attention",
+  },
+  disabled: { label: "Disabled", description: "has disabled its link to", status: "attention" },
   connected: { label: "Connected", description: "connected to", status: "complete" },
 };
 
@@ -304,11 +321,15 @@ function messagingLink(current: OnboardingCurrentState | undefined, messaging: J
   if (messaging === "complete") return "connected";
   if (current?.kind !== "handoff") return "none";
   // `provisioning` is the one state the Server states as an act in progress. `active-not-ready`
-  // names no cause, and `attention` covers an expired authorization as much as a failure, so
-  // neither is reported as movement or as a disconnection.
+  // names no cause, so it is not reported as movement or as a disconnection. Non-active states
+  // retain the exact Server-projected cause instead of collapsing authorization, error and disabled.
   if (current.progress.kind === "provisioning") return "connecting";
   if (current.progress.kind === "active-not-ready") return "not-ready";
-  if (current.progress.kind === "attention") return "attention";
+  if (current.progress.kind === "attention") {
+    if (current.progress.bindingState === "reauthorization_required") return "authorization-required";
+    if (current.progress.bindingState === "error") return "connection-error";
+    return "disabled";
+  }
   return "none";
 }
 
@@ -399,6 +420,17 @@ function onboardingJourney(
         (current.kind === "handoff" || current.kind === "ready" || current.kind === "agent-runtime"
           ? current.agent.runtimeProvider
           : undefined));
+  const runtimeIssue =
+    current.kind === "agent-runtime"
+      ? runtimeAttention(
+          snapshot?.runtime ?? { kind: "unavailable" },
+          current.agent.computerId,
+          current.agent.runtimeProvider,
+        )
+      : undefined;
+  const runtimeIssueCopy = runtimeIssue
+    ? runtimeAttentionCopy(runtimeIssue, snapshot?.targetAgent?.computer.displayName ?? "its Computer")
+    : undefined;
   const messaging: JourneyStatus =
     setupReady || messagingReady ? "complete" : messagingCurrent ? "current" : "upcoming";
   const computerFact = journeyComputerFact(current, snapshot);
@@ -408,7 +440,7 @@ function onboardingJourney(
       : current.kind === "provider"
         ? { label: "Runtime", status: "current", value: "Setup required" }
         : current.kind === "agent-runtime"
-          ? { label: "Runtime", status: "attention", value: "Needs attention" }
+          ? { label: "Runtime", status: "attention", value: runtimeIssueCopy?.title ?? "Runtime unavailable" }
           : { label: "Runtime", status: "ready", value: runtimeProvider ? providerLabel(runtimeProvider) : "Ready" };
   const agentFact: JourneyFact = snapshot?.targetAgent
     ? { label: "Agent", status: agentNeedsAttention ? "attention" : "ready", value: snapshot.targetAgent.displayName }
@@ -430,7 +462,7 @@ function onboardingJourney(
         ? "Your Agent is ready for the first conversation in Feishu."
         : ""
       : "Confirm where your Agent runs, then give it a clear identity.",
-    stageStatus: onboardingStageStatus(current),
+    stageStatus: onboardingStageStatus(current, runtimeIssueCopy?.title),
     stageTitle: prepareComplete
       ? setupReady
         ? "Your Agent is ready"
@@ -473,7 +505,7 @@ function journeyComputerRouteFact(
     : { label: "Computer", status: "attention", value: `${computer.displayName} · Offline` };
 }
 
-function onboardingStageStatus(current: OnboardingCurrentState): string {
+function onboardingStageStatus(current: OnboardingCurrentState, runtimeIssueTitle?: string): string {
   if (current.kind === "workspace") return "Checking OpenTag";
   if (current.kind === "computer") {
     if (current.availability === "none") return "Computer needed";
@@ -482,7 +514,7 @@ function onboardingStageStatus(current: OnboardingCurrentState): string {
   }
   if (current.kind === "provider") return "Runtime needs setup";
   if (current.kind === "agent") return "Runtime ready";
-  if (current.kind === "agent-runtime") return "Runtime needs attention";
+  if (current.kind === "agent-runtime") return runtimeIssueTitle ?? "Runtime unavailable";
   if (current.kind === "handoff") return "Agent prepared";
   return "Setup complete";
 }

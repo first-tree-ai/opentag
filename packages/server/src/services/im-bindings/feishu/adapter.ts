@@ -10,6 +10,7 @@ import {
   WSClient,
 } from "@larksuiteoapi/node-sdk";
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
+import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
   ProviderResourceInput,
@@ -244,6 +245,15 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
     return externalId ? [{ externalId, displayName: mention.name ?? null }] : [];
   });
   const content = boundedText(input.message.content);
+  const contentBlocks = contentBlocksWithMentions(
+    content.text,
+    input.message.mentions.slice(0, 256).flatMap((mention) => {
+      const externalId = mention.openId ?? mention.userId;
+      return externalId
+        ? [{ token: mention.key, externalId, label: mention.name ? `@${mention.name}` : mention.key }]
+        : [];
+    }),
+  );
   return [
     NormalizedInboundImEventSchema.parse({
       providerEventId:
@@ -278,9 +288,7 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
         content: {
           version: 1,
           fallbackText: content.text,
-          blocks: content.text
-            ? [{ type: "text", text: content.text }]
-            : [{ type: "unsupported", providerType: input.message.rawContentType }],
+          blocks: content.text ? contentBlocks : [{ type: "unsupported", providerType: input.message.rawContentType }],
           truncated: content.truncated,
         },
         resources,

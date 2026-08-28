@@ -23,7 +23,7 @@ describe("Feishu adapter", () => {
       chatType: "group",
       senderId: "ou_human",
       senderName: "Human",
-      content: "hello @Agent",
+      content: "@_user_1 hello",
       rawContentType: "post",
       resources: [{ type: "image", fileKey: "img_1", fileName: "image.png" }],
       mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Agent", isBot: true }],
@@ -48,7 +48,18 @@ describe("Feishu adapter", () => {
         parentId: "om_parent",
       },
       conversation: { externalId: "oc_1", kind: "channel" },
-      message: { externalId: "om_1", threadKey: "omt_1", replyToExternalId: "om_parent" },
+      message: {
+        externalId: "om_1",
+        threadKey: "omt_1",
+        replyToExternalId: "om_parent",
+        content: {
+          fallbackText: "@_user_1 hello",
+          blocks: [
+            { type: "mention", externalId: "ou_bot", label: "@Agent" },
+            { type: "text", text: " hello" },
+          ],
+        },
+      },
       mentions: [{ externalId: "ou_bot", displayName: "Agent" }],
     });
     expect(event?.message.resources[0]).toMatchObject({ providerResourceKey: "img_1", kind: "image" });

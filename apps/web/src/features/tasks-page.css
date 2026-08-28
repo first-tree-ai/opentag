@@ -6,7 +6,7 @@
 }
 
 .task-conversation-page {
-  width: min(100%, 920px);
+  width: min(100%, var(--workspace-page-frame));
   margin: 0 auto;
   padding-inline: var(--workspace-page-gutter);
 }
@@ -194,11 +194,11 @@
 }
 
 .task-table-row {
-  min-height: 104px;
+  min-height: 80px;
   align-items: center;
   border-bottom: 1px solid var(--border);
   color: var(--secondary-foreground);
-  padding: var(--space-5) 0;
+  padding: var(--space-4) 0;
   transition: background-color 160ms ease;
 }
 
@@ -212,15 +212,16 @@
 }
 
 .task-work-cell a {
-  display: -webkit-box;
+  display: block;
+  min-width: 0;
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--text-body);
   font-weight: var(--fw-semibold);
   line-height: 1.45;
   text-decoration: none;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-work-cell a:hover {
@@ -380,10 +381,14 @@
 }
 
 .task-conversation-header h1 {
-  max-width: 800px;
+  display: -webkit-box;
+  overflow: hidden;
   margin-bottom: var(--space-6);
   font-size: var(--text-title);
   line-height: 1.28;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .task-conversation-context {

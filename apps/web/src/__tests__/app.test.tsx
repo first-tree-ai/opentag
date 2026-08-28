@@ -1229,7 +1229,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Current work" })).toBeTruthy();
     expect(screen.getByText("No active work")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Where to use this Agent" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Messaging" })).toBeTruthy();
     expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(`/agents/${agentId}/settings`);
     expect(screen.getByRole("link", { name: "Usage" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
@@ -1299,7 +1299,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "How it works" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Where it receives work" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Agent details" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Instructions & behavior/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /^Instructions / })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Model & reasoning/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /^Name Reviewer$/ })).toBeTruthy();
@@ -1307,7 +1307,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: /Connected computer/ })).toBeNull();
     expect(screen.getByRole("link", { name: /Manage Agent/ })).toBeTruthy();
     expect(screen.getByText("Not configured")).toBeTruthy();
-    expect(screen.getByText("Codex · Default model · Default reasoning")).toBeTruthy();
+    expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();
     expect(screen.getByText("Reviewer")).toBeTruthy();
     expect(screen.getByText("Ada's Mac · macOS · Online")).toBeTruthy();
     expect(screen.queryByText("Runtime")).toBeNull();
@@ -1348,7 +1348,7 @@ describe("OpenTag Web App Shell", () => {
 
     const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
     expect(screen.getByRole("heading", { name: "Name" })).toBeTruthy();
-    expect(screen.getByText("Choose the name teammates see.")).toBeTruthy();
+    expect(screen.queryByText("Choose the name teammates see.")).toBeNull();
     expect(screen.queryByLabelText("Handle")).toBeNull();
     expect(screen.queryByText(/handle cannot be changed/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
@@ -1706,7 +1706,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Messages cannot currently be handed off to this Agent.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View messaging" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Current work" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Where to use this Agent" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Messaging" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByText("Ada's Mac")).toBeNull();
     expect(screen.queryByText("Runtime")).toBeNull();
@@ -1745,7 +1745,8 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("@reviewer")).toBeTruthy();
     expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Trigger rules" })).toBeTruthy();
-    expect(screen.getByText("Every direct message starts a task.")).toBeTruthy();
+    expect(screen.getByText("All messages")).toBeTruthy();
+    expect(screen.queryByText("Every direct message starts a task.")).toBeNull();
     expect(screen.getByText("Group chats")).toBeTruthy();
     expect(screen.getByRole("group", { name: "Shared conversation trigger rule" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Change Feishu Bot" })).toBeTruthy();

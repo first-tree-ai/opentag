@@ -1375,7 +1375,7 @@ const agentSettingsSections: ReadonlyArray<{
 }> = [
   {
     key: "instructions",
-    label: "Instructions & behavior",
+    label: "Instructions",
     group: "work",
     icon: "instructions",
   },
@@ -1579,7 +1579,7 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
   return (
     <section className="agent-home-section" aria-labelledby="agent-contact-heading">
       <header className="agent-home-section-heading">
-        <h2 id="agent-contact-heading">Where to use this Agent</h2>
+        <h2 id="agent-contact-heading">Messaging</h2>
       </header>
       {agent.messaging.kind === "unconfirmed" ? (
         <div className="agent-contact-row is-unconfirmed">
@@ -1649,7 +1649,6 @@ function AgentUsagePage() {
           <div className="agent-secondary-page">
             <header className="section-header">
               <h2>Usage</h2>
-              <p>Review token use over time.</p>
             </header>
             <AgentUsageTab agentId={agent.id} />
           </div>
@@ -1781,7 +1780,6 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
     <div className="agent-settings-overview">
       <header className="agent-settings-page-title">
         <h1>Agent settings</h1>
-        <p>Change how {agent.displayName} works and receives requests.</p>
       </header>
       <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>
         {(config) => (
@@ -1870,6 +1868,7 @@ function agentSettingsSummary(agent: AgentDetailView, config: AgentAdminConfig, 
   }
   if (section === "execution") {
     const provider = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+    if (!config.runtimeConfig.model && !config.runtimeConfig.reasoningEffort) return `${provider} · Provider defaults`;
     const model = config.runtimeConfig.model ?? "Default model";
     const reasoning = config.runtimeConfig.reasoningEffort
       ? titleCase(config.runtimeConfig.reasoningEffort)
@@ -1928,7 +1927,6 @@ function GeneralConfigForm({
     <form className="form-card agent-settings-form" onSubmit={submit}>
       <header className="agent-settings-page-title">
         <h1>Name</h1>
-        <p>Choose the name teammates see.</p>
       </header>
       <Field htmlFor="agent-display-name" label="Display name">
         <input
@@ -2126,7 +2124,6 @@ function AgentManageSettings({
     <section className="agent-manage-settings agent-settings-section-page">
       <header className="agent-settings-page-title">
         <h1>Manage Agent</h1>
-        <p>Pause this Agent temporarily or remove it permanently.</p>
       </header>
       <SettingsList>
         <SettingsRow
@@ -2311,7 +2308,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         <h1 ref={messagingHeadingRef} tabIndex={-1}>
           Messaging
         </h1>
-        <p>Choose how teammates can contact and assign work to {agent.displayName}.</p>
       </header>
       <FeishuSetup
         agentId={agent.id}
@@ -2346,7 +2342,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           <section className="im-section" aria-labelledby="contact-channel-heading">
                             <div className="im-section-heading">
                               <h3 id="contact-channel-heading">Contact channel</h3>
-                              <p>See how teammates can reach this agent and check its connection status.</p>
                             </div>
                             <div className="binding-status">
                               <StatusIndicator
@@ -2409,16 +2404,12 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               <h3 id="trigger-rules-heading" ref={triggerRulesHeadingRef} tabIndex={-1}>
                                 Trigger rules
                               </h3>
-                              <p>Choose which incoming messages can start a task.</p>
                             </div>
                             <SettingsList className="agent-message-rules">
-                              <SettingsRow description="Every direct message starts a task." label="Direct messages">
+                              <SettingsRow label="Direct messages">
                                 <strong>All messages</strong>
                               </SettingsRow>
-                              <SettingsRow
-                                description="Choose whether the agent responds only to mentions or to every message."
-                                label={sharedConversationLabel(binding.provider)}
-                              >
+                              <SettingsRow label={sharedConversationLabel(binding.provider)}>
                                 <fieldset aria-label="Shared conversation trigger rule" className="segmented-control">
                                   {binding.receiveMode === "mention_only" ? (
                                     <>
@@ -2451,7 +2442,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         <section className="im-section" aria-labelledby="contact-channel-heading">
                           <div className="im-section-heading">
                             <h3 id="contact-channel-heading">Contact channel</h3>
-                            <p>See how teammates can reach this agent.</p>
                           </div>
                           <EmptyState title="No messaging channel">
                             Teammates cannot contact this agent until a supported bot is connected.

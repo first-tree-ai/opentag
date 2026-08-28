@@ -1,3 +1,4 @@
+import { userInfo } from "node:os";
 import {
   checkServerHealth,
   resolveExecutable,
@@ -170,22 +171,39 @@ function blockingGroup(checks: readonly DoctorCheck[], selected: boolean): Docto
  * strict makes the diagnostic err toward "not ready", which is the safe direction: the daemon
  * gets its extra configuration from `daemon.env`, and that is layered on separately.
  */
-const SERVICE_ACCOUNT_VARIABLES = ["HOME", "LOGNAME", "SHELL", "USER"] as const;
 const SERVICE_MANAGER_VARIABLES: Readonly<Record<"launchd" | "systemd", readonly string[]>> = {
   launchd: ["TMPDIR"],
   systemd: ["XDG_RUNTIME_DIR"],
 };
 
+export interface ServiceAccount {
+  readonly homedir: string;
+  readonly shell: string | null;
+  readonly username: string;
+}
+
 /**
  * Reconstruct the environment the installed service's process actually has: the account-level
  * variables its manager provides, overlaid with exactly what its definition declares.
+ *
+ * The account identity comes from the operating system rather than the invoking environment. A
+ * service manager starts the job from the user account itself, so a shell that exported a different
+ * `HOME` would otherwise send the probes looking for provider homes the daemon never uses. The
+ * per-user temporary directory still comes from the environment: the same account resolves it to
+ * the same value, and it carries no credential.
  */
 export function serviceProcessEnvironment(
   base: NodeJS.ProcessEnv,
   service: { readonly environment: Readonly<Record<string, string>>; readonly platform: "launchd" | "systemd" },
+  account: ServiceAccount = userInfo(),
 ): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {};
-  for (const key of [...SERVICE_ACCOUNT_VARIABLES, ...SERVICE_MANAGER_VARIABLES[service.platform]]) {
+  const environment: NodeJS.ProcessEnv = {
+    HOME: account.homedir,
+    LOGNAME: account.username,
+    USER: account.username,
+    ...(account.shell ? { SHELL: account.shell } : {}),
+  };
+  for (const key of SERVICE_MANAGER_VARIABLES[service.platform]) {
     const value = base[key];
     if (value !== undefined) environment[key] = value;
   }

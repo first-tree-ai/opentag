@@ -206,6 +206,8 @@ describe("runDoctor", () => {
 });
 
 describe("serviceProcessEnvironment", () => {
+  const account = { homedir: "/Users/tester", shell: "/bin/zsh", username: "tester" };
+
   it("drops shell-only credentials and provider overrides the service never receives", () => {
     const environment = serviceProcessEnvironment(
       {
@@ -213,21 +215,20 @@ describe("serviceProcessEnvironment", () => {
         CLAUDE_CODE_OAUTH_TOKEN: "shell-only",
         CLAUDE_CONFIG_DIR: "/shell/claude",
         CODEX_HOME: "/shell/codex",
-        HOME: "/Users/tester",
         PATH: "/shell/bin",
-        SHELL: "/bin/zsh",
         TMPDIR: "/tmp/user",
-        USER: "tester",
       },
       {
         environment: { OPENTAG_HOME: "/Users/tester/.opentag", OPENTAG_SERVICE_MODE: "1", PATH: "/service/bin" },
         platform: "launchd",
       },
+      account,
     );
 
     // A launchd job receives the account's own variables plus exactly what its definition declares.
     expect(environment).toEqual({
       HOME: "/Users/tester",
+      LOGNAME: "tester",
       OPENTAG_HOME: "/Users/tester/.opentag",
       OPENTAG_SERVICE_MODE: "1",
       PATH: "/service/bin",
@@ -237,13 +238,31 @@ describe("serviceProcessEnvironment", () => {
     });
   });
 
-  it("gives a systemd unit its own manager variables", () => {
+  it("takes the account identity from the operating system, not the invoking shell", () => {
     const environment = serviceProcessEnvironment(
-      { HOME: "/home/tester", TMPDIR: "/tmp/user", XDG_RUNTIME_DIR: "/run/user/1000" },
-      { environment: { PATH: "/service/bin" }, platform: "systemd" },
+      // A shell can export any HOME; the service manager still starts the job from the account.
+      { HOME: "/tmp/pretend-home", USER: "someone-else" },
+      { environment: { PATH: "/service/bin" }, platform: "launchd" },
+      account,
     );
 
-    expect(environment).toEqual({ HOME: "/home/tester", PATH: "/service/bin", XDG_RUNTIME_DIR: "/run/user/1000" });
+    expect(environment).toMatchObject({ HOME: "/Users/tester", USER: "tester" });
+  });
+
+  it("gives a systemd unit its own manager variables", () => {
+    const environment = serviceProcessEnvironment(
+      { TMPDIR: "/tmp/user", XDG_RUNTIME_DIR: "/run/user/1000" },
+      { environment: { PATH: "/service/bin" }, platform: "systemd" },
+      { homedir: "/home/tester", shell: null, username: "tester" },
+    );
+
+    expect(environment).toEqual({
+      HOME: "/home/tester",
+      LOGNAME: "tester",
+      PATH: "/service/bin",
+      USER: "tester",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+    });
   });
 });
 

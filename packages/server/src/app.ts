@@ -207,6 +207,16 @@ export function createApp(options: CreateAppOptions = {}) {
     const authOptions = {
       ...(options.betterAuth ? { betterAuth: options.betterAuth.instance } : {}),
       ...(publicOrigin ? { publicOrigin } : {}),
+      /*
+       * The pre-handler needs both to renew the double-submit token alongside a rolling session. Without them it
+       * silently declines to, and an active browser stays readable while losing the ability to mutate or sign out.
+       */
+      ...(options.browserAuth
+        ? {
+            secureCookies: options.browserAuth.secureCookies,
+            sessionTtlSeconds: options.browserAuth.sessionTtlSeconds,
+          }
+        : {}),
     };
     registerAuthRoutes(app, authService);
     registerMeRoutes(app, authService, {

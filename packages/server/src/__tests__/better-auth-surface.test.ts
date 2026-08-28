@@ -1,7 +1,9 @@
+import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { OpenTagBetterAuth } from "../auth/better-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
+import { SESSION_COOKIE_NAME, signedInBrowser } from "./signed-in-browser.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
@@ -155,6 +157,49 @@ describe("published Better Auth surface", () => {
     const header = response.headers["set-cookie"];
     const cookies = header === undefined ? [] : ([] as string[]).concat(header as string | string[]);
     expect(cookies, "a failed revocation must not strip the caller's credential").toEqual([]);
+  });
+
+  it("renews the double-submit token through the composition the server actually builds", async () => {
+    /*
+     * The renewal lives in the pre-handler, but whether it happens at all is decided by `createApp`: the options it
+     * assembles are what tell the pre-handler the session lifetime. Constructing the pre-handler directly proves the
+     * logic and nothing about the wiring, and a composition that omits those options fails silently — Better Auth
+     * keeps rolling the session while `opentag_csrf` expires on its original schedule, leaving an authenticated
+     * browser able to read but not to mutate or sign out.
+     */
+    const betterAuth = signedInBrowser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", {
+      publicUrl: "https://opentag.example.com",
+    });
+    const app = createApp({
+      authService: {
+        ...authService(),
+        getActiveUserById: vi.fn().mockResolvedValue({
+          user: { id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", email: "admin@example.com", displayName: "Admin" },
+          workspaces: [],
+        }),
+      },
+      betterAuth,
+      browserAuth: {
+        publicOrigin: "https://opentag.example.com",
+        secureCookies: true,
+        sessionTtlSeconds: 4242,
+      },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.me,
+      headers: { cookie: `${SESSION_COOKIE_NAME}=session; opentag_csrf=carried-token` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const cookies = ([] as string[]).concat((response.headers["set-cookie"] ?? []) as string | string[]);
+    const renewed = cookies.find((value) => value.startsWith("opentag_csrf="));
+    expect(renewed, "the double-submit token was not renewed alongside the session").toBeDefined();
+    // Re-sent unchanged, so a tab that already read it stays correct, and on the session's schedule rather than its own.
+    expect(renewed).toContain("opentag_csrf=carried-token");
+    expect(renewed).toContain("Max-Age=4242");
   });
 
   it("builds the forwarded URL from the configured origin, not the request Host", async () => {

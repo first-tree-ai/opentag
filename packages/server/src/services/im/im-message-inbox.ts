@@ -45,6 +45,7 @@ export function classifyImInboundPersistenceError(error: unknown): ImInboundPers
 export class ImMessageInbox {
   readonly #afterAdmissionFence: (() => Promise<void>) | undefined;
   readonly #afterMessageAuthority: (() => Promise<void>) | undefined;
+  readonly #beforeReliableThreadRootLookup: (() => void) | undefined;
   readonly #beforeSupersedeDeliveries: (() => Promise<void>) | undefined;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
@@ -56,6 +57,7 @@ export class ImMessageInbox {
       now?: () => Date;
       afterAdmissionFence?: () => Promise<void>;
       afterMessageAuthority?: () => Promise<void>;
+      beforeReliableThreadRootLookup?: () => void;
       beforeSupersedeDeliveries?: () => Promise<void>;
     } = {},
   ) {
@@ -63,6 +65,7 @@ export class ImMessageInbox {
     this.#now = options.now ?? (() => new Date());
     this.#afterAdmissionFence = options.afterAdmissionFence;
     this.#afterMessageAuthority = options.afterMessageAuthority;
+    this.#beforeReliableThreadRootLookup = options.beforeReliableThreadRootLookup;
     this.#beforeSupersedeDeliveries = options.beforeSupersedeDeliveries;
     this.#sessions = new SessionService(database, { now: this.#now });
   }
@@ -459,13 +462,21 @@ export class ImMessageInbox {
                   ),
                 )
                 .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
+              const reliableRootsByThreadKey = new Map<string, string>();
+              for (const pending of pendingThreadMessages) {
+                if (!pending.threadKey || reliableRootsByThreadKey.has(pending.threadKey)) continue;
+                const reliableRootExternalId = threadRootExternalId(pending.providerContext);
+                if (reliableRootExternalId) {
+                  reliableRootsByThreadKey.set(pending.threadKey, reliableRootExternalId);
+                }
+              }
               const seenExternalMessageIds = new Set<string>();
               for (const pending of pendingThreadMessages) {
                 if (seenExternalMessageIds.has(pending.externalMessageId)) continue;
                 seenExternalMessageIds.add(pending.externalMessageId);
                 if (
                   !pending.threadKey ||
-                  threadRootExternalId(pending.providerContext) !== event.message.externalId ||
+                  reliableRootsByThreadKey.get(pending.threadKey) !== event.message.externalId ||
                   (await this.#hasEndedThreadSession(
                     transaction,
                     imBindingId,
@@ -692,6 +703,7 @@ export class ImMessageInbox {
   ): Promise<string | undefined> {
     const current = threadRootExternalId(currentContext);
     if (current) return current;
+    this.#beforeReliableThreadRootLookup?.();
     const contexts = await transaction
       .select({ providerContext: imMessages.providerContext })
       .from(imMessages)

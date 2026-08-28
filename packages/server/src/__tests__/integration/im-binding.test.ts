@@ -2297,6 +2297,125 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("upgrades every pending Feishu Thread delivery when later events omit the out-of-order rootId", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_out_of_order",
+        teamId: "workspace_out_of_order",
+        botOpenId: "ou_out_of_order_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      let rootHistoryLookups = 0;
+      const inbox = new ImMessageInbox(value.database, {
+        beforeReliableThreadRootLookup: () => {
+          rootHistoryLookups += 1;
+        },
+      });
+
+      const firstReply = revisionEvent({
+        providerEventId: "feishu-out-of-order-first-reply",
+        externalMessageId: "om_out_of_order_reply_1",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:02.000Z",
+        revisionKey: "1",
+      });
+      firstReply.externalAppId = "cli_out_of_order";
+      firstReply.externalTeamId = "workspace_out_of_order";
+      firstReply.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_out_of_order",
+        rootId: "om_out_of_order_root",
+      };
+      firstReply.message.threadKey = "omt_out_of_order";
+      firstReply.mentions = [];
+      const first = await inbox.ingest(imBindingId, 1, firstReply);
+
+      const laterReply = revisionEvent({
+        providerEventId: "feishu-out-of-order-later-reply",
+        externalMessageId: "om_out_of_order_reply_2",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:03.000Z",
+        revisionKey: "1",
+      });
+      laterReply.externalAppId = "cli_out_of_order";
+      laterReply.externalTeamId = "workspace_out_of_order";
+      laterReply.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_out_of_order",
+      };
+      laterReply.message.threadKey = "omt_out_of_order";
+      laterReply.mentions = [];
+      const later = await inbox.ingest(imBindingId, 1, laterReply);
+
+      const unrelatedFirstReply = structuredClone(firstReply);
+      unrelatedFirstReply.providerEventId = "feishu-out-of-order-unrelated-first-reply";
+      unrelatedFirstReply.message.externalId = "om_unrelated_reply_1";
+      unrelatedFirstReply.message.threadKey = "omt_unrelated";
+      unrelatedFirstReply.message.occurredAt = new Date("2026-08-19T00:00:04.000Z");
+      unrelatedFirstReply.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_unrelated",
+        rootId: "om_unrelated_root",
+      };
+      await inbox.ingest(imBindingId, 1, unrelatedFirstReply);
+
+      const unrelatedLaterReply = structuredClone(unrelatedFirstReply);
+      unrelatedLaterReply.providerEventId = "feishu-out-of-order-unrelated-later-reply";
+      unrelatedLaterReply.message.externalId = "om_unrelated_reply_2";
+      unrelatedLaterReply.message.occurredAt = new Date("2026-08-19T00:00:05.000Z");
+      unrelatedLaterReply.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_unrelated",
+      };
+      await inbox.ingest(imBindingId, 1, unrelatedLaterReply);
+      const lookupsBeforeDirectRoot = rootHistoryLookups;
+
+      const root = revisionEvent({
+        providerEventId: "feishu-out-of-order-direct-root",
+        externalMessageId: "om_out_of_order_root",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      root.externalAppId = "cli_out_of_order";
+      root.externalTeamId = "workspace_out_of_order";
+      root.providerContext = { provider: "feishu", chatType: "group" };
+      root.mentions = [{ externalId: "ou_out_of_order_bot", displayName: "Assistant" }];
+      await inbox.ingest(imBindingId, 1, root);
+      expect(rootHistoryLookups).toBe(lookupsBeforeDirectRoot);
+
+      const upgradedDeliveries = await value.database
+        .select({ attention: imMessageDeliveries.attention, externalMessageId: imMessages.externalMessageId })
+        .from(imMessageDeliveries)
+        .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(
+          and(
+            inArray(imMessageDeliveries.messageId, [first.messageId as string, later.messageId as string]),
+            eq(sessions.kind, "thread"),
+          ),
+        );
+      expect(upgradedDeliveries).toHaveLength(2);
+      expect(upgradedDeliveries).toEqual(
+        expect.arrayContaining([
+          { attention: "direct", externalMessageId: "om_out_of_order_reply_1" },
+          { attention: "direct", externalMessageId: "om_out_of_order_reply_2" },
+        ]),
+      );
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("inherits an unknown Feishu revision when only a Thread Session exists", async () => {
     const value = await unboundFixture();
     try {

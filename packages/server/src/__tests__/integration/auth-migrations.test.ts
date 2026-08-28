@@ -82,14 +82,14 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
 }
 
 describe("database migrations", () => {
-  it("orders the Slack single-configuration cleanup after the deployed setup migrations", async () => {
+  it("orders Slack workspace routing after the deployed auth and Session collaboration migrations", async () => {
     const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    // Anchored to the fixed 0010..0019 range rather than the tail: a trailing slice silently stops covering the
+    // Anchored to the fixed 0010..0024 range rather than the tail: a trailing slice silently stops covering the
     // earliest entry every time a migration is appended, which would quietly shrink what this test guarantees.
-    expect(journal.entries.slice(10, 20).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(10, 25).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -100,6 +100,11 @@ describe("database migrations", () => {
       { idx: 17, tag: "0017_sour_tiger_shark" },
       { idx: 18, tag: "0018_salty_tombstone" },
       { idx: 19, tag: "0019_previous_magneto" },
+      { idx: 20, tag: "0020_large_jack_power" },
+      { idx: 21, tag: "0021_slow_gamora" },
+      { idx: 22, tag: "0022_short_kitty_pryde" },
+      { idx: 23, tag: "0023_motionless_gideon" },
+      { idx: 24, tag: "0024_icy_warlock" },
     ]);
   });
 
@@ -219,11 +224,14 @@ describe("database migrations", () => {
             last_error_code: string | null;
             observed_connected_at: Date | null;
             setup_attempt_id: string | null;
+            slack_installation_id: string | null;
+            slack_route_kind: string | null;
             status: string;
           }[]
         >`
           select agent_id::text, status, encrypted_credential, setup_attempt_id::text,
-                 encrypted_setup_context, observed_connected_at, last_error_code
+                 encrypted_setup_context, observed_connected_at, last_error_code,
+                 slack_installation_id::text, slack_route_kind::text
           from im_bindings
           order by agent_id
         `;
@@ -236,24 +244,30 @@ describe("database migrations", () => {
             encrypted_setup_context: null,
             observed_connected_at: null,
             last_error_code: "SLACK_CONFIGURATION_REQUIRED",
+            slack_installation_id: null,
+            slack_route_kind: null,
           },
           {
             agent_id: slackIncompleteAgentId,
-            status: "reauthorization_required",
-            encrypted_credential: "encrypted-incomplete",
+            status: "disabled",
+            encrypted_credential: null,
             setup_attempt_id: null,
             encrypted_setup_context: null,
             observed_connected_at: null,
             last_error_code: "SLACK_SCOPE_REAUTH_REQUIRED",
+            slack_installation_id: null,
+            slack_route_kind: null,
           },
           {
             agent_id: slackCompleteAgentId,
             status: "active",
-            encrypted_credential: "encrypted-complete",
+            encrypted_credential: null,
             setup_attempt_id: null,
             encrypted_setup_context: null,
             observed_connected_at: null,
             last_error_code: null,
+            slack_installation_id: expect.any(String),
+            slack_route_kind: "default",
           },
           {
             agent_id: feishuAgentId,
@@ -263,8 +277,14 @@ describe("database migrations", () => {
             encrypted_setup_context: "encrypted-feishu-setup",
             observed_connected_at: expect.any(Date),
             last_error_code: null,
+            slack_installation_id: null,
+            slack_route_kind: null,
           },
         ]);
+        const installations = await sql<{ encrypted_credential: string | null; status: string }[]>`
+          select status::text, encrypted_credential from slack_installations
+        `;
+        expect(installations).toEqual([{ status: "active", encrypted_credential: "encrypted-complete" }]);
         const pendingColumn = await sql<{ count: number }[]>`
           select count(*)::int as count from information_schema.columns
           where table_name = 'im_bindings' and column_name = 'pending_receive_mode'
@@ -293,6 +313,180 @@ describe("database migrations", () => {
             where agent_id = ${slackCompleteAgentId}
           `,
         ).rejects.toThrow();
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
+  it("ends Sessions for every Slack binding disabled by the workspace installation cutover", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0020-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 20);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const userId = "10000000-0000-4000-8000-000000000001";
+        const workspaceId = "10000000-0000-4000-8000-000000000002";
+        const computerId = "10000000-0000-4000-8000-000000000003";
+        const workspaceComputerId = "10000000-0000-4000-8000-000000000004";
+        const provisioningAgentId = "10000000-0000-4000-8000-000000000011";
+        const chosenAgentId = "10000000-0000-4000-8000-000000000012";
+        const supersededAgentId = "10000000-0000-4000-8000-000000000013";
+        const provisioningBindingId = "10000000-0000-4000-8000-000000000021";
+        const chosenBindingId = "10000000-0000-4000-8000-000000000022";
+        const supersededBindingId = "10000000-0000-4000-8000-000000000023";
+        await sql`
+          insert into users (id, email, display_name)
+          values (${userId}, 'slack-cutover@example.com', 'Slack Cutover')
+        `;
+        await sql`
+          insert into workspaces (id, name, display_name)
+          values (${workspaceId}, 'slack-cutover', 'Slack Cutover')
+        `;
+        await sql`
+          insert into workspace_admin_grants (workspace_id, user_id, granted_by_user_id)
+          values (${workspaceId}, ${userId}, ${userId})
+        `;
+        await sql`insert into computers (id) values (${computerId})`;
+        await sql`
+          insert into workspace_computers (
+            id, workspace_id, computer_id, display_name, platform, arch, client_version, enrolled_by_user_id
+          ) values (
+            ${workspaceComputerId}, ${workspaceId}, ${computerId}, 'Cutover Computer', 'linux', 'x64', 'test', ${userId}
+          )
+        `;
+        await sql`
+          insert into agents (
+            id, workspace_id, created_by_user_id, workspace_computer_id, name, display_name, runtime_provider
+          ) values
+            (${provisioningAgentId}, ${workspaceId}, ${userId}, ${workspaceComputerId}, 'provisioning', 'Provisioning', 'codex'),
+            (${chosenAgentId}, ${workspaceId}, ${userId}, ${workspaceComputerId}, 'chosen', 'Chosen', 'codex'),
+            (${supersededAgentId}, ${workspaceId}, ${userId}, ${workspaceComputerId}, 'superseded', 'Superseded', 'codex')
+        `;
+        await sql`
+          insert into im_bindings (id, agent_id, provider, status, created_at, updated_at)
+          values (
+            ${provisioningBindingId}, ${provisioningAgentId}, 'slack', 'provisioning',
+            '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z'
+          )
+        `;
+        await sql`
+          insert into im_bindings (
+            id, agent_id, provider, status, external_app_id, external_team_id, external_bot_id,
+            credential_schema_version, credential_generation, encrypted_credential, granted_capabilities,
+            activated_at, created_at, updated_at
+          ) values
+            (
+              ${chosenBindingId}, ${chosenAgentId}, 'slack', 'active', 'A_CUSTOMER', 'T_CUSTOMER', 'U_CUSTOMER',
+              1, 3, 'encrypted-customer',
+              array[
+                'app_mentions:read', 'channels:history', 'chat:write', 'files:read',
+                'groups:history', 'im:history', 'mpim:history'
+              ]::text[],
+              '2026-08-20T01:00:00.000Z', '2026-08-20T01:00:00.000Z', '2026-08-20T01:00:00.000Z'
+            ),
+            (
+              ${supersededBindingId}, ${supersededAgentId}, 'slack', 'active', 'A_OTHER', 'T_OTHER', 'U_OTHER',
+              1, 2, 'encrypted-other',
+              array[
+                'app_mentions:read', 'channels:history', 'chat:write', 'files:read',
+                'groups:history', 'im:history', 'mpim:history'
+              ]::text[],
+              '2026-08-20T02:00:00.000Z', '2026-08-20T02:00:00.000Z', '2026-08-20T02:00:00.000Z'
+            )
+        `;
+        await sql`
+          insert into sessions (im_binding_id, channel_id, conversation_kind, kind)
+          values
+            (${provisioningBindingId}, 'C_PROVISIONING', 'channel', 'channel'),
+            (${chosenBindingId}, 'C_CHOSEN', 'channel', 'channel'),
+            (${supersededBindingId}, 'C_SUPERSEDED', 'channel', 'channel')
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+
+        const rows = await sql<
+          {
+            binding_id: string;
+            encrypted_credential: string | null;
+            ended_at: Date | null;
+            revision: number;
+            slack_installation_id: string | null;
+            slack_route_kind: string | null;
+            status: string;
+          }[]
+        >`
+          select
+            im_bindings.id::text as binding_id,
+            im_bindings.status::text,
+            im_bindings.encrypted_credential,
+            im_bindings.slack_installation_id::text,
+            im_bindings.slack_route_kind::text,
+            sessions.ended_at,
+            sessions.revision::int
+          from im_bindings
+          inner join sessions on sessions.im_binding_id = im_bindings.id
+          order by im_bindings.id
+        `;
+        expect(rows).toEqual([
+          {
+            binding_id: provisioningBindingId,
+            status: "disabled",
+            encrypted_credential: null,
+            slack_installation_id: null,
+            slack_route_kind: null,
+            ended_at: expect.any(Date),
+            revision: 2,
+          },
+          {
+            binding_id: chosenBindingId,
+            status: "active",
+            encrypted_credential: null,
+            slack_installation_id: expect.any(String),
+            slack_route_kind: "default",
+            ended_at: null,
+            revision: 1,
+          },
+          {
+            binding_id: supersededBindingId,
+            status: "disabled",
+            encrypted_credential: null,
+            slack_installation_id: null,
+            slack_route_kind: null,
+            ended_at: expect.any(Date),
+            revision: 2,
+          },
+        ]);
+        const installations = await sql<
+          { encrypted_credential: string; external_app_id: string; external_team_id: string; workspace_id: string }[]
+        >`
+          select workspace_id::text, external_app_id, external_team_id, encrypted_credential
+          from slack_installations
+          where status <> 'disabled'
+        `;
+        expect(installations).toEqual([
+          {
+            workspace_id: workspaceId,
+            external_app_id: "A_CUSTOMER",
+            external_team_id: "T_CUSTOMER",
+            encrypted_credential: "encrypted-customer",
+          },
+        ]);
       } finally {
         await sql.end();
       }

@@ -74,7 +74,11 @@ export class DefaultSlackApiClient implements SlackApiClient {
       })
       .passthrough()
       .parse(await response.json());
-    if (!result.ok) throw new Error(result.error === "invalid_code" ? "SLACK_AUTH_INVALID" : "SLACK_AUTH_REJECTED");
+    if (!result.ok) {
+      throw new Error(result.error === "invalid_code" ? "SLACK_AUTH_INVALID" : "SLACK_AUTH_REJECTED", {
+        cause: result.error ?? "unknown_error",
+      });
+    }
     if (
       result.token_type !== "bot" ||
       !result.access_token ||

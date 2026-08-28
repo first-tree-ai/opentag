@@ -64,7 +64,7 @@ describe("SlackOAuthStateService", () => {
     const second = await service.issue({
       userId,
       agentId,
-      intent: "replace",
+      intent: "reauthorize",
       expectedBinding: { id: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0", credentialGeneration: 1 },
     });
     await expect(service.verify(first.state, second.sessionBinding)).rejects.toMatchObject({

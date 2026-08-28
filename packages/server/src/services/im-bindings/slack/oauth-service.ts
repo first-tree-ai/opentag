@@ -71,13 +71,7 @@ export class SlackOAuthService {
   }
 
   async start(callerUserId: string, agentId: string, intent: SlackConfigurationIntent): Promise<SlackOAuthStartResult> {
-    const configuration = await this.#slack.get(callerUserId, agentId);
-    const expectedBinding = configuration.currentBinding
-      ? {
-          id: configuration.currentBinding.id,
-          credentialGeneration: configuration.currentBinding.credentialGeneration,
-        }
-      : null;
+    const expectedBinding = await this.#slack.currentBinding(callerUserId, agentId);
     if (intent === "create" && expectedBinding) {
       throw new SlackConfigurationServiceError(
         "SLACK_CONFIGURATION_CONFLICT",
@@ -85,11 +79,11 @@ export class SlackOAuthService {
         "Create cannot replace an existing Slack binding",
       );
     }
-    if (intent !== "create" && !expectedBinding) {
+    if (intent === "reauthorize" && !expectedBinding) {
       throw new SlackConfigurationServiceError(
         "SLACK_CONFIGURATION_CONFLICT",
         409,
-        `Slack ${intent} requires a current configured binding`,
+        "Slack reauthorize requires a current configured binding",
       );
     }
 
@@ -221,7 +215,16 @@ export class SlackOAuthService {
     } catch (error) {
       const codeName = error instanceof Error ? error.message : "";
       if (codeName === "SLACK_AUTH_INVALID" || codeName === "SLACK_AUTH_REJECTED") {
-        oauthFailed();
+        const failure = new SlackConfigurationServiceError(
+          "SLACK_OAUTH_FAILED",
+          401,
+          "The Slack authorization flow is invalid or expired",
+          "credential",
+        );
+        if (error instanceof Error && typeof error.cause === "string") {
+          Object.assign(failure, { upstreamSlackError: error.cause.slice(0, 128) });
+        }
+        throw failure;
       }
       if (codeName === "SLACK_AUTH_IDENTITY_INCOMPLETE") {
         throw new SlackConfigurationServiceError(

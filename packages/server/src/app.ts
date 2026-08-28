@@ -28,7 +28,7 @@ import type { ComputerService, MachineAuthService } from "./services/computers/i
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
-import { type SlackConfigurationService, SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
+import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
@@ -62,7 +62,6 @@ export interface CreateAppOptions {
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
   feishuSetupService?: FeishuSetupService;
-  slackConfigurationService?: SlackConfigurationService;
   slackOAuth?: SlackOAuthRouteOptions;
   loggerStream?: FastifyLoggerOptions["stream"];
   readiness?: BootstrapReadiness;
@@ -246,14 +245,7 @@ export function createApp(options: CreateAppOptions = {}) {
       registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, authOptions);
     }
     if (options.imBindingService) {
-      registerImBindingRoutes(
-        app,
-        authService,
-        options.imBindingService,
-        options.feishuSetupService,
-        options.slackConfigurationService,
-        authOptions,
-      );
+      registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
     if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
     if (options.imResourceService && options.machineAuthService) {

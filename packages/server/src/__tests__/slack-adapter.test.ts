@@ -293,9 +293,10 @@ describe("Slack installed-binding adapter", () => {
       slackEvents: {
         now: () => now,
         imBindings: {
-          findSlackIngressBinding: vi.fn().mockResolvedValue({
-            imBindingId: crypto.randomUUID(),
+          findSlackInstallationIngress: vi.fn().mockResolvedValue({
+            installationId: crypto.randomUUID(),
             generation: 1,
+            workspaceId: crypto.randomUUID(),
             appId: "A1",
             teamId: "T1",
             botUserId: "U1",
@@ -303,7 +304,7 @@ describe("Slack installed-binding adapter", () => {
             botAccessToken: "xoxb",
             signingSecret: "secret",
           }),
-          recordSlackObservation: vi.fn().mockResolvedValue(true),
+          recordSlackInstallationObservation: vi.fn().mockResolvedValue(true),
         } as never,
         inbox: {} as never,
         createAdapter: vi.fn() as never,

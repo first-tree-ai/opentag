@@ -3,6 +3,7 @@ import {
   type AnyPgColumn,
   bigint,
   check,
+  index,
   pgEnum,
   pgTable,
   text,
@@ -11,6 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
+import { slackInstallations } from "./slack-installations.js";
 
 export const imProvider = pgEnum("im_provider", ["feishu", "slack"]);
 export const imBindingStatus = pgEnum("im_binding_status", [
@@ -30,6 +32,7 @@ export const feishuSetupState = pgEnum("feishu_setup_state", [
   "expired",
   "canceled",
 ]);
+export const slackRouteKind = pgEnum("slack_route_kind", ["default"]);
 
 export const imBindings = pgTable(
   "im_bindings",
@@ -62,6 +65,11 @@ export const imBindings = pgTable(
     setupOwnerHeartbeatAt: timestamp("setup_owner_heartbeat_at", { withTimezone: true }),
     encryptedSetupContext: text("encrypted_setup_context"),
     setupExpiresAt: timestamp("setup_expires_at", { withTimezone: true }),
+    slackInstallationId: uuid("slack_installation_id").references(() => slackInstallations.id, {
+      onDelete: "restrict",
+    }),
+    slackRouteKind: slackRouteKind("slack_route_kind"),
+
     replacementImBindingId: uuid("replacement_im_binding_id").references((): AnyPgColumn => imBindings.id, {
       onDelete: "set null",
     }),
@@ -83,9 +91,10 @@ export const imBindings = pgTable(
     uniqueIndex("im_bindings_feishu_app_current_unique")
       .on(table.externalAppId)
       .where(sql`${table.provider} = 'feishu' and ${table.status} <> 'disabled'`),
-    uniqueIndex("im_bindings_slack_app_team_current_unique")
-      .on(table.externalAppId, table.externalTeamId)
+    uniqueIndex("im_bindings_slack_installation_current_unique")
+      .on(table.slackInstallationId)
       .where(sql`${table.provider} = 'slack' and ${table.status} <> 'disabled'`),
+    index("im_bindings_slack_installation_id_idx").on(table.slackInstallationId),
     check("im_bindings_credential_generation_nonnegative", sql`${table.credentialGeneration} >= 0`),
     check("im_bindings_connection_epoch_nonnegative", sql`${table.connectionFencingEpoch} >= 0`),
     check(
@@ -94,8 +103,14 @@ export const imBindings = pgTable(
         ${table.externalAppId} is not null and
         (${table.provider} = 'feishu' or ${table.externalTeamId} is not null) and
         ${table.externalBotId} is not null and ${table.credentialSchemaVersion} is not null and
-        ${table.credentialGeneration} >= 1 and ${table.encryptedCredential} is not null and
-        ${table.activatedAt} is not null and ${table.disabledAt} is null
+        ${table.credentialGeneration} >= 1 and
+        ${table.activatedAt} is not null and ${table.disabledAt} is null and
+        (
+          (${table.provider} = 'feishu' and ${table.encryptedCredential} is not null and
+            ${table.slackInstallationId} is null and ${table.slackRouteKind} is null) or
+          (${table.provider} = 'slack' and ${table.encryptedCredential} is null and
+            ${table.slackInstallationId} is not null and ${table.slackRouteKind} is not null)
+        )
       )`,
     ),
     check(
@@ -130,11 +145,21 @@ export const imBindings = pgTable(
         ${table.setupExpiresAt} is null
       )`,
     ),
+    check(
+      "im_bindings_slack_route_fields",
+      sql`${table.provider} = 'slack' or (
+        ${table.slackInstallationId} is null and ${table.slackRouteKind} is null
+      )`,
+    ),
   ],
 );
 
 export const imBindingsRelations = relations(imBindings, ({ one, many }) => ({
   agent: one(agents, { fields: [imBindings.agentId], references: [agents.id] }),
+  slackInstallation: one(slackInstallations, {
+    fields: [imBindings.slackInstallationId],
+    references: [slackInstallations.id],
+  }),
   replacement: one(imBindings, {
     fields: [imBindings.replacementImBindingId],
     references: [imBindings.id],

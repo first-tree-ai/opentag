@@ -111,6 +111,27 @@ export function registerSlackOAuthRoutes(app: FastifyInstance, options: SlackOAu
       });
       return reply.redirect(resultRedirect(options.publicOrigin, result.agentId), 302);
     } catch (error) {
+      const callbackQuery = request.query as { code?: unknown; error?: unknown };
+      request.log.error(
+        {
+          callbackHadCode: typeof callbackQuery.code === "string" && callbackQuery.code.length > 0,
+          callbackSlackError: typeof callbackQuery.error === "string" ? callbackQuery.error.slice(0, 128) : undefined,
+          errorCode:
+            typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+              ? error.code
+              : undefined,
+          errorMessage: error instanceof Error ? error.message : "Unknown Slack OAuth callback failure",
+          errorName: error instanceof Error ? error.name : typeof error,
+          upstreamSlackError:
+            typeof error === "object" &&
+            error !== null &&
+            "upstreamSlackError" in error &&
+            typeof error.upstreamSlackError === "string"
+              ? error.upstreamSlackError
+              : undefined,
+        },
+        "Slack OAuth callback failed",
+      );
       return redirectOAuthFailure(reply, options.publicOrigin, errorAgentId(error), error);
     }
   });

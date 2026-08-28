@@ -12,7 +12,6 @@ import {
   agentImBindingConfigPath,
   agentImBindingPath,
   agentReactivatePath,
-  agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -21,7 +20,6 @@ import {
   ComputerConnectCodeExchangeResponseSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
-  type ConfigureSlackAppRequest,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -58,10 +56,6 @@ import {
   type SessionCliListResponse,
   SessionCliListResponseSchema,
   type SessionCliSendRequest,
-  type SlackAppConfiguration,
-  SlackAppConfigurationSchema,
-  type SlackConfigurationResult,
-  SlackConfigurationResultSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -233,24 +227,6 @@ export class OpenTagApi {
     return this.#request(`${feishuSetupAttemptPath(attemptId)}/cancel`, FeishuSetupAttemptSchema, {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  getSlackAppConfiguration(accessToken: string, agentId: string): Promise<SlackAppConfiguration> {
-    return this.#request(agentSlackConfigurationPath(agentId), SlackAppConfigurationSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  configureSlackApp(
-    accessToken: string,
-    agentId: string,
-    input: ConfigureSlackAppRequest,
-  ): Promise<SlackConfigurationResult> {
-    return this.#request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }
 

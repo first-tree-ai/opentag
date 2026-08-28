@@ -1,0 +1,43 @@
+# OpenTag first-party Slack Public Distribution manifest.
+# Copy into the Slack app manifest editor and replace only the origin
+# https://YOUR_OPENTAG_ORIGIN. Do not add App IDs, client secrets, signing
+# secrets, extra scopes, or logo assets here.
+_metadata:
+  major_version: 1
+  minor_version: 1
+display_information:
+  name: OpenTag
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: OpenTag
+    always_online: false
+oauth_config:
+  redirect_urls:
+    - https://YOUR_OPENTAG_ORIGIN/api/v1/im-bindings/slack/oauth/callback
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - chat:write
+      - files:read
+      - groups:history
+      - im:history
+      - mpim:history
+settings:
+  event_subscriptions:
+    request_url: https://YOUR_OPENTAG_ORIGIN/api/v1/im-bindings/slack/events
+    bot_events:
+      - app_mention
+      - app_uninstalled
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+      - tokens_revoked
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

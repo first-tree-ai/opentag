@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  ConfigureSlackAppRequestSchema,
   FEISHU_REQUIRED_TENANT_SCOPES,
   FeishuSetupAttemptSchema,
   hasRequiredFeishuTenantScopes,
@@ -11,7 +10,6 @@ import {
   ImBindingSummarySchema,
   SLACK_REQUIRED_BOT_SCOPES,
   SLACK_SUBSCRIBED_BOT_EVENTS,
-  SlackAppConfigurationSchema,
   SlackBindingActivationSchema,
   SlackConfigurationResultSchema,
   StartSlackOAuthRequestSchema,
@@ -146,29 +144,10 @@ describe("IM binding contracts", () => {
     expect(() => ImBindingSummarySchema.parse({ ...base, lastConfirmedAt: base.lastValidatedAt })).toThrow();
   });
 
-  it("keeps Slack configuration stateless and secrets out of the response", () => {
-    const configuration = {
-      agentId: crypto.randomUUID(),
-      manifest: { display_information: { name: "Reviewer" } },
-      manifestUrl: "https://api.slack.com/apps?new_app=1",
-      eventsUrl: "https://opentag.example/api/v1/agents/agent/im-binding/slack/events",
-      requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
-      subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
-      currentBinding: null,
-      distributedOAuthAvailable: false,
-    };
-    expect(SlackAppConfigurationSchema.parse(configuration)).toEqual(configuration);
-    expect(() => SlackAppConfigurationSchema.parse({ ...configuration, signingSecret: "secret" })).toThrow();
-    const request = {
-      intent: "create" as const,
-      expectedBinding: null,
-      appId: "A1",
-      botAccessToken: "xoxb-secret",
-      signingSecret: "signing-secret",
-    };
-    expect(ConfigureSlackAppRequestSchema.parse(request)).toEqual(request);
-    expect(() => ConfigureSlackAppRequestSchema.parse({ ...request, intent: "setup" })).toThrow();
+  it("keeps Slack OAuth start and activation results free of secrets and replace intent", () => {
     expect(StartSlackOAuthRequestSchema.parse({ intent: "create" })).toEqual({ intent: "create" });
+    expect(StartSlackOAuthRequestSchema.parse({ intent: "reauthorize" })).toEqual({ intent: "reauthorize" });
+    expect(() => StartSlackOAuthRequestSchema.parse({ intent: "replace" })).toThrow();
     expect(() => StartSlackOAuthRequestSchema.parse({ intent: "create", state: "secret" })).toThrow();
     expect(() =>
       StartSlackOAuthResponseSchema.parse({
@@ -177,12 +156,23 @@ describe("IM binding contracts", () => {
         sessionBinding: "secret",
       }),
     ).toThrow();
-    const { intent: _intent, ...missingIntent } = request;
-    expect(() => ConfigureSlackAppRequestSchema.parse(missingIntent)).toThrow();
+    expect(() =>
+      SlackBindingActivationSchema.parse({
+        intent: "replace",
+        agentId: crypto.randomUUID(),
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: ["chat:write"],
+        botAccessToken: "xoxb-secret",
+        signingSecret: "signing-secret",
+        installedAt: "2026-08-19T00:00:00.000Z",
+      }),
+    ).toThrow();
     expect(
       SlackConfigurationResultSchema.parse({
         imBindingId: crypto.randomUUID(),
-        agentId: configuration.agentId,
+        agentId: crypto.randomUUID(),
         appId: "A1",
         teamId: "T1",
         botUserId: "U1",
@@ -191,6 +181,19 @@ describe("IM binding contracts", () => {
         identityClosure: { status: "pending", verifiedAt: null },
       }).identityClosure,
     ).toEqual({ status: "pending", verifiedAt: null });
+    expect(() =>
+      SlackConfigurationResultSchema.parse({
+        imBindingId: crypto.randomUUID(),
+        agentId: crypto.randomUUID(),
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        credentialGeneration: 1,
+        bindingState: "active",
+        identityClosure: { status: "pending", verifiedAt: null },
+        signingSecret: "secret",
+      }),
+    ).toThrow();
   });
 
   it("defines a strict handoff projection without changing the strict summary contract", () => {

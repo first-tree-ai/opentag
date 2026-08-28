@@ -282,107 +282,20 @@ describe("OpenTagApi Agent methods", () => {
     expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });
 
-  it("uses the stateless Slack guide and one atomic configuration write", async () => {
-    const imBindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
-    const requiredBotScopes = [
-      "app_mentions:read",
-      "channels:history",
-      "chat:write",
-      "files:read",
-      "groups:history",
-      "im:history",
-      "mpim:history",
-    ];
-    const subscribedBotEvents = [
-      "app_mention",
-      "app_uninstalled",
-      "message.channels",
-      "message.groups",
-      "message.im",
-      "message.mpim",
-      "tokens_revoked",
-    ];
-    const configuration = {
-      agentId,
-      manifest: {
-        oauth_config: { scopes: { bot: requiredBotScopes } },
-        settings: { event_subscriptions: { bot_events: subscribedBotEvents } },
-      },
-      manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
-      eventsUrl: `https://opentag.example/api/v1/agents/${agentId}/im-binding/slack/events`,
-      requiredBotScopes,
-      subscribedBotEvents,
-      currentBinding: null,
-      distributedOAuthAvailable: false,
-    };
-    const detail = {
-      id: imBindingId,
-      agentId,
-      provider: "slack",
-      bindingState: "active",
-      bot: { displayName: "Reviewer", avatarUrl: null },
-      receiveMode: "mention_only",
-      lastInboundAt: null,
-      lastValidatedAt: null,
-      lastRuntimeObservationAt: null,
-      identity: {
-        provider: "slack",
-        appId: "A1",
-        teamId: "T1",
-        enterpriseId: null,
-        botUserId: "U1",
-        appIdEvidence: "configured",
-      },
-      credentialGeneration: 1,
-      grantedCapabilities: requiredBotScopes,
-      reauthorizationRequired: false,
-      lastErrorCode: null,
-    };
-    const input = {
-      intent: "create" as const,
-      expectedBinding: null,
-      appId: "A1",
-      botAccessToken: "xoxb-secret",
-      signingSecret: "signing-secret",
-    };
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(configuration))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          imBindingId: detail.id,
-          agentId,
-          appId: "A1",
-          teamId: "T1",
-          botUserId: "U1",
-          credentialGeneration: 1,
-          bindingState: "active",
-          identityClosure: { status: "pending", verifiedAt: null },
-        }),
-      );
-    const api = new OpenTagApi("https://opentag.example", fetchImpl);
-
-    await expect(api.getSlackAppConfiguration("access", agentId)).resolves.toEqual(configuration);
-    await expect(api.configureSlackApp("access", agentId, input)).resolves.toMatchObject({
-      imBindingId: detail.id,
-      credentialGeneration: 1,
-      identityClosure: { status: "pending", verifiedAt: null },
-    });
-    expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
-      [`/api/v1/agents/${agentId}/im-binding/slack/configuration`, "GET"],
-      [`/api/v1/agents/${agentId}/im-binding/slack/configuration`, "PUT"],
-    ]);
-    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify(input));
-
-    fetchImpl.mockResolvedValueOnce(
+  it("starts first-party Slack OAuth without a customer-owned configuration write", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse({
         authorizationUrl: "https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state",
         expiresAt: "2026-08-19T00:10:00.000Z",
       }),
     );
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
     await expect(api.startSlackOAuth("access", agentId, { intent: "create" })).resolves.toMatchObject({
       authorizationUrl: expect.stringContaining("https://slack.com/oauth/v2/authorize"),
     });
-    expect(fetchImpl.mock.calls.at(-1)?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
+    expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
+      [`/api/v1/agents/${agentId}/im-binding/slack/oauth/start`, "POST"],
+    ]);
+    expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });
 });

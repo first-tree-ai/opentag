@@ -88,7 +88,6 @@ function installApi(
     profileUpdateFails?: boolean;
     setupFailureCode?: string;
     setupCompletedAt?: string | null;
-    slackOAuth?: boolean;
     unauthenticated?: boolean;
     workspaceless?: boolean;
   } = {},
@@ -475,62 +474,6 @@ function installApi(
         },
         201,
       );
-    }
-    if (path === `/api/v1/agents/${agentId}/im-binding/slack/configuration` && (init?.method ?? "GET") === "GET") {
-      return json({
-        agentId,
-        manifest: {
-          display_information: { name: "Reviewer - OpenTag" },
-          oauth_config: {
-            scopes: {
-              bot: [
-                "app_mentions:read",
-                "channels:history",
-                "chat:write",
-                "files:read",
-                "groups:history",
-                "im:history",
-                "mpim:history",
-              ],
-            },
-          },
-          settings: {
-            event_subscriptions: {
-              bot_events: [
-                "app_mention",
-                "app_uninstalled",
-                "message.channels",
-                "message.groups",
-                "message.im",
-                "message.mpim",
-                "tokens_revoked",
-              ],
-            },
-          },
-        },
-        manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
-        eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
-        requiredBotScopes: [
-          "app_mentions:read",
-          "channels:history",
-          "chat:write",
-          "files:read",
-          "groups:history",
-          "im:history",
-          "mpim:history",
-        ],
-        subscribedBotEvents: [
-          "app_mention",
-          "app_uninstalled",
-          "message.channels",
-          "message.groups",
-          "message.im",
-          "message.mpim",
-          "tokens_revoked",
-        ],
-        currentBinding: null,
-        distributedOAuthAvailable: options.slackOAuth === true,
-      });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/slack/oauth/start` && init?.method === "POST") {
       return json({
@@ -1894,8 +1837,7 @@ describe("OpenTag Web App Shell", () => {
       vi
         .mocked(fetch)
         .mock.calls.filter(
-          ([input, init]) =>
-            String(input).includes("/im-binding/slack/configuration") && (init?.method ?? "GET") !== "GET",
+          ([input, init]) => String(input).endsWith("/im-binding/slack/oauth/start") && init?.method === "POST",
         ),
     ).toHaveLength(0);
     await waitFor(() =>
@@ -2135,8 +2077,8 @@ describe("OpenTag Web App Shell", () => {
     });
   });
 
-  it("starts first-party OpenTag Slack OAuth from the Agent IM tab when configured", async () => {
-    installApi({ slackOAuth: true });
+  it("starts first-party OpenTag Slack OAuth from the Agent IM tab", async () => {
+    installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
@@ -2161,25 +2103,10 @@ describe("OpenTag Web App Shell", () => {
         ),
       ),
     ).toEqual({ intent: "create" });
-  });
-
-  it("opens a stateless customer-owned Slack App configuration from the Agent IM tab", async () => {
-    installApi();
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    render(<App />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Connect Slack App" }));
-
-    expect(await screen.findByRole("link", { name: /Create a Slack App from the complete manifest/ })).toBeTruthy();
-    expect(screen.getByLabelText("Slack App ID")).toBeTruthy();
-    expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
-    expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
-    expect(screen.getAllByText(/files:read/)).toHaveLength(2);
-    const requests = vi
-      .mocked(fetch)
-      .mock.calls.filter(([input]) => String(input).endsWith("/im-binding/slack/configuration"));
-    expect(requests.length).toBeGreaterThanOrEqual(1);
-    expect(requests.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
+    expect(screen.queryByRole("button", { name: "Connect Slack App" })).toBeNull();
+    expect(screen.queryByLabelText("Slack App ID")).toBeNull();
+    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
+    expect(screen.queryByLabelText("Signing Secret")).toBeNull();
   });
 
   it("creates a Computer connection command only after an explicit admin click", async () => {

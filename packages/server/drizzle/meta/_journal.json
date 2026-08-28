@@ -169,6 +169,13 @@
       "when": 1787870418663,
       "tag": "0023_motionless_gideon",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787885742102,
+      "tag": "0024_icy_warlock",
+      "breakpoints": true
     }
   ]
 }

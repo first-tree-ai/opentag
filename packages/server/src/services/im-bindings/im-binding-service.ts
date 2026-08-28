@@ -18,7 +18,7 @@ import {
   hasRequiredSlackBotScopes,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -27,6 +27,7 @@ import {
   imMessages,
   sessionPlacements,
   sessions,
+  slackInstallations,
   workspaceComputers,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
@@ -62,15 +63,28 @@ export interface VerifiedFeishuBinding {
   grantedScopes: string[];
 }
 
-export interface SlackIngressBinding {
-  imBindingId: string;
+export interface SlackInstallationIngress {
+  installationId: string;
   generation: number;
+  workspaceId: string;
   appId: string;
   teamId: string;
   botUserId: string;
   botId: string;
   botAccessToken: string;
   signingSecret: string;
+}
+
+export interface SlackInboundRoute {
+  imBindingId: string;
+  agentId: string;
+  installationId: string;
+  generation: number;
+  routeKind: "default";
+}
+
+export interface SlackIngressBinding extends SlackInstallationIngress {
+  imBindingId: string;
 }
 
 export interface FeishuConnectionMaterial {
@@ -84,7 +98,16 @@ export interface FeishuConnectionMaterial {
   grantedScopes: string[];
 }
 
-export interface SlackConnectionMaterial extends SlackIngressBinding {
+export interface SlackConnectionMaterial {
+  imBindingId: string;
+  installationId: string;
+  generation: number;
+  workspaceId: string;
+  appId: string;
+  teamId: string;
+  botUserId: string;
+  botId: string;
+  botAccessToken: string;
   grantedScopes: string[];
 }
 
@@ -137,6 +160,7 @@ export async function disableImBindingInTransaction(
   imBindingId: string,
   now: Date,
   expectedGeneration?: number,
+  releaseUnusedSlackInstallation = true,
 ): Promise<boolean> {
   const disabled = await transaction
     .update(imBindings)
@@ -159,12 +183,40 @@ export async function disableImBindingInTransaction(
         ...(expectedGeneration === undefined ? [] : [eq(imBindings.credentialGeneration, expectedGeneration)]),
       ),
     )
-    .returning({ id: imBindings.id });
+    .returning({ id: imBindings.id, slackInstallationId: imBindings.slackInstallationId });
   if (disabled.length === 0) return false;
   await transaction
     .update(sessions)
     .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
     .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
+  const installationId = disabled[0]?.slackInstallationId;
+  if (installationId && releaseUnusedSlackInstallation) {
+    const [installation] = await transaction
+      .select({ id: slackInstallations.id, status: slackInstallations.status })
+      .from(slackInstallations)
+      .where(eq(slackInstallations.id, installationId))
+      .limit(1)
+      .for("update");
+    if (installation && installation.status !== "disabled") {
+      const [remainingRoute] = await transaction
+        .select({ id: imBindings.id })
+        .from(imBindings)
+        .where(
+          and(
+            eq(imBindings.slackInstallationId, installationId),
+            eq(imBindings.provider, "slack"),
+            ne(imBindings.status, "disabled"),
+          ),
+        )
+        .limit(1);
+      if (!remainingRoute) {
+        await transaction
+          .update(slackInstallations)
+          .set({ status: "disabled", encryptedCredential: null, disabledAt: now, updatedAt: now })
+          .where(and(eq(slackInstallations.id, installationId), ne(slackInstallations.status, "disabled")));
+      }
+    }
+  }
   return true;
 }
 
@@ -214,6 +266,28 @@ function projectedErrorCode(input: {
     return "IM_BINDING_CREDENTIAL_INVALID";
   }
   return null;
+}
+
+function slackInstallationInspectionInput(installation: typeof slackInstallations.$inferSelect): {
+  provider: "slack";
+  encryptedCredential: string | null;
+  externalAppId: string | null;
+  externalBotId: string | null;
+  externalTeamId: string | null;
+  credentialGeneration: number;
+  credentialSchemaVersion: number | null;
+  grantedCapabilities: string[];
+} {
+  return {
+    provider: "slack",
+    encryptedCredential: installation.encryptedCredential,
+    externalAppId: installation.externalAppId,
+    externalBotId: installation.externalBotId,
+    externalTeamId: installation.externalTeamId,
+    credentialGeneration: installation.credentialGeneration,
+    credentialSchemaVersion: installation.credentialSchemaVersion,
+    grantedCapabilities: installation.grantedCapabilities,
+  };
 }
 
 function needsScopeUpdate(
@@ -291,6 +365,7 @@ export class ImBindingService {
         channelId: sessions.channelId,
         threadKey: sessions.threadKey,
         binding: imBindings,
+        slackInstallation: slackInstallations,
         boundAgentId: imBindings.agentId,
         agentWorkspaceComputerId: agents.workspaceComputerId,
         agentStatus: agents.status,
@@ -302,6 +377,7 @@ export class ImBindingService {
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .leftJoin(
         workspaceComputers,
@@ -341,7 +417,7 @@ export class ImBindingService {
     }
     const binding = row.binding;
     if (binding.status !== "active") return rejected("binding_inactive");
-    if (this.#inspectCredentialMaterial(binding).status !== "valid") {
+    if (binding.provider !== "slack" && this.#inspectCredentialMaterial(binding).status !== "valid") {
       return rejected("credential_stale");
     }
     if (binding.provider === "feishu") {
@@ -370,14 +446,25 @@ export class ImBindingService {
           : {}),
       };
     }
-    if (!binding.observedConnectedAt) return rejected("binding_inactive");
-    const credential = this.#decodeSlackCredential(binding.encryptedCredential);
+    const installation = row.slackInstallation;
+    if (!installation) return rejected("binding_inactive");
+    if (
+      installation.status !== "active" ||
+      installation.workspaceId !== row.workspaceId ||
+      !installation.observedConnectedAt
+    ) {
+      return rejected("binding_inactive");
+    }
+    if (this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation)).status !== "valid") {
+      return rejected("credential_stale");
+    }
+    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
     if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
     return {
       type: "im:credential:result",
       requestId: request.requestId,
       status: "succeeded",
-      credentialGeneration: binding.credentialGeneration,
+      credentialGeneration: installation.credentialGeneration,
       grant: { provider: "slack", botAccessToken: credential.botAccessToken },
       ...(computerAuth.imCredentialGrantVersion === 2
         ? {
@@ -404,23 +491,7 @@ export class ImBindingService {
       grantedScopes: [...new Set(input.grantedBotScopes)].sort(),
     });
     try {
-      const activated = await this.#activate(
-        {
-          agentId: input.agentId,
-          provider: "slack",
-          intent: input.intent,
-          identity: {
-            appId: input.appId,
-            teamId: input.teamId,
-            enterpriseId: input.enterpriseId ?? null,
-            botId: input.botUserId,
-            teamBrand: null,
-          },
-          credential,
-        },
-        transaction,
-      );
-      if (!activated.teamId) throw new Error("Activated Slack binding did not contain a Team ID");
+      const activated = await this.#activateSlackInstallation(input, credential, transaction);
       return {
         imBindingId: activated.id,
         agentId: activated.agentId,
@@ -432,13 +503,18 @@ export class ImBindingService {
         identityClosure: { status: "pending", verifiedAt: null },
       };
     } catch (error) {
-      // The partial unique index decides concurrent activations of one App/Workspace; report the loser
-      // with the same typed conflict the in-transaction precheck uses.
-      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_team_current_unique")) {
+      if (isImBindingUniqueViolation(error, "slack_installations_app_team_current_unique")) {
         throw new ImBindingServiceError(
           "SLACK_APP_TEAM_ALREADY_BOUND",
           409,
-          "This Slack App installation is already bound to another Agent",
+          "This Slack App installation is already bound to another OpenTag workspace",
+        );
+      }
+      if (isImBindingUniqueViolation(error, "slack_installations_workspace_current_unique")) {
+        throw new ImBindingServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "This OpenTag workspace already has a Slack installation",
         );
       }
       throw error;
@@ -481,51 +557,100 @@ export class ImBindingService {
     }
   }
 
-  async findSlackIngressBinding(appId: string, teamId: string): Promise<SlackIngressBinding | undefined> {
+  async findSlackInstallationIngress(appId: string, teamId: string): Promise<SlackInstallationIngress | undefined> {
     const [row] = await this.#database
-      .select({ imBinding: imBindings })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .select()
+      .from(slackInstallations)
       .where(
         and(
-          eq(imBindings.provider, "slack"),
-          eq(imBindings.externalAppId, appId),
-          eq(imBindings.externalTeamId, teamId),
-          eq(imBindings.status, "active"),
-          ne(agents.status, "deleted"),
+          eq(slackInstallations.externalAppId, appId),
+          eq(slackInstallations.externalTeamId, teamId),
+          eq(slackInstallations.status, "active"),
         ),
       )
       .limit(1);
-    return this.#slackIngressFromRow(row?.imBinding, appId, teamId);
+    return this.#slackInstallationIngressFromRow(row);
   }
 
-  async findSlackIngressBindingForAgent(agentId: string): Promise<SlackIngressBinding | undefined> {
+  async findSlackInstallationIngressForAgent(agentId: string): Promise<SlackInstallationIngress | undefined> {
     const [row] = await this.#database
-      .select({ imBinding: imBindings })
+      .select({ installation: slackInstallations })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(
         and(
           eq(imBindings.agentId, agentId),
           eq(imBindings.provider, "slack"),
           eq(imBindings.status, "active"),
+          eq(slackInstallations.status, "active"),
+          eq(slackInstallations.workspaceId, agents.workspaceId),
           ne(agents.status, "deleted"),
         ),
       )
       .limit(1);
-    const imBinding = row?.imBinding;
-    if (!imBinding?.externalAppId || !imBinding.externalTeamId) return undefined;
-    return this.#slackIngressFromRow(imBinding, imBinding.externalAppId, imBinding.externalTeamId);
+    return this.#slackInstallationIngressFromRow(row?.installation);
+  }
+
+  async resolveSlackDefaultRoute(installationId: string): Promise<SlackInboundRoute | undefined> {
+    return this.#resolveSlackRoute(installationId);
+  }
+
+  async resolveSlackAgentRoute(installationId: string, agentId: string): Promise<SlackInboundRoute | undefined> {
+    return this.#resolveSlackRoute(installationId, agentId);
+  }
+
+  async findSlackIngressBinding(appId: string, teamId: string): Promise<SlackIngressBinding | undefined> {
+    const installation = await this.findSlackInstallationIngress(appId, teamId);
+    if (!installation) return undefined;
+    const route = await this.resolveSlackDefaultRoute(installation.installationId);
+    if (!route) return undefined;
+    return { ...installation, imBindingId: route.imBindingId };
+  }
+
+  async findSlackIngressBindingForAgent(agentId: string): Promise<SlackIngressBinding | undefined> {
+    const installation = await this.findSlackInstallationIngressForAgent(agentId);
+    if (!installation) return undefined;
+    const route = await this.resolveSlackAgentRoute(installation.installationId, agentId);
+    if (!route) return undefined;
+    return { ...installation, imBindingId: route.imBindingId };
   }
 
   async getSlackConnectionMaterial(imBindingId: string): Promise<SlackConnectionMaterial | undefined> {
-    const imBinding = await this.#activeMaterial(imBindingId, "slack");
-    if (!imBinding?.externalAppId || !imBinding.externalTeamId || !imBinding.observedConnectedAt) return undefined;
-    const ingress = this.#slackIngressFromRow(imBinding, imBinding.externalAppId, imBinding.externalTeamId);
+    const [row] = await this.#database
+      .select({ imBinding: imBindings, installation: slackInstallations, workspaceId: agents.workspaceId })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.status, "active"),
+          eq(slackInstallations.status, "active"),
+          ne(agents.status, "deleted"),
+        ),
+      )
+      .limit(1);
+    if (!row || row.installation.workspaceId !== row.workspaceId || !row.installation.observedConnectedAt) {
+      return undefined;
+    }
+    const ingress = this.#slackInstallationIngressFromRow(row.installation);
     if (!ingress) return undefined;
-    const credential = this.#decodeSlackCredential(imBinding.encryptedCredential);
+    const credential = this.#decodeSlackCredential(row.installation.encryptedCredential);
     if (!credential) return undefined;
-    return { ...ingress, grantedScopes: credential.grantedScopes };
+    return {
+      imBindingId,
+      installationId: ingress.installationId,
+      generation: ingress.generation,
+      workspaceId: ingress.workspaceId,
+      appId: ingress.appId,
+      teamId: ingress.teamId,
+      botUserId: ingress.botUserId,
+      botId: ingress.botId,
+      botAccessToken: ingress.botAccessToken,
+      grantedScopes: credential.grantedScopes,
+    };
   }
 
   async listFeishuConnectionIds(afterId: string | undefined, limit = 100): Promise<string[]> {
@@ -595,14 +720,16 @@ export class ImBindingService {
         externalTeamId: imBindings.externalTeamId,
         credentialSchemaVersion: imBindings.credentialSchemaVersion,
         credentialGeneration: imBindings.credentialGeneration,
+        slackInstallation: slackInstallations,
       })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
       .limit(1);
     if (!row) return undefined;
     const activity = await this.#activity(row.id);
-    const credential = this.#inspectCredentialMaterial(row);
+    const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
     const reauthorizationRequired =
       row.bindingState === "reauthorization_required" ||
       needsScopeUpdate(row.bindingState, row.provider, row.grantedCapabilities) ||
@@ -616,13 +743,15 @@ export class ImBindingService {
       receiveMode: row.receiveMode,
       ...activity,
       lastValidatedAt: row.activatedAt?.toISOString() ?? null,
-      lastRuntimeObservationAt: row.observedAt?.toISOString() ?? null,
+      lastRuntimeObservationAt:
+        (row.provider === "slack" ? (row.slackInstallation?.observedAt ?? null) : row.observedAt)?.toISOString() ??
+        null,
     };
   }
 
   async getHandoffForAgent(callerUserId: string, agentId: string): Promise<ImBindingHandoffStatus | undefined> {
     await this.#assertCanRead(callerUserId, agentId);
-    const [imBinding] = await this.#database
+    const [row] = await this.#database
       .select({
         agentId: imBindings.agentId,
         provider: imBindings.provider,
@@ -637,27 +766,49 @@ export class ImBindingService {
         externalTeamId: imBindings.externalTeamId,
         credentialSchemaVersion: imBindings.credentialSchemaVersion,
         credentialGeneration: imBindings.credentialGeneration,
+        slackInstallation: slackInstallations,
       })
       .from(imBindings)
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
       .limit(1);
-    if (!imBinding) return undefined;
-    return (await this.#readiness(this.#withCredentialStatus(imBinding))).handoff;
+    if (!row) return undefined;
+    const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
+    const observedConnectedAt =
+      row.provider === "slack" ? (row.slackInstallation?.observedConnectedAt ?? null) : row.observedConnectedAt;
+    const observedAt = row.provider === "slack" ? (row.slackInstallation?.observedAt ?? null) : row.observedAt;
+    const grantedCapabilities =
+      row.provider === "slack" && row.slackInstallation
+        ? row.slackInstallation.grantedCapabilities
+        : row.grantedCapabilities;
+    const status =
+      row.provider === "slack" && row.slackInstallation?.status === "reauthorization_required"
+        ? "reauthorization_required"
+        : row.status;
+    return (
+      await this.#readiness(
+        this.#withCredentialStatus(
+          { ...row, status, observedConnectedAt, observedAt, grantedCapabilities },
+          credential.status,
+        ),
+      )
+    ).handoff;
   }
 
   async getConfigForAgent(callerUserId: string, agentId: string): Promise<ImBindingAdminDetail | undefined> {
     await this.assertCanManage(callerUserId, agentId);
     const [row] = await this.#database
-      .select({ imBinding: imBindings, receiveMode: agents.receiveMode })
+      .select({ imBinding: imBindings, receiveMode: agents.receiveMode, slackInstallation: slackInstallations })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
       .limit(1);
     if (!row) return undefined;
     const binding = row.imBinding;
     if (!binding.externalAppId || !binding.externalBotId || binding.credentialGeneration < 1) return undefined;
     const activity = await this.#activity(binding.id);
-    const credential = this.#inspectCredentialMaterial(binding);
+    const credential = this.#inspectBindingCredentials(binding, row.slackInstallation);
     const reauthorizationRequired =
       binding.status === "reauthorization_required" ||
       needsScopeUpdate(binding.status, binding.provider, binding.grantedCapabilities) ||
@@ -729,7 +880,7 @@ export class ImBindingService {
   }
 
   async diagnostics(callerUserId: string, imBindingId: string): Promise<ImBindingDiagnostics> {
-    const [imBinding] = await this.#database
+    const [row] = await this.#database
       .select({
         id: imBindings.id,
         agentId: imBindings.agentId,
@@ -747,13 +898,41 @@ export class ImBindingService {
         encryptedCredential: imBindings.encryptedCredential,
         credentialSchemaVersion: imBindings.credentialSchemaVersion,
         activatedAt: imBindings.activatedAt,
+        slackInstallation: slackInstallations,
       })
       .from(imBindings)
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(eq(imBindings.id, imBindingId))
       .limit(1);
-    if (!imBinding) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM binding was not found");
-    await this.assertCanManage(callerUserId, imBinding.agentId);
-    const credential = this.#inspectCredentialMaterial(imBinding);
+    if (!row) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM binding was not found");
+    await this.assertCanManage(callerUserId, row.agentId);
+    const credential = this.#inspectBindingCredentials(row, row.slackInstallation);
+    const observedConnectedAt =
+      row.provider === "slack" ? (row.slackInstallation?.observedConnectedAt ?? null) : row.observedConnectedAt;
+    const observedAt = row.provider === "slack" ? (row.slackInstallation?.observedAt ?? null) : row.observedAt;
+    const grantedCapabilities =
+      row.provider === "slack" && row.slackInstallation
+        ? row.slackInstallation.grantedCapabilities
+        : row.grantedCapabilities;
+    const credentialGeneration =
+      row.provider === "slack" && row.slackInstallation
+        ? row.slackInstallation.credentialGeneration
+        : row.credentialGeneration;
+    const status =
+      row.provider === "slack" && row.slackInstallation?.status === "reauthorization_required"
+        ? "reauthorization_required"
+        : row.status;
+    const lastErrorCode =
+      row.provider === "slack" && row.slackInstallation ? row.slackInstallation.lastErrorCode : row.lastErrorCode;
+    const imBinding = {
+      ...row,
+      status,
+      observedConnectedAt,
+      observedAt,
+      grantedCapabilities,
+      credentialGeneration,
+      lastErrorCode,
+    };
     const readiness = await this.#readiness(this.#withCredentialStatus(imBinding, credential.status));
     const activity = await this.#activity(imBindingId);
     return {
@@ -795,62 +974,133 @@ export class ImBindingService {
   }
 
   async requireReauthorization(imBindingId: string, generation: number, errorCode: string): Promise<boolean> {
-    const updated = await this.#database
-      .update(imBindings)
-      .set({ status: "reauthorization_required", lastErrorCode: errorCode.slice(0, 120), updatedAt: this.#now() })
-      .where(
-        and(
-          eq(imBindings.id, imBindingId),
-          eq(imBindings.provider, "slack"),
-          eq(imBindings.status, "active"),
-          eq(imBindings.credentialGeneration, generation),
-        ),
-      )
-      .returning({ id: imBindings.id });
-    return updated.length === 1;
+    const installationId = await this.#slackInstallationIdForRoute(imBindingId);
+    return installationId ? this.requireSlackInstallationReauthorization(installationId, generation, errorCode) : false;
   }
 
   async recordSlackObservation(imBindingId: string, generation: number): Promise<boolean> {
-    const updated = await this.#database
-      .update(imBindings)
-      .set({ observedAt: this.#now() })
-      .where(
-        and(
-          eq(imBindings.id, imBindingId),
-          eq(imBindings.provider, "slack"),
-          eq(imBindings.status, "active"),
-          eq(imBindings.credentialGeneration, generation),
-        ),
-      )
-      .returning({ id: imBindings.id });
-    return updated.length === 1;
+    const installationId = await this.#slackInstallationIdForRoute(imBindingId);
+    return installationId ? this.recordSlackInstallationObservation(installationId, generation) : false;
   }
 
   async recordSlackIdentityClosure(imBindingId: string, generation: number): Promise<boolean> {
-    const observedAt = this.#now();
-    const updated = await this.#database
-      .update(imBindings)
-      .set({
-        observedAt,
-        observedConnectedAt: sql<Date>`coalesce(
-          ${imBindings.observedConnectedAt},
-          ${sql.param(observedAt, imBindings.observedConnectedAt)}
-        )`,
-      })
-      .where(
-        and(
-          eq(imBindings.id, imBindingId),
-          eq(imBindings.provider, "slack"),
-          eq(imBindings.status, "active"),
-          eq(imBindings.credentialGeneration, generation),
-        ),
-      )
-      .returning({ id: imBindings.id });
-    return updated.length === 1;
+    const installationId = await this.#slackInstallationIdForRoute(imBindingId);
+    return installationId ? this.recordSlackInstallationIdentityClosure(installationId, generation) : false;
   }
 
   async disableFromProvider(imBindingId: string, generation: number): Promise<boolean> {
-    return this.#disable(imBindingId, generation);
+    const installationId = await this.#slackInstallationIdForRoute(imBindingId);
+    return installationId ? this.disableSlackInstallationFromProvider(installationId, generation) : false;
+  }
+
+  async recordSlackInstallationObservation(installationId: string, generation: number): Promise<boolean> {
+    const observedAt = this.#now();
+    return this.#database.transaction(async (transaction) => {
+      const [updated] = await transaction
+        .update(slackInstallations)
+        .set({ observedAt })
+        .where(
+          and(
+            eq(slackInstallations.id, installationId),
+            eq(slackInstallations.status, "active"),
+            eq(slackInstallations.credentialGeneration, generation),
+          ),
+        )
+        .returning({ id: slackInstallations.id });
+      if (!updated) return false;
+      await transaction
+        .update(imBindings)
+        .set({ observedAt })
+        .where(
+          and(
+            eq(imBindings.slackInstallationId, installationId),
+            eq(imBindings.provider, "slack"),
+            ne(imBindings.status, "disabled"),
+          ),
+        );
+      return true;
+    });
+  }
+
+  async recordSlackInstallationIdentityClosure(installationId: string, generation: number): Promise<boolean> {
+    const observedAt = this.#now();
+    return this.#database.transaction(async (transaction) => {
+      const [updated] = await transaction
+        .update(slackInstallations)
+        .set({
+          observedAt,
+          observedConnectedAt: sql<Date>`coalesce(
+            ${slackInstallations.observedConnectedAt},
+            ${sql.param(observedAt, slackInstallations.observedConnectedAt)}
+          )`,
+        })
+        .where(
+          and(
+            eq(slackInstallations.id, installationId),
+            eq(slackInstallations.status, "active"),
+            eq(slackInstallations.credentialGeneration, generation),
+          ),
+        )
+        .returning({
+          id: slackInstallations.id,
+          observedConnectedAt: slackInstallations.observedConnectedAt,
+        });
+      if (!updated) return false;
+      await transaction
+        .update(imBindings)
+        .set({
+          observedAt,
+          observedConnectedAt: updated.observedConnectedAt,
+        })
+        .where(
+          and(
+            eq(imBindings.slackInstallationId, installationId),
+            eq(imBindings.provider, "slack"),
+            ne(imBindings.status, "disabled"),
+          ),
+        );
+      return true;
+    });
+  }
+
+  async requireSlackInstallationReauthorization(
+    installationId: string,
+    generation: number,
+    errorCode: string,
+  ): Promise<boolean> {
+    const now = this.#now();
+    const lastErrorCode = errorCode.slice(0, 120);
+    return this.#database.transaction(async (transaction) => {
+      const [updated] = await transaction
+        .update(slackInstallations)
+        .set({ status: "reauthorization_required", lastErrorCode, updatedAt: now })
+        .where(
+          and(
+            eq(slackInstallations.id, installationId),
+            eq(slackInstallations.status, "active"),
+            eq(slackInstallations.credentialGeneration, generation),
+          ),
+        )
+        .returning({ id: slackInstallations.id });
+      if (!updated) return false;
+      await transaction
+        .update(imBindings)
+        .set({ status: "reauthorization_required", lastErrorCode, updatedAt: now })
+        .where(
+          and(
+            eq(imBindings.slackInstallationId, installationId),
+            eq(imBindings.provider, "slack"),
+            eq(imBindings.status, "active"),
+          ),
+        );
+      return true;
+    });
+  }
+
+  async disableSlackInstallationFromProvider(installationId: string, generation: number): Promise<boolean> {
+    return this.#database.transaction(async (transaction) => {
+      return this.#disableSlackInstallation(transaction, installationId, this.#now(), generation);
+    });
   }
 
   async assertCanManage(
@@ -1036,24 +1286,545 @@ export class ImBindingService {
     }
   }
 
-  #slackIngressFromRow(
-    imBinding: typeof imBindings.$inferSelect | undefined,
-    appId: string,
-    teamId: string,
-  ): SlackIngressBinding | undefined {
-    if (!imBinding?.externalBotId || this.#inspectCredentialMaterial(imBinding).status !== "valid") return undefined;
-    const credential = this.#decodeSlackCredential(imBinding.encryptedCredential);
+  #inspectBindingCredentials(
+    binding: {
+      provider: "feishu" | "slack";
+      encryptedCredential: string | null;
+      externalAppId: string | null;
+      externalBotId: string | null;
+      externalTeamId: string | null;
+      credentialGeneration: number;
+      credentialSchemaVersion: number | null;
+      grantedCapabilities: string[];
+    },
+    installation: typeof slackInstallations.$inferSelect | null | undefined,
+  ): CredentialInspection {
+    if (binding.provider !== "slack") return this.#inspectCredentialMaterial(binding);
+    if (!installation) {
+      return this.#inspectCredentialMaterial({
+        provider: "slack",
+        encryptedCredential: null,
+        externalAppId: binding.externalAppId,
+        externalBotId: binding.externalBotId,
+        externalTeamId: binding.externalTeamId,
+        credentialGeneration: binding.credentialGeneration,
+        credentialSchemaVersion: binding.credentialSchemaVersion,
+        grantedCapabilities: binding.grantedCapabilities,
+      });
+    }
+    return this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation));
+  }
+
+  #slackInstallationIngressFromRow(
+    installation: typeof slackInstallations.$inferSelect | undefined,
+  ): SlackInstallationIngress | undefined {
+    if (
+      !installation ||
+      this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation)).status !== "valid"
+    ) {
+      return undefined;
+    }
+    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
     if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return undefined;
     return {
-      imBindingId: imBinding.id,
-      generation: imBinding.credentialGeneration,
-      appId,
-      teamId,
-      botUserId: imBinding.externalBotId,
+      installationId: installation.id,
+      generation: installation.credentialGeneration,
+      workspaceId: installation.workspaceId,
+      appId: installation.externalAppId,
+      teamId: installation.externalTeamId,
+      botUserId: installation.externalBotId,
       botId: credential.botId,
       botAccessToken: credential.botAccessToken,
       signingSecret: credential.signingSecret,
     };
+  }
+
+  async #resolveSlackRoute(installationId: string, agentId?: string): Promise<SlackInboundRoute | undefined> {
+    const rows = await this.#database
+      .select({
+        imBinding: imBindings,
+        agentWorkspaceId: agents.workspaceId,
+        agentStatus: agents.status,
+        installation: slackInstallations,
+      })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
+      .where(
+        and(
+          eq(imBindings.slackInstallationId, installationId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.status, "active"),
+          eq(imBindings.slackRouteKind, "default"),
+          eq(slackInstallations.id, installationId),
+          eq(slackInstallations.status, "active"),
+          ...(agentId ? [eq(imBindings.agentId, agentId)] : []),
+        ),
+      )
+      .limit(2);
+    if (rows.length !== 1) return undefined;
+    const row = rows[0];
+    if (!row || row.agentStatus === "deleted" || row.agentWorkspaceId !== row.installation.workspaceId) {
+      return undefined;
+    }
+    if (row.imBinding.slackRouteKind !== "default") return undefined;
+    return {
+      imBindingId: row.imBinding.id,
+      agentId: row.imBinding.agentId,
+      installationId: row.installation.id,
+      generation: row.installation.credentialGeneration,
+      routeKind: row.imBinding.slackRouteKind,
+    };
+  }
+
+  async #slackInstallationIdForRoute(imBindingId: string): Promise<string | undefined> {
+    const [row] = await this.#database
+      .select({ slackInstallationId: imBindings.slackInstallationId })
+      .from(imBindings)
+      .where(and(eq(imBindings.id, imBindingId), eq(imBindings.provider, "slack")))
+      .limit(1);
+    return row?.slackInstallationId ?? undefined;
+  }
+
+  async #activateSlackInstallation(
+    input: SlackBindingActivation,
+    credential: z.infer<typeof SlackCredentialSchema>,
+    existingTransaction?: DatabaseTransaction,
+  ): Promise<{
+    id: string;
+    installationId: string;
+    agentId: string;
+    appId: string;
+    teamId: string;
+    botId: string;
+    credentialGeneration: number;
+  }> {
+    const missing = SLACK_REQUIRED_BOT_SCOPES.filter((scope) => !credential.grantedScopes.includes(scope));
+    if (missing.length > 0) {
+      throw new ImBindingServiceError(
+        "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+        409,
+        `The provider grant is missing required capabilities: ${missing.join(", ")}`,
+      );
+    }
+    const encryptedCredential = this.#cipher.encrypt(JSON.stringify(credential));
+    const activate = async (transaction: DatabaseTransaction) => {
+      const [agent] = await transaction
+        .select({ id: agents.id, workspaceId: agents.workspaceId })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
+        .limit(1)
+        .for("update");
+      if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
+      const [currentRoute] = await transaction
+        .select()
+        .from(imBindings)
+        .where(and(eq(imBindings.agentId, input.agentId), ne(imBindings.status, "disabled")))
+        .limit(1)
+        .for("update");
+      if (currentRoute && currentRoute.provider !== "slack") {
+        throw new ImBindingServiceError(
+          "IM_BINDING_PROVIDER_IMMUTABLE",
+          409,
+          "The Agent already has a different IM provider",
+        );
+      }
+      const [appTeamInstallation] = await transaction
+        .select()
+        .from(slackInstallations)
+        .where(
+          and(
+            eq(slackInstallations.externalAppId, input.appId),
+            eq(slackInstallations.externalTeamId, input.teamId),
+            ne(slackInstallations.status, "disabled"),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (appTeamInstallation && appTeamInstallation.workspaceId !== agent.workspaceId) {
+        throw new ImBindingServiceError(
+          "SLACK_APP_TEAM_ALREADY_BOUND",
+          409,
+          "This Slack App installation is already bound to another OpenTag workspace",
+        );
+      }
+      const [workspaceInstallation] = await transaction
+        .select()
+        .from(slackInstallations)
+        .where(and(eq(slackInstallations.workspaceId, agent.workspaceId), ne(slackInstallations.status, "disabled")))
+        .limit(1)
+        .for("update");
+      const configuredRoute = currentRoute?.status === "provisioning" ? undefined : currentRoute;
+      if (input.intent === "create" && configuredRoute) {
+        throw new ImBindingServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "Create cannot replace an existing Slack binding",
+        );
+      }
+      if (input.intent !== "create" && !configuredRoute) {
+        throw new ImBindingServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          `Slack ${input.intent} requires a current configured binding`,
+        );
+      }
+      const now = this.#now();
+      let currentWorkspaceInstallation = workspaceInstallation;
+      let currentAppTeamInstallation = appTeamInstallation;
+      let releasedWorkspaceInstallationId: string | undefined;
+      if (currentWorkspaceInstallation) {
+        const [installationRoute] = await transaction
+          .select({ id: imBindings.id })
+          .from(imBindings)
+          .where(
+            and(
+              eq(imBindings.slackInstallationId, currentWorkspaceInstallation.id),
+              eq(imBindings.provider, "slack"),
+              ne(imBindings.status, "disabled"),
+            ),
+          )
+          .limit(1);
+        if (!installationRoute) {
+          await this.#disableSlackInstallation(transaction, currentWorkspaceInstallation.id, now);
+          releasedWorkspaceInstallationId = currentWorkspaceInstallation.id;
+          if (currentAppTeamInstallation?.id === currentWorkspaceInstallation.id) {
+            currentAppTeamInstallation = undefined;
+          }
+          currentWorkspaceInstallation = undefined;
+        }
+      }
+      if (
+        currentWorkspaceInstallation &&
+        currentAppTeamInstallation &&
+        currentWorkspaceInstallation.id !== currentAppTeamInstallation.id
+      ) {
+        throw new ImBindingServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "This OpenTag workspace already has a different Slack installation",
+        );
+      }
+      if (input.intent === "create" && currentWorkspaceInstallation && !currentAppTeamInstallation) {
+        throw new ImBindingServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "This OpenTag workspace already has a Slack installation",
+        );
+      }
+      const existingInstallation = currentAppTeamInstallation ?? currentWorkspaceInstallation;
+      if (existingInstallation) {
+        const currentCredential = this.#decodeSlackCredential(existingInstallation.encryptedCredential);
+        const sameIdentity =
+          existingInstallation.externalAppId === input.appId &&
+          existingInstallation.externalTeamId === input.teamId &&
+          existingInstallation.externalBotId === input.botUserId &&
+          currentCredential?.botId === credential.botId;
+        if (input.intent === "reauthorize" && !sameIdentity) {
+          if (configuredRoute?.slackInstallationId !== existingInstallation.id) {
+            throw new ImBindingServiceError(
+              "SLACK_CONFIGURATION_CONFLICT",
+              409,
+              "The configured Slack route does not belong to the current workspace installation",
+            );
+          }
+          await this.#disableSlackInstallation(transaction, existingInstallation.id, now);
+          const replacement = await this.#insertSlackInstallationAndDefaultRoute(
+            transaction,
+            {
+              agentId: input.agentId,
+              workspaceId: agent.workspaceId,
+              appId: input.appId,
+              teamId: input.teamId,
+              enterpriseId: input.enterpriseId ?? null,
+              botUserId: input.botUserId,
+              encryptedCredential,
+              grantedCapabilities: credential.grantedScopes,
+            },
+            now,
+          );
+          await transaction
+            .update(slackInstallations)
+            .set({ replacementSlackInstallationId: replacement.installationId, updatedAt: now })
+            .where(eq(slackInstallations.id, existingInstallation.id));
+          await transaction
+            .update(imBindings)
+            .set({ replacementImBindingId: replacement.id, updatedAt: now })
+            .where(eq(imBindings.id, configuredRoute.id));
+          return replacement;
+        }
+        const nextGeneration = existingInstallation.credentialGeneration + 1;
+        const [updatedInstallation] = await transaction
+          .update(slackInstallations)
+          .set({
+            status: "active",
+            externalAppId: input.appId,
+            externalTeamId: input.teamId,
+            externalEnterpriseId: input.enterpriseId ?? null,
+            externalBotId: input.botUserId,
+            credentialSchemaVersion: 1,
+            credentialGeneration: nextGeneration,
+            encryptedCredential,
+            grantedCapabilities: credential.grantedScopes,
+            observedAt: null,
+            observedConnectedAt: null,
+            activatedAt: now,
+            disabledAt: null,
+            lastErrorCode: null,
+            updatedAt: now,
+          })
+          .where(eq(slackInstallations.id, existingInstallation.id))
+          .returning();
+        if (!updatedInstallation) throw new Error("Slack installation update did not return a row");
+        await this.#syncSlackRoutesFromInstallation(transaction, updatedInstallation, now);
+        const routeId =
+          input.intent === "create"
+            ? await this.#insertDefaultSlackRoute(transaction, updatedInstallation, input.agentId, now)
+            : configuredRoute?.id;
+        if (!routeId) throw new Error("Slack route was not created");
+        if (input.intent === "reauthorize" && configuredRoute && configuredRoute.id !== routeId) {
+          throw new Error("Slack reauthorization lost the current route");
+        }
+        return {
+          id: routeId,
+          installationId: updatedInstallation.id,
+          agentId: input.agentId,
+          appId: updatedInstallation.externalAppId,
+          teamId: updatedInstallation.externalTeamId,
+          botId: updatedInstallation.externalBotId,
+          credentialGeneration: nextGeneration,
+        };
+      }
+      const created = await this.#insertSlackInstallationAndDefaultRoute(
+        transaction,
+        {
+          agentId: input.agentId,
+          workspaceId: agent.workspaceId,
+          appId: input.appId,
+          teamId: input.teamId,
+          enterpriseId: input.enterpriseId ?? null,
+          botUserId: input.botUserId,
+          encryptedCredential,
+          grantedCapabilities: credential.grantedScopes,
+        },
+        now,
+      );
+      if (releasedWorkspaceInstallationId) {
+        await transaction
+          .update(slackInstallations)
+          .set({ replacementSlackInstallationId: created.installationId, updatedAt: now })
+          .where(eq(slackInstallations.id, releasedWorkspaceInstallationId));
+      }
+      return created;
+    };
+    return existingTransaction ? activate(existingTransaction) : this.#database.transaction(activate);
+  }
+
+  async #insertSlackInstallationAndDefaultRoute(
+    transaction: DatabaseTransaction,
+    input: {
+      agentId: string;
+      workspaceId: string;
+      appId: string;
+      teamId: string;
+      enterpriseId: string | null;
+      botUserId: string;
+      encryptedCredential: string;
+      grantedCapabilities: string[];
+    },
+    now: Date,
+  ): Promise<{
+    id: string;
+    installationId: string;
+    agentId: string;
+    appId: string;
+    teamId: string;
+    botId: string;
+    credentialGeneration: number;
+  }> {
+    const [createdInstallation] = await transaction
+      .insert(slackInstallations)
+      .values({
+        workspaceId: input.workspaceId,
+        status: "active",
+        externalAppId: input.appId,
+        externalTeamId: input.teamId,
+        externalEnterpriseId: input.enterpriseId,
+        externalBotId: input.botUserId,
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: input.encryptedCredential,
+        grantedCapabilities: input.grantedCapabilities,
+        observedAt: null,
+        observedConnectedAt: null,
+        activatedAt: now,
+        disabledAt: null,
+        lastErrorCode: null,
+        updatedAt: now,
+        createdAt: now,
+      })
+      .returning();
+    if (!createdInstallation) throw new Error("Slack installation insert did not return a row");
+    const routeId = await this.#insertDefaultSlackRoute(transaction, createdInstallation, input.agentId, now);
+    return {
+      id: routeId,
+      installationId: createdInstallation.id,
+      agentId: input.agentId,
+      appId: createdInstallation.externalAppId,
+      teamId: createdInstallation.externalTeamId,
+      botId: createdInstallation.externalBotId,
+      credentialGeneration: 1,
+    };
+  }
+
+  async #insertDefaultSlackRoute(
+    transaction: DatabaseTransaction,
+    installation: typeof slackInstallations.$inferSelect,
+    agentId: string,
+    now: Date,
+  ): Promise<string> {
+    const currentRoutes = await transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(
+        and(
+          eq(imBindings.slackInstallationId, installation.id),
+          eq(imBindings.provider, "slack"),
+          ne(imBindings.status, "disabled"),
+        ),
+      )
+      .for("update");
+    for (const route of currentRoutes) {
+      await disableImBindingInTransaction(transaction, route.id, now, undefined, false);
+    }
+    const [created] = await transaction
+      .insert(imBindings)
+      .values(this.#slackRouteValues(installation, agentId, now))
+      .returning({ id: imBindings.id });
+    if (!created) throw new Error("Slack route insert did not return an id");
+    if (currentRoutes.length > 0) {
+      await transaction
+        .update(imBindings)
+        .set({ replacementImBindingId: created.id, updatedAt: now })
+        .where(
+          inArray(
+            imBindings.id,
+            currentRoutes.map((route) => route.id),
+          ),
+        );
+    }
+    return created.id;
+  }
+
+  async #syncSlackRoutesFromInstallation(
+    transaction: DatabaseTransaction,
+    installation: typeof slackInstallations.$inferSelect,
+    now: Date,
+  ): Promise<void> {
+    await transaction
+      .update(imBindings)
+      .set({
+        status: installation.status === "reauthorization_required" ? "reauthorization_required" : "active",
+        externalAppId: installation.externalAppId,
+        externalTeamId: installation.externalTeamId,
+        externalEnterpriseId: installation.externalEnterpriseId,
+        externalBotId: installation.externalBotId,
+        externalTeamName: installation.externalTeamName,
+        botDisplayName: installation.botDisplayName,
+        botAvatarUrl: installation.botAvatarUrl,
+        credentialSchemaVersion: installation.credentialSchemaVersion,
+        credentialGeneration: installation.credentialGeneration,
+        grantedCapabilities: installation.grantedCapabilities,
+        observedAt: installation.observedAt,
+        observedConnectedAt: installation.observedConnectedAt,
+        lastErrorCode: installation.lastErrorCode,
+        activatedAt: installation.activatedAt,
+        encryptedCredential: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(imBindings.slackInstallationId, installation.id),
+          eq(imBindings.provider, "slack"),
+          ne(imBindings.status, "disabled"),
+        ),
+      );
+  }
+
+  #slackRouteValues(installation: typeof slackInstallations.$inferSelect, agentId: string, now: Date) {
+    return {
+      agentId,
+      provider: "slack" as const,
+      status: "active" as const,
+      slackInstallationId: installation.id,
+      slackRouteKind: "default" as const,
+      externalAppId: installation.externalAppId,
+      externalTeamId: installation.externalTeamId,
+      externalEnterpriseId: installation.externalEnterpriseId,
+      externalBotId: installation.externalBotId,
+      externalTeamBrand: null,
+      externalTeamName: installation.externalTeamName,
+      botDisplayName: installation.botDisplayName,
+      botAvatarUrl: installation.botAvatarUrl,
+      credentialSchemaVersion: 1,
+      credentialGeneration: installation.credentialGeneration,
+      encryptedCredential: null,
+      grantedCapabilities: installation.grantedCapabilities,
+      setupAttemptId: null,
+      setupIntent: null,
+      setupState: null,
+      setupOwnerInstanceId: null,
+      setupOwnerHeartbeatAt: null,
+      encryptedSetupContext: null,
+      setupExpiresAt: null,
+      observedAt: installation.observedAt,
+      observedConnectedAt: installation.observedConnectedAt,
+      activatedAt: now,
+      disabledAt: null,
+      lastErrorCode: null,
+      updatedAt: now,
+    };
+  }
+
+  async #disableSlackInstallation(
+    transaction: DatabaseTransaction,
+    installationId: string,
+    now: Date,
+    expectedGeneration?: number,
+  ): Promise<boolean> {
+    const [disabled] = await transaction
+      .update(slackInstallations)
+      .set({
+        status: "disabled",
+        encryptedCredential: null,
+        disabledAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(slackInstallations.id, installationId),
+          ne(slackInstallations.status, "disabled"),
+          ...(expectedGeneration === undefined
+            ? []
+            : [eq(slackInstallations.credentialGeneration, expectedGeneration)]),
+        ),
+      )
+      .returning({ id: slackInstallations.id });
+    if (!disabled) return false;
+    const routes = await transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(
+        and(
+          eq(imBindings.slackInstallationId, installationId),
+          eq(imBindings.provider, "slack"),
+          ne(imBindings.status, "disabled"),
+        ),
+      );
+    for (const route of routes) {
+      await disableImBindingInTransaction(transaction, route.id, now);
+    }
+    return true;
   }
 
   async #activate(
@@ -1094,6 +1865,9 @@ export class ImBindingService {
           "The Agent already has a different IM provider",
         );
       }
+      if (input.provider === "slack") {
+        throw new Error("Slack activation must use the workspace installation write path");
+      }
       if (input.provider === "feishu") {
         const [conflicting] = await transaction
           .select({ id: imBindings.id })
@@ -1112,28 +1886,6 @@ export class ImBindingService {
             "FEISHU_APP_ALREADY_BOUND",
             409,
             "The selected Feishu App is already bound to another Agent",
-          );
-        }
-      }
-      if (input.provider === "slack" && input.identity.teamId) {
-        const [conflicting] = await transaction
-          .select({ id: imBindings.id })
-          .from(imBindings)
-          .where(
-            and(
-              eq(imBindings.provider, "slack"),
-              eq(imBindings.externalAppId, input.identity.appId),
-              eq(imBindings.externalTeamId, input.identity.teamId),
-              ne(imBindings.agentId, input.agentId),
-              ne(imBindings.status, "disabled"),
-            ),
-          )
-          .limit(1);
-        if (conflicting) {
-          throw new ImBindingServiceError(
-            "SLACK_APP_TEAM_ALREADY_BOUND",
-            409,
-            "This Slack App installation is already bound to another Agent",
           );
         }
       }
@@ -1170,53 +1922,7 @@ export class ImBindingService {
           "The authorized Feishu Bot identity does not match the current App binding",
         );
       }
-      const sameIdentity =
-        input.provider === "feishu"
-          ? sameProviderApp
-          : sameProviderApp &&
-            current?.externalTeamId === activationInput.identity.teamId &&
-            current.externalBotId === activationInput.identity.botId;
-      if (input.provider === "slack") {
-        const proposedSlackCredential = SlackCredentialSchema.parse(input.credential);
-        const configuredCurrent = current?.status === "provisioning" ? undefined : current;
-        const currentSlackCredential = configuredCurrent
-          ? this.#decodeSlackCredential(configuredCurrent.encryptedCredential)
-          : undefined;
-        if (!input.intent) throw new Error("Slack activation intent is missing");
-        if (input.intent === "create" && configuredCurrent) {
-          throw new ImBindingServiceError(
-            "SLACK_CONFIGURATION_CONFLICT",
-            409,
-            "Create cannot replace an existing Slack binding",
-          );
-        }
-        if (input.intent !== "create" && !configuredCurrent) {
-          throw new ImBindingServiceError(
-            "SLACK_CONFIGURATION_CONFLICT",
-            409,
-            `Slack ${input.intent} requires a current configured binding`,
-          );
-        }
-        if (
-          input.intent === "reauthorize" &&
-          (!sameIdentity ||
-            (currentSlackCredential?.botId !== undefined &&
-              currentSlackCredential.botId !== proposedSlackCredential.botId))
-        ) {
-          throw new ImBindingServiceError(
-            "SLACK_BINDING_IDENTITY_MISMATCH",
-            409,
-            "Reauthorization must preserve the current Slack App, Team, and Bot identity",
-          );
-        }
-        if (input.intent === "replace" && sameProviderApp) {
-          throw new ImBindingServiceError(
-            "SLACK_CONFIGURATION_CONFLICT",
-            409,
-            "Change App requires a different Slack App ID",
-          );
-        }
-      }
+      const sameIdentity = sameProviderApp;
       const activated = (id: string, credentialGeneration: number): ActivatedBinding => ({
         id,
         agentId: activationInput.agentId,
@@ -1338,12 +2044,6 @@ export class ImBindingService {
       )
       .limit(1);
     return row?.imBinding;
-  }
-
-  async #disable(imBindingId: string, expectedGeneration?: number): Promise<boolean> {
-    return this.#database.transaction(async (transaction) => {
-      return disableImBindingInTransaction(transaction, imBindingId, this.#now(), expectedGeneration);
-    });
   }
 
   async #activity(imBindingId: string): Promise<{ lastInboundAt: string | null }> {

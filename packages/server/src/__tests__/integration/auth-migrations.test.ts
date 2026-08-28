@@ -4,29 +4,40 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
-import { decodeJwt } from "jose";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
-import { createDatabaseClient } from "../../db/client.js";
+import { createBetterAuth } from "../../auth/better-auth.js";
+import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
+import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   MigrationVerificationError,
   migrateDatabase,
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "../../db/migrate.js";
-import { accountCliLoginCodes, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
+import { accountCliLoginCodes, authSessions, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
 import {
   AuthService,
   AuthServiceError,
   type AuthTokenProvider,
-  AuthTokenService,
   ConnectCodeService,
   hashSecret,
 } from "../../services/auth/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
-const jwtSecret = "im-binding-test-secret-at-least-32-characters";
+const betterAuthSecret = "im-binding-test-secret-at-least-32-characters";
+
+/** The credential provider the server composes, so these fixtures exercise the shipped one. */
+function sessionAuth(database: DatabaseClient) {
+  return createBetterAuth(database, {
+    onSessionCreating: async () => {},
+    publicUrl: "http://localhost:8000",
+    secret: betterAuthSecret,
+    secureCookies: false,
+    sessionTtlSeconds: 60 * 60 * 24 * 30,
+  });
+}
 let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 
@@ -50,6 +61,21 @@ beforeEach(async () => {
   }
 });
 
+/** A migrations folder stopping at `lastIndex`, for replaying what a revision from that point would have done. */
+async function truncatedMigrations(lastIndex: number): Promise<string> {
+  const folder = await mkdtemp(join(tmpdir(), `opentag-${lastIndex}-migrations-`));
+  await mkdir(join(folder, "meta"));
+  const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+    entries: Array<{ idx: number; tag: string }>;
+  };
+  const entries = journal.entries.filter(({ idx }) => idx <= lastIndex);
+  for (const entry of entries) {
+    await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(folder, `${entry.tag}.sql`));
+  }
+  await writeFile(join(folder, "meta/_journal.json"), JSON.stringify({ ...journal, entries }, null, 2));
+  return folder;
+}
+
 async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), authTokens?: AuthTokenProvider) {
   let currentNow = now;
   await migrateDatabase(databaseUrl, migrationsFolder);
@@ -66,7 +92,7 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
   );
   const auth = new AuthService(
     client.database,
-    authTokens ?? new AuthTokenService(jwtSecret, 900, 3600, { now: () => currentNow }),
+    authTokens ?? new BetterAuthSessionTokens(sessionAuth(client.database), client.database, { now: () => currentNow }),
     {
       now: () => currentNow,
     },
@@ -113,12 +139,18 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(20, 24).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(20, 25).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 20, tag: "0020_large_jack_power" },
       { idx: 21, tag: "0021_slow_gamora" },
       { idx: 22, tag: "0022_short_kitty_pryde" },
-      // Records which session a legacy credential was exchanged for, so a replayed exchange converges on one row.
+      // Recorded which session a legacy credential was exchanged for, so a replayed exchange converged on one row.
       { idx: 23, tag: "0023_motionless_gideon" },
+      /*
+       * Retires that record with the bridge it served, and takes over the one-Account-per-address invariant from the
+       * resolver. It lands last because it could not exist while a revision that wrote unnormalized addresses might
+       * still be serving.
+       */
+      { idx: 24, tag: "0024_handy_captain_america" },
     ]);
   });
 
@@ -611,7 +643,12 @@ describe("database migrations", () => {
           values (${verifiedUserId}, 'google', 'https://accounts.google.com', 'google-subject-1', 'Verified@Example.com')
         `;
 
-        await migrateDatabase(databaseUrl, migrationsFolder);
+        const expandOnlyFolder = await truncatedMigrations(23);
+        try {
+          await migrateDatabase(databaseUrl, expandOnlyFolder);
+        } finally {
+          await rm(expandOnlyFolder, { force: true, recursive: true });
+        }
 
         const accounts = await sql<{ email: string; email_verified: boolean; id: string }[]>`
           select id, email, email_verified from users order by email
@@ -624,12 +661,25 @@ describe("database migrations", () => {
 
         /*
          * The previous server revision inserts a `users` row for an unknown provider subject without resolving the
-         * address first. It has to keep working after this migration, so no uniqueness lands here: creating the index
-         * while that revision is still serving would turn its bootstrap-Account first sign-in into a raw `23505`.
+         * address first. It had to keep working across the whole expand-only window, because rolling back code does
+         * not roll back migrations: uniqueness landing there would have turned its first sign-in into a raw `23505`.
          */
+        const [duplicate] = await sql<{ id: string }[]>`
+          insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Previous Revision') returning id
+        `;
+        expect(duplicate).toBeDefined();
+
+        /*
+         * 0024 closes that window. It is the contract step, and can only run once no revision that writes
+         * unnormalized addresses is still serving — which is also why its guard refuses to create the index while a
+         * duplicate exists rather than choosing a row to discard.
+         */
+        await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(/share an email address/);
+        await sql`delete from users where id = ${duplicate?.id ?? ""}`;
+        await migrateDatabase(databaseUrl, migrationsFolder);
         await expect(
           sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Previous Revision')`,
-        ).resolves.toBeDefined();
+        ).rejects.toMatchObject({ code: "23505" });
       } finally {
         await sql.end();
       }
@@ -1191,22 +1241,21 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("stores only the connect-code hash and issues authority-free JWTs", async () => {
+  it("stores only the connect-code hash and issues an authority-free session", async () => {
     const fixture = await createAuthFixture();
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
       const [storedCode] = await fixture.database.select().from(accountCliLoginCodes);
       expect(storedCode?.tokenHash).toBe(hashSecret(fixture.bootstrap.connectCode));
       expect(storedCode?.tokenHash).not.toBe(fixture.bootstrap.connectCode);
-      for (const token of [tokens.accessToken, tokens.refreshToken]) {
-        const claims = decodeJwt(token);
-        expect(claims.sub).toBe(fixture.bootstrap.userId);
-        expect(claims).toHaveProperty("jti");
-        expect(claims).not.toHaveProperty("email");
-        expect(claims).not.toHaveProperty("workspaceId");
-        expect(claims).not.toHaveProperty("role");
-        expect(claims).not.toHaveProperty("sid");
-      }
+      /*
+       * The credential is a row, not a claim set, so nothing is carried inside it that could go stale — authority is
+       * read live per request. What the row names is the Account and nothing else.
+       */
+      const sessions = await fixture.database.select().from(authSessions);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]).toMatchObject({ token: tokens.accessToken, userId: fixture.bootstrap.userId });
+      expect(tokens.refreshToken).toBe(tokens.accessToken);
 
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toMatchObject({
         code: "AUTH_CODE_CONSUMED",
@@ -1266,7 +1315,8 @@ describe("authentication persistence", () => {
 
   it("does not consume a connect code when token issuance fails", async () => {
     const now = new Date("2026-08-18T00:00:00.000Z");
-    const delegate = new AuthTokenService(jwtSecret, 900, 3600, { now: () => now });
+    const client = createDatabaseClient(databaseUrl);
+    const delegate = new BetterAuthSessionTokens(sessionAuth(client.database), client.database, { now: () => now });
     let shouldFail = true;
     const authTokens: AuthTokenProvider = {
       issuePairForUser: async (userId) => {
@@ -1352,17 +1402,22 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("uses stateless sliding refresh JWTs while preserving live account checks", async () => {
+  it("withdraws the credential a refresh replaces, while preserving live account checks", async () => {
     const fixture = await createAuthFixture();
     try {
       const initial = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
       const rotated = await fixture.auth.refresh(initial.refreshToken);
       expect(rotated.accessToken).not.toBe(initial.accessToken);
-      expect(rotated.refreshToken).not.toBe(initial.refreshToken);
-      await expect(fixture.auth.refresh(initial.refreshToken)).resolves.toMatchObject({ tokenType: "Bearer" });
-      await expect(fixture.auth.getAuthenticatedUser(initial.accessToken)).resolves.toMatchObject({
-        me: { user: { id: fixture.bootstrap.userId } },
+      /*
+       * The replaced credential stops working immediately. Leaving it valid until its own expiry would mean revoking
+       * what a client currently holds does not lock out a copy taken before its last refresh — which is most of the
+       * point of a credential the server can withdraw at all.
+       */
+      await expect(fixture.auth.refresh(initial.refreshToken)).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
+      await expect(fixture.auth.getAuthenticatedUser(initial.accessToken)).rejects.toMatchObject({
+        code: "AUTH_INVALID_TOKEN",
       });
+      expect(await fixture.database.select().from(authSessions)).toHaveLength(1);
 
       await fixture.database
         .update(users)
@@ -1396,13 +1451,15 @@ describe("authentication persistence", () => {
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
         me: { user: { id: fixture.bootstrap.userId }, workspaces: [] },
       });
-      await expect(fixture.auth.refresh(tokens.refreshToken)).resolves.toMatchObject({ tokenType: "Bearer" });
+      // Refreshing withdraws what it replaces, so the renewed credential is the one that carries on from here.
+      const renewed = await fixture.auth.refresh(tokens.refreshToken);
+      expect(renewed).toMatchObject({ tokenType: "Bearer" });
 
       await fixture.database
         .update(users)
         .set({ suspendedAt: new Date("2026-08-18T00:02:00.000Z") })
         .where(eq(users.id, fixture.bootstrap.userId));
-      const error = await fixture.auth.getAuthenticatedUser(tokens.accessToken).catch((caught: unknown) => caught);
+      const error = await fixture.auth.getAuthenticatedUser(renewed.accessToken).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(AuthServiceError);
       expect(error).toMatchObject({ code: "AUTH_USER_SUSPENDED" });
     } finally {

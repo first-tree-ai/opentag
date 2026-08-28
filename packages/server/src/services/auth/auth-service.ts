@@ -12,7 +12,7 @@ import { accountCliLoginCodes, users } from "../../db/schema/index.js";
 import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
 import { hashSecret } from "./security.js";
-import type { AuthTokenProvider } from "./tokens.js";
+import type { AuthTokenProvider } from "./token-provider.js";
 
 export interface AuthServiceOptions {
   now?: () => Date;

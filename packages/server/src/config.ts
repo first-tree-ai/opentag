@@ -72,7 +72,6 @@ export function isHostedEnvironment(environment: ChannelName): boolean {
 const ServerEnvironmentSchema = z
   .object({
     BETTER_AUTH_SECRET: z.string().min(32),
-    OPENTAG_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
@@ -94,15 +93,9 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_ENVIRONMENT: z.string().trim().min(1).optional(),
     OPENTAG_OTEL_HEADERS: z.string().default(""),
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
-    OPENTAG_REFRESH_TOKEN_TTL_SECONDS: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(60 * 60 * 24 * 30),
     /*
-     * Defaults to what the refresh token's lifetime was, because that is the number this replaces: how long a client
-     * may be idle and still be signed in. It is defaulted so no deployment has to be configured before the revision
-     * that reads it.
+     * Defaults to what the refresh token's lifetime was, because that is the number it replaced: how long a client
+     * may be idle and still be signed in.
      */
     OPENTAG_SESSION_TTL_SECONDS: z.coerce
       .number()
@@ -206,9 +199,8 @@ export function parseSlackRedirectUrl(value: string, publicOrigin: string): stri
 }
 
 export interface ServerConfig {
-  accessTokenTtlSeconds: number;
   autoMigrate: boolean;
-  /** Signs Better Auth sessions and cookies. Distinct from `jwtSecret` so the two can be rotated independently. */
+  /** Signs every Account session and its cookies. */
   betterAuthSecret: string;
   databaseUrl: string;
   encryptionKey: Uint8Array;
@@ -218,6 +210,7 @@ export interface ServerConfig {
   google?: { clientId: string; clientSecret: string };
   slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
   host: string;
+  /** Signs Slack OAuth state. No longer signs any Account credential; Better Auth owns those. */
   jwtSecret: string;
   migrationsDirectory: string;
   observability: {
@@ -230,8 +223,6 @@ export interface ServerConfig {
   };
   port: number;
   publicUrl: string;
-  /** Lifetime of the credentials the previous revision issued; they are only verified now, never issued. */
-  refreshTokenTtlSeconds: number;
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
   /**
@@ -266,7 +257,6 @@ export function parseDatabaseConfig(environment: NodeJS.ProcessEnv): DatabaseCon
 export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig {
   const parsed = ServerEnvironmentSchema.parse({
     BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
-    OPENTAG_ACCESS_TOKEN_TTL_SECONDS: environment.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
@@ -288,12 +278,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_ENVIRONMENT: environment.OPENTAG_OTEL_ENVIRONMENT,
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
-    OPENTAG_REFRESH_TOKEN_TTL_SECONDS: environment.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
   });
 
   return {
-    accessTokenTtlSeconds: parsed.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
     betterAuthSecret: parsed.BETTER_AUTH_SECRET,
     channel: getChannelConfig(parsed.OPENTAG_ENV),
@@ -332,7 +320,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     },
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
-    refreshTokenTtlSeconds: parsed.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
     stagingOnboardingLab: parsed.OPENTAG_ENV === "staging",
   };

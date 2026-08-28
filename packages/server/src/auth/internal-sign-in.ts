@@ -1,21 +1,15 @@
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
-import { z } from "zod";
 import { AuthServiceError } from "../services/auth/errors.js";
-import { hashSecret } from "../services/auth/security.js";
 
 /**
- * Paths below the Better Auth base path, both deliberately absent from the published route allowlist.
+ * Path below the Better Auth base path, deliberately absent from the published route allowlist.
  *
- * Nothing routes to them from outside. Their only callers are OpenTag routes that have already decided the request may
- * have a session, and reach them server-side.
+ * Nothing routes to it from outside. Its only caller is the loopback-guarded OpenTag development route, which has
+ * already decided the request may have a session, and reaches it server-side.
  */
 export const DEV_SIGN_IN_PATH = "/dev/sign-in";
-export const LEGACY_UPGRADE_PATH = "/legacy/upgrade";
-
-/** Whatever an endpoint here can be told; the Account it acts on never comes from the caller. */
-const LegacyUpgradeBodySchema = z.object({ refreshToken: z.string().min(1).max(4096) });
 
 /**
  * Signs the one configured development Account in.
@@ -36,95 +30,6 @@ export function devSignInPlugin(resolveUserId: () => Promise<string>): BetterAut
       }),
     },
   };
-}
-
-/** What a presented legacy credential resolves to, once it has been verified. */
-export interface LegacyCredential {
-  /** When the presented credential itself expires, which bounds how long its exchange has to stay recorded. */
-  expiresAt: Date;
-  userId: string;
-}
-
-/**
- * Exchanges a credential the previous revision issued for the session that replaces it.
- *
- * This is not a way to sign in without one: the caller must present a refresh token that still verifies, and
- * `resolveCredential` is what decides whether it does. It exists so a browser that has not signed in since the cutover
- * moves across on its next refresh rather than being asked to sign in again.
- *
- * One legacy credential converges on one session, however many times it is presented. A stateless refresh token has
- * nothing to consume, so the exchange is recorded against the token itself in a single statement that returns the
- * winning session — the first writer's. A later caller withdraws the session it had just created and hands back the
- * winner's, so every response carries the same token and it does not matter which `Set-Cookie` the browser applies
- * last. Without that, a replay or two tabs racing a `401` would each leave a live row invisible to the browser holding
- * the cookie, surviving the sign-out meant to end it.
- *
- * The record is the gate, so nothing here takes a lock. An advisory lock would be held by one connection while every
- * waiter held another, and the holder still needs a connection of its own to do the work: a pool of ten stalls on ten
- * concurrent exchanges of the same credential.
- */
-export function legacyUpgradePlugin(options: LegacyUpgradeOptions): BetterAuthPlugin {
-  return {
-    id: "opentag-legacy-upgrade",
-    endpoints: {
-      opentagLegacyUpgrade: createAuthEndpoint(
-        LEGACY_UPGRADE_PATH,
-        { body: LegacyUpgradeBodySchema, method: "POST" },
-        async (ctx) => {
-          const refreshToken = ctx.body.refreshToken;
-          const credential = await resolve(options.resolveCredential(refreshToken));
-          const user = await requireUser(ctx, credential.userId);
-          const session = await createSession(ctx, credential.userId);
-
-          const winner = await options.recordExchange({
-            expiresAt: credential.expiresAt,
-            sessionToken: session.token,
-            tokenHash: hashSecret(refreshToken),
-          });
-          if (winner === session.token) {
-            await setSessionCookie(ctx, { session, user });
-            return ctx.json({ userId: credential.userId });
-          }
-
-          /*
-           * Another exchange of this credential got there first. Withdraw the session just created — it was handed to
-           * nobody — and hand back theirs, so the credential still corresponds to exactly one revocable row.
-           */
-          await ctx.context.internalAdapter.deleteSession(session.token);
-          const existing = await ctx.context.internalAdapter.findSession(winner);
-          if (!existing) {
-            // The credential is spent and the session it produced is already gone; there is nothing to hand back.
-            throw new APIError("UNAUTHORIZED", {
-              code: "AUTH_INVALID_TOKEN",
-              message: "The refresh token has already been exchanged",
-            });
-          }
-          await setSessionCookie(ctx, { session: existing.session, user });
-          return ctx.json({ userId: credential.userId });
-        },
-      ),
-    },
-  };
-}
-
-/** One exchange of a legacy credential. */
-export interface LegacyExchange {
-  expiresAt: Date;
-  sessionToken: string;
-  tokenHash: string;
-}
-
-export interface LegacyUpgradeOptions {
-  /**
-   * Records this exchange and answers with the session token that won, which is this one only on a first exchange.
-   *
-   * It has to decide the winner in one statement. Better Auth's `reserveVerificationValue` looks like the primitive
-   * for exactly this and is not: its first-writer-wins comes from writing a derived primary key, and
-   * `auth_verifications.id` is a `uuid` column with a default, so the derived id does not survive the insert and every
-   * caller reserves successfully.
-   */
-  recordExchange: (exchange: LegacyExchange) => Promise<string>;
-  resolveCredential: (refreshToken: string) => Promise<LegacyCredential>;
 }
 
 /** The statuses OpenTag's authentication decisions produce, named as Better Auth's error constructor wants them. */

@@ -2,6 +2,7 @@ import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { ConnectCodeIssuer, UserAuthService } from "../services/auth/index.js";
+import { signedInBrowser } from "./signed-in-browser.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
@@ -43,7 +44,10 @@ function createAuthService(): UserAuthService {
         ],
       },
     }),
-    getActiveUserById: vi.fn(),
+    getActiveUserById: vi.fn().mockResolvedValue({
+      user: { id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", email: "admin@example.com", displayName: "Admin" },
+      workspaces: [],
+    }),
     updateSelfProfile: vi.fn().mockResolvedValue({
       id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
       email: "admin@example.com",
@@ -167,9 +171,9 @@ describe("auth HTTP API", () => {
     const authService = createAuthService();
     const app = createApp({
       authService,
+      betterAuth: signedInBrowser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e"),
       browserAuth: {
         publicOrigin: "https://dev.example.com",
-        refreshTokenTtlSeconds: 3600,
         sessionTtlSeconds: 3600,
         secureCookies: true,
       },
@@ -179,7 +183,7 @@ describe("auth HTTP API", () => {
     const rejected = await app.inject({
       method: "PATCH",
       url: HTTP_PATHS.me,
-      headers: { cookie: "opentag_access=access; opentag_csrf=csrf" },
+      headers: { cookie: "opentag.session_token=session; opentag_csrf=csrf" },
       payload: { displayName: "Updated Admin" },
     });
     expect(rejected.statusCode).toBe(403);
@@ -189,7 +193,7 @@ describe("auth HTTP API", () => {
       method: "PATCH",
       url: HTTP_PATHS.me,
       headers: {
-        cookie: "opentag_access=access; opentag_csrf=csrf",
+        cookie: "opentag.session_token=session; opentag_csrf=csrf",
         origin: "https://dev.example.com",
         "x-opentag-csrf": "csrf",
       },
@@ -243,9 +247,9 @@ describe("auth HTTP API", () => {
     };
     const app = createApp({
       authService,
+      betterAuth: signedInBrowser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e"),
       browserAuth: {
         publicOrigin: "https://dev.example.com",
-        refreshTokenTtlSeconds: 3600,
         sessionTtlSeconds: 3600,
         secureCookies: true,
       },
@@ -256,7 +260,7 @@ describe("auth HTTP API", () => {
     const rejected = await app.inject({
       method: "POST",
       url: HTTP_PATHS.meConnectCodes,
-      headers: { cookie: "opentag_access=access; opentag_csrf=csrf" },
+      headers: { cookie: "opentag.session_token=session; opentag_csrf=csrf" },
     });
     expect(rejected.statusCode).toBe(403);
     expect(issuer.issueForUser).not.toHaveBeenCalled();
@@ -265,7 +269,7 @@ describe("auth HTTP API", () => {
       method: "POST",
       url: HTTP_PATHS.meConnectCodes,
       headers: {
-        cookie: "opentag_access=access; opentag_csrf=csrf",
+        cookie: "opentag.session_token=session; opentag_csrf=csrf",
         origin: "https://dev.example.com",
         "x-opentag-csrf": "csrf",
       },

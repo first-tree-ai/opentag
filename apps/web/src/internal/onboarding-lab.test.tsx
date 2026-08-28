@@ -22,7 +22,6 @@ function renderLab(overrides: Partial<Parameters<typeof OnboardingLabPage>[0]> =
   const onScenarioChange = vi.fn();
   render(
     <OnboardingLabPage
-      resetAvailable
       scenarioId={null}
       user={user}
       onResetSucceeded={onResetSucceeded}
@@ -52,7 +51,7 @@ function openSwitcher(): HTMLElement {
 
 async function confirmReset() {
   openSwitcher();
-  fireEvent.click(screen.getByRole("button", { name: "Reset shared account and start onboarding" }));
+  fireEvent.click(screen.getByRole("button", { name: "Reset my account and start onboarding" }));
   const dialog = await screen.findByRole("dialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Reset and start onboarding" }));
 }
@@ -62,19 +61,19 @@ describe("Onboarding Lab page", () => {
     vi.restoreAllMocks();
   });
 
-  it("warns that the staging Account is shared before any reset", () => {
+  it("says whose Account the reset destroys, and that it is nobody else's", () => {
     renderLab();
     openSwitcher();
 
-    expect(screen.getByText(/Shared staging test account/)).toBeTruthy();
-    expect(screen.getByText(/can interrupt another tester/)).toBeTruthy();
+    expect(screen.getByText(/This resets your own Account/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(user.email))).toBeTruthy();
+    expect(screen.getByText(/reaches nothing of anyone else's/)).toBeTruthy();
   });
 
   it("renders every fixed scenario through the production onboarding presentation", () => {
     for (const scenario of ONBOARDING_SCENARIOS) {
       const view = render(
         <OnboardingLabPage
-          resetAvailable
           scenarioId={scenario.id}
           user={user}
           onResetSucceeded={vi.fn()}
@@ -91,7 +90,6 @@ describe("Onboarding Lab page", () => {
     for (const scenario of ONBOARDING_SCENARIOS) {
       const view = render(
         <OnboardingLabPage
-          resetAvailable
           scenarioId={scenario.id}
           user={user}
           onResetSucceeded={vi.fn()}
@@ -124,7 +122,6 @@ describe("Onboarding Lab page", () => {
 
     render(
       <OnboardingLabPage
-        resetAvailable
         scenarioId="computer-offline"
         user={user}
         onResetSucceeded={vi.fn()}
@@ -133,7 +130,6 @@ describe("Onboarding Lab page", () => {
     ).unmount();
     render(
       <OnboardingLabPage
-        resetAvailable
         scenarioId="setup-complete"
         user={user}
         onResetSucceeded={vi.fn()}
@@ -142,7 +138,6 @@ describe("Onboarding Lab page", () => {
     ).unmount();
     render(
       <OnboardingLabPage
-        resetAvailable
         scenarioId="loading-failure"
         user={user}
         onResetSucceeded={vi.fn()}
@@ -180,15 +175,15 @@ describe("Onboarding Lab page", () => {
     expect(onScenarioChange).toHaveBeenCalledExactlyOnceWith("computer-offline");
   });
 
-  it("requires one confirmation before it resets the shared Account", async () => {
+  it("requires one confirmation before it resets this Account", async () => {
     const reset = vi.spyOn(browserApi, "resetOnboardingLab").mockResolvedValue();
     renderLab();
     openSwitcher();
 
-    fireEvent.click(screen.getByRole("button", { name: "Reset shared account and start onboarding" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset my account and start onboarding" }));
     const dialog = await screen.findByRole("dialog");
 
-    expect(within(dialog).getByText(/Another tester using it right now will be interrupted/)).toBeTruthy();
+    expect(within(dialog).getByText(/Nobody else's Account is touched/)).toBeTruthy();
     expect(reset).not.toHaveBeenCalled();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -236,7 +231,6 @@ describe("Onboarding Lab route", () => {
   function installApi(
     options: {
       offered?: boolean;
-      resetAvailable?: boolean;
       workspaces?: "none";
       setupCompletedAt?: string | null;
       afterResetSetupCompletedAt?: string | null;
@@ -279,7 +273,7 @@ describe("Onboarding Lab route", () => {
           return new Response(null, { status: 204 });
         }
         if (options.offered === false) return new Response(null, { status: 404 });
-        return json({ reset: options.resetAvailable !== false });
+        return new Response(null, { status: 204 });
       }
       if (path.endsWith("/computers")) return json({ computers: [] });
       if (path.endsWith("/agents")) return json({ agents: [] });
@@ -324,21 +318,21 @@ describe("Onboarding Lab route", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Page not found" })).toBeTruthy();
   });
 
-  it("shows Preview but no reset control to an Account that does not own the reset", async () => {
-    installApi({ resetAvailable: false });
+  it("offers both halves to any Account the Lab answers, and requests nothing until asked", async () => {
+    installApi();
 
     render(<App />);
 
     await screen.findByRole("button", { name: /Onboarding Lab/ });
     openSwitcher();
     expect(screen.getByRole("heading", { level: 2, name: "Onboarding Lab" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Reset shared account and start onboarding" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Reset my account and start onboarding" })).toBeTruthy();
     expect(resetRequests).toBe(0);
   });
 
-  it("shows Preview to an authenticated Account that holds no active resource grant", async () => {
+  it("shows the Lab to an authenticated Account that holds no active resource grant", async () => {
     // The Server admits this Account and answers the Lab read, so the Web must not refuse it first.
-    installApi({ resetAvailable: false, workspaces: "none" });
+    installApi({ workspaces: "none" });
 
     render(<App />);
 
@@ -346,7 +340,6 @@ describe("Onboarding Lab route", () => {
     openSwitcher();
     expect(screen.getAllByRole("button", { name: /Brand new account/ }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Reset shared account and start onboarding" })).toBeNull();
   });
 
   it("renders the scenario named in the URL", async () => {

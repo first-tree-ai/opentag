@@ -10,60 +10,31 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
-  it("offers the staging Onboarding Lab on every staging deployment and its reset only when configured", () => {
-    const accountId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+  it("offers the Onboarding Lab on the staging environment alone, and takes no setting for it", () => {
     expect(
       parseServerConfig({
         ...required,
         OPENTAG_ENV: "staging",
         OPENTAG_PUBLIC_URL: "https://staging.example.com",
-        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: ` ${accountId} `,
       }).stagingOnboardingLab,
-    ).toEqual({ accountId });
+    ).toBe(true);
 
-    // Scenario Preview is fixed client-side fixtures, so staging offers the Lab with no Account
-    // configured; only the reset half waits for one.
-    expect(
-      parseServerConfig({
-        ...required,
-        OPENTAG_ENV: "staging",
-        OPENTAG_PUBLIC_URL: "https://staging.example.com",
-        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "",
-      }).stagingOnboardingLab,
-    ).toEqual({});
-    expect(
-      parseServerConfig({
-        ...required,
-        OPENTAG_ENV: "staging",
-        OPENTAG_PUBLIC_URL: "https://staging.example.com",
-      }).stagingOnboardingLab,
-    ).toEqual({});
-
-    expect(parseServerConfig({ ...required, OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "" }).stagingOnboardingLab).toBe(
-      undefined,
-    );
-    expect(parseServerConfig(required).stagingOnboardingLab).toBe(undefined);
+    expect(parseServerConfig(required).stagingOnboardingLab).toBe(false);
     expect(
       parseServerConfig({ ...required, OPENTAG_ENV: "prod", OPENTAG_PUBLIC_URL: "https://example.com" })
         .stagingOnboardingLab,
-    ).toBe(undefined);
+    ).toBe(false);
 
-    for (const invalid of [
-      {
-        OPENTAG_ENV: "prod",
-        OPENTAG_PUBLIC_URL: "https://example.com",
-        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: accountId,
-      },
-      { OPENTAG_ENV: "dev", OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: accountId },
-      { OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: accountId },
-      {
+    // The Lab took one setting before the reset became reflexive. A deployment that still carries it
+    // must keep starting, so the retired name is ignored rather than rejected as unknown.
+    expect(
+      parseServerConfig({
+        ...required,
         OPENTAG_ENV: "staging",
         OPENTAG_PUBLIC_URL: "https://staging.example.com",
-        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "not-a-uuid",
-      },
-    ]) {
-      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
-    }
+        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      }).stagingOnboardingLab,
+    ).toBe(true);
   });
 
   it("applies safe local defaults", () => {

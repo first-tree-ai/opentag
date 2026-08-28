@@ -398,7 +398,6 @@ processes.
 | `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session lifetime, browser and CLI alike |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-JWT lifetime; only credentials issued before the Better Auth cutover |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime; only credentials issued before the Better Auth cutover |
-| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Staging-only Account UUID allowed to reset the [Onboarding Lab](./docs/staging-onboarding-lab.md) Account; Scenario Preview needs no configuration |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm

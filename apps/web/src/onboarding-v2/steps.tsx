@@ -395,11 +395,6 @@ export function CloudStep({
         <h1>{COPY.cloud.title}</h1>
       </header>
       <form className="otv2-form" onSubmit={submit}>
-        <p className="otv2-note otv2-note--offer">
-          <Icon name="model" />
-          <span>{COPY.cloud.offer}</span>
-        </p>
-
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
 
         <fieldset className="otv2-fieldset">

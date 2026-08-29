@@ -36,6 +36,9 @@ export function CommandBlock({
   /** Renders the block's shape with nothing to act on, while its real contents are still coming. */
   inert?: boolean;
 }) {
+  const split = command.lastIndexOf(" ") + 1;
+  const lead = command.slice(0, split);
+  const token = command.slice(split);
   const [copied, setCopied] = useState(false);
   const [hint, setHint] = useState<string>();
   const codeRef = useRef<HTMLElement>(null);
@@ -76,7 +79,15 @@ export function CommandBlock({
           <code ref={codeRef}>
             <span className="otv2-command__comment">{comment}</span>
             {"\n"}
-            {command}
+            {lead}
+            {/*
+              The trailing token is an opaque secret — a connect code — and it breaks by character
+              rather than at its own hyphens and underscores. Left to break at those, two codes of
+              the same length wrap to a different number of lines and the block changes height when
+              one is reissued; measured, that was 19px of movement below 640px. The rest of the
+              command still breaks between words, so short tokens like `sh` stay whole.
+            */}
+            <span className="otv2-command__token">{token}</span>
           </code>
         </pre>
         {/*

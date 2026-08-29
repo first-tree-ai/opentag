@@ -118,11 +118,6 @@ export const COPY = {
     signInPending: "Waiting for you to approve it…",
     signInDone: (runtime: string) => `Signed in to ${runtime}.`,
     /**
-     * Says only what stays true. Tokens are no longer always included — a user can bring their own
-     * coding plan — so that promise belongs to the token section, where it is actually chosen.
-     */
-    offer: "OpenTag runs the agent for you. Nothing to install, and no computer to connect.",
-    /**
      * The name is fixed once the Agent exists: the Server has no way to rename one. Picking a
      * messaging app is what creates it, so this says why the field stopped accepting edits.
      */

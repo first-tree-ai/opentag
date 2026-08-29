@@ -592,8 +592,6 @@
   display: flex;
   gap: var(--space-3);
   align-items: flex-start;
-  /* Four wrapped lines of the install-and-connect command, so its exact wrapping cannot resize it. */
-  min-height: 108px;
   padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   border: 1px solid var(--strong-border);
   border-radius: var(--radius-control);
@@ -667,6 +665,13 @@
   color: #8fa08c;
 }
 
+/* Breaks by character, so the block's height cannot depend on which characters a code happens to
+   contain. Everything around it still breaks between words. */
+.otv2-command__token {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
 /*
  * Sits on the dark block, so it carries its own colours rather than the ghost variant's. Sized as
  * a real target rather than around the icon: `.ds-icon` is 1em, which on a compact button is only
@@ -674,23 +679,25 @@
  */
 .otv2-command__copy {
   flex: 0 0 auto;
-  width: 40px;
-  min-width: 40px;
-  height: 40px;
-  min-height: 40px;
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  min-height: 48px;
   padding: 0;
+
+  /* The same value the command itself is set in, so the control is as legible as what it copies. */
   background: transparent;
-  color: #9aa79a;
+  color: #e6e9e0;
 }
 
 .otv2-command__copy .ds-icon {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
 }
 
 .otv2-command__copy:hover:not(:disabled) {
-  background: rgb(230 233 224 / 12%);
-  color: #e6e9e0;
+  background: rgb(230 233 224 / 14%);
+  color: #fff;
 }
 
 .otv2-shell .otv2-command__copy:active {

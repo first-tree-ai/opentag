@@ -109,8 +109,9 @@ function connectCommand(code: string): string {
 
 /**
  * A command of exactly the shape a real one has, for the moment before one has been issued. Built
- * from the same parts, so the block it renders is the same height at any width and the arrival of
- * the real command moves nothing.
+ * from the same parts and the same code length, so the block it renders is the same height at any
+ * width. That identity is what keeps the arrival of the real command from moving anything — there
+ * is no reserved height doing the work, and none is needed.
  */
 export const PLACEHOLDER_CONNECT_COMMAND = connectCommand("0".repeat(32));
 

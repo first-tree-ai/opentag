@@ -67,6 +67,26 @@ describe("onboarding flow layout", () => {
     }
   });
 
+  it("answers a press with colour rather than shrinking the control", () => {
+    // `styles.css` and the design system both apply `transform: scale(0.96)` on `:active`.
+    expect(declarationValue(".otv2-shell button:active", "transform")).toBe("none");
+    for (const selector of [
+      ".otv2-shell .ds-button--primary:active",
+      ".otv2-shell .ds-button--secondary:active",
+      ".otv2-choice:active:not(:disabled)",
+      ".otv2-lab__toggle:active",
+    ]) {
+      expect(() => declarationValue(selector, "background")).not.toThrow();
+    }
+    // No `:active` rule may reintroduce a scale. Waiting animations still use one, deliberately.
+    stylesheet.walkRules((rule) => {
+      if (!rule.selectors.some((selector) => selector.includes(":active"))) return;
+      rule.walkDecls("transform", (declaration) => {
+        expect(declaration.value).not.toContain("scale");
+      });
+    });
+  });
+
   it("keeps the command block wrapping rather than forcing a horizontal scroll", () => {
     expect(declarationValue(".otv2-command__code", "white-space")).toBe("pre-wrap");
     expect(declarationValue(".otv2-command__code", "overflow-wrap")).toBe("anywhere");

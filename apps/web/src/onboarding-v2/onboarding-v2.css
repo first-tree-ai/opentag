@@ -13,6 +13,11 @@
   --otv2-attention: #d98207;
   --otv2-attention-surface: #fdf1de;
 
+  /* One pressed step below each resting surface, so a click reads as a colour change. */
+  --otv2-pressed: #d2d7c6;
+  --otv2-pressed-brand: #2b4703;
+  --otv2-pressed-brand-surface: #e2ebd0;
+
   display: flex;
   flex-direction: column;
   min-height: 100vh;
@@ -266,6 +271,51 @@
   background: var(--brand-light);
 }
 
+/*
+ * Pressing something changes its colour rather than its size. Both `styles.css` and the design
+ * system shrink on `:active` with `transform: scale(0.96)`; that is undone here and replaced with
+ * a pressed tint, so every control on this surface answers a click the same way.
+ */
+.otv2-shell button:active,
+.otv2-shell .ds-button:active {
+  transform: none;
+}
+
+.otv2-shell .ds-button--primary:active {
+  background: var(--otv2-pressed-brand);
+}
+
+.otv2-shell .ds-button--secondary:active,
+.otv2-shell .ds-button--outline:active,
+.otv2-shell .ds-button--ghost:active {
+  background: var(--otv2-pressed);
+}
+
+.otv2-shell .ds-button--inline:active {
+  color: var(--otv2-pressed-brand);
+  text-decoration-color: currentcolor;
+}
+
+.otv2-choice:active:not(:disabled) {
+  border-color: var(--color-border-control);
+  background: var(--otv2-pressed);
+}
+
+.otv2-choice[aria-pressed="true"]:active {
+  border-color: var(--brand);
+  background: var(--otv2-pressed-brand-surface);
+}
+
+.otv2-restart:active {
+  background: none;
+  color: var(--otv2-pressed-brand);
+}
+
+.otv2-lab__toggle:active,
+.otv2-lab__segmented button:active {
+  background: var(--otv2-pressed);
+}
+
 .otv2-choice:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
@@ -510,24 +560,11 @@
   flex: 0 0 auto;
 }
 
+/* Copying is confirmed by colour and the check icon; the button does not change size. */
 .otv2-command__copy[data-copied="true"] {
-  border-color: var(--color-status-success);
-  color: var(--color-status-success);
-  animation: otv2-copy-pop 320ms ease;
-}
-
-@keyframes otv2-copy-pop {
-  0% {
-    transform: scale(1);
-  }
-
-  45% {
-    transform: scale(0.94);
-  }
-
-  100% {
-    transform: scale(1);
-  }
+  border-color: var(--otv2-pass);
+  background: var(--otv2-pass-surface);
+  color: var(--otv2-pass);
 }
 
 /* The line that says how to run the command, with the command's validity on its far end. */

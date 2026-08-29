@@ -105,7 +105,12 @@ export function OnboardingV2Page() {
       </header>
 
       <main className="otv2-shell__main">
-        <StepRail steps={flow.steps} />
+        {/*
+          No rail on the first step. How many steps follow depends on the answer to that step's
+          question — a local computer needs its own connect and check, a cloud one does not — so a
+          rail there would have to show a length it cannot know yet.
+        */}
+        {flow.page === "destination" ? null : <StepRail steps={flow.steps} />}
         <div className="otv2-shell__content">
           {flow.complete ? (
             <DoneStep name={draft.name} />

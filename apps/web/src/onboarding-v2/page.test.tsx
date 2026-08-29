@@ -68,6 +68,15 @@ describe("OnboardingV2Page", () => {
     expect(cloud.textContent).toContain("Coming soon");
   });
 
+  it("shows no progress rail until the branch is known", () => {
+    render(<OnboardingV2Page />);
+    // How many steps follow depends on this step's answer, so there is no honest length to show.
+    expect(screen.queryByRole("navigation", { name: "Setup progress" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByRole("navigation", { name: "Setup progress" })).toBeTruthy();
+  });
+
   it("requires a confirmed choice rather than advancing on selection", () => {
     render(<OnboardingV2Page />);
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);

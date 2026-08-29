@@ -27,10 +27,9 @@ function defines(utility) {
 }
 
 /*
- * The Kumo probes are classes its components render but nothing in OpenTag writes, and which its own
- * bundled CSS does not already define -- so each one is present only when Kumo's dist is scanned.
- * `h-9` and `bg-kumo-badge-orange` are not usable here: Kumo's binding stylesheet already carries them,
- * so they stay present even when the scan misses everything else.
+ * The Kumo probes are classes its components render but nothing in OpenTag writes, so each is present
+ * only when Kumo's dist is scanned. Any such class works; these were taken from the set difference
+ * between a build that scans the dist and one that does not.
  */
 const required = [
   { reason: "Kumo control sizing", utility: "h-11" },

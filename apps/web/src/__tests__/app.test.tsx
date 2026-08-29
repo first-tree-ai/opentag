@@ -2733,7 +2733,9 @@ describe("OpenTag Web App Shell", () => {
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell
     // brand would stand beside the one onboarding renders itself.
-    expect(screen.queryByRole("navigation", { name: "Primary navigation" })).toBeNull();
+    // The sidebar is an <aside>, so it is `complementary`; asking for `navigation` here matched
+    // nothing whether or not the shell rendered.
+    expect(screen.queryByRole("complementary", { name: "Primary navigation" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
     expect(screen.getAllByRole("link", { name: "OpenTag" })).toHaveLength(1);
   });

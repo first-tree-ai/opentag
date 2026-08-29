@@ -147,6 +147,17 @@ export {
   type AdmissionSnapshot,
 } from "./runtime/admission-controller.js";
 export {
+  type AgentRuntimeCliInstallation,
+  type AgentRuntimeExecutableSource,
+  codexDesktopAppBinDirs,
+  type ProbeAgentRuntimeCliInstallationsOptions,
+  probeAgentRuntimeCliInstallations,
+  type ResolveAgentRuntimeExecutableOptions,
+  type ResolvedAgentRuntimeExecutable,
+  resolveAgentRuntimeExecutable,
+  wellKnownAgentRuntimeBinDirs,
+} from "./runtime/agent-runtime-installation.js";
+export {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
   AgentRuntimeProviderUnavailableError,

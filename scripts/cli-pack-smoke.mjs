@@ -172,9 +172,16 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
     if (!computerConnectHelp.stdout.includes("--no-start")) {
       throw new Error("CLI Computer connect help is missing --no-start");
     }
-    const doctor = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], { expectedStatus: 1 });
-    if (!doctor.stderr.includes("Network error:")) {
-      throw new Error("CLI doctor smoke did not report the expected network failure");
+    const doctorHelp = run(binaryPath, ["doctor", "--help"]);
+    if (doctorHelp.stdout.includes("--server-url")) {
+      throw new Error("CLI doctor still exposes a caller-selected Server URL");
+    }
+    const doctor = run(binaryPath, ["doctor"], {
+      expectedStatus: 1,
+      env: { OPENTAG_HOME: join(temporaryRoot, "empty-opentag-home") },
+    });
+    if (!doctor.stderr.includes("OpenTag server: not configured")) {
+      throw new Error("CLI doctor smoke did not report the expected missing enrollment");
     }
 
     const installedManifest = JSON.parse(

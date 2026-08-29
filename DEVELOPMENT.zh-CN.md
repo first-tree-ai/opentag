@@ -77,11 +77,8 @@ Server 默认监听 `http://127.0.0.1:8000`。在另一个终端中运行：
 pnpm --filter open-tag start doctor
 ```
 
-可以通过 `--server-url` 或 `OPENTAG_SERVER_URL` 指定其他 Server URL：
-
-```bash
-pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
-```
+`doctor` 检查本机 Computer enrollment 中记录的 Server URL，不接受调用方另行指定 Server URL。它还会报告本地
+是否安装了受支持的 Agent Runtime CLI。该检查只判断安装状态，不检查 Agent Runtime 登录状态或 Integration CLI。
 
 ## 本地 PostgreSQL
 
@@ -354,7 +351,7 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | --- | --- | --- |
 | `OPENTAG_HOST` | `127.0.0.1` | Server 监听地址 |
 | `OPENTAG_PORT` | `8000` | Server 监听端口 |
-| `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor 目标地址 |
+| `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | login 和 Computer connect 的可选 Server 目标覆盖 |
 | `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和生成连接命令使用的必需 Server 公共 origin |
 | `OPENTAG_ENV` | `dev` | OpenTag 环境/channel：`dev`、`staging` 或 `prod`；托管值要求 HTTPS |
 | `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
@@ -377,7 +374,9 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session 有效期，浏览器与 CLI 相同 |
 | `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
 
-如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
+如果 `doctor` 失败，其错误类别会区分 enrollment、网络、HTTP、无效响应和本地 Agent Runtime 安装问题。请确认
+Computer enrollment 所记录的 Server 已启动。Agent Runtime 登录状态和 Integration CLI 可用性仍是后续独立诊断项，
+报告会明确标记为未检查。
 
 ## 发布
 

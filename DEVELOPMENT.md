@@ -78,11 +78,9 @@ The server listens on `http://127.0.0.1:8000` by default. In another terminal, r
 pnpm --filter open-tag start doctor
 ```
 
-Use a different server URL with `--server-url` or `OPENTAG_SERVER_URL`:
-
-```bash
-pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
-```
+`doctor` checks the Server URL recorded by this Computer's enrollment; it does not accept a caller-selected Server URL.
+It also reports whether a supported local Agent Runtime CLI is installed. This install-only check does not inspect Agent
+Runtime authentication or Integration CLI availability.
 
 ## Local PostgreSQL
 
@@ -379,7 +377,7 @@ processes.
 | --- | --- | --- |
 | `OPENTAG_HOST` | `127.0.0.1` | Server listen host |
 | `OPENTAG_PORT` | `8000` | Server listen port |
-| `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
+| `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | Optional Server target override for login and Computer connect |
 | `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and generated connect commands |
 | `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
@@ -402,8 +400,9 @@ processes.
 | `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session lifetime, browser and CLI alike |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
-If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
-the server is running and that the configured URL points to its base address.
+If `doctor` fails, its error category distinguishes enrollment, network, HTTP, invalid-response, and local Agent Runtime
+installation failures. Confirm the Server recorded by the Computer enrollment is running. Agent Runtime authentication and
+Integration CLI availability remain separate follow-up diagnostics and are stated as unchecked in the report.
 
 ## Releases
 

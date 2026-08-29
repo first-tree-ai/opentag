@@ -378,7 +378,6 @@ export function CloudStep({
   signIn: PlanSignIn;
 }) {
   const [touched, setTouched] = useState(false);
-  const tokenApplies = tokenChoiceApplies(draft.cloudRuntime);
   const runtimeLabel = draft.cloudRuntime ? CLOUD_RUNTIME_COPY[draft.cloudRuntime].title : "";
   const signedIn = signIn === "signed-in";
   const submittable = draftIsSubmittable(draft, signedIn);
@@ -400,13 +399,22 @@ export function CloudStep({
         <fieldset className="otv2-fieldset">
           <legend>{COPY.cloud.runtimeLabel}</legend>
           <p className="otv2-fieldset__hint">{COPY.cloud.runtimeHint}</p>
-          <ul className="otv2-choices otv2-choices--grid">
+          {/* OpenTag's own agent leads on its own row; the coding agents follow beside each other. */}
+          <ul className="otv2-choices otv2-choices--grid otv2-choices--lead">
             {CLOUD_RUNTIMES.map((runtime) => (
               <li key={runtime}>
                 <button
                   aria-pressed={draft.cloudRuntime === runtime}
                   className="otv2-choice otv2-choice--runtime"
-                  onClick={() => onChange({ ...draft, cloudRuntime: runtime, tokenSource: undefined })}
+                  onClick={() =>
+                    onChange({
+                      ...draft,
+                      cloudRuntime: runtime,
+                      // The OpenTag agent can only spend OpenTag's tokens, so that answer comes
+                      // with the choice; any other runtime starts the question over.
+                      tokenSource: runtime === "opentag" ? "opentag" : undefined,
+                    })
+                  }
                   type="button"
                 >
                   <span aria-hidden="true" className="otv2-mark" data-runtime={runtime}>
@@ -423,37 +431,37 @@ export function CloudStep({
           <p className="otv2-footnote">{COPY.cloud.runtimeFootnote}</p>
         </fieldset>
 
-        {/*
-          Only a third-party runtime has a plan to attach. OpenTag's own runtime has none, so the
-          question is answered rather than asked — a disabled pair of options would imply a choice.
-        */}
-        {draft.cloudRuntime === undefined ? null : tokenApplies ? (
+        {draft.cloudRuntime === undefined ? null : (
           <fieldset className="otv2-fieldset">
             <legend>{COPY.cloud.tokenLabel}</legend>
             <p className="otv2-fieldset__hint">{COPY.cloud.tokenHint}</p>
             <ul className="otv2-choices otv2-choices--grid">
-              {TOKEN_SOURCES.map((source) => (
-                <li key={source}>
-                  <button
-                    aria-pressed={draft.tokenSource === source}
-                    className="otv2-choice otv2-choice--runtime"
-                    onClick={() => onChange({ ...draft, tokenSource: source })}
-                    type="button"
-                  >
-                    <span className="otv2-choice__copy">
-                      <strong>{TOKEN_COPY[source].title}</strong>
-                      <span>{TOKEN_COPY[source].description}</span>
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {TOKEN_SOURCES.map((source) => {
+                /*
+                 * Both options are always listed, so the choice that exists elsewhere is visible
+                 * here too. Against the OpenTag agent there is no subscription of the user's to
+                 * attach, so its own tokens are already chosen and the other cannot be picked.
+                 */
+                const available = source === "opentag" || tokenChoiceApplies(draft.cloudRuntime);
+                return (
+                  <li key={source}>
+                    <button
+                      aria-pressed={draft.tokenSource === source}
+                      className="otv2-choice otv2-choice--runtime"
+                      disabled={!available}
+                      onClick={() => onChange({ ...draft, tokenSource: source })}
+                      type="button"
+                    >
+                      <span className="otv2-choice__copy">
+                        <strong>{TOKEN_COPY[source].title}</strong>
+                        <span>{TOKEN_COPY[source].description}</span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           </fieldset>
-        ) : (
-          <p className="otv2-note">
-            <Icon name="shield" />
-            <span>{COPY.cloud.tokenIncluded}</span>
-          </p>
         )}
 
         {needsPlanSignIn(draft) ? (

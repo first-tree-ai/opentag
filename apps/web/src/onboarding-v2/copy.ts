@@ -30,13 +30,13 @@ export const RUNTIME_COPY: Record<Runtime, { readonly title: string; readonly de
 };
 
 export const CLOUD_RUNTIME_COPY: Record<CloudRuntime, { readonly title: string; readonly description: string }> = {
-  opentag: { title: "OpenTag runtime", description: "Ours, and nothing to set up" },
+  opentag: { title: "OpenTag agent", description: "Ours, and easy to set up." },
   "claude-code": { title: "Claude Code", description: "Anthropic" },
   codex: { title: "Codex", description: "OpenAI" },
 };
 
 export const TOKEN_COPY: Record<TokenSource, { readonly title: string; readonly description: string }> = {
-  opentag: { title: "OpenTag tokens", description: "Included — nothing to connect" },
+  opentag: { title: "OpenTag Tokens", description: "Select from all open source models." },
   "own-plan": { title: "Your own coding plan", description: "Use the subscription you already pay for" },
 };
 
@@ -108,9 +108,8 @@ export const COPY = {
     runtimeHint: "The coding agent OpenTag will use.",
     runtimeFootnote: "More runtimes coming soon.",
     tokenLabel: "Tokens",
-    tokenHint: "Who pays for the model calls your agent makes.",
-    /** Only a third-party runtime has a plan to attach; OpenTag's own has none. */
-    tokenIncluded: "Tokens are included with the OpenTag runtime.",
+    /** "the token your agent rely on" — the subject is plural here, so it takes "rely". */
+    tokenHint: "The tokens your agent relies on to complete tasks.",
     signInTitle: (runtime: string) => `Sign in to ${runtime}`,
     signInHint: (runtime: string) =>
       `We'll open ${runtime} in a new tab. Approve the request there, then come back to this page.`,

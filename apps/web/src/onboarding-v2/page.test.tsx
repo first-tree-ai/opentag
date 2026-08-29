@@ -420,22 +420,25 @@ describe("OnboardingV2Page", () => {
       expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
     });
 
-    it("offers OpenTag's runtime first, then the coding agents", async () => {
+    it("leads with OpenTag's own agent, on a row of its own", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
       const runtimes = [...document.querySelectorAll(".otv2-choice--runtime strong")].map((n) => n.textContent);
-      expect(runtimes.slice(0, 3)).toEqual(["OpenTag runtime", "Claude Code", "Codex"]);
+      expect(runtimes.slice(0, 3)).toEqual(["OpenTag agent", "Claude Code", "Codex"]);
+      expect(document.querySelector(".otv2-choices--lead")).toBeTruthy();
       expect(screen.getByText("More runtimes coming soon.")).toBeTruthy();
     });
 
-    it("answers the token question for its own runtime rather than asking it", async () => {
+    it("lists both token options for its own agent, with one already chosen and one barred", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
-      fireEvent.click(screen.getByRole("button", { name: /OpenTag runtime/ }));
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
 
-      // No plan can be attached to OpenTag's own runtime, so there is no choice to offer.
-      expect(screen.getByText("Tokens are included with the OpenTag runtime.")).toBeTruthy();
-      expect(screen.queryByRole("button", { name: /Your own coding plan/ })).toBeNull();
+      const included = screen.getByRole("button", { name: /OpenTag Tokens/ }) as HTMLButtonElement;
+      const ownPlan = screen.getByRole("button", { name: /Your own coding plan/ }) as HTMLButtonElement;
+      expect(included.getAttribute("aria-pressed")).toBe("true");
+      // There is no subscription of the user's to attach to OpenTag's own agent.
+      expect(ownPlan.disabled).toBe(true);
       expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
     });
 
@@ -444,12 +447,12 @@ describe("OnboardingV2Page", () => {
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
 
-      expect(screen.getByRole("button", { name: /OpenTag tokens/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /OpenTag Tokens/ })).toBeTruthy();
       expect(screen.getByRole("button", { name: /Your own coding plan/ })).toBeTruthy();
       // Nothing is chosen yet, so there is nothing to continue to.
       expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
 
-      fireEvent.click(screen.getByRole("button", { name: /OpenTag tokens/ }));
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag Tokens/ }));
       expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
     });
 
@@ -476,7 +479,7 @@ describe("OnboardingV2Page", () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-      fireEvent.click(screen.getByRole("button", { name: /OpenTag tokens/ }));
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag Tokens/ }));
       expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
 
       fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
@@ -486,7 +489,7 @@ describe("OnboardingV2Page", () => {
     it("connects a messaging app on its own step, like a local agent", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
-      fireEvent.click(screen.getByRole("button", { name: /OpenTag runtime/ }));
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
 
@@ -500,7 +503,7 @@ describe("OnboardingV2Page", () => {
     it("never names the runtime OpenTag uses for its own agent", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
-      fireEvent.click(screen.getByRole("button", { name: /OpenTag runtime/ }));
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
       // The Context Tree bars the internal runtime from product exposure, so it is never named.
       expect(document.body.textContent ?? "").not.toMatch(/\bPi\b/);
     });

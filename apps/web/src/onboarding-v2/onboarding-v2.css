@@ -291,6 +291,11 @@
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+/* The first option leads on a row of its own, so it reads as the recommended one. */
+.otv2-choices--lead > li:first-child {
+  grid-column: 1 / -1;
+}
+
 .otv2-choice {
   display: flex;
   gap: var(--space-4);

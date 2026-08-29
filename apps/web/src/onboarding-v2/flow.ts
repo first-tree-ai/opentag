@@ -16,8 +16,8 @@ export const CLOUD_RUNTIMES = ["opentag", "claude-code", "codex"] as const;
 export type CloudRuntime = (typeof CLOUD_RUNTIMES)[number];
 
 /**
- * Who pays for the tokens. Only a third-party runtime can run on the user's own plan; OpenTag's
- * own runtime has no separate plan to attach, so the choice does not arise there.
+ * Which tokens the agent spends. Only a third-party runtime can run on the user's own plan: the
+ * OpenTag agent has no separate subscription to attach, so that option is shown but not offered.
  */
 export const TOKEN_SOURCES = ["opentag", "own-plan"] as const;
 export type TokenSource = (typeof TOKEN_SOURCES)[number];
@@ -162,9 +162,7 @@ export function needsPlanSignIn(draft: AgentDraft): boolean {
 export function draftIsSubmittable(draft: AgentDraft, planSignedIn = false): boolean {
   if (validateAgentName(draft.name) !== undefined) return false;
   if (draft.destination !== "cloud") return draft.runtime !== undefined;
-  if (draft.cloudRuntime === undefined) return false;
-  if (!tokenChoiceApplies(draft.cloudRuntime)) return true;
-  if (draft.tokenSource === undefined) return false;
+  if (draft.cloudRuntime === undefined || draft.tokenSource === undefined) return false;
   return draft.tokenSource === "opentag" || planSignedIn;
 }
 

@@ -392,14 +392,35 @@ describe("OnboardingV2Page", () => {
       expect(screen.getByRole("button", { name: /Lark/ }).getAttribute("aria-pressed")).toBe("true");
     });
 
-    it("holds Slack's place without pretending it is built", async () => {
+    it("installs Slack by sending the user there and bringing them back", async () => {
       render(<OnboardingV2Page />);
       await reachMessagingStep();
 
       fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
       await advance(ISSUE_MS);
-      expect(screen.getByText("The Slack connection isn't designed yet.")).toBeTruthy();
+      // Slack issues nothing up front: the user goes and installs the App.
       expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+      expect(screen.getByText(/Install OpenTag in your Slack workspace/)).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Add to Slack" }));
+      expect(screen.getByText("Waiting for you to finish in Slack…")).toBeTruthy();
+
+      await advanceMock("Return from Slack");
+      expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+    });
+
+    it("offers the same Slack install on the cloud route", async () => {
+      render(<OnboardingV2Page />);
+      fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await advance(CREATE_MS);
+
+      fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Add to Slack" }));
+      await advanceMock("Return from Slack");
+      expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
   });
 
@@ -414,7 +435,7 @@ describe("OnboardingV2Page", () => {
       await chooseCloud();
       expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
       expect([...document.querySelectorAll(".otv2-rail__label")].map((node) => node.textContent)).toEqual([
-        "Your agent",
+        "Create agent",
         "Messaging app",
       ]);
       expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();

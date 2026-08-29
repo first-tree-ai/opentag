@@ -519,20 +519,21 @@
   text-align: center;
 }
 
-/* Holds the place of a connection flow that has not been designed yet. */
-.otv2-panel--pending {
+.otv2-panel--slack {
   align-items: center;
-  justify-content: center;
-  border-style: dashed;
+  gap: var(--space-4);
   text-align: center;
 }
 
 /*
- * Both providers' connection areas occupy the same box, so picking one does not resize the step.
- * Sized by the taller of the two: the Feishu panel around its 208px code.
+ * Each provider's connection area sizes itself. They are very different heights — a code to scan
+ * against a single install button — and reserving the taller for both left a hole under Slack.
+ * Switching provider is a deliberate act, not something arriving under the reader, so the change
+ * is the answer to what was just pressed. What must not move is anything *within* one provider,
+ * which its own reserved slots handle.
  */
 .otv2-slot--messaging {
-  min-height: 358px;
+  justify-content: flex-start;
 }
 
 /* Command block ---------------------------------------------------------- */

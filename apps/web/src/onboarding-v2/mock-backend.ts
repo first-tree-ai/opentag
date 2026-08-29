@@ -151,7 +151,9 @@ export interface MockBackend {
   readonly issueConnectCode: () => void;
   /** Replaces an expired code with a fresh one, restarting the arrival. */
   readonly refreshConnectCode: () => void;
-  readonly startMessaging: () => void;
+  readonly startMessaging: (provider: "feishu" | "slack") => void;
+  /** Slack's install is a link out; this stands in for the user leaving for Slack. */
+  readonly startSlackInstall: () => void;
   /** What is waiting to happen, if anything: the Computer arriving, the probe, or the scan. */
   readonly pending: PendingEvent | undefined;
   /** Lab controls — the page itself never offers these. */
@@ -251,18 +253,28 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     setCheckResult({ runtime: "ready", messagingCli: "ready" });
   }, []);
 
-  const startMessaging = useCallback(() => {
-    setMessaging((current) => {
-      if (current.kind !== "idle") return current;
-      queueMicrotask(() => {
-        later(() => {
-          setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/feishu/${randomId()}` });
-          later(() => setMessaging({ kind: "connected" }), timings.scanMs);
-        }, timings.issueMs);
+  /** Only Lark has something to issue up front; Slack waits for the user to start its install. */
+  const startMessaging = useCallback(
+    (provider: "feishu" | "slack") => {
+      if (provider !== "feishu") return;
+      setMessaging((current) => {
+        if (current.kind !== "idle") return current;
+        queueMicrotask(() => {
+          later(() => {
+            setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/feishu/${randomId()}` });
+            later(() => setMessaging({ kind: "connected" }), timings.scanMs);
+          }, timings.issueMs);
+        });
+        return { kind: "issuing" };
       });
-      return { kind: "issuing" };
-    });
-  }, [later, timings.issueMs, timings.scanMs]);
+    },
+    [later, timings.issueMs, timings.scanMs],
+  );
+
+  const startSlackInstall = useCallback(() => {
+    setMessaging((current) => (current.kind === "idle" ? { kind: "away" } : current));
+    later(() => setMessaging((current) => (current.kind === "away" ? { kind: "connected" } : current)), timings.scanMs);
+  }, [later, timings.scanMs]);
 
   const startPlanSignIn = useCallback(() => {
     setPlanSignIn((current) => (current === "idle" ? "pending" : current));
@@ -282,6 +294,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     if (checkResult) return { label: "Return check result", run: settleCheck };
     if (planSignIn === "pending") return { label: "Approve sign-in", run: () => setPlanSignIn("signed-in") };
     if (messaging.kind === "waiting") return { label: "Scan QR code", run: () => setMessaging({ kind: "connected" }) };
+    if (messaging.kind === "away")
+      return { label: "Return from Slack", run: () => setMessaging({ kind: "connected" }) };
     return undefined;
   }, [arrive, checkResult, connect.kind, messaging.kind, planSignIn, settleCheck]);
 
@@ -295,6 +309,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       issueConnectCode,
       refreshConnectCode: issue,
       startMessaging,
+      startSlackInstall,
       pending,
       expireNow: () =>
         setConnect((current) => (current.kind === "issued" ? { kind: "expired", command: current.command } : current)),
@@ -313,6 +328,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       reset,
       startMessaging,
       startPlanSignIn,
+      startSlackInstall,
     ],
   );
 }

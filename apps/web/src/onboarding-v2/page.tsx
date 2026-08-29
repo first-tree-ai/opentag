@@ -144,6 +144,7 @@ export function OnboardingV2Page() {
             <MessagingStep
               messaging={backend.messaging}
               onChoose={setMessagingProvider}
+              onSlackInstall={backend.startSlackInstall}
               onStart={backend.startMessaging}
               provider={messagingProvider}
             />

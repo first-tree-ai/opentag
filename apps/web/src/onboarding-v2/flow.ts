@@ -60,10 +60,16 @@ export interface ReadinessFacts {
   readonly messagingCli: MessagingCliStatus;
 }
 
+/**
+ * Lark and Slack connect differently. Lark shows a code to scan on a phone; Slack sends the user
+ * to Slack to install the App and bring them back, so its waiting state is about a page they are
+ * not on rather than a code they are looking at.
+ */
 export type MessagingState =
   | { readonly kind: "idle" }
   | { readonly kind: "issuing" }
   | { readonly kind: "waiting"; readonly qrValue: string }
+  | { readonly kind: "away" }
   | { readonly kind: "connected" };
 
 /**

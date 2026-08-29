@@ -281,9 +281,11 @@ function MessagingPicker({
 
 function MessagingConnection({
   messaging,
+  onSlackInstall,
   provider,
 }: {
   messaging: MessagingState;
+  onSlackInstall: () => void;
   provider: MessagingProvider | undefined;
 }) {
   return (
@@ -304,8 +306,22 @@ function MessagingConnection({
           </p>
         </div>
       ) : provider === "slack" ? (
-        <div className="otv2-panel otv2-panel--pending">
-          <p className="otv2-muted">{COPY.messaging.slackPending}</p>
+        <div className="otv2-panel otv2-panel--slack">
+          <p className="otv2-muted">{COPY.messaging.slackIntro}</p>
+          {/*
+            Installing is a link out: the user finishes in Slack and comes back. So the waiting
+            state here is about a page they are not on, not something to watch on this one.
+          */}
+          <div className="otv2-slot otv2-slot--signin">
+            {messaging.kind === "away" ? (
+              <p className="otv2-waiting" role="status">
+                <span aria-hidden="true" className="otv2-pulse" />
+                {COPY.messaging.slackWaiting}
+              </p>
+            ) : (
+              <Button onClick={onSlackInstall}>{COPY.messaging.slackAction}</Button>
+            )}
+          </div>
         </div>
       ) : null}
     </div>
@@ -693,17 +709,19 @@ function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; positio
 export function MessagingStep({
   messaging,
   onChoose,
+  onSlackInstall,
   onStart,
   provider,
 }: {
   messaging: MessagingState;
   onChoose: (provider: MessagingProvider) => void;
-  onStart: () => void;
+  onSlackInstall: () => void;
+  onStart: (provider: MessagingProvider) => void;
   provider: MessagingProvider | undefined;
 }) {
-  // The QR is only worth issuing once Feishu has actually been picked.
+  // Lark's code is issued as soon as it is picked; Slack waits for its install to be started.
   useEffect(() => {
-    if (provider === "feishu" && messaging.kind === "idle") onStart();
+    if (provider && messaging.kind === "idle") onStart(provider);
   }, [messaging.kind, onStart, provider]);
 
   return (
@@ -714,7 +732,7 @@ export function MessagingStep({
       </header>
 
       <MessagingPicker onChoose={onChoose} provider={provider} />
-      <MessagingConnection messaging={messaging} provider={provider} />
+      <MessagingConnection messaging={messaging} onSlackInstall={onSlackInstall} provider={provider} />
 
       <StepNav disabled />
     </section>

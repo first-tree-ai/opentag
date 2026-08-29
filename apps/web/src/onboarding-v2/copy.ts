@@ -6,8 +6,8 @@
 import type { CheckRow, CheckState, CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {
-  agent: "Your agent",
-  computer: "Your computer",
+  agent: "Create agent",
+  computer: "Prepare computer",
   messaging: "Messaging app",
 };
 
@@ -112,7 +112,7 @@ export const COPY = {
     tokenHint: "The tokens your agent relies on to complete tasks.",
     signInTitle: (runtime: string) => `Sign in to ${runtime}`,
     signInHint: (runtime: string) =>
-      `We'll open ${runtime} in a new tab. Approve the request there, then come back to this page.`,
+      `We'll open the ${runtime} sign-in page in a new tab. Approve the request there, then come back.`,
     signInAction: (runtime: string) => `Sign in to ${runtime}`,
     signInPending: "Waiting for you to approve it…",
     signInDone: (runtime: string) => `Signed in to ${runtime}.`,
@@ -175,8 +175,9 @@ export const COPY = {
     feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
     qrAlt: "Scan this QR code in Lark",
     waiting: "Waiting for you to scan…",
-    /** The Slack connection has not been designed yet; the step reserves its place and says so. */
-    slackPending: "The Slack connection isn't designed yet.",
+    slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
+    slackAction: "Add to Slack",
+    slackWaiting: "Waiting for you to finish in Slack…",
   },
 
   done: {

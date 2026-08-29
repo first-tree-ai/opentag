@@ -268,7 +268,7 @@ describe("OnboardingV2Page", () => {
     // Still probing: the slot already holds its waiting line, in the same shape step 3 uses.
     const slot = () => document.querySelector('[data-ui="onboarding-v2-check-outcome"]');
     expect(slot()?.textContent ?? "").toContain("Waiting for the computer check…");
-    expect(slot()?.querySelector(".animate-pulse")).toBeTruthy();
+    expect(slot()?.querySelector(".otv2-pulse")).toBeTruthy();
 
     await settleCheck();
     expect(slot()).toBeTruthy();

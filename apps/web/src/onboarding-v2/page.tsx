@@ -266,7 +266,7 @@ function OnboardingV2Flow({
         </Button>
       </header>
 
-      <main className="flex w-full max-w-[720px] flex-1 flex-col items-center gap-6 mx-auto p-6">
+      <main className="otv2-frame flex flex-1 flex-col items-center gap-6 mx-auto p-6">
         {/*
           A rail only where there are steps. The first screen cannot know how many follow, and the
           cloud route is one page, so neither shows one.

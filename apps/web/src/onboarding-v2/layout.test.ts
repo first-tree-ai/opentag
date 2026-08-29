@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const stylesheet: Root = postcss.parse(readFileSync(resolve(here, "onboarding-v2.css"), "utf8"));
-const steps = readFileSync(resolve(here, "steps.tsx"), "utf8");
 
 /** Reads a declaration from the top-level rule only, ignoring media-query overrides. */
 function declarationValue(selector: string, property: string): string {
@@ -52,28 +51,41 @@ describe("onboarding flow layout", () => {
   });
 
   /*
-   * The reserved heights moved onto the elements they belong to when this app gained a Tailwind
-   * compiler. They are still measurements the flow depends on — each is the tallest state its slot
-   * holds, and losing one lets the step's footer move while a check resolves — so they are guarded
-   * here rather than left to be deleted as decoration.
+   * The reserved heights are declarations again: this app compiles no utilities of its own, so a
+   * bracketed class would be inert. They are still measurements the flow depends on — each is the
+   * tallest state its slot holds, and losing one lets the step's footer move while a check
+   * resolves — so they are guarded here rather than left to be deleted as decoration.
    */
   it("holds a reserved height for every slot whose contents change length", () => {
-    const reserved: readonly (readonly [string, readonly string[]])[] = [
-      // The connect status: waiting on one line, connected on another.
-      ["connect status", ["min-h-[28px]"]],
-      // The check outcome: waiting, a two-line repair summary, or a pass.
-      ["check outcome", ["min-h-[50px]", "max-[640px]:min-h-[71px]", "max-[359px]:min-h-[114px]"]],
-      // A check row, whose failure detail takes a second line on a narrow screen.
-      ["check row", ["min-h-[73px]", "max-[399px]:min-h-[90px]"]],
-      // The name field's error line, which exists whether or not it says anything.
-      ["name error", ["min-h-[20px]", "max-[640px]:min-h-[34px]"]],
-      // The sign-in slot, which holds a button, a waiting line, or a result.
-      ["sign-in", ["min-h-[40px]"]],
-    ];
-    for (const [what, classes] of reserved) {
-      for (const className of classes) {
-        expect(steps, `${what} lost ${className}`).toContain(className);
-      }
-    }
+    // The connect status: waiting on one line, connected on another.
+    expect(declarationValue(".otv2-slot--status", "min-height")).toBe("28px");
+    // The check outcome: waiting, a two-line repair summary, or a pass.
+    expect(declarationValue(".otv2-slot--outcome", "min-height")).toBe("50px");
+    // A check row, whose failure detail takes a second line on a narrow screen.
+    expect(declarationValue(".otv2-check", "min-height")).toBe("73px");
+    // The name field's error line, which exists whether or not it says anything.
+    expect(declarationValue(".otv2-field-error", "min-height")).toBe("20px");
+    // The sign-in slot, which holds a button, a waiting line, or a result.
+    expect(declarationValue(".otv2-slot--signin", "min-height")).toBe("40px");
+  });
+
+  it("holds the taller reserve each slot needs once its copy wraps", () => {
+    const atWidth = (limit: string, selector: string, property: string): string | undefined => {
+      let value: string | undefined;
+      stylesheet.walkAtRules("media", (atRule) => {
+        if (!atRule.params.includes(limit)) return;
+        atRule.walkRules((rule) => {
+          if (!rule.selectors.includes(selector)) return;
+          rule.walkDecls(property, (declaration) => {
+            value = declaration.value;
+          });
+        });
+      });
+      return value;
+    };
+    expect(atWidth("640px", ".otv2-slot--outcome", "min-height")).toBe("71px");
+    expect(atWidth("640px", ".otv2-field-error", "min-height")).toBe("34px");
+    expect(atWidth("399px", ".otv2-check", "min-height")).toBe("90px");
+    expect(atWidth("359px", ".otv2-slot--outcome", "min-height")).toBe("114px");
   });
 });

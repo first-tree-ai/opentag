@@ -212,3 +212,105 @@
 .otv2-command__expired button:hover {
   color: #e8f5cd;
 }
+
+/* Measurements ----------------------------------------------------------- */
+
+/*
+ * The numbers the flow depends on. They live here because this app compiles no utilities of its
+ * own: it ships Kumo's prebuilt sheet, so a bracketed class would be inert.
+ */
+
+/* The reading frame. */
+.otv2-frame {
+  width: min(100%, 720px);
+}
+
+/* Cards sit side by side wherever two tracks fit, and stack when they do not. */
+.otv2-choices--grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+/* The first option leads on a row of its own, so it reads as the recommended one. */
+.otv2-lead {
+  grid-column: 1 / -1;
+}
+
+/*
+ * Anything that changes length while someone is reading is given the height of its tallest state,
+ * so the step's footer keeps one position. These are measured, not chosen.
+ */
+.otv2-slot--status {
+  min-height: 28px;
+}
+
+.otv2-slot--outcome {
+  min-height: 50px;
+}
+
+.otv2-slot--signin {
+  min-height: 40px;
+}
+
+.otv2-field-error {
+  min-height: 20px;
+}
+
+/* A check row's second line is a status, and a failure reads longer than what it replaces. */
+.otv2-check {
+  min-height: 73px;
+}
+
+@media (width <= 640px) {
+  .otv2-slot--outcome {
+    min-height: 71px;
+  }
+
+  .otv2-field-error {
+    min-height: 34px;
+  }
+
+  .otv2-command-lead {
+    flex-direction: column;
+    align-items: flex-start;
+    min-height: 68px;
+  }
+}
+
+/* Below this width a failing check's status takes a second line. */
+@media (width <= 399px) {
+  .otv2-check {
+    min-height: 90px;
+  }
+}
+
+/* And below this one the repair summary takes a second pair of lines. */
+@media (width <= 359px) {
+  .otv2-slot--outcome {
+    min-height: 114px;
+  }
+}
+
+/* The waiting dot carries its own animation. */
+.otv2-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-kumo-brand);
+  animation: otv2-fade 1.4s ease-in-out infinite;
+}
+
+/* The QR keeps its box whether or not a code has arrived, so the panel never changes height. */
+.otv2-qr {
+  width: 208px;
+  height: 208px;
+}
+
+.otv2-qr__image {
+  width: 100%;
+  height: 100%;
+}
+
+/* Slack's published button, at the size Slack publishes it. */
+.otv2-slack-install img {
+  height: 40px;
+}

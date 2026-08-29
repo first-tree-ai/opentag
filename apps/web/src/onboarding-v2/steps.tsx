@@ -49,7 +49,7 @@ const HEADER = "flex flex-col gap-1";
 const FIELDSET = "flex flex-col gap-1 m-0 p-0 border-0";
 const HINT = "text-sm text-kumo-subtle m-0";
 const CHOICES = "flex flex-col gap-3 m-0 p-0 list-none";
-const CHOICE_GRID = "grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3 m-0 p-0 list-none";
+const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
   "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
 const WAITING = "flex items-center gap-2 text-sm text-kumo-subtle m-0";
@@ -240,7 +240,7 @@ function AgentNameField({
       */}
       <p
         aria-live="polite"
-        className={`text-sm m-0 min-h-[20px] max-[640px]:min-h-[34px] ${errorText ? "text-kumo-danger" : "text-kumo-subtle"}`}
+        className={`otv2-field-error text-sm m-0 ${errorText ? "text-kumo-danger" : "text-kumo-subtle"}`}
         data-ui="onboarding-v2-field-error"
         data-empty={errorText || locked ? undefined : "true"}
         data-note={!errorText && locked ? "true" : undefined}
@@ -339,7 +339,7 @@ function MessagingConnection({
       {provider === "feishu" ? (
         <div className={PANEL}>
           <p className="text-kumo-subtle m-0">{COPY.messaging.feishuIntro}</p>
-          <div className="flex size-[208px] items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
+          <div className="otv2-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
           </div>
           {/*
@@ -355,7 +355,7 @@ function MessagingConnection({
             </div>
           ) : (
             <p className={WAITING} role="status">
-              <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-brand animate-pulse" />
+              <span aria-hidden="true" className="otv2-pulse shrink-0" />
               {COPY.messaging.waiting}
             </p>
           )}
@@ -367,10 +367,10 @@ function MessagingConnection({
             Installing is a link out: the user finishes in Slack and comes back. So the waiting
             state here is about a page they are not on, not something to watch on this one.
           */}
-          <div className="flex items-center justify-center min-h-[40px]">
+          <div className="otv2-slot--signin flex items-center justify-center">
             {messaging.kind === "away" ? (
               <p className={WAITING} role="status">
-                <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-brand animate-pulse" />
+                <span aria-hidden="true" className="otv2-pulse shrink-0" />
                 {COPY.messaging.slackWaiting}
               </p>
             ) : (
@@ -379,7 +379,11 @@ function MessagingConnection({
                * embeds rather than copied into this repository. Used unmodified, as their brand
                * guidelines require, and nothing of theirs is redistributed here.
                */
-              <Button className="h-10 bg-transparent p-0 cursor-pointer" onClick={onSlackInstall} variant="ghost">
+              <Button
+                className="otv2-slack-install bg-transparent p-0 cursor-pointer"
+                onClick={onSlackInstall}
+                variant="ghost"
+              >
                 <img alt={COPY.messaging.slackAction} src={ADD_TO_SLACK_URL} />
               </Button>
             )}
@@ -484,7 +488,7 @@ export function CloudStep({
           <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
             {CLOUD_RUNTIMES.map((runtime, index) => (
               <li
-                className={index === 0 ? "col-span-full" : undefined}
+                className={index === 0 ? "otv2-lead" : undefined}
                 data-lead={index === 0 ? "true" : undefined}
                 key={runtime}
               >
@@ -583,12 +587,12 @@ function PlanSignInPanel({
         {COPY.cloud.signInTitle(runtimeLabel)}
       </Text>
       <p className="text-sm text-kumo-subtle m-0">{COPY.cloud.signInHint(runtimeLabel)}</p>
-      <div className="flex items-start min-h-[40px]">
+      <div className="otv2-slot--signin flex items-start">
         {signIn === "signed-in" ? (
           <StatusIndicator label={COPY.cloud.signInDone(runtimeLabel)} tone="success" />
         ) : signIn === "pending" ? (
           <p className={WAITING} role="status">
-            <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-brand animate-pulse" />
+            <span aria-hidden="true" className="otv2-pulse shrink-0" />
             {COPY.cloud.signInPending}
           </p>
         ) : (
@@ -650,7 +654,7 @@ export function ComputerStep({
             about to run, and how long it lasts belongs to it rather than to a note underneath.
           */}
           <div
-            className="flex items-center justify-between gap-3 max-[640px]:flex-col max-[640px]:items-start max-[640px]:min-h-[68px]"
+            className="otv2-command-lead flex items-center justify-between gap-3"
             data-ui="onboarding-v2-command-lead"
           >
             <p className="text-sm text-kumo-subtle m-0">{COPY.connect.commandIntro}</p>
@@ -671,13 +675,10 @@ export function ComputerStep({
               <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
             ))}
           </ol>
-          <div
-            className="flex flex-col justify-start min-h-[50px] max-[640px]:min-h-[71px] max-[359px]:min-h-[114px]"
-            data-ui="onboarding-v2-check-outcome"
-          >
+          <div className="otv2-slot--outcome flex flex-col justify-start" data-ui="onboarding-v2-check-outcome">
             {resolving ? (
               <p className={WAITING} role="status">
-                <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-brand animate-pulse" />
+                <span aria-hidden="true" className="otv2-pulse shrink-0" />
                 {COPY.check.waiting}
               </p>
             ) : failures.length > 0 ? (
@@ -745,12 +746,12 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
 
 function ConnectStatus({ connect }: { connect: ConnectState }) {
   return (
-    <div className="flex flex-col justify-center min-h-[28px]" data-ui="onboarding-v2-connect-status">
+    <div className="otv2-slot--status flex flex-col justify-center" data-ui="onboarding-v2-connect-status">
       {connect.kind === "connected" ? (
         <StatusIndicator label={COPY.connect.connected} tone="success" />
       ) : (
         <p className={WAITING} role="status">
-          <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-brand animate-pulse" />
+          <span aria-hidden="true" className="otv2-pulse shrink-0" />
           {COPY.connect.waiting}
         </p>
       )}
@@ -784,7 +785,7 @@ function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; positio
   const dim = check.state === "blocked" || check.state === "pending";
   return (
     <li
-      className="otv2-check flex items-center gap-3 p-4 border-t border-kumo-line first:border-t-0 min-h-[73px] max-[399px]:min-h-[90px]"
+      className="otv2-check flex items-center gap-3 p-4 border-t border-kumo-line first:border-t-0 "
       data-state={check.state}
     >
       <span
@@ -861,7 +862,7 @@ function QrCode({ value }: { value: string }) {
       active = false;
     };
   }, [value]);
-  return source ? <img alt={COPY.messaging.qrAlt} className="size-full" src={source} /> : null;
+  return source ? <img alt={COPY.messaging.qrAlt} className="otv2-qr__image" src={source} /> : null;
 }
 
 export function DoneStep({ name }: { name: string }) {

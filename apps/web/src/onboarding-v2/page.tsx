@@ -24,7 +24,7 @@ const CONNECTED_DWELL_MS = 1_400;
  */
 export function OnboardingV2Page() {
   const [scenario, setScenario] = useState<MockScenario>(SCENARIOS[0] as MockScenario);
-  const [speed, setSpeed] = useState<MockSpeed>("realistic");
+  const [speed, setSpeed] = useState<MockSpeed>("manual");
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [draftConfirmed, setDraftConfirmed] = useState(false);

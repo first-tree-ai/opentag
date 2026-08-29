@@ -2,19 +2,22 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingV2Page } from "./page.js";
 
-// The realistic timings the mock uses, so a test advances by a meaningful amount rather than a
-// magic number.
-const ISSUE_MS = 500;
-const CONNECT_MS = 8_000;
+// The mock defaults to manual: the Computer arriving, the check returning and the QR being
+// scanned all wait to be advanced by hand. Only these two are still on a clock.
+const ISSUE_MS = 300;
 const DWELL_MS = 1_400;
-const PROBE_MS = 2_500;
 const CREATE_MS = 900;
-const SCAN_MS = 6_000;
 
 async function advance(ms: number) {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
   });
+}
+
+/** Presses the control that stands in for the outside world doing the next thing. */
+async function advanceMock(label: string) {
+  fireEvent.click(screen.getByRole("button", { name: label }));
+  await act(async () => undefined);
 }
 
 /** Walks to the connect step, where the install command is on screen. */
@@ -26,15 +29,15 @@ async function reachConnectStep() {
   await advance(ISSUE_MS);
 }
 
-/**
- * Advances through the Computer arriving, the dwell that lets the arrival be read, and the probe.
- * These are separate advances because each timer is only created once React has committed the
- * render before it.
- */
+/** Brings the Computer in and lets the arrival be read, landing on the check step. */
 async function reachCheckStep() {
-  await advance(CONNECT_MS);
+  await advanceMock("Connect computer");
   await advance(DWELL_MS);
-  await advance(PROBE_MS);
+}
+
+/** Returns the check's result, so the step moves from probing to resolved. */
+async function settleCheck() {
+  await advanceMock("Return check result");
 }
 
 function openLab() {
@@ -96,6 +99,31 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
   });
 
+  it("reads heading, explanation, then control in both sections of the agent step", () => {
+    render(<OnboardingV2Page />);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    for (const section of document.querySelectorAll(".otv2-fieldset")) {
+      const parts = [...section.children].map((child) => child.className || child.tagName.toLowerCase());
+      const heading = parts.findIndex((part) => part === "otv2-fieldset__label" || part === "legend");
+      const hint = parts.indexOf("otv2-fieldset__hint");
+      const control = parts.findIndex((part) => part.includes("ds-control") || part.includes("otv2-choices"));
+      expect(heading).toBeGreaterThanOrEqual(0);
+      expect(hint).toBeGreaterThan(heading);
+      expect(control).toBeGreaterThan(hint);
+    }
+  });
+
+  it("holds the name error's line before there is an error to show", () => {
+    render(<OnboardingV2Page />);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    const error = document.querySelector(".otv2-field-error") as HTMLElement;
+    expect(error).toBeTruthy();
+    expect(error.dataset.empty).toBe("true");
+  });
+
   it("keeps the command's preamble with the command rather than in the page header", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
@@ -146,7 +174,7 @@ describe("OnboardingV2Page", () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
 
-    await advance(CONNECT_MS);
+    await advanceMock("Connect computer");
     expect(screen.getByText("Your computer is connected.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Your computer" })).toBeTruthy();
 
@@ -158,6 +186,7 @@ describe("OnboardingV2Page", () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
     await reachCheckStep();
+    await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
     expect(screen.getByText("Feishu CLI is installed")).toBeTruthy();
@@ -169,6 +198,7 @@ describe("OnboardingV2Page", () => {
     chooseScenario("runtime-install");
     await reachConnectStep();
     await reachCheckStep();
+    await settleCheck();
 
     expect(screen.getByText("One thing needs fixing before your agent can run.")).toBeTruthy();
     // A light pointer back to the terminal, not a command block: the repair is already running there.
@@ -176,16 +206,13 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByText(/Continue in your terminal or agent for instructions/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /check again/i })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /Copy/ })).toHaveLength(0);
-    // Sign-in cannot be answered while the CLI is missing, and the page says so.
-    expect(screen.getByText("We'll know once the CLI is installed.")).toBeTruthy();
   });
 
   it("keeps one heading and a detail line on every check, in every state", async () => {
     render(<OnboardingV2Page />);
     chooseScenario("runtime-install");
     await reachConnectStep();
-    await advance(CONNECT_MS);
-    await advance(DWELL_MS);
+    await reachCheckStep();
 
     // Mid-probe: every row already has its detail line.
     const rowsWhileChecking = document.querySelectorAll(".otv2-check");
@@ -194,20 +221,11 @@ describe("OnboardingV2Page", () => {
       expect(row.querySelectorAll("span > span")).toHaveLength(1);
     }
 
-    await advance(PROBE_MS);
+    await settleCheck();
     expect(document.querySelectorAll(".otv2-check")).toHaveLength(3);
     for (const row of document.querySelectorAll(".otv2-check")) {
       expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
-  });
-
-  it("holds the name error's line before there is an error to show", () => {
-    render(<OnboardingV2Page />);
-    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    const error = document.querySelector(".otv2-field-error") as HTMLElement;
-    expect(error).toBeTruthy();
-    expect(error.dataset.empty).toBe("true");
   });
 
   it("keeps the connect step's countdown and status slots through the arrival", async () => {
@@ -217,7 +235,7 @@ describe("OnboardingV2Page", () => {
     expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
 
     // The countdown goes away on arrival; its slot, and the status slot, must not.
-    await advance(CONNECT_MS);
+    await advanceMock("Connect computer");
     expect(screen.queryByText(/Expires in/)).toBeNull();
     expect(document.querySelector(".otv2-command__footer")).toBeTruthy();
     expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
@@ -226,15 +244,14 @@ describe("OnboardingV2Page", () => {
   it("keeps the check step's outcome slot before and after the result lands", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
-    await advance(CONNECT_MS);
-    await advance(DWELL_MS);
+    await reachCheckStep();
 
     // Still probing: nothing to say yet, but the space is already held.
     const slot = () => document.querySelector(".otv2-slot--outcome");
     expect(slot()).toBeTruthy();
     expect((slot()?.textContent ?? "").trim()).toBe("");
 
-    await advance(PROBE_MS);
+    await settleCheck();
     expect(slot()).toBeTruthy();
     expect(slot()?.textContent).toContain("Everything your agent needs is ready.");
   });
@@ -255,7 +272,7 @@ describe("OnboardingV2Page", () => {
 
     await advance(ISSUE_MS);
     expect(next().disabled).toBe(true);
-    await advance(CONNECT_MS);
+    await advanceMock("Connect computer");
     expect(next().disabled).toBe(false);
   });
 
@@ -264,6 +281,7 @@ describe("OnboardingV2Page", () => {
     chooseScenario("both-failing");
     await reachConnectStep();
     await reachCheckStep();
+    await settleCheck();
     expect(screen.getByText("2 things need fixing before your agent can run.")).toBeTruthy();
   });
 
@@ -272,30 +290,68 @@ describe("OnboardingV2Page", () => {
     chooseScenario("messaging-install");
     await reachConnectStep();
     await reachCheckStep();
+    await settleCheck();
     expect(screen.getByText("We need lark-cli to send Feishu messages.")).toBeTruthy();
 
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Ran doctor --fix" }));
-    await advance(4_000);
-    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
+    await settleCheck();
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("creates the Agent only after a runnable route is proven, then asks for Feishu", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
     await reachCheckStep();
+    await settleCheck();
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
     await advance(ISSUE_MS);
-    await advance(SCAN_MS);
+    await advanceMock("Scan QR code");
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
   });
 
+  describe("the mock's advance control", () => {
+    it("names the one thing the outside world would do next", async () => {
+      render(<OnboardingV2Page />);
+      await reachConnectStep();
+      expect(screen.getByRole("button", { name: "Connect computer" })).toBeTruthy();
+
+      await reachCheckStep();
+      expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
+
+      await settleCheck();
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await advance(CREATE_MS);
+      await advance(ISSUE_MS);
+      expect(screen.getByRole("button", { name: "Scan QR code" })).toBeTruthy();
+    });
+
+    it("has nothing to offer when nothing is waiting", () => {
+      render(<OnboardingV2Page />);
+      const control = screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement;
+      expect(control.disabled).toBe(true);
+    });
+
+    it("cannot bring a Computer in on an expired code", async () => {
+      render(<OnboardingV2Page />);
+      await reachConnectStep();
+      openLab();
+      fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
+      fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
+
+      expect(screen.getByText("This command has expired.")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
+      expect((screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
   describe("going back", () => {
-    it("returns from the agent step to the destination, keeping the draft", async () => {
+    it("returns from the agent step to the destination, keeping the draft", () => {
       render(<OnboardingV2Page />);
       fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -331,30 +387,18 @@ describe("OnboardingV2Page", () => {
       render(<OnboardingV2Page />);
       await reachConnectStep();
       await reachCheckStep();
+      await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
       expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
     });
   });
 
-  it("never connects a Computer with an expired code", async () => {
-    render(<OnboardingV2Page />);
-    await reachConnectStep();
-
-    openLab();
-    fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
-    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
-
-    // The arrival timer from the original issue is still pending; it must not resurrect the code.
-    await advance(CONNECT_MS);
-    expect(screen.getByText("This command has expired.")).toBeTruthy();
-    expect(screen.queryByText("Your computer is connected.")).toBeNull();
-  });
-
   it("cancels a creation still in flight when the flow is restarted", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
     await reachCheckStep();
+    await settleCheck();
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Start over" }));
@@ -363,7 +407,8 @@ describe("OnboardingV2Page", () => {
     // Second run: the stale creation must not carry the flow past its confirmation.
     await reachConnectStep();
     await reachCheckStep();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+    await settleCheck();
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole("heading", { name: "Connect your messaging app" })).toBeNull();
   });
 

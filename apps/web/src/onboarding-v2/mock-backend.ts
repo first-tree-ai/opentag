@@ -1,11 +1,12 @@
 /**
  * A stand-in for the Server and the Computer daemon, so the flow can be built and tuned without
  * either. It models only what the pages actually observe — a connect code that expires, a Computer
- * that shows up some seconds later, a readiness probe that resolves to a scenario's outcome, and a
- * QR code that gets scanned — and deliberately not the protocol underneath any of it.
+ * that shows up, a readiness probe that resolves to a scenario's outcome, and a QR code that gets
+ * scanned — and deliberately not the protocol underneath any of it.
  *
- * Every delay is named and adjustable so an interaction can be judged at real speed and then
- * exercised quickly, which is the whole point of having a mock at this stage.
+ * Three of those events are things the outside world does, not things the page does. They default
+ * to waiting for an explicit nudge, so a state can be looked at for as long as it takes; the timed
+ * modes exist for judging the flow at its real pace.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -57,28 +58,31 @@ export const SCENARIOS: readonly MockScenario[] = [
   },
 ];
 
-export type MockSpeed = "realistic" | "fast";
+export type MockSpeed = "manual" | "realistic" | "fast";
+export const MOCK_SPEEDS: readonly MockSpeed[] = ["manual", "realistic", "fast"];
 
 interface Timings {
   readonly issueMs: number;
-  readonly connectMs: number;
   readonly codeTtlMs: number;
-  readonly probeMs: number;
-  readonly repairMs: number;
-  readonly scanMs: number;
+  /** `null` means the event waits to be advanced by hand rather than on a clock. */
+  readonly connectMs: number | null;
+  readonly probeMs: number | null;
+  readonly repairMs: number | null;
+  readonly scanMs: number | null;
 }
 
 const TIMINGS: Record<MockSpeed, Timings> = {
+  manual: { issueMs: 300, codeTtlMs: 15 * 60 * 1_000, connectMs: null, probeMs: null, repairMs: null, scanMs: null },
   // The production connect code is valid for 15 minutes.
   realistic: {
     issueMs: 500,
-    connectMs: 8_000,
     codeTtlMs: 15 * 60 * 1_000,
+    connectMs: 8_000,
     probeMs: 2_500,
     repairMs: 4_000,
     scanMs: 6_000,
   },
-  fast: { issueMs: 150, connectMs: 2_000, codeTtlMs: 25_000, probeMs: 800, repairMs: 1_200, scanMs: 1_500 },
+  fast: { issueMs: 150, codeTtlMs: 25_000, connectMs: 2_000, probeMs: 800, repairMs: 1_200, scanMs: 1_500 },
 };
 
 const COMPUTER_NAME = "MacBook Pro";
@@ -87,6 +91,13 @@ const SERVER_URL = "https://opentag.ai";
 function connectCommand(code: string): string {
   return `npm i -g open-tag && opentag computer connect --server ${SERVER_URL} -- ${code}`;
 }
+
+/**
+ * A command of exactly the shape a real one has, for the moment before one has been issued. Built
+ * from the same parts, so the block it renders is the same height at any width and the arrival of
+ * the real command moves nothing.
+ */
+export const PLACEHOLDER_CONNECT_COMMAND = connectCommand("0".repeat(32));
 
 /**
  * Matches the Server's connect code: `generateSecret(24)`, so 24 random bytes rendered base64url,
@@ -106,20 +117,26 @@ function randomId(): string {
   return randomCode().slice(0, 16);
 }
 
+/** The one thing the outside world could do next, for the control that stands in for it. */
+export interface PendingEvent {
+  readonly label: string;
+  readonly run: () => void;
+}
+
 export interface MockBackend {
   readonly connect: ConnectState;
   readonly readiness: ReadinessFacts | undefined;
   readonly messaging: MessagingState;
   /** Issues the first connect code. Safe to call repeatedly; only the idle state acts on it. */
   readonly issueConnectCode: () => void;
-  /** Replaces an expired code with a fresh one, restarting the arrival timer. */
+  /** Replaces an expired code with a fresh one, restarting the arrival. */
   readonly refreshConnectCode: () => void;
   readonly startMessaging: () => void;
+  /** What is waiting to happen, if anything: the Computer arriving, the probe, or the scan. */
+  readonly pending: PendingEvent | undefined;
   /** Lab controls — the page itself never offers these. */
-  readonly connectNow: () => void;
   readonly expireNow: () => void;
   readonly repairNow: () => void;
-  readonly scanNow: () => void;
   readonly reset: () => void;
 }
 
@@ -128,21 +145,24 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   const [connect, setConnect] = useState<ConnectState>({ kind: "idle" });
   const [readiness, setReadiness] = useState<ReadinessFacts | undefined>(undefined);
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
+  /** The result a running check will settle on, held so it can be applied on a clock or by hand. */
+  const [checkResult, setCheckResult] = useState<ReadinessFacts | undefined>(undefined);
 
   const timers = useRef<number[]>([]);
   const clearTimers = useCallback(() => {
     for (const id of timers.current) window.clearTimeout(id);
     timers.current = [];
   }, []);
-  const later = useCallback((run: () => void, delayMs: number) => {
+  const later = useCallback((run: () => void, delayMs: number | null) => {
+    if (delayMs === null) return;
     timers.current.push(window.setTimeout(run, delayMs));
   }, []);
 
   useEffect(() => clearTimers, [clearTimers]);
 
-  // Only a live code can produce a Computer. The arrival timer outlives an expiry, so without this
-  // guard an expired code would still "connect" and the expiry scenario would report an impossible
-  // success. A reissue clears the old timer, so the guard is the only thing an expiry needs.
+  // Only a live code can produce a Computer. The arrival outlives an expiry, so without this guard
+  // an expired code would still "connect" and the expiry scenario would report an impossible
+  // success. A reissue clears pending timers, so the guard is all an expiry needs.
   const arrive = useCallback(() => {
     setConnect((current) =>
       current.kind === "issued"
@@ -185,21 +205,30 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     return () => window.clearTimeout(id);
   }, [connect]);
 
-  // The readiness probe runs when the Computer arrives, exactly like the daemon's eager first probe.
+  // The check runs when the Computer arrives, exactly like the daemon's eager first probe.
   useEffect(() => {
     if (connect.kind !== "connected") return;
     setReadiness({ runtime: "checking", messagingCli: "checking" });
-    const id = window.setTimeout(
-      () => setReadiness({ runtime: scenario.runtime, messagingCli: scenario.messagingCli }),
-      timings.probeMs,
-    );
+    setCheckResult({ runtime: scenario.runtime, messagingCli: scenario.messagingCli });
+  }, [connect.kind, scenario.messagingCli, scenario.runtime]);
+
+  const settleCheck = useCallback(() => {
+    setCheckResult((target) => {
+      if (target) setReadiness(target);
+      return undefined;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!checkResult || timings.probeMs === null) return;
+    const id = window.setTimeout(settleCheck, timings.probeMs);
     return () => window.clearTimeout(id);
-  }, [connect.kind, scenario.messagingCli, scenario.runtime, timings.probeMs]);
+  }, [checkResult, settleCheck, timings.probeMs]);
 
   const repairNow = useCallback(() => {
     setReadiness({ runtime: "checking", messagingCli: "checking" });
-    later(() => setReadiness({ runtime: "ready", messagingCli: "ready" }), timings.repairMs);
-  }, [later, timings.repairMs]);
+    setCheckResult({ runtime: "ready", messagingCli: "ready" });
+  }, []);
 
   const startMessaging = useCallback(() => {
     setMessaging((current) => {
@@ -218,8 +247,16 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     clearTimers();
     setConnect({ kind: "idle" });
     setReadiness(undefined);
+    setCheckResult(undefined);
     setMessaging({ kind: "idle" });
   }, [clearTimers]);
+
+  const pending = useMemo<PendingEvent | undefined>(() => {
+    if (connect.kind === "issued") return { label: "Connect computer", run: arrive };
+    if (checkResult) return { label: "Return check result", run: settleCheck };
+    if (messaging.kind === "waiting") return { label: "Scan QR code", run: () => setMessaging({ kind: "connected" }) };
+    return undefined;
+  }, [arrive, checkResult, connect.kind, messaging.kind, settleCheck]);
 
   return useMemo(
     () => ({
@@ -229,13 +266,12 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       issueConnectCode,
       refreshConnectCode: issue,
       startMessaging,
-      connectNow: arrive,
+      pending,
       expireNow: () =>
         setConnect((current) => (current.kind === "issued" ? { kind: "expired", command: current.command } : current)),
       repairNow,
-      scanNow: () => setMessaging((current) => (current.kind === "waiting" ? { kind: "connected" } : current)),
       reset,
     }),
-    [arrive, connect, issue, issueConnectCode, messaging, readiness, repairNow, reset, startMessaging],
+    [connect, issue, issueConnectCode, messaging, pending, readiness, repairNow, reset, startMessaging],
   );
 }

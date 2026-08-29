@@ -21,6 +21,7 @@ export function CommandBlock({
   copiedLabel,
   fallbackHint,
   footer,
+  inert = false,
   muted = false,
 }: {
   comment: string;
@@ -29,6 +30,8 @@ export function CommandBlock({
   copiedLabel: string;
   fallbackHint: string;
   footer?: ReactNode;
+  /** Renders the block's shape with nothing to act on, while its real contents are still coming. */
+  inert?: boolean;
   /** Dims the block when its contents can no longer be used, such as an expired code. */
   muted?: boolean;
 }) {
@@ -78,6 +81,7 @@ export function CommandBlock({
         <Button
           className="otv2-command__copy"
           data-copied={copied ? "true" : undefined}
+          disabled={inert}
           onClick={() => void copy()}
           size="compact"
           variant="secondary"

@@ -1,6 +1,6 @@
 import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { Button, Field, Icon, StatusIndicator } from "../ui/design-system.js";
+import { Button, Icon, StatusIndicator } from "../ui/design-system.js";
 import { CommandBlock } from "./command-block.js";
 import { CHECK_COPY, COPY, DESTINATION_COPY, RUNTIME_COPY, STEP_LABELS } from "./copy.js";
 import {
@@ -21,6 +21,7 @@ import {
   readinessPassed,
   validateAgentName,
 } from "./flow.js";
+import { PLACEHOLDER_CONNECT_COMMAND } from "./mock-backend.js";
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   return (
@@ -164,7 +165,19 @@ export function AgentStep({
         <h1>{COPY.agent.title}</h1>
       </header>
       <form className="otv2-form" onSubmit={submit}>
-        <Field hint={COPY.agent.nameHint} hintId={hintId} htmlFor={nameId} label={COPY.agent.nameLabel}>
+        {/*
+          Both sections of this step read the same way: heading, then the line that explains it,
+          then the thing you act on. The design system's `Field` puts its hint after the control and
+          renders its error only when there is one, so this section is composed here instead — it
+          needs the hint above the input, and an error line that holds its space either way.
+        */}
+        <div className="otv2-fieldset">
+          <label className="otv2-fieldset__label" htmlFor={nameId}>
+            {COPY.agent.nameLabel}
+          </label>
+          <p className="otv2-fieldset__hint" id={hintId}>
+            {COPY.agent.nameHint}
+          </p>
           <input
             aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
             aria-invalid={errorText ? true : undefined}
@@ -177,15 +190,10 @@ export function AgentStep({
             spellCheck={false}
             value={draft.name}
           />
-        </Field>
-        {/*
-          The error keeps its line whether or not there is one, so validating a name never pushes
-          the runtime picker down the page. The design system's own error slot is conditional, so
-          this is rendered here rather than through `Field`.
-        */}
-        <p aria-live="polite" className="otv2-field-error" id={errorId} data-empty={errorText ? undefined : "true"}>
-          {errorText ?? "\u00a0"}
-        </p>
+          <p aria-live="polite" className="otv2-field-error" id={errorId} data-empty={errorText ? undefined : "true"}>
+            {errorText ?? "\u00a0"}
+          </p>
+        </div>
 
         <fieldset className="otv2-fieldset">
           <legend>{COPY.agent.runtimeLabel}</legend>
@@ -261,8 +269,21 @@ export function ConnectStep({
 }
 
 function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
+  // Before a command exists, the block still renders — same structure, same length, so nothing
+  // moves when the real one lands. It is inert: nothing to copy and nothing to announce.
   if (connect.kind === "idle" || connect.kind === "issuing") {
-    return <div aria-hidden="true" className="otv2-command otv2-command--placeholder" />;
+    return (
+      <div aria-hidden="true" className="otv2-command-pending">
+        <CommandBlock
+          command={PLACEHOLDER_CONNECT_COMMAND}
+          comment={COPY.connect.commandComment}
+          copiedLabel={COPY.connect.copied}
+          copyLabel={COPY.connect.copy}
+          fallbackHint={COPY.connect.copyFallback}
+          inert
+        />
+      </div>
+    );
   }
   const expired = connect.kind === "expired";
   return (

@@ -331,7 +331,9 @@
   border: 0;
 }
 
-.otv2-fieldset legend {
+.otv2-fieldset legend,
+.otv2-fieldset__label {
+  display: block;
   padding: 0;
   font-size: var(--text-ui);
   font-weight: var(--fw-medium);
@@ -413,7 +415,7 @@
 
 .otv2-field-error {
   min-height: 18px;
-  margin: calc(var(--space-2) * -1) 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--error);
   font-size: var(--text-meta);
   line-height: var(--lh-ui);
@@ -423,10 +425,11 @@
   visibility: hidden;
 }
 
-.otv2-command--placeholder {
-  min-height: 84px;
-  border-radius: var(--radius-control);
-  background: var(--surface-soft);
+/* The block's shape while its command is still being issued: same box, nothing legible in it. */
+.otv2-command-pending {
+  opacity: 0.35;
+  filter: blur(3px);
+  pointer-events: none;
 }
 
 .otv2-command__body {
@@ -455,6 +458,13 @@
   font-size: var(--text-ui);
   line-height: var(--lh-ui);
   white-space: pre-wrap;
+
+  /*
+   * Break at any character rather than preferring hyphens. A connect code is a fixed 32 characters
+   * but its hyphens and underscores are break opportunities, so otherwise two codes of the same
+   * length wrap to a different number of lines and the block changes height when one arrives.
+   */
+  word-break: break-all;
   overflow-wrap: anywhere;
 }
 
@@ -713,6 +723,23 @@
   right: var(--space-6);
   bottom: var(--space-6);
   z-index: var(--layer-sidebar);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+
+/* Sits beside the panel toggle so the next event is always one click away. */
+.otv2-lab__advance {
+  box-shadow: 0 6px 20px rgb(22 33 27 / 18%);
+}
+
+.otv2-lab {
+  flex-direction: row;
+  align-items: flex-end;
+}
+
+.otv2-lab__stack {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

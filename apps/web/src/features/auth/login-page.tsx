@@ -1,5 +1,4 @@
 import { type AuthProvidersResponse, DEFAULT_SIGN_IN_DESTINATION } from "@opentag/shared/browser";
-import { useLocation } from "react-router-dom";
 import { browserApi } from "../../api.js";
 import googleSignInButton from "../../assets/google-sign-in-light@2x.png";
 import { Icon, Text } from "../../ui/design-system.js";
@@ -8,9 +7,9 @@ import { PasswordSignInForm } from "./password-sign-in-form.js";
 
 export type AuthProvider = AuthProvidersResponse["providers"][number];
 
-export function LoginPage() {
+export function LoginPage({ next: requested }: { next?: string }) {
   const providers = useResource(() => browserApi.authProviders(), "auth-providers");
-  const next = new URLSearchParams(useLocation().search).get("next") ?? DEFAULT_SIGN_IN_DESTINATION;
+  const next = requested ?? DEFAULT_SIGN_IN_DESTINATION;
   return (
     <main className="grid min-h-screen place-items-center bg-kumo-canvas p-6" data-ui="login-page">
       <section

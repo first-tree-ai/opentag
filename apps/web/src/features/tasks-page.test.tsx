@@ -1,7 +1,7 @@
 import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderInRouter } from "../__tests__/support/router.js";
 import { browserApi } from "../api.js";
 import { TaskDetailPage, TasksPage } from "./tasks-page.js";
 
@@ -89,11 +89,7 @@ describe("Tasks debug view", () => {
     } satisfies TaskSummary;
     vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task, second], nextCursor: null });
 
-    render(
-      <MemoryRouter>
-        <TasksPage />
-      </MemoryRouter>,
-    );
+    await renderInRouter(<TasksPage />);
 
     expect(await screen.findByRole("table", { name: "Tasks" })).toBeTruthy();
     expect(screen.getAllByRole("row")).toHaveLength(3);
@@ -123,13 +119,7 @@ describe("Tasks debug view", () => {
 
   it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detail);
-    render(
-      <MemoryRouter initialEntries={[`/tasks/${sessionId}`]}>
-        <Routes>
-          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const conversation = await screen.findByLabelText("Task conversation");
     expect(within(conversation).getByText("Please investigate the failed deployment.")).toBeTruthy();
@@ -168,13 +158,7 @@ describe("Tasks debug view", () => {
       report: null,
     } satisfies TaskDetail["turns"][number];
     vi.spyOn(browserApi, "task").mockResolvedValue({ ...detail, turns: [steered, root] });
-    render(
-      <MemoryRouter initialEntries={[`/tasks/${sessionId}`]}>
-        <Routes>
-          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const conversation = await screen.findByLabelText("Task conversation");
     expect(within(conversation).getByText("This input was steered into the active Turn.")).toBeTruthy();
@@ -200,13 +184,7 @@ describe("Tasks debug view", () => {
       .spyOn(browserApi, "task")
       .mockResolvedValueOnce(firstPage)
       .mockResolvedValueOnce({ ...detail, turns: [olderTurn], nextCursor: null });
-    render(
-      <MemoryRouter initialEntries={[`/tasks/${sessionId}`]}>
-        <Routes>
-          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
     expect(await screen.findByText("This is an older inbound message.")).toBeTruthy();
@@ -221,11 +199,7 @@ describe("Tasks debug view", () => {
         resolve = next;
       }),
     );
-    render(
-      <MemoryRouter>
-        <TasksPage />
-      </MemoryRouter>,
-    );
+    await renderInRouter(<TasksPage />);
 
     expect(screen.getByRole("heading", { name: "Loading Tasks" })).toBeTruthy();
     resolve({ tasks: [], nextCursor: null });

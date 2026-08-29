@@ -1,5 +1,5 @@
+import { Link, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
 import { browserApi } from "../../../api.js";
 import { RuntimeConfigurationForm } from "../../../runtime-configuration.js";
 import { Icon, Loader, Text } from "../../../ui/design-system.js";
@@ -7,6 +7,7 @@ import { NotFoundPage } from "../../not-found.js";
 import { AsyncState, useResource } from "../../resource/use-resource.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { loadAgentDetail, markAgentDetailUnconfirmed } from "../agent-model.js";
+import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "../agent-routes.js";
 import { AgentComputerSettings } from "./agent-computer-settings.js";
 import { AgentManageSettings } from "./agent-manage-settings.js";
 import { GeneralConfigForm } from "./general-config-form.js";
@@ -14,15 +15,9 @@ import { ImTab } from "./im-tab.js";
 import type { AgentSettingsSection } from "./sections.js";
 import { agentSettingsGroups, agentSettingsSections, agentSettingsSummary } from "./sections.js";
 
-export function AgentSettingsPage() {
-  const { agentId = "", section } = useParams();
-  const location = useLocation();
-  const routeState = location.state as {
-    agent?: AgentDetailView;
-    returnLabel?: string;
-    returnTo?: string;
-  } | null;
-  const initialAgent = routeState?.agent?.id === agentId ? routeState.agent : undefined;
+export function AgentSettingsPage({ agentId, section }: { agentId: string; section?: string }) {
+  const routeState = useRouterState({ select: (state) => state.location.state });
+  const initialAgent = routeState.agent?.id === agentId ? routeState.agent : undefined;
   const [refreshVersion, setRefreshVersion] = useState(0);
   const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
     initialValue: initialAgent,
@@ -38,12 +33,17 @@ export function AgentSettingsPage() {
   return (
     <AsyncState state={state}>
       {(agent) => {
-        const backTo = selected ? (routeState?.returnTo ?? `/agents/${agent.id}/settings`) : `/agents/${agent.id}`;
-        const backLabel = selected ? (routeState?.returnLabel ?? "Agent settings") : agent.displayName;
+        const returnAgentId = routeState.returnAgentId;
+        const back = selected
+          ? returnAgentId
+            ? agentDetailLink(returnAgentId)
+            : agentSettingsLink(agent.id)
+          : agentDetailLink(agent.id);
+        const backLabel = selected ? (routeState.returnLabel ?? "Agent settings") : agent.displayName;
         return (
           <section className="grid gap-6">
             <div className="grid gap-4">
-              <Link className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link" to={backTo}>
+              <Link className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link" {...back}>
                 <Icon name="arrow-left" />
                 Back to {backLabel}
               </Link>
@@ -159,7 +159,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                         <Link
                           className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
                           key={item.key}
-                          to={`/agents/${agent.id}/settings/${item.key}`}
+                          {...agentSettingsSectionLink(agent.id, item.key)}
                         >
                           {content}
                           <span

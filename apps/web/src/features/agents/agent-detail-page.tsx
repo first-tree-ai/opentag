@@ -1,4 +1,4 @@
-import { Link, useParams } from "react-router-dom";
+import { Link } from "@tanstack/react-router";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
 import { useWorkspace } from "../session/session-context.js";
@@ -13,9 +13,9 @@ import {
   initials,
   titleCase,
 } from "./agent-presentation.js";
+import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink, agentUsageLink } from "./agent-routes.js";
 
-export function AgentDetailPage() {
-  const { agentId = "" } = useParams();
+export function AgentDetailPage({ agentId }: { agentId: string }) {
   const state = useResource(() => loadAgentDetail(agentId), agentId, {
     onBackgroundError: markAgentDetailUnconfirmed,
     revalidateMs: 30_000,
@@ -44,7 +44,7 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
     <header className="grid gap-4">
       <Link
         className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link"
-        to={backToSettings ? `/agents/${agent.id}` : "/agents"}
+        {...(backToSettings ? agentDetailLink(agent.id) : ({ to: "/agents" } as const))}
       >
         <Icon name="arrow-left" />
         {backToSettings ? agent.displayName : "Agents"}
@@ -72,7 +72,7 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
           {!backToSettings ? (
-            <Link className="text-sm text-kumo-link" state={{ agent }} to={`/agents/${agent.id}/usage`}>
+            <Link className="text-sm text-kumo-link" state={{ agent }} {...agentUsageLink(agent.id)}>
               Usage
             </Link>
           ) : null}
@@ -80,7 +80,7 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
             <Link
               className={buttonClassName({ variant: "secondary" })}
               state={{ agent }}
-              to={`/agents/${agent.id}/settings`}
+              {...agentSettingsLink(agent.id)}
             >
               <Icon name="settings" /> Settings
             </Link>
@@ -104,7 +104,11 @@ export function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
         <p>{agentRecoveryMessage(agent)}</p>
       </div>
       {recovery ? (
-        <Link className={buttonClassName({ size: "compact", variant: "secondary" })} state={{ agent }} to={recovery.to}>
+        <Link
+          className={buttonClassName({ size: "compact", variant: "secondary" })}
+          state={{ agent }}
+          {...recovery.link}
+        >
           {recovery.label}
         </Link>
       ) : null}
@@ -175,8 +179,8 @@ export function AgentContact({ agent }: { agent: AgentDetailView }) {
           </span>
           <Link
             className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-            to={`/agents/${agent.id}/settings/messaging`}
+            state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
+            {...agentSettingsSectionLink(agent.id, "messaging")}
           >
             Manage
           </Link>
@@ -192,8 +196,8 @@ export function AgentContact({ agent }: { agent: AgentDetailView }) {
           </span>
           <Link
             className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-            to={`/agents/${agent.id}/settings/messaging`}
+            state={{ returnAgentId: agent.id, returnLabel: agent.displayName }}
+            {...agentSettingsSectionLink(agent.id, "messaging")}
           >
             Connect
           </Link>

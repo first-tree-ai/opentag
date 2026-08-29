@@ -17,8 +17,7 @@
     "echarts": "6.0.0",
     "qrcode": "^1.5.4",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1",
-    "react-router-dom": "^7.18.2"
+    "react-dom": "^19.1.1"
   },
   "devDependencies": {
     "@tanstack/router-plugin": "^1.168.35",

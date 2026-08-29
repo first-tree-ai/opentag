@@ -1,5 +1,5 @@
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { browserApi } from "../../api.js";
 import {
   DropdownMenu,
@@ -24,7 +24,7 @@ export function AppShell() {
 
 export function AppShellContent() {
   const { me } = useAccount();
-  const location = useLocation();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
   const { setOpenMobile } = useSidebar();
   const [openMenu, setOpenMenu] = useState<"account">();
@@ -40,7 +40,7 @@ export function AppShellContent() {
     setAccountError(undefined);
     try {
       await browserApi.logout();
-      navigate("/login", { replace: true });
+      void navigate({ replace: true, to: "/login" });
     } catch (cause) {
       setAccountError(cause instanceof Error ? cause.message : "Unable to sign out");
       setLoggingOut(false);
@@ -59,8 +59,8 @@ export function AppShellContent() {
             <Sidebar.Group>
               <Sidebar.Menu>
                 <Sidebar.MenuButton
-                  active={isSidebarNavActive(location.pathname, "/agents")}
-                  aria-current={isSidebarNavActive(location.pathname, "/agents") ? "page" : undefined}
+                  active={isSidebarNavActive(pathname, "/agents")}
+                  aria-current={isSidebarNavActive(pathname, "/agents") ? "page" : undefined}
                   href="/agents"
                   icon={<WorkspaceNavIcon name="agents" />}
                   onClick={() => setOpenMobile(false)}
@@ -68,8 +68,8 @@ export function AppShellContent() {
                   Agents
                 </Sidebar.MenuButton>
                 <Sidebar.MenuButton
-                  active={isSidebarNavActive(location.pathname, "/tasks")}
-                  aria-current={isSidebarNavActive(location.pathname, "/tasks") ? "page" : undefined}
+                  active={isSidebarNavActive(pathname, "/tasks")}
+                  aria-current={isSidebarNavActive(pathname, "/tasks") ? "page" : undefined}
                   href="/tasks"
                   icon={<WorkspaceNavIcon name="tasks" />}
                   onClick={() => setOpenMobile(false)}
@@ -77,8 +77,8 @@ export function AppShellContent() {
                   Tasks
                 </Sidebar.MenuButton>
                 <Sidebar.MenuButton
-                  active={isSidebarNavActive(location.pathname, "/skills")}
-                  aria-current={isSidebarNavActive(location.pathname, "/skills") ? "page" : undefined}
+                  active={isSidebarNavActive(pathname, "/skills")}
+                  aria-current={isSidebarNavActive(pathname, "/skills") ? "page" : undefined}
                   href="/skills"
                   icon={<WorkspaceNavIcon name="skills" />}
                   onClick={() => setOpenMobile(false)}
@@ -86,8 +86,8 @@ export function AppShellContent() {
                   Skills
                 </Sidebar.MenuButton>
                 <Sidebar.MenuButton
-                  active={isSidebarNavActive(location.pathname, "/integrations")}
-                  aria-current={isSidebarNavActive(location.pathname, "/integrations") ? "page" : undefined}
+                  active={isSidebarNavActive(pathname, "/integrations")}
+                  aria-current={isSidebarNavActive(pathname, "/integrations") ? "page" : undefined}
                   href="/integrations"
                   icon={<WorkspaceNavIcon name="integrations" />}
                   onClick={() => setOpenMobile(false)}
@@ -133,7 +133,7 @@ export function AppShellContent() {
                     <DropdownMenu.Item
                       onClick={() => {
                         setOpenMobile(false);
-                        navigate("/account");
+                        void navigate({ to: "/account" });
                       }}
                     >
                       Account

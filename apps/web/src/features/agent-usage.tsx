@@ -4,8 +4,8 @@ import {
   type AgentUsageDetail,
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
+import { Link } from "@tanstack/react-router";
 import { type ComponentProps, lazy, Suspense, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { browserApi } from "../api.js";
 import { ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
 
@@ -45,7 +45,9 @@ export function AgentUsageOverview({ agentId }: { agentId: string }) {
           </Text>
           <p>Token use from Tasks handled by this Agent during the last 30 days.</p>
         </div>
-        <Link to={`/agents/${agentId}/usage`}>View usage details</Link>
+        <Link params={{ agentId }} to="/agents/$agentId/usage">
+          View usage details
+        </Link>
       </div>
       <UsageSummaryState state={state} compact />
     </section>

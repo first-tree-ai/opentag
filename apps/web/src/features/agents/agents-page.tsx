@@ -1,5 +1,5 @@
+import { Link } from "@tanstack/react-router";
 import { type ReactNode, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { Button, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { EmptyState, Page } from "../layout/page.js";
@@ -14,6 +14,7 @@ import {
   formatUsageNumber,
   initials,
 } from "./agent-presentation.js";
+import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
 
 export function AgentsPage() {
@@ -91,7 +92,7 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
           </span>
           <Link
             className={buttonClassName({ variant: "inline" })}
-            to={`/agents/${agent.id}/settings/${action.section}`}
+            {...agentSettingsSectionLink(agent.id, action.section)}
           >
             {action.label}
           </Link>
@@ -116,7 +117,7 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
         </span>
         <div className="grid min-w-0 gap-1" data-ui="agent-card-identity-copy">
           <strong>
-            <Link aria-label={`Open ${agent.displayName}`} to={`/agents/${agent.id}`}>
+            <Link aria-label={`Open ${agent.displayName}`} {...agentDetailLink(agent.id)}>
               {agent.displayName}
             </Link>
           </strong>

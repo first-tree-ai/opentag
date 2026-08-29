@@ -1,27 +1,31 @@
-import { Link, Navigate, useParams } from "react-router-dom";
+import { Link } from "@tanstack/react-router";
 import { buttonClassName, Text } from "../../ui/design-system.js";
+import { Redirect } from "../navigation/redirect.js";
 import { NotFoundPage } from "../not-found.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
 import { AgentObjectHeader } from "./agent-detail-page.js";
 import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
+import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 
-export function LegacyAgentSectionRedirect() {
-  const { agentId = "", legacySection = "" } = useParams();
-  const destinations: Record<string, string> = {
-    general: `/agents/${agentId}`,
-    runtime: `/agents/${agentId}/settings/execution`,
-    im: `/agents/${agentId}/settings/messaging`,
-  };
-  const destination = destinations[legacySection];
-  if (destination) return <Navigate replace to={destination} />;
+export function LegacyAgentSectionRedirect({ agentId, legacySection }: { agentId: string; legacySection: string }) {
+  if (legacySection === "general") return <Redirect replace {...agentDetailLink(agentId)} />;
+  if (legacySection === "runtime") {
+    return <Redirect replace {...agentSettingsSectionLink(agentId, "execution")} />;
+  }
+  if (legacySection === "im") return <Redirect replace {...agentSettingsSectionLink(agentId, "messaging")} />;
   if (legacySection === "integrations" || legacySection === "skills") {
-    return <LegacyAgentCapabilityPage capability={legacySection} />;
+    return <LegacyAgentCapabilityPage agentId={agentId} capability={legacySection} />;
   }
   return <NotFoundPage />;
 }
 
-export function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" | "skills" }) {
-  const { agentId = "" } = useParams();
+export function LegacyAgentCapabilityPage({
+  agentId,
+  capability,
+}: {
+  agentId: string;
+  capability: "integrations" | "skills";
+}) {
   const state = useResource(() => loadAgentDetail(agentId), agentId, {
     onBackgroundError: markAgentDetailUnconfirmed,
   });
@@ -42,10 +46,13 @@ export function LegacyAgentCapabilityPage({ capability }: { capability: "integra
               </Text>
             </header>
             <div className="flex flex-wrap gap-3">
-              <Link className={buttonClassName()} to={`/agents/${agent.id}`}>
+              <Link className={buttonClassName()} {...agentDetailLink(agent.id)}>
                 Back to {agent.displayName}
               </Link>
-              <Link className={buttonClassName({ variant: "secondary" })} to={`/${capability}`}>
+              <Link
+                className={buttonClassName({ variant: "secondary" })}
+                to={capability === "integrations" ? "/integrations" : "/skills"}
+              >
                 Browse {label}
               </Link>
             </div>

@@ -1,6 +1,7 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
+import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 export const agentAvatarTones = ["brand", "amber", "blue", "neutral"] as const;
@@ -251,10 +252,12 @@ export function messagingAgentStatusDescription(
   return agentRecoveryMessage(agent);
 }
 
-export function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
+export function agentAvailabilityRecovery(
+  agent: AgentDetailView,
+): { label: string; link: AgentSettingsSectionLink } | undefined {
   if (!true || agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
-    return { label: "Manage Agent", to: `/agents/${agent.id}/settings/manage` };
+    return { label: "Manage Agent", link: agentSettingsSectionLink(agent.id, "manage") };
   }
   if (
     agent.availability.reason === "im_not_connected" ||
@@ -262,13 +265,13 @@ export function agentAvailabilityRecovery(agent: AgentDetailView): { label: stri
     agent.availability.reason === "im_reauthorization_required" ||
     agent.availability.reason === "im_error"
   ) {
-    return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
+    return { label: "View messaging", link: agentSettingsSectionLink(agent.id, "messaging") };
   }
   if (agent.availability.reason === "handoff_unavailable") {
-    return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
+    return { label: "View messaging", link: agentSettingsSectionLink(agent.id, "messaging") };
   }
   if (agent.availability.state === "unconfirmed") return undefined;
-  return { label: "View Computer", to: `/agents/${agent.id}/settings/computer` };
+  return { label: "View Computer", link: agentSettingsSectionLink(agent.id, "computer") };
 }
 
 export function agentRecoveryMessage(agent: AgentDetailView): string {

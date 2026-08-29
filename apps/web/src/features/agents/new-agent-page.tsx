@@ -1,6 +1,6 @@
 import type { AgentAdminConfig, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { type AgentCreationFacts, AgentCreationFlow } from "../../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../../api.js";
 import { FeishuSetup } from "../../im/feishu-setup.js";
@@ -9,6 +9,7 @@ import { Page } from "../layout/page.js";
 import type { LoadState } from "../resource/use-resource.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
 import { useWorkspace } from "../session/session-context.js";
+import { agentDetailLink } from "./agent-routes.js";
 
 export function useOwnComputersResource(accountId: string, refreshVersion = 0) {
   return useResource(() => browserApi.computers(), `${accountId}:${refreshVersion}`, {
@@ -34,7 +35,7 @@ export function NewAgentPage() {
       }
     >
       {created ? (
-        <NewAgentMessagingStep agent={created} onFinish={() => navigate(`/agents/${created.id}`)} />
+        <NewAgentMessagingStep agent={created} onFinish={() => void navigate(agentDetailLink(created.id))} />
       ) : (
         <AgentCreationContent
           computers={computers}
@@ -63,7 +64,7 @@ export function NewAgentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<AgentAdminConfig>();
   const finish = () => {
-    if (created) navigate(`/agents/${created.id}`);
+    if (created) void navigate(agentDetailLink(created.id));
   };
   const close = () => {
     if (created) finish();

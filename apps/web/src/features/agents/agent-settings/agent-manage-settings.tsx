@@ -1,6 +1,6 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
+import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { browserApi } from "../../../api.js";
 import {
   Banner,
@@ -64,7 +64,7 @@ export function AgentManageSettings({
       setMessage(undefined);
       setConfirmationError(undefined);
       await browserApi.deleteAgent(config.id);
-      navigate("/agents");
+      void navigate({ to: "/agents" });
     } catch (cause) {
       setConfirmationError(cause instanceof Error ? cause.message : "Unable to delete Agent");
       setBusy(false);

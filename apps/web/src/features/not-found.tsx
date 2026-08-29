@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link } from "@tanstack/react-router";
 import { Text } from "../ui/design-system.js";
 
 export function NotFoundPage() {

@@ -1,5 +1,5 @@
+import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import { browserApi } from "../../../api.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
@@ -158,11 +158,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 tone={agentStatus.tone}
                               />
                               <p>{messagingAgentStatusDescription(agent, binding.provider)}</p>
-                              {agentRecovery && agentRecovery.to !== `/agents/${agent.id}/settings/messaging` ? (
+                              {agentRecovery && agentRecovery.link.params.section !== "messaging" ? (
                                 <Link
                                   className={buttonClassName({ size: "compact", variant: "secondary" })}
                                   state={{ agent }}
-                                  to={agentRecovery.to}
+                                  {...agentRecovery.link}
                                 >
                                   {agentRecovery.label}
                                 </Link>

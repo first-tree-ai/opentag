@@ -7,10 +7,12 @@
  */
 
 import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
+import { emptyDraft } from "./flow.js";
 import { OnboardingV2Page } from "./page.js";
+import { useServerBackend } from "./server-backend.js";
 
 const NOW = "2026-08-29T00:00:00.000Z";
 const AGENT_COMPUTER = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
@@ -111,6 +113,49 @@ describe("the refusal banner at a669488", () => {
     // The refusal belonged to the move the fresh code superseded, and `issue()` has already decided
     // that run's state goes with it — `rebindTarget` is cleared there, which is exactly what makes
     // the surviving button inert. So the banner and its control go too.
+    // Both halves, separately. The button alone cannot tell the two releases apart — it lives
+    // inside the banner, so clearing either one removes it — while a surviving banner is what a
+    // stale, no-longer-applicable explanation actually looks like.
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  /*
+   * The other half of that release, at the seam rather than through the page.
+   *
+   * Through the page the two clears cannot be told apart: the button lives inside the banner, so
+   * retiring either one removes it. Here the offer itself is the assertion — a retry that is still
+   * on offer after its target was cleared is a dead control waiting for a banner to appear under,
+   * and `completeSetup` failing later is one way it gets one.
+   */
+  it("stops offering a retry once the move it belonged to has been superseded", async () => {
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(async () => ({
+      bootstrapCommand: "sh install",
+      expiresIn: 3,
+      issuedAt: new Date(Date.now()).toISOString(),
+    }));
+    let call = 0;
+    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
+      call += 1;
+      const departed = machine(AGENT_COMPUTER, "Ada's old Mac", false, false);
+      if (call <= 2) return { computers: [departed] };
+      return { computers: [departed, machine(OTHER_COMPUTER, "Ada's new Mac", true)] };
+    });
+    vi.spyOn(browserApi, "rebindAgentComputer").mockRejectedValue(new Error("delivery in flight"));
+
+    const view = renderHook(() => useServerBackend(emptyDraft()));
+    await settle();
+    view.result.current.issueConnectCode();
+    await settle();
+    await tick(POLL_MS);
+    expect(view.result.current.retryRebind).toBeTypeOf("function");
+
+    // A fresh code supersedes that move, and the offer goes with it.
+    await tick(POLL_MS * 2);
+    act(() => view.result.current.refreshConnectCode());
+    await settle();
+
+    expect(view.result.current.retryRebind).toBeUndefined();
   });
 });

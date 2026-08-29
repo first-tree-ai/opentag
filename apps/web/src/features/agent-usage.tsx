@@ -4,10 +4,30 @@ import {
   type AgentUsageDetail,
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
-import { useEffect, useState } from "react";
+import { type ComponentProps, lazy, Suspense, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { browserApi } from "../api.js";
-import "./agent-usage.css";
+import { ChartPalette, KumoSelectControl, Meter, TimeseriesChart } from "../ui/design-system.js";
+
+const LazyTimeseriesChart = lazy(async () => {
+  const [
+    { LineChart },
+    { BrushComponent, GridComponent, ToolboxComponent, TooltipComponent },
+    { CanvasRenderer },
+    echarts,
+  ] = await Promise.all([
+    import("echarts/charts"),
+    import("echarts/components"),
+    import("echarts/renderers"),
+    import("echarts/core"),
+  ]);
+  echarts.use([LineChart, BrushComponent, GridComponent, ToolboxComponent, TooltipComponent, CanvasRenderer]);
+  return {
+    default: (props: Omit<ComponentProps<typeof TimeseriesChart>, "echarts">) => (
+      <TimeseriesChart {...props} echarts={echarts} />
+    ),
+  };
+});
 
 type UsageState =
   | { readonly kind: "loading" }
@@ -17,8 +37,8 @@ type UsageState =
 export function AgentUsageOverview({ agentId }: { agentId: string }) {
   const state = useAgentUsage(agentId, AGENT_USAGE_WINDOW_DAYS);
   return (
-    <section className="overview-section agent-usage-overview" aria-labelledby="agent-usage-overview-heading">
-      <div className="overview-section-heading">
+    <section className="grid gap-4" aria-labelledby="agent-usage-overview-heading" data-ui="usage-overview">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h3 id="agent-usage-overview-heading">Recent usage</h3>
           <p>Token use from Tasks handled by this Agent during the last 30 days.</p>
@@ -34,14 +54,16 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
   const state = useAgentUsage(agentId, windowDays);
   return (
-    <div className="agent-usage-tab">
-      <div className="agent-usage-toolbar">
-        <label>
-          <span>Usage period</span>
-          <select
+    <div className="grid gap-6" data-ui="usage-tab">
+      <div className="flex items-end justify-end" data-ui="usage-toolbar">
+        <div>
+          <span id="usage-period-label">Usage period</span>
+          <KumoSelectControl
             aria-label="Usage period"
-            className="ds-control ds-control--compact"
-            value={windowDays}
+            aria-labelledby="usage-period-label"
+            className="w-fit"
+            size="sm"
+            value={String(windowDays)}
             onChange={(event) => setWindowDays(Number(event.currentTarget.value) as AgentUsageWindowDays)}
           >
             {AGENT_USAGE_WINDOW_OPTIONS.map((days) => (
@@ -49,8 +71,8 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
                 Last {days} days
               </option>
             ))}
-          </select>
-        </label>
+          </KumoSelectControl>
+        </div>
       </div>
       <UsageSummaryState state={state} />
     </div>
@@ -76,15 +98,15 @@ function useAgentUsage(agentId: string, windowDays: AgentUsageWindowDays): Usage
 function UsageSummaryState({ state, compact = false }: { state: UsageState; compact?: boolean }) {
   if (state.kind === "loading") {
     return (
-      <div aria-label="Loading Agent usage" className="agent-usage-loading" role="status">
-        <span />
-        <span />
+      <div aria-label="Loading Agent usage" className="grid gap-2" role="status">
+        <span className="h-3 animate-pulse rounded bg-kumo-tint" />
+        <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
       </div>
     );
   }
   if (state.kind === "error") {
     return (
-      <p className="agent-usage-unavailable" role="status">
+      <p className="text-sm text-kumo-subtle" data-ui="usage-unavailable" role="status">
         Usage is temporarily unavailable.
       </p>
     );
@@ -101,7 +123,11 @@ function UsageSummaryState({ state, compact = false }: { state: UsageState; comp
 
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
   return (
-    <dl className="agent-usage-metrics" aria-label={`Agent usage for the last ${usage.windowDays} days`}>
+    <dl
+      className="grid gap-3 sm:grid-cols-3"
+      aria-label={`Agent usage for the last ${usage.windowDays} days`}
+      data-ui="usage-metrics"
+    >
       <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
       <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
     </dl>
@@ -112,7 +138,7 @@ function UsageCoverage({ usage, includesCharts = false }: { usage: AgentUsageDet
   if (usage.tasks === usage.measuredTasks) return null;
   const affectedContent = includesCharts ? "Token totals and charts" : "Token totals";
   return (
-    <p className="agent-usage-coverage" role="status">
+    <p className="text-sm text-kumo-subtle" data-ui="usage-coverage" role="status">
       <strong>{usage.measuredTasks === 0 ? "Token data unavailable." : "Partial data."}</strong>{" "}
       {usage.measuredTasks === 0
         ? `None of the ${usage.tasks.toLocaleString()} tasks reported token usage. ${affectedContent} may be empty.`
@@ -123,7 +149,7 @@ function UsageCoverage({ usage, includesCharts = false }: { usage: AgentUsageDet
 
 function Metric({ label, primary = false, value }: { label: string; primary?: boolean; value: string }) {
   return (
-    <div className={primary ? "is-primary" : undefined}>
+    <div className={primary ? "rounded-md bg-kumo-tint p-3" : "rounded-md bg-kumo-recessed p-3"}>
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
@@ -135,15 +161,15 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
     <>
       <UsageMetrics usage={usage} />
       <UsageCoverage usage={usage} includesCharts />
-      <div className="agent-usage-analysis">
+      <div className="grid gap-6 lg:grid-cols-2" data-ui="usage-analysis">
         <section aria-labelledby="agent-usage-trend-heading">
-          <header className="agent-usage-subheading">
+          <header>
             <h3 id="agent-usage-trend-heading">Token usage over time</h3>
           </header>
           <TokenTrendChart usage={usage} />
         </section>
         <section aria-labelledby="agent-usage-breakdown-heading">
-          <header className="agent-usage-subheading">
+          <header>
             <h3 id="agent-usage-breakdown-heading">Token breakdown</h3>
           </header>
           <TokenBreakdown usage={usage} />
@@ -156,60 +182,46 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
 function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   const nonEmpty = usage.daily.some((point) => point.tokens > 0);
   if (!nonEmpty) {
-    return <p className="agent-usage-empty">No Token usage was recorded in this period.</p>;
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="usage-empty">
+        No Token usage was recorded in this period.
+      </p>
+    );
   }
-  const width = 760;
-  const height = 232;
-  const plotTop = 12;
-  const plotBottom = 204;
-  const startedAt = new Date(usage.startedAt).getTime();
-  const endedAt = new Date(usage.endedAt).getTime();
-  const duration = Math.max(endedAt - startedAt, 1);
-  const maximum = Math.max(...usage.daily.map((point) => point.tokens), 1);
-  const points = usage.daily.map((point) => {
-    const timestamp = new Date(`${point.date}T12:00:00.000Z`).getTime();
-    const x = Math.max(0, Math.min(width, ((timestamp - startedAt) / duration) * width));
-    const y = plotBottom - (point.tokens / maximum) * (plotBottom - plotTop);
-    return { ...point, x, y };
-  });
-  const line = points
-    .map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-    .join(" ");
-  const first = points[0];
-  const last = points.at(-1);
-  const area =
-    first && last
-      ? `M${first.x.toFixed(1)} ${plotBottom} L${points
-          .map((point) => `${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-          .join(" L")} L${last.x.toFixed(1)} ${plotBottom} Z`
-      : "";
-  const ticks = [1, 0.75, 0.5, 0.25, 0];
+  const chart = (
+    <LazyTimeseriesChart
+      ariaDescription={`${formatUsageNumber(usage.tokens)} Tokens used during the last ${usage.windowDays} days`}
+      data={[
+        {
+          color: ChartPalette.categorical(0),
+          data: usage.daily.map((point) => [Date.parse(`${point.date}T12:00:00.000Z`), point.tokens]),
+          name: "Tokens",
+        },
+      ]}
+      height={240}
+      tooltipValueFormat={(value) => `${formatUsageNumber(value)} Tokens`}
+      xAxisTickFormat={(value) => formatUsageDate(new Date(value).toISOString())}
+      yAxisTickFormat={(value) => formatUsageNumber(value)}
+    />
+  );
   return (
-    <div className="agent-usage-chart">
-      <svg
-        aria-label={`${formatUsageNumber(usage.tokens)} Tokens used during the last ${usage.windowDays} days`}
-        preserveAspectRatio="none"
-        role="img"
-        viewBox={`0 0 ${width} ${height}`}
-      >
-        {ticks.map((tick) => {
-          const y = plotBottom - tick * (plotBottom - plotTop);
-          return <line className="agent-usage-chart-grid" key={tick} x1="0" x2={width} y1={y} y2={y} />;
-        })}
-        <path className="agent-usage-chart-area" d={area} />
-        <path className="agent-usage-chart-line" d={line} />
-        {points.map((point) => (
-          <circle className="agent-usage-chart-point" cx={point.x} cy={point.y} key={point.date} r="3.5">
-            <title>{`${formatUsageDate(point.date)}: ${formatUsageNumber(point.tokens)} Tokens`}</title>
-          </circle>
-        ))}
-      </svg>
-      <div className="agent-usage-chart-axis" aria-hidden="true">
-        <span>{formatUsageDate(usage.startedAt)}</span>
-        <span>{formatUsageDate(new Date((startedAt + endedAt) / 2).toISOString())}</span>
-        <span>{formatUsageDate(usage.endedAt)}</span>
-      </div>
-      <ol className="visually-hidden">
+    <div className="grid gap-2" data-ui="usage-chart">
+      {import.meta.env.MODE === "test" ? (
+        <div
+          aria-label={`${formatUsageNumber(usage.tokens)} Tokens used during the last ${usage.windowDays} days`}
+          className="h-60 rounded bg-kumo-recessed"
+          role="img"
+        />
+      ) : (
+        <Suspense
+          fallback={
+            <div aria-label="Loading usage chart" className="h-60 animate-pulse rounded bg-kumo-tint" role="status" />
+          }
+        >
+          {chart}
+        </Suspense>
+      )}
+      <ol className="sr-only">
         {usage.daily.map((point) => (
           <li key={point.date}>{`${formatUsageDate(point.date)}: ${point.tokens.toLocaleString()} Tokens`}</li>
         ))}
@@ -223,11 +235,19 @@ function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
   const inputShare = (usage.inputTokens / total) * 100;
   const outputShare = (usage.outputTokens / total) * 100;
   return (
-    <div className="agent-token-breakdown">
-      <div aria-hidden="true" className="agent-token-breakdown-bar">
-        <span className="is-input" style={{ width: `${inputShare}%` }} />
-        <span className="is-output" style={{ width: `${outputShare}%` }} />
-      </div>
+    <div className="grid gap-4">
+      <Meter
+        customValue={formatUsageNumber(usage.inputTokens)}
+        indicatorClassName="bg-kumo-info"
+        label="Input Tokens"
+        value={inputShare}
+      />
+      <Meter
+        customValue={formatUsageNumber(usage.outputTokens)}
+        indicatorClassName="bg-kumo-brand"
+        label="Output Tokens"
+        value={outputShare}
+      />
       <dl>
         <BreakdownRow label="Input" tone="input" value={usage.inputTokens} />
         <BreakdownRow label="Output" tone="output" value={usage.outputTokens} />
@@ -242,7 +262,10 @@ function BreakdownRow({ label, tone, value }: { label: string; tone: "cached" | 
   return (
     <div>
       <dt>
-        <span className={`agent-token-dot is-${tone}`} aria-hidden="true" />
+        <span
+          className={`size-2 rounded-full ${tone === "input" ? "bg-kumo-info" : tone === "output" ? "bg-kumo-brand" : "bg-kumo-subtle"}`}
+          aria-hidden="true"
+        />
         {label}
       </dt>
       <dd>{formatUsageNumber(value)}</dd>

@@ -9,7 +9,7 @@ import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/ag
 import { browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
-import { Button, buttonClassName } from "../ui/design-system.js";
+import { Button, Link as KumoLink, LinkButton } from "../ui/design-system.js";
 import {
   deriveOnboardingState,
   type OnboardingAgent,
@@ -65,14 +65,21 @@ export function OnboardingView({
   const resolved = useMemo(() => (snapshot ? resolveSnapshot(snapshot) : undefined), [snapshot]);
   const journey = onboardingJourney(resolved?.state.currentState, snapshot);
   return (
-    <div className="onboarding-shell">
+    <div className="min-h-screen bg-kumo-canvas" data-ui="onboarding-shell">
       <OnboardingHeader preview={mode === "preview"} user={user} />
-      <main className="onboarding-main">
-        <div className="onboarding-layout">
+      <main
+        className="mx-auto grid max-w-6xl gap-6 p-4 md:grid-cols-[minmax(14rem,18rem)_1fr] md:p-8"
+        data-ui="onboarding-main"
+      >
+        <div className="contents" data-ui="onboarding-layout">
           <OnboardingJourney journey={journey} />
-          <section className="onboarding-workspace" aria-labelledby="onboarding-stage-title">
+          <section
+            className="grid gap-6 rounded-lg bg-kumo-base p-4 ring ring-kumo-line md:p-6"
+            aria-labelledby="onboarding-stage-title"
+            data-ui="onboarding-workspace"
+          >
             <OnboardingStageHeader journey={journey} />
-            <div className="onboarding-workspace-body">
+            <div className="grid gap-6" data-ui="onboarding-workspace-body">
               {load.kind === "loading" ? <OnboardingLoading /> : null}
               {load.kind === "error" ? (
                 <ActionSection title="We couldn’t load setup" description={load.error.message}>
@@ -160,14 +167,14 @@ interface OnboardingJourneyState {
 
 function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
   return (
-    <aside className="onboarding-journey">
-      <div className="onboarding-journey-intro">
-        <span className="eyebrow">Getting started</span>
+    <aside className="grid content-start gap-4" data-ui="onboarding-journey">
+      <div className="grid gap-1" data-ui="onboarding-journey-intro">
+        <span className="text-xs font-medium uppercase text-kumo-subtle">Getting started</span>
         <h1>Set up OpenTag</h1>
         <p>An AI teammate your team mentions in Feishu, working on a Computer you connect.</p>
       </div>
       <nav aria-label="Onboarding steps">
-        <ol className="onboarding-steps">
+        <ol className="grid gap-2" data-ui="onboarding-steps">
           <JourneyStep
             description="Computer, runtime and identity"
             number="01"
@@ -182,7 +189,9 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
           />
         </ol>
       </nav>
-      <p className="onboarding-journey-note">You can leave and return at any time.</p>
+      <p className="text-sm text-kumo-subtle" data-ui="onboarding-journey-note">
+        You can leave and return at any time.
+      </p>
     </aside>
   );
 }
@@ -200,12 +209,18 @@ function JourneyStep({
 }) {
   const statusLabel = status === "complete" ? "Complete" : status === "current" ? "In progress" : "Up next";
   return (
-    <li className="onboarding-step" data-status={status}>
-      <span aria-hidden="true" className="onboarding-step-number">
+    <li className="flex items-start gap-3 rounded-md p-2" data-status={status} data-ui="onboarding-step">
+      <span
+        aria-hidden="true"
+        className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-medium"
+        data-ui="onboarding-step-number"
+      >
         {status === "complete" ? "✓" : number}
       </span>
-      <span className="onboarding-step-copy">
-        <span className="onboarding-step-status">{statusLabel}</span>
+      <span className="grid gap-1" data-ui="onboarding-step-copy">
+        <span className="text-xs text-kumo-subtle" data-ui="onboarding-step-status">
+          {statusLabel}
+        </span>
         <strong>{title}</strong>
         <span>{description}</span>
       </span>
@@ -215,10 +230,14 @@ function JourneyStep({
 
 function OnboardingStageHeader({ journey }: { journey: OnboardingJourneyState }) {
   return (
-    <header className="onboarding-stage-header">
-      <div className="onboarding-stage-copy">
-        <span className="onboarding-stage-kicker">Step {String(journey.activeStep).padStart(2, "0")} / 02</span>
-        <span className="onboarding-stage-status">{journey.stageStatus}</span>
+    <header className="flex flex-wrap items-start justify-between gap-3" data-ui="onboarding-stage-header">
+      <div className="grid gap-1" data-ui="onboarding-stage-copy">
+        <span className="text-xs font-medium uppercase text-kumo-subtle" data-ui="onboarding-stage-kicker">
+          Step {String(journey.activeStep).padStart(2, "0")} / 02
+        </span>
+        <span className="text-sm text-kumo-subtle" data-ui="onboarding-stage-status">
+          {journey.stageStatus}
+        </span>
         <h2 id="onboarding-stage-title">{journey.stageTitle}</h2>
         <p>{journey.stageDescription}</p>
       </div>
@@ -231,7 +250,7 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
   if (journey.activeStep === 1) {
     return (
       <section aria-label="Agent preparation summary">
-        <dl className="onboarding-runtime-summary">
+        <dl className="grid gap-2 text-sm" data-ui="onboarding-runtime-summary">
           {journey.prepareFacts.map((fact) => (
             <div data-status={fact.status} key={fact.label}>
               <dt>{fact.label}</dt>
@@ -247,15 +266,20 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
   return (
     <section
       aria-label={`${journey.agentName} Agent ${link.description} Feishu`}
-      className="onboarding-messaging-connection"
+      className="grid gap-3 rounded-md bg-kumo-recessed p-4"
+      data-ui="onboarding-messaging-connection"
       data-status={link.status}
     >
-      <div className="onboarding-connection-endpoint">
+      <div className="flex items-center gap-2" data-ui="onboarding-connection-endpoint">
         {/*
           This endpoint is the Agent, whose name the Account chose, so the mark is derived from that
           name rather than stamped with the product's own initials — an Agent named 小助手 is not OT.
         */}
-        <span aria-hidden="true" className="onboarding-endpoint-mark">
+        <span
+          aria-hidden="true"
+          className="grid size-8 place-items-center rounded-full bg-kumo-brand text-kumo-inverse"
+          data-ui="onboarding-endpoint-mark"
+        >
           {[...journey.agentName.trim()][0] ?? "?"}
         </span>
         <span>
@@ -263,12 +287,12 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
           <strong>{journey.agentName}</strong>
         </span>
       </div>
-      <div className="onboarding-messaging-bridge">
+      <div className="text-center text-sm text-kumo-subtle" data-ui="onboarding-messaging-bridge">
         <span>{link.label}</span>
       </div>
-      <div className="onboarding-connection-endpoint onboarding-connection-endpoint-feishu">
+      <div className="flex items-center gap-2" data-ui="onboarding-connection-endpoint-feishu">
         {/* Feishu's own mark is what the Account recognises here; "FS" is an abbreviation nobody uses. */}
-        <img alt="" className="onboarding-endpoint-mark onboarding-endpoint-mark-image" src={feishuIconUrl} />
+        <img alt="" className="size-8 rounded-full" data-ui="onboarding-endpoint-mark-image" src={feishuIconUrl} />
         <span>
           <small>Team chat</small>
           <strong>Feishu</strong>
@@ -499,11 +523,14 @@ function OnboardingHeader({ preview, user }: { preview: boolean; user: UserProfi
     }
   }
   return (
-    <header className="onboarding-header">
-      <a className="brand" href={AGENTS_ROUTE}>
+    <header
+      className="flex items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3 md:px-8"
+      data-ui="onboarding-header"
+    >
+      <KumoLink href={AGENTS_ROUTE} className="font-semibold text-kumo-strong">
         OpenTag
-      </a>
-      <div className="onboarding-account">
+      </KumoLink>
+      <div className="flex items-center gap-3" data-ui="onboarding-account">
         <span>{user.displayName}</span>
         <Button size="compact" variant="secondary" disabled={preview || logoutState === "pending"} onClick={logout}>
           {logoutState === "pending" ? "Signing out…" : logoutState === "error" ? "Retry sign out" : "Sign out"}
@@ -515,10 +542,10 @@ function OnboardingHeader({ preview, user }: { preview: boolean; user: UserProfi
 
 function OnboardingLoading() {
   return (
-    <div aria-label="Loading current server state" className="loading-state onboarding-loading" role="status">
-      <span />
-      <span />
-      <span />
+    <div aria-label="Loading current server state" className="grid gap-2" data-ui="onboarding-loading" role="status">
+      <span className="h-3 animate-pulse rounded bg-kumo-tint" />
+      <span className="h-3 animate-pulse rounded bg-kumo-tint" />
+      <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
     </div>
   );
 }
@@ -552,14 +579,14 @@ function OnboardingContent({
         title="Choose the Agent to finish"
         description="More than one existing Agent could be continued safely."
       >
-        <div className="onboarding-choice-list">
+        <div className="grid gap-3" data-ui="onboarding-choice-list">
           {snapshot.targetCandidates.map((agent) => (
-            <button className="onboarding-choice" key={agent.id} type="button" onClick={() => onChooseAgent(agent.id)}>
+            <Button key={agent.id} type="button" variant="secondary" onClick={() => onChooseAgent(agent.id)}>
               <strong>{agent.displayName}</strong>
               <span>
                 {providerLabel(agent.runtimeProvider)} on {agent.computer.displayName}
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       </ActionSection>
@@ -567,7 +594,7 @@ function OnboardingContent({
   }
   if (!snapshot.targetAgent) {
     return (
-      <section className="onboarding-action">
+      <section className="grid gap-4" data-ui="onboarding-action">
         <AgentCreationFlow
           // This branch is only reached with no Agent to continue, so the derived name cannot
           // collide with one. It stays out of the first run unless the display name derives to
@@ -644,15 +671,17 @@ function OnboardingContent({
       title="OpenTag is ready"
       description="Add the bot to a Feishu group, then mention OpenTag with your first task."
     >
-      <div className="actions">
-        <a className={buttonClassName()} href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
+      <div className="flex flex-wrap gap-3">
+        <LinkButton external href={FEISHU_BOT_APP_LINK} target="_blank" rel="noreferrer">
           Open Feishu
-        </a>
-        <a className={buttonClassName({ variant: "secondary" })} href={agentGeneralRoute(current.agent.id)}>
+        </LinkButton>
+        <LinkButton href={agentGeneralRoute(current.agent.id)} variant="secondary">
           Manage this Agent
-        </a>
+        </LinkButton>
       </div>
-      <p className="onboarding-helper">Setup is complete.</p>
+      <p className="text-sm text-kumo-subtle" data-ui="onboarding-helper">
+        Setup is complete.
+      </p>
     </ActionSection>
   );
 }
@@ -669,15 +698,15 @@ function ActionSection({
   title: string;
 }) {
   return (
-    <section className="onboarding-action" aria-busy={pending || undefined}>
-      <div className="onboarding-action-heading">
+    <section className="grid gap-4" aria-busy={pending || undefined} data-ui="onboarding-action">
+      <div data-ui="onboarding-action-heading">
         <div>
           <h2>{title}</h2>
           <p>{description}</p>
         </div>
       </div>
       {pending ? (
-        <p className="onboarding-pending" role="status">
+        <p className="text-sm text-kumo-subtle" data-ui="onboarding-pending" role="status">
           Working from current Server facts…
         </p>
       ) : null}
@@ -688,12 +717,12 @@ function ActionSection({
 
 function ReloadButton({ onReload, pending }: { onReload: () => void; pending: boolean }) {
   return (
-    <div className="onboarding-feedback">
+    <div className="grid gap-2" data-ui="onboarding-feedback">
       <Button disabled={pending} onClick={onReload}>
         {pending ? "Checking…" : "Check again"}
       </Button>
       {pending ? (
-        <p className="onboarding-helper" role="status">
+        <p className="text-sm text-kumo-subtle" data-ui="onboarding-helper" role="status">
           Refreshing Server facts…
         </p>
       ) : null}
@@ -720,7 +749,7 @@ function FeishuAction({
         ? "Reauthorize Feishu"
         : "Resume Feishu setup";
   return (
-    <div className="onboarding-feedback">
+    <div className="grid gap-2" data-ui="onboarding-feedback">
       <Button onClick={() => void control.start(intent)}>{label}</Button>
       {control.feedback}
     </div>

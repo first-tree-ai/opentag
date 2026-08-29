@@ -1,7 +1,7 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "./api.js";
-import { Button } from "./ui/design-system.js";
+import { Banner, Button } from "./ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const COPY_FEEDBACK_MS = 2_000;
@@ -214,7 +214,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
   }, [pollCycle, targetComputerId, waitingForComputer]);
 
   return (
-    <section className="panel">
+    <section className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
       <h2>{targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}</h2>
       {/*
         Connecting a new Computer needs no machine named: whichever terminal runs the command is the
@@ -223,23 +223,21 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
         to happen on that machine.
       */}
       <p>Generate a command, then run it in the terminal{targetName ? ` on ${targetName}` : ""}.</p>
-      <Button className="connect-command-primary" onClick={() => void connectComputer()}>
-        Generate connection command
-      </Button>
+      <Button onClick={() => void connectComputer()}>Generate connection command</Button>
       {bootstrapCommand ? (
         <>
           <pre>
             <code ref={commandRef}>{bootstrapCommand}</code>
           </pre>
-          <div className="connect-command-actions">
+          <div className="flex flex-wrap items-center gap-3">
             <Button variant="secondary" onClick={() => void copyCommand(bootstrapCommand)}>
               {copied ? "Copied" : "Copy command"}
             </Button>
             {waitingForComputer && remainingMs !== undefined ? (
-              <p className="connect-command-meta">Expires in {formatRemaining(remainingMs)}</p>
+              <p className="text-sm text-kumo-subtle">Expires in {formatRemaining(remainingMs)}</p>
             ) : null}
           </div>
-          {copyHint ? <p className="connect-command-meta">{copyHint}</p> : null}
+          {copyHint ? <p className="text-sm text-kumo-subtle">{copyHint}</p> : null}
           {waitingForComputer || computerConnected ? (
             <p role="status">
               {waitingForComputer
@@ -251,11 +249,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
           ) : null}
         </>
       ) : null}
-      {error ? (
-        <div className="notice error" role="alert">
-          {error}
-        </div>
-      ) : null}
+      {error ? <Banner variant="error" role="alert" description={error} /> : null}
     </section>
   );
 }

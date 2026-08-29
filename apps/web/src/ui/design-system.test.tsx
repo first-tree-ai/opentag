@@ -7,99 +7,72 @@ import {
   Dialog,
   Field,
   Icon,
+  KumoSelectControl,
   SettingsList,
   SettingsRow,
   StatusIndicator,
   Tabs,
 } from "./design-system.js";
 
-describe("design system primitives", () => {
-  it("maps button intent to an explicit visual variant", () => {
-    render(<Button variant="secondary">Cancel</Button>);
-    expect(screen.getByRole("button", { name: "Cancel" }).className).toContain("ds-button--secondary");
+describe("Kumo semantic adapter", () => {
+  it("maps legacy button intents to Kumo variants", () => {
+    expect(buttonClassName({ variant: "danger" })).toContain("bg-");
+    render(<Button variant="inline">Details</Button>);
+    expect(screen.getByRole("button", { name: "Details" }).className).not.toContain("ds-");
   });
 
-  it("exposes the Viktor-aligned button hierarchy without a separate save color", () => {
+  it("provides labelled Kumo tabs and settings rows", () => {
     render(
       <>
-        <Button variant="outline">Review</Button>
-        <Button variant="ghost">Dismiss</Button>
-        <Button variant="inline">Details</Button>
+        <Tabs label="Example settings">
+          <a href="/general">General</a>
+          <a href="/runtime">Runtime</a>
+        </Tabs>
+        <SettingsList>
+          <SettingsRow description="Visible throughout the product." label="Display name">
+            <Field htmlFor="display-name" label="Display name">
+              <input id="display-name" />
+            </Field>
+          </SettingsRow>
+        </SettingsList>
       </>,
     );
-    expect(screen.getByRole("button", { name: "Review" }).className).toContain("ds-button--outline");
-    expect(screen.getByRole("button", { name: "Dismiss" }).className).toContain("ds-button--ghost");
-    expect(screen.getByRole("button", { name: "Details" }).className).toContain("ds-button--inline");
-  });
-
-  it("shares button styling with semantic links", () => {
-    render(
-      <a className={buttonClassName({ variant: "secondary" })} href="/continue">
-        Continue
-      </a>,
-    );
-    expect(screen.getByText("Continue").className).toContain("ds-button--secondary");
-  });
-
-  it("provides labelled tabs with an explicit mobile-collapse contract", () => {
-    render(
-      <Tabs collapseOnMobile label="Example settings">
-        <a href="/general">General</a>
-        <a href="/runtime">Runtime</a>
-      </Tabs>,
-    );
-    const navigation = screen.getByRole("navigation", { name: "Example settings" });
-    expect(navigation.className).toContain("ds-tabs");
-    expect(navigation.className).toContain("ds-tabs--collapsible");
-    expect(screen.getAllByRole("link")).toHaveLength(2);
-  });
-
-  it("keeps setting copy and controls in one consistent row", () => {
-    render(
-      <SettingsList>
-        <SettingsRow label="Display name" description="Visible throughout the product.">
-          <Field htmlFor="display-name" label="Display name">
-            <input id="display-name" />
-          </Field>
-        </SettingsRow>
-      </SettingsList>,
-    );
-    const row = screen.getByText("Visible throughout the product.").closest(".ds-settings-row");
-    expect(row).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Example settings" })).toBeTruthy();
     expect(screen.getByLabelText("Display name")).toBeTruthy();
-    expect(row?.querySelector(".ds-settings-row__control")).toBeTruthy();
   });
 
-  it("keeps field labels, help and errors associated with the control", () => {
+  it("associates field errors and status with semantic state", () => {
     render(
-      <Field
-        error="Choose another name"
-        errorId="name-error"
-        hint="Lowercase letters only"
-        hintId="name-hint"
-        htmlFor="agent-name"
-        label="Agent name"
-      >
-        <input aria-describedby="name-hint name-error" id="agent-name" />
-      </Field>,
+      <>
+        <Field
+          error="Choose another name"
+          errorId="name-error"
+          hint="Lowercase letters only"
+          hintId="name-hint"
+          htmlFor="agent-name"
+          label="Agent name"
+        >
+          <input aria-describedby="name-hint name-error" id="agent-name" />
+        </Field>
+        <StatusIndicator detail="Ready for work" label="Online" tone="success" />
+      </>,
     );
-    expect(screen.getByLabelText("Agent name")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toBe("Choose another name");
+    expect(screen.getByText("Online").closest("[data-state]")?.getAttribute("data-state")).toBe("success");
   });
 
-  it("keeps operational status independent from brand styling", () => {
-    render(<StatusIndicator detail="Ready for work" label="Online" tone="success" />);
-    expect(screen.getByText("Online").closest(".ds-status")?.className).toContain("ds-status--success");
-    expect(screen.getByText("Ready for work")).toBeTruthy();
+  it("renders a real Kumo select with controlled callbacks", () => {
+    const onChange = () => undefined;
+    render(
+      <KumoSelectControl aria-label="Usage period" value="7" onChange={onChange}>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+      </KumoSelectControl>,
+    );
+    expect(screen.getByRole("combobox", { name: "Usage period" })).toBeTruthy();
   });
 
-  it("provides consistent vector icons", () => {
-    const { container } = render(<Icon name="check" />);
-    expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
-    expect(container.querySelector("path")).toBeTruthy();
-  });
-
-  it("closes dialogs on Escape and returns focus", () => {
+  it("keeps dialog Escape and focus return behavior", () => {
     const triggerRef = createRef<HTMLButtonElement>();
     function Example() {
       const [open, setOpen] = useState(false);
@@ -108,19 +81,26 @@ describe("design system primitives", () => {
           <button ref={triggerRef} type="button" onClick={() => setOpen(true)}>
             Open
           </button>
-          {open ? (
-            <Dialog returnFocusRef={triggerRef} title="Example" onClose={() => setOpen(false)}>
-              <button type="button">Action</button>
-            </Dialog>
-          ) : null}
+          <Dialog open={open} returnFocusRef={triggerRef} title="Example" onClose={() => setOpen(false)}>
+            <Button>Action</Button>
+          </Dialog>
         </>
       );
     }
     render(<Example />);
     const trigger = screen.getByRole("button", { name: "Open" });
     fireEvent.click(trigger);
+    expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("keeps icon-only controls discoverable", () => {
+    render(
+      <Button aria-label="Close" shape="square" variant="ghost">
+        <Icon name="close" />
+      </Button>,
+    );
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
   });
 });

@@ -1,20 +1,22 @@
 import { integrationPreviews } from "../mock/capability-data.js";
-import "../mock-pages.css";
+import { Badge, Table } from "../ui/design-system.js";
 
 export function IntegrationsPage() {
   return (
-    <section className="capability-page" aria-labelledby="integrations-page-title">
-      <header className="capability-page-header integration-page-header">
+    <section className="grid gap-6" aria-labelledby="integrations-page-title" data-ui="integrations-page">
+      <header className="flex flex-wrap items-start justify-between gap-4" data-ui="integrations-header">
         <div>
           <h1 id="integrations-page-title">Integrations</h1>
           <p>Services OpenTag could work with to find context and complete work.</p>
         </div>
-        <span className="capability-demo-note">Demo data</span>
+        <span className="text-sm text-kumo-subtle" data-ui="integrations-demo-note">
+          Demo data
+        </span>
       </header>
 
-      <table className="capability-table" aria-label="Demo Integrations">
+      <Table className="w-full" aria-label="Demo Integrations" data-ui="integrations-table">
         <thead>
-          <tr className="capability-table-header capability-integration-grid">
+          <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
             <th scope="col">Name</th>
             <th scope="col">Category</th>
             <th scope="col">Status</th>
@@ -22,9 +24,12 @@ export function IntegrationsPage() {
         </thead>
         <tbody>
           {integrationPreviews.map((integration) => (
-            <tr className="capability-table-row capability-integration-grid" key={integration.id}>
-              <td className="capability-primary-cell capability-integration-cell">
-                <span className={`capability-integration-mark is-${integration.id}`} aria-hidden="true">
+            <tr className="border-b border-kumo-line" key={integration.id}>
+              <td className="p-3">
+                <span
+                  className="mr-2 inline-grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
+                  aria-hidden="true"
+                >
                   {integration.abbreviation}
                 </span>
                 <span>
@@ -34,12 +39,12 @@ export function IntegrationsPage() {
               </td>
               <td data-label="Category">{integration.category}</td>
               <td data-label="Status">
-                <span className="capability-demo-status">Demo</span>
+                <Badge variant="neutral">Demo</Badge>
               </td>
             </tr>
           ))}
         </tbody>
-      </table>
+      </Table>
     </section>
   );
 }

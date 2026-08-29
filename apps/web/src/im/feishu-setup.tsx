@@ -2,7 +2,7 @@ import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/brow
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import { Button } from "../ui/design-system.js";
+import { Banner, Button } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
@@ -145,11 +145,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
     feedback: (
       <>
         {attempt ? <FeishuSetupFeedback attempt={attempt} onRetry={start} /> : null}
-        {error ? (
-          <div className="notice error" role="alert">
-            {error.message}
-          </div>
-        ) : null}
+        {error ? <Banner variant="error" role="alert" description={error.message} /> : null}
       </>
     ),
   });
@@ -164,7 +160,7 @@ function FeishuSetupFeedback({
 }) {
   const recovery = setupRecovery(attempt);
   return (
-    <div className="notice">
+    <Banner data-ui="feishu-setup-feedback">
       <strong>Feishu setup started</strong>
       <br />
       {attempt.intent === "reauthorize"
@@ -193,7 +189,7 @@ function FeishuSetupFeedback({
           <Button onClick={() => void onRetry(attempt.intent)}>Retry Feishu setup</Button>
         </>
       ) : null}
-    </div>
+    </Banner>
   );
 }
 
@@ -208,7 +204,13 @@ function FeishuQrCode({ value }: { value: string }) {
       active = false;
     };
   }, [value]);
-  return source ? <img alt="Scan this QR code in Feishu" className="setup-qr" src={source} /> : null;
+  return source ? (
+    <img
+      alt="Scan this QR code in Feishu"
+      className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
+      src={source}
+    />
+  ) : null;
 }
 
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {

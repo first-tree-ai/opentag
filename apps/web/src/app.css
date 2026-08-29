@@ -1,0 +1,36 @@
+/* OpenTag application boundary. Component styling belongs to Kumo. */
+:root {
+  color: var(--text-color-kumo-default);
+  background: var(--color-kumo-canvas);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
+  font-synthesis: none;
+}
+
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-kumo-canvas);
+  color: var(--text-color-kumo-default);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+  }
+}

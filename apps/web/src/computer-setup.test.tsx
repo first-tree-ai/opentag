@@ -62,9 +62,7 @@ describe("ComputerSetup", () => {
     });
 
     render(<ComputerSetup />);
-    expect(
-      screen.getByRole("button", { name: "Generate connection command" }).classList.contains("connect-command-primary"),
-    ).toBe(true);
+    expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
     await clickGenerate();
 
     expect(calls).toEqual(["baseline", "issue"]);

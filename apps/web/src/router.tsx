@@ -15,7 +15,6 @@ import { DEFAULT_SIGN_IN_DESTINATION, PASSWORD_MIN_LENGTH, resolveSignInDestinat
 import {
   createContext,
   type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   useCallback,
   useContext,
@@ -51,16 +50,24 @@ import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
+  Banner,
   Button,
   buttonClassName,
   Dialog,
+  DropdownMenu,
   Field,
   Icon,
   type IconName,
+  Input,
+  KumoInputControl,
   SettingsList,
   SettingsRow,
+  Sidebar,
+  SidebarProvider,
+  SidebarTrigger,
   StatusIndicator,
   type StatusTone,
+  useSidebar,
 } from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -408,16 +415,16 @@ function AsyncState<T>({
   if (state.kind === "loading")
     return (
       loading ?? (
-        <div aria-label="Loading current server state" className="loading-state" role="status">
-          <span />
-          <span />
-          <span />
+        <div aria-label="Loading current server state" className="grid gap-2" role="status">
+          <span className="h-3 animate-pulse rounded bg-kumo-tint" />
+          <span className="h-3 animate-pulse rounded bg-kumo-tint" />
+          <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
         </div>
       )
     );
   if (state.kind === "error")
     return (
-      <div className="notice error" role="alert">
+      <div className="rounded-md bg-kumo-danger-tint p-3 text-sm text-kumo-danger" role="alert">
         {state.error.message}
       </div>
     );
@@ -510,10 +517,14 @@ function LoginPage() {
   const providers = useResource(() => browserApi.authProviders(), "auth-providers");
   const next = new URLSearchParams(useLocation().search).get("next") ?? DEFAULT_SIGN_IN_DESTINATION;
   return (
-    <main className="login-page decorative-page">
-      <section aria-labelledby="login-title" className="login-card">
+    <main className="grid min-h-screen place-items-center bg-kumo-canvas p-6" data-ui="login-page">
+      <section
+        aria-labelledby="login-title"
+        className="grid w-full max-w-md gap-6 rounded-lg bg-kumo-base p-6 ring ring-kumo-line"
+        data-ui="login-card"
+      >
         <OpenTagBrandLockup />
-        <header className="login-copy">
+        <header className="grid gap-1" data-ui="login-copy">
           <h1 id="login-title">Welcome back</h1>
           <p>Sign in to continue to OpenTag.</p>
         </header>
@@ -531,7 +542,7 @@ function LoginPage() {
             );
             if (linkProviders.length === 0 && !password) {
               return (
-                <p className="login-unavailable" role="status">
+                <p className="text-sm text-kumo-subtle" data-ui="login-unavailable" role="status">
                   No sign-in methods are currently available.
                 </p>
               );
@@ -540,12 +551,15 @@ function LoginPage() {
               <>
                 {password ? <PasswordSignInForm next={next} /> : null}
                 {password && linkProviders.length > 0 ? (
-                  <p className="login-divider">
+                  <p
+                    className="flex items-center justify-center gap-2 text-sm text-kumo-subtle"
+                    data-ui="login-divider"
+                  >
                     <span>or</span>
                   </p>
                 ) : null}
                 {linkProviders.length > 0 ? (
-                  <div className="login-actions">
+                  <div className="grid gap-3" data-ui="login-actions">
                     {linkProviders.map((provider: AuthProvider) => (
                       <LoginProviderLink key={provider.id} next={next} provider={provider} />
                     ))}
@@ -555,7 +569,9 @@ function LoginPage() {
             );
           }}
         </AsyncState>
-        <p className="login-access-note">Sign in to manage your Agents.</p>
+        <p className="text-sm text-kumo-subtle" data-ui="login-access-note">
+          Sign in to manage your Agents.
+        </p>
       </section>
     </main>
   );
@@ -563,24 +579,13 @@ function LoginPage() {
 
 function OpenTagBrandLockup() {
   return (
-    <div className="login-brand-lockup">
-      <svg aria-hidden="true" className="login-brand-mark" focusable="false" viewBox="0 0 48 48">
-        <path
-          d="M23.8 4.4c7.1-.8 14.3 2.6 17.6 8.2 3.5 5.9 3.1 15.3-.8 22-4.2 7.1-12.5 9.6-21.2 9.1-8.3-.5-14.1-4.2-15.2-11.3C2.9 24.6 4.9 15.2 11 9.9c3.3-2.9 7.8-4.9 12.8-5.5Z"
-          fill="currentColor"
-          stroke="var(--foreground)"
-          strokeWidth="1.5"
-        />
-        <path
-          d="M31.3 42.7c.1-6.3 3.8-10.6 11.8-12.7-1.4 6.7-5.7 11-11.8 12.7Z"
-          fill="var(--surface)"
-          stroke="var(--foreground)"
-          strokeLinejoin="round"
-          strokeWidth="1.5"
-        />
-        <circle cx="17.4" cy="23" fill="var(--foreground)" r="1.8" />
-        <circle cx="29.4" cy="23" fill="var(--foreground)" r="1.8" />
-      </svg>
+    <div className="flex items-center gap-2 text-lg font-semibold text-kumo-strong" data-ui="login-brand-lockup">
+      <span
+        className="grid size-8 place-items-center rounded-md bg-kumo-brand text-kumo-inverse"
+        data-ui="login-brand-mark"
+      >
+        <Icon name="shield" />
+      </span>
       <span>OpenTag</span>
     </div>
   );
@@ -639,60 +644,58 @@ export function PasswordSignInForm({
   };
 
   return (
-    <form className="login-password-form" onSubmit={submit}>
-      <label className="login-field" htmlFor="login-email">
-        <span>Email</span>
-        <input
-          autoComplete="email"
-          id="login-email"
-          name="email"
-          onChange={(event) => setEmail(event.target.value)}
-          required
-          type="email"
-          value={email}
-        />
-      </label>
+    <form className="grid gap-4" data-ui="login-password-form" onSubmit={submit}>
+      <Input
+        label="Email"
+        autoComplete="email"
+        id="login-email"
+        name="email"
+        onChange={(event) => setEmail(event.target.value)}
+        required
+        type="email"
+        value={email}
+      />
       {registering ? (
-        <label className="login-field" htmlFor="login-display-name">
-          <span>Name</span>
-          <input
-            autoComplete="name"
-            id="login-display-name"
-            name="displayName"
-            onChange={(event) => setDisplayName(event.target.value)}
-            required
-            type="text"
-            value={displayName}
-          />
-        </label>
-      ) : null}
-      <label className="login-field" htmlFor="login-password">
-        <span>Password</span>
-        <input
-          // Tells a password manager to offer a new secret rather than an existing one, and the reverse on sign-in.
-          autoComplete={registering ? "new-password" : "current-password"}
-          id="login-password"
-          minLength={registering ? PASSWORD_MIN_LENGTH : undefined}
-          name="password"
-          onChange={(event) => setPassword(event.target.value)}
+        <Input
+          label="Name"
+          autoComplete="name"
+          id="login-display-name"
+          name="displayName"
+          onChange={(event) => setDisplayName(event.target.value)}
           required
-          type="password"
-          value={password}
+          type="text"
+          value={displayName}
         />
-      </label>
-      {registering ? <p className="login-password-hint">At least {PASSWORD_MIN_LENGTH} characters.</p> : null}
+      ) : null}
+      <Input
+        label="Password"
+        // Tells a password manager to offer a new secret rather than an existing one, and the reverse on sign-in.
+        autoComplete={registering ? "new-password" : "current-password"}
+        id="login-password"
+        minLength={registering ? PASSWORD_MIN_LENGTH : undefined}
+        name="password"
+        onChange={(event) => setPassword(event.target.value)}
+        required
+        type="password"
+        value={password}
+      />
+      {registering ? (
+        <p className="text-sm text-kumo-subtle" data-ui="login-password-hint">
+          At least {PASSWORD_MIN_LENGTH} characters.
+        </p>
+      ) : null}
       {error ? (
-        <p className="login-error" role="alert">
+        <p className="text-sm text-kumo-danger" data-ui="login-error" role="alert">
           {error}
         </p>
       ) : null}
-      <button className="login-submit" disabled={submitting} type="submit">
+      <Button disabled={submitting} type="submit">
         {registering ? "Create account" : "Sign in"}
-      </button>
-      <p className="login-mode-switch">
+      </Button>
+      <p className="text-sm text-kumo-subtle" data-ui="login-mode-switch">
         {registering ? "Already have an account?" : "No account yet?"}{" "}
-        <button
-          className="login-mode-button"
+        <Button
+          variant="inline"
           onClick={() => {
             setMode(registering ? "sign-in" : "sign-up");
             setError(undefined);
@@ -700,7 +703,7 @@ export function PasswordSignInForm({
           type="button"
         >
           {registering ? "Sign in" : "Create one"}
-        </button>
+        </Button>
       </p>
     </form>
   );
@@ -712,17 +715,19 @@ function LoginProviderLink({ next, provider }: { next: string; provider: AuthPro
   const href = `${provider.startUrl}?next=${encodeURIComponent(next)}`;
   if (google) {
     return (
-      <a className="login-provider-button login-provider-button--google" href={href}>
-        <img alt="Sign in with Google" className="login-provider-button-image" src={googleSignInButton} />
+      <a className="block overflow-hidden rounded-md ring ring-kumo-line" data-ui="login-provider-google" href={href}>
+        <img alt="Sign in with Google" className="block w-full" src={googleSignInButton} />
       </a>
     );
   }
 
   return (
-    <a className="login-provider-button" href={href}>
-      <span className="login-provider-button-content">
-        <span className="login-provider-button-label">Continue with {provider.id}</span>
-      </span>
+    <a
+      className="flex min-h-10 items-center justify-center rounded-md bg-kumo-base px-4 py-2 text-sm font-medium text-kumo-default ring ring-kumo-line"
+      data-ui="login-provider"
+      href={href}
+    >
+      <span>Continue with {provider.id}</span>
     </a>
   );
 }
@@ -780,11 +785,14 @@ function WorkspaceAuthorityGate() {
 
 function NoWorkspaceAccess({ onRetry }: { onRetry: () => void }) {
   return (
-    <main className="center-card decorative-page">
-      <span className="eyebrow">Account access</span>
+    <main
+      className="mx-auto grid max-w-xl gap-4 rounded-lg bg-kumo-base p-6 ring ring-kumo-line"
+      data-ui="account-access"
+    >
+      <span className="text-xs font-medium uppercase text-kumo-subtle">Account access</span>
       <h1>OpenTag is not ready for this account</h1>
       <p>The server has not assigned the internal access needed to use OpenTag.</p>
-      <div className="notice" role="status">
+      <div className="rounded-md bg-kumo-info-tint p-3 text-sm" role="status">
         Retry after provisioning finishes, or contact an operator if this continues.
       </div>
       <Button onClick={onRetry}>Check again</Button>
@@ -863,56 +871,25 @@ function WorkspaceSetupGate() {
 }
 
 function AppShell() {
+  return (
+    <SidebarProvider className="min-h-screen" collapsible="offcanvas" defaultOpen>
+      <AppShellContent />
+    </SidebarProvider>
+  );
+}
+
+function AppShellContent() {
   const { me } = useAccount();
   const navigate = useNavigate();
-  const [navigationOpen, setNavigationOpen] = useState(false);
+  const { setOpenMobile } = useSidebar();
   const [openMenu, setOpenMenu] = useState<"account">();
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
   const accountMenuRef = useRef<HTMLDivElement>(null);
-  const accountTriggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (!openMenu) return;
-    const menu = accountMenuRef.current;
-    const initialFocus = menu?.querySelector<HTMLElement>('[role="menuitem"]');
-    initialFocus?.focus();
-
-    const closeOutside = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (!accountMenuRef.current?.contains(target)) setOpenMenu(undefined);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setOpenMenu(undefined);
-      accountTriggerRef.current?.focus();
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
+    if (openMenu !== "account") return;
+    accountMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')?.focus();
   }, [openMenu]);
-  function handleAccountMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
-    const items = Array.from(
-      accountMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [],
-    );
-    if (items.length === 0) return;
-    event.preventDefault();
-    const activeIndex = items.indexOf(document.activeElement as HTMLElement);
-    if (event.key === "Home") {
-      items[0]?.focus();
-    } else if (event.key === "End") {
-      items.at(-1)?.focus();
-    } else {
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      const nextIndex = activeIndex < 0 ? 0 : (activeIndex + direction + items.length) % items.length;
-      items[nextIndex]?.focus();
-    }
-  }
   async function logout() {
     setLoggingOut(true);
     setAccountError(undefined);
@@ -925,111 +902,83 @@ function AppShell() {
     }
   }
   return (
-    <div className="shell">
-      {navigationOpen ? (
-        <button
-          aria-label="Close navigation"
-          className="sidebar-backdrop is-visible"
-          type="button"
-          onClick={() => setNavigationOpen(false)}
-        />
-      ) : null}
-      <aside className={`sidebar${navigationOpen ? " is-open" : ""}`} aria-label="Primary navigation">
-        <div className="sidebar-top">
-          <Link className="brand" to="/agents" onClick={() => setNavigationOpen(false)}>
-            OpenTag
-          </Link>
-          <nav aria-label="Product" className="primary-nav">
-            <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="agents" />
-              Agents
-            </NavLink>
-            <NavLink to="/tasks" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="tasks" />
-              Tasks
-            </NavLink>
-            <NavLink to="/skills" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="skills" />
-              Skills
-            </NavLink>
-            <NavLink to="/integrations" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="integrations" />
-              Integrations
-            </NavLink>
-          </nav>
-        </div>
-        <div className="sidebar-bottom">
-          <div className="account-menu" ref={accountMenuRef}>
-            <button
-              aria-label="Account menu"
-              aria-controls="account-menu-popover"
-              aria-expanded={openMenu === "account"}
-              aria-haspopup="menu"
-              className="account-row"
-              ref={accountTriggerRef}
-              type="button"
-              onClick={() => setOpenMenu((value) => (value === "account" ? undefined : "account"))}
-            >
-              <span className="account-avatar" aria-hidden="true">
-                {initials(me.user.displayName)}
-              </span>
-              <span className="account-copy">
-                <strong>{me.user.displayName}</strong>
-              </span>
-              <span className="account-menu-dots" aria-hidden="true">
-                <Icon name="more-vertical" />
-              </span>
-            </button>
-            {openMenu === "account" ? (
-              <div
-                aria-label="Account"
-                className="account-menu-popover"
-                id="account-menu-popover"
-                role="menu"
-                onKeyDown={handleAccountMenuKeyDown}
-              >
-                <div className="account-menu-actions">
-                  <NavLink
-                    end
-                    role="menuitem"
-                    to="/account"
-                    onClick={() => {
-                      setOpenMenu(undefined);
-                      setNavigationOpen(false);
-                    }}
-                  >
-                    Account
-                  </NavLink>
-                  <button
-                    className="account-signout"
-                    disabled={loggingOut}
-                    role="menuitem"
-                    type="button"
-                    onClick={() => void logout()}
-                  >
-                    {loggingOut ? "Signing out…" : "Sign out"}
-                  </button>
-                </div>
-                {accountError ? (
-                  <span className="account-menu-error" role="alert">
-                    {accountError}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
+    <div className="flex min-h-screen bg-kumo-canvas" data-ui="shell">
+      <Sidebar aria-label="Primary navigation" fullScreenOnMobile>
+        <div className="flex h-full flex-col justify-between gap-8 p-4" data-ui="sidebar-content">
+          <div className="grid gap-6">
+            <Link className="text-lg font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
+              OpenTag
+            </Link>
+            <nav aria-label="Product" className="grid gap-1">
+              <NavLink to="/agents" onClick={() => setOpenMobile(false)}>
+                <WorkspaceNavIcon name="agents" />
+                Agents
+              </NavLink>
+              <NavLink to="/tasks" onClick={() => setOpenMobile(false)}>
+                <WorkspaceNavIcon name="tasks" />
+                Tasks
+              </NavLink>
+              <NavLink to="/skills" onClick={() => setOpenMobile(false)}>
+                <WorkspaceNavIcon name="skills" />
+                Skills
+              </NavLink>
+              <NavLink to="/integrations" onClick={() => setOpenMobile(false)}>
+                <WorkspaceNavIcon name="integrations" />
+                Integrations
+              </NavLink>
+            </nav>
           </div>
+          <DropdownMenu
+            open={openMenu === "account"}
+            onOpenChange={(open) => setOpenMenu(open ? "account" : undefined)}
+          >
+            <DropdownMenu.Trigger
+              render={
+                <Button aria-label="Account menu" className="w-full justify-start gap-2" type="button" variant="ghost">
+                  <span
+                    className="grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
+                    aria-hidden="true"
+                  >
+                    {initials(me.user.displayName)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-left">
+                    <strong>{me.user.displayName}</strong>
+                  </span>
+                  <span aria-hidden="true">
+                    <Icon name="more-vertical" />
+                  </span>
+                </Button>
+              }
+            />
+            <DropdownMenu.Content aria-label="Account" ref={accountMenuRef}>
+              <DropdownMenu.Item
+                onClick={() => {
+                  setOpenMobile(false);
+                  navigate("/account");
+                }}
+              >
+                Account
+              </DropdownMenu.Item>
+              <DropdownMenu.Item disabled={loggingOut} onClick={() => void logout()}>
+                {loggingOut ? "Signing out…" : "Sign out"}
+              </DropdownMenu.Item>
+              {accountError ? (
+                <span className="text-sm text-kumo-danger" role="alert">
+                  {accountError}
+                </span>
+              ) : null}
+            </DropdownMenu.Content>
+          </DropdownMenu>
         </div>
-      </aside>
-      <div className="app-main">
-        <header className="mobile-shell-bar">
-          <Link className="mobile-brand" to="/agents" onClick={() => setNavigationOpen(false)}>
+      </Sidebar>
+      <div className="min-w-0 flex-1" data-ui="app-main">
+        <header className="flex items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3 md:hidden">
+          <Link className="font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
             OpenTag
           </Link>
-          <Button size="compact" variant="secondary" onClick={() => setNavigationOpen(true)}>
-            Menu
-          </Button>
+          <SidebarTrigger aria-label="Open navigation" title="Open navigation" />
         </header>
-        <main className="content">
+        <main className="min-w-0 w-full px-4 py-5 md:px-8 md:py-8" data-ui="content">
           <Outlet />
         </main>
       </div>
@@ -1038,45 +987,9 @@ function AppShell() {
 }
 
 function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills" | "tasks" }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className="primary-nav-icon"
-      fill="none"
-      focusable="false"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="1.8"
-      viewBox="0 0 24 24"
-    >
-      {name === "agents" ? (
-        <>
-          <circle cx="9" cy="8" r="3" />
-          <path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19" />
-          <path d="M15.5 5.4a3 3 0 0 1 0 5.2M17 13.4a4.5 4.5 0 0 1 3.5 4.4V19" />
-        </>
-      ) : null}
-      {name === "tasks" ? (
-        <>
-          <rect height="17" rx="2.2" width="17" x="3.5" y="3.5" />
-          <path d="m7.5 12 3 3 6-6" />
-        </>
-      ) : null}
-      {name === "integrations" ? (
-        <>
-          <path d="M8 12h8M12 8v8" />
-          <path d="M7 4.5h10A2.5 2.5 0 0 1 19.5 7v10a2.5 2.5 0 0 1-2.5 2.5H7A2.5 2.5 0 0 1 4.5 17V7A2.5 2.5 0 0 1 7 4.5Z" />
-        </>
-      ) : null}
-      {name === "skills" ? (
-        <>
-          <path d="m12 3 1.5 4.2L18 9l-4.5 1.8L12 15l-1.5-4.2L6 9l4.5-1.8L12 3Z" />
-          <path d="m18 14 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z" />
-        </>
-      ) : null}
-    </svg>
-  );
+  const icon: IconName =
+    name === "agents" ? "user" : name === "tasks" ? "instructions" : name === "skills" ? "shield" : "settings";
+  return <Icon name={icon} />;
 }
 
 function AgentsPage() {
@@ -1101,7 +1014,7 @@ function AgentsPage() {
       >
         <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
       </Page>
-      {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
+      <NewAgentDialog open={createOpen} returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} />
     </>
   );
 }
@@ -1128,8 +1041,8 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
   );
   shownOrder.current = order;
   return (
-    <section className="agent-list-section" aria-label="Agents">
-      <div className="agent-card-grid">
+    <section className="grid gap-4" aria-label="Agents" data-ui="agent-list">
+      <div className="grid gap-4 sm:grid-cols-2" data-ui="agent-card-grid">
         {order.map((id) => {
           const agent = byId.get(id);
           return agent ? <AgentCard agent={agent} key={agent.id} /> : null;
@@ -1148,12 +1061,12 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
     ) : status.detail ? (
       action ? (
         <>
-          <span className="agent-state-reason">{status.detail}</span>
-          <span className="agent-state-separator" aria-hidden="true">
+          <span className="text-kumo-subtle">{status.detail}</span>
+          <span className="text-kumo-subtle" aria-hidden="true">
             {" · "}
           </span>
           <Link
-            className={buttonClassName({ className: "agent-reconnect", variant: "inline" })}
+            className={buttonClassName({ variant: "inline" })}
             to={`/agents/${agent.id}/settings/${action.section}`}
           >
             {action.label}
@@ -1164,24 +1077,32 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
       )
     ) : undefined;
   return (
-    <article className="agent-card" data-avatar-tone={agentAvatarTone(agent.id)} data-tone={status.tone}>
-      <div className="agent-card-identity">
-        <span className="agent-avatar" aria-hidden="true">
+    <article
+      className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      data-avatar-tone={agentAvatarTone(agent.id)}
+      data-tone={status.tone}
+      data-ui="agent-card"
+    >
+      <div className="flex items-center gap-3" data-ui="agent-card-identity">
+        <span
+          className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold text-kumo-strong"
+          aria-hidden="true"
+        >
           {initials(agent.displayName)}
         </span>
-        <div className="agent-card-identity-copy">
+        <div className="grid min-w-0 gap-1" data-ui="agent-card-identity-copy">
           <strong>
-            <Link aria-label={`Open ${agent.displayName}`} className="agent-card-open" to={`/agents/${agent.id}`}>
+            <Link aria-label={`Open ${agent.displayName}`} to={`/agents/${agent.id}`}>
               {agent.displayName}
             </Link>
           </strong>
           <small>@{agent.name}</small>
         </div>
       </div>
-      <div className="agent-card-state">
-        <StatusIndicator className="agent-card-status" detail={statusDetail} label={status.label} tone={status.tone} />
+      <div data-ui="agent-card-state">
+        <StatusIndicator detail={statusDetail} label={status.label} tone={status.tone} />
       </div>
-      <dl className="agent-card-usage">
+      <dl className="grid grid-cols-2 gap-4 border-t border-kumo-line pt-3" data-ui="agent-card-usage">
         <div>
           <dt>Tasks</dt>
           <dd>{formatUsageNumber(agent.usage.tasks)}</dd>
@@ -1192,7 +1113,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
         </div>
       </dl>
       {/* The row itself is the link; the chevron only signals where it goes. */}
-      <span aria-hidden="true" className="agent-card-action">
+      <span aria-hidden="true" className="absolute right-4 top-4 text-kumo-subtle" data-ui="agent-card-action">
         <Icon name="chevron-right" />
       </span>
     </article>
@@ -1318,9 +1239,11 @@ function NewAgentPage() {
 }
 
 function NewAgentDialog({
+  open,
   onClose,
   returnFocusRef,
 }: {
+  open: boolean;
   onClose: () => void;
   returnFocusRef: { current: HTMLButtonElement | null };
 }) {
@@ -1341,9 +1264,10 @@ function NewAgentDialog({
   return (
     <Dialog
       busy={submitting}
-      className="new-agent-dialog"
+      className="w-[min(42rem,calc(100vw-2rem))]"
       closeLabel="Close new Agent dialog"
       returnFocusRef={returnFocusRef}
+      open={open}
       title="New Agent"
       onClose={close}
     >
@@ -1389,7 +1313,7 @@ function AgentCreationContent({
 
   const refreshFocusTarget = onCancel ? (
     <span
-      className="visually-hidden"
+      className="sr-only"
       ref={computerRefreshFocusRef}
       role={computerRefreshFocusActive ? "status" : undefined}
       tabIndex={-1}
@@ -1445,13 +1369,13 @@ function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminConfig; o
   return (
     <FeishuSetup agentId={agent.id} onSuccess={onFinish}>
       {(setup) => (
-        <section className="agent-create-complete" aria-labelledby="agent-created-heading">
+        <section className="grid gap-4" aria-labelledby="agent-created-heading" data-ui="agent-create-complete">
           <div>
-            <span className="eyebrow">Agent created</span>
+            <span className="text-xs font-medium uppercase text-kumo-subtle">Agent created</span>
             <h2 id="agent-created-heading">Connect messaging</h2>
             <p>Connect a Feishu Bot so teammates can mention {agent.displayName}.</p>
           </div>
-          <div className="agent-create-actions">
+          <div className="flex flex-wrap gap-3">
             <Button onClick={() => void setup.start()}>Connect Feishu</Button>
             <Button variant="secondary" onClick={onFinish}>
               Set up later
@@ -1568,17 +1492,17 @@ function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" 
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <section className="object-page agent-profile-page">
+        <section className="grid gap-6">
           <AgentObjectHeader agent={agent} />
-          <div className="agent-secondary-page">
-            <header className="section-header">
+          <div className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
+            <header className="grid gap-2">
               <h2>Agent {label} are not available here</h2>
               <p>
                 OpenTag does not currently show {label} assigned to {agent.displayName}. The shared catalog is separate
                 from this Agent.
               </p>
             </header>
-            <div className="actions">
+            <div className="flex flex-wrap gap-3">
               <Link className={buttonClassName()} to={`/agents/${agent.id}`}>
                 Back to {agent.displayName}
               </Link>
@@ -1603,9 +1527,9 @@ function AgentDetailPage() {
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <section className="object-page agent-profile-page">
+        <section className="grid gap-6">
           <AgentObjectHeader agent={agent} />
-          <div className="agent-home">
+          <div className="grid gap-6">
             {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
             <AgentCurrentActivity agent={agent} />
             <AgentContact agent={agent} />
@@ -1620,18 +1544,24 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
   const { me } = useWorkspace();
   const showCreator = agent.createdBy.userId !== me.user.id;
   return (
-    <header className="object-header">
-      <Link className="breadcrumb" to={backToSettings ? `/agents/${agent.id}` : "/agents"}>
+    <header className="grid gap-4">
+      <Link
+        className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link"
+        to={backToSettings ? `/agents/${agent.id}` : "/agents"}
+      >
         <Icon name="arrow-left" />
         {backToSettings ? agent.displayName : "Agents"}
       </Link>
-      <div className="object-title-row">
-        <div className="object-identity">
-          <span className="agent-avatar large" aria-hidden="true">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span
+            className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-tint font-semibold"
+            aria-hidden="true"
+          >
             {initials(agent.displayName)}
           </span>
-          <div className="object-identity-copy">
-            <div className="agent-name-line">
+          <div className="grid min-w-0 gap-1">
+            <div className="flex flex-wrap items-center gap-3">
               <h1>{agent.displayName}</h1>
               <AgentAvailabilityAction agent={agent} />
             </div>
@@ -1641,9 +1571,9 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
             </p>
           </div>
         </div>
-        <div className="agent-header-actions">
+        <div className="flex flex-wrap items-center justify-end gap-3">
           {!backToSettings ? (
-            <Link className="agent-usage-link" state={{ agent }} to={`/agents/${agent.id}/usage`}>
+            <Link className="text-sm text-kumo-link" state={{ agent }} to={`/agents/${agent.id}/usage`}>
               Usage
             </Link>
           ) : null}
@@ -1665,7 +1595,10 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
 function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
   const recovery = agentAvailabilityRecovery(agent);
   return (
-    <section className="agent-recovery-banner" aria-label="Agent needs attention">
+    <section
+      className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-danger-tint p-4"
+      aria-label="Agent needs attention"
+    >
       <div>
         <strong>{availabilityStateLabel(agent.availability.state)}</strong>
         <p>{agentRecoveryMessage(agent)}</p>
@@ -1681,20 +1614,23 @@ function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
 
 function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
   return (
-    <section className="agent-home-section" aria-labelledby="current-activity-heading">
-      <header className="agent-home-section-heading">
+    <section
+      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="current-activity-heading"
+    >
+      <header className="flex items-center justify-between gap-3">
         <h2 id="current-activity-heading">Current work</h2>
       </header>
       {agent.activity.state === "working" ? (
-        <div className="agent-current-work">
-          <span className="agent-activity-pulse" aria-hidden="true" />
+        <div className="flex items-center gap-3">
+          <span className="size-3 rounded-full bg-kumo-brand" aria-hidden="true" />
           <div>
             <strong>Handling a request</strong>
             <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
           </div>
         </div>
       ) : (
-        <p className="agent-activity-empty">
+        <p className="text-sm text-kumo-subtle">
           <strong>No active work</strong>
         </p>
       )}
@@ -1705,26 +1641,29 @@ function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
 function AgentContact({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   return (
-    <section className="agent-home-section" aria-labelledby="agent-contact-heading">
-      <header className="agent-home-section-heading">
+    <section
+      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-contact-heading"
+    >
+      <header className="flex items-center justify-between gap-3">
         <h2 id="agent-contact-heading">Messaging</h2>
       </header>
       {agent.messaging.kind === "unconfirmed" ? (
-        <div className="agent-contact-row is-unconfirmed">
-          <span className="agent-contact-mark" aria-hidden="true">
+        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
+          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
             ?
           </span>
-          <span className="agent-contact-copy">
+          <span className="grid min-w-0 flex-1 gap-1">
             <strong>Unable to confirm messaging</strong>
             <small>Try again shortly</small>
           </span>
         </div>
       ) : binding ? (
-        <div className="agent-contact-row">
-          <span className="agent-contact-mark" aria-hidden="true">
+        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
+          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
             {titleCase(binding.provider).charAt(0)}
           </span>
-          <span className="agent-contact-copy">
+          <span className="grid min-w-0 flex-1 gap-1">
             <strong>
               {titleCase(binding.provider)} · @{agent.name}
             </strong>
@@ -1739,11 +1678,11 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
           </Link>
         </div>
       ) : (
-        <div className="agent-contact-row is-empty">
-          <span className="agent-contact-mark" aria-hidden="true">
+        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
+          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
             +
           </span>
-          <span className="agent-contact-copy">
+          <span className="grid min-w-0 flex-1 gap-1">
             <strong>No messaging connected</strong>
             <small>Connect Feishu or Slack to start sending work</small>
           </span>
@@ -1772,10 +1711,10 @@ function AgentUsagePage() {
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <section className="object-page agent-profile-page">
+        <section className="grid gap-6">
           <AgentObjectHeader agent={agent} backToSettings />
-          <div className="agent-secondary-page">
-            <header className="section-header">
+          <div className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
+            <header className="grid gap-2">
               <h2>Usage</h2>
             </header>
             <AgentUsageTab agentId={agent.id} />
@@ -1813,13 +1752,13 @@ function AgentSettingsPage() {
         const backTo = selected ? (routeState?.returnTo ?? `/agents/${agent.id}/settings`) : `/agents/${agent.id}`;
         const backLabel = selected ? (routeState?.returnLabel ?? "Agent settings") : agent.displayName;
         return (
-          <section className="object-page agent-profile-page">
-            <div className="agent-settings-page">
-              <Link className="agent-page-back" to={backTo}>
+          <section className="grid gap-6">
+            <div className="grid gap-4">
+              <Link className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link" to={backTo}>
                 <Icon name="arrow-left" />
                 Back to {backLabel}
               </Link>
-              <div className="agent-settings-content">
+              <div className="min-w-0">
                 <AgentSettingsContent
                   agent={agent}
                   section={selected}
@@ -1847,7 +1786,7 @@ function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
   const tone = availabilityTone(agent.availability.state);
   const working = agent.availability.state === "ready" && agent.activity.state === "working";
   return (
-    <div className="agent-availability-line">
+    <div className="inline-flex">
       <StatusIndicator
         label={working ? "Working" : availabilityStateLabel(agent.availability.state)}
         tone={working ? "info" : tone}
@@ -1905,26 +1844,29 @@ function AgentConfigSettingsContent({
 function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
   const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:settings-overview`);
   return (
-    <div className="agent-settings-overview">
-      <header className="agent-settings-page-title">
+    <div className="grid gap-6">
+      <header className="grid gap-2">
         <h1>Agent settings</h1>
       </header>
       <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>
         {(config) => (
-          <div className="agent-settings-groups">
+          <div className="grid gap-6">
             {agentSettingsGroups.map((group) => (
-              <section className="agent-settings-group" key={group.key} aria-labelledby={`agent-settings-${group.key}`}>
+              <section className="grid gap-3" key={group.key} aria-labelledby={`agent-settings-${group.key}`}>
                 <h2 id={`agent-settings-${group.key}`}>{group.label}</h2>
-                <div className="agent-settings-grid">
+                <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
                   {agentSettingsSections
                     .filter((item) => item.group === group.key)
                     .map((item) => {
                       const content = (
                         <>
-                          <span className="agent-settings-icon" aria-hidden="true">
+                          <span
+                            className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint"
+                            aria-hidden="true"
+                          >
                             <Icon name={item.icon} />
                           </span>
-                          <span className="agent-settings-row-copy">
+                          <span className="grid min-w-0 flex-1 gap-1">
                             <strong>{item.label}</strong>
                             <small>{agentSettingsSummary(agent, config, item.key)}</small>
                           </span>
@@ -1934,19 +1876,25 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                         item.key === "computer" && agent.availability.dependencies.computer.state === "ready";
                       if (computerReady) {
                         return (
-                          <div className="agent-settings-entry is-static" key={item.key}>
+                          <div
+                            className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
+                            key={item.key}
+                          >
                             {content}
                           </div>
                         );
                       }
                       return (
                         <Link
-                          className="agent-settings-entry"
+                          className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
                           key={item.key}
                           to={`/agents/${agent.id}/settings/${item.key}`}
                         >
                           {content}
-                          <span className="agent-settings-row-value" aria-hidden="true">
+                          <span
+                            className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
+                            aria-hidden="true"
+                          >
                             {item.key === "computer" ? <small>Review</small> : null}
                             <Icon name="chevron-right" />
                           </span>
@@ -1965,20 +1913,20 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
 
 function AgentSettingsDirectoryLoading() {
   return (
-    <div aria-label="Loading Agent settings" className="agent-settings-loading" role="status">
-      <div aria-hidden="true" className="agent-settings-groups">
+    <div aria-label="Loading Agent settings" className="grid gap-6" role="status">
+      <div aria-hidden="true" className="grid gap-6">
         {agentSettingsGroups.map((group) => (
-          <div className="agent-settings-group" key={group.key}>
-            <span className="agent-settings-loading-label" />
-            <div className="agent-settings-grid">
+          <div className="grid gap-3" key={group.key}>
+            <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
+            <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
               {agentSettingsSections
                 .filter((item) => item.group === group.key)
                 .map((item) => (
-                  <div className="agent-settings-entry is-static is-loading" key={item.key}>
-                    <span className="agent-settings-icon" />
-                    <span className="agent-settings-loading-copy">
-                      <span className="agent-settings-loading-title" />
-                      <span className="agent-settings-loading-summary" />
+                  <div className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0" key={item.key}>
+                    <span className="size-8 shrink-0 animate-pulse rounded-md bg-kumo-tint" />
+                    <span className="grid min-w-0 flex-1 gap-2">
+                      <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
+                      <span className="h-3 animate-pulse rounded bg-kumo-tint" />
                     </span>
                   </div>
                 ))}
@@ -2052,13 +2000,12 @@ function GeneralConfigForm({
     }
   }
   return (
-    <form className="form-card agent-settings-form" onSubmit={submit}>
-      <header className="agent-settings-page-title">
+    <form className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line" onSubmit={submit}>
+      <header className="grid gap-2">
         <h1>Name</h1>
       </header>
       <Field htmlFor="agent-display-name" label="Display name">
-        <input
-          className="ds-control"
+        <KumoInputControl
           id="agent-display-name"
           name="displayName"
           required
@@ -2070,9 +2017,9 @@ function GeneralConfigForm({
         />
       </Field>
       {dirty ? (
-        <div className="dirty-bar">
-          <span>Unsaved changes</span>
-          <div className="dirty-actions">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
+          <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+          <div className="flex flex-wrap justify-end gap-2">
             <Button
               disabled={saving}
               variant="ghost"
@@ -2131,9 +2078,12 @@ function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailVi
       : "Unable to confirm";
   const computerTone: StatusTone = ready ? "success" : blocked ? "warning" : "neutral";
   return (
-    <div className="agent-runtime-stack agent-settings-section-page">
-      <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
-        <header className="agent-runtime-section__header">
+    <div className="grid gap-6">
+      <section
+        aria-labelledby="computer-heading"
+        className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      >
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 id="computer-heading">
               {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
@@ -2142,8 +2092,8 @@ function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailVi
           <StatusIndicator label={computerStatus} tone={computerTone} />
         </header>
         {ready ? null : (
-          <div className="agent-runtime-computer__body">
-            <div className="agent-runtime-recovery">
+          <div className="rounded-md bg-kumo-recessed p-4">
+            <div className="grid gap-3">
               {computerState.lastConfirmedAt ? (
                 <p>
                   Last seen {formatRelativeTime(computerState.lastConfirmedAt)} ·{" "}
@@ -2165,7 +2115,7 @@ function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailVi
                     {reconnecting ? "Cancel Computer connection" : "Reconnect this Computer"}
                   </Button>
                   {reconnecting ? (
-                    <div className="agent-runtime-reconnect" id="agent-computer-reconnect">
+                    <div className="grid gap-3" id="agent-computer-reconnect">
                       <ComputerSetup
                         target={{
                           computerId: agent.computer.computerId,
@@ -2173,7 +2123,7 @@ function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailVi
                         }}
                         onConnected={() => onAgentChanged()}
                       />
-                      <p className="agent-runtime-reconnect__scope">
+                      <p className="text-sm text-kumo-subtle">
                         Reconnecting restores this Computer for every Agent that runs on it.
                       </p>
                     </div>
@@ -2249,8 +2199,8 @@ function AgentManageSettings({
     setConfirmationError(undefined);
   }
   return (
-    <section className="agent-manage-settings agent-settings-section-page">
-      <header className="agent-settings-page-title">
+    <section className="grid gap-4">
+      <header className="grid gap-2">
         <h1>Manage Agent</h1>
       </header>
       <SettingsList>
@@ -2306,12 +2256,8 @@ function AgentManageSettings({
           title={`Pause ${config.displayName}?`}
           onClose={closeConfirmation}
         >
-          {confirmationError ? (
-            <div className="notice error" role="alert">
-              {confirmationError}
-            </div>
-          ) : null}
-          <div className="dialog-actions actions">
+          {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
+          <div className="flex flex-wrap justify-end gap-3">
             <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
               Keep active
             </Button>
@@ -2329,7 +2275,7 @@ function AgentManageSettings({
           title={`Delete ${config.displayName}?`}
           onClose={closeConfirmation}
         >
-          <div className="agent-delete-confirmation">
+          <div className="grid gap-4">
             <Field
               htmlFor="agent-delete-confirmation"
               label={
@@ -2338,19 +2284,15 @@ function AgentManageSettings({
                 </>
               }
             >
-              <input
+              <KumoInputControl
                 autoComplete="off"
                 id="agent-delete-confirmation"
                 value={confirmationText}
                 onChange={(event) => setConfirmationText(event.currentTarget.value)}
               />
             </Field>
-            {confirmationError ? (
-              <div className="notice error" role="alert">
-                {confirmationError}
-              </div>
-            ) : null}
-            <div className="dialog-actions actions">
+            {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
+            <div className="flex flex-wrap justify-end gap-3">
               <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
                 Cancel
               </Button>
@@ -2431,8 +2373,8 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
     setConfirmationError(undefined);
   }
   return (
-    <div className="agent-settings-section-page">
-      <header className="agent-settings-page-title">
+    <div className="grid gap-6">
+      <header className="grid gap-2">
         <h1 ref={messagingHeadingRef} tabIndex={-1}>
           Messaging
         </h1>
@@ -2464,14 +2406,17 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
               return (
                 <AsyncState state={state}>
                   {(binding) => (
-                    <div className="im-stack">
+                    <div className="grid gap-6">
                       {binding ? (
                         <>
-                          <section className="im-section" aria-labelledby="contact-channel-heading">
-                            <div className="im-section-heading">
+                          <section
+                            className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+                            aria-labelledby="contact-channel-heading"
+                          >
+                            <div className="grid gap-2">
                               <h3 id="contact-channel-heading">Contact channel</h3>
                             </div>
-                            <div className="binding-status">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
                               <StatusIndicator
                                 detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
                                   binding,
@@ -2488,7 +2433,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                     : "Not yet observed"}
                               </small>
                             </div>
-                            <dl className="messaging-contact-facts">
+                            <dl className="grid gap-3 rounded-md bg-kumo-recessed p-3 sm:grid-cols-2">
                               <div>
                                 <dt>Contact</dt>
                                 <dd>@{agent.name}</dd>
@@ -2499,16 +2444,16 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               </div>
                             </dl>
                             {binding.bindingState === "reauthorization_required" && binding.provider === "feishu" ? (
-                              <div className="im-actions">
+                              <div className="flex flex-wrap gap-3">
                                 <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
                               </div>
                             ) : null}
                             {binding.bindingState === "reauthorization_required" && binding.provider === "slack" ? (
-                              <div className="im-actions">
+                              <div className="flex flex-wrap gap-3">
                                 <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
                               </div>
                             ) : null}
-                            <div className="im-actions messaging-connection-actions">
+                            <div className="flex flex-wrap gap-3">
                               {binding.provider === "feishu" ? (
                                 <Button size="compact" variant="outline" onClick={() => void connectFeishu("replace")}>
                                   Change Feishu Bot
@@ -2527,22 +2472,31 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               </Button>
                             </div>
                           </section>
-                          <section className="im-section" aria-labelledby="trigger-rules-heading">
-                            <div className="im-section-heading">
+                          <section
+                            className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+                            aria-labelledby="trigger-rules-heading"
+                          >
+                            <div className="grid gap-2">
                               <h3 id="trigger-rules-heading" ref={triggerRulesHeadingRef} tabIndex={-1}>
                                 Trigger rules
                               </h3>
                             </div>
-                            <SettingsList className="agent-message-rules">
+                            <SettingsList>
                               <SettingsRow label="Direct messages">
                                 <strong>All messages</strong>
                               </SettingsRow>
                               <SettingsRow label={sharedConversationLabel(binding.provider)}>
-                                <fieldset aria-label="Shared conversation trigger rule" className="segmented-control">
+                                <fieldset
+                                  aria-label="Shared conversation trigger rule"
+                                  className="flex flex-wrap items-center gap-2"
+                                >
                                   {binding.receiveMode === "mention_only" ? (
                                     <>
-                                      <span className="active">Mentions only</span>
-                                      <button
+                                      <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
+                                        Mentions only
+                                      </span>
+                                      <Button
+                                        variant="inline"
                                         ref={allMessagesButtonRef}
                                         type="button"
                                         onClick={() => {
@@ -2551,14 +2505,20 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                         }}
                                       >
                                         Every message
-                                      </button>
+                                      </Button>
                                     </>
                                   ) : (
                                     <>
-                                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                      <Button
+                                        variant="inline"
+                                        type="button"
+                                        onClick={() => void changeReceiveMode("mention_only")}
+                                      >
                                         Mentions only
-                                      </button>
-                                      <span className="active">Every message</span>
+                                      </Button>
+                                      <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
+                                        Every message
+                                      </span>
                                     </>
                                   )}
                                 </fieldset>
@@ -2567,14 +2527,17 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           </section>
                         </>
                       ) : (
-                        <section className="im-section" aria-labelledby="contact-channel-heading">
-                          <div className="im-section-heading">
+                        <section
+                          className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+                          aria-labelledby="contact-channel-heading"
+                        >
+                          <div className="grid gap-2">
                             <h3 id="contact-channel-heading">Contact channel</h3>
                           </div>
                           <EmptyState title="No messaging channel">
                             Teammates cannot contact this agent until a supported bot is connected.
                           </EmptyState>
-                          <div className="im-actions">
+                          <div className="flex flex-wrap gap-3">
                             <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
                             <Button variant="secondary" onClick={() => void connectSlack()}>
                               Add OpenTag to Slack
@@ -2584,11 +2547,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                       )}
                       {feishuSetup.feedback}
                       {slackConfiguration.feedback}
-                      {error ? (
-                        <div className="notice error" role="alert">
-                          {error}
-                        </div>
-                      ) : null}
+                      {error ? <Banner variant="error" role="alert" description={error} /> : null}
                     </div>
                   )}
                 </AsyncState>
@@ -2605,12 +2564,8 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           title="Allow messages without mentions?"
           onClose={closeMessagingConfirmation}
         >
-          {confirmationError ? (
-            <div className="notice error" role="alert">
-              {confirmationError}
-            </div>
-          ) : null}
-          <div className="dialog-actions actions">
+          {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
+          <div className="flex flex-wrap justify-end gap-3">
             <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
               Keep mentions only
             </Button>
@@ -2628,12 +2583,8 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           title="Disconnect messaging?"
           onClose={closeMessagingConfirmation}
         >
-          {confirmationError ? (
-            <div className="notice error" role="alert">
-              {confirmationError}
-            </div>
-          ) : null}
-          <div className="dialog-actions actions">
+          {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
+          <div className="flex flex-wrap justify-end gap-3">
             <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
               Keep connected
             </Button>
@@ -2776,20 +2727,13 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
   }
 
   return (
-    <form className="settings-profile-form" onSubmit={submit}>
+    <form className="grid gap-4" onSubmit={submit}>
       <h2>Account profile</h2>
       <SettingsList>
         <SettingsRow label="Email" description="Your sign-in email cannot be changed here.">
-          <Field
-            className="settings-profile-field"
-            hint="Read only"
-            hintId="account-email-hint"
-            htmlFor="account-email"
-            label="Email"
-          >
-            <input
+          <Field hint="Read only" hintId="account-email-hint" htmlFor="account-email" label="Email">
+            <KumoInputControl
               aria-describedby="account-email-hint"
-              className="ds-control"
               id="account-email"
               name="email"
               readOnly
@@ -2799,10 +2743,9 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
           </Field>
         </SettingsRow>
         <SettingsRow label="Display name" description="This identity is used throughout OpenTag.">
-          <Field className="settings-profile-field" htmlFor="account-display-name" label="Display name">
-            <input
+          <Field htmlFor="account-display-name" label="Display name">
+            <KumoInputControl
               autoComplete="name"
-              className="ds-control"
               // Editing during a refresh-only retry could open a save that races it.
               disabled={syncing}
               id="account-display-name"
@@ -2820,9 +2763,9 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
         </SettingsRow>
       </SettingsList>
       {dirty ? (
-        <div className="dirty-bar">
-          <span>Unsaved changes</span>
-          <div className="dirty-actions">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
+          <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+          <div className="flex flex-wrap justify-end gap-2">
             <Button
               disabled={saving}
               variant="ghost"
@@ -2843,9 +2786,9 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
       {!dirty && unsyncedDisplayName !== undefined ? (
         // The value is saved, so this offers only the step that failed: no Save that would repeat
         // the write, and no Discard that would replace the saved name with the stale projection.
-        <div className="dirty-bar">
-          <span>Account not refreshed</span>
-          <div className="dirty-actions">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
+          <span className="text-sm text-kumo-subtle">Account not refreshed</span>
+          <div className="flex flex-wrap justify-end gap-2">
             <Button disabled={syncing} onClick={() => void retrySync()}>
               {syncing ? "Refreshing…" : "Retry refresh"}
             </Button>
@@ -2853,12 +2796,12 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
         </div>
       ) : null}
       {message ? (
-        <p className="settings-inline-status success" role="status">
+        <p className="text-sm text-kumo-success" role="status">
           {message}
         </p>
       ) : null}
       {error ? (
-        <p className="notice error" role="alert">
+        <p className="text-sm text-kumo-danger" role="alert">
           {error}
         </p>
       ) : null}
@@ -2880,10 +2823,10 @@ function Page({
   children: ReactNode;
 }) {
   return (
-    <section className="page">
-      <header className="page-header">
-        <div>
-          {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
+    <section className="mx-auto grid w-full max-w-6xl gap-6" data-ui="page">
+      <header className="flex flex-wrap items-start justify-between gap-4" data-ui="page-header">
+        <div className="grid gap-1">
+          {eyebrow ? <span className="text-xs font-medium uppercase text-kumo-subtle">{eyebrow}</span> : null}
           <h1>{title}</h1>
           {description ? <p>{description}</p> : null}
         </div>
@@ -2896,7 +2839,7 @@ function Page({
 
 function EmptyState({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="empty-state">
+    <section className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line" data-ui="empty">
       <h2>{title}</h2>
       <p>{children}</p>
     </section>
@@ -2905,7 +2848,10 @@ function EmptyState({ title, children }: { title: string; children: ReactNode })
 
 function NotFoundPage() {
   return (
-    <section className="center-card">
+    <section
+      className="mx-auto grid max-w-xl gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-line"
+      data-ui="not-found"
+    >
       <h1>Page not found</h1>
       <p>The requested OpenTag page is not available.</p>
       <Link to="/agents">Back to Agents</Link>
@@ -2915,7 +2861,7 @@ function NotFoundPage() {
 
 function StandaloneNotFoundPage() {
   return (
-    <main className="center-card decorative-page">
+    <main className="mx-auto grid max-w-xl gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-line" data-ui="not-found">
       <h1>Page not found</h1>
       <p>The requested OpenTag page is not available.</p>
       <Link to="/agents">Back to Agents</Link>

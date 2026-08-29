@@ -12,7 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { users, workspaces } from "./auth.js";
-import { workspaceComputers } from "./computers.js";
+import { accountComputers, workspaceComputers } from "./computers.js";
 
 export const agentRuntimeProvider = pgEnum("agent_runtime_provider", ["codex", "claude-code"]);
 export const agentReceiveMode = pgEnum("agent_receive_mode", ["all_message", "mention_only"]);
@@ -31,6 +31,7 @@ export const agents = pgTable(
     creationIntentId: uuid("creation_intent_id"),
     creationIntentFingerprint: text("creation_intent_fingerprint"),
     workspaceComputerId: uuid("workspace_computer_id").notNull(),
+    computerId: uuid("computer_id").references(() => accountComputers.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
@@ -50,6 +51,7 @@ export const agents = pgTable(
     index("agents_workspace_id_idx").on(table.workspaceId),
     index("agents_created_by_user_id_idx").on(table.createdByUserId),
     index("agents_workspace_computer_id_idx").on(table.workspaceComputerId),
+    index("agents_computer_id_idx").on(table.computerId),
     foreignKey({
       columns: [table.workspaceId, table.workspaceComputerId],
       foreignColumns: [workspaceComputers.workspaceId, workspaceComputers.id],
@@ -69,5 +71,9 @@ export const agentsRelations = relations(agents, ({ one }) => ({
   workspaceComputer: one(workspaceComputers, {
     fields: [agents.workspaceComputerId],
     references: [workspaceComputers.id],
+  }),
+  computer: one(accountComputers, {
+    fields: [agents.computerId],
+    references: [accountComputers.id],
   }),
 }));

@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { agents } from "./agents.js";
 import { workspaces } from "./auth.js";
 
 export const slackInstallationStatus = pgEnum("slack_installation_status", [
@@ -26,6 +27,7 @@ export const slackInstallations = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "restrict" }),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "restrict" }),
     status: slackInstallationStatus("status").notNull().default("active"),
 
     externalAppId: text("external_app_id").notNull(),
@@ -63,6 +65,7 @@ export const slackInstallations = pgTable(
       .on(table.workspaceId)
       .where(sql`${table.status} <> 'disabled'`),
     index("slack_installations_workspace_id_idx").on(table.workspaceId),
+    index("slack_installations_agent_id_idx").on(table.agentId),
     index("slack_installations_app_team_idx").on(table.externalAppId, table.externalTeamId),
     check("slack_installations_credential_generation_nonnegative", sql`${table.credentialGeneration} >= 0`),
     check(
@@ -84,6 +87,7 @@ export const slackInstallations = pgTable(
 
 export const slackInstallationsRelations = relations(slackInstallations, ({ one, many }) => ({
   workspace: one(workspaces, { fields: [slackInstallations.workspaceId], references: [workspaces.id] }),
+  agent: one(agents, { fields: [slackInstallations.agentId], references: [agents.id] }),
   replacement: one(slackInstallations, {
     fields: [slackInstallations.replacementSlackInstallationId],
     references: [slackInstallations.id],

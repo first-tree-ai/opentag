@@ -2953,42 +2953,60 @@ textarea:focus {
   font-size: var(--text-meta);
 }
 
-.binding-status {
-  display: flex;
+.messaging-channel {
+  display: grid;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 14px;
   border-block: 1px solid var(--border);
-  background: transparent;
   padding: 18px 0;
 }
 
-.binding-status > small {
-  margin-top: 4px;
+.messaging-channel-icon {
+  width: 26px;
+  height: 26px;
+  display: block;
+  justify-self: center;
+}
+
+.messaging-channel-copy {
+  min-width: 0;
+}
+
+.messaging-channel-copy strong,
+.messaging-channel-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.messaging-channel-copy strong {
+  color: var(--foreground);
+  font-size: var(--text-body);
+  font-weight: var(--fw-semibold);
+}
+
+.messaging-channel-copy small {
+  margin-top: 3px;
   color: var(--muted);
   font-size: var(--text-meta);
 }
 
-.messaging-contact-facts {
+.trigger-mode {
   display: grid;
-  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
-  gap: 24px;
+  gap: 12px;
+}
+
+.trigger-mode .segmented-control {
+  max-width: 320px;
+}
+
+.trigger-mode-description {
   margin: 0;
-  border-bottom: 1px solid var(--border);
-  padding: 4px 0 18px;
-}
-
-.messaging-contact-facts div {
-  min-width: 0;
-}
-
-.messaging-contact-facts dt {
-  margin-bottom: 5px;
-  font-size: var(--text-meta);
-}
-
-.messaging-contact-facts dd {
-  color: var(--foreground);
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: var(--text-ui);
   line-height: var(--lh-prose);
 }
 
@@ -3913,12 +3931,16 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .messaging-contact-facts {
-    grid-template-columns: 1fr;
-    gap: 12px;
+  .messaging-channel {
+    align-items: flex-start;
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 10px 12px;
   }
 
-  .binding-status,
+  .messaging-channel .ds-status {
+    grid-column: 2;
+  }
+
   .agent-capability-item-heading,
   .agent-capability-list-heading,
   .settings-policy-banner,

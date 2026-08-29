@@ -1782,21 +1782,28 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText(/cannot contact this agent/)).toBeTruthy();
   });
 
-  it("separates a connected contact channel from its trigger rules", async () => {
+  it("separates the connected channel from the trigger mode that acts on it", async () => {
     installApi({ bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
-    expect(screen.getByText(/Feishu · Connected/)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
+    expect(screen.getByText("Feishu · @reviewer")).toBeTruthy();
+    expect(screen.getByText("Connected")).toBeTruthy();
     expect(screen.getByText(/Validated/)).toBeTruthy();
-    expect(screen.getByText("@reviewer")).toBeTruthy();
-    expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Trigger rules" })).toBeTruthy();
-    expect(screen.getByText("All messages")).toBeTruthy();
-    expect(screen.queryByText("Every direct message starts a task.")).toBeNull();
-    expect(screen.getByText("Group chats")).toBeTruthy();
-    expect(screen.getByRole("group", { name: "Shared conversation trigger rule" })).toBeTruthy();
+    expect(document.querySelector(".messaging-channel-icon")).toBeTruthy();
+    // The channel identity is reported, not edited, so it carries no fields of its own.
+    expect(screen.queryByText("Contact")).toBeNull();
+    expect(screen.queryByText("How to use")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Group chat trigger mode" })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "This Agent receives every message in connected group chats. This setting only decides when it wakes up to act on them.",
+      ),
+    ).toBeTruthy();
+    // A direct message is always delivered, so the row that only ever said so is gone.
+    expect(screen.queryByText("Direct messages")).toBeNull();
+    expect(screen.getByRole("group", { name: "Group chat trigger mode" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Change Feishu Bot" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Feishu" })).toBeTruthy();
   });
@@ -1870,9 +1877,9 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, provider: "slack" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
+    // Receiving is unchanged either way, so widening the trigger applies without a confirmation.
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() =>
       expect(
         vi
@@ -1900,7 +1907,7 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("keeps receive-mode failures inside the active dialog and clears them before retry", async () => {
+  it("reports a failed trigger-mode change on the page and clears it before retry", async () => {
     installApi({ bound: true });
     const baseFetch = vi.mocked(fetch).getMockImplementation();
     if (!baseFetch) throw new Error("Expected the test API to be installed");
@@ -1925,14 +1932,13 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
-    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to update message access");
+    expect((await screen.findByRole("alert")).textContent).toContain("Unable to update message access");
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Allow messages without mentions?" })).toBeNull());
-    expect(screen.queryByText("Unable to update message access")).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Trigger rules" })));
+    fireEvent.click(screen.getByRole("button", { name: "Every message" }));
+    await waitFor(() => expect(screen.queryByText("Unable to update message access")).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Group chat trigger mode" })),
+    );
   });
 
   it("keeps disconnect failures inside the active dialog and allows retry", async () => {

@@ -2185,9 +2185,7 @@ function AgentManageSettings({
 function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string>();
-  const [confirmation, setConfirmation] = useState<
-    { kind: "all_messages" } | { bindingId: string; kind: "disable_binding" }
-  >();
+  const [confirmation, setConfirmation] = useState<{ bindingId: string; kind: "disable_binding" }>();
   const [confirmationError, setConfirmationError] = useState<string>();
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [restoreFocusTarget, setRestoreFocusTarget] = useState<"messaging" | "trigger_rules">();
@@ -2212,13 +2210,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       setReload((value) => value + 1);
-      if (receiveMode === "all_message") setRestoreFocusTarget("trigger_rules");
-      setConfirmation(undefined);
+      setRestoreFocusTarget("trigger_rules");
       onAgentChanged();
     } catch (cause) {
-      const nextError = cause instanceof Error ? cause.message : "Unable to change receive mode";
-      if (confirmation?.kind === "all_messages") setConfirmationError(nextError);
-      else setError(nextError);
+      setError(cause instanceof Error ? cause.message : "Unable to change receive mode");
     } finally {
       setConfirmationBusy(false);
     }
@@ -2282,45 +2277,37 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         <>
                           <section className="im-section" aria-labelledby="contact-channel-heading">
                             <div className="im-section-heading">
-                              <h3 id="contact-channel-heading">Contact channel</h3>
+                              <h3 id="contact-channel-heading">Connected channel</h3>
                             </div>
-                            <div className="binding-status">
+                            <div className="messaging-channel">
+                              <ProviderIcon className="messaging-channel-icon" provider={binding.provider} />
+                              <span className="messaging-channel-copy">
+                                <strong>{binding.bot.displayName}</strong>
+                                <small>
+                                  {titleCase(binding.provider)} · @{agent.name}
+                                </small>
+                              </span>
                               <StatusIndicator
-                                detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
-                                  binding,
-                                  agent.availability.dependencies.handoff.state,
-                                )}`}
-                                label={binding.bot.displayName}
+                                detail={
+                                  binding.lastRuntimeObservationAt
+                                    ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
+                                    : binding.lastValidatedAt
+                                      ? `Validated ${formatDate(binding.lastValidatedAt)}`
+                                      : "Not yet observed"
+                                }
+                                label={messagingConnectionLabel(binding, agent.availability.dependencies.handoff.state)}
                                 tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
                               />
-                              <small>
-                                {binding.lastRuntimeObservationAt
-                                  ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
-                                  : binding.lastValidatedAt
-                                    ? `Validated ${formatDate(binding.lastValidatedAt)}`
-                                    : "Not yet observed"}
-                              </small>
                             </div>
-                            <dl className="messaging-contact-facts">
-                              <div>
-                                <dt>Contact</dt>
-                                <dd>@{agent.name}</dd>
-                              </div>
-                              <div>
-                                <dt>How to use</dt>
-                                <dd>{agentUseInstruction(agent, binding.provider)}</dd>
-                              </div>
-                            </dl>
-                            {binding.bindingState === "reauthorization_required" && binding.provider === "feishu" ? (
-                              <div className="im-actions">
-                                <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
-                              </div>
-                            ) : null}
-                            {binding.bindingState === "reauthorization_required" && binding.provider === "slack" ? (
-                              <div className="im-actions">
-                                <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
-                              </div>
-                            ) : null}
+                            <MessagingChannelRecovery
+                              agent={agent}
+                              binding={binding}
+                              onReconnect={() =>
+                                void (binding.provider === "feishu"
+                                  ? connectFeishu("reauthorize")
+                                  : connectSlack("reauthorize"))
+                              }
+                            />
                             <div className="im-actions messaging-connection-actions">
                               {binding.provider === "feishu" ? (
                                 <Button size="compact" variant="outline" onClick={() => void connectFeishu("replace")}>
@@ -2343,40 +2330,36 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           <section className="im-section" aria-labelledby="trigger-rules-heading">
                             <div className="im-section-heading">
                               <h3 id="trigger-rules-heading" ref={triggerRulesHeadingRef} tabIndex={-1}>
-                                Trigger rules
+                                {triggerModeHeading(binding.provider)}
                               </h3>
+                              <p className="im-section-note">{triggerModeExplanation(binding.provider)}</p>
                             </div>
-                            <SettingsList className="agent-message-rules">
-                              <SettingsRow label="Direct messages">
-                                <strong>All messages</strong>
-                              </SettingsRow>
-                              <SettingsRow label={sharedConversationLabel(binding.provider)}>
-                                <fieldset aria-label="Shared conversation trigger rule" className="segmented-control">
-                                  {binding.receiveMode === "mention_only" ? (
-                                    <>
-                                      <span className="active">Mentions only</span>
-                                      <button
-                                        ref={allMessagesButtonRef}
-                                        type="button"
-                                        onClick={() => {
-                                          setConfirmationError(undefined);
-                                          setConfirmation({ kind: "all_messages" });
-                                        }}
-                                      >
-                                        Every message
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                                        Mentions only
-                                      </button>
-                                      <span className="active">Every message</span>
-                                    </>
-                                  )}
-                                </fieldset>
-                              </SettingsRow>
-                            </SettingsList>
+                            <div className="trigger-mode">
+                              <fieldset aria-label={triggerModeHeading(binding.provider)} className="segmented-control">
+                                {binding.receiveMode === "mention_only" ? (
+                                  <>
+                                    <span className="active">On mention</span>
+                                    <button
+                                      ref={allMessagesButtonRef}
+                                      type="button"
+                                      onClick={() => void changeReceiveMode("all_message")}
+                                    >
+                                      Every message
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                      On mention
+                                    </button>
+                                    <span className="active">Every message</span>
+                                  </>
+                                )}
+                              </fieldset>
+                              <p className="trigger-mode-description">
+                                {triggerModeDescription(binding.receiveMode, binding.provider)}
+                              </p>
+                            </div>
                           </section>
                         </>
                       ) : (
@@ -2410,29 +2393,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           </SlackConfiguration>
         )}
       </FeishuSetup>
-      {confirmation?.kind === "all_messages" ? (
-        <Dialog
-          busy={confirmationBusy}
-          description="Every new conversation message could start a task. This can share more conversation content and increase token usage."
-          returnFocusRef={allMessagesButtonRef}
-          title="Allow messages without mentions?"
-          onClose={closeMessagingConfirmation}
-        >
-          {confirmationError ? (
-            <div className="notice error" role="alert">
-              {confirmationError}
-            </div>
-          ) : null}
-          <div className="dialog-actions actions">
-            <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
-              Keep mentions only
-            </Button>
-            <Button disabled={confirmationBusy} onClick={() => void changeReceiveMode("all_message")}>
-              {confirmationBusy ? "Updating…" : "Allow every message"}
-            </Button>
-          </div>
-        </Dialog>
-      ) : null}
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
@@ -2461,6 +2421,73 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         </Dialog>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The mode never changes what the Agent receives -- every message in a shared conversation reaches it
+ * either way. It changes when the Agent wakes up to act, which is what costs Tokens.
+ */
+function triggerModeHeading(provider: ImBindingSummary["provider"]): string {
+  return provider === "feishu" ? "Group chat trigger mode" : "Channel trigger mode";
+}
+
+function triggerModeExplanation(provider: ImBindingSummary["provider"]): string {
+  const destination = provider === "feishu" ? "group chats" : "channels";
+  return `This Agent receives every message in connected ${destination}. This setting only decides when it wakes up to act on them.`;
+}
+
+function triggerModeDescription(
+  receiveMode: AgentSummary["receiveMode"],
+  provider: ImBindingSummary["provider"],
+): string {
+  const destination = provider === "feishu" ? "group chat" : "channel";
+  if (receiveMode === "all_message") {
+    return `Wakes up on each new ${destination} message and decides for itself whether to reply. Fastest to react, and uses the most Tokens.`;
+  }
+  return `Waits until someone @mentions it, then reads everything said since its last reply in one go. Slower to react, and much cheaper.`;
+}
+
+/**
+ * One exit per channel state. Where the connection itself cannot be repaired from here, the row says
+ * what it is waiting on instead of offering an action that would do nothing.
+ */
+function MessagingChannelRecovery({
+  agent,
+  binding,
+  onReconnect,
+}: {
+  agent: AgentDetailView;
+  binding: ImBindingSummary;
+  onReconnect: () => void;
+}) {
+  const provider = titleCase(binding.provider);
+  if (binding.bindingState === "reauthorization_required") {
+    return (
+      <div className="im-actions">
+        <Button onClick={onReconnect}>Reauthorize {provider}</Button>
+      </div>
+    );
+  }
+  if (binding.bindingState === "error" || binding.bindingState === "disabled") {
+    return (
+      <div className="im-actions">
+        <Button onClick={onReconnect}>Reconnect {provider}</Button>
+      </div>
+    );
+  }
+  if (binding.bindingState === "provisioning") {
+    return <p className="im-section-note">Setting up. This usually finishes within a minute.</p>;
+  }
+  if (agent.availability.dependencies.handoff.state === "ready") return null;
+  if (agent.availability.dependencies.handoff.state === "unconfirmed") {
+    return <p className="im-section-note">Could not confirm delivery. Retrying automatically.</p>;
+  }
+  return (
+    <p className="im-section-note">
+      The channel itself is connected. Messages wait until this Agent's Computer is online.{" "}
+      <Link to={`/agents/${agent.id}/settings/computer`}>View Computer</Link>
+    </p>
   );
 }
 
@@ -2770,22 +2797,6 @@ function agentRecoveryTitle(agent: AgentDetailView): string {
     handoff_unavailable: "Messaging disconnected",
   };
   return agent.availability.reason ? titles[agent.availability.reason] : agentAvailabilitySummary(agent);
-}
-
-function sharedConversationLabel(provider: ImBindingSummary["provider"]): string {
-  return provider === "feishu" ? "Group chats" : "Channels";
-}
-
-function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
-  if (provider === "feishu") return plural ? "connected Feishu group chats" : "a Feishu group chat";
-  return plural ? "connected Slack channels" : "a Slack channel";
-}
-
-function agentUseInstruction(agent: AgentDetailView, provider: ImBindingSummary["provider"]): string {
-  if (agent.receiveMode === "all_message") {
-    return `Send @${agent.name} a direct message. It can also receive every message in ${sharedConversationDestination(provider, true)}.`;
-  }
-  return `Send @${agent.name} a direct message, or mention it in ${sharedConversationDestination(provider)}.`;
 }
 
 function agentAvailabilitySummary(agent: AgentDetailView): string {

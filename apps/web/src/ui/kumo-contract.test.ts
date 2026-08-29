@@ -10,8 +10,29 @@ const sourceFiles = readdirSync(root, { recursive: true, withFileTypes: true })
 const source = sourceFiles.map((file) => readFileSync(resolve(root, file), "utf8")).join("\n");
 
 describe("Kumo integration contract", () => {
-  it("loads standalone styles once and keeps application styles local", () => {
-    expect(source.match(/@cloudflare\/kumo\/styles\/standalone/g)?.length).toBe(1);
+  /*
+   * Kumo's standalone bundle ships a fixed set of utilities and regenerates nothing from page source,
+   * so a class it happens not to contain does nothing at all -- silently. That is how a 1116px icon
+   * and a one-column grid shipped past a green type-check and a green suite, and why a check that
+   * compares written classes against that fixed set can only ever chase the symptom. Tailwind builds
+   * the utilities from the sources it scans, so the set cannot be missing what the pages use.
+   */
+  it("generates utilities from application source instead of shipping a fixed set", () => {
+    const stylesheet = readFileSync(resolve(root, "app.css"), "utf8");
+    expect(stylesheet).toContain('@import "tailwindcss"');
+    expect(stylesheet).toContain('@import "@cloudflare/kumo/styles/tailwind"');
+    expect(readFileSync(resolve(root, "..", "vite.config.ts"), "utf8")).toContain("tailwindcss()");
+    expect(source).not.toMatch(/@cloudflare\/kumo\/styles\/standalone/);
+    /*
+     * Which paths `@source` names is deliberately not asserted here. An earlier version pinned their
+     * shape and would have rejected the fix for a scan that silently matched nothing -- whether the
+     * scan works is a property of the emitted stylesheet, checked by the build.
+     */
+    expect(readFileSync(resolve(root, "..", "package.json"), "utf8")).toContain("assert-web-generated-utilities.mjs");
+  });
+
+  it("loads the application stylesheet once and keeps application styles local", () => {
+    expect(source.match(/import "\.\/app\.css"/g)?.length).toBe(1);
     expect(source).not.toMatch(/(?:styles|mock-pages|tasks-page|agent-usage)\.css/);
     expect(existsSync(resolve(root, "styles.css"))).toBe(false);
     expect(existsSync(resolve(root, "ui/design-system.css"))).toBe(false);

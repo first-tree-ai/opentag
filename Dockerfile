@@ -17,6 +17,8 @@ COPY tsconfig.json ./
 COPY packages/shared packages/shared
 COPY packages/server packages/server
 COPY apps/web apps/web
+# The Web build asserts its emitted stylesheet; the checker lives outside the Vite root on purpose.
+COPY scripts scripts
 RUN pnpm --filter @opentag/shared build
 RUN pnpm --filter @opentag/web build
 RUN pnpm --filter @opentag/server build

@@ -1,3 +1,15 @@
+/*
+ * Tailwind generates utilities from the sources listed below. Kumo's standalone bundle ships a fixed
+ * set instead, which silently drops any class the application uses but the bundle does not contain --
+ * a missing rule rearranges a page without failing a build, a type-check, or a test.
+ */
+@import "tailwindcss";
+@import "@cloudflare/kumo/styles/tailwind";
+
+/* Kumo's own components are class-based too, so its dist has to be scanned alongside ours. */
+@source "../src";
+@source "../node_modules/@cloudflare/kumo/dist";
+
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--text-color-kumo-default);

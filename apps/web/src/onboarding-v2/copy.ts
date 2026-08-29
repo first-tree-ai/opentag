@@ -181,6 +181,8 @@ export const COPY = {
     slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
     slackAction: "Add to Slack",
     slackWaiting: "Waiting for you to finish in Slack…",
+    retry: "Try again",
+    failed: "That didn't work. Try again to get a new code.",
   },
 
   done: {

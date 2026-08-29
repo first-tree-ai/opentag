@@ -17,6 +17,7 @@ import type {
   ConnectState,
   CreationState,
   MessagingCliStatus,
+  MessagingProvider,
   MessagingState,
   ReadinessFacts,
   RuntimeStatus,
@@ -55,16 +56,25 @@ function findArrival(
 /**
  * A Computer's readiness, read for the runtime this draft actually chose.
  *
+ * The verdict carries the Provider it is about. A reader who goes back and picks a different
+ * runtime must not be handed the previous one's result while the next poll is still in flight —
+ * the Agent's provider cannot be changed after it is created, so a stale `ready` would commit them
+ * to a runtime nothing ever checked.
+ *
  * A Computer that has reported nothing yet is `checking` rather than absent: it is the daemon's
  * first probe that has not landed, not a failure, and showing a failure there would accuse a
- * machine that has not answered yet. The same applies to the messaging CLI.
+ * machine that has not answered yet. The same applies to each messaging CLI, which is read by
+ * Provider rather than by position — the Server sends only what it has observed, in its own
+ * canonical order, so position 0 is whichever CLI happened to report, not the one being asked about.
  */
 function readReadiness(computer: WorkspaceComputerSummary, runtime: AgentRuntimeProvider | undefined): ReadinessFacts {
   const provider = runtime ? computer.providerReadiness?.find((entry) => entry.provider === runtime) : undefined;
-  const messagingCli = computer.imCliReadiness?.[0];
+  const messagingCli: Partial<Record<MessagingProvider, MessagingCliStatus>> = {};
+  for (const entry of computer.imCliReadiness ?? []) messagingCli[entry.provider] = entry.status;
   return {
     runtime: (provider?.status ?? "checking") as RuntimeStatus,
-    messagingCli: (messagingCli?.status ?? "checking") as MessagingCliStatus,
+    runtimeProvider: runtime,
+    messagingCli,
   };
 }
 
@@ -75,7 +85,7 @@ function readReadiness(computer: WorkspaceComputerSummary, runtime: AgentRuntime
  */
 export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [connect, setConnect] = useState<ConnectState>({ kind: "idle" });
-  const [readiness, setReadiness] = useState<ReadinessFacts>();
+  const [computer, setComputer] = useState<WorkspaceComputerSummary>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   const [agent, setAgent] = useState<CreatedAgent>();
   const [creation, setCreation] = useState<CreationState>("idle");
@@ -94,6 +104,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   /** Bumped by every reissue and by unmount, so a reply from a superseded attempt is discarded. */
   const attempt = useRef(0);
   const creationRef = useRef<CreationState>("idle");
+  const feishuTimer = useRef(0);
   const runtime = useRef<AgentRuntimeProvider | undefined>(draft.runtime);
   runtime.current = draft.runtime;
   const mounted = useRef(true);
@@ -103,6 +114,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     return () => {
       mounted.current = false;
       attempt.current += 1;
+      window.clearInterval(feishuTimer.current);
     };
   }, []);
 
@@ -154,13 +166,16 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           if (!mounted.current || attempt.current !== mine) return;
           const arrived = findArrival(value.computers, baseline.current);
           if (!arrived) return;
-          computerId.current = arrived.computerId;
-          setConnect((current) =>
-            current.kind === "issued"
-              ? { kind: "connected", command: current.command, computerName: arrived.displayName }
-              : current,
-          );
-          setReadiness(readReadiness(arrived, runtime.current));
+          // A reply can land after its code expired. Claiming the Computer outside this guard let an
+          // expired attempt adopt a machine, enable Continue, and create an Agent the page could then
+          // never move past — so the adoption happens only if the connection is still the one waiting.
+          setConnect((current) => {
+            if (current.kind !== "issued") return current;
+            computerId.current = arrived.computerId;
+            setComputer(arrived);
+            setError(undefined);
+            return { kind: "connected", command: current.command, computerName: arrived.displayName };
+          });
         },
         (cause: unknown) => {
           if (mounted.current && attempt.current === mine) setError(errorMessage(cause, COPY.errors.computers));
@@ -181,7 +196,11 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         (value) => {
           if (!mounted.current || attempt.current !== mine) return;
           const mineNow = value.computers.find((computer) => computer.computerId === computerId.current);
-          if (mineNow) setReadiness(readReadiness(mineNow, runtime.current));
+          if (!mineNow) return;
+          setComputer(mineNow);
+          // A poll that succeeds retires whatever the last failed one put on screen; otherwise
+          // "We lost contact" stays above "Your computer is connected."
+          setError(undefined);
         },
         () => undefined,
       );
@@ -226,17 +245,19 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     (provider: "feishu" | "slack") => {
       if (provider !== "feishu" || !agent) return;
       setMessaging((current) => {
-        if (current.kind !== "idle") return current;
+        // A refused attempt is retried only when the reader asks for it, never on sight.
+        if (current.kind !== "idle" && current.kind !== "failed") return current;
+        const mine = attempt.current;
         queueMicrotask(() => {
           void browserApi.createFeishuSetupAttempt(agent.id).then(
             (created) => {
-              if (!mounted.current) return;
+              if (!mounted.current || attempt.current !== mine) return;
               setMessaging(created.qrUrl ? { kind: "waiting", qrValue: created.qrUrl } : { kind: "issuing" });
-              pollFeishu(created.id);
+              pollFeishu(created.id, mine);
             },
             (cause: unknown) => {
-              if (!mounted.current) return;
-              setMessaging({ kind: "idle" });
+              if (!mounted.current || attempt.current !== mine) return;
+              setMessaging({ kind: "failed" });
               setError(errorMessage(cause, COPY.errors.messaging));
             },
           );
@@ -244,22 +265,30 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         return { kind: "issuing" };
       });
 
-      function pollFeishu(attemptId: string) {
-        const timer = window.setInterval(() => {
+      function pollFeishu(attemptId: string, mine: number) {
+        // The handle is held so `reset()` can end a poll the reader walked away from. Without it a
+        // Start over left the previous attempt running, and its eventual success connected the
+        // messaging app of a flow that no longer existed.
+        window.clearInterval(feishuTimer.current);
+        feishuTimer.current = window.setInterval(() => {
+          if (!mounted.current || attempt.current !== mine) {
+            window.clearInterval(feishuTimer.current);
+            return;
+          }
           void browserApi.feishuSetupAttempt(attemptId).then(
             (current) => {
-              if (!mounted.current) {
-                window.clearInterval(timer);
+              if (!mounted.current || attempt.current !== mine) {
+                window.clearInterval(feishuTimer.current);
                 return;
               }
               if (current.state === "succeeded") {
-                window.clearInterval(timer);
+                window.clearInterval(feishuTimer.current);
                 setMessaging({ kind: "connected" });
                 return;
               }
               if (current.state === "failed" || current.state === "expired" || current.state === "canceled") {
-                window.clearInterval(timer);
-                setMessaging({ kind: "idle" });
+                window.clearInterval(feishuTimer.current);
+                setMessaging({ kind: "failed" });
                 setError(COPY.errors.feishuAttempt);
                 return;
               }
@@ -295,12 +324,13 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   const reset = useCallback(() => {
     attempt.current += 1;
+    window.clearInterval(feishuTimer.current);
     computerId.current = undefined;
     baseline.current = new Map();
     expiresAt.current = 0;
     creationRef.current = "idle";
     setConnect({ kind: "idle" });
-    setReadiness(undefined);
+    setComputer(undefined);
     setMessaging({ kind: "idle" });
     setAgent(undefined);
     setCreation("idle");
@@ -308,6 +338,11 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, []);
 
   const startPlanSignIn = useCallback(() => undefined, []);
+
+  const readiness = useMemo(
+    () => (computer ? readReadiness(computer, draft.runtime) : undefined),
+    [computer, draft.runtime],
+  );
 
   return useMemo(
     () => ({

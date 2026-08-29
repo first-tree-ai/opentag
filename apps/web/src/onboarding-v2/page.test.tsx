@@ -113,7 +113,7 @@ describe("OnboardingV2Page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Open Tag" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    const error = document.querySelector(".otv2-field-error") as HTMLElement;
+    const error = document.querySelector('[data-ui="onboarding-v2-field-error"]') as HTMLElement;
     expect(error.textContent).toContain("lowercase letters");
     expect(error.dataset.empty).toBeUndefined();
     expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
@@ -124,11 +124,15 @@ describe("OnboardingV2Page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    for (const section of document.querySelectorAll(".otv2-fieldset")) {
-      const parts = [...section.children].map((child) => child.className || child.tagName.toLowerCase());
-      const heading = parts.findIndex((part) => part === "otv2-fieldset__label" || part === "legend");
-      const hint = parts.indexOf("otv2-fieldset__hint");
-      const control = parts.findIndex((part) => part.includes("otv2-name") || part.includes("otv2-choices"));
+    for (const section of document.querySelectorAll('[data-ui="onboarding-v2-field"], fieldset')) {
+      const parts = [...section.children].map(
+        (child) => (child as HTMLElement).dataset.ui ?? child.tagName.toLowerCase(),
+      );
+      const heading = parts.findIndex((part) => part === "onboarding-v2-field-label" || part === "legend");
+      const hint = parts.indexOf("onboarding-v2-field-hint");
+      const control = parts.findIndex(
+        (part) => part === "onboarding-v2-field-control" || part === "onboarding-v2-choices",
+      );
       expect(heading).toBeGreaterThanOrEqual(0);
       expect(hint).toBeGreaterThan(heading);
       expect(control).toBeGreaterThan(hint);
@@ -139,7 +143,7 @@ describe("OnboardingV2Page", () => {
     render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    const error = document.querySelector(".otv2-field-error") as HTMLElement;
+    const error = document.querySelector('[data-ui="onboarding-v2-field-error"]') as HTMLElement;
     expect(error).toBeTruthy();
     expect(error.dataset.empty).toBe("true");
   });
@@ -230,7 +234,9 @@ describe("OnboardingV2Page", () => {
     const rowsWhileChecking = document.querySelectorAll(".otv2-check");
     expect(rowsWhileChecking).toHaveLength(2);
     for (const row of rowsWhileChecking) {
-      expect(row.querySelectorAll("span > span")).toHaveLength(1);
+      // One title and one detail line, always both, so a resolving row never changes height.
+      const copy = row.querySelector("span:last-child");
+      expect(copy?.children).toHaveLength(2);
     }
 
     await settleCheck();
@@ -243,15 +249,15 @@ describe("OnboardingV2Page", () => {
   it("keeps the countdown's row while the command is still on screen", async () => {
     render(<OnboardingV2MockPage />);
     await reachConnectStep();
-    expect(document.querySelector(".otv2-command-lead")).toBeTruthy();
-    expect(document.querySelector(".otv2-command__expiry")).toBeTruthy();
-    expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-command-lead"]')).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-expiry"]')).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-connect-status"]')).toBeTruthy();
 
     // Expiring empties the countdown but must not collapse the row it sits on.
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
     expect(screen.queryByText(/Expires in/)).toBeNull();
-    expect(document.querySelector(".otv2-command__expiry")).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-expiry"]')).toBeTruthy();
   });
 
   it("keeps the check step's outcome slot before and after the result lands", async () => {
@@ -260,9 +266,9 @@ describe("OnboardingV2Page", () => {
     await reachCheckStep();
 
     // Still probing: the slot already holds its waiting line, in the same shape step 3 uses.
-    const slot = () => document.querySelector(".otv2-slot--outcome");
+    const slot = () => document.querySelector('[data-ui="onboarding-v2-check-outcome"]');
     expect(slot()?.textContent ?? "").toContain("Waiting for the computer check…");
-    expect(slot()?.querySelector(".otv2-pulse")).toBeTruthy();
+    expect(slot()?.querySelector(".animate-pulse")).toBeTruthy();
 
     await settleCheck();
     expect(slot()).toBeTruthy();
@@ -384,7 +390,9 @@ describe("OnboardingV2Page", () => {
 
       // Slack leads.
       expect(
-        [...document.querySelectorAll(".otv2-choices--grid .otv2-choice__copy strong")].map((n) => n.textContent),
+        [...document.querySelectorAll('[data-ui="onboarding-v2-choices"] [data-ui="onboarding-v2-card-title"]')].map(
+          (n) => n.textContent,
+        ),
       ).toEqual(["Slack", "Lark"]);
       // The step is finished by scanning or installing, not by pressing anything on this page.
       expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
@@ -455,19 +463,18 @@ describe("OnboardingV2Page", () => {
       render(<OnboardingV2MockPage />);
       await chooseCloud();
       expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
-      expect([...document.querySelectorAll(".otv2-rail__label")].map((node) => node.textContent)).toEqual([
-        "Create agent",
-        "Messaging app",
-      ]);
+      expect(
+        [...document.querySelectorAll('[data-ui="onboarding-v2-rail-label"]')].map((node) => node.textContent),
+      ).toEqual(["Create agent", "Messaging app"]);
       expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
     });
 
     it("leads with OpenTag's own agent, on a row of its own", async () => {
       render(<OnboardingV2MockPage />);
       await chooseCloud();
-      const runtimes = [...document.querySelectorAll(".otv2-choice--runtime strong")].map((n) => n.textContent);
+      const runtimes = [...document.querySelectorAll('[data-ui="onboarding-v2-card-title"]')].map((n) => n.textContent);
       expect(runtimes.slice(0, 3)).toEqual(["OpenTag agent", "Claude Code", "Codex"]);
-      expect(document.querySelector(".otv2-choices--lead")).toBeTruthy();
+      expect(document.querySelector("[data-lead]")).toBeTruthy();
       expect(screen.getByText("More runtimes coming soon.")).toBeTruthy();
     });
 

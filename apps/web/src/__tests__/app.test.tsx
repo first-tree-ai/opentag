@@ -2579,21 +2579,21 @@ describe("OpenTag Web App Shell", () => {
   it("routes an admin with incomplete Workspace setup into onboarding", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
   });
 
   it("renders onboarding without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    await screen.findByRole("heading", { name: "Set up OpenTag" });
+    await screen.findByRole("heading", { name: "Where should your agent run?" });
 
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell
     // brand would stand beside the one onboarding renders itself.
     expect(screen.queryByRole("navigation", { name: "Primary navigation" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
-    expect(screen.getAllByRole("link", { name: "OpenTag" })).toHaveLength(1);
+    expect(screen.queryAllByRole("link", { name: "OpenTag" })).toHaveLength(0);
   });
 
   it("keeps completed Workspaces out of onboarding even when it is requested directly", async () => {

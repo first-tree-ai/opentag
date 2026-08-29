@@ -232,8 +232,11 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   // The check runs when the Computer arrives, exactly like the daemon's eager first probe.
   useEffect(() => {
     if (connect.kind !== "connected") return;
-    setReadiness({ runtime: "checking", messagingCli: "checking" });
-    setCheckResult({ runtime: scenario.runtime, messagingCli: scenario.messagingCli });
+    setReadiness({ runtime: "checking", messagingCli: { feishu: "checking", slack: "checking" } });
+    setCheckResult({
+      runtime: scenario.runtime,
+      messagingCli: { feishu: scenario.messagingCli, slack: scenario.messagingCli },
+    });
   }, [connect.kind, scenario.messagingCli, scenario.runtime]);
 
   const settleCheck = useCallback(() => {
@@ -250,8 +253,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   }, [checkResult, settleCheck, timings.probeMs]);
 
   const repairNow = useCallback(() => {
-    setReadiness({ runtime: "checking", messagingCli: "checking" });
-    setCheckResult({ runtime: "ready", messagingCli: "ready" });
+    setReadiness({ runtime: "checking", messagingCli: { feishu: "checking", slack: "checking" } });
+    setCheckResult({ runtime: "ready", messagingCli: { feishu: "ready", slack: "ready" } });
   }, []);
 
   /** Only Lark has something to issue up front; Slack waits for the user to start its install. */

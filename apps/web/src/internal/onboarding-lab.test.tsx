@@ -370,7 +370,7 @@ describe("Onboarding Lab route", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/onboarding"));
     expect(window.location.search).toBe("");
     expect(meRequests).toBeGreaterThan(before);
-    expect(await screen.findByRole("heading", { level: 1, name: "Set up OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Where should your agent run?" })).toBeTruthy();
   });
 
   it("stays on the Lab when the refreshed Account still reports completed setup", async () => {

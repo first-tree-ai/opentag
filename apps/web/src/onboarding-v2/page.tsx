@@ -27,10 +27,18 @@ const ALLOCATE_COMPUTER_MS = 700;
  * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
  * given that after it runs.
  */
-export function OnboardingV2Page() {
+export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string) => void } = {}) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const backend = useServerBackend(draft);
-  return <OnboardingV2Flow backend={backend} cloudAvailable={false} draft={draft} onDraftChange={setDraft} />;
+  return (
+    <OnboardingV2Flow
+      backend={backend}
+      cloudAvailable={false}
+      draft={draft}
+      onComplete={onComplete}
+      onDraftChange={setDraft}
+    />
+  );
 }
 
 /**
@@ -75,12 +83,15 @@ function OnboardingV2Flow({
   cloudAvailable,
   draft,
   lab,
+  onComplete,
   onDraftChange,
 }: {
   backend: OnboardingBackend;
   cloudAvailable: boolean;
   draft: AgentDraft;
   lab?: React.ReactNode;
+  /** Told once, when the flow has actually finished, so setup can be marked complete. */
+  onComplete?: (agentId: string) => void;
   onDraftChange: (draft: AgentDraft) => void;
 }) {
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
@@ -107,6 +118,19 @@ function OnboardingV2Flow({
   useEffect(() => {
     if (flow.page === "computer") backend.issueConnectCode();
   }, [backend.issueConnectCode, flow.page]);
+
+  /*
+   * Setup is completed from the finished flow, and exactly once. Reporting it from the render that
+   * first sees `complete` — rather than from the button that connected the messaging app — is what
+   * keeps it true for both routes and for a reader who arrives already finished.
+   */
+  const reported = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const agentId = backend.agent?.id;
+    if (!flow.complete || !agentId || reported.current === agentId) return;
+    reported.current = agentId;
+    onComplete?.(agentId);
+  }, [backend.agent?.id, flow.complete, onComplete]);
 
   // Held so a restart or an unmount can cancel an allocation still in flight; otherwise the stale
   // timer lands on the next run and skips its confirmation step.
@@ -148,27 +172,31 @@ function OnboardingV2Flow({
   }, [backend, onDraftChange]);
 
   return (
-    <div className="otv2-shell">
-      <header className="otv2-shell__header">
-        <span className="otv2-brand">{COPY.brand}</span>
-        <Button className="otv2-restart" onClick={startOver} variant="ghost">
+    <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas">
+      <header className="flex items-center justify-between p-6">
+        <span className="text-lg font-semibold text-kumo-strong">{COPY.brand}</span>
+        <Button onClick={startOver} variant="ghost">
           Start over
         </Button>
       </header>
 
-      <main className="otv2-shell__main">
+      <main className="flex w-full max-w-[720px] flex-1 flex-col items-center gap-6 mx-auto p-6">
         {/*
           A rail only where there are steps. The first screen cannot know how many follow, and the
           cloud route is one page, so neither shows one.
         */}
         {flow.steps.length > 0 ? <StepRail steps={flow.steps} /> : null}
-        <div className="otv2-shell__content">
+        <div className="w-full">
           {/*
             Whatever last failed against the Server, above the step rather than inside it: it is
             about the page's ability to make progress, not about the field being filled in.
           */}
           {backend.error ? (
-            <p className="otv2-note otv2-note--attention" data-ui="onboarding-v2-error" role="alert">
+            <p
+              className="flex items-start gap-2 rounded-xl bg-kumo-base p-4 mb-0 text-sm text-kumo-danger ring ring-kumo-line"
+              data-ui="onboarding-v2-error"
+              role="alert"
+            >
               {backend.error}
             </p>
           ) : null}

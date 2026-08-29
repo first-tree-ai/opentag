@@ -47,7 +47,6 @@ import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackConfiguration } from "./im/slack-configuration.js";
 import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
-import { OnboardingPage } from "./onboarding/page.js";
 import { OnboardingV2MockPage, OnboardingV2Page } from "./onboarding-v2/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
@@ -828,22 +827,17 @@ function NoWorkspaceAccess({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/**
+ * Onboarding is the redesigned flow. It carries its own draft and its own Server access, so the
+ * route's only remaining job is to mark setup complete once the flow says it finished.
+ */
 function OnboardingRoute() {
-  const { me, refreshMe } = useWorkspace();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const targetAgentId = searchParams.get("agentId") ?? undefined;
+  const { refreshMe } = useWorkspace();
   return (
-    <OnboardingPage
-      targetAgentId={targetAgentId}
-      user={me.user}
-      onSetupReady={async (agentId) => {
+    <OnboardingV2Page
+      onComplete={async (agentId) => {
         await browserApi.completeSetup(agentId);
         await refreshMe();
-      }}
-      onTargetAgentChange={(agentId) => {
-        const next = new URLSearchParams(searchParams);
-        next.set("agentId", agentId);
-        setSearchParams(next, { replace: true });
       }}
     />
   );

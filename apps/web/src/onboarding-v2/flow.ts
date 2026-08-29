@@ -58,7 +58,18 @@ export type ConnectState =
 
 export interface ReadinessFacts {
   readonly runtime: RuntimeStatus;
-  readonly messagingCli: MessagingCliStatus;
+  /**
+   * Which runtime the verdict above is about. A reader who goes back and changes their mind must
+   * not be shown the previous runtime's result as though it were the new one's: the Agent's
+   * provider is immutable once created, so a stale `ready` would commit them to a runtime that was
+   * never checked. A verdict whose provider no longer matches the draft is not a verdict.
+   */
+  readonly runtimeProvider?: Runtime;
+  /**
+   * Per messaging provider, because the Server reports only the CLIs it has observed and in its own
+   * canonical order. Reading position 0 would let one provider's result speak for another's.
+   */
+  readonly messagingCli: Partial<Record<MessagingProvider, MessagingCliStatus>>;
 }
 
 /**
@@ -71,6 +82,12 @@ export type MessagingState =
   | { readonly kind: "issuing" }
   | { readonly kind: "waiting"; readonly qrValue: string }
   | { readonly kind: "away" }
+  /**
+   * A refused or expired attempt rests here rather than returning to `idle`. Idle is the state the
+   * step starts an attempt from, so a failure that returned to it would be retried on sight, for
+   * as long as the failure lasted, without the reader doing anything.
+   */
+  | { readonly kind: "failed" }
   | { readonly kind: "connected" };
 
 /**
@@ -219,8 +236,8 @@ export function deriveChecks(readiness: ReadinessFacts | undefined): readonly Ch
 }
 
 /** The chosen provider's CLI, probed on the messaging step once there is a provider to probe. */
-export function messagingCliCheck(readiness: ReadinessFacts | undefined): CheckState {
-  return messagingCliState(readiness?.messagingCli ?? "checking");
+export function messagingCliCheck(readiness: ReadinessFacts | undefined, provider: MessagingProvider): CheckState {
+  return messagingCliState(readiness?.messagingCli[provider] ?? "checking");
 }
 
 function runtimeCliState(status: RuntimeStatus): CheckState {

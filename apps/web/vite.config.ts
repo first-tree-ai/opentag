@@ -1,9 +1,11 @@
+import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   base: "/",
-  plugins: [react()],
+  // The route generator must run before the React plugin so the generated tree is transformed too.
+  plugins: [tanstackRouter({ autoCodeSplitting: false, target: "react" }), react()],
   server: {
     proxy: {
       "/api": "http://localhost:8000",

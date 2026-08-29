@@ -1,5 +1,5 @@
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { readCredentials, writeMachineCredentialsAtomically } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
@@ -15,6 +15,7 @@ import type { CommandResult, ServiceRunner } from "../core/daemon/service/types.
 
 const directories: string[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -45,6 +46,45 @@ describe("systemd service backend", () => {
     });
     await expect(backend.preflight()).rejects.toThrow("non-root");
     expect(runner.run).not.toHaveBeenCalled();
+  });
+
+  it("ignores the invoking shell XDG_CONFIG_HOME when locating the account service definition", async () => {
+    const userHome = await temporaryDirectory("opentag-systemd-account-home-");
+    const shellXdgConfigHome = await temporaryDirectory("opentag-systemd-shell-xdg-");
+    const home = await temporaryDirectory("opentag-systemd-home-");
+    const invocation = { args: [], program: "/usr/bin/opentag" };
+    const unitPath = join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`);
+    await writeFileWithParents(
+      unitPath,
+      renderSystemdUnit({
+        home,
+        invocation,
+        path: buildServicePath(invocation, "linux"),
+        serviceId: channelConfig.serviceId,
+      }),
+    );
+    const runner = fakeRunner((_, args) => {
+      if (args.includes("is-active")) return result(0, "active", "");
+      if (args.includes("MainPID")) return result(0, "321", "");
+      if (args.includes("LoadState")) return result(0, "not-found", "");
+      return result(0, "", "");
+    });
+    const manager = await createDaemonServiceManager({
+      env: { PATH: "/usr/bin", XDG_CONFIG_HOME: shellXdgConfigHome },
+      home,
+      invocation,
+      platform: "linux",
+      runner,
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+
+    await expect(manager.status()).resolves.toMatchObject({
+      definitionPath: unitPath,
+      pid: 321,
+      state: "active",
+    });
   });
 
   it("keeps the unit when systemd disable fails during uninstall", async () => {
@@ -464,6 +504,22 @@ describe("launchd service backend", () => {
     expect(plist).not.toContain("node");
     expect(plist).not.toContain("index.mjs");
     expect(wrapper).toContain("'/usr/bin/node' '/app/index.mjs' 'daemon' 'service-run'");
+  });
+
+  it("ignores the invoking shell HOME when locating the account LaunchAgent definition", async () => {
+    const shellHome = await temporaryDirectory("opentag-launchd-shell-home-");
+    const home = await temporaryDirectory("opentag-launchd-home-");
+    vi.stubEnv("HOME", shellHome);
+    const manager = await createDaemonServiceManager({
+      home,
+      invocation: { args: [], program: "/usr/local/bin/opentag" },
+      platform: "darwin",
+      runner: fakeRunner(() => result(113, "", "Could not find service")),
+    });
+
+    await expect(manager.status()).resolves.toMatchObject({
+      definitionPath: join(userInfo().homedir, "Library", "LaunchAgents", `${channelConfig.serviceId}.plist`),
+    });
   });
 
   it("waits for eviction before bootstrapping", async () => {

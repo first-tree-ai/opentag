@@ -2789,17 +2789,21 @@ describe("OpenTag Web App Shell", () => {
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);
-    const { menu } = await openAccountMenu();
+    const { menu, trigger } = await openAccountMenu();
     const account = within(menu).getByRole("menuitem", { name: "Account" });
     account.focus();
     fireEvent.keyDown(account, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+    // The menu is named after its trigger — "Account menu" — so a query for a menu named "Account"
+    // matches nothing whether or not Escape closed anything. Close on the menu this test opened.
+    await waitFor(() => expect(document.getElementById(menu.id)).toBeNull());
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("supports arrow-key navigation and focus return in the account menu", async () => {
     installApi();
     render(<App />);
-    const { menu } = await openAccountMenu();
+    const { menu, trigger } = await openAccountMenu();
     const account = within(menu).getByRole("menuitem", { name: "Account" });
     const signOut = within(menu).getByRole("menuitem", { name: "Sign out" });
     account.focus();
@@ -2808,7 +2812,9 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
     fireEvent.keyDown(account, { key: "End" });
     fireEvent.keyDown(signOut, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+    await waitFor(() => expect(document.getElementById(menu.id)).toBeNull());
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("removes the old admin product shell without a redirect", async () => {

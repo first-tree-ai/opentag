@@ -40,10 +40,10 @@ import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { PageHeader } from "./components/kumo/page-header/page-header.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { orderAgentIds } from "./features/agent-list-order.js";
-import { AgentUsageTab } from "./features/agent-usage.js";
+import { AgentUsageOverview, AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
-import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
+import { AgentTasksSection, TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackConfiguration } from "./im/slack-configuration.js";
 import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
@@ -71,6 +71,7 @@ import {
   Text,
   useSidebar,
 } from "./ui/design-system.js";
+import { ProviderIcon } from "./ui/provider-icon.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 type AuthProvider = AuthProvidersResponse["providers"][number];
@@ -87,6 +88,7 @@ type AgentAvailability = {
     | "im_provisioning"
     | "im_reauthorization_required"
     | "im_error"
+    | "im_disabled"
     | "handoff_unavailable"
     | "computer_unconfirmed"
     | "handoff_unconfirmed"
@@ -200,7 +202,7 @@ function projectAgentAvailability(
   if (binding.bindingState === "error" || binding.bindingState === "disabled") {
     return {
       state: "action_required",
-      reason: "im_error",
+      reason: binding.bindingState === "disabled" ? "im_disabled" : "im_error",
       lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
@@ -1075,7 +1077,6 @@ function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Monitor availability and 30-day usage across your AI teammates."
         action={
           <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
             New Agent <Icon name="plus" />
@@ -1112,6 +1113,7 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
   shownOrder.current = order;
   return (
     <section className="grid gap-4" aria-label="Agents" data-ui="agent-list">
+      <p className="justify-self-end text-sm text-kumo-subtle">Usage · last 30 days</p>
       <div className="grid gap-4 sm:grid-cols-2" data-ui="agent-card-grid">
         {order.map((id) => {
           const agent = byId.get(id);
@@ -1125,6 +1127,7 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 function AgentCard({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
   const action = status.action;
+  const channel = agent.availability.dependencies.channel.provider;
   const statusDetail: ReactNode =
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
@@ -1161,16 +1164,18 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           {initials(agent.displayName)}
         </span>
         <div className="grid min-w-0 gap-1" data-ui="agent-card-identity-copy">
-          <strong>
+          <strong className="flex min-w-0 items-center gap-2">
             <Link aria-label={`Open ${agent.displayName}`} to={`/agents/${agent.id}`}>
               {agent.displayName}
             </Link>
+            {channel ? (
+              <span className="inline-flex shrink-0 items-center" data-ui="agent-card-channel">
+                <ProviderIcon className="size-4" provider={channel} />
+                <span className="sr-only">{titleCase(channel)}</span>
+              </span>
+            ) : null}
           </strong>
-          <small>@{agent.name}</small>
         </div>
-      </div>
-      <div data-ui="agent-card-state">
-        <StatusIndicator detail={statusDetail} label={status.label} tone={status.tone} />
       </div>
       <dl className="grid grid-cols-2 gap-4 border-t border-kumo-line pt-3" data-ui="agent-card-usage">
         <div>
@@ -1182,10 +1187,9 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
-      {/* The row itself is the link; the chevron only signals where it goes. */}
-      <span aria-hidden="true" className="absolute right-4 top-4 text-kumo-subtle" data-ui="agent-card-action">
-        <Icon name="chevron-right" />
-      </span>
+      <div data-ui="agent-card-state">
+        <StatusIndicator detail={statusDetail} label={status.label} tone={status.tone} />
+      </div>
     </article>
   );
 }
@@ -1492,7 +1496,7 @@ function markOwnComputersUnconfirmed(value: { computers: WorkspaceComputerSummar
 }
 
 type AgentSettingsSection = "instructions" | "execution" | "messaging" | "identity" | "computer" | "manage";
-type AgentSettingsGroup = "work" | "contact" | "details";
+type AgentSettingsGroup = "setup" | "danger";
 
 const agentSettingsSections: ReadonlyArray<{
   key: AgentSettingsSection;
@@ -1501,46 +1505,49 @@ const agentSettingsSections: ReadonlyArray<{
   icon: IconName;
 }> = [
   {
+    key: "identity",
+    label: "Name",
+    group: "setup",
+    icon: "user",
+  },
+  {
+    key: "messaging",
+    label: "Messaging",
+    group: "setup",
+    icon: "message",
+  },
+  {
+    key: "computer",
+    label: "Computer",
+    group: "setup",
+    icon: "laptop",
+  },
+  {
     key: "instructions",
     label: "Instructions",
-    group: "work",
+    group: "setup",
     icon: "instructions",
   },
   {
     key: "execution",
     label: "Model & reasoning",
-    group: "work",
+    group: "setup",
     icon: "model",
   },
   {
-    key: "messaging",
-    label: "Messaging",
-    group: "contact",
-    icon: "message",
-  },
-  {
-    key: "identity",
-    label: "Name",
-    group: "details",
-    icon: "user",
-  },
-  {
-    key: "computer",
-    label: "Connected computer",
-    group: "details",
-    icon: "laptop",
-  },
-  {
     key: "manage",
-    label: "Manage Agent",
-    group: "details",
+    label: "Pause or delete",
+    group: "danger",
     icon: "shield",
   },
 ];
+/*
+ * One list in the order a viewer thinks about an Agent -- who it is, how it is reached, where it
+ * runs, how it works -- with the irreversible actions held apart rather than sorted among them.
+ */
 const agentSettingsGroups = [
-  { key: "work", label: "How it works" },
-  { key: "contact", label: "Where it receives work" },
-  { key: "details", label: "Agent details" },
+  { key: "setup", label: null },
+  { key: "danger", label: "Danger zone" },
 ] as const;
 
 function LegacyAgentSectionRedirect() {
@@ -1608,8 +1615,8 @@ function AgentDetailPage() {
           <AgentObjectHeader agent={agent} />
           <div className="grid gap-6">
             {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
-            <AgentCurrentActivity agent={agent} />
-            <AgentContact agent={agent} />
+            <AgentUsageOverview agentId={agent.id} detailsLinkState={{ agent }} />
+            <AgentTasksSection agentId={agent.id} />
           </div>
         </section>
       )}
@@ -1651,11 +1658,7 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
-          {!backToSettings ? (
-            <Link className="text-sm text-kumo-link" state={{ agent }} to={`/agents/${agent.id}/usage`}>
-              Usage
-            </Link>
-          ) : null}
+          {!backToSettings ? <AgentMessagingLink agent={agent} /> : null}
           {true && !backToSettings ? (
             <Link
               className={buttonClassName({ variant: "secondary" })}
@@ -1692,94 +1695,27 @@ function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
   );
 }
 
-function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
-  return (
-    <section
-      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      aria-labelledby="current-activity-heading"
-    >
-      <header className="flex items-center justify-between gap-3">
-        <Text as="h2" id="current-activity-heading" variant="heading">
-          Current work
-        </Text>
-      </header>
-      {agent.activity.state === "working" ? (
-        <div className="flex items-center gap-3">
-          <span className="size-3 rounded-full bg-kumo-brand" aria-hidden="true" />
-          <div>
-            <strong>Handling a request</strong>
-            <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-kumo-subtle">
-          <strong>No active work</strong>
-        </p>
-      )}
-    </section>
-  );
-}
-
-function AgentContact({ agent }: { agent: AgentDetailView }) {
+/**
+ * The Agent's messaging channel as a single header affordance. It always opens messaging settings, so
+ * a missing binding or unreadable evidence keeps an entry point instead of disappearing.
+ */
+function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
+  const label = binding
+    ? messagingChannelLabel(agent, binding)
+    : agent.messaging.kind === "unconfirmed"
+      ? "Messaging status unavailable"
+      : "Connect messaging";
   return (
-    <section
-      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      aria-labelledby="agent-contact-heading"
+    <Link
+      aria-label={label}
+      className="grid size-9 place-items-center rounded-md text-kumo-subtle ring ring-kumo-line hover:text-kumo-link"
+      state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
+      title={label}
+      to={`/agents/${agent.id}/settings/messaging`}
     >
-      <header className="flex items-center justify-between gap-3">
-        <Text as="h2" id="agent-contact-heading" variant="heading">
-          Messaging
-        </Text>
-      </header>
-      {agent.messaging.kind === "unconfirmed" ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            ?
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>Unable to confirm messaging</strong>
-            <small>Try again shortly</small>
-          </span>
-        </div>
-      ) : binding ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            {titleCase(binding.provider).charAt(0)}
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>
-              {titleCase(binding.provider)} · @{agent.name}
-            </strong>
-            <small>{agentUseInstruction(agent, binding.provider)}</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-            to={`/agents/${agent.id}/settings/messaging`}
-          >
-            Manage
-          </Link>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            +
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>No messaging connected</strong>
-            <small>Connect Feishu or Slack to start sending work</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-            to={`/agents/${agent.id}/settings/messaging`}
-          >
-            Connect
-          </Link>
-        </div>
-      )}
-    </section>
+      {binding ? <ProviderIcon className="size-5" provider={binding.provider} /> : <Icon name="message" />}
+    </Link>
   );
 }
 
@@ -1868,13 +1804,14 @@ function AccountPage() {
   );
 }
 
+/**
+ * Only the healthy states are shown beside the name. Every other state is already stated, with its
+ * recovery, by the banner at the top of the Agent home, and repeating it read as two problems.
+ */
 function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
+  if (agent.availability.state !== "ready") return null;
   const status = agentStatusPresentation(agent);
-  return (
-    <div className="inline-flex">
-      <StatusIndicator label={status.label} tone={status.tone} />
-    </div>
-  );
+  return <StatusIndicator label={status.label} tone={status.tone} />;
 }
 
 function AgentSettingsContent({
@@ -1936,10 +1873,17 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
         {(config) => (
           <div className="grid gap-6">
             {agentSettingsGroups.map((group) => (
-              <section className="grid gap-3" key={group.key} aria-labelledby={`agent-settings-${group.key}`}>
-                <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
-                  {group.label}
-                </Text>
+              <section
+                className={group.label ? "grid gap-3 border-t border-kumo-line pt-6" : "grid gap-3"}
+                key={group.key}
+                aria-label={group.label ?? "Agent setup"}
+                aria-labelledby={group.label ? `agent-settings-${group.key}` : undefined}
+              >
+                {group.label ? (
+                  <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
+                    {group.label}
+                  </Text>
+                ) : null}
                 <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
                   {agentSettingsSections
                     .filter((item) => item.group === group.key)
@@ -1949,6 +1893,7 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                           <span
                             className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint"
                             aria-hidden="true"
+                            data-ui="agent-settings-entry-icon"
                           >
                             <Icon name={item.icon} />
                           </span>
@@ -1965,6 +1910,7 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                           <div
                             className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
                             key={item.key}
+                            data-ui="agent-settings-entry"
                           >
                             {content}
                           </div>
@@ -1974,6 +1920,7 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                         <Link
                           className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
                           key={item.key}
+                          data-ui="agent-settings-entry"
                           to={`/agents/${agent.id}/settings/${item.key}`}
                         >
                           {content}
@@ -2026,7 +1973,7 @@ function agentSettingsSummary(agent: AgentDetailView, config: AgentAdminConfig, 
     const binding = agent.messaging.value;
     if (!binding) return "No messaging channel connected";
     const status = messagingConnectionLabel(binding);
-    return `${titleCase(binding.provider)} · @${agent.name} · ${status}`;
+    return `${messagingChannelLabel(agent, binding)} · ${status}`;
   }
   if (section === "identity") return config.displayName;
   if (section === "computer") {
@@ -2385,9 +2332,7 @@ function AgentManageSettings({
 function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string>();
-  const [confirmation, setConfirmation] = useState<
-    { kind: "all_messages" } | { bindingId: string; kind: "disable_binding" }
-  >();
+  const [confirmation, setConfirmation] = useState<{ bindingId: string; kind: "disable_binding" }>();
   const [confirmationError, setConfirmationError] = useState<string>();
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [restoreFocusTarget, setRestoreFocusTarget] = useState<"messaging" | "trigger_rules">();
@@ -2412,13 +2357,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       setReload((value) => value + 1);
-      if (receiveMode === "all_message") setRestoreFocusTarget("trigger_rules");
-      setConfirmation(undefined);
+      setRestoreFocusTarget("trigger_rules");
       onAgentChanged();
     } catch (cause) {
-      const nextError = cause instanceof Error ? cause.message : "Unable to change receive mode";
-      if (confirmation?.kind === "all_messages") setConfirmationError(nextError);
-      else setError(nextError);
+      setError(cause instanceof Error ? cause.message : "Unable to change receive mode");
     } finally {
       setConfirmationBusy(false);
     }
@@ -2466,8 +2408,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
             }}
           >
             {(slackConfiguration) => {
-              const agentStatus = agentStatusPresentation(agent);
-              const agentRecovery = agentAvailabilityRecovery(agent);
               const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
                 setError(undefined);
                 await feishuSetup.start(intent);
@@ -2488,72 +2428,37 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           >
                             <div className="grid gap-2">
                               <Text as="h3" id="contact-channel-heading" variant="heading">
-                                Contact channel
+                                Connected channel
                               </Text>
                             </div>
-                            <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex flex-wrap items-center gap-3">
+                              <ProviderIcon className="size-7" provider={binding.provider} />
+                              <span className="grid min-w-0 flex-1 gap-1">
+                                <strong>{binding.bot.displayName ?? titleCase(binding.provider)}</strong>
+                                <small className="text-kumo-subtle">{messagingChannelLabel(agent, binding)}</small>
+                              </span>
                               <StatusIndicator
-                                detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(binding)}`}
-                                label={binding.bot.displayName}
+                                detail={
+                                  binding.lastRuntimeObservationAt
+                                    ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
+                                    : binding.lastValidatedAt
+                                      ? `Validated ${formatDate(binding.lastValidatedAt)}`
+                                      : "Not yet observed"
+                                }
+                                label={messagingConnectionLabel(binding)}
                                 tone={messagingConnectionTone(binding)}
                               />
-                              <small>
-                                {binding.lastRuntimeObservationAt
-                                  ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
-                                  : binding.lastValidatedAt
-                                    ? `Validated ${formatDate(binding.lastValidatedAt)}`
-                                    : "Not yet observed"}
-                              </small>
                             </div>
-                            <div className="grid gap-2">
-                              <StatusIndicator
-                                detail="Agent status"
-                                label={agentStatus.label}
-                                tone={agentStatus.tone}
-                              />
-                              <p>{messagingAgentStatusDescription(agent, binding.provider)}</p>
-                              {agentRecovery && agentRecovery.to !== `/agents/${agent.id}/settings/messaging` ? (
-                                <Link
-                                  className={buttonClassName({ size: "compact", variant: "secondary" })}
-                                  state={{ agent }}
-                                  to={agentRecovery.to}
-                                >
-                                  {agentRecovery.label}
-                                </Link>
-                              ) : null}
-                            </div>
-                            <dl className="grid gap-3 rounded-md bg-kumo-recessed p-3 sm:grid-cols-2">
-                              <div>
-                                <dt>Contact</dt>
-                                <dd>@{agent.name}</dd>
-                              </div>
-                              <div>
-                                <dt>How to use</dt>
-                                <dd>{agentUseInstruction(agent, binding.provider)}</dd>
-                              </div>
-                            </dl>
-                            {binding.bindingState === "reauthorization_required" && binding.provider === "feishu" ? (
-                              <div className="flex flex-wrap gap-3">
-                                <Button
-                                  loading={feishuSetup.loading}
-                                  disabled={feishuSetup.loading}
-                                  onClick={() => void connectFeishu("reauthorize")}
-                                >
-                                  Reauthorize Feishu
-                                </Button>
-                              </div>
-                            ) : null}
-                            {binding.bindingState === "reauthorization_required" && binding.provider === "slack" ? (
-                              <div className="flex flex-wrap gap-3">
-                                <Button
-                                  loading={slackConfiguration.loading}
-                                  disabled={slackConfiguration.loading}
-                                  onClick={() => void connectSlack("reauthorize")}
-                                >
-                                  Reauthorize Slack
-                                </Button>
-                              </div>
-                            ) : null}
+                            <MessagingChannelRecovery
+                              agent={agent}
+                              binding={binding}
+                              busy={feishuSetup.loading || slackConfiguration.loading}
+                              onReconnect={() =>
+                                void (binding.provider === "feishu"
+                                  ? connectFeishu("reauthorize")
+                                  : connectSlack("reauthorize"))
+                              }
+                            />
                             <div className="flex flex-wrap gap-3">
                               {binding.provider === "feishu" ? (
                                 <Button
@@ -2591,52 +2496,48 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 tabIndex={-1}
                                 variant="heading"
                               >
-                                Trigger rules
+                                {triggerModeHeading(binding.provider)}
                               </Text>
+                              <p className="text-sm text-kumo-subtle">{triggerModeExplanation(binding.provider)}</p>
                             </div>
-                            <SettingsList>
-                              <SettingsRow label="Direct messages">
-                                <strong>All messages</strong>
-                              </SettingsRow>
-                              <SettingsRow label={sharedConversationLabel(binding.provider)}>
-                                <fieldset
-                                  aria-label="Shared conversation trigger rule"
-                                  className="flex flex-wrap items-center gap-2"
-                                >
-                                  {binding.receiveMode === "mention_only" ? (
-                                    <>
-                                      <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
-                                        Mentions only
-                                      </span>
-                                      <Button
-                                        variant="inline"
-                                        ref={allMessagesButtonRef}
-                                        type="button"
-                                        onClick={() => {
-                                          setConfirmationError(undefined);
-                                          setConfirmation({ kind: "all_messages" });
-                                        }}
-                                      >
-                                        Every message
-                                      </Button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Button
-                                        variant="inline"
-                                        type="button"
-                                        onClick={() => void changeReceiveMode("mention_only")}
-                                      >
-                                        Mentions only
-                                      </Button>
-                                      <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
-                                        Every message
-                                      </span>
-                                    </>
-                                  )}
-                                </fieldset>
-                              </SettingsRow>
-                            </SettingsList>
+                            <div className="grid gap-3">
+                              <fieldset
+                                aria-label={triggerModeHeading(binding.provider)}
+                                className="flex flex-wrap items-center gap-2"
+                              >
+                                {binding.receiveMode === "mention_only" ? (
+                                  <>
+                                    <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
+                                      On mention
+                                    </span>
+                                    <Button
+                                      variant="inline"
+                                      ref={allMessagesButtonRef}
+                                      type="button"
+                                      onClick={() => void changeReceiveMode("all_message")}
+                                    >
+                                      Every message
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Button
+                                      variant="inline"
+                                      type="button"
+                                      onClick={() => void changeReceiveMode("mention_only")}
+                                    >
+                                      On mention
+                                    </Button>
+                                    <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
+                                      Every message
+                                    </span>
+                                  </>
+                                )}
+                              </fieldset>
+                              <p className="text-sm text-kumo-subtle">
+                                {triggerModeDescription(binding.receiveMode, binding.provider)}
+                              </p>
+                            </div>
                           </section>
                         </>
                       ) : (
@@ -2682,29 +2583,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           </SlackConfiguration>
         )}
       </FeishuSetup>
-      {confirmation?.kind === "all_messages" ? (
-        <Dialog
-          busy={confirmationBusy}
-          description="Every new conversation message could start a task. This can share more conversation content and increase token usage."
-          returnFocusRef={allMessagesButtonRef}
-          title="Allow messages without mentions?"
-          onClose={closeMessagingConfirmation}
-        >
-          {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
-          <div className="flex flex-wrap justify-end gap-3">
-            <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
-              Keep mentions only
-            </Button>
-            <Button
-              loading={confirmationBusy}
-              disabled={confirmationBusy}
-              onClick={() => void changeReceiveMode("all_message")}
-            >
-              Allow every message
-            </Button>
-          </div>
-        </Dialog>
-      ) : null}
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
@@ -3019,6 +2897,112 @@ function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): string 
  * excluded: a connected Slack or Feishu App can coexist with an offline Computer or unavailable
  * runtime, and collapsing those facts into one warning made the old status impossible to interpret.
  */
+/**
+ * Feishu gives each Agent its own bot, so its handle addresses the Agent. Slack routes one workspace
+ * Bot, so an Agent handle would name a Slack identity that does not exist.
+ */
+function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {
+  const provider = titleCase(binding.provider);
+  if (binding.provider === "feishu") return `${provider} · @${agent.name}`;
+  return binding.bot.displayName ? `${provider} · ${binding.bot.displayName}` : provider;
+}
+
+/**
+ * The mode never changes what the Agent receives -- every message in a shared conversation reaches it
+ * either way. It changes when the Agent wakes up to act, which is what costs Tokens.
+ */
+function triggerModeHeading(provider: ImBindingSummary["provider"]): string {
+  return provider === "feishu" ? "Group chat trigger mode" : "Channel trigger mode";
+}
+
+function triggerModeExplanation(provider: ImBindingSummary["provider"]): string {
+  const destination = provider === "feishu" ? "group chats" : "channels";
+  return `This Agent receives every message in connected ${destination}. This setting only decides when it wakes up to act on them.`;
+}
+
+function triggerModeDescription(
+  receiveMode: AgentSummary["receiveMode"],
+  provider: ImBindingSummary["provider"],
+): string {
+  const destination = provider === "feishu" ? "group chat" : "channel";
+  if (receiveMode === "all_message") {
+    return `Wakes up on each new ${destination} message and decides for itself whether to reply. Fastest to react, and uses the most Tokens.`;
+  }
+  return "Waits until someone @mentions it, then reads everything said since its last reply in one go. Slower to react, and much cheaper.";
+}
+
+/**
+ * One exit per channel state. Where the connection cannot be repaired from here, the row says what it
+ * is waiting on -- and only when the evidence names it -- instead of offering an action that does nothing.
+ */
+function MessagingChannelRecovery({
+  agent,
+  binding,
+  busy = false,
+  onReconnect,
+}: {
+  agent: AgentDetailView;
+  binding: ImBindingSummary;
+  busy?: boolean;
+  onReconnect: () => void;
+}) {
+  const provider = titleCase(binding.provider);
+  if (binding.bindingState === "reauthorization_required") {
+    return (
+      <div className="flex flex-wrap gap-3">
+        <Button disabled={busy} loading={busy} onClick={onReconnect}>
+          Reauthorize {provider}
+        </Button>
+      </div>
+    );
+  }
+  if (binding.bindingState === "error" || binding.bindingState === "disabled") {
+    return (
+      <div className="flex flex-wrap gap-3">
+        <Button disabled={busy} loading={busy} onClick={onReconnect}>
+          Reconnect {provider}
+        </Button>
+      </div>
+    );
+  }
+  if (binding.bindingState === "provisioning") {
+    return <p className="text-sm text-kumo-subtle">Setting up. This usually finishes within a minute.</p>;
+  }
+  const handoffState = agent.availability.dependencies.handoff.state;
+  if (handoffState === "ready") return null;
+  if (handoffState === "unconfirmed") {
+    return <p className="text-sm text-kumo-subtle">Could not confirm delivery. Retrying automatically.</p>;
+  }
+  const computerState = agent.availability.dependencies.computer.state;
+  const runtimeStatus = agent.availability.dependencies.runtime.status;
+  if (computerState === "action_required") {
+    return (
+      <p className="text-sm text-kumo-subtle">
+        The channel itself is connected. Messages wait until this Agent's Computer is online.{" "}
+        <Link className="text-kumo-link" to={`/agents/${agent.id}/settings/computer`}>
+          View Computer
+        </Link>
+      </p>
+    );
+  }
+  if (computerState === "ready" && runtimeStatus && runtimeStatus !== "ready") {
+    return (
+      <p className="text-sm text-kumo-subtle">
+        The channel itself is connected. Messages wait until {runtimeProviderName(agent.runtimeProvider)} is ready on
+        this Agent's Computer.{" "}
+        <Link className="text-kumo-link" to={`/agents/${agent.id}/settings/computer`}>
+          View Computer
+        </Link>
+      </p>
+    );
+  }
+  return (
+    <p className="text-sm text-kumo-subtle">
+      The channel itself is connected, but messages cannot be delivered yet. Retrying automatically.
+    </p>
+  );
+}
+
 function agentStatusPresentation(agent: AgentStatusSource): { label: string; tone: StatusTone } {
   const { availability } = agent;
   if (availability.state === "ready") {
@@ -3026,56 +3010,32 @@ function agentStatusPresentation(agent: AgentStatusSource): { label: string; ton
       ? { label: "Working", tone: "info" }
       : { label: "Ready", tone: "success" };
   }
-  if (availability.state === "suspended") return { label: "Paused", tone: "neutral" };
-  if (availability.state === "setting_up") return { label: "Messaging setup in progress", tone: "info" };
-  if (availability.state === "not_connected") return { label: "Messaging not connected", tone: "neutral" };
+  if (availability.state === "suspended") return { label: "Suspended", tone: "neutral" };
 
+  /*
+   * Unreadable evidence is one situation to a viewer -- nothing to act on, retried automatically --
+   * so it is named for the dependency it covers rather than for which read failed.
+   */
   if (availability.state === "unconfirmed") {
-    if (availability.reason === "computer_unconfirmed") {
-      return { label: "Computer status unavailable", tone: "neutral" };
+    if (availability.reason === "computer_unconfirmed" || availability.reason === "runtime_unconfirmed") {
+      return { label: "Computer unknown", tone: "neutral" };
     }
-    if (availability.reason === "runtime_unconfirmed") {
-      return { label: "Runtime status unavailable", tone: "neutral" };
-    }
-    if (availability.reason === "handoff_unconfirmed") {
-      return { label: "Messaging status unavailable", tone: "neutral" };
-    }
-    return { label: "Agent status unavailable", tone: "neutral" };
+    return { label: "Status unknown", tone: "neutral" };
   }
 
   if (availability.reason === "computer_offline") return { label: "Computer offline", tone: "warning" };
   if (availability.reason === "runtime_unavailable") {
-    const { provider, status } = availability.dependencies.runtime;
-    const providerName = runtimeProviderName(provider);
-    if (status === "checking") return { label: `Checking ${providerName}`, tone: "info" };
-    if (status === "install") return { label: `${providerName} not installed`, tone: "warning" };
-    if (status === "sign-in") return { label: `${providerName} sign-in required`, tone: "warning" };
-    return { label: `${providerName} unavailable`, tone: "warning" };
+    const { status } = availability.dependencies.runtime;
+    return { label: "Agent runtime not available", tone: status === "checking" ? "info" : "warning" };
   }
-  if (availability.reason === "im_not_connected") return { label: "Messaging not connected", tone: "neutral" };
-  if (availability.reason === "im_provisioning") return { label: "Messaging setup in progress", tone: "info" };
-  if (availability.reason === "im_reauthorization_required") {
-    return { label: "Messaging authorization required", tone: "warning" };
+  /*
+   * Every messaging failure blocks the same thing, and separating "not connected" from "error" from
+   * "handoff" made one outcome read as four unrelated events.
+   */
+  if (availability.state === "not_connected" || availability.state === "setting_up") {
+    return { label: "Messaging disconnected", tone: availability.state === "setting_up" ? "info" : "neutral" };
   }
-  if (availability.reason === "im_error") return { label: "Messaging connection error", tone: "warning" };
-  if (availability.reason === "handoff_unavailable") return { label: "Cannot receive messages", tone: "warning" };
-  return { label: "Agent unavailable", tone: "warning" };
-}
-
-function sharedConversationLabel(provider: ImBindingSummary["provider"]): string {
-  return provider === "feishu" ? "Group chats" : "Channels";
-}
-
-function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
-  if (provider === "feishu") return plural ? "connected Feishu group chats" : "a Feishu group chat";
-  return plural ? "connected Slack channels" : "a Slack channel";
-}
-
-function agentUseInstruction(agent: AgentDetailView, provider: ImBindingSummary["provider"]): string {
-  if (agent.receiveMode === "all_message") {
-    return `Send @${agent.name} a direct message. It can also receive every message in ${sharedConversationDestination(provider, true)}.`;
-  }
-  return `Send @${agent.name} a direct message, or mention it in ${sharedConversationDestination(provider)}.`;
+  return { label: "Messaging disconnected", tone: "warning" };
 }
 
 function agentAvailabilitySummary(agent: AgentDetailView): string {
@@ -3092,21 +3052,6 @@ function agentAvailabilitySummary(agent: AgentDetailView): string {
   }[agent.availability.state];
 }
 
-function messagingAgentStatusDescription(agent: AgentDetailView, provider: ImBindingSummary["provider"]): string {
-  if (agent.availability.state === "ready") {
-    return agent.activity.state === "working"
-      ? "This Agent is handling a request and remains connected for new messages."
-      : `Ready to receive new messages from ${titleCase(provider)}.`;
-  }
-  if (agent.availability.reason === "computer_offline" || agent.availability.reason === "runtime_unavailable") {
-    return computerRecoveryMessage(agent);
-  }
-  if (agent.availability.reason === "handoff_unavailable") {
-    return `${titleCase(provider)} is connected, but messages cannot currently be handed off to this Agent.`;
-  }
-  return agentRecoveryMessage(agent);
-}
-
 function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
   if (!true || agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
@@ -3116,7 +3061,8 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
     agent.availability.reason === "im_not_connected" ||
     agent.availability.reason === "im_provisioning" ||
     agent.availability.reason === "im_reauthorization_required" ||
-    agent.availability.reason === "im_error"
+    agent.availability.reason === "im_error" ||
+    agent.availability.reason === "im_disabled"
   ) {
     return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
@@ -3129,18 +3075,19 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
 
 function agentRecoveryMessage(agent: AgentDetailView): string {
   const messages: Record<NonNullable<AgentAvailability["reason"]>, string> = {
-    agent_suspended: "This Agent is paused and cannot accept new requests.",
-    agent_unconfirmed: "OpenTag could not confirm this Agent's current status.",
-    computer_offline: "The assigned Computer is offline, so new requests cannot start.",
-    runtime_unavailable: "The assigned Computer is not ready to run this Agent.",
-    runtime_unconfirmed: "OpenTag could not confirm whether the assigned Computer is ready.",
-    im_not_connected: "Connect Feishu or Slack so teammates can assign work to this agent.",
+    agent_suspended: "This Agent is paused. Resume it to start receiving messages again.",
+    agent_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
+    handoff_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
+    computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
+    runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
+    computer_offline: "This Agent's Computer is offline. Retrying automatically.",
+    runtime_unavailable: "The Agent runtime is not available. Set up the runtime on this Agent's Computer.",
+    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
     im_provisioning: "The messaging connection is still being set up.",
-    im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
-    im_error: "The messaging connection has an error and cannot receive requests.",
-    handoff_unavailable: "Messages cannot currently be handed off to this Agent.",
-    computer_unconfirmed: "OpenTag could not confirm the assigned Computer's connection.",
-    handoff_unconfirmed: "OpenTag could not confirm whether messaging is available.",
+    im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
+    im_error: "The messaging connection failed. Reconnect Feishu or Slack to receive messages.",
+    im_disabled: "Messaging is turned off for this Agent. Reconnect Feishu or Slack to receive messages.",
+    handoff_unavailable: "Messages cannot be sent to this Agent.",
   };
   return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);
 }

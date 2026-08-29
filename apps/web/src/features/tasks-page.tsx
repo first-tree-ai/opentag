@@ -2,7 +2,6 @@ import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/sha
 import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "../api.js";
-import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import {
   Button,
@@ -17,6 +16,7 @@ import {
   Table,
   Text,
 } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 
 type TaskFilter = "all" | TaskStatus;
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -169,6 +169,93 @@ export function TasksPage() {
       ) : null}
       {state.kind === "ready" && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
+ * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
+ */
+export function AgentTasksSection({ agentId }: { agentId: string }) {
+  const [state, setState] = useState<LoadState<{ tasks: TaskSummary[]; nextCursor: string | null }>>({
+    kind: "loading",
+  });
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setState({ kind: "loading" });
+    browserApi.tasks({ agentId }).then(
+      (value) =>
+        active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
+      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
+    );
+    return () => {
+      active = false;
+    };
+  }, [agentId]);
+
+  async function loadMore(): Promise<void> {
+    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await browserApi.tasks({ agentId, cursor: state.value.nextCursor });
+      setState({ kind: "ready", value: { tasks: [...state.value.tasks, ...next.tasks], nextCursor: next.nextCursor } });
+    } catch (error) {
+      setState({ kind: "error", error: asError(error) });
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  return (
+    <section className="grid gap-4" aria-labelledby="agent-tasks-heading" data-ui="agent-tasks">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <Text as="h2" id="agent-tasks-heading" variant="heading">
+          Tasks
+        </Text>
+        <Link className="text-sm text-kumo-link" to="/tasks">
+          All Tasks
+        </Link>
+      </div>
+      {state.kind === "loading" ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Loading Tasks…
+        </p>
+      ) : null}
+      {state.kind === "error" ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Tasks are temporarily unavailable.
+        </p>
+      ) : null}
+      {state.kind === "ready" && state.value.tasks.length === 0 ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          No Tasks yet. Work this Agent handles in Feishu or Slack appears here.
+        </p>
+      ) : null}
+      {state.kind === "ready" && state.value.tasks.length > 0 ? (
+        <>
+          <Table className="w-full" aria-label="Agent Tasks" data-ui="task-table">
+            <thead>
+              <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
+                <th scope="col">Task</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.value.tasks.map((task) => (
+                <TaskRow key={task.id} showAgent={false} task={task} />
+              ))}
+            </tbody>
+          </Table>
+          {state.value.nextCursor ? (
+            <Button disabled={loadingMore} type="button" variant="secondary" onClick={() => void loadMore()}>
+              {loadingMore ? "Loading more Tasks…" : "Load more"}
+            </Button>
+          ) : null}
+        </>
       ) : null}
     </section>
   );
@@ -462,7 +549,7 @@ function TaskSelect({
   );
 }
 
-function TaskRow({ task }: { task: TaskSummary }) {
+function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
@@ -471,9 +558,13 @@ function TaskRow({ task }: { task: TaskSummary }) {
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
-          <span>{task.agent.displayName}</span>
-          <span aria-hidden="true">·</span>
-          <ProviderIcon provider={task.source.provider} compact />
+          {showAgent ? (
+            <>
+              <span>{task.agent.displayName}</span>
+              <span aria-hidden="true">·</span>
+            </>
+          ) : null}
+          <TaskProviderIcon provider={task.source.provider} compact />
           <span>{task.source.provider}</span>
           <span aria-hidden="true">·</span>
           <span>{task.sessionKind}</span>
@@ -496,7 +587,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
 function SourceIdentity({ task }: { task: TaskSummary }) {
   return (
     <span className="inline-flex items-center gap-2" data-ui="task-source-identity">
-      <ProviderIcon provider={task.source.provider} />
+      <TaskProviderIcon provider={task.source.provider} />
       <span>
         <strong>{task.agent.displayName}</strong>
         <small>
@@ -507,20 +598,14 @@ function SourceIdentity({ task }: { task: TaskSummary }) {
   );
 }
 
-function ProviderIcon({
+function TaskProviderIcon({
   provider,
   compact = false,
 }: {
   provider: TaskSummary["source"]["provider"];
   compact?: boolean;
 }) {
-  if (provider !== "feishu")
-    return (
-      <span className="grid size-7 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-        S
-      </span>
-    );
-  return <img alt="" aria-hidden="true" className={compact ? "size-5" : "size-7"} src={feishuIconUrl} />;
+  return <ProviderIcon className={compact ? "size-5" : "size-7"} provider={provider} />;
 }
 
 function DebugValue({ label, value }: { label: string; value: string }) {

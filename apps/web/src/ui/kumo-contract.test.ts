@@ -35,6 +35,16 @@ describe("Kumo integration contract", () => {
     expect(source).not.toMatch(/data-kumo-component|kumo-select/);
   });
 
+  it("uses the Kumo compound sidebar layout for the application shell", () => {
+    const router = readFileSync(resolve(root, "router.tsx"), "utf8");
+    expect(router).toContain("<Sidebar.Header>");
+    expect(router).toContain("<Sidebar.Content>");
+    expect(router).toContain("<Sidebar.Menu>");
+    expect(router).toContain("<Sidebar.MenuButton");
+    expect(router).toContain("<Sidebar.Footer>");
+    expect(router).not.toContain('data-ui="sidebar-content"');
+  });
+
   it("keeps native interactive controls limited to browser file and hidden inputs", () => {
     expect(source).not.toMatch(/<(?:button|select|textarea|details)\b/);
     const nativeInputs = source.match(/<input\b[^>]*>/gs) ?? [];

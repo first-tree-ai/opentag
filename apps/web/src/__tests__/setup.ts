@@ -34,6 +34,13 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 
+if (!Element.prototype.getAnimations) {
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value: () => [],
+  });
+}
+
 class TestResizeObserver {
   observe() {}
   unobserve() {}

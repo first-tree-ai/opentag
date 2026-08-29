@@ -25,7 +25,6 @@ import {
 import {
   Link,
   Navigate,
-  NavLink,
   Outlet,
   Route,
   Routes,
@@ -904,72 +903,107 @@ function AppShellContent() {
   return (
     <div className="flex min-h-screen bg-kumo-canvas" data-ui="shell">
       <Sidebar aria-label="Primary navigation" fullScreenOnMobile>
-        <div className="flex h-full flex-col justify-between gap-8 p-4" data-ui="sidebar-content">
-          <div className="grid gap-6">
-            <Link className="text-lg font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
-              OpenTag
-            </Link>
-            <nav aria-label="Product" className="grid gap-1">
-              <NavLink to="/agents" onClick={() => setOpenMobile(false)}>
-                <WorkspaceNavIcon name="agents" />
-                Agents
-              </NavLink>
-              <NavLink to="/tasks" onClick={() => setOpenMobile(false)}>
-                <WorkspaceNavIcon name="tasks" />
-                Tasks
-              </NavLink>
-              <NavLink to="/skills" onClick={() => setOpenMobile(false)}>
-                <WorkspaceNavIcon name="skills" />
-                Skills
-              </NavLink>
-              <NavLink to="/integrations" onClick={() => setOpenMobile(false)}>
-                <WorkspaceNavIcon name="integrations" />
-                Integrations
-              </NavLink>
-            </nav>
-          </div>
-          <DropdownMenu
-            open={openMenu === "account"}
-            onOpenChange={(open) => setOpenMenu(open ? "account" : undefined)}
-          >
-            <DropdownMenu.Trigger
-              render={
-                <Button aria-label="Account menu" className="w-full justify-start gap-2" type="button" variant="ghost">
-                  <span
-                    className="grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
-                    aria-hidden="true"
-                  >
-                    {initials(me.user.displayName)}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-left">
-                    <strong>{me.user.displayName}</strong>
-                  </span>
-                  <span aria-hidden="true">
-                    <Icon name="more-vertical" />
-                  </span>
-                </Button>
-              }
-            />
-            <DropdownMenu.Content aria-label="Account" ref={accountMenuRef}>
-              <DropdownMenu.Item
-                onClick={() => {
-                  setOpenMobile(false);
-                  navigate("/account");
-                }}
+        <Sidebar.Header>
+          <Link className="text-lg font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
+            OpenTag
+          </Link>
+        </Sidebar.Header>
+        <Sidebar.Content>
+          <nav aria-label="Product">
+            <Sidebar.Group>
+              <Sidebar.Menu>
+                <Sidebar.MenuButton
+                  active={isSidebarNavActive(location.pathname, "/agents")}
+                  aria-current={isSidebarNavActive(location.pathname, "/agents") ? "page" : undefined}
+                  href="/agents"
+                  icon={<WorkspaceNavIcon name="agents" />}
+                  onClick={() => setOpenMobile(false)}
+                >
+                  Agents
+                </Sidebar.MenuButton>
+                <Sidebar.MenuButton
+                  active={isSidebarNavActive(location.pathname, "/tasks")}
+                  aria-current={isSidebarNavActive(location.pathname, "/tasks") ? "page" : undefined}
+                  href="/tasks"
+                  icon={<WorkspaceNavIcon name="tasks" />}
+                  onClick={() => setOpenMobile(false)}
+                >
+                  Tasks
+                </Sidebar.MenuButton>
+                <Sidebar.MenuButton
+                  active={isSidebarNavActive(location.pathname, "/skills")}
+                  aria-current={isSidebarNavActive(location.pathname, "/skills") ? "page" : undefined}
+                  href="/skills"
+                  icon={<WorkspaceNavIcon name="skills" />}
+                  onClick={() => setOpenMobile(false)}
+                >
+                  Skills
+                </Sidebar.MenuButton>
+                <Sidebar.MenuButton
+                  active={isSidebarNavActive(location.pathname, "/integrations")}
+                  aria-current={isSidebarNavActive(location.pathname, "/integrations") ? "page" : undefined}
+                  href="/integrations"
+                  icon={<WorkspaceNavIcon name="integrations" />}
+                  onClick={() => setOpenMobile(false)}
+                >
+                  Integrations
+                </Sidebar.MenuButton>
+              </Sidebar.Menu>
+            </Sidebar.Group>
+          </nav>
+        </Sidebar.Content>
+        <Sidebar.Footer>
+          <Sidebar.Menu>
+            <Sidebar.MenuItem>
+              <DropdownMenu
+                open={openMenu === "account"}
+                onOpenChange={(open) => setOpenMenu(open ? "account" : undefined)}
               >
-                Account
-              </DropdownMenu.Item>
-              <DropdownMenu.Item disabled={loggingOut} onClick={() => void logout()}>
-                {loggingOut ? "Signing out…" : "Sign out"}
-              </DropdownMenu.Item>
-              {accountError ? (
-                <span className="text-sm text-kumo-danger" role="alert">
-                  {accountError}
-                </span>
-              ) : null}
-            </DropdownMenu.Content>
-          </DropdownMenu>
-        </div>
+                <DropdownMenu.Trigger
+                  render={
+                    <Sidebar.MenuButton
+                      aria-label="Account menu"
+                      className="justify-start"
+                      icon={
+                        <span
+                          className="grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
+                          aria-hidden="true"
+                        >
+                          {initials(me.user.displayName)}
+                        </span>
+                      }
+                    >
+                      <span className="min-w-0 flex-1 truncate text-left">
+                        <strong>{me.user.displayName}</strong>
+                      </span>
+                      <span aria-hidden="true">
+                        <Icon name="more-vertical" />
+                      </span>
+                    </Sidebar.MenuButton>
+                  }
+                />
+                <DropdownMenu.Content aria-label="Account" ref={accountMenuRef}>
+                  <DropdownMenu.Item
+                    onClick={() => {
+                      setOpenMobile(false);
+                      navigate("/account");
+                    }}
+                  >
+                    Account
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item disabled={loggingOut} onClick={() => void logout()}>
+                    {loggingOut ? "Signing out…" : "Sign out"}
+                  </DropdownMenu.Item>
+                  {accountError ? (
+                    <span className="text-sm text-kumo-danger" role="alert">
+                      {accountError}
+                    </span>
+                  ) : null}
+                </DropdownMenu.Content>
+              </DropdownMenu>
+            </Sidebar.MenuItem>
+          </Sidebar.Menu>
+        </Sidebar.Footer>
       </Sidebar>
       <div className="min-w-0 flex-1" data-ui="app-main">
         <header className="flex items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3 md:hidden">
@@ -990,6 +1024,10 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills"
   const icon: IconName =
     name === "agents" ? "user" : name === "tasks" ? "instructions" : name === "skills" ? "shield" : "settings";
   return <Icon name={icon} />;
+}
+
+function isSidebarNavActive(pathname: string, href: string): boolean {
+  return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 function AgentsPage() {

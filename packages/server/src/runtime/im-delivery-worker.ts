@@ -37,6 +37,7 @@ import {
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   imMessageDeliveries,
@@ -526,6 +527,7 @@ export class ImDeliveryWorker {
         imBinding: imBindings,
         agent: agents,
         computer: workspaceComputers,
+        computerOwnerAccountId: accountComputers.ownerAccountId,
       })
       .from(imMessageDeliveries)
       .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
@@ -533,6 +535,7 @@ export class ImDeliveryWorker {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
       .innerJoin(
         workspaceComputers,
         and(
@@ -557,6 +560,11 @@ export class ImDeliveryWorker {
     if (!row) {
       setActiveSpanAttributes(outcomeAttrs("failed", "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE"));
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE", claimToken);
+      return;
+    }
+    if (row.computerOwnerAccountId !== row.agent.createdByUserId) {
+      setActiveSpanAttributes(outcomeAttrs("failed", "IM_DELIVERY_COMPUTER_OWNER_MISMATCH"));
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_COMPUTER_OWNER_MISMATCH", claimToken);
       return;
     }
     setActiveSpanAttributes({

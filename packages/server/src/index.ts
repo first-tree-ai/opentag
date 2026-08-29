@@ -211,7 +211,6 @@ export async function startServer(): Promise<void> {
           requestReconcile: (workspaceComputerId, instanceId, request, onDispatched) =>
             domainOwner.requestReconcile(workspaceComputerId, instanceId, request, onDispatched),
         }),
-      workspaceAdmins,
     });
     const feishuConnections = new FeishuConnectionManager({
       database,

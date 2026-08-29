@@ -194,7 +194,7 @@ describe("Account-native management collections", () => {
     expect(list.statusCode).toBe(200);
     expect(list.headers["cache-control"]).toBe("no-store");
     expect(list.json()).toEqual({ tasks: [taskSummary], nextCursor: null });
-    expect(service.taskService.list).toHaveBeenCalledWith(workspaceId, {
+    expect(service.taskService.list).toHaveBeenCalledWith(userId, {
       agentId,
       kind: "channel",
       limit: 25,
@@ -207,7 +207,7 @@ describe("Account-native management collections", () => {
     });
     expect(detail.statusCode).toBe(200);
     expect(detail.headers["cache-control"]).toBe("no-store");
-    expect(service.taskService.get).toHaveBeenCalledWith(workspaceId, taskSummary.id, { limit: 50 });
+    expect(service.taskService.get).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 50 });
   });
 
   it("creates and lists Agents without a client-selected scope", async () => {

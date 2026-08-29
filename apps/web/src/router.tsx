@@ -2570,12 +2570,12 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         >
                           <div className="grid gap-2">
                             <Text as="h3" id="contact-channel-heading" variant="heading">
-                              Contact channel
+                              No channel connected
                             </Text>
                           </div>
-                          <EmptyState title="No messaging channel">
-                            Teammates cannot contact this agent until a supported bot is connected.
-                          </EmptyState>
+                          <p className="text-sm text-kumo-subtle">
+                            Teammates cannot contact this Agent until a supported bot is connected.
+                          </p>
                           <div className="flex flex-wrap gap-3">
                             <Button
                               loading={feishuSetup.loading}

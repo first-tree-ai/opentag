@@ -1910,9 +1910,11 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "No messaging channel" })).toBeTruthy();
-    expect(screen.getByText(/cannot contact this agent/)).toBeTruthy();
+    // The section names the state it is in, rather than carrying one name when a channel exists and
+    // another when it does not.
+    expect(await screen.findByRole("heading", { name: "No channel connected" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Contact channel" })).toBeNull();
+    expect(screen.getByText(/cannot contact this Agent/)).toBeTruthy();
   });
 
   it("separates the connected channel from the trigger mode that acts on it", async () => {
@@ -2758,7 +2760,9 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const account = screen.getByRole("menuitem", { name: "Account" });
+    // Kumo mounts the menu content asynchronously; reading it synchronously passes locally and races
+    // on CI, which is what turned Node 26 red on one head and green on three others.
+    const account = await screen.findByRole("menuitem", { name: "Account" });
     expect(screen.getByRole("menu")).toBeTruthy();
     account.focus();
     fireEvent.keyDown(account, { key: "Escape" });
@@ -2770,7 +2774,9 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const account = screen.getByRole("menuitem", { name: "Account" });
+    // Kumo mounts the menu content asynchronously; reading it synchronously passes locally and races
+    // on CI, which is what turned Node 26 red on one head and green on three others.
+    const account = await screen.findByRole("menuitem", { name: "Account" });
     const signOut = screen.getByRole("menuitem", { name: "Sign out" });
     expect(screen.getByRole("menu")).toBeTruthy();
     account.focus();

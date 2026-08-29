@@ -266,11 +266,16 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const issue = useCallback(async () => {
     const mine = attempt.current + 1;
     attempt.current = mine;
-    // Everything keyed to the run just superseded is released with it. A move left mid-flight would
-    // otherwise hold its own gate shut for the rest of the session — its reply is discarded by the
-    // run check above, so the branch that would have reopened the gate never runs.
+    // Everything keyed to the run just superseded is released with it — what the reader can see as
+    // well as what they cannot. A move left mid-flight would otherwise hold its own gate shut for
+    // the rest of the session, and a move that was refused would leave behind an explanation that
+    // no longer applies beside a control with nothing left to try.
+    const refused = rebindState.current === "refused";
     rebindState.current = "idle";
     rebindTarget.current = undefined;
+    setRebindRefused(false);
+    // Only the refusal's own message. Another action's failure is still the reader's to read.
+    if (refused) setActionError(undefined);
     setConnect({ kind: "issuing" });
     setConnectionError(undefined);
     try {

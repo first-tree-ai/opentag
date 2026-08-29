@@ -21,6 +21,7 @@ import {
   quoteSystemdEnvironment,
   quoteSystemdToken,
   resolveCliInvocation,
+  resolveServiceManagerExecutable,
   runRequired,
   writeFileAtomically,
 } from "../core/daemon/service/shared.js";
@@ -100,6 +101,46 @@ describe("daemon service primitives", () => {
     expect(servicePath).not.toContain("relative");
     expect(servicePath.filter((entry) => entry === "/opt/opentag/bin")).toHaveLength(1);
     expect(servicePath.filter((entry) => entry === "/usr/bin")).toHaveLength(1);
+  });
+
+  it("resolves a bare service-manager name only through reviewed absolute locations", async () => {
+    const inspected: string[] = [];
+
+    await expect(
+      resolveServiceManagerExecutable("launchctl", "darwin", {
+        access: async (path) => {
+          inspected.push(`access:${path}`);
+        },
+        stat: async (path) => {
+          inspected.push(`stat:${path}`);
+          return { isFile: () => true };
+        },
+      }),
+    ).resolves.toBe("/bin/launchctl");
+
+    expect(inspected).toEqual(["stat:/bin/launchctl", "access:/bin/launchctl"]);
+    expect(inspected).not.toContain("stat:launchctl");
+  });
+
+  it("supports the governed NixOS systemd manager location", async () => {
+    const inspected: string[] = [];
+
+    await expect(
+      resolveServiceManagerExecutable("systemctl", "linux", {
+        access: async (path) => {
+          inspected.push(`access:${path}`);
+        },
+        stat: async (path) => {
+          inspected.push(`stat:${path}`);
+          return { isFile: () => path === "/run/current-system/systemd/bin/systemctl" };
+        },
+      }),
+    ).resolves.toBe("/run/current-system/systemd/bin/systemctl");
+
+    expect(inspected).toEqual([
+      "stat:/run/current-system/systemd/bin/systemctl",
+      "access:/run/current-system/systemd/bin/systemctl",
+    ]);
   });
 
   it("atomically replaces files and leaves no temporary files", async () => {

@@ -605,8 +605,10 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     render(<App />);
 
+    // The row itself is the target: one link covers the card and carries its accessible name, while
+    // the name renders as text so the two are not announced twice.
     const open = await screen.findByRole("link", { name: "Open Reviewer" });
-    expect(open.textContent).toBe("Reviewer");
+    expect(open.className).toContain("absolute inset-0");
     expect(open.getAttribute("href")).toBe(`/agents/${agentId}`);
     const card = open.closest('[data-ui="agent-card"]');
     expect(card).toBeTruthy();
@@ -619,7 +621,7 @@ describe("OpenTag Web App Shell", () => {
     const exit = within(card as HTMLElement).getByRole("link", { name: "Connect messaging" });
     expect(open.contains(exit)).toBe(false);
     expect(exit.getAttribute("href")).toBe(`/agents/${agentId}/settings/messaging`);
-    expect(within(card as HTMLElement).getAllByRole("link")).toEqual([open, exit]);
+    expect(new Set(within(card as HTMLElement).getAllByRole("link"))).toEqual(new Set([open, exit]));
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {

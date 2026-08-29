@@ -220,7 +220,7 @@ function FeishuQrCode({ value }: { value: string }) {
   return source ? (
     <img
       alt="Scan this QR code in Feishu"
-      className="my-3 w-full max-w-xs rounded-md bg-kumo-base p-2 ring ring-kumo-line"
+      className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />
   ) : null;

@@ -390,7 +390,7 @@ export function TaskDetailPage() {
         </section>
       </header>
 
-      <section className="grid gap-3 md:grid-cols-2" aria-label="Task debug identifiers" data-ui="task-debug-facts">
+      <section className="grid gap-3 sm:grid-cols-2" aria-label="Task debug identifiers" data-ui="task-debug-facts">
         <DebugValue label="Session" value={task.id} />
         <DebugValue label="Channel" value={task.source.channelId} />
         {task.source.threadKey ? <DebugValue label="Thread" value={task.source.threadKey} /> : null}
@@ -472,7 +472,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
       <article className="rounded-lg bg-kumo-recessed p-4" data-ui="task-message-request">
         <header className="flex items-center gap-2" data-ui="task-message-author">
           <span
-            className="grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
+            className="grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
             aria-hidden="true"
           >
             {getInitials(turn.message.authorDisplayName ?? turn.message.authorKind)}
@@ -492,7 +492,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
       <article className="rounded-lg bg-kumo-base p-4 ring ring-kumo-line" data-ui="task-message-agent">
         <header className="flex items-center gap-2" data-ui="task-message-author-agent">
           <span
-            className="grid size-8 place-items-center rounded-full bg-kumo-brand text-kumo-inverse"
+            className="grid size-7 place-items-center rounded-full bg-kumo-brand text-kumo-inverse"
             aria-hidden="true"
           >
             {task.agent.displayName.charAt(0)}
@@ -639,7 +639,7 @@ function TaskProviderIcon({
   provider: TaskSummary["source"]["provider"];
   compact?: boolean;
 }) {
-  return <ProviderIcon className={compact ? "size-5" : "size-8"} provider={provider} />;
+  return <ProviderIcon className={compact ? "size-5" : "size-6"} provider={provider} />;
 }
 
 function DebugValue({ label, value }: { label: string; value: string }) {

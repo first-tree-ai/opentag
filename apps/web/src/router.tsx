@@ -1159,7 +1159,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
     ) : undefined;
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line hover:bg-kumo-recessed"
+      className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line hover:bg-kumo-tint"
       data-avatar-tone={agentAvatarTone(agent.id)}
       data-tone={status.tone}
       data-ui="agent-card"
@@ -1173,13 +1173,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
         </span>
         <div className="grid min-w-0 gap-1" data-ui="agent-card-identity-copy">
           <strong className="flex min-w-0 items-center gap-2">
-            <Link
-              aria-label={`Open ${agent.displayName}`}
-              className="after:absolute after:inset-0 after:content-['']"
-              to={`/agents/${agent.id}`}
-            >
-              {agent.displayName}
-            </Link>
+            <span className="truncate">{agent.displayName}</span>
             {channel ? (
               <span className="inline-flex shrink-0 items-center" data-ui="agent-card-channel">
                 <ProviderIcon className="size-4" provider={channel} />
@@ -1202,6 +1196,17 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
       <div data-ui="agent-card-state">
         <StatusIndicator detail={statusDetail} label={status.label} tone={status.tone} />
       </div>
+      {/*
+       * Last, and covering the row: the whole card opens the Agent, while the recovery exit above it
+       * keeps its own target. Kumo ships no `after:inset-0`, so this is an overlay rather than a
+       * stretched pseudo-element.
+       */}
+      <Link
+        aria-label={`Open ${agent.displayName}`}
+        className="absolute inset-0"
+        data-ui="agent-card-open"
+        to={`/agents/${agent.id}`}
+      />
     </article>
   );
 }
@@ -1727,7 +1732,7 @@ function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
   return (
     <Link
       aria-label={label}
-      className="grid size-9 place-items-center rounded-md text-kumo-subtle ring ring-kumo-line hover:text-kumo-link"
+      className="grid size-9 place-items-center rounded-md text-kumo-subtle ring ring-kumo-line"
       state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
       title={label}
       to={`/agents/${agent.id}/settings/messaging`}
@@ -2444,7 +2449,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               </Text>
                             </div>
                             <div className="flex flex-wrap items-center gap-3">
-                              <ProviderIcon className="size-8" provider={binding.provider} />
+                              <ProviderIcon className="size-6" provider={binding.provider} />
                               <span className="grid min-w-0 flex-1 gap-1">
                                 <strong>{binding.bot.displayName ?? titleCase(binding.provider)}</strong>
                                 <small className="text-kumo-subtle">{messagingChannelDetail(agent, binding)}</small>

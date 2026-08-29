@@ -44,6 +44,7 @@
 }
 
 .otv2-restart:hover {
+  background: none;
   color: var(--foreground);
 }
 
@@ -248,6 +249,21 @@
 .otv2-choice:hover:not(:disabled) {
   border-color: var(--strong-border);
   background: var(--color-bg-hover);
+}
+
+/*
+ * The app's global `button:hover` paints brand ink. Every bare button on this surface has to say
+ * what its own hover is, or that rule shows through — it was turning the disabled Cloud card dark
+ * green, which is both the wrong colour and a hover on something that cannot be pressed.
+ */
+.otv2-choice:disabled:hover {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.otv2-choice[aria-pressed="true"]:hover {
+  border-color: var(--brand);
+  background: var(--brand-light);
 }
 
 .otv2-choice:focus-visible {
@@ -775,6 +791,10 @@
   align-items: flex-end;
 }
 
+.otv2-lab__toggle:hover {
+  background: var(--color-bg-hover);
+}
+
 .otv2-lab__toggle {
   padding: var(--space-2) var(--space-4);
   border: 1px solid var(--strong-border);
@@ -841,7 +861,12 @@
   cursor: pointer;
 }
 
-.otv2-lab__segmented button[aria-pressed="true"] {
+.otv2-lab__segmented button:hover {
+  background: var(--color-bg-hover);
+}
+
+.otv2-lab__segmented button[aria-pressed="true"],
+.otv2-lab__segmented button[aria-pressed="true"]:hover {
   background: var(--brand-light);
   color: var(--brand-ink);
 }

@@ -51,6 +51,22 @@ describe("onboarding flow layout", () => {
     expect(narrowViewportValue(".otv2-choices--grid", "grid-template-columns")).toBe("1fr");
   });
 
+  it("gives every bare button its own hover, so the global button hover cannot show through", () => {
+    // `styles.css` has a bare `button:hover { background: var(--brand-ink) }`. Anything on this
+    // surface that is a plain <button> has to state its own hover or it turns dark green — which
+    // is how the disabled Cloud card ended up lighting up.
+    const selectors = [
+      ".otv2-choice:hover:not(:disabled)",
+      ".otv2-choice:disabled:hover",
+      ".otv2-restart:hover",
+      ".otv2-lab__toggle:hover",
+      ".otv2-lab__segmented button:hover",
+    ];
+    for (const selector of selectors) {
+      expect(() => declarationValue(selector, "background")).not.toThrow();
+    }
+  });
+
   it("keeps the command block wrapping rather than forcing a horizontal scroll", () => {
     expect(declarationValue(".otv2-command__code", "white-space")).toBe("pre-wrap");
     expect(declarationValue(".otv2-command__code", "overflow-wrap")).toBe("anywhere");

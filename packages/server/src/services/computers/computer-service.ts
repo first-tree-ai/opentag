@@ -1,7 +1,12 @@
 import type { ComputerRegisterFrame, MeResponse } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { workspaceComputerCredentials, workspaceComputers, workspaces } from "../../db/schema/index.js";
+import {
+  accountComputers,
+  workspaceComputerCredentials,
+  workspaceComputers,
+  workspaces,
+} from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 
@@ -34,18 +39,19 @@ export class ComputerService {
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
       await this.#lockActiveCredential(transaction, context);
+      const observation = {
+        displayName: frame.displayName,
+        platform: frame.platform,
+        arch: frame.arch,
+        clientVersion: frame.clientVersion,
+        currentInstanceId: frame.instanceId,
+        connectedAt: now,
+        lastSeenAt: now,
+        updatedAt: now,
+      };
       const updated = await transaction
         .update(workspaceComputers)
-        .set({
-          displayName: frame.displayName,
-          platform: frame.platform,
-          arch: frame.arch,
-          clientVersion: frame.clientVersion,
-          currentInstanceId: frame.instanceId,
-          connectedAt: now,
-          lastSeenAt: now,
-          updatedAt: now,
-        })
+        .set(observation)
         .where(
           and(
             eq(workspaceComputers.id, context.workspaceComputerId),
@@ -56,6 +62,10 @@ export class ComputerService {
         )
         .returning({ id: workspaceComputers.id });
       if (updated.length !== 1) throw unavailableEnrollment();
+      await transaction
+        .update(accountComputers)
+        .set(observation)
+        .where(eq(accountComputers.id, context.workspaceComputerId));
     });
   }
 
@@ -63,9 +73,10 @@ export class ComputerService {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
       await this.#lockActiveCredential(transaction, context);
+      const heartbeat = { lastSeenAt: now, updatedAt: now };
       const updated = await transaction
         .update(workspaceComputers)
-        .set({ lastSeenAt: now, updatedAt: now })
+        .set(heartbeat)
         .where(
           and(
             eq(workspaceComputers.id, context.workspaceComputerId),
@@ -76,7 +87,12 @@ export class ComputerService {
           ),
         )
         .returning({ id: workspaceComputers.id });
-      return updated.length === 1;
+      if (updated.length !== 1) return false;
+      await transaction
+        .update(accountComputers)
+        .set(heartbeat)
+        .where(eq(accountComputers.id, context.workspaceComputerId));
+      return true;
     });
   }
 
@@ -86,12 +102,24 @@ export class ComputerService {
 
   async disconnect(workspaceComputerId: string, instanceId: string): Promise<boolean> {
     const now = this.#now();
-    const updated = await this.#database
-      .update(workspaceComputers)
-      .set({ currentInstanceId: null, connectedAt: null, lastSeenAt: now, updatedAt: now })
-      .where(and(eq(workspaceComputers.id, workspaceComputerId), eq(workspaceComputers.currentInstanceId, instanceId)))
-      .returning({ id: workspaceComputers.id });
-    return updated.length === 1;
+    return this.#database.transaction(async (transaction) => {
+      const disconnection = {
+        currentInstanceId: null,
+        connectedAt: null,
+        lastSeenAt: now,
+        updatedAt: now,
+      };
+      const updated = await transaction
+        .update(workspaceComputers)
+        .set(disconnection)
+        .where(
+          and(eq(workspaceComputers.id, workspaceComputerId), eq(workspaceComputers.currentInstanceId, instanceId)),
+        )
+        .returning({ id: workspaceComputers.id });
+      if (updated.length !== 1) return false;
+      await transaction.update(accountComputers).set(disconnection).where(eq(accountComputers.id, workspaceComputerId));
+      return true;
+    });
   }
 
   async #lockActiveCredential(transaction: DatabaseTransaction, context: ComputerAuthContext): Promise<void> {

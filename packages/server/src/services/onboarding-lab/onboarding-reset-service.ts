@@ -2,8 +2,10 @@ import type { ChannelName } from "@opentag/shared";
 import { and, count, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   computerConnectCodes,
+  computerCredentials,
   imBindings,
   workspaceAdminGrants,
   workspaceComputerCredentials,
@@ -211,6 +213,10 @@ export class OnboardingResetService {
           ),
         );
       await transaction
+        .update(computerCredentials)
+        .set({ revokedByUserId: accountId, revokedAt: now })
+        .where(and(inArray(computerCredentials.computerId, enrollmentIds), isNull(computerCredentials.revokedAt)));
+      await transaction
         .update(workspaceComputers)
         .set({
           revokedByUserId: accountId,
@@ -220,6 +226,14 @@ export class OnboardingResetService {
           updatedAt: now,
         })
         .where(and(inArray(workspaceComputers.id, enrollmentIds), isNull(workspaceComputers.revokedAt)));
+      await transaction
+        .update(accountComputers)
+        .set({
+          currentInstanceId: null,
+          connectedAt: null,
+          updatedAt: now,
+        })
+        .where(inArray(accountComputers.id, enrollmentIds));
       return enrollmentIds;
     });
   }

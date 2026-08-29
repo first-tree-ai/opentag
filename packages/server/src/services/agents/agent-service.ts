@@ -34,6 +34,7 @@ import {
   workspaceComputers,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { projectedComputerId } from "../computers/ownership-projections.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
@@ -337,6 +338,7 @@ export class AgentService {
             creationIntentId: input.creationIntentId,
             creationIntentFingerprint: intentFingerprint,
             workspaceComputerId: computerEnrollment.id,
+            computerId: await projectedComputerId(transaction, computerEnrollment.id),
             name: input.name,
             displayName: input.displayName,
             runtimeProvider: input.runtimeProvider,

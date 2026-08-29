@@ -1558,6 +1558,7 @@ export class ImBindingService {
           .update(slackInstallations)
           .set({
             status: "active",
+            agentId: input.agentId,
             externalAppId: input.appId,
             externalTeamId: input.teamId,
             externalEnterpriseId: input.enterpriseId ?? null,
@@ -1646,6 +1647,7 @@ export class ImBindingService {
       .insert(slackInstallations)
       .values({
         workspaceId: input.workspaceId,
+        agentId: input.agentId,
         status: "active",
         externalAppId: input.appId,
         externalTeamId: input.teamId,

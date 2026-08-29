@@ -2158,11 +2158,13 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
 
+    // The menu content mounts asynchronously, so the absence checks only mean something once the
+    // menu itself is on screen; reading them synchronously passes locally and races on CI.
+    expect(await screen.findByRole("menuitem", { name: "Account" })).toBeTruthy();
     expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(screen.queryByText("Secondary")).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Computers" })).toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Account" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 

@@ -2,7 +2,6 @@ import { EventEmitter } from "node:events";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setImmediate as waitImmediate } from "node:timers/promises";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -150,7 +149,7 @@ describe("daemon service runtime", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
-  it("starts one independent Runtime per Workspace enrollment", async () => {
+  it("fails closed when multiple enrollments are present instead of starting one Runtime per enrollment", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-multi-enrollment-"));
     directories.push(home);
     const signals = new EventEmitter();
@@ -165,72 +164,11 @@ describe("daemon service runtime", () => {
     });
     clientMocks.readMachineCredentials.mockResolvedValue(credentials);
     clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
-    const run = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
-    clientMocks.createClientRuntime
-      .mockResolvedValueOnce({ run: run[0], stop: vi.fn() })
-      .mockResolvedValueOnce({ run: run[1], stop: vi.fn() });
 
-    await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
-
-    expect(clientMocks.createClientRuntime).toHaveBeenCalledTimes(2);
-    expect(clientMocks.createClientRuntime.mock.calls.map((call) => call[1].machineToken).sort()).toEqual(
-      credentials.enrollments.map(({ machineToken }) => machineToken).sort(),
-    );
-    expect(run[0]).toHaveBeenCalledOnce();
-    expect(run[1]).toHaveBeenCalledOnce();
-  });
-
-  it("keeps a healthy Workspace runtime alive after another enrollment fails", async () => {
-    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-isolated-enrollment-"));
-    directories.push(home);
-    const signals = new EventEmitter();
-    const credentials = machineCredentials();
-    const firstEnrollment = credentials.enrollments[0];
-    if (!firstEnrollment) throw new Error("expected a machine enrollment fixture");
-    credentials.enrollments.push({
-      ...firstEnrollment,
-      workspaceComputerId: "00000000-0000-4000-8000-000000000004",
-      workspaceId: "00000000-0000-4000-8000-000000000005",
-      machineToken: `otmc_${"b".repeat(64)}`,
-    });
-    clientMocks.readMachineCredentials.mockResolvedValue(credentials);
-    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
-    let finishHealthy: (() => void) | undefined;
-    const healthyRun = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finishHealthy = resolve;
-        }),
-    );
-    const failedStop = vi.fn();
-    const healthyStop = vi.fn(() => finishHealthy?.());
-    clientMocks.createClientRuntime
-      .mockResolvedValueOnce({
-        run: vi.fn(async () => Promise.reject(new Error("credential revoked"))),
-        stop: failedStop,
-      })
-      .mockResolvedValueOnce({ run: healthyRun, stop: healthyStop });
-
-    const daemon = runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
-    let settled = false;
-    void daemon.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
-    await vi.waitFor(() => expect(healthyRun).toHaveBeenCalledOnce());
-    await waitImmediate();
-
-    expect(settled).toBe(false);
-    expect(failedStop).not.toHaveBeenCalled();
-    expect(healthyStop).not.toHaveBeenCalled();
-
-    signals.emit("SIGTERM");
-    await daemon;
-    expect(healthyStop).toHaveBeenCalledOnce();
+    await expect(
+      runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process }),
+    ).rejects.toThrow("multiple enrollments");
+    expect(clientMocks.createClientRuntime).not.toHaveBeenCalled();
   });
 
   it("logs ownership release failures safely and returns a failed service exit", async () => {

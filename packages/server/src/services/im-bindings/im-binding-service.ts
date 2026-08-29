@@ -22,6 +22,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   imMessages,
@@ -367,8 +368,10 @@ export class ImBindingService {
         binding: imBindings,
         slackInstallation: slackInstallations,
         boundAgentId: imBindings.agentId,
+        agentCreatedByUserId: agents.createdByUserId,
         agentWorkspaceComputerId: agents.workspaceComputerId,
         agentStatus: agents.status,
+        computerOwnerAccountId: accountComputers.ownerAccountId,
         placementComputerId: sessionPlacements.workspaceComputerId,
         placementGeneration: sessionPlacements.generation,
         workspaceComputerId: workspaceComputers.id,
@@ -379,6 +382,7 @@ export class ImBindingService {
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .leftJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .leftJoin(
         workspaceComputers,
         and(
@@ -401,6 +405,7 @@ export class ImBindingService {
       !row ||
       row.sessionKind === "internal" ||
       row.boundAgentId !== request.agentId ||
+      row.computerOwnerAccountId !== row.agentCreatedByUserId ||
       row.agentWorkspaceComputerId !== computerAuth.workspaceComputerId ||
       row.workspaceComputerId !== computerAuth.workspaceComputerId ||
       row.workspaceId !== computerAuth.workspaceId ||

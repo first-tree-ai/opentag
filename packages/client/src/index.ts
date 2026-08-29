@@ -62,11 +62,13 @@ export {
   writeCredentialsAtomically,
 } from "./auth/credentials.js";
 export {
+  type BoundAccountComputerResolution,
   MACHINE_CREDENTIALS_FILE_NAME,
   type MachineEnrollmentCredential,
   machineCredentialsPath,
   readMachineCredentials,
   readMachineCredentialsStrict,
+  resolveBoundAccountComputer,
   type StoredMachineCredentials,
   storeMachineEnrollmentCredential,
   writeMachineCredentialsAtomically,
@@ -187,11 +189,13 @@ export {
   resolvedClaudeCodeFactory,
 } from "./runtime/client-runtime-composition.js";
 export {
+  allocateComputerIdentity,
   COMPUTER_IDENTITY_FILE_NAME,
   type ComputerIdentity,
   computerIdentityPath,
   readComputerIdentity,
   resolveComputerIdentity,
+  writeComputerIdentityAtomically,
 } from "./runtime/computer-identity.js";
 export {
   ImCredentialEnvironmentError,

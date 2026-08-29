@@ -210,9 +210,9 @@ export class TaskQueryError extends Error {
 export class TaskService {
   constructor(readonly database: DatabaseClient) {}
 
-  async list(workspaceId: string, options: ListTaskOptions): Promise<ListTasksResponse> {
+  async list(accountId: string, options: ListTaskOptions): Promise<ListTasksResponse> {
     const cursor = parseCursor(options.cursor);
-    const rows = await this.#summaryRows(workspaceId, {
+    const rows = await this.#summaryRows(accountId, {
       ...options,
       cursor,
       limit: options.limit + 1,
@@ -225,8 +225,8 @@ export class TaskService {
     };
   }
 
-  async get(workspaceId: string, sessionId: string, options: GetTaskOptions): Promise<TaskDetail> {
-    const [row] = await this.#summaryRows(workspaceId, { sessionId, limit: 1 });
+  async get(accountId: string, sessionId: string, options: GetTaskOptions): Promise<TaskDetail> {
+    const [row] = await this.#summaryRows(accountId, { sessionId, limit: 1 });
     if (!row) throw workspaceNotFound();
     const cursor = parseCursor(options.cursor);
     const turns = await this.database.execute<TaskTurnRow>(sql`
@@ -326,7 +326,7 @@ export class TaskService {
   }
 
   async #summaryRows(
-    workspaceId: string,
+    accountId: string,
     options: {
       agentId?: string;
       cursor?: { at: Date; id: string };
@@ -379,7 +379,7 @@ export class TaskService {
       inner join im_bindings b on b.id = s.im_binding_id
       inner join agents a on a.id = b.agent_id
       left join latest_delivery ld on ld.session_id = s.id
-      where a.workspace_id = ${workspaceId}::uuid
+      where a.created_by_user_id = ${accountId}::uuid
         and a.status <> 'deleted'
         and s.kind in ('channel', 'thread')
         ${options.sessionId ? sql`and s.id = ${options.sessionId}::uuid` : sql``}

@@ -231,13 +231,14 @@ describe("OnboardingV2Page", () => {
   it("keeps the connect step's countdown and status slots through the arrival", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
-    expect(document.querySelector(".otv2-command__footer")).toBeTruthy();
+    expect(document.querySelector(".otv2-command-lead")).toBeTruthy();
     expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
 
-    // The countdown goes away on arrival; its slot, and the status slot, must not.
+    // The countdown rides on the intro line and goes away on arrival; neither row may collapse.
     await advanceMock("Connect computer");
     expect(screen.queryByText(/Expires in/)).toBeNull();
-    expect(document.querySelector(".otv2-command__footer")).toBeTruthy();
+    expect(document.querySelector(".otv2-command-lead")).toBeTruthy();
+    expect(document.querySelector(".otv2-command__expiry")).toBeTruthy();
     expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
   });
 
@@ -310,6 +311,7 @@ describe("OnboardingV2Page", () => {
     await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await advance(ISSUE_MS);
     await advanceMock("Scan QR code");
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
@@ -327,6 +329,7 @@ describe("OnboardingV2Page", () => {
       await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
+      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("button", { name: "Scan QR code" })).toBeTruthy();
     });
@@ -347,6 +350,48 @@ describe("OnboardingV2Page", () => {
       expect(screen.getByText("This command has expired.")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
       expect((screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
+  describe("the messaging step", () => {
+    async function reachMessagingStep() {
+      await reachConnectStep();
+      await reachCheckStep();
+      await settleCheck();
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await advance(CREATE_MS);
+    }
+
+    it("asks which app before showing any connection", async () => {
+      render(<OnboardingV2Page />);
+      await reachMessagingStep();
+
+      expect(screen.getByRole("button", { name: /Feishu/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+      // Nothing is issued, and nothing is waiting, until one is picked.
+      expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+      expect((screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("brings up the Feishu code in place, without leaving the step", async () => {
+      render(<OnboardingV2Page />);
+      await reachMessagingStep();
+
+      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      await advance(ISSUE_MS);
+      expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+      expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Feishu/ }).getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("holds Slack's place without pretending it is built", async () => {
+      render(<OnboardingV2Page />);
+      await reachMessagingStep();
+
+      fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
+      await advance(ISSUE_MS);
+      expect(screen.getByText("The Slack connection isn't designed yet.")).toBeTruthy();
+      expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
     });
   });
 

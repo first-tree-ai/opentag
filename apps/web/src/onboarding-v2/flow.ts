@@ -9,6 +9,9 @@ export type Runtime = (typeof RUNTIMES)[number];
 
 export type Destination = "local" | "cloud";
 
+export const MESSAGING_PROVIDERS = ["feishu", "slack"] as const;
+export type MessagingProvider = (typeof MESSAGING_PROVIDERS)[number];
+
 /** Mirrors the Server's provider readiness vocabulary so the mock stays swappable for the real API. */
 export type RuntimeStatus = "checking" | "ready" | "install" | "sign-in" | "unavailable";
 /** The messaging CLI has no sign-in of its own: it is installed or it is not. */

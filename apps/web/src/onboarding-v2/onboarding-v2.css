@@ -384,6 +384,23 @@
 .otv2-panel--qr {
   align-items: center;
   gap: var(--space-4);
+  text-align: center;
+}
+
+/* Holds the place of a connection flow that has not been designed yet. */
+.otv2-panel--pending {
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  text-align: center;
+}
+
+/*
+ * Both providers' connection areas occupy the same box, so picking one does not resize the step.
+ * Sized by the taller of the two: the Feishu panel around its 208px code.
+ */
+.otv2-slot--messaging {
+  min-height: 358px;
 }
 
 /* Command block ---------------------------------------------------------- */
@@ -497,16 +514,27 @@
   }
 }
 
-.otv2-command__footer {
+/* The line that says how to run the command, with the command's validity on its far end. */
+.otv2-command-lead {
   display: flex;
-  min-height: 18px;
-  justify-content: flex-end;
+  gap: var(--space-3);
+  align-items: baseline;
+  justify-content: space-between;
+
+  /* Holds the taller of its two states: an expiry notice reads longer than a countdown. */
+  min-height: 24px;
+}
+
+.otv2-command-lead p {
+  flex: 1;
 }
 
 .otv2-command__expiry {
   display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  align-items: center;
+  align-items: baseline;
   color: var(--muted);
   font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
@@ -825,6 +853,17 @@
 }
 
 @media (width <= 640px) {
+  /*
+   * There is no room for the validity beside the sentence at this width, so it takes its own line
+   * and the row reserves both states' height rather than growing when a code expires.
+   */
+  .otv2-command-lead {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+    min-height: 68px;
+  }
+
   /* Both reserved slots hold a line more once their copy wraps at this width. */
   .otv2-slot--outcome {
     min-height: 92px;

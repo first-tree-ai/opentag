@@ -7,6 +7,7 @@ import {
   deriveFlowState,
   emptyDraft,
   type FlowFacts,
+  type MessagingProvider,
 } from "./flow.js";
 import { LabControls } from "./lab-controls.js";
 import { type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
@@ -30,6 +31,7 @@ export function OnboardingV2Page() {
   const [draftConfirmed, setDraftConfirmed] = useState(false);
   const [connectAcknowledged, setConnectAcknowledged] = useState(false);
   const [creation, setCreation] = useState<CreationState>("idle");
+  const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   const backend = useMockBackend(scenario, speed);
 
   const facts: FlowFacts = {
@@ -89,6 +91,7 @@ export function OnboardingV2Page() {
     setDraftConfirmed(false);
     setConnectAcknowledged(false);
     setCreation("idle");
+    setMessagingProvider(undefined);
     backend.reset();
   }, [backend]);
 
@@ -135,7 +138,12 @@ export function OnboardingV2Page() {
               readiness={backend.readiness}
             />
           ) : (
-            <MessagingStep messaging={backend.messaging} onStart={backend.startMessaging} />
+            <MessagingStep
+              messaging={backend.messaging}
+              onChoose={setMessagingProvider}
+              onStart={backend.startMessaging}
+              provider={messagingProvider}
+            />
           )}
         </div>
       </main>

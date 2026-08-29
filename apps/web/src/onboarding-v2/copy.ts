@@ -135,11 +135,15 @@ export const COPY = {
 
   messaging: {
     title: "Connect your messaging app",
-    description: "Scan this with Feishu to finish. You'll do the last step inside Feishu itself.",
-    slack: "Slack",
-    slackBadge: "Coming soon",
+    description: "Pick the app your team already works in.",
+    providerLabel: "Messaging app",
+    feishu: { title: "Feishu", description: "Also called Lark" },
+    slack: { title: "Slack", description: "Your Slack workspace" },
+    feishuIntro: "Scan this with Feishu. You'll finish the last step inside Feishu itself.",
     qrAlt: "Scan this QR code in Feishu",
     waiting: "Waiting for you to scan…",
+    /** The Slack connection has not been designed yet; the step reserves its place and says so. */
+    slackPending: "The Slack connection isn't designed yet.",
   },
 
   done: {

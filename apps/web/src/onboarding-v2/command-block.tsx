@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Icon } from "../ui/design-system.js";
 
 const COPY_FEEDBACK_MS = 1_600;
@@ -20,7 +20,6 @@ export function CommandBlock({
   copyLabel,
   copiedLabel,
   fallbackHint,
-  footer,
   inert = false,
   muted = false,
 }: {
@@ -29,7 +28,6 @@ export function CommandBlock({
   copyLabel: string;
   copiedLabel: string;
   fallbackHint: string;
-  footer?: ReactNode;
   /** Renders the block's shape with nothing to act on, while its real contents are still coming. */
   inert?: boolean;
   /** Dims the block when its contents can no longer be used, such as an expired code. */
@@ -90,8 +88,6 @@ export function CommandBlock({
           <span>{copied ? copiedLabel : copyLabel}</span>
         </Button>
       </div>
-      {/* Always rendered, even when empty: the countdown disappearing must not move the page. */}
-      <div className="otv2-command__footer">{footer}</div>
       {hint ? (
         <p className="otv2-command__hint" role="status">
           {hint}

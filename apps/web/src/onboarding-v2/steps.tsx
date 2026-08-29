@@ -13,6 +13,8 @@ import {
   deriveChecks,
   type FlowState,
   formatRemaining,
+  MESSAGING_PROVIDERS,
+  type MessagingProvider,
   type MessagingState,
   type ReadinessFacts,
   RUNTIMES,
@@ -259,8 +261,13 @@ export function ConnectStep({
         </p>
       </header>
       <div className="otv2-command-group">
-        <p className="otv2-muted">{COPY.connect.commandIntro}</p>
-        <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
+        {/* The validity rides on the end of the line that says how to run it, rather than taking a
+            row of its own beneath the block. */}
+        <div className="otv2-command-lead">
+          <p className="otv2-muted">{COPY.connect.commandIntro}</p>
+          <ConnectValidity connect={connect} onRefreshCommand={onRefreshCommand} />
+        </div>
+        <ConnectCommand connect={connect} />
       </div>
       <ConnectStatus connect={connect} />
       <StepNav back={onBack} disabled={connect.kind !== "connected"} onNext={onAdvance} />
@@ -268,7 +275,24 @@ export function ConnectStep({
   );
 }
 
-function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
+function ConnectValidity({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
+  return (
+    <span className="otv2-command__expiry">
+      {connect.kind === "issued" ? (
+        <Countdown expiresAt={connect.expiresAt} />
+      ) : connect.kind === "expired" ? (
+        <>
+          <span>{COPY.connect.expired}</span>
+          <Button onClick={onRefreshCommand} variant="inline">
+            {COPY.connect.refresh}
+          </Button>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+function ConnectCommand({ connect }: { connect: ConnectState }) {
   // Before a command exists, the block still renders — same structure, same length, so nothing
   // moves when the real one lands. It is inert: nothing to copy and nothing to announce.
   if (connect.kind === "idle" || connect.kind === "issuing") {
@@ -285,7 +309,6 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
       </div>
     );
   }
-  const expired = connect.kind === "expired";
   return (
     <CommandBlock
       key={connect.command}
@@ -294,19 +317,7 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
       copiedLabel={COPY.connect.copied}
       copyLabel={COPY.connect.copy}
       fallbackHint={COPY.connect.copyFallback}
-      muted={expired}
-      footer={
-        connect.kind === "issued" ? (
-          <Countdown expiresAt={connect.expiresAt} />
-        ) : expired ? (
-          <span className="otv2-command__expiry">
-            <span>{COPY.connect.expired}</span>
-            <Button onClick={onRefreshCommand} variant="inline">
-              {COPY.connect.refresh}
-            </Button>
-          </span>
-        ) : null
-      }
+      muted={connect.kind === "expired"}
     />
   );
 }
@@ -327,8 +338,7 @@ function ConnectStatus({ connect }: { connect: ConnectState }) {
 }
 
 function Countdown({ expiresAt }: { expiresAt: number }) {
-  const remaining = useRemaining(expiresAt);
-  return <span className="otv2-command__expiry">{COPY.connect.expiresIn(formatRemaining(remaining))}</span>;
+  return <span>{COPY.connect.expiresIn(formatRemaining(useRemaining(expiresAt)))}</span>;
 }
 
 /** Ticks once a second and settles at zero, so an expired code never shows a negative duration. */
@@ -430,10 +440,21 @@ function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; positio
   );
 }
 
-export function MessagingStep({ messaging, onStart }: { messaging: MessagingState; onStart: () => void }) {
+export function MessagingStep({
+  messaging,
+  onChoose,
+  onStart,
+  provider,
+}: {
+  messaging: MessagingState;
+  onChoose: (provider: MessagingProvider) => void;
+  onStart: () => void;
+  provider: MessagingProvider | undefined;
+}) {
+  // The QR is only worth issuing once Feishu has actually been picked.
   useEffect(() => {
-    if (messaging.kind === "idle") onStart();
-  }, [messaging.kind, onStart]);
+    if (provider === "feishu" && messaging.kind === "idle") onStart();
+  }, [messaging.kind, onStart, provider]);
 
   return (
     <section className="otv2-step">
@@ -441,22 +462,55 @@ export function MessagingStep({ messaging, onStart }: { messaging: MessagingStat
         <h1>{COPY.messaging.title}</h1>
         <p>{COPY.messaging.description}</p>
       </header>
-      <div className="otv2-panel otv2-panel--qr">
-        <div className="otv2-qr">
-          {messaging.kind === "waiting" ? (
-            <QrCode value={messaging.qrValue} />
-          ) : (
-            <div className="otv2-qr__placeholder" />
-          )}
-        </div>
-        <p className="otv2-waiting" role="status">
-          <span aria-hidden="true" className="otv2-pulse" />
-          {COPY.messaging.waiting}
-        </p>
+
+      <ul className="otv2-choices otv2-choices--grid">
+        {MESSAGING_PROVIDERS.map((candidate) => (
+          <li key={candidate}>
+            <button
+              aria-pressed={provider === candidate}
+              className="otv2-choice otv2-choice--runtime"
+              onClick={() => onChoose(candidate)}
+              type="button"
+            >
+              <span aria-hidden="true" className="otv2-mark" data-messaging={candidate}>
+                {COPY.messaging[candidate].title.slice(0, 1)}
+              </span>
+              <span className="otv2-choice__copy">
+                <strong>{COPY.messaging[candidate].title}</strong>
+                <span>{COPY.messaging[candidate].description}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {/*
+        The connection appears here rather than on another screen, and the area keeps its size
+        across both providers so choosing one does not resize the page.
+      */}
+      <div className="otv2-slot otv2-slot--messaging">
+        {provider === "feishu" ? (
+          <div className="otv2-panel otv2-panel--qr">
+            <p className="otv2-muted">{COPY.messaging.feishuIntro}</p>
+            <div className="otv2-qr">
+              {messaging.kind === "waiting" ? (
+                <QrCode value={messaging.qrValue} />
+              ) : (
+                <div className="otv2-qr__placeholder" />
+              )}
+            </div>
+            <p className="otv2-waiting" role="status">
+              <span aria-hidden="true" className="otv2-pulse" />
+              {COPY.messaging.waiting}
+            </p>
+          </div>
+        ) : provider === "slack" ? (
+          <div className="otv2-panel otv2-panel--pending">
+            <p className="otv2-muted">{COPY.messaging.slackPending}</p>
+          </div>
+        ) : null}
       </div>
-      <p className="otv2-footnote">
-        {COPY.messaging.slack} <em className="otv2-badge">{COPY.messaging.slackBadge}</em>
-      </p>
+
       <StepNav disabled />
     </section>
   );

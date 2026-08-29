@@ -1897,7 +1897,7 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
           <div className="grid gap-6">
             {agentSettingsGroups.map((group) => (
               <section
-                className={group.label ? "grid gap-3 border-t border-kumo-line pt-6" : "grid gap-3"}
+                className={group.label ? "mt-4 grid gap-3 border-t border-kumo-line pt-2" : "grid gap-3"}
                 key={group.key}
                 aria-label={group.label ?? "Agent setup"}
                 aria-labelledby={group.label ? `agent-settings-${group.key}` : undefined}

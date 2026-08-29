@@ -310,12 +310,19 @@ the server's memory rather than only its patience.
 step to assert the address, and recording one that never happened would be worse than recording none. For the same
 reason there is no password reset: adding one means adding a mail sender first.
 
-That has a consequence an operator has to weigh before enabling this alongside Google. Because registration proves
-nothing about the address, someone can register an address they do not own and keep a working password on it; Google is
-a trusted provider, so when the real owner later signs in, their identity links to that existing Account rather than
-creating a new one, and both parties end up holding it. Until address ownership is proven before a password credential
-can participate in linking, treat `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` and Google sign-in as a combination to
-enable only where every address that can reach the server is already trusted.
+That has a consequence an operator has to weigh before enabling self-service registration at all. Because registration
+proves nothing about the address, anyone can register an address they do not own, receive a session, and have the
+Account provisioned — all while `email_verified` stays false.
+
+What happens next is worth stating precisely, because the obvious guess is wrong. Better Auth defaults
+`accountLinking.requireLocalEmailVerified` to true, and being a trusted provider does not lift it: that setting governs
+whether the *provider* verified the address, not whether the local Account did. A later Google sign-in for the squatted
+address is therefore refused rather than linked, so the squatter and the real owner do not end up sharing an Account.
+
+The harm is a lockout instead. `users_email_unique` reserves the address, so the real owner can neither register it nor
+reach it through Google, and the squatter holds a provisioned Account for an address they never proved. An integration
+test pins that behavior. Until ownership is proven before a password credential can claim an address, enable
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` only where everyone who can reach the server is already trusted.
 
 An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
 enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The

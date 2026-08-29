@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { handleOAuthUserInfo } from "better-auth/oauth2";
 import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -726,6 +727,53 @@ describe("email and password credentials", () => {
     // The `session.create` hook is the single place suspension is enforced, and the password path runs through it too.
     expect(response.ok).toBe(false);
     expect(await client.database.select().from(authSessions)).toHaveLength(0);
+  });
+
+  /**
+   * What an unverified registration actually does to the address it claimed.
+   *
+   * Two reviews disagreed about this, so it is pinned here rather than argued. Better Auth 1.7.2 defaults
+   * `accountLinking.requireLocalEmailVerified` to true, and being a trusted provider does not lift it — that flag is
+   * only checked against the *provider's* verification, not the local Account's. So a later Google sign-in for the
+   * squatted address is refused outright: attacker and victim do not end up sharing an Account.
+   *
+   * The harm is the other one. The address is now reserved by `users_email_unique`, so the real owner can neither
+   * register it nor sign in with it, and the squatter holds an Account that OpenTag has already provisioned. That is
+   * the constraint the deferred ownership-proof work has to remove, and this test is the baseline it will change.
+   */
+  it("locks the real owner out of an address a password registration squatted, rather than sharing it", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "victim@example.com", name: "Squatter", password: PASSWORD });
+    const [squatted] = await client.database.select().from(users);
+    expect(squatted?.emailVerified).toBe(false);
+
+    const linked = await handleOAuthUserInfo({ context: await auth.$context } as never, {
+      account: {
+        accountId: "google-subject-victim",
+        issuer: GOOGLE_ISSUER,
+        providerId: "google",
+        scope: null,
+        idToken: null,
+        accessToken: null,
+        refreshToken: null,
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        password: null,
+      },
+      userInfo: {
+        id: "google-subject-victim",
+        email: "victim@example.com",
+        emailVerified: true,
+        name: "Real Owner",
+        image: null,
+      },
+    });
+
+    expect(linked.error).toBe("account not linked");
+    expect(linked.data).toBeNull();
+    // No second Account, and no identity attached to the squatter's: the owner is refused, not merged into it.
+    expect(await client.database.select().from(users)).toHaveLength(1);
+    expect(await client.database.select().from(authIdentities)).toHaveLength(1);
   });
 
   it("creates no Account through the credential endpoint on a server that did not enable it", async () => {

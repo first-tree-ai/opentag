@@ -289,10 +289,16 @@ cookie 与新的 double-submit token，这是新登录的浏览器能够执行�
 这些 Account 的 `users.email_verified` 保持 false。产品内没有任何邮件发送能力，因此不存在断言该地址的验证步骤，而记录
 一个从未发生过的验证比不记录更糟。出于同样的原因，也没有找回密码：要做它得先做邮件发送。
 
-这带来一个运维在与 Google 同时启用前必须权衡的后果。由于注册不能证明地址归属，任何人都可以用自己并不拥有的地址注册并
-保有一个可用密码；而 Google 是受信任的 provider，真正的所有者之后登录时，其身份会挂到那个已存在的 Account 上而不是新建
-一个，最终两方共同持有同一个 Account。在「密码凭据参与 linking 之前必须先证明地址归属」这件事落地之前，应当把
-`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` 与 Google 登录的组合视为——仅在所有能访问该服务的地址都已受信任的环境中才可启用。
+这带来一个在开放自助注册之前必须权衡的后果。由于注册不能证明地址归属，任何人都可以用自己并不拥有的地址注册、拿到 session、
+并让 Account 完成 provisioning——而整个过程中 `email_verified` 始终是 false。
+
+接下来会发生什么值得精确陈述，因为最直觉的猜测是错的。Better Auth 的 `accountLinking.requireLocalEmailVerified` 默认为 true，
+且「受信任的 provider」并不能豁免它：该设置管的是 **provider** 是否验证过地址，而不是本地 Account 是否验证过。因此真正的所有者
+之后用 Google 登录会被**拒绝**而非挂接，抢注者与所有者不会共享同一个 Account。
+
+真正的危害是锁死。`users_email_unique` 已经占住了该地址，所以真正的所有者既无法注册它，也无法通过 Google 登录进来，而抢注者
+持有一个为从未验证过的地址完成 provisioning 的 Account。这一行为由集成测试钉住。在「地址归属必须先被证明，密码凭据才能占用它」
+落地之前，只应在所有能访问该服务的人都已受信任的环境中启用 `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED`。
 
 Account email 以小写存储，且一个地址最多对应一个 Account。这由 `users_email_unique` 索引保证，并且不区分大小写，
 使跳过归一化的写入方也无法通过大小写变体绕过。原先负责对地址串行化的 identity resolver 已删除；Better Auth 的

@@ -2,10 +2,20 @@ import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { Button, Icon, StatusIndicator } from "../ui/design-system.js";
 import { CommandBlock } from "./command-block.js";
-import { CHECK_COPY, COMING_SOON, COPY, DESTINATION_COPY, RUNTIME_COPY, STEP_LABELS } from "./copy.js";
+import {
+  CHECK_COPY,
+  CLOUD_RUNTIME_COPY,
+  COMING_SOON,
+  COPY,
+  DESTINATION_COPY,
+  RUNTIME_COPY,
+  STEP_LABELS,
+  TOKEN_COPY,
+} from "./copy.js";
 import {
   type AgentDraft,
   type CheckRow,
+  CLOUD_RUNTIMES,
   type ConnectState,
   type CreationState,
   DEFAULT_AGENT_NAME,
@@ -17,14 +27,17 @@ import {
   MESSAGING_PROVIDERS,
   type MessagingProvider,
   type MessagingState,
+  needsPlanSignIn,
   type ReadinessFacts,
   RUNTIMES,
   type Runtime,
   readinessIsResolving,
   readinessPassed,
+  TOKEN_SOURCES,
+  tokenChoiceApplies,
   validateAgentName,
 } from "./flow.js";
-import { PLACEHOLDER_CONNECT_COMMAND } from "./mock-backend.js";
+import { PLACEHOLDER_CONNECT_COMMAND, type PlanSignIn } from "./mock-backend.js";
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   return (
@@ -195,6 +208,18 @@ function AgentNameField({
   );
 }
 
+/**
+ * Placeholder runtime marks. Real vendor logos are licensed assets and are dropped in here once
+ * their usage terms are cleared; the layout reserves the same square either way.
+ */
+function RuntimeMark({ runtime }: { runtime: Runtime }) {
+  return (
+    <span aria-hidden="true" className="otv2-mark" data-runtime={runtime}>
+      {RUNTIME_COPY[runtime].title.slice(0, 1)}
+    </span>
+  );
+}
+
 function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
   return (
     <fieldset className="otv2-fieldset">
@@ -331,46 +356,37 @@ export function AgentStep({
  * environment to check, so there is nothing for pagination to break up: name the agent, say where
  * it should listen, and the connection appears in place.
  */
+/**
+ * The cloud route's first step: who the agent is, what it runs on, and who pays for it. Connecting
+ * a messaging app follows on its own step, as it does for a local agent.
+ */
 export function CloudStep({
   creation,
   draft,
-  messaging,
   onBack,
   onChange,
-  onChooseMessaging,
-  onStart,
+  onSignIn,
   onSubmit,
-  provider,
+  signIn,
 }: {
   creation: CreationState;
   draft: AgentDraft;
-  messaging: MessagingState;
   onBack: () => void;
   onChange: (draft: AgentDraft) => void;
-  onChooseMessaging: (provider: MessagingProvider) => void;
-  onStart: () => void;
+  onSignIn: () => void;
   onSubmit: () => void;
-  provider: MessagingProvider | undefined;
+  signIn: PlanSignIn;
 }) {
   const [touched, setTouched] = useState(false);
-  const created = creation === "created";
+  const tokenApplies = tokenChoiceApplies(draft.cloudRuntime);
+  const runtimeLabel = draft.cloudRuntime ? CLOUD_RUNTIME_COPY[draft.cloudRuntime].title : "";
+  const signedIn = signIn === "signed-in";
+  const submittable = draftIsSubmittable(draft, signedIn);
 
-  // The QR binds an Agent, so it cannot be issued before there is one.
-  useEffect(() => {
-    if (created && provider === "feishu" && messaging.kind === "idle") onStart();
-  }, [created, messaging.kind, onStart, provider]);
-
-  /**
-   * Picking a messaging app is what creates the Agent. There is no separate "create" button: by
-   * the time someone names an agent and says where it should listen, their intent is not in doubt,
-   * and making them press a button whose effect they cannot see only delays the thing they came
-   * for. An invalid name blocks the pick and explains itself instead.
-   */
-  function choose(next: MessagingProvider) {
+  function submit(event: FormEvent) {
+    event.preventDefault();
     setTouched(true);
-    if (!draftIsSubmittable(draft)) return;
-    onChooseMessaging(next);
-    if (!created) onSubmit();
+    if (submittable) onSubmit();
   }
 
   return (
@@ -378,44 +394,115 @@ export function CloudStep({
       <header className="otv2-step__header">
         <h1>{COPY.cloud.title}</h1>
       </header>
-      <form className="otv2-form" onSubmit={(event) => event.preventDefault()}>
+      <form className="otv2-form" onSubmit={submit}>
         <p className="otv2-note otv2-note--offer">
           <Icon name="model" />
           <span>{COPY.cloud.offer}</span>
         </p>
 
-        <AgentNameField
-          draft={draft}
-          locked={created}
-          lockedNote={COPY.cloud.nameFixed}
-          onBlur={() => setTouched(true)}
-          onChange={onChange}
-          showError={touched}
-        />
+        <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
 
         <fieldset className="otv2-fieldset">
-          <legend>{COPY.messaging.providerLabel}</legend>
-          <p className="otv2-fieldset__hint">{COPY.messaging.description}</p>
-          <MessagingPicker onChoose={choose} provider={provider} />
+          <legend>{COPY.cloud.runtimeLabel}</legend>
+          <p className="otv2-fieldset__hint">{COPY.cloud.runtimeHint}</p>
+          <ul className="otv2-choices otv2-choices--grid">
+            {CLOUD_RUNTIMES.map((runtime) => (
+              <li key={runtime}>
+                <button
+                  aria-pressed={draft.cloudRuntime === runtime}
+                  className="otv2-choice otv2-choice--runtime"
+                  onClick={() => onChange({ ...draft, cloudRuntime: runtime, tokenSource: undefined })}
+                  type="button"
+                >
+                  <span aria-hidden="true" className="otv2-mark" data-runtime={runtime}>
+                    {CLOUD_RUNTIME_COPY[runtime].title.slice(0, 1)}
+                  </span>
+                  <span className="otv2-choice__copy">
+                    <strong>{CLOUD_RUNTIME_COPY[runtime].title}</strong>
+                    <span>{CLOUD_RUNTIME_COPY[runtime].description}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="otv2-footnote">{COPY.cloud.runtimeFootnote}</p>
         </fieldset>
 
-        <MessagingConnection messaging={messaging} provider={created ? provider : undefined} />
+        {/*
+          Only a third-party runtime has a plan to attach. OpenTag's own runtime has none, so the
+          question is answered rather than asked — a disabled pair of options would imply a choice.
+        */}
+        {draft.cloudRuntime === undefined ? null : tokenApplies ? (
+          <fieldset className="otv2-fieldset">
+            <legend>{COPY.cloud.tokenLabel}</legend>
+            <p className="otv2-fieldset__hint">{COPY.cloud.tokenHint}</p>
+            <ul className="otv2-choices otv2-choices--grid">
+              {TOKEN_SOURCES.map((source) => (
+                <li key={source}>
+                  <button
+                    aria-pressed={draft.tokenSource === source}
+                    className="otv2-choice otv2-choice--runtime"
+                    onClick={() => onChange({ ...draft, tokenSource: source })}
+                    type="button"
+                  >
+                    <span className="otv2-choice__copy">
+                      <strong>{TOKEN_COPY[source].title}</strong>
+                      <span>{TOKEN_COPY[source].description}</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </fieldset>
+        ) : (
+          <p className="otv2-note">
+            <Icon name="shield" />
+            <span>{COPY.cloud.tokenIncluded}</span>
+          </p>
+        )}
 
-        <StepNav back={created ? undefined : onBack} disabled />
+        {needsPlanSignIn(draft) ? (
+          <PlanSignInPanel onSignIn={onSignIn} runtimeLabel={runtimeLabel} signIn={signIn} />
+        ) : null}
+
+        <StepNav
+          back={onBack}
+          disabled={!submittable || creation !== "idle"}
+          label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
+          submit
+        />
       </form>
     </section>
   );
 }
 
-/**
- * Placeholder runtime marks. Real vendor logos are licensed assets and are dropped in here once
- * their usage terms are cleared; the layout reserves the same square either way.
- */
-function RuntimeMark({ runtime }: { runtime: Runtime }) {
+/** The user's own plan has to be signed into before an agent can spend it. */
+function PlanSignInPanel({
+  onSignIn,
+  runtimeLabel,
+  signIn,
+}: {
+  onSignIn: () => void;
+  runtimeLabel: string;
+  signIn: PlanSignIn;
+}) {
   return (
-    <span aria-hidden="true" className="otv2-mark" data-runtime={runtime}>
-      {RUNTIME_COPY[runtime].title.slice(0, 1)}
-    </span>
+    <div className="otv2-panel otv2-signin">
+      <h2 className="otv2-signin__title">{COPY.cloud.signInTitle(runtimeLabel)}</h2>
+      <p className="otv2-muted">{COPY.cloud.signInHint(runtimeLabel)}</p>
+      <div className="otv2-slot otv2-slot--signin">
+        {signIn === "signed-in" ? (
+          <StatusIndicator className="otv2-status" label={COPY.cloud.signInDone(runtimeLabel)} tone="success" />
+        ) : signIn === "pending" ? (
+          <p className="otv2-waiting" role="status">
+            <span aria-hidden="true" className="otv2-pulse" />
+            {COPY.cloud.signInPending}
+          </p>
+        ) : (
+          <Button onClick={onSignIn}>{COPY.cloud.signInAction(runtimeLabel)}</Button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -623,53 +710,8 @@ export function MessagingStep({
         <p>{COPY.messaging.description}</p>
       </header>
 
-      <ul className="otv2-choices otv2-choices--grid">
-        {MESSAGING_PROVIDERS.map((candidate) => (
-          <li key={candidate}>
-            <button
-              aria-pressed={provider === candidate}
-              className="otv2-choice otv2-choice--runtime"
-              onClick={() => onChoose(candidate)}
-              type="button"
-            >
-              <span aria-hidden="true" className="otv2-mark" data-messaging={candidate}>
-                {COPY.messaging[candidate].title.slice(0, 1)}
-              </span>
-              <span className="otv2-choice__copy">
-                <strong>{COPY.messaging[candidate].title}</strong>
-                <span>{COPY.messaging[candidate].description}</span>
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
-
-      {/*
-        The connection appears here rather than on another screen, and the area keeps its size
-        across both providers so choosing one does not resize the page.
-      */}
-      <div className="otv2-slot otv2-slot--messaging">
-        {provider === "feishu" ? (
-          <div className="otv2-panel otv2-panel--qr">
-            <p className="otv2-muted">{COPY.messaging.feishuIntro}</p>
-            <div className="otv2-qr">
-              {messaging.kind === "waiting" ? (
-                <QrCode value={messaging.qrValue} />
-              ) : (
-                <div className="otv2-qr__placeholder" />
-              )}
-            </div>
-            <p className="otv2-waiting" role="status">
-              <span aria-hidden="true" className="otv2-pulse" />
-              {COPY.messaging.waiting}
-            </p>
-          </div>
-        ) : provider === "slack" ? (
-          <div className="otv2-panel otv2-panel--pending">
-            <p className="otv2-muted">{COPY.messaging.slackPending}</p>
-          </div>
-        ) : null}
-      </div>
+      <MessagingPicker onChoose={onChoose} provider={provider} />
+      <MessagingConnection messaging={messaging} provider={provider} />
 
       <StepNav disabled />
     </section>

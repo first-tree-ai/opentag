@@ -7,6 +7,25 @@
 export const RUNTIMES = ["codex", "claude-code"] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 
+/**
+ * A cloud agent can run OpenTag's own runtime or one of the same coding agents a local one uses.
+ * OpenTag's is listed first because it is the reason to pick cloud at all: nothing to install and
+ * nothing to sign into.
+ */
+export const CLOUD_RUNTIMES = ["opentag", "claude-code", "codex"] as const;
+export type CloudRuntime = (typeof CLOUD_RUNTIMES)[number];
+
+/**
+ * Who pays for the tokens. Only a third-party runtime can run on the user's own plan; OpenTag's
+ * own runtime has no separate plan to attach, so the choice does not arise there.
+ */
+export const TOKEN_SOURCES = ["opentag", "own-plan"] as const;
+export type TokenSource = (typeof TOKEN_SOURCES)[number];
+
+export function tokenChoiceApplies(runtime: CloudRuntime | undefined): boolean {
+  return runtime !== undefined && runtime !== "opentag";
+}
+
 export type Destination = "local" | "cloud";
 
 export const MESSAGING_PROVIDERS = ["feishu", "slack"] as const;
@@ -25,6 +44,8 @@ export interface AgentDraft {
   readonly destination: Destination | undefined;
   readonly name: string;
   readonly runtime: Runtime | undefined;
+  readonly cloudRuntime: CloudRuntime | undefined;
+  readonly tokenSource: TokenSource | undefined;
 }
 
 export type ConnectState =
@@ -66,6 +87,8 @@ export interface FlowFacts {
   readonly connect: ConnectState;
   readonly readiness: ReadinessFacts | undefined;
   readonly creation: CreationState;
+  /** Whether the user's own coding plan has been signed into, when they chose to use one. */
+  readonly planSignedIn: boolean;
   readonly messaging: MessagingState;
 }
 
@@ -84,6 +107,8 @@ export interface FlowFacts {
  * simply the rest of what connecting tells you.
  */
 export const STEP_IDS = ["agent", "computer", "messaging"] as const;
+/** A cloud agent has no Computer to connect, so its route is the two steps that remain. */
+export const CLOUD_STEP_IDS = ["agent", "messaging"] as const;
 export type StepId = (typeof STEP_IDS)[number];
 export type PageId = "destination" | "cloud" | StepId;
 
@@ -97,7 +122,13 @@ export interface FlowState {
 }
 
 export function emptyDraft(): AgentDraft {
-  return { destination: undefined, name: DEFAULT_AGENT_NAME, runtime: undefined };
+  return {
+    destination: undefined,
+    name: DEFAULT_AGENT_NAME,
+    runtime: undefined,
+    cloudRuntime: undefined,
+    tokenSource: undefined,
+  };
 }
 
 export function initialFacts(): FlowFacts {
@@ -108,6 +139,7 @@ export function initialFacts(): FlowFacts {
     connect: { kind: "idle" },
     readiness: undefined,
     creation: "idle",
+    planSignedIn: false,
     messaging: { kind: "idle" },
   };
 }
@@ -122,10 +154,18 @@ export function validateAgentName(value: string): AgentNameError | undefined {
   return undefined;
 }
 
-export function draftIsSubmittable(draft: AgentDraft): boolean {
+/** Whether an agent's own sign-in is still outstanding, which only a own-plan cloud agent has. */
+export function needsPlanSignIn(draft: AgentDraft): boolean {
+  return draft.destination === "cloud" && tokenChoiceApplies(draft.cloudRuntime) && draft.tokenSource === "own-plan";
+}
+
+export function draftIsSubmittable(draft: AgentDraft, planSignedIn = false): boolean {
   if (validateAgentName(draft.name) !== undefined) return false;
-  // A cloud agent has no runtime to pick: OpenTag supplies it.
-  return draft.destination === "cloud" || draft.runtime !== undefined;
+  if (draft.destination !== "cloud") return draft.runtime !== undefined;
+  if (draft.cloudRuntime === undefined) return false;
+  if (!tokenChoiceApplies(draft.cloudRuntime)) return true;
+  if (draft.tokenSource === undefined) return false;
+  return draft.tokenSource === "opentag" || planSignedIn;
 }
 
 export function computerIsConnected(connect: ConnectState): boolean {
@@ -190,14 +230,25 @@ export function readinessIsResolving(readiness: ReadinessFacts | undefined): boo
 }
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
-  const { draft, destinationConfirmed, draftConfirmed, connect, readiness, creation, messaging } = facts;
+  const { draft, destinationConfirmed, draftConfirmed, connect, readiness, creation, planSignedIn, messaging } = facts;
   const destination = draft.destination;
   if (!destination || !destinationConfirmed) {
     return { page: "destination", steps: [], complete: false };
   }
 
   if (destination === "cloud") {
-    return { page: "cloud", steps: [], complete: messaging.kind === "connected" };
+    const agentDone = draftIsSubmittable(draft, planSignedIn) && draftConfirmed && creation === "created";
+    const messagingDone = agentDone && messaging.kind === "connected";
+    const ids = CLOUD_STEP_IDS;
+    const currentIndex = ids.findIndex((id) => !(id === "agent" ? agentDone : messagingDone));
+    return {
+      page: currentIndex === -1 ? "messaging" : ids[currentIndex] === "agent" ? "cloud" : "messaging",
+      steps: ids.map((id, index) => ({
+        id,
+        status: stepStatus(id === "agent" ? agentDone : messagingDone, index, currentIndex),
+      })),
+      complete: messagingDone,
+    };
   }
 
   const done: Record<StepId, boolean> = { agent: false, computer: false, messaging: false };

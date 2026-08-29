@@ -138,8 +138,12 @@ export interface PendingEvent {
   readonly run: () => void;
 }
 
+export type PlanSignIn = "idle" | "pending" | "signed-in";
+
 export interface MockBackend {
   readonly connect: ConnectState;
+  readonly planSignIn: PlanSignIn;
+  readonly startPlanSignIn: () => void;
   readonly readiness: ReadinessFacts | undefined;
   readonly messaging: MessagingState;
   /** Issues the first connect code. Safe to call repeatedly; only the idle state acts on it. */
@@ -162,6 +166,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   /** The result a running check will settle on, held so it can be applied on a clock or by hand. */
   const [checkResult, setCheckResult] = useState<ReadinessFacts | undefined>(undefined);
+  const [planSignIn, setPlanSignIn] = useState<PlanSignIn>("idle");
 
   const timers = useRef<number[]>([]);
   const clearTimers = useCallback(() => {
@@ -258,8 +263,13 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     });
   }, [later, timings.issueMs, timings.scanMs]);
 
+  const startPlanSignIn = useCallback(() => {
+    setPlanSignIn((current) => (current === "idle" ? "pending" : current));
+  }, []);
+
   const reset = useCallback(() => {
     clearTimers();
+    setPlanSignIn("idle");
     setConnect({ kind: "idle" });
     setReadiness(undefined);
     setCheckResult(undefined);
@@ -269,15 +279,18 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   const pending = useMemo<PendingEvent | undefined>(() => {
     if (connect.kind === "issued") return { label: "Connect computer", run: arrive };
     if (checkResult) return { label: "Return check result", run: settleCheck };
+    if (planSignIn === "pending") return { label: "Approve sign-in", run: () => setPlanSignIn("signed-in") };
     if (messaging.kind === "waiting") return { label: "Scan QR code", run: () => setMessaging({ kind: "connected" }) };
     return undefined;
-  }, [arrive, checkResult, connect.kind, messaging.kind, settleCheck]);
+  }, [arrive, checkResult, connect.kind, messaging.kind, planSignIn, settleCheck]);
 
   return useMemo(
     () => ({
       connect,
       readiness,
       messaging,
+      planSignIn,
+      startPlanSignIn,
       issueConnectCode,
       refreshConnectCode: issue,
       startMessaging,
@@ -287,6 +300,18 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       repairNow,
       reset,
     }),
-    [connect, issue, issueConnectCode, messaging, pending, readiness, repairNow, reset, startMessaging],
+    [
+      connect,
+      issue,
+      issueConnectCode,
+      messaging,
+      pending,
+      planSignIn,
+      readiness,
+      repairNow,
+      reset,
+      startMessaging,
+      startPlanSignIn,
+    ],
   );
 }

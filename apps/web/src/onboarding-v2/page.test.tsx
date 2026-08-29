@@ -409,61 +409,100 @@ describe("OnboardingV2Page", () => {
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     }
 
-    it("is one page with no progress rail", async () => {
+    it("has its own two steps and never asks for a Computer", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
       expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
-      // Nothing to install, connect or check, so there are no steps to track.
-      expect(screen.queryByRole("navigation", { name: "Setup progress" })).toBeNull();
+      expect([...document.querySelectorAll(".otv2-rail__label")].map((node) => node.textContent)).toEqual([
+        "Your agent",
+        "Messaging app",
+      ]);
       expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
-      expect(screen.queryByRole("heading", { name: "Computer check" })).toBeNull();
     });
 
-    it("states the runtime instead of offering a choice, and never names it", async () => {
+    it("offers OpenTag's runtime first, then the coding agents", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
-      expect(screen.getByText("OpenTag runs the agent for you, with tokens included.")).toBeTruthy();
-      expect(screen.queryByRole("button", { name: /Codex/ })).toBeNull();
-      expect(screen.queryByRole("button", { name: /Claude Code/ })).toBeNull();
-      // The Context Tree bars the internal runtime from product exposure, so it is never named.
-      expect(document.body.textContent ?? "").not.toMatch(/\bPi\b/);
+      const runtimes = [...document.querySelectorAll(".otv2-choice--runtime strong")].map((n) => n.textContent);
+      expect(runtimes.slice(0, 3)).toEqual(["OpenTag runtime", "Claude Code", "Codex"]);
+      expect(screen.getByText("More runtimes coming soon.")).toBeTruthy();
     });
 
-    it("shows the code as soon as an app is picked, with no create button in the way", async () => {
+    it("answers the token question for its own runtime rather than asking it", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
-      expect(screen.queryByRole("button", { name: "Create agent" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag runtime/ }));
 
-      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+      // No plan can be attached to OpenTag's own runtime, so there is no choice to offer.
+      expect(screen.getByText("Tokens are included with the OpenTag runtime.")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Your own coding plan/ })).toBeNull();
+      expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("asks who pays once a coding agent is chosen", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+
+      expect(screen.getByRole("button", { name: /OpenTag tokens/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Your own coding plan/ })).toBeTruthy();
+      // Nothing is chosen yet, so there is nothing to continue to.
+      expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
+
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag tokens/ }));
+      expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it("holds Continue until an own plan has actually been signed into", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Your own coding plan/ }));
+
+      const next = () => screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+      expect(next().disabled).toBe(true);
+      expect(screen.getByRole("heading", { name: "Sign in to Claude Code" })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "Sign in to Claude Code" }));
+      expect(screen.getByText("Waiting for you to approve it…")).toBeTruthy();
+      expect(next().disabled).toBe(true);
+
+      await advanceMock("Approve sign-in");
+      expect(screen.getByText("Signed in to Claude Code.")).toBeTruthy();
+      expect(next().disabled).toBe(false);
+    });
+
+    it("forgets a token choice when the runtime changes under it", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag tokens/ }));
+      expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
+
+      fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+      expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it("connects a messaging app on its own step, like a local agent", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag runtime/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
-      await advance(ISSUE_MS);
-      expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
-      expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
 
+      expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+      await advance(ISSUE_MS);
       await advanceMock("Scan QR code");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
 
-    it("refuses to create on an invalid name, and says why", async () => {
+    it("never names the runtime OpenTag uses for its own agent", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
-      fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Open Tag" } });
-      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
-      await advance(CREATE_MS);
-
-      expect((document.querySelector(".otv2-field-error") as HTMLElement).textContent).toContain("lowercase letters");
-      expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
-    });
-
-    it("fixes the name once the Agent exists, because it cannot be renamed", async () => {
-      render(<OnboardingV2Page />);
-      await chooseCloud();
-      expect((screen.getByLabelText("Agent name") as HTMLInputElement).readOnly).toBe(false);
-
-      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
-      await advance(CREATE_MS);
-      expect((screen.getByLabelText("Agent name") as HTMLInputElement).readOnly).toBe(true);
-      expect(document.body.textContent).toContain("Your agent's name is set once it's created.");
+      fireEvent.click(screen.getByRole("button", { name: /OpenTag runtime/ }));
+      // The Context Tree bars the internal runtime from product exposure, so it is never named.
+      expect(document.body.textContent ?? "").not.toMatch(/\bPi\b/);
     });
   });
 

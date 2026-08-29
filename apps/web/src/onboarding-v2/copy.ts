@@ -3,7 +3,7 @@
  * than layout during this phase, so it stays out of the components and can be read end to end.
  */
 
-import type { CheckRow, CheckState, Destination, Runtime, StepId } from "./flow.js";
+import type { CheckRow, CheckState, CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {
   agent: "Your agent",
@@ -27,6 +27,17 @@ export const COMING_SOON = "Coming soon";
 export const RUNTIME_COPY: Record<Runtime, { readonly title: string; readonly description: string }> = {
   codex: { title: "Codex", description: "OpenAI" },
   "claude-code": { title: "Claude Code", description: "Anthropic" },
+};
+
+export const CLOUD_RUNTIME_COPY: Record<CloudRuntime, { readonly title: string; readonly description: string }> = {
+  opentag: { title: "OpenTag runtime", description: "Ours, and nothing to set up" },
+  "claude-code": { title: "Claude Code", description: "Anthropic" },
+  codex: { title: "Codex", description: "OpenAI" },
+};
+
+export const TOKEN_COPY: Record<TokenSource, { readonly title: string; readonly description: string }> = {
+  opentag: { title: "OpenTag tokens", description: "Included — nothing to connect" },
+  "own-plan": { title: "Your own coding plan", description: "Use the subscription you already pay for" },
 };
 
 /**
@@ -93,8 +104,24 @@ export const COPY = {
 
   cloud: {
     title: "Create your cloud agent",
-    /** The offer itself, stated up front where it is the first thing read. */
-    offer: "OpenTag runs the agent for you, with tokens included.",
+    runtimeLabel: "Agent runtime",
+    runtimeHint: "The coding agent OpenTag will use.",
+    runtimeFootnote: "More runtimes coming soon.",
+    tokenLabel: "Tokens",
+    tokenHint: "Who pays for the model calls your agent makes.",
+    /** Only a third-party runtime has a plan to attach; OpenTag's own has none. */
+    tokenIncluded: "Tokens are included with the OpenTag runtime.",
+    signInTitle: (runtime: string) => `Sign in to ${runtime}`,
+    signInHint: (runtime: string) =>
+      `We'll open ${runtime} in a new tab. Approve the request there, then come back to this page.`,
+    signInAction: (runtime: string) => `Sign in to ${runtime}`,
+    signInPending: "Waiting for you to approve it…",
+    signInDone: (runtime: string) => `Signed in to ${runtime}.`,
+    /**
+     * Says only what stays true. Tokens are no longer always included — a user can bring their own
+     * coding plan — so that promise belongs to the token section, where it is actually chosen.
+     */
+    offer: "OpenTag runs the agent for you. Nothing to install, and no computer to connect.",
     /**
      * The name is fixed once the Agent exists: the Server has no way to rename one. Picking a
      * messaging app is what creates it, so this says why the field stopped accepting edits.

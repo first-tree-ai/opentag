@@ -219,6 +219,23 @@
   color: var(--brand);
 }
 
+.otv2-signin {
+  gap: var(--space-2);
+}
+
+.otv2-signin__title {
+  margin: 0;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-medium);
+}
+
+/* Holds the tallest of the three sign-in states, so approving one moves nothing below it. */
+.otv2-slot--signin {
+  min-height: 40px;
+  margin-top: var(--space-2);
+  align-items: flex-start;
+}
+
 .otv2-lab__check {
   display: flex;
   gap: var(--space-2);

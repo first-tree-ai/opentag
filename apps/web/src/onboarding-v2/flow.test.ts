@@ -11,7 +11,13 @@ import {
   validateAgentName,
 } from "./flow.js";
 
-const draft: AgentDraft = { destination: "local", name: "opentag", runtime: "codex" };
+const draft: AgentDraft = {
+  destination: "local",
+  name: "opentag",
+  runtime: "codex",
+  cloudRuntime: undefined,
+  tokenSource: undefined,
+};
 /** The facts of a user who has confirmed both of the steps they drive themselves. */
 const confirmed = { draft, destinationConfirmed: true, draftConfirmed: true } as const;
 const connected: ConnectState = { kind: "connected", command: "npm i -g open-tag", computerName: "MacBook Pro" };

@@ -40,6 +40,7 @@ export function OnboardingV2Page() {
     connect: backend.connect,
     readiness: backend.readiness,
     creation,
+    planSignedIn: backend.planSignIn === "signed-in",
     messaging: backend.messaging,
   };
   const flow = deriveFlowState(facts);
@@ -116,13 +117,11 @@ export function OnboardingV2Page() {
             <CloudStep
               creation={creation}
               draft={draft}
-              messaging={backend.messaging}
               onBack={backToDestination}
               onChange={setDraft}
-              onChooseMessaging={setMessagingProvider}
-              onStart={backend.startMessaging}
+              onSignIn={backend.startPlanSignIn}
               onSubmit={submitCloud}
-              provider={messagingProvider}
+              signIn={backend.planSignIn}
             />
           ) : flow.page === "agent" ? (
             <AgentStep

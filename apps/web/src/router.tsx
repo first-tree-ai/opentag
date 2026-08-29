@@ -78,6 +78,7 @@ type AgentAvailability = {
     | "im_provisioning"
     | "im_reauthorization_required"
     | "im_error"
+    | "im_disabled"
     | "handoff_unavailable"
     | "computer_unconfirmed"
     | "handoff_unconfirmed"
@@ -191,7 +192,7 @@ function projectAgentAvailability(
   if (binding.bindingState === "error" || binding.bindingState === "disabled") {
     return {
       state: "action_required",
-      reason: "im_error",
+      reason: binding.bindingState === "disabled" ? "im_disabled" : "im_error",
       lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
@@ -1531,7 +1532,7 @@ function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
   return (
     <section className="agent-recovery-banner" aria-label="Agent needs attention">
       <div>
-        <strong>{availabilityStateLabel(agent.availability.state)}</strong>
+        <strong>{agentRecoveryTitle(agent)}</strong>
         <p>{agentRecoveryMessage(agent)}</p>
       </div>
       {recovery ? (
@@ -2748,16 +2749,27 @@ function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
   return "Linux";
 }
 
-function availabilityStateLabel(state: AgentAvailability["state"]): string {
-  const labels = {
-    ready: "Ready",
-    action_required: "Needs attention",
-    setting_up: "Setting up",
-    not_connected: "Not connected",
-    suspended: "Suspended",
-    unconfirmed: "Unable to confirm",
-  } satisfies Record<AgentAvailability["state"], string>;
-  return labels[state];
+/**
+ * A viewer acts on the dependency that failed, not on the availability state that summarises it, so
+ * the banner is titled by reason. States without a reason cannot reach the banner.
+ */
+function agentRecoveryTitle(agent: AgentDetailView): string {
+  const titles: Record<NonNullable<AgentAvailability["reason"]>, string> = {
+    agent_suspended: "Suspended",
+    agent_unconfirmed: "Status unknown",
+    handoff_unconfirmed: "Status unknown",
+    computer_unconfirmed: "Computer unknown",
+    runtime_unconfirmed: "Computer unknown",
+    computer_offline: "Computer offline",
+    runtime_unavailable: "Agent runtime not available",
+    im_not_connected: "Messaging disconnected",
+    im_provisioning: "Messaging disconnected",
+    im_reauthorization_required: "Messaging disconnected",
+    im_error: "Messaging disconnected",
+    im_disabled: "Messaging disconnected",
+    handoff_unavailable: "Messaging disconnected",
+  };
+  return agent.availability.reason ? titles[agent.availability.reason] : agentAvailabilitySummary(agent);
 }
 
 function sharedConversationLabel(provider: ImBindingSummary["provider"]): string {
@@ -2799,7 +2811,8 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
     agent.availability.reason === "im_not_connected" ||
     agent.availability.reason === "im_provisioning" ||
     agent.availability.reason === "im_reauthorization_required" ||
-    agent.availability.reason === "im_error"
+    agent.availability.reason === "im_error" ||
+    agent.availability.reason === "im_disabled"
   ) {
     return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
@@ -2812,18 +2825,19 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
 
 function agentRecoveryMessage(agent: AgentDetailView): string {
   const messages: Record<NonNullable<AgentAvailability["reason"]>, string> = {
-    agent_suspended: "This Agent is paused and cannot accept new requests.",
-    agent_unconfirmed: "OpenTag could not confirm this Agent's current status.",
-    computer_offline: "The assigned Computer is offline, so new requests cannot start.",
-    runtime_unavailable: "The assigned Computer is not ready to run this Agent.",
-    runtime_unconfirmed: "OpenTag could not confirm whether the assigned Computer is ready.",
-    im_not_connected: "Connect Feishu or Slack so teammates can assign work to this agent.",
+    agent_suspended: "This Agent is paused. Resume it to start receiving messages again.",
+    agent_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
+    handoff_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
+    computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
+    runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
+    computer_offline: "This Agent's Computer is offline. Retrying automatically.",
+    runtime_unavailable: "The Agent runtime is not available. Set up the runtime on this Agent's Computer.",
+    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
     im_provisioning: "The messaging connection is still being set up.",
-    im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
-    im_error: "The messaging connection needs attention before it can receive requests.",
+    im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
+    im_error: "The messaging connection failed. Reconnect Feishu or Slack to receive messages.",
+    im_disabled: "Messaging is turned off for this Agent. Reconnect Feishu or Slack to receive messages.",
     handoff_unavailable: "Messages cannot be sent to this Agent.",
-    computer_unconfirmed: "OpenTag could not confirm the assigned Computer's connection.",
-    handoff_unconfirmed: "OpenTag could not confirm whether messaging is available.",
   };
   return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);
 }

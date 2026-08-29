@@ -1683,7 +1683,7 @@ describe("OpenTag Web App Shell", () => {
 
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("The assigned Computer is offline, so new requests cannot start.")).toBeTruthy();
+    expect(await screen.findByText("This Agent's Computer is offline. Retrying automatically.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View Computer" })).toBeTruthy();
   });
 
@@ -1729,9 +1729,10 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    // The detail status names the same state as the Agent list, so one failure has one name.
-    expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+    // The banner names the dependency that failed, not the internal availability state.
+    expect(screen.getByText("Messaging disconnected")).toBeTruthy();
     expect(screen.queryByText("Action required")).toBeNull();
+    expect(screen.queryByText("Needs attention")).toBeNull();
     expect(screen.getByText("Messages cannot be sent to this Agent.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View messaging" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
@@ -1739,6 +1740,21 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByText("Ada's Mac")).toBeNull();
     expect(screen.queryByText("Runtime")).toBeNull();
+  });
+
+  it("titles the recovery banner by the dependency that failed", async () => {
+    installApi({ bound: true, handoffReady: true, initialStatus: "suspended" });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    expect(screen.getByText("Suspended")).toBeTruthy();
+    expect(screen.getByText("This Agent is paused. Resume it to start receiving messages again.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Manage Agent" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/manage`,
+    );
+    // A paused Agent is not "Ready", so the name carries no competing status of its own.
+    expect(screen.queryByText("Ready")).toBeNull();
   });
 
   it("does not infer an empty contact when messaging evidence cannot be confirmed", async () => {
@@ -1820,7 +1836,7 @@ describe("OpenTag Web App Shell", () => {
     expect(agentReads).toBe(2);
 
     releaseAgentRead();
-    expect(await screen.findByText("The assigned Computer is offline, so new requests cannot start.")).toBeTruthy();
+    expect(await screen.findByText("This Agent's Computer is offline. Retrying automatically.")).toBeTruthy();
   });
 
   it("invalidates a stale Agent detail after a background not-found response", async () => {

@@ -17,6 +17,37 @@ pnpm install
 
 The repository pins pnpm in `package.json`. Do not use npm or Yarn to update dependencies.
 
+## Git hooks and worktrees
+
+`pnpm install` runs the root `prepare` script, which installs three hooks into the clone's hooks directory:
+
+- `pre-commit` runs Biome over the staged files, applies the fixes it can make safely, and stages the result.
+- `pre-push` runs `biome lint .` and `biome format .` over the whole repository.
+- `post-checkout` prepares a worktree that `git worktree add` has just created: it runs `pnpm install` inside the new
+  worktree and reinstalls the hooks, so the worktree is ready to commit and push.
+
+Git shares one hooks directory between a clone and all of its linked worktrees, so a single installation covers every
+worktree. The `post-checkout` payload in `scripts/git-hooks/` is installed by `scripts/install-git-hooks.mjs` rather than
+by lefthook, because it has to run before the new worktree has a `node_modules` directory. Prepare a worktree by hand
+when it was created by a tool that bypasses Git hooks:
+
+```bash
+pnpm worktree:setup
+```
+
+`lefthook.yml` holds the shared configuration; personal overrides belong in an untracked `lefthook-local.yml`. The hooks
+stay out of the way when they are not wanted:
+
+| Variable | Effect |
+| --- | --- |
+| `LEFTHOOK=0` | skip the lefthook gates for one command |
+| `OPENTAG_SKIP_WORKTREE_BOOTSTRAP=1` | skip the worktree bootstrap |
+| `OPENTAG_SKIP_GIT_HOOKS=1` | skip hook installation during `pnpm install` |
+| `OPENTAG_HOOKS_LOG_LEVEL=debug` | print every decision the hook scripts make |
+
+A set `CI` variable disables the bootstrap and the installation as well, so automated checkouts never install local
+hooks.
+
 ## Validation
 
 ```bash

@@ -1,0 +1,23 @@
+#!/bin/sh
+# opentag-managed-hook: installed from scripts/git-hooks/post-checkout by scripts/install-git-hooks.mjs.
+#
+# Git shares one hooks directory across every worktree, so this file is the only entry point that is
+# guaranteed to exist inside a worktree that `git worktree add` has just created. At that moment the
+# worktree has no `node_modules`, so the hook must depend on nothing but `git` and `node`.
+#
+# Arguments: <previous HEAD> <new HEAD> <branch checkout flag>. The bootstrap script decides which
+# checkouts deserve work; a post-checkout hook can never change the outcome of the checkout itself.
+
+set -u
+
+repository_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+bootstrap_script="$repository_root/scripts/worktree-bootstrap.mjs"
+
+[ -f "$bootstrap_script" ] || exit 0
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "[worktree-bootstrap] node is not on PATH; skipping worktree bootstrap" >&2
+  exit 0
+fi
+
+exec node "$bootstrap_script" "$@"

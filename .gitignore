@@ -9,6 +9,9 @@ coverage/
 *.tsbuildinfo
 .portable-release/
 
+# Local tooling overrides
+lefthook-local.yml
+
 # Local environment and logs
 .env
 .env.*

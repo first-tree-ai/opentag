@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import { Banner } from "../ui/design-system.js";
 
 type SlackOAuthIntent = "create" | "reauthorize";
 
@@ -25,6 +26,7 @@ const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
 export interface SlackConfigurationControl {
   /** Starts the first-party OpenTag Slack OAuth install when the server has configured it. */
   startOAuth: (intent?: SlackOAuthIntent) => Promise<boolean>;
+  loading: boolean;
   feedback: ReactNode;
 }
 
@@ -77,21 +79,18 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
   }
 
   return children({
+    loading,
     startOAuth,
     feedback: (
       <>
         {saved ? (
-          <div className="notice success" role="status">
-            Slack configuration is active. A future signed event will verify the App-to-Bot identity before runtime
-            access becomes ready; Request URL verification remains observation-only, and no test message is required to
-            save this generation.
-          </div>
+          <Banner
+            variant="secondary"
+            role="status"
+            description="Slack configuration is active. A future signed event will verify the App-to-Bot identity before runtime access becomes ready; Request URL verification remains observation-only, and no test message is required to save this generation."
+          />
         ) : null}
-        {error ? (
-          <div className="notice error" role="alert">
-            {error}
-          </div>
-        ) : null}
+        {error ? <Banner variant="error" role="alert" description={error} /> : null}
       </>
     ),
   });

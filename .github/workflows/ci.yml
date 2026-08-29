@@ -348,11 +348,38 @@ jobs:
           OPENTAG_HOME="$runtime_home" timeout 5s node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$runtime_home/second.log" 2>&1
           grep -q "already running" "$runtime_home/second.log"
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'
-          computer_id=$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
+          computer_list=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list)
+          printf '%s\n' "$computer_list" | grep -q $'\tonline\t'
+          installation_id=$(node -p \
+            "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
             "$runtime_home/config/computer.json")
+          computer_id=$(node -p \
+            "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).enrollments[0].workspaceComputerId" \
+            "$runtime_home/config/computer-credentials.json")
+          test "$installation_id" != "$computer_id"
+          printf '%s\n' "$computer_list" | awk -F '\t' -v computer_id="$computer_id" \
+            '$2 == computer_id { found = 1 } END { exit found ? 0 : 1 }'
+          if printf '%s\n' "$computer_list" | awk -F '\t' -v installation_id="$installation_id" \
+            '$2 == installation_id { found = 1 } END { exit found ? 0 : 1 }'; then
+            echo "Account Computer list exposed the local installation ID" >&2
+            exit 1
+          fi
           test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/computer.json"
+
+          if OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
+            --name installation-id-agent \
+            --display-name "Installation ID Agent" \
+            --provider codex \
+            --computer "$installation_id" \
+            >"$runtime_home/installation-id-agent.out" \
+            2>"$runtime_home/installation-id-agent.err"; then
+            echo "Agent creation accepted a local installation ID" >&2
+            exit 1
+          fi
+          grep -q "is not enrolled by this Account" "$runtime_home/installation-id-agent.err"
+          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list)" = \
+            "No Agents registered"
 
           agent_create=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
             --name ci-agent \

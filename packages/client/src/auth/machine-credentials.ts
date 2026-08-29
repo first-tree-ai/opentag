@@ -29,6 +29,17 @@ export function readMachineCredentials(home = resolveOpenTagHome()): Promise<Sto
   return readPrivateJson(home, machineCredentialsPath(home), validateMachineCredentials);
 }
 
+/**
+ * Strict, read-only projection for diagnostics. Unlike the runtime reader, this rejects the whole
+ * file when any stored enrollment is unusable, so corruption cannot be reported as a healthy
+ * partial configuration.
+ */
+export function readMachineCredentialsStrict(
+  home = resolveOpenTagHome(),
+): Promise<StoredMachineCredentials | undefined> {
+  return readPrivateJson(home, machineCredentialsPath(home), checkMachineCredentialsStrict);
+}
+
 /** Rejects rather than throwing synchronously, so a caller handling the returned promise sees the refusal. */
 export async function writeMachineCredentialsAtomically(
   credentials: StoredMachineCredentials,
@@ -38,21 +49,30 @@ export async function writeMachineCredentialsAtomically(
   await writePrivateJson(home, machineCredentialsPath(home), checked);
 }
 
+export type BoundAccountComputerResolution =
+  | { status: "disconnected" }
+  | { status: "bound"; credential: MachineEnrollmentCredential }
+  | { status: "ambiguous" };
+
+/**
+ * One canonical home binds at most one Account Computer. Existing files are upgraded only when they
+ * contain exactly one enrollment; zero stays disconnected; multiple fail closed.
+ */
+export function resolveBoundAccountComputer(
+  credentials: StoredMachineCredentials | undefined,
+): BoundAccountComputerResolution {
+  const enrollments = credentials?.enrollments ?? [];
+  if (enrollments.length === 0) return { status: "disconnected" };
+  const credential = enrollments[0];
+  if (enrollments.length > 1 || !credential) return { status: "ambiguous" };
+  return { status: "bound", credential };
+}
+
 export async function storeMachineEnrollmentCredential(
   credential: MachineEnrollmentCredential,
   home = resolveOpenTagHome(),
 ): Promise<StoredMachineCredentials> {
-  const current = (await readMachineCredentials(home)) ?? { version: 1 as const, enrollments: [] };
-  // The enrollment id is the identity; the legacy scope is only compared when both entries carry one,
-  // so a re-enrolment that arrives without it still replaces the credential it supersedes.
-  const enrollments = current.enrollments.filter(
-    (entry) =>
-      entry.workspaceComputerId !== credential.workspaceComputerId &&
-      !(entry.workspaceId !== undefined && entry.workspaceId === credential.workspaceId),
-  );
-  enrollments.push({ ...credential });
-  enrollments.sort((left, right) => left.workspaceComputerId.localeCompare(right.workspaceComputerId));
-  const next: StoredMachineCredentials = { version: 1, enrollments };
+  const next: StoredMachineCredentials = { version: 1, enrollments: [{ ...credential }] };
   await writeMachineCredentialsAtomically(next, home);
   return next;
 }
@@ -79,15 +99,22 @@ function validateMachineCredentials(value: unknown): StoredMachineCredentials {
  * bytes just written. Unusable input is rejected, and the validated projection is what reaches disk.
  */
 function checkMachineCredentialsToWrite(value: StoredMachineCredentials): StoredMachineCredentials {
+  return checkMachineCredentialsStrict(value, "Refusing to write");
+}
+
+function checkMachineCredentialsStrict(
+  value: unknown,
+  failurePrefix = "The stored OpenTag Computer credentials contain",
+): StoredMachineCredentials {
   const enrollmentIds = new Set<string>();
   const enrollments: MachineEnrollmentCredential[] = [];
   for (const [index, entry] of readCredentialsEnvelope(value).entries()) {
     const credential = readEnrollmentEntry(entry);
     if (!credential) {
-      throw new Error(`Refusing to write an unusable OpenTag Computer credential (entry ${index})`);
+      throw new Error(`${failurePrefix} an unusable OpenTag Computer credential (entry ${index})`);
     }
     if (enrollmentIds.has(credential.workspaceComputerId)) {
-      throw new Error(`Refusing to write a duplicate OpenTag Computer enrollment (entry ${index})`);
+      throw new Error(`${failurePrefix} a duplicate OpenTag Computer enrollment (entry ${index})`);
     }
     enrollmentIds.add(credential.workspaceComputerId);
     enrollments.push(credential);

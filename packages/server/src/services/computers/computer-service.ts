@@ -1,7 +1,7 @@
 import type { ComputerRegisterFrame, MeResponse } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { workspaceComputerCredentials, workspaceComputers, workspaces } from "../../db/schema/index.js";
+import { accountComputers, computerCredentials, workspaceComputers } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 
@@ -34,18 +34,30 @@ export class ComputerService {
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
       await this.#lockActiveCredential(transaction, context);
+      const observation = {
+        displayName: frame.displayName,
+        platform: frame.platform,
+        arch: frame.arch,
+        clientVersion: frame.clientVersion,
+        currentInstanceId: frame.instanceId,
+        connectedAt: now,
+        lastSeenAt: now,
+        updatedAt: now,
+      };
       const updated = await transaction
+        .update(accountComputers)
+        .set(observation)
+        .where(
+          and(
+            eq(accountComputers.id, context.workspaceComputerId),
+            eq(accountComputers.currentInstallationId, context.computerId),
+          ),
+        )
+        .returning({ id: accountComputers.id });
+      if (updated.length !== 1) throw unavailableEnrollment();
+      const legacy = await transaction
         .update(workspaceComputers)
-        .set({
-          displayName: frame.displayName,
-          platform: frame.platform,
-          arch: frame.arch,
-          clientVersion: frame.clientVersion,
-          currentInstanceId: frame.instanceId,
-          connectedAt: now,
-          lastSeenAt: now,
-          updatedAt: now,
-        })
+        .set(observation)
         .where(
           and(
             eq(workspaceComputers.id, context.workspaceComputerId),
@@ -55,29 +67,48 @@ export class ComputerService {
           ),
         )
         .returning({ id: workspaceComputers.id });
-      if (updated.length !== 1) throw unavailableEnrollment();
+      if (legacy.length !== 1) throw unavailableEnrollment();
     });
   }
 
   async heartbeat(context: ComputerAuthContext, instanceId: string): Promise<boolean> {
     const now = this.#now();
-    return this.#database.transaction(async (transaction) => {
-      await this.#lockActiveCredential(transaction, context);
-      const updated = await transaction
-        .update(workspaceComputers)
-        .set({ lastSeenAt: now, updatedAt: now })
-        .where(
-          and(
-            eq(workspaceComputers.id, context.workspaceComputerId),
-            eq(workspaceComputers.workspaceId, context.workspaceId),
-            eq(workspaceComputers.computerId, context.computerId),
-            eq(workspaceComputers.currentInstanceId, instanceId),
-            isNull(workspaceComputers.revokedAt),
-          ),
-        )
-        .returning({ id: workspaceComputers.id });
-      return updated.length === 1;
-    });
+    try {
+      return await this.#database.transaction(async (transaction) => {
+        await this.#lockActiveCredential(transaction, context);
+        const heartbeat = { lastSeenAt: now, updatedAt: now };
+        const updated = await transaction
+          .update(accountComputers)
+          .set(heartbeat)
+          .where(
+            and(
+              eq(accountComputers.id, context.workspaceComputerId),
+              eq(accountComputers.currentInstallationId, context.computerId),
+              eq(accountComputers.currentInstanceId, instanceId),
+            ),
+          )
+          .returning({ id: accountComputers.id });
+        if (updated.length !== 1) return false;
+        const legacy = await transaction
+          .update(workspaceComputers)
+          .set(heartbeat)
+          .where(
+            and(
+              eq(workspaceComputers.id, context.workspaceComputerId),
+              eq(workspaceComputers.workspaceId, context.workspaceId),
+              eq(workspaceComputers.computerId, context.computerId),
+              eq(workspaceComputers.currentInstanceId, instanceId),
+              isNull(workspaceComputers.revokedAt),
+            ),
+          )
+          .returning({ id: workspaceComputers.id });
+        if (legacy.length !== 1) throw new LegacyProjectionMismatchError();
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof LegacyProjectionMismatchError) return false;
+      throw error;
+    }
   }
 
   async assertActiveCredential(context: ComputerAuthContext): Promise<void> {
@@ -86,33 +117,57 @@ export class ComputerService {
 
   async disconnect(workspaceComputerId: string, instanceId: string): Promise<boolean> {
     const now = this.#now();
-    const updated = await this.#database
-      .update(workspaceComputers)
-      .set({ currentInstanceId: null, connectedAt: null, lastSeenAt: now, updatedAt: now })
-      .where(and(eq(workspaceComputers.id, workspaceComputerId), eq(workspaceComputers.currentInstanceId, instanceId)))
-      .returning({ id: workspaceComputers.id });
-    return updated.length === 1;
+    try {
+      return await this.#database.transaction(async (transaction) => {
+        const disconnection = {
+          currentInstanceId: null,
+          connectedAt: null,
+          lastSeenAt: now,
+          updatedAt: now,
+        };
+        const updated = await transaction
+          .update(accountComputers)
+          .set(disconnection)
+          .where(and(eq(accountComputers.id, workspaceComputerId), eq(accountComputers.currentInstanceId, instanceId)))
+          .returning({ id: accountComputers.id });
+        if (updated.length !== 1) return false;
+        const legacy = await transaction
+          .update(workspaceComputers)
+          .set(disconnection)
+          .where(
+            and(eq(workspaceComputers.id, workspaceComputerId), eq(workspaceComputers.currentInstanceId, instanceId)),
+          )
+          .returning({ id: workspaceComputers.id });
+        if (legacy.length !== 1) throw new LegacyProjectionMismatchError();
+        return true;
+      });
+    } catch (error) {
+      if (error instanceof LegacyProjectionMismatchError) return false;
+      throw error;
+    }
   }
 
   async #lockActiveCredential(transaction: DatabaseTransaction, context: ComputerAuthContext): Promise<void> {
-    const [workspace] = await transaction
-      .select({ id: workspaces.id })
-      .from(workspaces)
-      .where(eq(workspaces.id, context.workspaceId))
+    const [accountComputer] = await transaction
+      .select({ id: accountComputers.id })
+      .from(accountComputers)
+      .where(eq(accountComputers.id, context.workspaceComputerId))
       .limit(1)
       .for("update");
-    if (!workspace) throw unavailableEnrollment();
+    if (!accountComputer) throw unavailableEnrollment();
     const [active] = await transaction
-      .select({ id: workspaceComputerCredentials.id })
-      .from(workspaceComputerCredentials)
-      .innerJoin(workspaceComputers, eq(workspaceComputers.id, workspaceComputerCredentials.workspaceComputerId))
+      .select({ id: computerCredentials.id })
+      .from(computerCredentials)
+      .innerJoin(accountComputers, eq(accountComputers.id, computerCredentials.computerId))
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
       .where(
         and(
-          eq(workspaceComputerCredentials.id, context.credentialId),
-          eq(workspaceComputers.id, context.workspaceComputerId),
+          eq(computerCredentials.id, context.credentialId),
+          eq(accountComputers.id, context.workspaceComputerId),
+          eq(accountComputers.currentInstallationId, context.computerId),
           eq(workspaceComputers.workspaceId, context.workspaceId),
           eq(workspaceComputers.computerId, context.computerId),
-          isNull(workspaceComputerCredentials.revokedAt),
+          isNull(computerCredentials.revokedAt),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -120,6 +175,8 @@ export class ComputerService {
     if (!active) throw unavailableEnrollment();
   }
 }
+
+class LegacyProjectionMismatchError extends Error {}
 
 function unavailableEnrollment(): AuthServiceError {
   return new AuthServiceError(

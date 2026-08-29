@@ -1062,6 +1062,26 @@ describe("database migrations", () => {
           select id from agents where id in (${activeAgentId}, ${deletedAgentId})
         `;
         expect(preservedAgentIds).toHaveLength(2);
+        const [expansion] = await sql<
+          {
+            account_computers: number;
+            computer_credentials: number;
+            agents_filled: number;
+            placements_filled: number;
+          }[]
+        >`
+          select
+            (select count(*)::int from account_computers) as account_computers,
+            (select count(*)::int from computer_credentials) as computer_credentials,
+            (select count(*)::int from agents where computer_id is not null) as agents_filled,
+            (select count(*)::int from session_placements where computer_id is not null) as placements_filled
+        `;
+        expect(expansion).toEqual({
+          account_computers: 4,
+          computer_credentials: 0,
+          agents_filled: 2,
+          placements_filled: 2,
+        });
         const repairedWorkspaces = await sql<{ completed: boolean; name: string }[]>`
           select name, setup_completed_at is not null as completed
           from workspaces

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   computers,
   imBindings,
@@ -52,12 +53,22 @@ async function fixture() {
     })
     .returning();
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  await client.database.insert(accountComputers).values({
+    id: workspaceComputer.id,
+    ownerAccountId: bootstrap.userId,
+    currentInstallationId: computer.id,
+    displayName: "workstation",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "0.0.1",
+  });
   const [agent] = await client.database
     .insert(agents)
     .values({
       workspaceId: bootstrap.workspaceId,
       createdByUserId: bootstrap.userId,
       workspaceComputerId: workspaceComputer.id,
+      computerId: workspaceComputer.id,
       name: "atlas",
       displayName: "Atlas",
       runtimeProvider: "codex",
@@ -153,7 +164,7 @@ describe("Task debug queries", () => {
   it("projects a top-level Session and its stored Turn report", async () => {
     const value = await fixture();
     try {
-      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
       expect(listed).toMatchObject({
         nextCursor: null,
         tasks: [
@@ -167,7 +178,7 @@ describe("Task debug queries", () => {
         ],
       });
 
-      const detail = await value.service.get(value.bootstrap.workspaceId, value.session.id, { limit: 50 });
+      const detail = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 50 });
       expect(detail.turns).toHaveLength(1);
       expect(detail.turns[0]).toMatchObject({
         attention: "direct",
@@ -207,7 +218,7 @@ describe("Task debug queries", () => {
         .set({ content: event.message.content, providerContext: event.providerContext })
         .where(eq(imMessages.id, value.message.id));
 
-      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
       expect(listed.tasks[0]?.title).toBe("ask <@U_ALICE> to review");
     } finally {
       await value.sql.end();
@@ -244,7 +255,7 @@ describe("Task debug queries", () => {
         .set({ content: event.message.content, providerContext: event.providerContext })
         .where(eq(imMessages.id, value.message.id));
 
-      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
       expect(listed.tasks[0]?.title).toBe("ask @Alice to review");
     } finally {
       await value.sql.end();
@@ -278,7 +289,7 @@ describe("Task debug queries", () => {
         .set({ content: event.message.content, providerContext: event.providerContext })
         .where(eq(imMessages.id, value.message.id));
 
-      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
       expect(listed.tasks[0]?.title).toBe("@Alice take another look at the regression");
     } finally {
       await value.sql.end();
@@ -295,9 +306,9 @@ describe("Task debug queries", () => {
       await expect(value.service.get(crypto.randomUUID(), value.session.id, { limit: 50 })).rejects.toMatchObject({
         statusCode: 404,
       });
-      await expect(
-        value.service.list(value.bootstrap.workspaceId, { cursor: "invalid", limit: 50 }),
-      ).rejects.toBeInstanceOf(TaskQueryError);
+      await expect(value.service.list(value.bootstrap.userId, { cursor: "invalid", limit: 50 })).rejects.toBeInstanceOf(
+        TaskQueryError,
+      );
     } finally {
       await value.sql.end();
     }
@@ -338,7 +349,7 @@ describe("Task debug queries", () => {
         expiresAt: new Date("2026-08-28T01:00:00.000Z"),
       });
 
-      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
       expect(listed.tasks[0]).toMatchObject({
         status: "completed",
         title: "Use the newer requirement.",
@@ -376,7 +387,7 @@ describe("Task debug queries", () => {
         })
         .returning();
       if (!pendingDelivery) throw new Error("Deferred steer delivery fixture was not created");
-      const detail = await value.service.get(value.bootstrap.workspaceId, value.session.id, { limit: 50 });
+      const detail = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 50 });
       expect(detail.turns.find((turn) => turn.deliveryId === pendingDelivery.id)).toMatchObject({
         delivery: { state: "pending" },
         absorbedBy: null,

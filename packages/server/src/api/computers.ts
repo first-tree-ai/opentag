@@ -48,6 +48,7 @@ export function registerComputerRoutes(
               bootstrapCommand: buildComputerConnectCommand({ code: issued.code, environment, publicUrl }),
               expiresIn: issued.expiresIn,
               issuedAt: issued.issuedAt.toISOString(),
+              mode: issued.mode,
             }),
           );
       },

@@ -110,7 +110,7 @@ async function seedAccount(
   });
   const outstanding = await machineAuth.issueForWorkspaceAdmin(input.accountId, input.workspaceId);
   const agent = await agentService.createForWorkspace(input.accountId, input.workspaceId, {
-    computerId,
+    computerId: enrollment.workspaceComputerId,
     displayName: "Lab Agent",
     name: input.agentName,
     runtimeProvider: "codex",
@@ -144,9 +144,12 @@ async function seedAccount(
     .values({ imBindingId: imBinding.id, channelId: "channel-1", conversationKind: "channel", kind: "channel" })
     .returning({ id: sessions.id });
   if (!session) throw new Error("Session fixture was not created");
-  await database
-    .insert(sessionPlacements)
-    .values({ sessionId: session.id, workspaceComputerId: enrollment.workspaceComputerId, generation: 1 });
+  await database.insert(sessionPlacements).values({
+    sessionId: session.id,
+    workspaceComputerId: enrollment.workspaceComputerId,
+    computerId: enrollment.workspaceComputerId,
+    generation: 1,
+  });
   await database.update(workspaces).set({ setupCompletedAt: now }).where(eq(workspaces.id, input.workspaceId));
   return {
     accountId: input.accountId,

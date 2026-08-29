@@ -34,6 +34,8 @@ export {
   CreateAgentRuntimeConfigSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type RebindAgentComputerRequest,
+  RebindAgentComputerRequestSchema,
   type ReceiveMode,
   ReceiveModeSchema,
   type UpdateAgentRequest,
@@ -54,10 +56,18 @@ export {
   ConnectCodeIssueRequestSchema,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
+  EmailAddressSchema,
+  type EmailSignInRequest,
+  EmailSignInRequestSchema,
+  type EmailSignUpRequest,
+  EmailSignUpRequestSchema,
   type MeResponse,
   MeResponseSchema,
   type MeWorkspace,
   MeWorkspaceSchema,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  PasswordSchema,
   type RefreshTokenRequest,
   RefreshTokenRequestSchema,
   type RefreshTokenResponse,
@@ -81,8 +91,12 @@ export {
   ServiceIdSchema,
 } from "./channel.js";
 export {
+  type AccountComputerConnectCodeCreateRequest,
+  AccountComputerConnectCodeCreateRequestSchema,
   type AccountComputerConnectCodeIssueRequest,
   AccountComputerConnectCodeIssueRequestSchema,
+  type AccountComputerConnectCodeRepairRequest,
+  AccountComputerConnectCodeRepairRequestSchema,
   type ComputerConnectCodeExchangeRequest,
   ComputerConnectCodeExchangeRequestSchema,
   type ComputerConnectCodeExchangeResponse,
@@ -91,6 +105,8 @@ export {
   ComputerConnectCodeIssueRequestSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
+  type ComputerConnectCodeMode,
+  ComputerConnectCodeModeSchema,
   type ComputerConnectionStatus,
   ComputerConnectionStatusSchema,
   type ComputerImCliReadiness,
@@ -132,6 +148,7 @@ export {
   ACCOUNT_SETUP_COMPLETE_PATH,
   ACCOUNT_TASKS_PATH,
   AGENT_BY_ID_TEMPLATE,
+  AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
@@ -144,6 +161,7 @@ export {
   AGENT_USAGE_TEMPLATE,
   API_V1_PREFIX,
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
@@ -354,6 +372,7 @@ export {
 } from "./runtime-protocol.js";
 export * from "./session.js";
 export * from "./session-cli.js";
+export * from "./sign-in-destination.js";
 export * from "./task.js";
 export {
   type CompleteWorkspaceSetupRequest,

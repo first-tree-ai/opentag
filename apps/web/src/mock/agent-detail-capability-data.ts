@@ -3,7 +3,7 @@ export type AgentIntegrationPreview = {
   readonly identity: string;
   readonly purpose: string;
   readonly scope: string;
-  readonly connection: "Connected" | "Needs attention";
+  readonly connection: "Connected" | "Connection error";
   readonly availability: "Available" | "Unavailable";
 };
 
@@ -21,7 +21,7 @@ export const agentIntegrationPreviews: readonly AgentIntegrationPreview[] = [
     identity: "OpenTag preview",
     purpose: "Read issue context while planning and reviewing work.",
     scope: "Shared catalog · read only",
-    connection: "Needs attention",
+    connection: "Connection error",
     availability: "Unavailable",
   },
 ];

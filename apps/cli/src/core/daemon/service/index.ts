@@ -121,6 +121,12 @@ export async function createDaemonServiceManager(
       if (!credentials?.enrollments.length) {
         throw new DaemonServiceError("CONFIGURATION", "This Computer is not enrolled; run computer connect first");
       }
+      if (credentials.enrollments.length !== 1) {
+        throw new DaemonServiceError(
+          "CONFIGURATION",
+          "This OpenTag home has multiple enrollments and cannot bind to one Account Computer",
+        );
+      }
       return mutate("install", () => backend.installAndStart());
     },
     start: () => mutate("start", () => backend.start()),

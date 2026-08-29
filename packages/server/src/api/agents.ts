@@ -1,5 +1,6 @@
 import {
   AGENT_BY_ID_TEMPLATE,
+  AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
@@ -11,6 +12,7 @@ import {
   AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
+  RebindAgentComputerRequestSchema,
   UpdateAgentRequestSchema,
   WORKSPACE_AGENTS_TEMPLATE,
 } from "@opentag/shared";
@@ -102,6 +104,15 @@ export function registerAgentRoutes(
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const response = AgentAdminConfigSchema.parse(
       await agentService.reactivateById(authenticatedUserId(request), agentId),
+    );
+    return reply.code(200).send(response);
+  });
+
+  app.post(AGENT_COMPUTER_REBIND_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const { computerId } = parseRequest(RebindAgentComputerRequestSchema, request.body);
+    const response = AgentAdminConfigSchema.parse(
+      await agentService.rebindById(authenticatedUserId(request), agentId, computerId),
     );
     return reply.code(200).send(response);
   });

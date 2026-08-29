@@ -5,7 +5,7 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
-import { Button, Field } from "./ui/design-system.js";
+import { Button, Field, KumoInputAreaControl, KumoInputControl, KumoSelectControl } from "./ui/design-system.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 
@@ -53,7 +53,10 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
     setSaving("runtime");
     setMessage(undefined);
     try {
-      const runtimeConfig = runtimeConfigurationFromForm(new FormData(event.currentTarget));
+      const runtimeConfig: UpdateAgentRuntimeConfig = {
+        model: nullableText(modelDraft),
+        reasoningEffort: nullableText(reasoningDraft),
+      };
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
       setConfig(updated);
       setModelDraft(updated.runtimeConfig.model ?? "");
@@ -101,22 +104,26 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
   }
 
   return (
-    <div className={`agent-runtime-settings${section === "all" ? "" : " agent-settings-section-page"}`}>
+    <div className="grid gap-6" data-ui={section === "all" ? "runtime-settings" : "settings-section"}>
       {section !== "instructions" ? (
-        <section aria-labelledby="execution-heading" className="agent-runtime-section">
-          <header className="agent-runtime-section__header">
+        <section
+          aria-labelledby="execution-heading"
+          className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+        >
+          <header className="flex items-start justify-between gap-3">
             <div>
               <ExecutionHeading id="execution-heading">
                 {section === "execution" ? "Model & reasoning" : "Execution"}
               </ExecutionHeading>
             </div>
           </header>
-          {section !== "execution" ? <p className="agent-runtime-provider">Provider: {providerName}</p> : null}
-          <form className="agent-runtime-edit-form" onSubmit={saveRuntime}>
-            <div className="agent-runtime-field-grid">
+          {section !== "execution" ? <p className="text-sm text-kumo-subtle">Provider: {providerName}</p> : null}
+          <form className="grid gap-4" onSubmit={saveRuntime}>
+            <div className="grid gap-4 sm:grid-cols-2">
               <Field htmlFor={fieldId("model")} label="Model">
-                <select
+                <KumoSelectControl
                   id={fieldId("model")}
+                  aria-label="Model"
                   value={modelSelection}
                   onChange={(event) => {
                     const selection = event.currentTarget.value;
@@ -136,13 +143,11 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                     </option>
                   ))}
                   <option value={CUSTOM_MODEL_OPTION}>Custom model ID…</option>
-                </select>
+                </KumoSelectControl>
                 {modelSelection === CUSTOM_MODEL_OPTION ? (
-                  <div className="agent-runtime-custom-model">
-                    <label className="ds-field__label" htmlFor={fieldId("custom-model")}>
-                      Custom model ID
-                    </label>
-                    <input
+                  <div className="mt-2">
+                    <KumoInputControl
+                      aria-label="Custom model ID"
                       autoComplete="off"
                       id={fieldId("custom-model")}
                       required
@@ -154,11 +159,11 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                     />
                   </div>
                 ) : null}
-                <input name="model" readOnly type="hidden" value={modelDraft} />
               </Field>
               <Field htmlFor={fieldId("reasoning-effort")} label="Reasoning level">
-                <select
+                <KumoSelectControl
                   id={fieldId("reasoning-effort")}
+                  aria-label="Reasoning level"
                   name="reasoningEffort"
                   value={reasoningDraft}
                   onChange={(event) => {
@@ -175,13 +180,13 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                       {effort}
                     </option>
                   ))}
-                </select>
+                </KumoSelectControl>
               </Field>
             </div>
             {runtimeDirty ? (
-              <div className="dirty-bar">
-                <span>Unsaved changes</span>
-                <div className="dirty-actions">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
+                <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+                <div className="flex flex-wrap justify-end gap-2">
                   <Button
                     disabled={Boolean(saving)}
                     variant="ghost"
@@ -206,17 +211,20 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
       ) : null}
 
       {section !== "execution" ? (
-        <section aria-labelledby="agent-instructions-heading" className="agent-runtime-section">
-          <header className="agent-runtime-section__header">
+        <section
+          aria-labelledby="agent-instructions-heading"
+          className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+        >
+          <header className="flex items-start justify-between gap-3">
             <div>
               <InstructionsHeading id="agent-instructions-heading">
                 {section === "instructions" ? "Instructions" : "Agent instructions"}
               </InstructionsHeading>
             </div>
           </header>
-          <form className="agent-instructions-form" onSubmit={saveInstructions}>
+          <form className="grid gap-4" onSubmit={saveInstructions}>
             <Field htmlFor={fieldId("instructions")} label="Instructions">
-              <textarea
+              <KumoInputAreaControl
                 id={fieldId("instructions")}
                 name="instructions"
                 rows={8}
@@ -228,9 +236,9 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
               />
             </Field>
             {instructionsDirty ? (
-              <div className="dirty-bar">
-                <span>Unsaved changes</span>
-                <div className="dirty-actions">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
+                <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+                <div className="flex flex-wrap justify-end gap-2">
                   <Button
                     disabled={Boolean(saving)}
                     variant="ghost"
@@ -263,7 +271,7 @@ function modelSelectionFor(model: string | null, suggestions: readonly string[])
 function SaveMessage({ message }: { message: { kind: "error" | "success"; text: string } }) {
   return (
     <p
-      className={message.kind === "error" ? "error" : "agent-runtime-save-message"}
+      className={message.kind === "error" ? "text-sm text-kumo-danger" : "text-sm text-kumo-success"}
       role={message.kind === "error" ? "alert" : "status"}
     >
       {message.text}

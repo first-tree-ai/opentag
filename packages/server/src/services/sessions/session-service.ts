@@ -12,6 +12,7 @@ import type {
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   imMessageDeliveries,
@@ -21,6 +22,7 @@ import {
   sessions,
   workspaceComputers,
 } from "../../db/schema/index.js";
+import { projectedComputerId } from "../computers/ownership-projections.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -264,6 +266,7 @@ export class SessionService {
         .values({
           sessionId: created.id,
           workspaceComputerId: creator.placement.workspaceComputerId,
+          computerId: await projectedComputerId(transaction, creator.placement.workspaceComputerId),
           generation: 1,
           updatedAt: now,
         })
@@ -412,7 +415,7 @@ export class SessionService {
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
     return this.#database.transaction(async (transaction) => {
       const [agent] = await transaction
-        .select({ status: agents.status })
+        .select({ createdByUserId: agents.createdByUserId, status: agents.status })
         .from(agents)
         .where(eq(agents.id, route.agentId))
         .limit(1)
@@ -444,6 +447,7 @@ export class SessionService {
       const authorityPlacementIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
       const authorityPlacements = await transaction
         .select({
+          computerId: sessionPlacements.computerId,
           generation: sessionPlacements.generation,
           sessionId: sessionPlacements.sessionId,
           workspaceComputerId: sessionPlacements.workspaceComputerId,
@@ -460,6 +464,20 @@ export class SessionService {
         sourcePlacement.generation !== route.sourcePlacementGeneration ||
         targetPlacement?.workspaceComputerId !== route.targetWorkspaceComputerId ||
         targetPlacement.generation !== route.targetPlacementGeneration
+      ) {
+        return { admitted: false } as const;
+      }
+
+      const placementComputerIds = [...new Set(authorityPlacements.map(({ computerId }) => computerId))].sort();
+      const placementComputers = await transaction
+        .select({ id: accountComputers.id, ownerAccountId: accountComputers.ownerAccountId })
+        .from(accountComputers)
+        .where(inArray(accountComputers.id, placementComputerIds))
+        .orderBy(accountComputers.id)
+        .for("update");
+      if (
+        placementComputers.length !== placementComputerIds.length ||
+        placementComputers.some(({ ownerAccountId }) => ownerAccountId !== agent.createdByUserId)
       ) {
         return { admitted: false } as const;
       }
@@ -649,7 +667,12 @@ export class SessionService {
         .where(and(eq(imMessageDeliveries.sessionId, sessionId), eq(imMessageDeliveries.state, "pending")));
       const [placement] = await transaction
         .update(sessionPlacements)
-        .set({ workspaceComputerId, generation, updatedAt: now })
+        .set({
+          workspaceComputerId,
+          computerId: await projectedComputerId(transaction, workspaceComputerId),
+          generation,
+          updatedAt: now,
+        })
         .where(eq(sessionPlacements.sessionId, sessionId))
         .returning();
       if (!placement) throw new SessionServiceError("SESSION_NOT_FOUND", "The Session placement was not found");
@@ -689,7 +712,9 @@ export class SessionService {
         session: sessions,
         placement: sessionPlacements,
         agentId: agents.id,
+        agentCreatedByUserId: agents.createdByUserId,
         computerId: workspaceComputers.computerId,
+        computerOwnerAccountId: accountComputers.ownerAccountId,
         connectionInstanceId: workspaceComputers.currentInstanceId,
         workspaceComputerId: workspaceComputers.id,
       })
@@ -697,6 +722,7 @@ export class SessionService {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .innerJoin(
         workspaceComputers,
         and(
@@ -716,6 +742,9 @@ export class SessionService {
       .limit(1)
       .for("update");
     if (!source) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
+    if (source.computerOwnerAccountId !== source.agentCreatedByUserId) {
+      throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session Computer requires Agent rebind");
+    }
     if (
       source.computerId !== input.computerId ||
       source.connectionInstanceId !== input.connectionInstanceId ||
@@ -736,13 +765,16 @@ export class SessionService {
       .select({
         session: sessions,
         placement: sessionPlacements,
+        agentCreatedByUserId: agents.createdByUserId,
         computerId: workspaceComputers.computerId,
+        computerOwnerAccountId: accountComputers.ownerAccountId,
         workspaceComputerId: workspaceComputers.id,
       })
       .from(sessions)
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .innerJoin(
         workspaceComputers,
         and(
@@ -755,6 +787,9 @@ export class SessionService {
       .limit(1)
       .for("update");
     if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not active");
+    if (target.computerOwnerAccountId !== target.agentCreatedByUserId) {
+      throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session Computer requires Agent rebind");
+    }
     if (
       target.session.imBindingId !== sourceSession.imBindingId ||
       target.session.channelId !== sourceSession.channelId ||
@@ -890,7 +925,13 @@ export class SessionService {
       (
         await transaction
           .insert(sessionPlacements)
-          .values({ sessionId: session.id, workspaceComputerId, generation: 1, updatedAt: now })
+          .values({
+            sessionId: session.id,
+            workspaceComputerId,
+            computerId: await projectedComputerId(transaction, workspaceComputerId),
+            generation: 1,
+            updatedAt: now,
+          })
           .onConflictDoNothing()
           .returning()
       )[0];

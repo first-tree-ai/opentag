@@ -7,6 +7,7 @@ export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
+export const AGENT_COMPUTER_REBIND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/computer/rebind`;
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
 export const AGENT_IM_BINDING_HANDOFF_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/handoff`;
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
@@ -51,6 +52,12 @@ export const HTTP_PATHS = {
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
   authBrowserLogout: `${API_V1_PREFIX}/auth/browser/logout`,
   authDevCallback: `${API_V1_PREFIX}/auth/dev/callback`,
+  /*
+   * Below `/auth/email/` rather than Better Auth's own `/sign-in/email`, so these stay OpenTag routes that call into
+   * the library server-side. Nothing under the base path is published except the OAuth callback.
+   */
+  authEmailSignIn: `${API_V1_PREFIX}/auth/email/sign-in`,
+  authEmailSignUp: `${API_V1_PREFIX}/auth/email/sign-up`,
   authGoogleStart: `${API_V1_PREFIX}/auth/google/start`,
   authProviders: `${API_V1_PREFIX}/auth/providers`,
   authRefresh: `${API_V1_PREFIX}/auth/refresh`,
@@ -103,6 +110,10 @@ export function agentSuspendPath(agentId: string): string {
 
 export function agentReactivatePath(agentId: string): string {
   return `${agentByIdPath(agentId)}/reactivate`;
+}
+
+export function agentComputerRebindPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/computer/rebind`;
 }
 
 export function agentImBindingPath(agentId: string): string {

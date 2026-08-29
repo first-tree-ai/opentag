@@ -79,6 +79,13 @@ const ServerEnvironmentSchema = z
     OPENTAG_ENV_EXPLICIT: z.boolean(),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
+    /*
+     * Defaults to off because turning it on opens Account creation to anyone who can reach the server. Every other
+     * sign-in method the server offers requires something a deployment already granted — a Google client, a loopback
+     * development bypass, a connect code — so this is the first one whose default could hand out Accounts, and that
+     * has to be a decision rather than an inheritance.
+     */
+    OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: booleanString("false"),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
@@ -207,6 +214,13 @@ export interface ServerConfig {
   channel: ChannelConfig;
   environment: ChannelName;
   devAuth?: { email: string };
+  /**
+   * Whether an address and password may both create an Account and sign one in.
+   *
+   * One flag rather than two: a deployment that accepts passwords but refuses to issue them would have no way to give
+   * anyone the first one, since nothing else in the product sets a password.
+   */
+  emailPasswordAuth: boolean;
   google?: { clientId: string; clientSecret: string };
   slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
   host: string;
@@ -264,6 +278,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_ENV_EXPLICIT: environment.OPENTAG_ENV !== undefined,
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
     OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
+    OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
@@ -291,6 +306,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     ...(parsed.OPENTAG_DEV_AUTH_BYPASS_ENABLED && parsed.OPENTAG_DEV_AUTH_EMAIL
       ? { devAuth: { email: parsed.OPENTAG_DEV_AUTH_EMAIL } }
       : {}),
+    emailPasswordAuth: parsed.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     ...(parsed.OPENTAG_GOOGLE_CLIENT_ID && parsed.OPENTAG_GOOGLE_CLIENT_SECRET
       ? { google: { clientId: parsed.OPENTAG_GOOGLE_CLIENT_ID, clientSecret: parsed.OPENTAG_GOOGLE_CLIENT_SECRET } }
       : {}),

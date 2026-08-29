@@ -83,10 +83,21 @@ export function clearSlackOAuthContextCookie(reply: FastifyReply, path: string, 
   ]);
 }
 
-export function requireBrowserMutationSecurity(request: FastifyRequest, publicOrigin: string): void {
+/**
+ * The half of the browser mutation fence that applies before any session exists.
+ *
+ * A sign-in has no double-submit token to present yet — it is the request that mints one — so the origin check is on
+ * its own what stops another site from posting credentials here. Requiring the token too would make signing in
+ * impossible rather than safer.
+ */
+export function requireBrowserOrigin(request: FastifyRequest, publicOrigin: string): void {
   if (request.headers.origin !== publicOrigin) {
     throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The browser request origin is invalid", 403);
   }
+}
+
+export function requireBrowserMutationSecurity(request: FastifyRequest, publicOrigin: string): void {
+  requireBrowserOrigin(request, publicOrigin);
   const cookies = parseCookies(request.headers.cookie);
   const cookieToken = cookies[BROWSER_COOKIE_NAMES.csrf];
   const headerToken = request.headers["x-opentag-csrf"];

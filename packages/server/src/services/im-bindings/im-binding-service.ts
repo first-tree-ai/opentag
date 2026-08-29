@@ -22,6 +22,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   imMessages,
@@ -367,8 +368,10 @@ export class ImBindingService {
         binding: imBindings,
         slackInstallation: slackInstallations,
         boundAgentId: imBindings.agentId,
+        agentCreatedByUserId: agents.createdByUserId,
         agentWorkspaceComputerId: agents.workspaceComputerId,
         agentStatus: agents.status,
+        computerOwnerAccountId: accountComputers.ownerAccountId,
         placementComputerId: sessionPlacements.workspaceComputerId,
         placementGeneration: sessionPlacements.generation,
         workspaceComputerId: workspaceComputers.id,
@@ -379,6 +382,7 @@ export class ImBindingService {
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .leftJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .leftJoin(
         workspaceComputers,
         and(
@@ -401,6 +405,7 @@ export class ImBindingService {
       !row ||
       row.sessionKind === "internal" ||
       row.boundAgentId !== request.agentId ||
+      row.computerOwnerAccountId !== row.agentCreatedByUserId ||
       row.agentWorkspaceComputerId !== computerAuth.workspaceComputerId ||
       row.workspaceComputerId !== computerAuth.workspaceComputerId ||
       row.workspaceId !== computerAuth.workspaceId ||
@@ -1514,6 +1519,13 @@ export class ImBindingService {
       }
       const existingInstallation = currentAppTeamInstallation ?? currentWorkspaceInstallation;
       if (existingInstallation) {
+        if (existingInstallation.agentId !== input.agentId) {
+          throw new ImBindingServiceError(
+            "SLACK_APP_TEAM_ALREADY_BOUND",
+            409,
+            "This Slack App installation is already bound to another OpenTag Agent",
+          );
+        }
         const currentCredential = this.#decodeSlackCredential(existingInstallation.encryptedCredential);
         const sameIdentity =
           existingInstallation.externalAppId === input.appId &&
@@ -1558,6 +1570,7 @@ export class ImBindingService {
           .update(slackInstallations)
           .set({
             status: "active",
+            agentId: input.agentId,
             externalAppId: input.appId,
             externalTeamId: input.teamId,
             externalEnterpriseId: input.enterpriseId ?? null,
@@ -1646,6 +1659,7 @@ export class ImBindingService {
       .insert(slackInstallations)
       .values({
         workspaceId: input.workspaceId,
+        agentId: input.agentId,
         status: "active",
         externalAppId: input.appId,
         externalTeamId: input.teamId,

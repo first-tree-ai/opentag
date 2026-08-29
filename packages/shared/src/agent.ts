@@ -100,7 +100,18 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
       platform: z.enum(["darwin", "linux", "win32"]),
     })
     .strict(),
+  /**
+   * Present when the Agent creator does not own the bound Computer. The Agent stays visible; execution
+   * is rejected until the creator rebinds it to an owned Computer.
+   */
+  requiresComputerRebind: z.boolean().optional(),
 }).strict();
+
+export const RebindAgentComputerRequestSchema = z
+  .object({
+    computerId: z.string().uuid(),
+  })
+  .strict();
 
 export const AGENT_USAGE_WINDOW_DAYS = 30;
 export const AGENT_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
@@ -266,4 +277,5 @@ export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
+export type RebindAgentComputerRequest = z.infer<typeof RebindAgentComputerRequestSchema>;
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;

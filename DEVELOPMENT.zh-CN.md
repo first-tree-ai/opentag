@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-26
+> Last synced with: 2026-08-29
 
 ## 前置要求
 
@@ -17,6 +17,34 @@ pnpm install
 ```
 
 仓库已在 `package.json` 中固定 pnpm 版本。请勿使用 npm 或 Yarn 更新依赖。
+
+## Git hooks 与 worktree
+
+`pnpm install` 会执行根目录的 `prepare` 脚本，将三个 hook 安装到该 clone 的 hooks 目录：
+
+- `pre-commit` 对暂存文件运行 Biome，应用可安全自动修复的改动并重新暂存结果。
+- `pre-push` 对整个仓库运行 `biome lint .` 和 `biome format .`。
+- `post-checkout` 负责准备 `git worktree add` 刚创建的 worktree：在新 worktree 中执行 `pnpm install` 并重新安装
+  hooks，使该 worktree 可以直接 commit 和 push。
+
+Git 的 hooks 目录由 clone 及其全部 linked worktree 共享，因此安装一次即可覆盖所有 worktree。`scripts/git-hooks/` 中的
+`post-checkout` 由 `scripts/install-git-hooks.mjs` 安装，而不是交给 lefthook，因为它必须在新 worktree 还没有
+`node_modules` 时就能运行。如果 worktree 由绕过 Git hooks 的工具创建，可手动准备：
+
+```bash
+pnpm worktree:setup
+```
+
+共享配置位于 `lefthook.yml`；个人覆盖配置应放在未纳入版本控制的 `lefthook-local.yml`。在不需要时，这些 hook 可以让开：
+
+| 变量 | 作用 |
+| --- | --- |
+| `LEFTHOOK=0` | 跳过本次命令的 lefthook 检查 |
+| `OPENTAG_SKIP_WORKTREE_BOOTSTRAP=1` | 跳过 worktree 引导 |
+| `OPENTAG_SKIP_GIT_HOOKS=1` | 跳过 `pnpm install` 期间的 hook 安装 |
+| `OPENTAG_HOOKS_LOG_LEVEL=debug` | 打印 hook 脚本的全部判断过程 |
+
+设置 `CI` 变量同样会禁用引导与安装，因此自动化 checkout 不会安装本地 hooks。
 
 ## 验证
 

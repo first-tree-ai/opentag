@@ -8,6 +8,8 @@
     "node": "^22.13.0 || ^24.0.0 || ^26.0.0"
   },
   "scripts": {
+    "prepare": "node scripts/install-git-hooks.mjs",
+    "worktree:setup": "node scripts/worktree-bootstrap.mjs --force",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "check": "biome check . && node scripts/third-party-notices.mjs --check",
@@ -24,6 +26,7 @@
     "@biomejs/biome": "^2.4.0",
     "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "3.2.7",
+    "lefthook": "^2.1.12",
     "tsdown": "^0.21.4",
     "tsx": "^4.21.0",
     "turbo": "^2.5.0",

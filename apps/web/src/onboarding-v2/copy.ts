@@ -58,11 +58,11 @@ export const CHECK_COPY: Record<
     },
   },
   "messaging-cli": {
-    title: () => "Feishu CLI is installed",
+    title: () => "Lark CLI is installed",
     detail: {
       pending: () => "Looking for lark-cli.",
       passed: () => "Found on this computer.",
-      failed: () => "We need lark-cli to send Feishu messages.",
+      failed: () => "We need lark-cli to send Lark messages.",
       blocked: () => "",
     },
   },
@@ -90,19 +90,17 @@ export const COPY = {
     runtimeLabel: "Agent runtime",
     runtimeHint: "The coding agent OpenTag will use.",
     runtimeFootnote: "More runtimes coming soon.",
-    /**
-     * A cloud agent has no runtime to choose, but the user still deserves to know what they are
-     * getting. Stated as a fact rather than shown as a disabled picker, which would imply a choice
-     * exists. Which runtime OpenTag uses is deliberately not named: that is our business, and the
-     * Context Tree bars the internal one from product exposure.
-     */
-    cloudRuntimeNote: "OpenTag runs the agent for you, with tokens included. There's nothing to install.",
   },
 
   cloud: {
     title: "Create your cloud agent",
-    description: "Nothing to install and nothing to connect — name it and say where it should listen.",
-    create: "Create agent",
+    /** The offer itself, stated up front where it is the first thing read. */
+    offer: "OpenTag runs the agent for you, with tokens included.",
+    /**
+     * The name is fixed once the Agent exists: the Server has no way to rename one. Picking a
+     * messaging app is what creates it, so this says why the field stopped accepting edits.
+     */
+    nameFixed: "Your agent's name is set once it's created.",
   },
 
   connect: {
@@ -147,10 +145,15 @@ export const COPY = {
     title: "Connect your messaging app",
     description: "Pick the app your team already works in.",
     providerLabel: "Messaging app",
-    feishu: { title: "Feishu", description: "Also called Lark" },
+    /**
+     * Lark is the name this product goes by in English; Feishu is the same app under its
+     * mainland China name. The provider's id stays `feishu`, because that is the Server's own
+     * vocabulary — only what the reader sees changes here.
+     */
+    feishu: { title: "Lark", description: "Also called Feishu" },
     slack: { title: "Slack", description: "Your Slack workspace" },
-    feishuIntro: "Scan this with Feishu. You'll finish the last step inside Feishu itself.",
-    qrAlt: "Scan this QR code in Feishu",
+    feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
+    qrAlt: "Scan this QR code in Lark",
     waiting: "Waiting for you to scan…",
     /** The Slack connection has not been designed yet; the step reserves its place and says so. */
     slackPending: "The Slack connection isn't designed yet.",
@@ -158,6 +161,6 @@ export const COPY = {
 
   done: {
     title: (name: string) => `${name} is ready.`,
-    description: (name: string) => `Tag @${name} in Feishu to put it to work.`,
+    description: (name: string) => `Tag @${name} in Lark to put it to work.`,
   },
 } as const;

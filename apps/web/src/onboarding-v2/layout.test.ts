@@ -89,6 +89,8 @@ describe("onboarding flow layout", () => {
 
   it("keeps the command block wrapping rather than forcing a horizontal scroll", () => {
     expect(declarationValue(".otv2-command__code", "white-space")).toBe("pre-wrap");
-    expect(declarationValue(".otv2-command__code", "overflow-wrap")).toBe("anywhere");
+    expect(declarationValue(".otv2-command__code", "overflow-wrap")).toBe("break-word");
+    // `break-all` splits short tokens like `sh`, which reads as a typo in a runnable command.
+    expect(() => declarationValue(".otv2-command__code", "word-break")).toThrow();
   });
 });

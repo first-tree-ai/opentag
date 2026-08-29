@@ -148,13 +148,16 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByText("# Install the OpenTag CLI and connect this computer to OpenTag.")).toBeTruthy();
   });
 
-  it("issues the same install command shape the Server builds", async () => {
+  it("installs through the portable installer, which needs nothing already on the machine", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
-    // `npm i -g <package> && <bin> computer connect --server <url> -- <32-char base64url code>`
     const command = screen.getByText(/opentag computer connect/).textContent ?? "";
+    // No `npm`: that would require a working Node before OpenTag could be installed at all.
+    expect(command).not.toContain("npm");
+    expect(command).toContain("curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh");
+    // The shim is not on this shell's PATH yet, so the connect call has to name its directory.
     expect(command).toMatch(
-      /npm i -g open-tag && opentag computer connect --server https:\/\/\S+ -- [A-Za-z0-9_-]{32}$/,
+      /PATH="\$HOME\/\.local\/bin\S* opentag computer connect --server \S+ -- [A-Za-z0-9_-]{32}$/,
     );
   });
 
@@ -168,7 +171,7 @@ describe("OnboardingV2Page", () => {
     await act(async () => undefined);
     const payload = writeText.mock.calls[0]?.[0] as string;
     expect(payload.startsWith("# Install the OpenTag CLI")).toBe(true);
-    expect(payload).toContain("npm i -g open-tag");
+    expect(payload).toContain("install.sh | sh");
   });
 
   it("counts the command's validity down and offers a fresh one once it expires", async () => {
@@ -192,7 +195,7 @@ describe("OnboardingV2Page", () => {
     await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
-    expect(screen.getByText("Feishu CLI is installed")).toBeTruthy();
+    expect(screen.getByText("Lark CLI is installed")).toBeTruthy();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 
@@ -295,7 +298,7 @@ describe("OnboardingV2Page", () => {
     await reachConnectStep();
     await reachCheckStep();
     await settleCheck();
-    expect(screen.getByText("We need lark-cli to send Feishu messages.")).toBeTruthy();
+    expect(screen.getByText("We need lark-cli to send Lark messages.")).toBeTruthy();
 
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Ran doctor --fix" }));
@@ -304,7 +307,7 @@ describe("OnboardingV2Page", () => {
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("creates the Agent only after a runnable route is proven, then asks for Feishu", async () => {
+  it("creates the Agent only after a runnable route is proven, then asks for Lark", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
     await reachCheckStep();
@@ -314,7 +317,7 @@ describe("OnboardingV2Page", () => {
     await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
     await advance(ISSUE_MS);
     await advanceMock("Scan QR code");
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
@@ -332,7 +335,7 @@ describe("OnboardingV2Page", () => {
       await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("button", { name: "Scan QR code" })).toBeTruthy();
     });
@@ -369,22 +372,22 @@ describe("OnboardingV2Page", () => {
       render(<OnboardingV2Page />);
       await reachMessagingStep();
 
-      expect(screen.getByRole("button", { name: /Feishu/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
       expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
       // Nothing is issued, and nothing is waiting, until one is picked.
       expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
       expect((screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement).disabled).toBe(true);
     });
 
-    it("brings up the Feishu code in place, without leaving the step", async () => {
+    it("brings up the Lark code in place, without leaving the step", async () => {
       render(<OnboardingV2Page />);
       await reachMessagingStep();
 
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
       expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Feishu/ }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("button", { name: /Lark/ }).getAttribute("aria-pressed")).toBe("true");
     });
 
     it("holds Slack's place without pretending it is built", async () => {
@@ -417,23 +420,19 @@ describe("OnboardingV2Page", () => {
     it("states the runtime instead of offering a choice, and never names it", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
-      expect(screen.getByText(/OpenTag runs the agent for you/)).toBeTruthy();
+      expect(screen.getByText("OpenTag runs the agent for you, with tokens included.")).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Codex/ })).toBeNull();
       expect(screen.queryByRole("button", { name: /Claude Code/ })).toBeNull();
       // The Context Tree bars the internal runtime from product exposure, so it is never named.
       expect(document.body.textContent ?? "").not.toMatch(/\bPi\b/);
     });
 
-    it("creates the Agent as the page is submitted, then shows the code in place", async () => {
+    it("shows the code as soon as an app is picked, with no create button in the way", async () => {
       render(<OnboardingV2Page />);
       await chooseCloud();
+      expect(screen.queryByRole("button", { name: "Create agent" })).toBeNull();
 
-      const create = () => screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
-      expect(create().disabled).toBe(true);
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
-      expect(create().disabled).toBe(false);
-
-      fireEvent.click(create());
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(CREATE_MS);
       await advance(ISSUE_MS);
       expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
@@ -441,6 +440,28 @@ describe("OnboardingV2Page", () => {
 
       await advanceMock("Scan QR code");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+    });
+
+    it("refuses to create on an invalid name, and says why", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Open Tag" } });
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+      await advance(CREATE_MS);
+
+      expect((document.querySelector(".otv2-field-error") as HTMLElement).textContent).toContain("lowercase letters");
+      expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+    });
+
+    it("fixes the name once the Agent exists, because it cannot be renamed", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      expect((screen.getByLabelText("Agent name") as HTMLInputElement).readOnly).toBe(false);
+
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+      await advance(CREATE_MS);
+      expect((screen.getByLabelText("Agent name") as HTMLInputElement).readOnly).toBe(true);
+      expect(document.body.textContent).toContain("Your agent's name is set once it's created.");
     });
   });
 

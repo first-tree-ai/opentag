@@ -24,7 +24,7 @@ export const SCENARIOS: readonly MockScenario[] = [
   {
     id: "all-ready",
     title: "Everything ready",
-    description: "The runtime and the Feishu CLI are both installed and signed in.",
+    description: "The runtime and the Lark CLI are both installed and signed in.",
     runtime: "ready",
     messagingCli: "ready",
   },
@@ -44,14 +44,14 @@ export const SCENARIOS: readonly MockScenario[] = [
   },
   {
     id: "messaging-install",
-    title: "Feishu CLI missing",
+    title: "Lark CLI missing",
     description: "The easiest failure to miss: the agent is perfect but nothing can be delivered.",
     runtime: "ready",
     messagingCli: "install",
   },
   {
     id: "both-failing",
-    title: "Runtime and Feishu CLI missing",
+    title: "Runtime and Lark CLI missing",
     description: "Two failures at once, to check the plural copy and the list rhythm.",
     runtime: "install",
     messagingCli: "install",
@@ -87,9 +87,24 @@ const TIMINGS: Record<MockSpeed, Timings> = {
 
 const COMPUTER_NAME = "MacBook Pro";
 const SERVER_URL = "https://opentag.ai";
+const INSTALLER_URL = "https://download.opentag.build/releases/prod/install.sh";
 
+/**
+ * The portable installer rather than npm. `npm i -g open-tag` needs a working Node on the machine
+ * before OpenTag can be installed at all, which is a prerequisite the first command of onboarding
+ * cannot assume; the portable release carries its own runtime and verifies its own checksum.
+ *
+ * The shim lands in `~/.local/bin`, which the installer adds to future shells but not to the one
+ * running this line, so the connect call names that directory explicitly.
+ *
+ * Note this deliberately differs from what the Server's `buildComputerConnectCommand` produces
+ * today. The Server still emits the npm form; changing it is a separate change to real behaviour.
+ */
 function connectCommand(code: string): string {
-  return `npm i -g open-tag && opentag computer connect --server ${SERVER_URL} -- ${code}`;
+  return [
+    `curl -fsSL ${INSTALLER_URL} | sh`,
+    `PATH="$HOME/.local/bin\${PATH:+:$PATH}" opentag computer connect --server ${SERVER_URL} -- ${code}`,
+  ].join(" && ");
 }
 
 /**

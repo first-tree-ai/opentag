@@ -204,6 +204,15 @@
   line-height: var(--lh-prose);
 }
 
+/* The cloud route's offer, stated where it is the first thing read. Declared after the base rule
+   so its colours win on equal specificity. */
+.otv2-note--offer {
+  border-color: var(--brand);
+  background: var(--brand-light);
+  color: var(--foreground);
+  font-size: var(--text-subsection);
+}
+
 .otv2-note .ds-icon {
   flex: 0 0 auto;
   margin-top: 3px;
@@ -544,6 +553,17 @@
   visibility: hidden;
 }
 
+/* The same reserved line carries a plain note when the field is locked; that is not a failure. */
+.otv2-field-error[data-note="true"] {
+  color: var(--muted);
+}
+
+.otv2-name[readonly] {
+  background: var(--surface-soft);
+  color: var(--muted);
+  cursor: default;
+}
+
 /* The block's shape while its command is still being issued: same box, nothing legible in it. */
 .otv2-command-pending {
   opacity: 0.35;
@@ -555,7 +575,8 @@
   display: flex;
   gap: var(--space-3);
   align-items: flex-start;
-  min-height: 84px;
+  /* Four wrapped lines of the install-and-connect command, so its exact wrapping cannot resize it. */
+  min-height: 108px;
   padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   border: 1px solid var(--strong-border);
   border-radius: var(--radius-control);
@@ -579,12 +600,12 @@
   white-space: pre-wrap;
 
   /*
-   * Break at any character rather than preferring hyphens. A connect code is a fixed 32 characters
-   * but its hyphens and underscores are break opportunities, so otherwise two codes of the same
-   * length wrap to a different number of lines and the block changes height when one arrives.
+   * Break between words, and inside one only when that word alone will not fit. `break-all` and
+   * `anywhere` both split short tokens — `sh` was landing across two lines — which reads as a
+   * typo in a command someone is about to run. The block reserves the height of its longest
+   * wrapping below, so a code whose hyphens fall differently still cannot resize it.
    */
-  word-break: break-all;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .otv2-command__comment {

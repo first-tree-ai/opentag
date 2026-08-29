@@ -135,11 +135,15 @@ export function DestinationStep({
 /** The name field: label, the line explaining it, the input, and an error line that always exists. */
 function AgentNameField({
   draft,
+  locked = false,
+  lockedNote,
   onBlur,
   onChange,
   showError,
 }: {
   draft: AgentDraft;
+  locked?: boolean;
+  lockedNote?: string;
   onBlur: () => void;
   onChange: (draft: AgentDraft) => void;
   showError: boolean;
@@ -174,11 +178,18 @@ function AgentNameField({
         onBlur={onBlur}
         onChange={(event) => onChange({ ...draft, name: event.target.value })}
         placeholder={DEFAULT_AGENT_NAME}
+        readOnly={locked}
         spellCheck={false}
         value={draft.name}
       />
-      <p aria-live="polite" className="otv2-field-error" data-empty={errorText ? undefined : "true"} id={errorId}>
-        {errorText ?? "\u00a0"}
+      <p
+        aria-live="polite"
+        className="otv2-field-error"
+        data-empty={errorText || locked ? undefined : "true"}
+        data-note={!errorText && locked ? "true" : undefined}
+        id={errorId}
+      >
+        {errorText ?? (locked ? lockedNote : undefined) ?? "\u00a0"}
       </p>
     </div>
   );
@@ -349,39 +360,48 @@ export function CloudStep({
     if (created && provider === "feishu" && messaging.kind === "idle") onStart();
   }, [created, messaging.kind, onStart, provider]);
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
+  /**
+   * Picking a messaging app is what creates the Agent. There is no separate "create" button: by
+   * the time someone names an agent and says where it should listen, their intent is not in doubt,
+   * and making them press a button whose effect they cannot see only delays the thing they came
+   * for. An invalid name blocks the pick and explains itself instead.
+   */
+  function choose(next: MessagingProvider) {
     setTouched(true);
-    if (draftIsSubmittable(draft)) onSubmit();
+    if (!draftIsSubmittable(draft)) return;
+    onChooseMessaging(next);
+    if (!created) onSubmit();
   }
 
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
         <h1>{COPY.cloud.title}</h1>
-        <p>{COPY.cloud.description}</p>
       </header>
-      <form className="otv2-form" onSubmit={submit}>
-        <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
-        <p className="otv2-note">
+      <form className="otv2-form" onSubmit={(event) => event.preventDefault()}>
+        <p className="otv2-note otv2-note--offer">
           <Icon name="model" />
-          <span>{COPY.agent.cloudRuntimeNote}</span>
+          <span>{COPY.cloud.offer}</span>
         </p>
+
+        <AgentNameField
+          draft={draft}
+          locked={created}
+          lockedNote={COPY.cloud.nameFixed}
+          onBlur={() => setTouched(true)}
+          onChange={onChange}
+          showError={touched}
+        />
 
         <fieldset className="otv2-fieldset">
           <legend>{COPY.messaging.providerLabel}</legend>
           <p className="otv2-fieldset__hint">{COPY.messaging.description}</p>
-          <MessagingPicker onChoose={onChooseMessaging} provider={provider} />
+          <MessagingPicker onChoose={choose} provider={provider} />
         </fieldset>
 
-        {created ? <MessagingConnection messaging={messaging} provider={provider} /> : null}
+        <MessagingConnection messaging={messaging} provider={created ? provider : undefined} />
 
-        <StepNav
-          back={created ? undefined : onBack}
-          disabled={provider === undefined || creation !== "idle"}
-          label={creation === "creating" ? COPY.check.creating : COPY.cloud.create}
-          submit
-        />
+        <StepNav back={created ? undefined : onBack} disabled />
       </form>
     </section>
   );

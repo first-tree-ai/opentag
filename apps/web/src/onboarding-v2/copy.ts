@@ -83,6 +83,7 @@ export const COPY = {
   brand: "OpenTag",
 
   nav: {
+    retry: "Try again",
     back: "Go back",
     next: "Continue",
   },
@@ -201,6 +202,8 @@ export const COPY = {
     createAgent: "We couldn't create your agent.",
     messaging: "We couldn't start connecting your messaging app.",
     feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
+    resume: "We couldn't check what your account already has.",
+    rebind: "We couldn't move your agent onto this computer.",
     completeSetup: "Your agent is ready, but we couldn't finish setting up your account. Reload to try again.",
   },
 } as const;

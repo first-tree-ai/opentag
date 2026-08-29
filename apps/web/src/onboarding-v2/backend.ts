@@ -47,6 +47,10 @@ export interface OnboardingBackend {
    * again — and the second attempt collides with the first on name uniqueness.
    */
   readonly resuming: boolean;
+  /** Why the Account could not be read, if it could not. */
+  readonly resumeError: string | undefined;
+  /** Reads it again. A failed read has to be recoverable: this route is the gate's only exit. */
+  readonly retryResume: () => void;
   readonly startPlanSignIn: () => void;
   /** Issues the first connect code. Safe to call repeatedly; only an idle connection acts on it. */
   readonly issueConnectCode: () => void;

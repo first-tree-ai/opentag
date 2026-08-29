@@ -9,6 +9,7 @@ import {
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
@@ -156,6 +157,18 @@ export class BrowserApi {
     return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
+    });
+  }
+
+  /**
+   * Moves an Agent onto another Computer. The runtime provider is immutable, but the machine is
+   * not: a laptop is replaced, reinstalled, or enrolled again, and the Agent has to follow it.
+   */
+  rebindAgentComputer(agentId: string, computerId: string): Promise<AgentAdminConfig> {
+    return this.request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      body: JSON.stringify({ computerId }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 

@@ -54,6 +54,24 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
    * slow would flash an empty page and one that never lands would leave one, with nothing to look
    * at and nothing to press.
    */
+  /*
+   * A read that failed is not "you must be new". Starting over from here ends at a name collision,
+   * so the reader is told and given the read back rather than a form they cannot submit.
+   */
+  if (backend.resumeError) {
+    return (
+      <div
+        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
+        data-ui="onboarding-v2-resume-error"
+      >
+        <p className="text-sm text-kumo-danger m-0" role="alert">
+          {backend.resumeError}
+        </p>
+        <Button onClick={backend.retryResume}>{COPY.nav.retry}</Button>
+      </div>
+    );
+  }
+
   if (backend.resuming) {
     return (
       <div

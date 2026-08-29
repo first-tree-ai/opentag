@@ -332,6 +332,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       planSignIn,
       // The mock has nothing to read back; it is the flow as it runs the first time.
       resuming: false,
+      resumeError: undefined,
+      retryResume: () => undefined,
       startPlanSignIn,
       issueConnectCode,
       refreshConnectCode: issue,

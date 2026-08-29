@@ -7,7 +7,7 @@
  */
 
 import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { OnboardingV2Page } from "./page.js";
@@ -126,20 +126,10 @@ describe("resume at 6b6920a", () => {
     expect(container.innerHTML).not.toBe("");
   });
 
-  it("does not leave Go back on a resumed step it cannot leave", async () => {
-    // `draftConfirmed || resumed` makes the confirmation permanent, so Go back sets a flag that is
-    // immediately overridden and the same step re-renders. The control stays enabled and does
-    // nothing when pressed.
-    resumeOntoDepartedComputer();
-
-    render(<OnboardingV2Page />);
-    await settle();
-    await tick(5_000);
-    const back = screen.queryByRole("button", { name: "Go back" });
-    if (!back) return;
-    fireEvent.click(back);
-    await settle();
-
-    expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
-  });
+  /*
+   * Superseded. This asked "if Go back is still here, does pressing it move?" and returned early
+   * when it was not, which made it pass without asserting anything once the control was withheld.
+   * Its replacement — `hides Go back on a resumed step rather than showing one that cannot act` —
+   * asserts the absence directly, and that the footer keeps its slot.
+   */
 });

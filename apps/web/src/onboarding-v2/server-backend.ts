@@ -104,6 +104,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    */
   const [planSignIn] = useState<PlanSignIn>("idle");
   const [resuming, setResuming] = useState(true);
+  const [resumeError, setResumeError] = useState<string>();
+  /** Discards the reply of a read the reader has already asked to redo. */
+  const resumeRun = useRef(0);
 
   /** The Computer this run enrolled. Messaging and creation both need it after the step is left. */
   const computerId = useRef<string | undefined>(undefined);
@@ -114,6 +117,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const creationRef = useRef<CreationState>("idle");
   const feishuTimer = useRef(0);
   /** The connection as it stands, readable from a callback without making an updater impure. */
+  /** The Computer the Agent is bound to on the Server, which a new machine has to replace. */
+  const boundComputerId = useRef<string | undefined>(undefined);
+  const agentRef = useRef<CreatedAgent | undefined>(undefined);
+  agentRef.current = agent;
   const connectRef = useRef<ConnectState>({ kind: "idle" });
   connectRef.current = connect;
   const mounted = useRef(true);
@@ -128,7 +135,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, []);
 
   /**
-   * What the Account already has, read once on arrival.
+   * What the Account already has.
    *
    * This flow is the setup gate's only exit, which makes re-entry ordinary rather than exceptional:
    * a Slack install leaves the page and the gate sends the return trip back here, a tab is
@@ -136,20 +143,18 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    * that already exists — and the second attempt is refused, because an Account's active Agent
    * names are unique. So the page picks up where the Server says it is.
    */
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      try {
+  const readAccount = useCallback(async () => {
+    const mine = resumeRun.current + 1;
+    resumeRun.current = mine;
+    const live = () => mounted.current && resumeRun.current === mine;
+    setResumeError(undefined);
+    setResuming(true);
+    try {
+      {
         const { agents } = await browserApi.agents();
-        if (!active || !mounted.current) return;
-        const existing = agents.find(
-          (candidate) => candidate.status === "active" && candidate.requiresComputerRebind !== true,
-        );
-        if (!existing) return;
-        setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
-        creationRef.current = "created";
-        setCreation("created");
-        computerId.current = existing.computer.computerId;
+        if (!live()) return;
+        const active = agents.filter((candidate) => candidate.status === "active");
+        if (active.length === 0) return;
 
         /*
          * The Agent names its Computer, but that is a foreign key rather than a state: it says which
@@ -159,33 +164,48 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
          * read, not inferred. One extra round trip buys not saying something untrue.
          */
         const { computers } = await browserApi.computers();
-        if (!active || !mounted.current) return;
-        const enrolled = computers.find((candidate) => candidate.computerId === existing.computer.computerId);
-        if (enrolled?.connectionStatus === "online") {
+        if (!live()) return;
+        const online = new Map(
+          computers.filter((one) => one.connectionStatus === "online").map((one) => [one.computerId, one]),
+        );
+        // Where the Account has more than one, the Agent whose Computer is actually there is the one
+        // this run can finish. Otherwise the first, which is the Server's own order.
+        const existing = active.find((candidate) => online.has(candidate.computer.computerId)) ?? active[0];
+        if (!existing) return;
+        setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
+        creationRef.current = "created";
+        setCreation("created");
+        boundComputerId.current = existing.computer.computerId;
+        const enrolled = online.get(existing.computer.computerId);
+        if (enrolled) {
+          computerId.current = enrolled.computerId;
           setComputer(enrolled);
           // Already enrolled, so this step has nothing to ask for: it reports the machine rather
           // than issuing a command that would spend its validity unseen.
           setConnect({ kind: "connected", command: "", computerName: enrolled.displayName });
         }
         // An offline or missing Computer leaves the connection idle, which is what makes the step
-        // issue a fresh code and offer the reader a way to reconnect.
+        // issue a fresh code — and whatever machine answers it gets bound to this Agent.
 
         const binding = await browserApi.imBinding(existing.id);
-        if (!active || !mounted.current) return;
+        if (!live()) return;
         // Only a live binding finishes the flow. One that is provisioning, broken or disabled is a
         // messaging app still to be connected, which is exactly the step this lands on.
         if (binding?.bindingState === "active") setMessaging({ kind: "connected" });
-      } catch {
-        // A failed read is not a failed setup. The flow simply starts from the beginning, which is
-        // what it would have done anyway, so this says nothing to the reader.
-      } finally {
-        if (active && mounted.current) setResuming(false);
       }
-    })();
-    return () => {
-      active = false;
-    };
+    } catch (cause) {
+      // Reading is the only way to tell a returning Account from a new one, so a failed read is
+      // not "you must be new": starting over from here ends at a name collision. It is reported,
+      // and the reader is given the read back rather than a form they cannot submit.
+      if (live()) setResumeError(errorMessage(cause, COPY.errors.resume));
+    } finally {
+      if (live()) setResuming(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void readAccount();
+  }, [readAccount]);
 
   const issue = useCallback(async () => {
     const mine = attempt.current + 1;
@@ -239,10 +259,36 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           // move past — so nothing is adopted unless the connection is still the one waiting.
           const waiting = connectRef.current;
           if (!arrived || waiting.kind !== "issued") return;
-          computerId.current = arrived.computerId;
-          setComputer(arrived);
-          setConnectionError(undefined);
-          setConnect({ kind: "connected", command: waiting.command, computerName: arrived.displayName });
+          const settled = () => {
+            computerId.current = arrived.computerId;
+            setComputer(arrived);
+            setConnectionError(undefined);
+            setConnect({ kind: "connected", command: waiting.command, computerName: arrived.displayName });
+          };
+          /*
+           * A machine that is not the one the Agent is bound to has to become it. An Agent's
+           * Computer can be changed after creation even though its runtime cannot, so the honest
+           * answer to "my laptop was replaced" is to move the Agent — not to insist the old machine
+           * comes back, and not to quietly finish setup with the Agent still pointing at a machine
+           * nobody checked. Until the move lands, this is not a connection worth reporting.
+           */
+          const resumedAgent = agentRef.current;
+          if (resumedAgent && boundComputerId.current !== arrived.computerId) {
+            void browserApi.rebindAgentComputer(resumedAgent.id, arrived.computerId).then(
+              () => {
+                if (!mounted.current || attempt.current !== mine) return;
+                boundComputerId.current = arrived.computerId;
+                settled();
+              },
+              (cause: unknown) => {
+                if (mounted.current && attempt.current === mine) {
+                  setActionError(errorMessage(cause, COPY.errors.rebind));
+                }
+              },
+            );
+            return;
+          }
+          settled();
         },
         (cause: unknown) => {
           if (mounted.current && attempt.current === mine)
@@ -402,10 +448,17 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setMessaging({ kind: "idle" });
     setAgent(undefined);
     setCreation("idle");
+    boundComputerId.current = undefined;
     setResuming(false);
+    setResumeError(undefined);
     setActionError(undefined);
     setConnectionError(undefined);
   }, []);
+
+  /** Reads the Account again after a failed read, which is the only way out of that state. */
+  const retryResume = useCallback(() => {
+    void readAccount();
+  }, [readAccount]);
 
   const startPlanSignIn = useCallback(() => undefined, []);
 
@@ -427,7 +480,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       readiness,
       refreshConnectCode,
       reset,
+      resumeError,
       resuming,
+      retryResume,
       startMessaging,
       startPlanSignIn,
       startSlackInstall,
@@ -445,7 +500,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       readiness,
       refreshConnectCode,
       reset,
+      resumeError,
       resuming,
+      retryResume,
       startMessaging,
       startPlanSignIn,
       startSlackInstall,

@@ -272,6 +272,33 @@ revoked at all; a session can be, immediately, which is the trade this makes.
 Credentials the previous revision issued are no longer accepted; the compatibility bridge and its two TTL settings are
 gone. `OPENTAG_JWT_SECRET` remains because it also signs Slack OAuth state, which is not Account authentication.
 
+## Email and password sign-in
+
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` lets an address and password both register an Account and sign one in, at
+`POST /api/v1/auth/email/sign-up` and `POST /api/v1/auth/email/sign-in`. It defaults to off, because it is the only
+sign-in method whose default could hand out Accounts: every other one needs something a deployment already granted — a
+Google client, a loopback bypass, a connect code. One setting covers both routes, since a server that accepted
+passwords but issued none would have no way to give anyone a first one.
+
+Passwords are between 12 and 128 characters. The bounds live in `@opentag/shared` and configure both the request schema
+and Better Auth, so the library cannot apply a different floor underneath and turn an accepted password into a rejected
+one. The stored value is a hash on the Account's `credential` identity row; the password itself is never persisted.
+
+These two routes are fenced on the request origin alone, not the double-submit CSRF token every other browser mutation
+carries. A signed-out browser has no such token — these are the requests that mint it — so requiring one would make
+signing in impossible rather than safer. Both responses carry the session cookie and a fresh double-submit token, which
+is what lets a newly signed-in browser write at all.
+
+A rejected sign-in gives one answer whether the address is unknown or the password is wrong, so the endpoint cannot be
+used to ask which addresses hold Accounts. Registration cannot keep that secret and still be actionable, so a taken
+address is reported as `AUTH_EMAIL_CONFLICT`. Sign-in attempts are bounded per source address and per email address;
+the second bound means an attacker can spend a victim's budget for the window, which is the better failure against
+distributed guessing at one known address.
+
+`users.email_verified` stays false for these Accounts. Nothing in the product sends mail, so there is no verification
+step to assert the address, and recording one that never happened would be worse than recording none. For the same
+reason there is no password reset: adding one means adding a mail sender first.
+
 An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
 enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The
 resolver that used to serialize on the address is gone; nothing in Better Auth's linking orders two concurrent first
@@ -394,6 +421,7 @@ processes.
 | `OPENTAG_SLACK_REDIRECT_URL` | none | Optional public origin or exact Slack OAuth callback URL on `OPENTAG_PUBLIC_URL` |
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | Explicitly enable loopback-only development sign-in; requires the configured email |
 | `OPENTAG_DEV_AUTH_EMAIL` | none | Existing unique bootstrap user selected by the development bypass |
+| `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` | `false` | Allow registering and signing in with an email address and password |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_OTEL_ENDPOINT` | empty | Optional OTLP/HTTP traces endpoint; see [server observability](./docs/observability.md) |
 | `OPENTAG_OTEL_HEADERS` | empty | Secret OTLP headers in comma-separated `key=value` form |

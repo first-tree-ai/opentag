@@ -9,8 +9,15 @@ afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 /** Stands in for the Better Auth mount, recording which endpoint a route drove rather than guessing from its effects. */
 function betterAuthStub(reply: () => Response) {
   const paths: string[] = [];
+  const bodies: unknown[] = [];
   const handler = vi.fn(async (request: Request) => {
     paths.push(new URL(request.url).pathname);
+    bodies.push(
+      await request
+        .clone()
+        .json()
+        .catch(() => undefined),
+    );
     return reply();
   });
   const instance = {
@@ -18,7 +25,7 @@ function betterAuthStub(reply: () => Response) {
     api: { getSession: vi.fn().mockResolvedValue(null) },
     handler,
   } as unknown as OpenTagBetterAuth;
-  return { instance: { instance, publicUrl: "http://localhost:8000" }, paths };
+  return { bodies, instance: { instance, publicUrl: "http://localhost:8000" }, paths };
 }
 
 function devSession() {
@@ -41,11 +48,22 @@ function googleRedirect() {
   });
 }
 
+function passwordSession() {
+  return new Response(JSON.stringify({ token: "session-token" }), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "set-cookie": "opentag.session_token=password-session; Path=/; HttpOnly",
+    },
+  });
+}
+
 function createBrowserApp(
   options: {
     betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
     devSignIn?: boolean;
     googleSignIn?: boolean;
+    passwordSignIn?: boolean;
   } = {},
 ) {
   const app = createApp({
@@ -54,6 +72,7 @@ function createBrowserApp(
       ...(options.betterAuth ? { betterAuth: options.betterAuth } : {}),
       ...(options.devSignIn ? { devSignIn: true } : {}),
       ...(options.googleSignIn ? { googleSignIn: true } : {}),
+      ...(options.passwordSignIn ? { passwordSignIn: true } : {}),
       publicOrigin: "http://localhost:8000",
       secureCookies: false,
       sessionTtlSeconds: 3600,
@@ -62,6 +81,9 @@ function createBrowserApp(
   apps.push(app);
   return { app };
 }
+
+const SAME_ORIGIN = { "content-type": "application/json", origin: "http://localhost:8000" };
+const VALID_PASSWORD = "correct-horse-battery";
 
 describe("browser authentication routes", () => {
   it("starts Google through Better Auth without putting next in the provider URL itself", async () => {
@@ -72,6 +94,7 @@ describe("browser authentication routes", () => {
       providers: [
         { id: "google", enabled: true, startUrl: HTTP_PATHS.authGoogleStart },
         { id: "dev", enabled: false, startUrl: null },
+        { id: "password", enabled: false, startUrl: null },
       ],
     });
 
@@ -89,7 +112,7 @@ describe("browser authentication routes", () => {
     const { app } = createBrowserApp({ betterAuth: betterAuth.instance });
 
     expect((await app.inject({ method: "GET", url: HTTP_PATHS.authProviders })).json()).toMatchObject({
-      providers: [{ id: "google", enabled: false, startUrl: null }, { id: "dev" }],
+      providers: [{ id: "google", enabled: false, startUrl: null }, { id: "dev" }, { id: "password" }],
     });
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.authGoogleStart });
     expect(response.statusCode).toBe(404);
@@ -116,6 +139,7 @@ describe("browser authentication routes", () => {
       providers: [
         { id: "google", enabled: false, startUrl: null },
         { id: "dev", enabled: true, startUrl: HTTP_PATHS.authDevCallback },
+        { id: "password", enabled: false, startUrl: null },
       ],
     });
     expect(
@@ -127,7 +151,9 @@ describe("browser authentication routes", () => {
           remoteAddress: "127.0.0.1",
         })
       ).json(),
-    ).toMatchObject({ providers: [{ id: "google" }, { id: "dev", enabled: false, startUrl: null }] });
+    ).toMatchObject({
+      providers: [{ id: "google" }, { id: "dev", enabled: false, startUrl: null }, { id: "password" }],
+    });
 
     const response = await app.inject({
       method: "GET",
@@ -209,5 +235,195 @@ describe("browser authentication routes", () => {
     expect(betterAuth.paths).toEqual(["/api/v1/auth/sign-out"]);
     // The double-submit token is OpenTag's, so Better Auth's sign-out cannot retire it.
     expect(String(accepted.headers["set-cookie"])).toContain("opentag_csrf=;");
+  });
+});
+
+describe("email and password routes", () => {
+  it("registers through Better Auth and hands back both halves of the browser credential", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignUp,
+      headers: SAME_ORIGIN,
+      payload: { email: "new@example.com", displayName: "New Account", password: VALID_PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(betterAuth.paths).toEqual(["/api/v1/auth/sign-up/email"]);
+    const cookies = String(response.headers["set-cookie"]);
+    expect(cookies).toContain("opentag.session_token=password-session");
+    // Without the double-submit token the new session could read and never write, including never sign itself out.
+    expect(cookies).toContain("opentag_csrf=");
+  });
+
+  it("signs in through Better Auth and issues the double-submit token", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignIn,
+      headers: SAME_ORIGIN,
+      payload: { email: "member@example.com", password: VALID_PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(betterAuth.paths).toEqual(["/api/v1/auth/sign-in/email"]);
+    expect(String(response.headers["set-cookie"])).toContain("opentag_csrf=");
+  });
+
+  it("lowercases the address before it reaches Better Auth, so casing cannot split an Account", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignIn,
+      headers: SAME_ORIGIN,
+      payload: { email: "  Member@Example.COM ", password: VALID_PASSWORD },
+    });
+
+    // Normalized before the lookup rather than after it, so a casing variant reaches the same Account.
+    expect(betterAuth.bodies[0]).toMatchObject({ email: "member@example.com" });
+  });
+
+  it("forwards the display name as the field Better Auth maps onto the Account", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignUp,
+      headers: SAME_ORIGIN,
+      payload: { email: "named@example.com", displayName: "Named Account", password: VALID_PASSWORD },
+    });
+
+    // `name` is Better Auth's field for what OpenTag stores as `displayName`; sending the latter would drop it.
+    expect(betterAuth.bodies[0]).toMatchObject({ name: "Named Account" });
+  });
+
+  it("answers a rejected sign-in the same way whether the address or the password was wrong", async () => {
+    const betterAuth = betterAuthStub(
+      () =>
+        new Response(JSON.stringify({ code: "INVALID_EMAIL_OR_PASSWORD" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignIn,
+      headers: SAME_ORIGIN,
+      payload: { email: "member@example.com", password: VALID_PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(401);
+    const body = response.json();
+    expect(body.error.code).toBe("AUTH_INVALID_TOKEN");
+    // Better Auth's own reason is deliberately not forwarded: it would say which addresses hold Accounts.
+    expect(body.error.message).toBe("The email address or password is incorrect");
+    expect(String(response.headers["set-cookie"] ?? "")).not.toContain("opentag_csrf=");
+  });
+
+  it("reports a taken address as a conflict, because registration cannot act on anything else", async () => {
+    const betterAuth = betterAuthStub(
+      () =>
+        new Response(JSON.stringify({ code: "USER_ALREADY_EXISTS" }), {
+          status: 422,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignUp,
+      headers: SAME_ORIGIN,
+      payload: { email: "taken@example.com", displayName: "Taken", password: VALID_PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error.code).toBe("AUTH_EMAIL_CONFLICT");
+  });
+
+  it("refuses a cross-site post before reaching Better Auth", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignIn,
+      headers: { "content-type": "application/json", origin: "https://attacker.example" },
+      payload: { email: "member@example.com", password: VALID_PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(betterAuth.paths).toEqual([]);
+  });
+
+  it("accepts a sign-in with no double-submit token, which is the one it is about to mint", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignIn,
+      headers: SAME_ORIGIN,
+      payload: { email: "member@example.com", password: VALID_PASSWORD },
+    });
+
+    // Requiring the token here would make a signed-out browser unable to sign in at all.
+    expect(response.statusCode).toBe(204);
+  });
+
+  it("refuses a password shorter than the shared floor without asking Better Auth", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignUp,
+      headers: SAME_ORIGIN,
+      payload: { email: "short@example.com", displayName: "Short", password: "short" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(betterAuth.paths).toEqual([]);
+  });
+
+  it("reports the provider as disabled on a server that did not enable it", async () => {
+    const betterAuth = betterAuthStub(passwordSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance });
+
+    const signIn = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignIn,
+      headers: SAME_ORIGIN,
+      payload: { email: "member@example.com", password: VALID_PASSWORD },
+    });
+    const signUp = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignUp,
+      headers: SAME_ORIGIN,
+      payload: { email: "new@example.com", displayName: "New", password: VALID_PASSWORD },
+    });
+
+    expect(signIn.statusCode).toBe(404);
+    expect(signUp.statusCode).toBe(404);
+    expect(signIn.json().error.code).toBe("AUTH_PROVIDER_DISABLED");
+    // Refused by the route, so a disabled deployment never reaches the library at all.
+    expect(betterAuth.paths).toEqual([]);
+  });
+
+  it("advertises the password provider without a start URL, because it is a form", async () => {
+    const { app } = createBrowserApp({ passwordSignIn: true });
+
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.authProviders });
+
+    expect(response.json().providers).toContainEqual({ id: "password", enabled: true, startUrl: null });
   });
 });

@@ -3,7 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
-import { createBetterAuth } from "../../auth/better-auth.js";
+import { BETTER_AUTH_BASE_PATH, createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
@@ -50,6 +50,34 @@ function createAuth(devSignIn?: () => Promise<string>) {
     ...(devSignIn ? { devSignIn } : {}),
     google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
   });
+}
+
+/** The same composition with the password credential turned on, which is off unless a deployment asks for it. */
+function createPasswordAuth() {
+  return createBetterAuth(client.database, {
+    onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
+    publicUrl: PUBLIC_URL,
+    secret: "better-auth-integration-secret-at-least-32-characters",
+    secureCookies: false,
+    sessionTtlSeconds: SESSION_TTL_SECONDS,
+    emailPassword: true,
+    google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
+  });
+}
+
+function callAuth(
+  auth: ReturnType<typeof createAuth>,
+  path: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return auth.handler(
+    new Request(`${PUBLIC_URL}${BETTER_AUTH_BASE_PATH}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 /** Collects whatever a preHandler writes back, which is all these tests need from a reply. */
@@ -590,5 +618,130 @@ describe("Better Auth over the existing Account tables", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ code: "AUTH_DEV_USER_UNAVAILABLE" });
     expect(await client.database.select().from(authSessions)).toHaveLength(0);
+  });
+});
+
+const PASSWORD = "correct-horse-battery";
+
+/**
+ * Better Auth's own issuer for a password it stores itself.
+ *
+ * Pinned rather than derived, because `issuer` is `NOT NULL` and participates in three unique indexes on
+ * `auth_identities`. If a library upgrade changed this convention, existing credential rows would stop resolving and
+ * new ones would be written beside them; failing here is how that arrives as a test failure rather than as Accounts
+ * that silently cannot sign in.
+ */
+const CREDENTIAL_ISSUER = "local:credential";
+
+describe("email and password credentials", () => {
+  it("registers an Account and stores only a hash of its password", async () => {
+    const auth = createPasswordAuth();
+
+    const response = await callAuth(auth, "/sign-up/email", {
+      email: "Registered@Example.com",
+      name: "Registered Account",
+      password: PASSWORD,
+    });
+
+    expect(response.status).toBe(200);
+    const [user] = await client.database.select().from(users);
+    /*
+     * Lowercased by the same hook every other sign-in path goes through, so the address that reaches the unique index
+     * is the one a later sign-in is looked up by.
+     */
+    expect(user).toMatchObject({ email: "registered@example.com", displayName: "Registered Account" });
+    /*
+     * Nothing asserted this address, so it stays unverified. Registration is the one path that could quietly claim
+     * otherwise, because it is the only one where the address arrives from the person claiming it.
+     */
+    expect(user?.emailVerified).toBe(false);
+
+    const [identity] = await client.database.select().from(authIdentities);
+    expect(identity).toMatchObject({ provider: "credential", issuer: CREDENTIAL_ISSUER, userId: user?.id });
+    expect(identity?.password).toBeTruthy();
+    expect(identity?.password).not.toContain(PASSWORD);
+  });
+
+  it("signs the registration in, so a new Account arrives holding a session", async () => {
+    const auth = createPasswordAuth();
+
+    const response = await callAuth(auth, "/sign-up/email", {
+      email: "arrives@example.com",
+      name: "Arrives Signed In",
+      password: PASSWORD,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(1);
+  });
+
+  it("accepts the right password and refuses the wrong one without a session", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "member@example.com", name: "Member", password: PASSWORD });
+    await client.database.delete(authSessions);
+
+    const wrong = await callAuth(auth, "/sign-in/email", { email: "member@example.com", password: "wrong-password" });
+    expect(wrong.ok).toBe(false);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+
+    const right = await callAuth(auth, "/sign-in/email", { email: "member@example.com", password: PASSWORD });
+    expect(right.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(1);
+  });
+
+  it("signs in through a casing variant of the registered address", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "casing@example.com", name: "Casing", password: PASSWORD });
+    await client.database.delete(authSessions);
+
+    const response = await callAuth(auth, "/sign-in/email", { email: "CASING@Example.com", password: PASSWORD });
+
+    expect(response.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(1);
+  });
+
+  it("refuses a second Account for an address that already has one", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "taken@example.com", name: "First", password: PASSWORD });
+
+    const second = await callAuth(auth, "/sign-up/email", {
+      email: "TAKEN@example.com",
+      name: "Second",
+      password: `${PASSWORD}-other`,
+    });
+
+    expect(second.ok).toBe(false);
+    // One address, one Account — whether the second attempt is refused by Better Auth or by `users_email_unique`.
+    expect(await client.database.select().from(users)).toHaveLength(1);
+  });
+
+  it("refuses a suspended Account the session its password would otherwise buy", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "suspended@example.com", name: "Suspended", password: PASSWORD });
+    await client.database.update(users).set({ suspendedAt: new Date() });
+    await client.database.delete(authSessions);
+
+    const response = await callAuth(auth, "/sign-in/email", { email: "suspended@example.com", password: PASSWORD });
+
+    // The `session.create` hook is the single place suspension is enforced, and the password path runs through it too.
+    expect(response.ok).toBe(false);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+  });
+
+  it("creates no Account through the credential endpoint on a server that did not enable it", async () => {
+    const auth = createAuth();
+
+    const response = await callAuth(auth, "/sign-up/email", {
+      email: "absent@example.com",
+      name: "Absent",
+      password: PASSWORD,
+    });
+
+    /*
+     * The library refuses rather than 404s, which is why the OpenTag route in front of it answers first and reports
+     * the provider as disabled. What matters underneath is only that no Account came of it.
+     */
+    expect(response.ok).toBe(false);
+    expect(await client.database.select().from(users)).toHaveLength(0);
   });
 });

@@ -1,14 +1,20 @@
 import { isIP } from "node:net";
-import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
+import {
+  AuthProvidersResponseSchema,
+  EmailSignInRequestSchema,
+  EmailSignUpRequestSchema,
+  HTTP_PATHS,
+} from "@opentag/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { OpenTagBetterAuth } from "../auth/better-auth.js";
-import { callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
+import { betterAuthFailure, callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
 import { DEV_SIGN_IN_PATH } from "../auth/internal-sign-in.js";
 import {
   clearBrowserCsrfCookie,
   requireBrowserMutationSecurity,
+  requireBrowserOrigin,
   setBrowserCsrfCookie,
 } from "../services/auth/browser-cookies.js";
 import { AuthServiceError } from "../services/auth/errors.js";
@@ -28,6 +34,8 @@ export interface BrowserAuthRoutesOptions {
    */
   devSignIn?: boolean;
   googleSignIn?: boolean;
+  /** Whether an address and password may register an Account and sign one in. */
+  passwordSignIn?: boolean;
   publicOrigin: string;
   secureCookies: boolean;
   /** Bounds the double-submit token, so it lasts exactly as long as the session it accompanies. */
@@ -89,6 +97,12 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
             id: "dev",
             enabled: devAvailable,
             startUrl: devAvailable ? HTTP_PATHS.authDevCallback : null,
+          },
+          // A form rather than a link, so there is no URL to start it from; the caller posts to the two email routes.
+          {
+            id: "password",
+            enabled: Boolean(options.passwordSignIn),
+            startUrl: null,
           },
         ],
       }),
@@ -160,6 +174,89 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
     }
     copyBetterAuthCookies(reply, response);
     return reply.redirect(payload.url, 302);
+  });
+
+  /**
+   * Signs a request in and hands the browser both halves of what it needs to act.
+   *
+   * Better Auth issues the session cookie; the double-submit token is OpenTag's and is minted here, because every
+   * later mutation requires it and a browser that arrived with none would otherwise be able to read and nothing else.
+   */
+  const establishBrowserSession = (reply: Parameters<typeof setBrowserCsrfCookie>[0], response: Response): void => {
+    copyBetterAuthCookies(reply, response);
+    setBrowserCsrfCookie(reply, {
+      maxAgeSeconds: options.sessionTtlSeconds,
+      secure: options.secureCookies,
+    });
+  };
+
+  const requirePasswordAuth = (): NonNullable<BrowserAuthRoutesOptions["betterAuth"]> => {
+    if (!options.passwordSignIn || !options.betterAuth) {
+      throw new AuthServiceError(
+        "AUTH_PROVIDER_DISABLED",
+        "deterministic",
+        "Email and password sign-in is not enabled",
+        404,
+      );
+    }
+    return options.betterAuth;
+  };
+
+  app.post(HTTP_PATHS.authEmailSignUp, async (request, reply) => {
+    const betterAuth = requirePasswordAuth();
+    requireBrowserOrigin(request, options.publicOrigin);
+    limiter.check(`${request.ip}:sign-up`);
+    const body = parseRequest(EmailSignUpRequestSchema, request.body);
+    const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+      method: "POST",
+      path: "/sign-up/email",
+      // `name` is Better Auth's field for what OpenTag stores as `displayName`; the instance maps it to that column.
+      body: { email: body.email, name: body.displayName, password: body.password },
+    });
+    if (!response.ok) {
+      /*
+       * Registration cannot hide that an address is taken and still tell the caller what to do about it. Sign-in
+       * stays uniform, so this discloses only what any self-serve registration without a verification step must.
+       */
+      throw await betterAuthFailure(
+        response,
+        new AuthServiceError(
+          "AUTH_EMAIL_CONFLICT",
+          "deterministic",
+          "An Account already exists for that email address",
+          409,
+        ),
+      );
+    }
+    establishBrowserSession(reply, response);
+    return reply.code(204).send();
+  });
+
+  app.post(HTTP_PATHS.authEmailSignIn, async (request, reply) => {
+    const betterAuth = requirePasswordAuth();
+    requireBrowserOrigin(request, options.publicOrigin);
+    limiter.check(`${request.ip}:sign-in`);
+    const body = parseRequest(EmailSignInRequestSchema, request.body);
+    /*
+     * Also bounded per address, so guessing one Account's password cannot be spread across many source addresses.
+     * The cost is that an attacker can spend a victim's budget and lock them out for the window; against unbounded
+     * distributed guessing at a single known address, that is the better failure.
+     */
+    limiter.check(`sign-in:${body.email}`);
+    const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+      method: "POST",
+      path: "/sign-in/email",
+      body: { email: body.email, password: body.password },
+    });
+    if (!response.ok) {
+      /*
+       * One answer for an unknown address and a wrong password alike: distinguishing them would turn this endpoint
+       * into a way to ask which addresses hold Accounts. Better Auth's own reason is deliberately not forwarded.
+       */
+      throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The email address or password is incorrect", 401);
+    }
+    establishBrowserSession(reply, response);
+    return reply.code(204).send();
   });
 
   app.post(HTTP_PATHS.authBrowserLogout, async (request, reply) => {

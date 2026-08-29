@@ -11,6 +11,7 @@ import type {
   ProviderReadinessStatus,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
+import { PASSWORD_MIN_LENGTH } from "@opentag/shared/browser";
 import {
   createContext,
   type FormEvent,
@@ -518,10 +519,17 @@ function LoginPage() {
         </header>
         <AsyncState state={providers}>
           {(value) => {
-            const availableProviders = value.providers.filter(
-              (provider: AuthProvider) => provider.enabled && provider.startUrl,
+            /*
+             * `password` is deliberately excluded here rather than filtered out by the missing `startUrl`: it is a
+             * form, so it renders as one instead of as a link to somewhere.
+             */
+            const linkProviders = value.providers.filter(
+              (provider: AuthProvider) => provider.id !== "password" && provider.enabled && provider.startUrl,
             );
-            if (availableProviders.length === 0) {
+            const password = value.providers.some(
+              (provider: AuthProvider) => provider.id === "password" && provider.enabled,
+            );
+            if (linkProviders.length === 0 && !password) {
               return (
                 <p className="login-unavailable" role="status">
                   No sign-in methods are currently available.
@@ -529,11 +537,21 @@ function LoginPage() {
               );
             }
             return (
-              <div className="login-actions">
-                {availableProviders.map((provider: AuthProvider) => (
-                  <LoginProviderLink key={provider.id} next={next} provider={provider} />
-                ))}
-              </div>
+              <>
+                {password ? <PasswordSignInForm next={next} /> : null}
+                {password && linkProviders.length > 0 ? (
+                  <p className="login-divider">
+                    <span>or</span>
+                  </p>
+                ) : null}
+                {linkProviders.length > 0 ? (
+                  <div className="login-actions">
+                    {linkProviders.map((provider: AuthProvider) => (
+                      <LoginProviderLink key={provider.id} next={next} provider={provider} />
+                    ))}
+                  </div>
+                ) : null}
+              </>
             );
           }}
         </AsyncState>
@@ -565,6 +583,114 @@ function OpenTagBrandLockup() {
       </svg>
       <span>OpenTag</span>
     </div>
+  );
+}
+
+/**
+ * The email and password form, which both registers and signs in.
+ *
+ * One form with a mode rather than two routes: the two differ by a single field and a single endpoint, and a separate
+ * page would have to re-resolve which providers are available in order to render at all.
+ *
+ * On success it navigates with a full load rather than a client-side route change. The session and double-submit
+ * cookies arrive on that response, and every later request reads the token out of `document.cookie`; re-entering the
+ * app through a fresh load is what guarantees it is there before anything tries to use it.
+ */
+function PasswordSignInForm({ next }: { next: string }) {
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const registering = mode === "sign-up";
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(undefined);
+    setSubmitting(true);
+    try {
+      if (registering) {
+        await browserApi.signUpWithPassword({ email, password, displayName });
+      } else {
+        await browserApi.signInWithPassword({ email, password });
+      }
+      window.location.assign(next);
+    } catch (cause) {
+      /*
+       * The server's message is shown as it is. It is written to be shown — a rejected sign-in says only that the
+       * address or password was wrong, so restating it here could only make it less accurate.
+       */
+      setError(cause instanceof ApiError ? cause.message : "Sign-in failed. Try again.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form className="login-password-form" onSubmit={submit}>
+      <label className="login-field" htmlFor="login-email">
+        <span>Email</span>
+        <input
+          autoComplete="email"
+          id="login-email"
+          name="email"
+          onChange={(event) => setEmail(event.target.value)}
+          required
+          type="email"
+          value={email}
+        />
+      </label>
+      {registering ? (
+        <label className="login-field" htmlFor="login-display-name">
+          <span>Name</span>
+          <input
+            autoComplete="name"
+            id="login-display-name"
+            name="displayName"
+            onChange={(event) => setDisplayName(event.target.value)}
+            required
+            type="text"
+            value={displayName}
+          />
+        </label>
+      ) : null}
+      <label className="login-field" htmlFor="login-password">
+        <span>Password</span>
+        <input
+          // Tells a password manager to offer a new secret rather than an existing one, and the reverse on sign-in.
+          autoComplete={registering ? "new-password" : "current-password"}
+          id="login-password"
+          minLength={registering ? PASSWORD_MIN_LENGTH : undefined}
+          name="password"
+          onChange={(event) => setPassword(event.target.value)}
+          required
+          type="password"
+          value={password}
+        />
+      </label>
+      {registering ? <p className="login-password-hint">At least {PASSWORD_MIN_LENGTH} characters.</p> : null}
+      {error ? (
+        <p className="login-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <button className="login-submit" disabled={submitting} type="submit">
+        {registering ? "Create account" : "Sign in"}
+      </button>
+      <p className="login-mode-switch">
+        {registering ? "Already have an account?" : "No account yet?"}{" "}
+        <button
+          className="login-mode-button"
+          onClick={() => {
+            setMode(registering ? "sign-in" : "sign-up");
+            setError(undefined);
+          }}
+          type="button"
+        >
+          {registering ? "Sign in" : "Create one"}
+        </button>
+      </p>
+    </form>
   );
 }
 

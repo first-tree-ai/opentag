@@ -63,6 +63,7 @@ function installApi(
     multipleMemberships?: boolean;
     agentCreateError?: "conflict" | "generic" | "name";
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
+    passwordSignInFails?: boolean;
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
     bindingState?: "provisioning" | "active";
@@ -126,6 +127,20 @@ function installApi(
       return json({
         providers: options.authProviders ?? [{ id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" }],
       });
+    }
+    if (path === "/api/v1/auth/email/sign-in" || path === "/api/v1/auth/email/sign-up") {
+      return options.passwordSignInFails
+        ? json(
+            {
+              error: {
+                code: "AUTH_INVALID_TOKEN",
+                category: "credential",
+                message: "The email address or password is incorrect",
+              },
+            },
+            401,
+          )
+        : new Response(null, { status: 204 });
     }
     if (path === "/api/v1/me" && init?.method === "PATCH") {
       const body = JSON.parse(String(init.body)) as { displayName: string };
@@ -623,6 +638,90 @@ describe("OpenTag Web App Shell", () => {
     expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
     expect(screen.getByText("Sign in to manage your Agents.")).toBeTruthy();
+  });
+
+  it("offers the password form only where the server enabled it", async () => {
+    installApi({
+      authProviders: [{ id: "password", enabled: false, startUrl: null }],
+      unauthenticated: true,
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    // Disabled with nothing else available, so the page says so rather than showing an inert form.
+    expect(await screen.findByText("No sign-in methods are currently available.")).toBeTruthy();
+    expect(screen.queryByLabelText("Password")).toBeNull();
+  });
+
+  it("signs in with an email address and password", async () => {
+    installApi({
+      authProviders: [{ id: "password", enabled: true, startUrl: null }],
+      unauthenticated: true,
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-horse-battery" } });
+    // Registration is the only mode that asks for a name, so sign-in must not be showing that field.
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => {
+      const call = vi
+        .mocked(fetch)
+        .mock.calls.find(([input]) => String(input) === "/api/v1/auth/email/sign-in");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        email: "ada@example.com",
+        password: "correct-horse-battery",
+      });
+    });
+  });
+
+  it("asks for a name when registering, and posts it with the credential", async () => {
+    installApi({
+      authProviders: [{ id: "password", enabled: true, startUrl: null }],
+      unauthenticated: true,
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create one" }));
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New Account" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-horse-battery" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    await waitFor(() => {
+      const call = vi
+        .mocked(fetch)
+        .mock.calls.find(([input]) => String(input) === "/api/v1/auth/email/sign-up");
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+        displayName: "New Account",
+        email: "new@example.com",
+        password: "correct-horse-battery",
+      });
+    });
+  });
+
+  it("shows the server's reason for a rejected sign-in rather than restating it", async () => {
+    installApi({
+      authProviders: [{ id: "password", enabled: true, startUrl: null }],
+      passwordSignInFails: true,
+      unauthenticated: true,
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong-password-here" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    // Uniform by design: the server will not say which of the address or the password was wrong.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("The email address or password is incorrect");
   });
 
   it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {

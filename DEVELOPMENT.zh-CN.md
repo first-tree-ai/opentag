@@ -260,6 +260,27 @@ token，因此切换前构建的 CLI 无需升级即可继续工作。`OPENTAG_S
 上一版本签发的凭据已不再被接受：兼容桥及其两个 TTL 配置项都已移除。`OPENTAG_JWT_SECRET` 保留，因为它同时用于
 签名 Slack OAuth state，而那不属于 Account 认证。
 
+## 邮箱密码登录
+
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` 允许用邮箱地址与密码注册并登录 Account，对应
+`POST /api/v1/auth/email/sign-up` 与 `POST /api/v1/auth/email/sign-in`。默认关闭，因为它是唯一一个默认值就可能向外发放
+Account 的登录方式：其余方式都需要部署方已经授予的东西——Google client、loopback bypass、connect code。一个开关同时
+控制两条路由，因为只接受密码却不签发密码的服务端，没有任何途径把第一个密码交给任何人。
+
+密码长度为 12 到 128 个字符。该边界定义在 `@opentag/shared`，同时用于请求 schema 与 Better Auth 配置，因此库不会在底下
+套用另一套下限，把已通过校验的密码又拒掉。存储的是 Account `credential` identity 行上的哈希，密码本身不落库。
+
+这两条路由只以请求 origin 作为围栏，不要求其他浏览器变更请求都携带的 double-submit CSRF token。未登录的浏览器还没有
+这个 token——它正是由这两个请求签发的——所以强制要求只会让登录变得不可能，而不是更安全。两者的响应都会同时下发 session
+cookie 与新的 double-submit token，这是新登录的浏览器能够执行写操作的前提。
+
+登录被拒时，无论是地址不存在还是密码错误，都返回同一个答复，因此该接口无法被用来打探哪些地址存在 Account。注册无法
+在保密的同时仍然可操作，因此地址已被占用会以 `AUTH_EMAIL_CONFLICT` 报出。登录尝试按来源地址与邮箱地址分别限流；后者
+意味着攻击者可以在时间窗内耗尽受害者的额度，相对于针对某个已知地址的分布式撞库，这是更可接受的失败方向。
+
+这些 Account 的 `users.email_verified` 保持 false。产品内没有任何邮件发送能力，因此不存在断言该地址的验证步骤，而记录
+一个从未发生过的验证比不记录更糟。出于同样的原因，也没有找回密码：要做它得先做邮件发送。
+
 Account email 以小写存储，且一个地址最多对应一个 Account。这由 `users_email_unique` 索引保证，并且不区分大小写，
 使跳过归一化的写入方也无法通过大小写变体绕过。原先负责对地址串行化的 identity resolver 已删除；Better Auth 的
 linking 不会给同一地址的两次并发首登排序，因此这项职责由索引承担。它只能在没有任何会写入未归一化地址的版本仍在
@@ -369,6 +390,7 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_SLACK_REDIRECT_URL` | 无 | 可选 public origin，或位于 `OPENTAG_PUBLIC_URL` 上的精确 Slack OAuth callback URL |
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | 显式启用仅限 loopback 的开发登录，必须同时配置 email |
 | `OPENTAG_DEV_AUTH_EMAIL` | 无 | development bypass 选择的已有唯一 bootstrap 用户 |
+| `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` | `false` | 允许使用邮箱地址与密码注册并登录 |
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
 | `OPENTAG_OTEL_ENDPOINT` | 空 | 可选 OTLP/HTTP traces endpoint；参阅 [Server 可观测性](./docs/zh-CN/observability.md) |
 | `OPENTAG_OTEL_HEADERS` | 空 | 逗号分隔 `key=value` 格式的 secret OTLP headers |

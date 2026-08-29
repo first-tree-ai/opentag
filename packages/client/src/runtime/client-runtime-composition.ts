@@ -221,8 +221,9 @@ export async function createClientRuntime(
   options.signal?.throwIfAborted();
   const defaultHome = sourceEnvironment.HOME ?? homedir();
   const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
+  const defaultClaudeCodeHome = resolve(join(defaultHome, ".claude"));
   const configuredClaudeCodeHome = resolve(
-    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? join(defaultHome, ".claude"),
+    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? defaultClaudeCodeHome,
   );
   await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
   await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
@@ -232,10 +233,12 @@ export async function createClientRuntime(
   const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
   options.signal?.throwIfAborted();
   const codexEnvironment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
-  const claudeCodeEnvironment = claudeCodeAgentRuntimeEnvironment({
-    ...sourceEnvironment,
-    CLAUDE_CONFIG_DIR: claudeCodeHome,
-  });
+  const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
+  const claudeCodeEnvironment = claudeCodeProcessEnvironment(
+    sourceEnvironment,
+    claudeCodeHome,
+    canonicalDefaultClaudeCodeHome,
+  );
   const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
     codex: codexHome,
     "claude-code": claudeCodeHome,
@@ -583,6 +586,24 @@ export interface ResolvedCodexFactoryOptions {
   readonly command: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
+}
+
+function claudeCodeProcessEnvironment(
+  sourceEnvironment: NodeJS.ProcessEnv,
+  claudeCodeHome: string,
+  defaultClaudeCodeHome: string,
+): NodeJS.ProcessEnv {
+  // Claude Code treats a set CLAUDE_CONFIG_DIR as a distinct credential record, even when the
+  // value equals its own default. Omit the variable only when the resolved home is that default.
+  if (claudeCodeHome === defaultClaudeCodeHome) {
+    const environment = { ...sourceEnvironment };
+    delete environment.CLAUDE_CONFIG_DIR;
+    return claudeCodeAgentRuntimeEnvironment(environment);
+  }
+  return claudeCodeAgentRuntimeEnvironment({
+    ...sourceEnvironment,
+    CLAUDE_CONFIG_DIR: claudeCodeHome,
+  });
 }
 
 function productionProviderRegistration(

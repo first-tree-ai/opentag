@@ -432,6 +432,40 @@ describe("createClientRuntime production composition", () => {
     ).toBe("configuration_unsupported");
   });
 
+  it("omits CLAUDE_CONFIG_DIR when Claude Code uses the default home", async () => {
+    const home = await temporaryDirectory("opentag-client-claude-default-home-");
+    const { capture, runtime } = await composeClaudeCodeRuntime({
+      environment: { HOME: home, PATH: process.env.PATH },
+      home,
+    });
+    runtime.stop();
+    expect(capture).toBe("unset");
+    await expect(realpath(resolve(home, ".claude"))).resolves.toBe(resolve(home, ".claude"));
+  });
+
+  it("preserves an explicit CLAUDE_CONFIG_DIR in the Claude Code environment", async () => {
+    const home = await temporaryDirectory("opentag-client-claude-explicit-env-");
+    const claudeCodeHome = resolve(home, "explicit-env-claude");
+    const { capture, runtime } = await composeClaudeCodeRuntime({
+      environment: { HOME: home, PATH: process.env.PATH, CLAUDE_CONFIG_DIR: claudeCodeHome },
+      home,
+    });
+    runtime.stop();
+    expect(capture).toBe(`set:${await realpath(claudeCodeHome)}`);
+  });
+
+  it("preserves an explicit claudeCodeHome option in the Claude Code environment", async () => {
+    const home = await temporaryDirectory("opentag-client-claude-explicit-option-");
+    const claudeCodeHome = resolve(home, "explicit-option-claude");
+    const { capture, runtime } = await composeClaudeCodeRuntime({
+      claudeCodeHome,
+      environment: { HOME: home, PATH: process.env.PATH },
+      home,
+    });
+    runtime.stop();
+    expect(capture).toBe(`set:${await realpath(claudeCodeHome)}`);
+  });
+
   it("unit-tests composition delegates and every preflight outcome", async () => {
     const accepted = { result: { status: "accepted" } };
     const steered = { status: "steered" };
@@ -1912,6 +1946,32 @@ function delivery(runtime: EffectiveRuntimeSnapshot): DirectImMessageDeliveryReq
     },
     runtime,
   };
+}
+
+async function composeClaudeCodeRuntime(options: {
+  readonly claudeCodeHome?: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly home: string;
+}): Promise<{ readonly capture: string; readonly runtime: ComposedClientRuntime }> {
+  const capturePath = resolve(options.home, "claude-config-dir.capture");
+  const command = resolve(options.home, "claude-env-fixture");
+  await writeFile(
+    command,
+    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  const runtime = await createClientRuntime(runtimeConnection(), {
+    clientVersion: "0.0.1",
+    claudeCodeCommand: command,
+    ...(options.claudeCodeHome === undefined ? {} : { claudeCodeHome: options.claudeCodeHome }),
+    codexCommand: resolve(options.home, "missing-codex"),
+    environment: options.environment,
+    home: options.home,
+    larkCliCommand: resolve(options.home, "missing-lark"),
+    slackCliCommand: resolve(options.home, "missing-slack"),
+  });
+  return { capture: await readFile(capturePath, "utf8"), runtime };
 }
 
 function readyFactory(

@@ -7,6 +7,11 @@ import { getRuntimeConfigurationOptions, hashTuple } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
+  artifactOrTransientProbeIssue,
+  isBinaryShapedProviderProbeFailure,
+  isTransientProviderProbeFailure,
+} from "../../agent-runtime/probe-failure.js";
+import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
   type AgentApprovalResponse,
@@ -1004,9 +1009,20 @@ function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] {
     if (error.code === "protocol") {
       return { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` };
     }
-    return { code: "temporarily_unavailable", message: `Codex App Server is unavailable: ${error.message}` };
+    if (error.code === "timeout" || error.code === "aborted" || error.code === "write") {
+      return { code: "temporarily_unavailable", message: `Codex App Server is unavailable: ${error.message}` };
+    }
+    if (isTransientProviderProbeFailure(error)) {
+      return { code: "temporarily_unavailable", message: `Codex App Server is unavailable: ${error.message}` };
+    }
+    if (isBinaryShapedProviderProbeFailure(error)) {
+      return typeof error.exitCode === "number" && error.exitCode !== 0 && !error.signal
+        ? { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` }
+        : { code: "artifact_missing", message: "Codex CLI could not be executed" };
+    }
+    return { code: "artifact_missing", message: "Codex CLI could not be executed" };
   }
-  return { code: "artifact_missing", message: "Codex CLI could not be executed" };
+  return artifactOrTransientProbeIssue(error, "Codex CLI could not be executed");
 }
 
 async function probeCodex(

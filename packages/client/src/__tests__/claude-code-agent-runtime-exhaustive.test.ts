@@ -414,6 +414,20 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         { code: "artifact_missing", message: "Claude Code CLI could not be executed" },
       ],
     });
+    await expect(
+      new ClaudeCodeAgentRuntimeFactory({
+        probeRunner: async () => {
+          throw Object.assign(new Error("timeout"), { code: "ETIMEDOUT" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "temporarily_unavailable" }] });
+    await expect(
+      new ClaudeCodeAgentRuntimeFactory({
+        probeRunner: async () => {
+          throw Object.assign(new Error("crash"), { signal: "SIGSEGV" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
   });
 
   it("maps unrestricted policy and configuration override arguments", async () => {

@@ -4,6 +4,8 @@ import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AgentRuntimeExecutableNotFoundError,
+  canAdvanceRuntimeCandidate,
+  iterateAgentRuntimeExecutables,
   probeAgentRuntimeCliInstallations,
   resolveAgentRuntimeExecutable,
 } from "../runtime/agent-runtime-installation.js";
@@ -74,6 +76,7 @@ describe("Agent Runtime CLI installation discovery", () => {
           candidateAllowed: () => true,
           desktopAppDirs: () => [],
           home: root,
+          includeLoginShell: false,
           platform: "linux",
           wellKnownDirs: () => [bin],
         },
@@ -97,6 +100,7 @@ describe("Agent Runtime CLI installation discovery", () => {
           candidateAllowed: () => false,
           desktopAppDirs: () => [],
           home: "/Users/alice",
+          includeLoginShell: false,
           platform: "darwin",
           realpath: resolvePath,
           stat,
@@ -137,6 +141,7 @@ describe("Agent Runtime CLI installation discovery", () => {
       desktopAppDirs: () => [],
       environment: { PATH: `/runtime${delimiter}/unused` },
       home: "/home/alice",
+      includeLoginShell: false,
       platform: "linux" as const,
       realpath: vi.fn(async (path: string) => path),
       stat: vi.fn(async (path: string) => {
@@ -170,6 +175,7 @@ describe("Agent Runtime CLI installation discovery", () => {
       desktopAppDirs: () => [],
       environment: { PATH: "/runtime" },
       home: "/home/alice",
+      includeLoginShell: false,
       platform: "linux",
       stat: async () => {
         throw Object.assign(new Error("permission denied"), { code: "EACCES" });
@@ -181,11 +187,263 @@ describe("Agent Runtime CLI installation discovery", () => {
   });
 });
 
+describe("Agent Runtime CLI candidate sequence", () => {
+  it("preserves source order and does not evaluate later layers after a hit", async () => {
+    const root = await temporaryRoot();
+    const caller = join(root, "caller");
+    const wellKnown = join(root, "well-known");
+    const login = join(root, "login");
+    const version = join(root, "version");
+    const desktop = join(root, "desktop");
+    await Promise.all([caller, wellKnown, login, version, desktop].map((dir) => mkdir(dir)));
+    const executable = join(caller, "codex");
+    await writeFile(executable, "#!/bin/sh\n", { mode: 0o700 });
+    const loginShellPathDirs = vi.fn(async () => [login]);
+    const versionManagerDirs = vi.fn(() => [version]);
+    const desktopAppDirs = vi.fn(() => [desktop]);
+
+    await expect(
+      resolveAgentRuntimeExecutable(
+        "codex",
+        "codex",
+        { PATH: caller },
+        {
+          candidateAllowed: () => true,
+          desktopAppDirs,
+          home: root,
+          includeLoginShell: true,
+          loginShellPathDirs,
+          platform: "linux",
+          versionManagerDirs,
+          wellKnownDirs: () => [wellKnown],
+        },
+      ),
+    ).resolves.toMatchObject({ path: await realpath(executable), source: "caller-path" });
+    expect(loginShellPathDirs).not.toHaveBeenCalled();
+    expect(versionManagerDirs).not.toHaveBeenCalled();
+    expect(desktopAppDirs).not.toHaveBeenCalled();
+  });
+
+  it("yields later sources only when the consumer asks for the next candidate", async () => {
+    const root = await temporaryRoot();
+    const caller = join(root, "caller");
+    const wellKnown = join(root, "well-known");
+    const login = join(root, "login");
+    const version = join(root, "version");
+    const desktop = join(root, "desktop");
+    await Promise.all([caller, wellKnown, login, version, desktop].map((dir) => mkdir(dir)));
+    await Promise.all(
+      [caller, wellKnown, login, version, desktop].map((dir) =>
+        writeFile(join(dir, "codex"), "#!/bin/sh\n", { mode: 0o700 }),
+      ),
+    );
+    const loginShellPathDirs = vi.fn(async () => [login]);
+    const versionManagerDirs = vi.fn(() => [version]);
+    const desktopAppDirs = vi.fn(() => [desktop]);
+    const iterator = iterateAgentRuntimeExecutables(
+      "codex",
+      "codex",
+      { PATH: caller },
+      {
+        candidateAllowed: () => true,
+        desktopAppDirs,
+        home: root,
+        includeLoginShell: true,
+        loginShellPathDirs,
+        platform: "linux",
+        versionManagerDirs,
+        wellKnownDirs: () => [wellKnown],
+      },
+    );
+    await expect(iterator.next()).resolves.toMatchObject({ value: { source: "caller-path" } });
+    expect(loginShellPathDirs).not.toHaveBeenCalled();
+    expect(desktopAppDirs).not.toHaveBeenCalled();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { source: "well-known" } });
+    expect(loginShellPathDirs).not.toHaveBeenCalled();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { source: "desktop-app" } });
+    expect(desktopAppDirs).toHaveBeenCalledOnce();
+    expect(loginShellPathDirs).not.toHaveBeenCalled();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { source: "login-shell" } });
+    expect(loginShellPathDirs).toHaveBeenCalledOnce();
+    expect(versionManagerDirs).toHaveBeenCalledOnce();
+    await expect(iterator.next()).resolves.toMatchObject({ value: { source: "version-manager" } });
+    await expect(iterator.next()).resolves.toMatchObject({ done: true });
+  });
+
+  it("keeps an absolute explicit command as a single candidate without fallback sources", async () => {
+    const root = await temporaryRoot();
+    const explicit = join(root, "explicit-codex");
+    const other = join(root, "other");
+    await mkdir(other);
+    await writeFile(explicit, "#!/bin/sh\n", { mode: 0o700 });
+    await writeFile(join(other, "codex"), "#!/bin/sh\n", { mode: 0o700 });
+    const loginShellPathDirs = vi.fn(async () => [other]);
+    const iterator = iterateAgentRuntimeExecutables(
+      "codex",
+      explicit,
+      { PATH: other },
+      {
+        candidateAllowed: () => true,
+        desktopAppDirs: () => [other],
+        home: root,
+        includeLoginShell: true,
+        loginShellPathDirs,
+        platform: "linux",
+        wellKnownDirs: () => [other],
+      },
+    );
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { path: await realpath(explicit), source: "explicit" },
+    });
+    await expect(iterator.next()).resolves.toMatchObject({ done: true });
+    expect(loginShellPathDirs).not.toHaveBeenCalled();
+  });
+
+  it("skips login-shell and version-manager layers on the pre-connect path", async () => {
+    const root = await temporaryRoot();
+    const login = join(root, "login");
+    await mkdir(login);
+    await writeFile(join(login, "codex"), "#!/bin/sh\n", { mode: 0o700 });
+    const loginShellPathDirs = vi.fn(async () => [login]);
+    const versionManagerDirs = vi.fn(() => [login]);
+    await expect(
+      resolveAgentRuntimeExecutable(
+        "codex",
+        "codex",
+        { PATH: "" },
+        {
+          candidateAllowed: () => true,
+          desktopAppDirs: () => [],
+          home: root,
+          includeLoginShell: false,
+          loginShellPathDirs,
+          platform: "linux",
+          versionManagerDirs,
+          wellKnownDirs: () => [],
+        },
+      ),
+    ).rejects.toBeInstanceOf(AgentRuntimeExecutableNotFoundError);
+    expect(loginShellPathDirs).not.toHaveBeenCalled();
+    expect(versionManagerDirs).not.toHaveBeenCalled();
+  });
+
+  it("labels a login-shell hit after cheap sources miss", async () => {
+    const root = await temporaryRoot();
+    const login = join(root, "login");
+    await mkdir(login);
+    const executable = join(login, "claude");
+    await writeFile(executable, "#!/bin/sh\n", { mode: 0o700 });
+    await expect(
+      resolveAgentRuntimeExecutable(
+        "claude-code",
+        "claude",
+        { PATH: "" },
+        {
+          candidateAllowed: () => true,
+          desktopAppDirs: () => [],
+          home: root,
+          includeLoginShell: true,
+          loginShellPathDirs: async () => [login],
+          platform: "linux",
+          versionManagerDirs: () => [],
+          wellKnownDirs: () => [],
+        },
+      ),
+    ).resolves.toMatchObject({ path: await realpath(executable), source: "login-shell" });
+  });
+
+  it("keeps the existing desktop-app source ahead of the expensive login-shell layer", async () => {
+    const root = await temporaryRoot();
+    const desktop = join(root, "desktop");
+    await mkdir(desktop);
+    const executable = join(desktop, "codex");
+    await writeFile(executable, "#!/bin/sh\n", { mode: 0o700 });
+    await expect(
+      resolveAgentRuntimeExecutable(
+        "codex",
+        "codex",
+        { PATH: "" },
+        {
+          candidateAllowed: () => true,
+          desktopAppDirs: () => [desktop],
+          home: root,
+          includeLoginShell: true,
+          loginShellPathDirs: () => {
+            throw new Error("login shell must remain lazy after a cheap desktop hit");
+          },
+          platform: "linux",
+          versionManagerDirs: () => [],
+          wellKnownDirs: () => [],
+        },
+      ),
+    ).resolves.toMatchObject({ path: await realpath(executable), source: "desktop-app" });
+  });
+
+  it("deduplicates the same canonical executable reached through a symlink or a later source", async () => {
+    const root = await temporaryRoot();
+    const caller = join(root, "caller");
+    const alias = join(root, "alias");
+    const wellKnown = join(root, "well-known");
+    await mkdir(caller);
+    await mkdir(alias);
+    await mkdir(wellKnown);
+    const executable = join(caller, "codex");
+    await writeFile(executable, "#!/bin/sh\n", { mode: 0o700 });
+    await symlink(executable, join(alias, "codex"));
+    await symlink(executable, join(wellKnown, "codex"));
+    const yielded: string[] = [];
+    for await (const candidate of iterateAgentRuntimeExecutables(
+      "codex",
+      "codex",
+      { PATH: `${caller}${delimiter}${alias}` },
+      {
+        candidateAllowed: () => true,
+        desktopAppDirs: () => [],
+        home: root,
+        includeLoginShell: false,
+        platform: "linux",
+        wellKnownDirs: () => [wellKnown],
+      },
+    )) {
+      yielded.push(candidate.path);
+    }
+    expect(yielded).toEqual([await realpath(executable)]);
+  });
+});
+
+describe("same-Provider candidate fallback taxonomy", () => {
+  it("advances only when every issue is artifact_missing or version_incompatible", () => {
+    expect(canAdvanceRuntimeCandidate({ ready: false, issues: [{ code: "artifact_missing" }] })).toBe(true);
+    expect(
+      canAdvanceRuntimeCandidate({
+        ready: false,
+        issues: [{ code: "version_incompatible" }, { code: "artifact_missing" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("never advances on ready, empty, mixed, credential, configuration, or transient results", () => {
+    expect(canAdvanceRuntimeCandidate({ ready: true, issues: [] })).toBe(false);
+    expect(canAdvanceRuntimeCandidate({ ready: false, issues: [] })).toBe(false);
+    expect(canAdvanceRuntimeCandidate({ ready: false, issues: [{ code: "credential_missing" }] })).toBe(false);
+    expect(canAdvanceRuntimeCandidate({ ready: false, issues: [{ code: "configuration_invalid" }] })).toBe(false);
+    expect(canAdvanceRuntimeCandidate({ ready: false, issues: [{ code: "temporarily_unavailable" }] })).toBe(false);
+    expect(
+      canAdvanceRuntimeCandidate({
+        ready: false,
+        issues: [{ code: "version_incompatible" }, { code: "credential_missing" }],
+      }),
+    ).toBe(false);
+    expect(canAdvanceRuntimeCandidate({ ready: false, issues: [{ code: "other" }] })).toBe(false);
+  });
+});
+
 function emptyAutomaticLocations(home: string) {
   return {
     candidateAllowed: () => true,
     desktopAppDirs: () => [],
     home,
+    includeLoginShell: false,
     platform: "linux" as const,
     wellKnownDirs: () => [],
   };

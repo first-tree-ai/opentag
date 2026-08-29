@@ -37,7 +37,11 @@ import {
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AdmissionController } from "./admission-controller.js";
-import { resolveAgentRuntimeExecutable } from "./agent-runtime-installation.js";
+import {
+  canAdvanceRuntimeCandidate,
+  iterateAgentRuntimeExecutables,
+  type ResolveAgentRuntimeExecutableOptions,
+} from "./agent-runtime-installation.js";
 import {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
@@ -247,6 +251,10 @@ export async function createClientRuntime(
     codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
     "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
   };
+  let includeLoginShell = false;
+  const discovery: ResolveAgentRuntimeExecutableOptions = {
+    includeLoginShell: () => includeLoginShell,
+  };
   const factories =
     options.factories ??
     (options.factory
@@ -256,12 +264,14 @@ export async function createClientRuntime(
             clientVersion: options.clientVersion,
             command: codexCommand,
             codexHome,
+            discovery,
             environment: codexEnvironment,
             sourceEnvironment,
           }),
           resolvedClaudeCodeFactory({
             claudeCodeHome,
             command: claudeCodeCommand,
+            discovery,
             environment: claudeCodeEnvironment,
             sourceEnvironment,
           }),
@@ -407,6 +417,7 @@ export async function createClientRuntime(
     capabilityAbort.abort(error);
     throw error;
   }
+  includeLoginShell = true;
 
   const bindingStore = new SessionBindingStore({
     home: options.home,
@@ -586,6 +597,8 @@ export interface ResolvedCodexFactoryOptions {
   readonly command: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly createCandidateFactory?: (command: string) => CodexAgentRuntimeFactory;
 }
 
 function claudeCodeProcessEnvironment(
@@ -638,24 +651,45 @@ function productionProviderRegistration(
 
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
   let readyFactory: CodexAgentRuntimeFactory | undefined;
+  const createCandidate =
+    options.createCandidateFactory ??
+    ((command: string) =>
+      new CodexAgentRuntimeFactory({
+        clientVersion: options.clientVersion,
+        process: { command, env: options.environment, expectedCodexHome: options.codexHome },
+      }));
   return {
     manifest: CODEX_AGENT_RUNTIME_MANIFEST,
     async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
-      let command: string;
+      request.signal?.throwIfAborted();
+      let lastBinaryResult: AgentRuntimeProbeResult | undefined;
       try {
-        request.signal?.throwIfAborted();
-        command = (await resolveAgentRuntimeExecutable("codex", options.command, options.sourceEnvironment)).path;
+        for await (const resolved of iterateAgentRuntimeExecutables(
+          "codex",
+          options.command,
+          options.sourceEnvironment,
+          options.discovery,
+        )) {
+          request.signal?.throwIfAborted();
+          const candidate = createCandidate(resolved.path);
+          const result = await candidate.probe(request);
+          if (result.ready) {
+            readyFactory = candidate;
+            return result;
+          }
+          if (!canAdvanceRuntimeCandidate(result)) return result;
+          lastBinaryResult = result;
+        }
       } catch (error) {
         if (request.signal?.aborted) throw error;
         return { ready: false, issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }] };
       }
-      const candidate = new CodexAgentRuntimeFactory({
-        clientVersion: options.clientVersion,
-        process: { command, env: options.environment, expectedCodexHome: options.codexHome },
-      });
-      const result = await candidate.probe(request);
-      if (result.ready) readyFactory = candidate;
-      return result;
+      return (
+        lastBinaryResult ?? {
+          ready: false,
+          issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }],
+        }
+      );
     },
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyCodexFactory(readyFactory).create(request);
@@ -676,17 +710,40 @@ export interface ResolvedClaudeCodeFactoryOptions {
   readonly command: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly createCandidateFactory?: (command: string) => ClaudeCodeAgentRuntimeFactory;
 }
 
 export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOptions): AgentRuntimeFactory {
   let readyFactory: ClaudeCodeAgentRuntimeFactory | undefined;
+  const createCandidate =
+    options.createCandidateFactory ??
+    ((command: string) =>
+      new ClaudeCodeAgentRuntimeFactory({
+        process: { command, env: options.environment },
+      }));
   return {
     manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
     async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
-      let command: string;
+      request.signal?.throwIfAborted();
+      let lastBinaryResult: AgentRuntimeProbeResult | undefined;
       try {
-        request.signal?.throwIfAborted();
-        command = (await resolveAgentRuntimeExecutable("claude-code", options.command, options.sourceEnvironment)).path;
+        for await (const resolved of iterateAgentRuntimeExecutables(
+          "claude-code",
+          options.command,
+          options.sourceEnvironment,
+          options.discovery,
+        )) {
+          request.signal?.throwIfAborted();
+          const candidate = createCandidate(resolved.path);
+          const result = await candidate.probe(request);
+          if (result.ready) {
+            readyFactory = candidate;
+            return result;
+          }
+          if (!canAdvanceRuntimeCandidate(result)) return result;
+          lastBinaryResult = result;
+        }
       } catch (error) {
         if (request.signal?.aborted) throw error;
         return {
@@ -694,12 +751,12 @@ export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOpti
           issues: [{ code: "artifact_missing", message: "Claude Code CLI could not be executed" }],
         };
       }
-      const candidate = new ClaudeCodeAgentRuntimeFactory({
-        process: { command, env: options.environment },
-      });
-      const result = await candidate.probe(request);
-      if (result.ready) readyFactory = candidate;
-      return result;
+      return (
+        lastBinaryResult ?? {
+          ready: false,
+          issues: [{ code: "artifact_missing", message: "Claude Code CLI could not be executed" }],
+        }
+      );
     },
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyClaudeCodeFactory(readyFactory).create(request);

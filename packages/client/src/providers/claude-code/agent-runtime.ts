@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { getRuntimeConfigurationOptions } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
+import { artifactOrTransientProbeIssue } from "../../agent-runtime/probe-failure.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
@@ -622,7 +623,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       }
     } catch (error) {
       if (request.signal?.aborted) throw error;
-      issues.push({ code: "artifact_missing", message: "Claude Code CLI could not be executed" });
+      issues.push(artifactOrTransientProbeIssue(error, "Claude Code CLI could not be executed"));
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
   }

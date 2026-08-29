@@ -132,6 +132,7 @@ export async function startServer(): Promise<void> {
       secureCookies: isHostedEnvironment(config.environment),
       sessionTtlSeconds: config.sessionTtlSeconds,
       ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
+      ...(config.emailPasswordAuth ? { emailPassword: true } : {}),
       ...(config.google ? { google: config.google } : {}),
     });
     const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database), {
@@ -273,6 +274,7 @@ export async function startServer(): Promise<void> {
       browserAuth: {
         devSignIn: Boolean(dev),
         googleSignIn: Boolean(config.google),
+        passwordSignIn: config.emailPasswordAuth,
         publicOrigin: config.publicUrl,
         secureCookies: isHostedEnvironment(config.environment),
         sessionTtlSeconds: config.sessionTtlSeconds,

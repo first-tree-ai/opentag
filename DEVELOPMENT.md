@@ -272,6 +272,58 @@ revoked at all; a session can be, immediately, which is the trade this makes.
 Credentials the previous revision issued are no longer accepted; the compatibility bridge and its two TTL settings are
 gone. `OPENTAG_JWT_SECRET` remains because it also signs Slack OAuth state, which is not Account authentication.
 
+## Email and password sign-in
+
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` lets an address and password both register an Account and sign one in, at
+`POST /api/v1/auth/email/sign-up` and `POST /api/v1/auth/email/sign-in`. It defaults to off, because it is the only
+sign-in method whose default could hand out Accounts: every other one needs something a deployment already granted — a
+Google client, a loopback bypass, a connect code. One setting covers both routes, since a server that accepted
+passwords but issued none would have no way to give anyone a first one.
+
+Passwords are between 12 and 128 characters. The bounds live in `@opentag/shared` and configure both the request schema
+and Better Auth, so the library cannot apply a different floor underneath and turn an accepted password into a rejected
+one. The stored value is a hash on the Account's `credential` identity row; the password itself is never persisted.
+
+These two routes are fenced on the request origin alone, not the double-submit CSRF token every other browser mutation
+carries. A signed-out browser has no such token — these are the requests that mint it — so requiring one would make
+signing in impossible rather than safer. Both responses carry the session cookie and a fresh double-submit token, which
+is what lets a newly signed-in browser write at all.
+
+Both routes send the browser to the same destination allowlist every other sign-in method uses. It lives in
+`@opentag/shared` as `resolveSignInDestination` rather than on the server, because this is the one method that
+navigates the browser itself instead of handing its destination to a route; two implementations would eventually
+disagree, and the more permissive half would be the one that mattered.
+
+A rejected sign-in gives one answer whether the address is unknown or the password is wrong, so the endpoint cannot be
+used to ask which addresses hold Accounts. That uniformity covers refusals only — a server that could not answer
+reports `SERVICE_UNAVAILABLE`, and a suspended Account is named as suspended, because reaching that answer took a
+password the caller already had. Registration cannot keep the address secret and still be actionable, so a taken
+address is reported as `AUTH_EMAIL_CONFLICT` while any other refusal stays a validation failure.
+
+Sign-in attempts are counted per source address and per email address, and the counters are **per process**: each
+replica keeps its own, and a restart clears them. That is enough to make one server unattractive to hammer, and it is
+not a deployment-wide bound — enforcing that needs a shared store or a gateway in front. The table is capped and evicts
+expired entries first, because an email address is caller-chosen and an unbounded key space would let a caller spend
+the server's memory rather than only its patience.
+
+`users.email_verified` stays false for these Accounts. Nothing in the product sends mail, so there is no verification
+step to assert the address, and recording one that never happened would be worse than recording none. For the same
+reason there is no password reset: adding one means adding a mail sender first.
+
+That has a consequence an operator has to weigh before enabling self-service registration at all. Because registration
+proves nothing about the address, anyone can register an address they do not own, receive a session, and have the
+Account provisioned — all while `email_verified` stays false.
+
+What happens next is worth stating precisely, because the obvious guess is wrong. Better Auth defaults
+`accountLinking.requireLocalEmailVerified` to true, and being a trusted provider does not lift it: that setting governs
+whether the *provider* verified the address, not whether the local Account did. A later Google sign-in for the squatted
+address is therefore refused rather than linked, so the squatter and the real owner do not end up sharing an Account.
+
+The harm is a lockout instead. `users_email_unique` reserves the address, so the real owner can neither register it nor
+reach it through Google, and the squatter holds a provisioned Account for an address they never proved. An integration
+test pins that behavior. Until ownership is proven before a password credential can claim an address, enable
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` only where everyone who can reach the server is already trusted.
+
 An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
 enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The
 resolver that used to serialize on the address is gone; nothing in Better Auth's linking orders two concurrent first
@@ -394,6 +446,7 @@ processes.
 | `OPENTAG_SLACK_REDIRECT_URL` | none | Optional public origin or exact Slack OAuth callback URL on `OPENTAG_PUBLIC_URL` |
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | Explicitly enable loopback-only development sign-in; requires the configured email |
 | `OPENTAG_DEV_AUTH_EMAIL` | none | Existing unique bootstrap user selected by the development bypass |
+| `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` | `false` | Allow registering and signing in with an email address and password |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_OTEL_ENDPOINT` | empty | Optional OTLP/HTTP traces endpoint; see [server observability](./docs/observability.md) |
 | `OPENTAG_OTEL_HEADERS` | empty | Secret OTLP headers in comma-separated `key=value` form |

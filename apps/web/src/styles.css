@@ -1467,6 +1467,105 @@ code {
   margin-top: 30px;
 }
 
+.login-password-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 30px;
+  text-align: left;
+}
+
+.login-field {
+  display: grid;
+  gap: 6px;
+}
+
+.login-field > span {
+  color: var(--muted);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
+}
+
+.login-field > input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--strong-border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: var(--text-ui);
+}
+
+.login-field > input:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 1px;
+}
+
+.login-password-hint {
+  margin: -6px 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+.login-error {
+  margin: 0;
+  color: var(--danger, #b42318);
+  font-size: var(--text-ui);
+}
+
+.login-submit {
+  min-height: 48px;
+  border: 1px solid var(--strong-border);
+  border-radius: 8px;
+  background: var(--foreground);
+  color: var(--surface);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+
+.login-submit:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.login-mode-switch {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+  text-align: center;
+}
+
+/* The base control reset already inherits the font, so this only restates the weight it changes. */
+.login-mode-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--foreground);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* Separates the form from the redirect providers without implying either is the primary way in. */
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 22px 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--strong-border);
+}
+
 .login-provider-button {
   position: relative;
   display: flex;
@@ -2976,6 +3075,22 @@ textarea:focus {
   font-size: var(--text-meta);
 }
 
+.messaging-agent-status {
+  display: grid;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  padding: 18px 0;
+  grid-template-columns: minmax(190px, 0.45fr) minmax(0, 1fr) auto;
+}
+
+.messaging-agent-status p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+  line-height: var(--lh-prose);
+}
+
 .messaging-contact-facts {
   display: grid;
   grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
@@ -3926,6 +4041,11 @@ textarea:focus {
   .messaging-contact-facts {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .messaging-agent-status {
+    align-items: flex-start;
+    grid-template-columns: 1fr;
   }
 
   .binding-status,

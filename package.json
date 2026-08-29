@@ -15,6 +15,7 @@
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",
     "test": "node --test --test-concurrency=1 scripts/__tests__/*.test.mjs && turbo run test --concurrency=2",
+    "test:e2e:doctor-docker": "node scripts/e2e/doctor-docker.mjs",
     "test:coverage": "pnpm build && vitest run --config vitest.coverage.config.ts --maxWorkers=1",
     "check:node-compat": "pnpm build && pnpm test && node scripts/node-compat-smoke.mjs",
     "notices:write": "node scripts/third-party-notices.mjs --write"

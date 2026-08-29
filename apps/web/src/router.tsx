@@ -11,6 +11,7 @@ import type {
   ProviderReadinessStatus,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
+import { DEFAULT_SIGN_IN_DESTINATION, PASSWORD_MIN_LENGTH, resolveSignInDestination } from "@opentag/shared/browser";
 import {
   createContext,
   type FormEvent,
@@ -507,7 +508,7 @@ export function AppRouter() {
 
 function LoginPage() {
   const providers = useResource(() => browserApi.authProviders(), "auth-providers");
-  const next = new URLSearchParams(useLocation().search).get("next") ?? "/agents";
+  const next = new URLSearchParams(useLocation().search).get("next") ?? DEFAULT_SIGN_IN_DESTINATION;
   return (
     <main className="login-page decorative-page">
       <section aria-labelledby="login-title" className="login-card">
@@ -518,10 +519,17 @@ function LoginPage() {
         </header>
         <AsyncState state={providers}>
           {(value) => {
-            const availableProviders = value.providers.filter(
-              (provider: AuthProvider) => provider.enabled && provider.startUrl,
+            /*
+             * `password` is deliberately excluded here rather than filtered out by the missing `startUrl`: it is a
+             * form, so it renders as one instead of as a link to somewhere.
+             */
+            const linkProviders = value.providers.filter(
+              (provider: AuthProvider) => provider.id !== "password" && provider.enabled && provider.startUrl,
             );
-            if (availableProviders.length === 0) {
+            const password = value.providers.some(
+              (provider: AuthProvider) => provider.id === "password" && provider.enabled,
+            );
+            if (linkProviders.length === 0 && !password) {
               return (
                 <p className="login-unavailable" role="status">
                   No sign-in methods are currently available.
@@ -529,11 +537,21 @@ function LoginPage() {
               );
             }
             return (
-              <div className="login-actions">
-                {availableProviders.map((provider: AuthProvider) => (
-                  <LoginProviderLink key={provider.id} next={next} provider={provider} />
-                ))}
-              </div>
+              <>
+                {password ? <PasswordSignInForm next={next} /> : null}
+                {password && linkProviders.length > 0 ? (
+                  <p className="login-divider">
+                    <span>or</span>
+                  </p>
+                ) : null}
+                {linkProviders.length > 0 ? (
+                  <div className="login-actions">
+                    {linkProviders.map((provider: AuthProvider) => (
+                      <LoginProviderLink key={provider.id} next={next} provider={provider} />
+                    ))}
+                  </div>
+                ) : null}
+              </>
             );
           }}
         </AsyncState>
@@ -565,6 +583,126 @@ function OpenTagBrandLockup() {
       </svg>
       <span>OpenTag</span>
     </div>
+  );
+}
+
+/**
+ * The email and password form, which both registers and signs in.
+ *
+ * One form with a mode rather than two routes: the two differ by a single field and a single endpoint, and a separate
+ * page would have to re-resolve which providers are available in order to render at all.
+ *
+ * On success it navigates with a full load rather than a client-side route change. The session and double-submit
+ * cookies arrive on that response, and every later request reads the token out of `document.cookie`; re-entering the
+ * app through a fresh load is what guarantees it is there before anything tries to use it.
+ */
+export function PasswordSignInForm({
+  navigate = (to: string) => window.location.assign(to),
+  next,
+}: {
+  /** The navigation itself, so a test can observe where a sign-in decided to land rather than following it. */
+  navigate?: (to: string) => void;
+  next: string;
+}) {
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const registering = mode === "sign-up";
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(undefined);
+    setSubmitting(true);
+    try {
+      if (registering) {
+        await browserApi.signUpWithPassword({ email, password, displayName });
+      } else {
+        await browserApi.signInWithPassword({ email, password });
+      }
+      /*
+       * Re-checked here rather than trusted from the query string. This is the one sign-in method that navigates the
+       * browser itself instead of handing its destination to a server route, so without this the same `next` the
+       * redirect providers have validated since they existed would be an open redirect on this path alone.
+       */
+      navigate(resolveSignInDestination(next) ?? DEFAULT_SIGN_IN_DESTINATION);
+    } catch (cause) {
+      /*
+       * The server's message is shown as it is. It is written to be shown — a rejected sign-in says only that the
+       * address or password was wrong, so restating it here could only make it less accurate.
+       */
+      setError(cause instanceof ApiError ? cause.message : "Sign-in failed. Try again.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form className="login-password-form" onSubmit={submit}>
+      <label className="login-field" htmlFor="login-email">
+        <span>Email</span>
+        <input
+          autoComplete="email"
+          id="login-email"
+          name="email"
+          onChange={(event) => setEmail(event.target.value)}
+          required
+          type="email"
+          value={email}
+        />
+      </label>
+      {registering ? (
+        <label className="login-field" htmlFor="login-display-name">
+          <span>Name</span>
+          <input
+            autoComplete="name"
+            id="login-display-name"
+            name="displayName"
+            onChange={(event) => setDisplayName(event.target.value)}
+            required
+            type="text"
+            value={displayName}
+          />
+        </label>
+      ) : null}
+      <label className="login-field" htmlFor="login-password">
+        <span>Password</span>
+        <input
+          // Tells a password manager to offer a new secret rather than an existing one, and the reverse on sign-in.
+          autoComplete={registering ? "new-password" : "current-password"}
+          id="login-password"
+          minLength={registering ? PASSWORD_MIN_LENGTH : undefined}
+          name="password"
+          onChange={(event) => setPassword(event.target.value)}
+          required
+          type="password"
+          value={password}
+        />
+      </label>
+      {registering ? <p className="login-password-hint">At least {PASSWORD_MIN_LENGTH} characters.</p> : null}
+      {error ? (
+        <p className="login-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <button className="login-submit" disabled={submitting} type="submit">
+        {registering ? "Create account" : "Sign in"}
+      </button>
+      <p className="login-mode-switch">
+        {registering ? "Already have an account?" : "No account yet?"}{" "}
+        <button
+          className="login-mode-button"
+          onClick={() => {
+            setMode(registering ? "sign-in" : "sign-up");
+            setError(undefined);
+          }}
+          type="button"
+        >
+          {registering ? "Sign in" : "Create one"}
+        </button>
+      </p>
+    </form>
   );
 }
 
@@ -1082,49 +1220,50 @@ function agentCardStatus(agent: AgentListItem): {
   priority: number;
   tone: StatusTone;
 } {
-  if (agent.status === "suspended") return { label: "Paused", priority: 4, tone: "neutral" };
+  const status = agentStatusPresentation(agent);
+  if (agent.status === "suspended") return { label: status.label, priority: 4, tone: status.tone };
   if (!agent.evidenceConfirmed) {
     return { detail: "Unable to refresh", label: "Unconfirmed", priority: 1, tone: "neutral" };
   }
   if (agent.availability.state === "unconfirmed") {
-    return { detail: "Unable to confirm readiness", label: "Unconfirmed", priority: 1, tone: "neutral" };
+    return { detail: "Unable to confirm readiness", label: status.label, priority: 1, tone: status.tone };
   }
   if (agent.availability.state === "action_required") {
-    const { action, detail } =
+    const action =
       agent.availability.reason === "computer_offline"
-        ? { action: { label: "View Computer", section: "computer" as const }, detail: "Computer offline" }
+        ? { label: "View Computer", section: "computer" as const }
         : agent.availability.reason === "runtime_unavailable"
           ? // Provider readiness is observed per Computer, so the Computer page is where it is explained.
-            { action: { label: "View Computer", section: "computer" as const }, detail: "Computer not ready" }
-          : { action: { label: "View messaging", section: "messaging" as const }, detail: "Messaging unavailable" };
+            { label: "View Computer", section: "computer" as const }
+          : { label: "View messaging", section: "messaging" as const };
     return {
       action,
-      detail,
-      label: "Needs attention",
+      detail: "Cannot receive new work",
+      label: status.label,
       priority: 0,
-      tone: "warning",
+      tone: status.tone,
     };
   }
   if (agent.availability.state === "setting_up") {
-    return { detail: "Messaging setup in progress", label: "Setting up", priority: 2, tone: "info" };
+    return { detail: "Messaging setup in progress", label: status.label, priority: 2, tone: status.tone };
   }
   if (agent.availability.state === "not_connected") {
     return {
       action: { label: "Connect messaging", section: "messaging" },
-      detail: "Messaging not connected",
-      label: "Not connected",
+      detail: "Cannot receive new work",
+      label: status.label,
       priority: 2,
-      tone: "neutral",
+      tone: status.tone,
     };
   }
   if (agent.activity.state === "working") {
     return {
-      label: "Working",
+      label: status.label,
       priority: 2,
-      tone: "success",
+      tone: status.tone,
     };
   }
-  return { label: "Available", priority: 3, tone: "success" };
+  return { label: status.label, priority: 3, tone: status.tone };
 }
 
 function formatElapsedCompact(value: string): string {
@@ -1526,10 +1665,11 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
 
 function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
   const recovery = agentAvailabilityRecovery(agent);
+  const status = agentStatusPresentation(agent);
   return (
-    <section className="agent-recovery-banner" aria-label="Agent needs attention">
+    <section className="agent-recovery-banner" aria-label={`Agent status: ${status.label}`}>
       <div>
-        <strong>{availabilityStateLabel(agent.availability.state)}</strong>
+        <strong>{status.label}</strong>
         <p>{agentRecoveryMessage(agent)}</p>
       </div>
       {recovery ? (
@@ -1706,14 +1846,10 @@ function AccountPage() {
 }
 
 function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
-  const tone = availabilityTone(agent.availability.state);
-  const working = agent.availability.state === "ready" && agent.activity.state === "working";
+  const status = agentStatusPresentation(agent);
   return (
     <div className="agent-availability-line">
-      <StatusIndicator
-        label={working ? "Working" : availabilityStateLabel(agent.availability.state)}
-        tone={working ? "info" : tone}
-      />
+      <StatusIndicator label={status.label} tone={status.tone} />
     </div>
   );
 }
@@ -1869,10 +2005,7 @@ function agentSettingsSummary(agent: AgentDetailView, config: AgentAdminConfig, 
     if (agent.messaging.kind === "unconfirmed") return "Messaging status is temporarily unavailable";
     const binding = agent.messaging.value;
     if (!binding) return "No messaging channel connected";
-    const status =
-      binding.bindingState === "active" && agent.availability.dependencies.handoff.state === "ready"
-        ? "Connected"
-        : messagingConnectionLabel(binding, agent.availability.dependencies.handoff.state);
+    const status = messagingConnectionLabel(binding);
     return `${titleCase(binding.provider)} · @${agent.name} · ${status}`;
   }
   if (section === "identity") return config.displayName;
@@ -2315,6 +2448,8 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
             }}
           >
             {(slackConfiguration) => {
+              const agentStatus = agentStatusPresentation(agent);
+              const agentRecovery = agentAvailabilityRecovery(agent);
               const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
                 setError(undefined);
                 await feishuSetup.start(intent);
@@ -2335,12 +2470,9 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             </div>
                             <div className="binding-status">
                               <StatusIndicator
-                                detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
-                                  binding,
-                                  agent.availability.dependencies.handoff.state,
-                                )}`}
+                                detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(binding)}`}
                                 label={binding.bot.displayName}
-                                tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
+                                tone={messagingConnectionTone(binding)}
                               />
                               <small>
                                 {binding.lastRuntimeObservationAt
@@ -2349,6 +2481,23 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                     ? `Validated ${formatDate(binding.lastValidatedAt)}`
                                     : "Not yet observed"}
                               </small>
+                            </div>
+                            <div className="messaging-agent-status">
+                              <StatusIndicator
+                                detail="Agent status"
+                                label={agentStatus.label}
+                                tone={agentStatus.tone}
+                              />
+                              <p>{messagingAgentStatusDescription(agent, binding.provider)}</p>
+                              {agentRecovery && agentRecovery.to !== `/agents/${agent.id}/settings/messaging` ? (
+                                <Link
+                                  className={buttonClassName({ size: "compact", variant: "secondary" })}
+                                  state={{ agent }}
+                                  to={agentRecovery.to}
+                                >
+                                  {agentRecovery.label}
+                                </Link>
+                              ) : null}
                             </div>
                             <dl className="messaging-contact-facts">
                               <div>
@@ -2518,10 +2667,10 @@ function imBindingStateLabel(binding: ImBindingSummary): string {
     return "Permissions update required";
   }
   return {
-    active: "Configured",
+    active: "Connected",
     provisioning: "Setting up",
     reauthorization_required: "Permissions update required",
-    error: "Needs attention",
+    error: "Connection error",
     disabled: "Disabled",
   }[binding.bindingState];
 }
@@ -2537,26 +2686,12 @@ function imBindingTone(binding: ImBindingSummary): StatusTone {
   return tones[binding.bindingState];
 }
 
-function messagingConnectionLabel(
-  binding: ImBindingSummary,
-  handoffState: AgentAvailability["dependencies"]["handoff"]["state"],
-): string {
-  if (binding.bindingState !== "active") return imBindingStateLabel(binding);
-  if (handoffState === "ready") return "Connected";
-  if (handoffState === "setting_up") return "Setting up";
-  if (handoffState === "unconfirmed") return "Unable to confirm";
-  return "Needs attention";
+function messagingConnectionLabel(binding: ImBindingSummary): string {
+  return imBindingStateLabel(binding);
 }
 
-function messagingConnectionTone(
-  binding: ImBindingSummary,
-  handoffState: AgentAvailability["dependencies"]["handoff"]["state"],
-): StatusTone {
-  if (binding.bindingState !== "active") return imBindingTone(binding);
-  if (handoffState === "ready") return "success";
-  if (handoffState === "setting_up") return "info";
-  if (handoffState === "unconfirmed") return "neutral";
-  return "warning";
+function messagingConnectionTone(binding: ImBindingSummary): StatusTone {
+  return imBindingTone(binding);
 }
 
 function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeResponse>; user: MeResponse["user"] }) {
@@ -2798,23 +2933,58 @@ function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
   return "Linux";
 }
 
-function availabilityTone(state: AgentAvailability["state"]): StatusTone {
-  if (state === "ready") return "success";
-  if (state === "setting_up") return "info";
-  if (state === "action_required") return "warning";
-  return "neutral";
+type AgentStatusSource = Pick<AgentListItem, "activity" | "availability">;
+
+function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): string {
+  return provider === "codex" ? "Codex" : "Claude Code";
 }
 
-function availabilityStateLabel(state: AgentAvailability["state"]): string {
-  const labels = {
-    ready: "Ready",
-    action_required: "Needs attention",
-    setting_up: "Setting up",
-    not_connected: "Not connected",
-    suspended: "Suspended",
-    unconfirmed: "Unable to confirm",
-  } satisfies Record<AgentAvailability["state"], string>;
-  return labels[state];
+/**
+ * Presents the exact Agent-level state the viewer can act on. Channel authorization is deliberately
+ * excluded: a connected Slack or Feishu App can coexist with an offline Computer or unavailable
+ * runtime, and collapsing those facts into one warning made the old status impossible to interpret.
+ */
+function agentStatusPresentation(agent: AgentStatusSource): { label: string; tone: StatusTone } {
+  const { availability } = agent;
+  if (availability.state === "ready") {
+    return agent.activity.state === "working"
+      ? { label: "Working", tone: "info" }
+      : { label: "Ready", tone: "success" };
+  }
+  if (availability.state === "suspended") return { label: "Paused", tone: "neutral" };
+  if (availability.state === "setting_up") return { label: "Messaging setup in progress", tone: "info" };
+  if (availability.state === "not_connected") return { label: "Messaging not connected", tone: "neutral" };
+
+  if (availability.state === "unconfirmed") {
+    if (availability.reason === "computer_unconfirmed") {
+      return { label: "Computer status unavailable", tone: "neutral" };
+    }
+    if (availability.reason === "runtime_unconfirmed") {
+      return { label: "Runtime status unavailable", tone: "neutral" };
+    }
+    if (availability.reason === "handoff_unconfirmed") {
+      return { label: "Messaging status unavailable", tone: "neutral" };
+    }
+    return { label: "Agent status unavailable", tone: "neutral" };
+  }
+
+  if (availability.reason === "computer_offline") return { label: "Computer offline", tone: "warning" };
+  if (availability.reason === "runtime_unavailable") {
+    const { provider, status } = availability.dependencies.runtime;
+    const providerName = runtimeProviderName(provider);
+    if (status === "checking") return { label: `Checking ${providerName}`, tone: "info" };
+    if (status === "install") return { label: `${providerName} not installed`, tone: "warning" };
+    if (status === "sign-in") return { label: `${providerName} sign-in required`, tone: "warning" };
+    return { label: `${providerName} unavailable`, tone: "warning" };
+  }
+  if (availability.reason === "im_not_connected") return { label: "Messaging not connected", tone: "neutral" };
+  if (availability.reason === "im_provisioning") return { label: "Messaging setup in progress", tone: "info" };
+  if (availability.reason === "im_reauthorization_required") {
+    return { label: "Messaging authorization required", tone: "warning" };
+  }
+  if (availability.reason === "im_error") return { label: "Messaging connection error", tone: "warning" };
+  if (availability.reason === "handoff_unavailable") return { label: "Cannot receive messages", tone: "warning" };
+  return { label: "Agent unavailable", tone: "warning" };
 }
 
 function sharedConversationLabel(provider: ImBindingSummary["provider"]): string {
@@ -2847,6 +3017,21 @@ function agentAvailabilitySummary(agent: AgentDetailView): string {
   }[agent.availability.state];
 }
 
+function messagingAgentStatusDescription(agent: AgentDetailView, provider: ImBindingSummary["provider"]): string {
+  if (agent.availability.state === "ready") {
+    return agent.activity.state === "working"
+      ? "This Agent is handling a request and remains connected for new messages."
+      : `Ready to receive new messages from ${titleCase(provider)}.`;
+  }
+  if (agent.availability.reason === "computer_offline" || agent.availability.reason === "runtime_unavailable") {
+    return computerRecoveryMessage(agent);
+  }
+  if (agent.availability.reason === "handoff_unavailable") {
+    return `${titleCase(provider)} is connected, but messages cannot currently be handed off to this Agent.`;
+  }
+  return agentRecoveryMessage(agent);
+}
+
 function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
   if (!true || agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
@@ -2877,7 +3062,7 @@ function agentRecoveryMessage(agent: AgentDetailView): string {
     im_not_connected: "Connect Feishu or Slack so teammates can assign work to this agent.",
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
-    im_error: "The messaging connection needs attention before it can receive requests.",
+    im_error: "The messaging connection has an error and cannot receive requests.",
     handoff_unavailable: "Messages cannot currently be handed off to this Agent.",
     computer_unconfirmed: "OpenTag could not confirm the assigned Computer's connection.",
     handoff_unconfirmed: "OpenTag could not confirm whether messaging is available.",

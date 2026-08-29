@@ -1,3 +1,4 @@
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "@opentag/shared";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
@@ -45,6 +46,13 @@ export interface BetterAuthConfig {
    * Supplied only when development sign-in is configured, so the endpoint does not exist on a server without it.
    */
   devSignIn?: () => Promise<string>;
+  /**
+   * Whether an address and password may create an Account and sign one in.
+   *
+   * Off leaves the endpoints undefined rather than merely unreachable, so a route that forgets to check cannot reach a
+   * credential path the deployment did not ask for.
+   */
+  emailPassword?: boolean;
   google?: { clientId: string; clientSecret: string };
 }
 
@@ -126,6 +134,26 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
         },
       },
     },
+    /*
+     * Bounds come from the shared schema the request was already validated against, so the library cannot apply a
+     * different floor underneath and turn an accepted password into a rejected one.
+     *
+     * `requireEmailVerification` stays off because nothing in the product can send mail: switching it on without a
+     * sender would accept a registration and then refuse every sign-in it enables, with no way to clear the state.
+     * `emailVerified` therefore stays false for these Accounts, which is exactly what it means — no provider has
+     * asserted the address.
+     */
+    ...(config.emailPassword
+      ? {
+          emailAndPassword: {
+            enabled: true,
+            autoSignIn: true,
+            minPasswordLength: PASSWORD_MIN_LENGTH,
+            maxPasswordLength: PASSWORD_MAX_LENGTH,
+            requireEmailVerification: false,
+          },
+        }
+      : {}),
     ...(config.google
       ? {
           socialProviders: {

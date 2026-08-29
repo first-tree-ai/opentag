@@ -37,6 +37,7 @@ import {
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AdmissionController } from "./admission-controller.js";
+import { resolveAgentRuntimeExecutable } from "./agent-runtime-installation.js";
 import {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
@@ -643,7 +644,7 @@ export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): Agen
       let command: string;
       try {
         request.signal?.throwIfAborted();
-        command = await resolveExecutable(options.command, options.sourceEnvironment);
+        command = (await resolveAgentRuntimeExecutable("codex", options.command, options.sourceEnvironment)).path;
       } catch (error) {
         if (request.signal?.aborted) throw error;
         return { ready: false, issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }] };
@@ -685,7 +686,7 @@ export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOpti
       let command: string;
       try {
         request.signal?.throwIfAborted();
-        command = await resolveExecutable(options.command, options.sourceEnvironment);
+        command = (await resolveAgentRuntimeExecutable("claude-code", options.command, options.sourceEnvironment)).path;
       } catch (error) {
         if (request.signal?.aborted) throw error;
         return {

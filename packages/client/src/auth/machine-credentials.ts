@@ -29,6 +29,17 @@ export function readMachineCredentials(home = resolveOpenTagHome()): Promise<Sto
   return readPrivateJson(home, machineCredentialsPath(home), validateMachineCredentials);
 }
 
+/**
+ * Strict, read-only projection for diagnostics. Unlike the runtime reader, this rejects the whole
+ * file when any stored enrollment is unusable, so corruption cannot be reported as a healthy
+ * partial configuration.
+ */
+export function readMachineCredentialsStrict(
+  home = resolveOpenTagHome(),
+): Promise<StoredMachineCredentials | undefined> {
+  return readPrivateJson(home, machineCredentialsPath(home), checkMachineCredentialsStrict);
+}
+
 /** Rejects rather than throwing synchronously, so a caller handling the returned promise sees the refusal. */
 export async function writeMachineCredentialsAtomically(
   credentials: StoredMachineCredentials,
@@ -79,15 +90,22 @@ function validateMachineCredentials(value: unknown): StoredMachineCredentials {
  * bytes just written. Unusable input is rejected, and the validated projection is what reaches disk.
  */
 function checkMachineCredentialsToWrite(value: StoredMachineCredentials): StoredMachineCredentials {
+  return checkMachineCredentialsStrict(value, "Refusing to write");
+}
+
+function checkMachineCredentialsStrict(
+  value: unknown,
+  failurePrefix = "The stored OpenTag Computer credentials contain",
+): StoredMachineCredentials {
   const enrollmentIds = new Set<string>();
   const enrollments: MachineEnrollmentCredential[] = [];
   for (const [index, entry] of readCredentialsEnvelope(value).entries()) {
     const credential = readEnrollmentEntry(entry);
     if (!credential) {
-      throw new Error(`Refusing to write an unusable OpenTag Computer credential (entry ${index})`);
+      throw new Error(`${failurePrefix} an unusable OpenTag Computer credential (entry ${index})`);
     }
     if (enrollmentIds.has(credential.workspaceComputerId)) {
-      throw new Error(`Refusing to write a duplicate OpenTag Computer enrollment (entry ${index})`);
+      throw new Error(`${failurePrefix} a duplicate OpenTag Computer enrollment (entry ${index})`);
     }
     enrollmentIds.add(credential.workspaceComputerId);
     enrollments.push(credential);

@@ -23,7 +23,7 @@ describe("Agent detail capability previews", () => {
     expect(screen.getByText("opentag-preview")).toBeTruthy();
     expect(screen.getByText("opentag/preview-repository · read and pull requests")).toBeTruthy();
     expect(screen.getByText("Available")).toBeTruthy();
-    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Connection error")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.queryByText(/Feishu|Slack/)).toBeNull();
   });

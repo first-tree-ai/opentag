@@ -293,24 +293,26 @@ describe("OnboardingPage", () => {
     expect(within(strip).getByText("Connecting…")).toBeTruthy();
   });
 
-  it.each(["reauthorization_required", "error", "disabled"] as const)(
-    "reports %s as needing attention rather than as a severed transport",
-    async (bindingState) => {
-      installFacts({
-        agents: [agent],
-        computers: [readyComputer],
-        handoff: { bindingState, handoffReady: false },
-      });
-      render(<OnboardingPage user={user} />);
+  it.each([
+    ["reauthorization_required", "Authorization required", "requires authorization for its link to"],
+    ["error", "Connection error", "has a connection error on its link to"],
+    ["disabled", "Disabled", "has disabled its link to"],
+  ] as const)("reports the exact %s state rather than a generic warning", async (bindingState, label, description) => {
+    installFacts({
+      agents: [agent],
+      computers: [readyComputer],
+      handoff: { bindingState, handoffReady: false },
+    });
+    render(<OnboardingPage user={user} />);
 
-      // The accessible name carries the same claim as the label: an expired authorization is not
-      // evidence that Feishu is unreachable, so neither representation may say so.
-      const strip = await screen.findByLabelText("OpenTag Agent needs attention on its link to Feishu");
-      expect(within(strip).getByText("Needs attention")).toBeTruthy();
-      expect(within(strip).queryByText("Disconnected")).toBeNull();
-      expect(strip.getAttribute("data-status")).toBe("attention");
-    },
-  );
+    // The accessible name carries the exact state too; an expired authorization is not evidence
+    // that Feishu is unreachable, so neither representation may call it disconnected.
+    const strip = await screen.findByLabelText(`OpenTag Agent ${description} Feishu`);
+    expect(within(strip).getByText(label)).toBeTruthy();
+    expect(within(strip).queryByText("Disconnected")).toBeNull();
+    expect(within(strip).queryByText("Needs attention")).toBeNull();
+    expect(strip.getAttribute("data-status")).toBe("attention");
+  });
 
   it("reaches Ready from production runtime and authoritative handoff facts", async () => {
     installFacts({

@@ -14,7 +14,6 @@ const EXPECTED_ROOT_EXPORTS = [
   "formatSessionCommandResult",
   "formatSessionList",
   "listComputers",
-  "resolveServerUrl",
   "runAgentCreate",
   "runAgentDelete",
   "runAgentList",

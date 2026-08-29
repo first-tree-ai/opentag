@@ -54,10 +54,18 @@ export {
   ConnectCodeIssueRequestSchema,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
+  EmailAddressSchema,
+  type EmailSignInRequest,
+  EmailSignInRequestSchema,
+  type EmailSignUpRequest,
+  EmailSignUpRequestSchema,
   type MeResponse,
   MeResponseSchema,
   type MeWorkspace,
   MeWorkspaceSchema,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  PasswordSchema,
   type RefreshTokenRequest,
   RefreshTokenRequestSchema,
   type RefreshTokenResponse,
@@ -354,6 +362,7 @@ export {
 } from "./runtime-protocol.js";
 export * from "./session.js";
 export * from "./session-cli.js";
+export * from "./sign-in-destination.js";
 export * from "./task.js";
 export {
   type CompleteWorkspaceSetupRequest,

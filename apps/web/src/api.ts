@@ -21,6 +21,8 @@ import {
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
+  type EmailSignInRequest,
+  type EmailSignUpRequest,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
@@ -260,6 +262,26 @@ export class BrowserApi {
       observedAt: new Date().toISOString(),
       status: body.status,
     };
+  }
+
+  /*
+   * No CSRF header on either of these: a signed-out browser has no double-submit token, and these are the requests
+   * that mint one. The server fences them on the request origin instead.
+   */
+  async signUpWithPassword(input: EmailSignUpRequest): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.authEmailSignUp, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  async signInWithPassword(input: EmailSignInRequest): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.authEmailSignIn, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json" },
+    });
   }
 
   async logout(): Promise<void> {

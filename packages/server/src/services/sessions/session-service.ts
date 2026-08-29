@@ -21,6 +21,7 @@ import {
   sessions,
   workspaceComputers,
 } from "../../db/schema/index.js";
+import { projectedComputerId } from "../computers/ownership-projections.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -264,6 +265,7 @@ export class SessionService {
         .values({
           sessionId: created.id,
           workspaceComputerId: creator.placement.workspaceComputerId,
+          computerId: await projectedComputerId(transaction, creator.placement.workspaceComputerId),
           generation: 1,
           updatedAt: now,
         })
@@ -649,7 +651,12 @@ export class SessionService {
         .where(and(eq(imMessageDeliveries.sessionId, sessionId), eq(imMessageDeliveries.state, "pending")));
       const [placement] = await transaction
         .update(sessionPlacements)
-        .set({ workspaceComputerId, generation, updatedAt: now })
+        .set({
+          workspaceComputerId,
+          computerId: await projectedComputerId(transaction, workspaceComputerId),
+          generation,
+          updatedAt: now,
+        })
         .where(eq(sessionPlacements.sessionId, sessionId))
         .returning();
       if (!placement) throw new SessionServiceError("SESSION_NOT_FOUND", "The Session placement was not found");
@@ -890,7 +897,13 @@ export class SessionService {
       (
         await transaction
           .insert(sessionPlacements)
-          .values({ sessionId: session.id, workspaceComputerId, generation: 1, updatedAt: now })
+          .values({
+            sessionId: session.id,
+            workspaceComputerId,
+            computerId: await projectedComputerId(transaction, workspaceComputerId),
+            generation: 1,
+            updatedAt: now,
+          })
           .onConflictDoNothing()
           .returning()
       )[0];

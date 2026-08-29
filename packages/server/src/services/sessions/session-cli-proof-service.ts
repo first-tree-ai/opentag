@@ -11,6 +11,7 @@ import {
   workspaceComputers,
 } from "../../db/schema/index.js";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { projectedComputerId } from "../computers/ownership-projections.js";
 
 export interface SessionCliSourceContext {
   agentId: string;
@@ -94,6 +95,7 @@ export class SessionCliProofService {
       const proofId = randomUUID();
       const token = this.#deriveToken({ ...input, proofId });
       const now = this.#now();
+      const computerId = (await projectedComputerId(transaction, input.workspaceComputerId)) ?? null;
       await transaction
         .insert(sessionCliProofs)
         .values({
@@ -101,6 +103,7 @@ export class SessionCliProofService {
           proofId,
           tokenHash: hashToken(token),
           workspaceComputerId: input.workspaceComputerId,
+          computerId,
           placementGeneration: input.placementGeneration,
           connectionInstanceId: input.connectionInstanceId,
           createdAt: now,
@@ -112,6 +115,7 @@ export class SessionCliProofService {
             proofId,
             tokenHash: hashToken(token),
             workspaceComputerId: input.workspaceComputerId,
+            computerId,
             placementGeneration: input.placementGeneration,
             connectionInstanceId: input.connectionInstanceId,
             updatedAt: now,

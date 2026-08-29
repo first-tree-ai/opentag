@@ -3,7 +3,9 @@ import { type ChannelName, getChannelConfig } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   computerConnectCodes,
+  computerCredentials,
   computers,
   workspaceComputerCredentials,
   workspaceComputers,
@@ -83,6 +85,8 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         workspaceId,
         tokenHash: hashSecret(code),
         issuedByUserId: accountId,
+        issuedByAccountId: accountId,
+        mode: "create",
         createdAt: now,
         expiresAt,
       });
@@ -134,8 +138,22 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         })
         .onConflictDoNothing({ target: computers.id });
 
+      const enrollmentColumns = {
+        id: workspaceComputers.id,
+        computerId: workspaceComputers.computerId,
+        displayName: workspaceComputers.displayName,
+        platform: workspaceComputers.platform,
+        arch: workspaceComputers.arch,
+        clientVersion: workspaceComputers.clientVersion,
+        enrolledByUserId: workspaceComputers.enrolledByUserId,
+        enrolledAt: workspaceComputers.enrolledAt,
+        currentInstanceId: workspaceComputers.currentInstanceId,
+        connectedAt: workspaceComputers.connectedAt,
+        lastSeenAt: workspaceComputers.lastSeenAt,
+        updatedAt: workspaceComputers.updatedAt,
+      };
       let [enrollment] = await transaction
-        .select({ id: workspaceComputers.id })
+        .select(enrollmentColumns)
         .from(workspaceComputers)
         .where(
           and(
@@ -160,9 +178,9 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
             enrolledAt: now,
             updatedAt: now,
           })
-          .returning({ id: workspaceComputers.id });
+          .returning(enrollmentColumns);
       } else {
-        await transaction
+        [enrollment] = await transaction
           .update(workspaceComputers)
           .set({
             displayName: input.displayName,
@@ -174,9 +192,55 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
             lastSeenAt: null,
             updatedAt: now,
           })
-          .where(eq(workspaceComputers.id, enrollment.id));
+          .where(eq(workspaceComputers.id, enrollment.id))
+          .returning(enrollmentColumns);
       }
       if (!enrollment) throw new Error("Computer enrollment was not created");
+
+      const [accountComputer] = await transaction
+        .select({
+          ownerAccountId: accountComputers.ownerAccountId,
+          currentInstallationId: accountComputers.currentInstallationId,
+        })
+        .from(accountComputers)
+        .where(eq(accountComputers.id, enrollment.id))
+        .limit(1)
+        .for("update");
+      if (!accountComputer) {
+        await transaction.insert(accountComputers).values({
+          id: enrollment.id,
+          ownerAccountId: enrollment.enrolledByUserId,
+          currentInstallationId: enrollment.computerId,
+          displayName: enrollment.displayName,
+          platform: enrollment.platform,
+          arch: enrollment.arch,
+          clientVersion: enrollment.clientVersion,
+          currentInstanceId: enrollment.currentInstanceId,
+          connectedAt: enrollment.connectedAt,
+          lastSeenAt: enrollment.lastSeenAt,
+          createdAt: enrollment.enrolledAt,
+          updatedAt: enrollment.updatedAt,
+        });
+      } else if (
+        accountComputer.ownerAccountId !== enrollment.enrolledByUserId ||
+        accountComputer.currentInstallationId !== enrollment.computerId
+      ) {
+        throw new Error("The account-owned Computer projection does not match the enrollment identity");
+      } else {
+        await transaction
+          .update(accountComputers)
+          .set({
+            displayName: enrollment.displayName,
+            platform: enrollment.platform,
+            arch: enrollment.arch,
+            clientVersion: enrollment.clientVersion,
+            currentInstanceId: enrollment.currentInstanceId,
+            connectedAt: enrollment.connectedAt,
+            lastSeenAt: enrollment.lastSeenAt,
+            updatedAt: enrollment.updatedAt,
+          })
+          .where(eq(accountComputers.id, enrollment.id));
+      }
 
       await transaction
         .update(workspaceComputerCredentials)
@@ -187,18 +251,34 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
             isNull(workspaceComputerCredentials.revokedAt),
           ),
         );
+      await transaction
+        .update(computerCredentials)
+        .set({ revokedByUserId: connectCode.issuedByUserId, revokedAt: now })
+        .where(and(eq(computerCredentials.computerId, enrollment.id), isNull(computerCredentials.revokedAt)));
       const credentialId = randomUUID();
       const secret = generateSecret(32);
+      const secretHash = hashSecret(secret);
       await transaction.insert(workspaceComputerCredentials).values({
         id: credentialId,
         workspaceComputerId: enrollment.id,
-        secretHash: hashSecret(secret),
+        secretHash,
+        issuedByUserId: connectCode.issuedByUserId,
+        issuedAt: now,
+      });
+      await transaction.insert(computerCredentials).values({
+        id: credentialId,
+        computerId: enrollment.id,
+        secretHash,
         issuedByUserId: connectCode.issuedByUserId,
         issuedAt: now,
       });
       const [consumed] = await transaction
         .update(computerConnectCodes)
-        .set({ consumedWorkspaceComputerId: enrollment.id, consumedAt: now })
+        .set({
+          consumedWorkspaceComputerId: enrollment.id,
+          consumedComputerId: enrollment.id,
+          consumedAt: now,
+        })
         .where(and(eq(computerConnectCodes.id, connectCode.id), isNull(computerConnectCodes.consumedAt)))
         .returning({ id: computerConnectCodes.id });
       if (!consumed) {

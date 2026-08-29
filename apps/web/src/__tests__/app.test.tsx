@@ -541,7 +541,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(agentCard as HTMLElement).getByText("Tasks")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("428K")).toBeTruthy();
-    expect(within(agentCard as HTMLElement).getByText("Not connected")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Messaging not connected")).toBeTruthy();
     expect(
       within(agentCard as HTMLElement)
         .getByRole("link", { name: "Connect messaging" })
@@ -591,10 +591,10 @@ describe("OpenTag Web App Shell", () => {
     const agentCard = (await screen.findByRole("link", { name: "Open Reviewer" })).closest('[data-ui="agent-card"]');
     expect(agentCard).toBeTruthy();
     const status = within(agentCard as HTMLElement)
-      .getByText("Needs attention")
+      .getByText("Computer offline")
       .closest("[data-state]");
     expect(status).toBeTruthy();
-    expect(within(status as HTMLElement).getByText("Computer offline")).toBeTruthy();
+    expect(within(status as HTMLElement).getByText("Cannot receive new work")).toBeTruthy();
     const exit = within(status as HTMLElement).getByRole("link", { name: "View Computer" });
     expect(exit.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
     expect(exit.className).not.toContain("ds-");
@@ -1828,7 +1828,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Reviewer")).toBeTruthy();
-    expect(screen.getByText("Unconfirmed")).toBeTruthy();
+    expect(screen.getByText("Computer status unavailable")).toBeTruthy();
     expect(screen.getByText("Unable to confirm readiness")).toBeTruthy();
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
@@ -1850,8 +1850,8 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents");
     render(<App />);
 
-    expect(await screen.findByText("Needs attention")).toBeTruthy();
-    expect(screen.getByText("Computer not ready")).toBeTruthy();
+    expect(await screen.findByText("Claude Code sign-in required")).toBeTruthy();
+    expect(screen.getByText("Cannot receive new work")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,
     );
@@ -1865,7 +1865,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     // The detail status names the same state as the Agent list, so one failure has one name.
-    expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Cannot receive messages").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Needs attention")).toBeNull();
     expect(screen.queryByText("Action required")).toBeNull();
     expect(screen.getByText("Messages cannot currently be handed off to this Agent.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View messaging" })).toBeTruthy();
@@ -1973,7 +1974,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
-    expect(await screen.findByText("Available")).toBeTruthy();
+    expect(await screen.findByText("Ready")).toBeTruthy();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));
@@ -2209,13 +2210,37 @@ describe("OpenTag Web App Shell", () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
   });
 
-  it("describes an active binding as needing attention when handoff is unavailable", async () => {
+  it("separates an active channel from an Agent that cannot receive messages", async () => {
     installApi({ bound: true, handoffReady: false });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect((await screen.findByText(/Needs attention/)).closest("[data-state]")).toBeTruthy();
+    expect((await screen.findByText("Feishu · Connected")).closest("[data-state]")).toBeTruthy();
+    expect((await screen.findByText("Cannot receive messages")).closest("[data-state]")).toBeTruthy();
+    expect(
+      screen.getByText("Feishu is connected, but messages cannot currently be handed off to this Agent."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Needs attention/)).toBeNull();
     expect(screen.queryByText(/Online/)).toBeNull();
+  });
+
+  it("shows the selected runtime state beside a connected Slack channel", async () => {
+    installApi({
+      bound: true,
+      provider: "slack",
+      runtimeProvider: "codex",
+      computerProviderReadiness: [{ provider: "codex", status: "checking", observedAt: "2026-08-20T00:00:00.000Z" }],
+      handoffReady: false,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect((await screen.findByText("Slack · Connected")).closest("[data-state]")).toBeTruthy();
+    expect((await screen.findByText("Checking Codex")).closest("[data-state]")).toBeTruthy();
+    expect(screen.getByText("OpenTag is still checking Codex on Ada's Mac.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/computer`,
+    );
   });
 
   it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {

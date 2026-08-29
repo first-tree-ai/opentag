@@ -3,6 +3,7 @@ import {
   type AnyPgColumn,
   bigint,
   check,
+  foreignKey,
   index,
   pgEnum,
   pgTable,
@@ -95,6 +96,11 @@ export const imBindings = pgTable(
       .on(table.slackInstallationId)
       .where(sql`${table.provider} = 'slack' and ${table.status} <> 'disabled'`),
     index("im_bindings_slack_installation_id_idx").on(table.slackInstallationId),
+    foreignKey({
+      columns: [table.agentId, table.slackInstallationId],
+      foreignColumns: [slackInstallations.agentId, slackInstallations.id],
+      name: "im_bindings_slack_installation_owner_fk",
+    }).onDelete("restrict"),
     check("im_bindings_credential_generation_nonnegative", sql`${table.credentialGeneration} >= 0`),
     check("im_bindings_connection_epoch_nonnegative", sql`${table.connectionFencingEpoch} >= 0`),
     check(

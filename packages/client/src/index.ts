@@ -66,6 +66,7 @@ export {
   type MachineEnrollmentCredential,
   machineCredentialsPath,
   readMachineCredentials,
+  readMachineCredentialsStrict,
   type StoredMachineCredentials,
   storeMachineEnrollmentCredential,
   writeMachineCredentialsAtomically,
@@ -73,10 +74,12 @@ export {
 export { type AccessTokenLease, AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";
 export {
   checkServerHealth,
+  SERVER_HEALTH_TIMEOUT_MS,
   ServerHealthConfigurationError,
   ServerHealthHttpError,
   ServerHealthNetworkError,
   ServerHealthResponseError,
+  ServerHealthTimeoutError,
 } from "./health.js";
 export {
   type ClientLogBindings,
@@ -147,6 +150,19 @@ export {
   type AdmissionSnapshot,
 } from "./runtime/admission-controller.js";
 export {
+  type AgentRuntimeCliInstallation,
+  AgentRuntimeExecutableDiscoveryError,
+  AgentRuntimeExecutableNotFoundError,
+  type AgentRuntimeExecutableSource,
+  codexDesktopAppBinDirs,
+  type ProbeAgentRuntimeCliInstallationsOptions,
+  probeAgentRuntimeCliInstallations,
+  type ResolveAgentRuntimeExecutableOptions,
+  type ResolvedAgentRuntimeExecutable,
+  resolveAgentRuntimeExecutable,
+  wellKnownAgentRuntimeBinDirs,
+} from "./runtime/agent-runtime-installation.js";
+export {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
   AgentRuntimeProviderUnavailableError,
@@ -186,6 +202,11 @@ export {
   serializeEnvironment,
 } from "./runtime/im-credential-environment-manager.js";
 export { ImResourceFetcher } from "./runtime/im-resource-fetcher.js";
+export {
+  inspectLocalComputerConfiguration,
+  type LocalComputerConfigurationInspection,
+  type LocalConfigurationStatus,
+} from "./runtime/local-computer-configuration.js";
 export { renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
 export {
   type RuntimeBusinessFrame,

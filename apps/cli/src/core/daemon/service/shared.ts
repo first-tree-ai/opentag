@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { ensurePrivateDirectory } from "@opentag/client";
 import { resolveDaemonPaths } from "../paths.js";
@@ -40,10 +40,11 @@ export interface ServiceIdentity {
 }
 
 export const defaultServiceRunner: ServiceRunner = {
-  run(program, args, options) {
+  async run(program, args, options) {
+    const resolvedProgram = await resolveServiceManagerExecutable(program);
     return new Promise<CommandResult>((complete) => {
       execFile(
-        program,
+        resolvedProgram,
         [...args],
         {
           encoding: "utf8",
@@ -64,6 +65,59 @@ export const defaultServiceRunner: ServiceRunner = {
     });
   },
 };
+
+const SERVICE_MANAGER_LOCATIONS = {
+  darwin: {
+    launchctl: ["/bin/launchctl"],
+  },
+  linux: {
+    loginctl: ["/run/current-system/systemd/bin/loginctl", "/usr/bin/loginctl", "/bin/loginctl"],
+    systemctl: ["/run/current-system/systemd/bin/systemctl", "/usr/bin/systemctl", "/bin/systemctl"],
+  },
+} as const;
+
+export async function resolveServiceManagerExecutable(
+  program: string,
+  platform: NodeJS.Platform = process.platform,
+  dependencies: {
+    access?: (path: string, mode: number) => Promise<void>;
+    stat?: (path: string) => Promise<{ isFile(): boolean }>;
+  } = {},
+): Promise<string> {
+  const platformLocations =
+    platform === "darwin"
+      ? SERVICE_MANAGER_LOCATIONS.darwin
+      : platform === "linux"
+        ? SERVICE_MANAGER_LOCATIONS.linux
+        : undefined;
+  const managerName = isAbsolute(program) ? basename(program) : program;
+  if (!platformLocations || !(managerName in platformLocations)) {
+    throw new DaemonServiceError(
+      "MANAGER_UNAVAILABLE",
+      `The ${program} service manager is not governed on ${platform}`,
+    );
+  }
+  const candidates = platformLocations[managerName as keyof typeof platformLocations] as readonly string[];
+  const allowedCandidates = isAbsolute(program) ? candidates.filter((candidate) => candidate === program) : candidates;
+  if (allowedCandidates.length === 0) {
+    throw new DaemonServiceError("MANAGER_UNAVAILABLE", `The service manager path is not supported: ${program}`);
+  }
+  const checkAccess = dependencies.access ?? access;
+  const checkStat = dependencies.stat ?? stat;
+  for (const candidate of allowedCandidates) {
+    try {
+      if (!(await checkStat(candidate)).isFile()) continue;
+      await checkAccess(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Continue through the reviewed absolute location list only.
+    }
+  }
+  throw new DaemonServiceError(
+    "MANAGER_UNAVAILABLE",
+    `The ${program} service manager is unavailable at supported system locations`,
+  );
+}
 
 export function deriveServiceIdentity(serviceId: string): ServiceIdentity {
   return {

@@ -502,6 +502,35 @@ function installApi(
   });
 }
 
+/**
+ * Opens the account menu and waits for the menu this trigger owns.
+ *
+ * A press is one `click`. Base UI opens the trigger from `mousedown` when a pointer sequence
+ * precedes it and from `click` otherwise, and dispatching both halves in jsdom toggles the menu
+ * twice — open, then closed — so the sequence a real browser produces is not the one to imitate
+ * here.
+ */
+async function openAccountMenu(): Promise<HTMLElement> {
+  const trigger = await screen.findByRole("button", { name: "Account menu" });
+  fireEvent.click(trigger);
+  await waitFor(() => {
+    // The menu this trigger owns, not whichever menu happens to be in the document: a menu the
+    // previous press opened can still be leaving while this one opens, and reading that one is how
+    // an assertion passes against a menu the test never opened.
+    const owned = trigger.getAttribute("aria-controls");
+    const menu = owned ? document.getElementById(owned) : null;
+    if (trigger.getAttribute("aria-expanded") !== "true" || !menu) {
+      throw new Error(`The account menu did not open (aria-expanded=${trigger.getAttribute("aria-expanded")}).`);
+    }
+    if (within(menu).queryAllByRole("menuitem").length === 0) {
+      throw new Error(
+        `The account menu opened with no reachable item (${menu.querySelectorAll('[role="menuitem"]').length} in the DOM).`,
+      );
+    }
+  });
+  return trigger;
+}
+
 describe("OpenTag Web App Shell", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -2265,11 +2294,10 @@ describe("OpenTag Web App Shell", () => {
   it("keeps Workspace management and switching out of the account menu", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    await openAccountMenu();
 
-    // The menu content mounts asynchronously, so the absence checks only mean something once the
-    // menu itself is on screen; reading them synchronously passed locally and raced in CI.
-    expect(await screen.findByRole("menuitem", { name: "Account" })).toBeTruthy();
+    // The absence checks only mean something once the menu itself is on screen.
+    expect(screen.getByRole("menuitem", { name: "Account" })).toBeTruthy();
     expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(screen.queryByText("Secondary")).toBeNull();
@@ -2728,7 +2756,7 @@ describe("OpenTag Web App Shell", () => {
   it("keeps account controls personal and signs out from the account menu", async () => {
     installApi();
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    await openAccountMenu();
     expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Workspace management" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: "Account" }));
@@ -2738,7 +2766,7 @@ describe("OpenTag Web App Shell", () => {
     expect(displayName.readOnly).toBe(false);
     fireEvent.change(displayName, { target: { value: "Account Menu" } });
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    await openAccountMenu();
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
@@ -2758,12 +2786,8 @@ describe("OpenTag Web App Shell", () => {
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);
-    const trigger = await screen.findByRole("button", { name: "Account menu" });
-    fireEvent.click(trigger);
-    // Kumo mounts the menu content asynchronously; reading it synchronously passes locally and races
-    // on CI, which is what turned Node 26 red on one head and green on three others.
-    const account = await screen.findByRole("menuitem", { name: "Account" });
-    expect(screen.getByRole("menu")).toBeTruthy();
+    await openAccountMenu();
+    const account = screen.getByRole("menuitem", { name: "Account" });
     account.focus();
     fireEvent.keyDown(account, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
@@ -2772,13 +2796,9 @@ describe("OpenTag Web App Shell", () => {
   it("supports arrow-key navigation and focus return in the account menu", async () => {
     installApi();
     render(<App />);
-    const trigger = await screen.findByRole("button", { name: "Account menu" });
-    fireEvent.click(trigger);
-    // Kumo mounts the menu content asynchronously; reading it synchronously passes locally and races
-    // on CI, which is what turned Node 26 red on one head and green on three others.
-    const account = await screen.findByRole("menuitem", { name: "Account" });
+    await openAccountMenu();
+    const account = screen.getByRole("menuitem", { name: "Account" });
     const signOut = screen.getByRole("menuitem", { name: "Sign out" });
-    expect(screen.getByRole("menu")).toBeTruthy();
     account.focus();
     fireEvent.keyDown(account, { key: "ArrowDown" });
     expect(document.activeElement).toBe(signOut);

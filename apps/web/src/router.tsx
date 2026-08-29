@@ -871,7 +871,7 @@ function WorkspaceSetupGate() {
 
 function AppShell() {
   return (
-    <SidebarProvider className="min-h-screen" collapsible="offcanvas" defaultOpen>
+    <SidebarProvider className="h-full min-h-0 overflow-hidden" collapsible="offcanvas" defaultOpen>
       <AppShellContent />
     </SidebarProvider>
   );
@@ -902,7 +902,7 @@ function AppShellContent() {
     }
   }
   return (
-    <div className="flex min-h-screen bg-kumo-canvas" data-ui="shell">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas" data-ui="shell">
       <Sidebar aria-label="Primary navigation" fullScreenOnMobile>
         <Sidebar.Header>
           <Link className="text-lg font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
@@ -1006,14 +1006,17 @@ function AppShellContent() {
           </Sidebar.Menu>
         </Sidebar.Footer>
       </Sidebar>
-      <div className="min-w-0 flex-1" data-ui="app-main">
-        <header className="flex items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3 md:hidden">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-ui="app-main">
+        <header className="flex shrink-0 items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3 md:hidden">
           <Link className="font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
             OpenTag
           </Link>
           <SidebarTrigger aria-label="Open navigation" title="Open navigation" />
         </header>
-        <main className="min-w-0 w-full px-4 py-5 md:px-8 md:py-8" data-ui="content">
+        <main
+          className="min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto px-4 py-5 md:px-8 md:py-8"
+          data-ui="content"
+        >
           <Outlet />
         </main>
       </div>
@@ -2862,7 +2865,7 @@ function Page({
   children: ReactNode;
 }) {
   return (
-    <section className="mx-auto grid w-full max-w-6xl gap-6" data-ui="page">
+    <section className="grid w-full gap-6" data-ui="page">
       <header className="flex flex-wrap items-start justify-between gap-4" data-ui="page-header">
         <div className="grid gap-1">
           {eyebrow ? <span className="text-xs font-medium uppercase text-kumo-subtle">{eyebrow}</span> : null}

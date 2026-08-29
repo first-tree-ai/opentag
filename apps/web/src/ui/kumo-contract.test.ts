@@ -42,6 +42,10 @@ describe("Kumo integration contract", () => {
     expect(router).toContain("<Sidebar.Menu>");
     expect(router).toContain("<Sidebar.MenuButton");
     expect(router).toContain("<Sidebar.Footer>");
+    expect(router).toContain('className="h-full min-h-0 overflow-hidden"');
+    expect(router).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
+    expect(router).toContain("min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto");
+    expect(router).not.toContain("max-w-6xl");
     expect(router).not.toContain('data-ui="sidebar-content"');
   });
 

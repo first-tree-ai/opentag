@@ -1,6 +1,6 @@
 import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import { Link } from "@tanstack/react-router";
 import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
@@ -174,8 +174,7 @@ export function TasksPage() {
   );
 }
 
-export function TaskDetailPage() {
-  const { taskId } = useParams();
+export function TaskDetailPage({ taskId }: { taskId?: string }) {
   const [state, setState] = useState<LoadState<TaskDetail>>({ kind: "loading" });
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
@@ -467,7 +466,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
       <td className="p-3" data-label="Task">
-        <Link title={task.title} to={`/tasks/${task.id}`}>
+        <Link params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">

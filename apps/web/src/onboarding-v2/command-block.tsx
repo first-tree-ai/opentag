@@ -76,16 +76,22 @@ export function CommandBlock({
             {command}
           </code>
         </pre>
+        {/*
+          Icon only, and deliberately so. A button whose label changes changes width, and this one
+          sits beside the command: the swap from "Copy" to "Copied" was wide enough to reflow the
+          comment line underneath it. An icon is the same size in both states.
+        */}
         <Button
+          aria-label={copied ? copiedLabel : copyLabel}
           className="otv2-command__copy"
           data-copied={copied ? "true" : undefined}
           disabled={inert}
           onClick={() => void copy()}
           size="compact"
+          title={copied ? copiedLabel : copyLabel}
           variant="secondary"
         >
           <Icon name={copied ? "check" : "instructions"} />
-          <span>{copied ? copiedLabel : copyLabel}</span>
         </Button>
       </div>
       {hint ? (

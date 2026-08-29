@@ -2,7 +2,7 @@ import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { Button, Icon, StatusIndicator } from "../ui/design-system.js";
 import { CommandBlock } from "./command-block.js";
-import { CHECK_COPY, COPY, DESTINATION_COPY, RUNTIME_COPY, STEP_LABELS } from "./copy.js";
+import { CHECK_COPY, COMING_SOON, COPY, DESTINATION_COPY, RUNTIME_COPY, STEP_LABELS } from "./copy.js";
 import {
   type AgentDraft,
   type CheckRow,
@@ -11,6 +11,7 @@ import {
   DEFAULT_AGENT_NAME,
   type Destination,
   deriveChecks,
+  draftIsSubmittable,
   type FlowState,
   formatRemaining,
   MESSAGING_PROVIDERS,
@@ -82,17 +83,19 @@ function StepNav({
 }
 
 export function DestinationStep({
+  cloudAvailable,
   draft,
   onChoose,
   onSubmit,
 }: {
+  cloudAvailable: boolean;
   draft: AgentDraft;
   onChoose: (destination: Destination) => void;
   onSubmit: () => void;
 }) {
   const destinations: readonly { id: Destination; icon: "laptop" | "model"; enabled: boolean }[] = [
     { id: "local", icon: "laptop", enabled: true },
-    { id: "cloud", icon: "model", enabled: false },
+    { id: "cloud", icon: "model", enabled: cloudAvailable },
   ];
   return (
     <section className="otv2-step">
@@ -115,7 +118,7 @@ export function DestinationStep({
                 <span className="otv2-choice__copy">
                   <strong>
                     {copy.title}
-                    {copy.badge ? <em className="otv2-badge">{copy.badge}</em> : null}
+                    {destination.enabled ? null : <em className="otv2-badge">{COMING_SOON}</em>}
                   </strong>
                   <span>{copy.description}</span>
                 </span>
@@ -126,6 +129,150 @@ export function DestinationStep({
       </ul>
       <StepNav disabled={!draft.destination} onNext={onSubmit} />
     </section>
+  );
+}
+
+/** The name field: label, the line explaining it, the input, and an error line that always exists. */
+function AgentNameField({
+  draft,
+  onBlur,
+  onChange,
+  showError,
+}: {
+  draft: AgentDraft;
+  onBlur: () => void;
+  onChange: (draft: AgentDraft) => void;
+  showError: boolean;
+}) {
+  const nameId = useId();
+  const hintId = `${nameId}-hint`;
+  const errorId = `${nameId}-error`;
+  const error = showError ? validateAgentName(draft.name) : undefined;
+  const errorText =
+    error === "empty"
+      ? COPY.agent.nameEmptyError
+      : error === "too-long"
+        ? COPY.agent.nameTooLongError
+        : error === "charset"
+          ? COPY.agent.nameCharsetError
+          : undefined;
+
+  return (
+    <div className="otv2-fieldset">
+      <label className="otv2-fieldset__label" htmlFor={nameId}>
+        {COPY.agent.nameLabel}
+      </label>
+      <p className="otv2-fieldset__hint" id={hintId}>
+        {COPY.agent.nameHint}
+      </p>
+      <input
+        aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
+        aria-invalid={errorText ? true : undefined}
+        autoComplete="off"
+        className="ds-control otv2-name"
+        id={nameId}
+        onBlur={onBlur}
+        onChange={(event) => onChange({ ...draft, name: event.target.value })}
+        placeholder={DEFAULT_AGENT_NAME}
+        spellCheck={false}
+        value={draft.name}
+      />
+      <p aria-live="polite" className="otv2-field-error" data-empty={errorText ? undefined : "true"} id={errorId}>
+        {errorText ?? "\u00a0"}
+      </p>
+    </div>
+  );
+}
+
+function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
+  return (
+    <fieldset className="otv2-fieldset">
+      <legend>{COPY.agent.runtimeLabel}</legend>
+      <p className="otv2-fieldset__hint">{COPY.agent.runtimeHint}</p>
+      <ul className="otv2-choices otv2-choices--grid">
+        {RUNTIMES.map((runtime) => (
+          <li key={runtime}>
+            <button
+              aria-pressed={draft.runtime === runtime}
+              className="otv2-choice otv2-choice--runtime"
+              onClick={() => onChange({ ...draft, runtime })}
+              type="button"
+            >
+              <RuntimeMark runtime={runtime} />
+              <span className="otv2-choice__copy">
+                <strong>{RUNTIME_COPY[runtime].title}</strong>
+                <span>{RUNTIME_COPY[runtime].description}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="otv2-footnote">{COPY.agent.runtimeFootnote}</p>
+    </fieldset>
+  );
+}
+
+function MessagingPicker({
+  onChoose,
+  provider,
+}: {
+  onChoose: (provider: MessagingProvider) => void;
+  provider: MessagingProvider | undefined;
+}) {
+  return (
+    <ul className="otv2-choices otv2-choices--grid">
+      {MESSAGING_PROVIDERS.map((candidate) => (
+        <li key={candidate}>
+          <button
+            aria-pressed={provider === candidate}
+            className="otv2-choice otv2-choice--runtime"
+            onClick={() => onChoose(candidate)}
+            type="button"
+          >
+            <span aria-hidden="true" className="otv2-mark" data-messaging={candidate}>
+              {COPY.messaging[candidate].title.slice(0, 1)}
+            </span>
+            <span className="otv2-choice__copy">
+              <strong>{COPY.messaging[candidate].title}</strong>
+              <span>{COPY.messaging[candidate].description}</span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function MessagingConnection({
+  messaging,
+  provider,
+}: {
+  messaging: MessagingState;
+  provider: MessagingProvider | undefined;
+}) {
+  return (
+    <div className="otv2-slot otv2-slot--messaging">
+      {provider === "feishu" ? (
+        <div className="otv2-panel otv2-panel--qr">
+          <p className="otv2-muted">{COPY.messaging.feishuIntro}</p>
+          <div className="otv2-qr">
+            {messaging.kind === "waiting" ? (
+              <QrCode value={messaging.qrValue} />
+            ) : (
+              <div className="otv2-qr__placeholder" />
+            )}
+          </div>
+          <p className="otv2-waiting" role="status">
+            <span aria-hidden="true" className="otv2-pulse" />
+            {COPY.messaging.waiting}
+          </p>
+        </div>
+      ) : provider === "slack" ? (
+        <div className="otv2-panel otv2-panel--pending">
+          <p className="otv2-muted">{COPY.messaging.slackPending}</p>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -140,25 +287,13 @@ export function AgentStep({
   onChange: (draft: AgentDraft) => void;
   onSubmit: () => void;
 }) {
-  const nameId = useId();
-  const hintId = `${nameId}-hint`;
-  const errorId = `${nameId}-error`;
   // Errors are held back until the field is left, so a name is never called invalid mid-typing.
   const [touched, setTouched] = useState(false);
-  const error = touched ? validateAgentName(draft.name) : undefined;
-  const errorText =
-    error === "empty"
-      ? COPY.agent.nameEmptyError
-      : error === "too-long"
-        ? COPY.agent.nameTooLongError
-        : error === "charset"
-          ? COPY.agent.nameCharsetError
-          : undefined;
 
   function submit(event: FormEvent) {
     event.preventDefault();
     setTouched(true);
-    if (validateAgentName(draft.name) === undefined && draft.runtime) onSubmit();
+    if (draftIsSubmittable(draft)) onSubmit();
   }
 
   return (
@@ -167,61 +302,86 @@ export function AgentStep({
         <h1>{COPY.agent.title}</h1>
       </header>
       <form className="otv2-form" onSubmit={submit}>
+        <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
+        <RuntimePicker draft={draft} onChange={onChange} />
         {/*
-          Both sections of this step read the same way: heading, then the line that explains it,
-          then the thing you act on. The design system's `Field` puts its hint after the control and
-          renders its error only when there is one, so this section is composed here instead — it
-          needs the hint above the input, and an error line that holds its space either way.
+          Continue is held only while a *choice* is outstanding. An invalid name leaves it
+          pressable on purpose: pressing it is how the reason gets explained, and a dead button
+          that says nothing is worse than one that answers.
         */}
-        <div className="otv2-fieldset">
-          <label className="otv2-fieldset__label" htmlFor={nameId}>
-            {COPY.agent.nameLabel}
-          </label>
-          <p className="otv2-fieldset__hint" id={hintId}>
-            {COPY.agent.nameHint}
-          </p>
-          <input
-            aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
-            aria-invalid={errorText ? true : undefined}
-            autoComplete="off"
-            className="ds-control otv2-name"
-            id={nameId}
-            onBlur={() => setTouched(true)}
-            onChange={(event) => onChange({ ...draft, name: event.target.value })}
-            placeholder={DEFAULT_AGENT_NAME}
-            spellCheck={false}
-            value={draft.name}
-          />
-          <p aria-live="polite" className="otv2-field-error" id={errorId} data-empty={errorText ? undefined : "true"}>
-            {errorText ?? "\u00a0"}
-          </p>
-        </div>
+        <StepNav back={onBack} disabled={draft.runtime === undefined} submit />
+      </form>
+    </section>
+  );
+}
+
+/**
+ * The whole cloud route, on one page. There is nothing to install, no Computer to connect and no
+ * environment to check, so there is nothing for pagination to break up: name the agent, say where
+ * it should listen, and the connection appears in place.
+ */
+export function CloudStep({
+  creation,
+  draft,
+  messaging,
+  onBack,
+  onChange,
+  onChooseMessaging,
+  onStart,
+  onSubmit,
+  provider,
+}: {
+  creation: CreationState;
+  draft: AgentDraft;
+  messaging: MessagingState;
+  onBack: () => void;
+  onChange: (draft: AgentDraft) => void;
+  onChooseMessaging: (provider: MessagingProvider) => void;
+  onStart: () => void;
+  onSubmit: () => void;
+  provider: MessagingProvider | undefined;
+}) {
+  const [touched, setTouched] = useState(false);
+  const created = creation === "created";
+
+  // The QR binds an Agent, so it cannot be issued before there is one.
+  useEffect(() => {
+    if (created && provider === "feishu" && messaging.kind === "idle") onStart();
+  }, [created, messaging.kind, onStart, provider]);
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    setTouched(true);
+    if (draftIsSubmittable(draft)) onSubmit();
+  }
+
+  return (
+    <section className="otv2-step">
+      <header className="otv2-step__header">
+        <h1>{COPY.cloud.title}</h1>
+        <p>{COPY.cloud.description}</p>
+      </header>
+      <form className="otv2-form" onSubmit={submit}>
+        <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
+        <p className="otv2-note">
+          <Icon name="model" />
+          <span>{COPY.agent.cloudRuntimeNote}</span>
+        </p>
 
         <fieldset className="otv2-fieldset">
-          <legend>{COPY.agent.runtimeLabel}</legend>
-          <p className="otv2-fieldset__hint">{COPY.agent.runtimeHint}</p>
-          <ul className="otv2-choices otv2-choices--grid">
-            {RUNTIMES.map((runtime) => (
-              <li key={runtime}>
-                <button
-                  aria-pressed={draft.runtime === runtime}
-                  className="otv2-choice otv2-choice--runtime"
-                  onClick={() => onChange({ ...draft, runtime })}
-                  type="button"
-                >
-                  <RuntimeMark runtime={runtime} />
-                  <span className="otv2-choice__copy">
-                    <strong>{RUNTIME_COPY[runtime].title}</strong>
-                    <span>{RUNTIME_COPY[runtime].description}</span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-          <p className="otv2-footnote">{COPY.agent.runtimeFootnote}</p>
+          <legend>{COPY.messaging.providerLabel}</legend>
+          <p className="otv2-fieldset__hint">{COPY.messaging.description}</p>
+          <MessagingPicker onChoose={onChooseMessaging} provider={provider} />
         </fieldset>
 
-        <StepNav back={onBack} disabled={!draft.runtime} submit />
+        {created ? <MessagingConnection messaging={messaging} provider={provider} /> : null}
+
+        <StepNav
+          back={created ? undefined : onBack}
+          disabled={provider === undefined || creation !== "idle"}
+          label={creation === "creating" ? COPY.check.creating : COPY.cloud.create}
+          submit
+        />
       </form>
     </section>
   );
@@ -241,15 +401,16 @@ function RuntimeMark({ runtime }: { runtime: Runtime }) {
 
 export function ConnectStep({
   connect,
-  onAdvance,
   onBack,
+  onContinue,
   onRefreshCommand,
 }: {
   connect: ConnectState;
-  onAdvance: () => void;
   onBack: () => void;
+  onContinue: () => void;
   onRefreshCommand: () => void;
 }) {
+  const connected = connect.kind === "connected";
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
@@ -260,17 +421,19 @@ export function ConnectStep({
           {COPY.connect.privacy}
         </p>
       </header>
-      <div className="otv2-command-group">
-        {/* The validity rides on the end of the line that says how to run it, rather than taking a
+      {connected ? null : (
+        <div className="otv2-command-group">
+          {/* The validity rides on the end of the line that says how to run it, rather than taking a
             row of its own beneath the block. */}
-        <div className="otv2-command-lead">
-          <p className="otv2-muted">{COPY.connect.commandIntro}</p>
-          <ConnectValidity connect={connect} onRefreshCommand={onRefreshCommand} />
+          <div className="otv2-command-lead">
+            <p className="otv2-muted">{COPY.connect.commandIntro}</p>
+            <ConnectValidity connect={connect} onRefreshCommand={onRefreshCommand} />
+          </div>
+          <ConnectCommand connect={connect} />
         </div>
-        <ConnectCommand connect={connect} />
-      </div>
+      )}
       <ConnectStatus connect={connect} />
-      <StepNav back={onBack} disabled={connect.kind !== "connected"} onNext={onAdvance} />
+      <StepNav back={onBack} disabled={!connected} onNext={onContinue} />
     </section>
   );
 }

@@ -14,12 +14,16 @@ import { MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
  */
 export function LabControls({
   backend,
+  cloudAvailable,
+  onCloudAvailableChange,
   onScenarioChange,
   onSpeedChange,
   scenario,
   speed,
 }: {
   backend: MockBackend;
+  cloudAvailable: boolean;
+  onCloudAvailableChange: (available: boolean) => void;
   onScenarioChange: (scenario: MockScenario) => void;
   onSpeedChange: (speed: MockSpeed) => void;
   scenario: MockScenario;
@@ -87,6 +91,15 @@ export function LabControls({
               ))}
             </div>
           </div>
+
+          <label className="otv2-lab__check">
+            <input
+              checked={cloudAvailable}
+              onChange={(event) => onCloudAvailableChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Offer the cloud computer</span>
+          </label>
 
           <div className="otv2-lab__actions">
             <Button onClick={backend.expireNow} size="compact" variant="outline">

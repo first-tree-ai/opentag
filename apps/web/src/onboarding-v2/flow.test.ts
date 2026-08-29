@@ -48,7 +48,8 @@ describe("deriveFlowState", () => {
   it("starts on the destination page with nothing complete", () => {
     const state = deriveFlowState(initialFacts());
     expect(state.page).toBe("destination");
-    expect(state.steps.map((step) => step.status)).toEqual(["current", "upcoming", "upcoming", "upcoming", "upcoming"]);
+    // The fork decides how many steps follow, so it has none of its own to show.
+    expect(state.steps).toEqual([]);
   });
 
   it("stays on the destination page until the choice is confirmed", () => {
@@ -69,11 +70,11 @@ describe("deriveFlowState", () => {
   it("holds the connect page until the arrival has been seen", () => {
     const arrived = facts({ ...confirmed, connect: connected });
     expect(deriveFlowState(arrived).page).toBe("connect");
-    expect(deriveFlowState({ ...arrived, connectAcknowledged: true }).page).toBe("check");
+    expect(deriveFlowState({ ...arrived, connectConfirmed: true }).page).toBe("check");
   });
 
   it("gives the check its own step once the connect step completes", () => {
-    const state = deriveFlowState(facts({ ...confirmed, connect: connected, connectAcknowledged: true }));
+    const state = deriveFlowState(facts({ ...confirmed, connect: connected, connectConfirmed: true }));
     expect(state.steps.find((step) => step.id === "connect")?.status).toBe("complete");
     expect(state.steps.find((step) => step.id === "check")?.status).toBe("current");
     expect(state.page).toBe("check");
@@ -83,7 +84,7 @@ describe("deriveFlowState", () => {
     const passing = facts({
       ...confirmed,
       connect: connected,
-      connectAcknowledged: true,
+      connectConfirmed: true,
       readiness: ready,
     });
     expect(deriveFlowState(passing).page).toBe("check");
@@ -94,7 +95,7 @@ describe("deriveFlowState", () => {
     const base = facts({
       ...confirmed,
       connect: connected,
-      connectAcknowledged: true,
+      connectConfirmed: true,
       readiness: ready,
       creation: "created",
     });

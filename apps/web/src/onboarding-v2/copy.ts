@@ -6,17 +6,13 @@
 import type { CheckRow, CheckState, Destination, Runtime, StepId } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {
-  destination: "Where it runs",
   agent: "Your agent",
   connect: "Your computer",
   check: "Computer check",
   messaging: "Messaging app",
 };
 
-export const DESTINATION_COPY: Record<
-  Destination,
-  { readonly title: string; readonly description: string; readonly badge?: string }
-> = {
+export const DESTINATION_COPY: Record<Destination, { readonly title: string; readonly description: string }> = {
   local: {
     title: "Local computer",
     description: "Run on your own machine, with the coding agent and subscription you already have.",
@@ -24,9 +20,10 @@ export const DESTINATION_COPY: Record<
   cloud: {
     title: "Cloud computer",
     description: "We run the agent for you, with tokens included.",
-    badge: "Coming soon",
   },
 };
+
+export const COMING_SOON = "Coming soon";
 
 export const RUNTIME_COPY: Record<Runtime, { readonly title: string; readonly description: string }> = {
   codex: { title: "Codex", description: "OpenAI" },
@@ -93,6 +90,19 @@ export const COPY = {
     runtimeLabel: "Agent runtime",
     runtimeHint: "The coding agent OpenTag will use.",
     runtimeFootnote: "More runtimes coming soon.",
+    /**
+     * A cloud agent has no runtime to choose, but the user still deserves to know what they are
+     * getting. Stated as a fact rather than shown as a disabled picker, which would imply a choice
+     * exists. Which runtime OpenTag uses is deliberately not named: that is our business, and the
+     * Context Tree bars the internal one from product exposure.
+     */
+    cloudRuntimeNote: "OpenTag runs the agent for you, with tokens included. There's nothing to install.",
+  },
+
+  cloud: {
+    title: "Create your cloud agent",
+    description: "Nothing to install and nothing to connect — name it and say where it should listen.",
+    create: "Create agent",
   },
 
   connect: {

@@ -65,25 +65,29 @@ export interface FlowFacts {
   readonly draftConfirmed: boolean;
   readonly connect: ConnectState;
   /**
-   * Whether the arrival has been shown. The connect step advances on its own, but only after
-   * "Your computer is connected." has been on screen long enough to read; without this the page
-   * would jump the instant the Computer appears and the outcome would never be seen.
+   * Whether the reader has left the connect step themselves. Nothing here advances on a timer: a
+   * Computer arriving is news, and news is worth seeing. It also makes returning to this step
+   * work — the enrollment is durable, so coming back shows it already connected rather than
+   * asking for it again.
    */
-  readonly connectAcknowledged: boolean;
+  readonly connectConfirmed: boolean;
   readonly readiness: ReadinessFacts | undefined;
   readonly creation: CreationState;
   readonly messaging: MessagingState;
 }
 
 /**
- * One page per step. Connecting the Computer and checking it were once one page, but they hold
- * entirely different content — a command to run versus a report on what came back — so they read
- * better as separate screens with an automatic advance between them.
+ * Choosing where the agent runs is not one of the steps: it decides how many there are, so it
+ * settles the flow's shape before the flow starts. Numbering it would also mean the rail could
+ * never be shown on the screen it belongs to, since at that point its own length is unknown.
+ *
+ * Only the local route has steps. Pagination earns its place when there is waiting to break up —
+ * run a command, wait for a machine, wait for a check. A cloud agent has none of that: naming it
+ * and pointing it at a messaging app is one short piece of work, so it is one page with no rail.
  */
-export type PageId = StepId;
-
-export const STEP_IDS = ["destination", "agent", "connect", "check", "messaging"] as const;
+export const STEP_IDS = ["agent", "connect", "check", "messaging"] as const;
 export type StepId = (typeof STEP_IDS)[number];
+export type PageId = "destination" | "cloud" | StepId;
 
 export type StepStatus = "complete" | "current" | "upcoming";
 
@@ -104,7 +108,7 @@ export function initialFacts(): FlowFacts {
     destinationConfirmed: false,
     draftConfirmed: false,
     connect: { kind: "idle" },
-    connectAcknowledged: false,
+    connectConfirmed: false,
     readiness: undefined,
     creation: "idle",
     messaging: { kind: "idle" },
@@ -122,7 +126,9 @@ export function validateAgentName(value: string): AgentNameError | undefined {
 }
 
 export function draftIsSubmittable(draft: AgentDraft): boolean {
-  return draft.runtime !== undefined && validateAgentName(draft.name) === undefined;
+  if (validateAgentName(draft.name) !== undefined) return false;
+  // A cloud agent has no runtime to pick: OpenTag supplies it.
+  return draft.destination === "cloud" || draft.runtime !== undefined;
 }
 
 export function computerIsConnected(connect: ConnectState): boolean {
@@ -187,38 +193,27 @@ export function readinessIsResolving(readiness: ReadinessFacts | undefined): boo
 }
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
-  const { draft, destinationConfirmed, draftConfirmed, connect, connectAcknowledged, readiness, creation, messaging } =
+  const { draft, destinationConfirmed, draftConfirmed, connect, connectConfirmed, readiness, creation, messaging } =
     facts;
-  const destinationDone = draft.destination !== undefined && destinationConfirmed;
-  const agentDone = destinationDone && draftIsSubmittable(draft) && draftConfirmed;
-  const connectDone = agentDone && computerIsConnected(connect) && connectAcknowledged;
-  const checkDone = connectDone && readinessPassed(readiness) && creation === "created";
-  const messagingDone = checkDone && messaging.kind === "connected";
+  const destination = draft.destination;
+  if (!destination || !destinationConfirmed) {
+    return { page: "destination", steps: [], complete: false };
+  }
 
-  const page: PageId = !destinationDone
-    ? "destination"
-    : !agentDone
-      ? "agent"
-      : !connectDone
-        ? "connect"
-        : !checkDone
-          ? "check"
-          : "messaging";
+  if (destination === "cloud") {
+    return { page: "cloud", steps: [], complete: messaging.kind === "connected" };
+  }
 
-  const done: Record<StepId, boolean> = {
-    destination: destinationDone,
-    agent: agentDone,
-    connect: connectDone,
-    check: checkDone,
-    messaging: messagingDone,
-  };
+  const done: Record<StepId, boolean> = { agent: false, connect: false, check: false, messaging: false };
+  done.agent = draftIsSubmittable(draft) && draftConfirmed;
+  done.connect = done.agent && computerIsConnected(connect) && connectConfirmed;
+  done.check = done.connect && readinessPassed(readiness) && creation === "created";
+  done.messaging = done.check && messaging.kind === "connected";
+
   const currentIndex = STEP_IDS.findIndex((id) => !done[id]);
-  const steps = STEP_IDS.map((id, index) => ({
-    id,
-    status: stepStatus(done[id], index, currentIndex),
-  }));
+  const steps = STEP_IDS.map((id, index) => ({ id, status: stepStatus(done[id], index, currentIndex) }));
 
-  return { page, steps, complete: messagingDone };
+  return { page: STEP_IDS[currentIndex] ?? "messaging", steps, complete: done.messaging };
 }
 
 function stepStatus(isDone: boolean, index: number, currentIndex: number): StepStatus {

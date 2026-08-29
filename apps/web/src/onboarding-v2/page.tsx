@@ -12,11 +12,18 @@ import {
 import { LabControls } from "./lab-controls.js";
 import { type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
-import { AgentStep, CheckStep, ConnectStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
+import {
+  AgentStep,
+  CheckStep,
+  CloudStep,
+  ConnectStep,
+  DestinationStep,
+  DoneStep,
+  MessagingStep,
+  StepRail,
+} from "./steps.js";
 
 const CREATE_AGENT_MS = 900;
-/** Long enough to read "Your computer is connected." before the flow moves on by itself. */
-const CONNECTED_DWELL_MS = 1_400;
 
 /**
  * The redesigned onboarding flow, running entirely against the in-page mock. It talks to no
@@ -29,9 +36,11 @@ export function OnboardingV2Page() {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
-  const [connectAcknowledged, setConnectAcknowledged] = useState(false);
+  const [connectConfirmed, setConnectConfirmed] = useState(false);
   const [creation, setCreation] = useState<CreationState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
+  /** Cloud is not shipped; the mock can offer it so its flow can be reviewed before it is. */
+  const [cloudAvailable, setCloudAvailable] = useState(true);
   const backend = useMockBackend(scenario, speed);
 
   const facts: FlowFacts = {
@@ -39,7 +48,7 @@ export function OnboardingV2Page() {
     destinationConfirmed,
     draftConfirmed,
     connect: backend.connect,
-    connectAcknowledged,
+    connectConfirmed,
     readiness: backend.readiness,
     creation,
     messaging: backend.messaging,
@@ -47,19 +56,11 @@ export function OnboardingV2Page() {
   const flow = deriveFlowState(facts);
 
   // The connect code is issued when the page that shows it is first reached, not before: an
-  // unseen code would spend its validity in the background.
+  // unseen code would spend its validity in the background. A Computer that is already connected
+  // needs none, and `issueConnectCode` only acts on an idle connection.
   useEffect(() => {
     if (flow.page === "connect") backend.issueConnectCode();
   }, [backend.issueConnectCode, flow.page]);
-
-  // The arrival is shown before the flow advances, so the user sees the outcome of the command
-  // they ran rather than a screen that changes underneath them.
-  const connected = backend.connect.kind === "connected";
-  useEffect(() => {
-    if (!connected || connectAcknowledged) return;
-    const id = window.setTimeout(() => setConnectAcknowledged(true), CONNECTED_DWELL_MS);
-    return () => window.clearTimeout(id);
-  }, [connectAcknowledged, connected]);
 
   // Held so a restart or an unmount can cancel a creation that is still in flight; otherwise the
   // stale timer lands on the next run and skips its confirmation step.
@@ -72,24 +73,28 @@ export function OnboardingV2Page() {
     creationTimer.current = window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
   }, [creation]);
 
+  /** The cloud page creates its Agent as it is submitted: it has no Computer and no check first. */
+  const submitCloud = useCallback(() => {
+    setDraftConfirmed(true);
+    createAgent();
+  }, [createAgent]);
+
   /**
    * Going back undoes the decision that advanced you, rather than moving a separate cursor. That
-   * keeps the page a pure function of the facts, and it means Go back does what it says: leaving
-   * the check step really is asking to connect a Computer again, so the code is reissued.
+   * keeps the page a pure function of the facts. Leaving the connect step is the one place this
+   * takes care: a Computer's enrollment is durable and outlives this flow, so coming back forgets
+   * only that the step was left, never the machine itself.
    */
   const backToDestination = useCallback(() => setDestinationConfirmed(false), []);
   const backToAgent = useCallback(() => setDraftConfirmed(false), []);
-  const backToConnect = useCallback(() => {
-    setConnectAcknowledged(false);
-    backend.reset();
-  }, [backend]);
+  const backToConnect = useCallback(() => setConnectConfirmed(false), []);
 
   const startOver = useCallback(() => {
     window.clearTimeout(creationTimer.current);
     setDraft(emptyDraft());
     setDestinationConfirmed(false);
     setDraftConfirmed(false);
-    setConnectAcknowledged(false);
+    setConnectConfirmed(false);
     setCreation("idle");
     setMessagingProvider(undefined);
     backend.reset();
@@ -106,19 +111,31 @@ export function OnboardingV2Page() {
 
       <main className="otv2-shell__main">
         {/*
-          No rail on the first step. How many steps follow depends on the answer to that step's
-          question — a local computer needs its own connect and check, a cloud one does not — so a
-          rail there would have to show a length it cannot know yet.
+          A rail only where there are steps. The first screen cannot know how many follow, and the
+          cloud route is one page, so neither shows one.
         */}
-        {flow.page === "destination" ? null : <StepRail steps={flow.steps} />}
+        {flow.steps.length > 0 ? <StepRail steps={flow.steps} /> : null}
         <div className="otv2-shell__content">
           {flow.complete ? (
             <DoneStep name={draft.name} />
           ) : flow.page === "destination" ? (
             <DestinationStep
+              cloudAvailable={cloudAvailable}
               draft={draft}
               onChoose={(destination: Destination) => setDraft({ ...draft, destination })}
               onSubmit={() => setDestinationConfirmed(true)}
+            />
+          ) : flow.page === "cloud" ? (
+            <CloudStep
+              creation={creation}
+              draft={draft}
+              messaging={backend.messaging}
+              onBack={backToDestination}
+              onChange={setDraft}
+              onChooseMessaging={setMessagingProvider}
+              onStart={backend.startMessaging}
+              onSubmit={submitCloud}
+              provider={messagingProvider}
             />
           ) : flow.page === "agent" ? (
             <AgentStep
@@ -130,8 +147,8 @@ export function OnboardingV2Page() {
           ) : flow.page === "connect" ? (
             <ConnectStep
               connect={backend.connect}
-              onAdvance={() => setConnectAcknowledged(true)}
               onBack={backToAgent}
+              onContinue={() => setConnectConfirmed(true)}
               onRefreshCommand={backend.refreshConnectCode}
             />
           ) : flow.page === "check" ? (
@@ -155,6 +172,8 @@ export function OnboardingV2Page() {
 
       <LabControls
         backend={backend}
+        cloudAvailable={cloudAvailable}
+        onCloudAvailableChange={setCloudAvailable}
         onScenarioChange={setScenario}
         onSpeedChange={setSpeed}
         scenario={scenario}

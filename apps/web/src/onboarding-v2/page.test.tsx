@@ -5,7 +5,6 @@ import { OnboardingV2Page } from "./page.js";
 // The mock defaults to manual: the Computer arriving, the check returning and the QR being
 // scanned all wait to be advanced by hand. Only these two are still on a clock.
 const ISSUE_MS = 300;
-const DWELL_MS = 1_400;
 const CREATE_MS = 900;
 
 async function advance(ms: number) {
@@ -29,10 +28,10 @@ async function reachConnectStep() {
   await advance(ISSUE_MS);
 }
 
-/** Brings the Computer in and lets the arrival be read, landing on the check step. */
+/** Brings the Computer in, then leaves the connect step by hand, landing on the check step. */
 async function reachCheckStep() {
   await advanceMock("Connect computer");
-  await advance(DWELL_MS);
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 }
 
 /** Returns the check's result, so the step moves from probing to resolved. */
@@ -60,9 +59,16 @@ describe("OnboardingV2Page", () => {
     Reflect.deleteProperty(navigator, "clipboard");
   });
 
-  it("offers the local computer and marks the cloud one as coming soon", () => {
+  it("marks the cloud computer as coming soon when it is not on offer", () => {
     render(<OnboardingV2Page />);
     expect((screen.getByRole("button", { name: /Local computer/ }) as HTMLButtonElement).disabled).toBe(false);
+
+    // The mock offers cloud by default so its flow can be reviewed; turning it off is what
+    // production looks like today.
+    openLab();
+    fireEvent.click(screen.getByLabelText("Offer the cloud computer"));
+    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
+
     const cloud = screen.getByRole("button", { name: /Cloud computer/ }) as HTMLButtonElement;
     expect(cloud.disabled).toBe(true);
     expect(cloud.textContent).toContain("Coming soon");
@@ -179,18 +185,6 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
   });
 
-  it("shows the arrival before advancing to the check on its own", async () => {
-    render(<OnboardingV2Page />);
-    await reachConnectStep();
-
-    await advanceMock("Connect computer");
-    expect(screen.getByText("Your computer is connected.")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-
-    await advance(DWELL_MS);
-    expect(screen.getByRole("heading", { name: "Computer check" })).toBeTruthy();
-  });
-
   it("reports a clean environment and offers to create the Agent", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
@@ -237,18 +231,18 @@ describe("OnboardingV2Page", () => {
     }
   });
 
-  it("keeps the connect step's countdown and status slots through the arrival", async () => {
+  it("keeps the countdown's row while the command is still on screen", async () => {
     render(<OnboardingV2Page />);
     await reachConnectStep();
     expect(document.querySelector(".otv2-command-lead")).toBeTruthy();
-    expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
-
-    // The countdown rides on the intro line and goes away on arrival; neither row may collapse.
-    await advanceMock("Connect computer");
-    expect(screen.queryByText(/Expires in/)).toBeNull();
-    expect(document.querySelector(".otv2-command-lead")).toBeTruthy();
     expect(document.querySelector(".otv2-command__expiry")).toBeTruthy();
     expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
+
+    // Expiring empties the countdown but must not collapse the row it sits on.
+    openLab();
+    fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
+    expect(screen.queryByText(/Expires in/)).toBeNull();
+    expect(document.querySelector(".otv2-command__expiry")).toBeTruthy();
   });
 
   it("keeps the check step's outcome slot before and after the result lands", async () => {
@@ -258,7 +252,7 @@ describe("OnboardingV2Page", () => {
 
     // Still probing: the slot already holds its waiting line, in the same shape step 3 uses.
     const slot = () => document.querySelector(".otv2-slot--outcome");
-    expect(slot()?.textContent).toContain("Waiting for the computer check…");
+    expect(slot()?.textContent ?? "").toContain("Waiting for the computer check…");
     expect(slot()?.querySelector(".otv2-pulse")).toBeTruthy();
 
     await settleCheck();
@@ -404,6 +398,52 @@ describe("OnboardingV2Page", () => {
     });
   });
 
+  describe("the cloud route", () => {
+    async function chooseCloud() {
+      fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    }
+
+    it("is one page with no progress rail", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
+      // Nothing to install, connect or check, so there are no steps to track.
+      expect(screen.queryByRole("navigation", { name: "Setup progress" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: "Computer check" })).toBeNull();
+    });
+
+    it("states the runtime instead of offering a choice, and never names it", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+      expect(screen.getByText(/OpenTag runs the agent for you/)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Codex/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Claude Code/ })).toBeNull();
+      // The Context Tree bars the internal runtime from product exposure, so it is never named.
+      expect(document.body.textContent ?? "").not.toMatch(/\bPi\b/);
+    });
+
+    it("creates the Agent as the page is submitted, then shows the code in place", async () => {
+      render(<OnboardingV2Page />);
+      await chooseCloud();
+
+      const create = () => screen.getByRole("button", { name: "Create agent" }) as HTMLButtonElement;
+      expect(create().disabled).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      expect(create().disabled).toBe(false);
+
+      fireEvent.click(create());
+      await advance(CREATE_MS);
+      await advance(ISSUE_MS);
+      expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
+      expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+
+      await advanceMock("Scan QR code");
+      expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+    });
+  });
+
   describe("going back", () => {
     it("returns from the agent step to the destination, keeping the draft", () => {
       render(<OnboardingV2Page />);
@@ -425,16 +465,17 @@ describe("OnboardingV2Page", () => {
       expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
     });
 
-    it("reissues a command when returning from the check step", async () => {
+    it("keeps the Computer when returning from the check step", async () => {
       render(<OnboardingV2Page />);
       await reachConnectStep();
       await reachCheckStep();
 
+      // The enrollment is durable, so going back shows it connected rather than asking again.
       fireEvent.click(screen.getByRole("button", { name: "Go back" }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-      expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
-      expect(screen.getByText("Expires in 15:00")).toBeTruthy();
+      expect(screen.getByText("Your computer is connected.")).toBeTruthy();
+      expect(screen.queryByText("Waiting for your computer…")).toBeNull();
     });
 
     it("has no way back once the Agent has been created", async () => {

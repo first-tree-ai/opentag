@@ -189,6 +189,35 @@
   margin-top: var(--space-1);
 }
 
+/* A fact the step states rather than a choice it offers. */
+.otv2-note {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  color: var(--secondary-foreground);
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
+}
+
+.otv2-note .ds-icon {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  color: var(--brand);
+}
+
+.otv2-lab__check {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  color: var(--secondary-foreground);
+  font-size: var(--text-micro);
+}
+
 .otv2-muted {
   margin: 0;
   color: var(--muted);
@@ -564,6 +593,9 @@
 
 .otv2-command__copy {
   flex: 0 0 auto;
+  width: 32px;
+  min-width: 32px;
+  padding: 0;
 }
 
 /* Copying is confirmed by colour and the check icon; the button does not change size. */
@@ -663,7 +695,9 @@
 .otv2-check {
   display: flex;
   gap: var(--space-3);
-  align-items: flex-start;
+
+  /* Centred on the whole row, not on its first line: every row carries two lines of copy. */
+  align-items: center;
   padding: var(--space-4);
 }
 

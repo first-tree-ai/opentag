@@ -3075,6 +3075,22 @@ textarea:focus {
   font-size: var(--text-meta);
 }
 
+.messaging-agent-status {
+  display: grid;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  padding: 18px 0;
+  grid-template-columns: minmax(190px, 0.45fr) minmax(0, 1fr) auto;
+}
+
+.messaging-agent-status p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+  line-height: var(--lh-prose);
+}
+
 .messaging-contact-facts {
   display: grid;
   grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
@@ -4025,6 +4041,11 @@ textarea:focus {
   .messaging-contact-facts {
     grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .messaging-agent-status {
+    align-items: flex-start;
+    grid-template-columns: 1fr;
   }
 
   .binding-status,

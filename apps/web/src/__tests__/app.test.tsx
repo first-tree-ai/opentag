@@ -510,15 +510,17 @@ function installApi(
  * twice — open, then closed — so the sequence a real browser produces is not the one to imitate
  * here.
  */
-async function openAccountMenu(): Promise<HTMLElement> {
+async function openAccountMenu(): Promise<{ menu: HTMLElement; trigger: HTMLElement }> {
   const trigger = await screen.findByRole("button", { name: "Account menu" });
   fireEvent.click(trigger);
+  // The menu this trigger owns, not whichever menu happens to be in the document: a menu the
+  // previous press opened can still be leaving while this one opens, and reading that one is how an
+  // assertion passes against a menu the test never opened. Callers read through the returned menu
+  // so that guarantee reaches their assertions too.
+  let menu: HTMLElement | null = null;
   await waitFor(() => {
-    // The menu this trigger owns, not whichever menu happens to be in the document: a menu the
-    // previous press opened can still be leaving while this one opens, and reading that one is how
-    // an assertion passes against a menu the test never opened.
     const owned = trigger.getAttribute("aria-controls");
-    const menu = owned ? document.getElementById(owned) : null;
+    menu = owned ? document.getElementById(owned) : null;
     if (trigger.getAttribute("aria-expanded") !== "true" || !menu) {
       throw new Error(`The account menu did not open (aria-expanded=${trigger.getAttribute("aria-expanded")}).`);
     }
@@ -528,7 +530,8 @@ async function openAccountMenu(): Promise<HTMLElement> {
       );
     }
   });
-  return trigger;
+  if (!menu) throw new Error("The account menu did not open.");
+  return { menu, trigger };
 }
 
 describe("OpenTag Web App Shell", () => {
@@ -2294,15 +2297,15 @@ describe("OpenTag Web App Shell", () => {
   it("keeps Workspace management and switching out of the account menu", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);
-    await openAccountMenu();
+    const { menu } = await openAccountMenu();
 
     // The absence checks only mean something once the menu itself is on screen.
-    expect(screen.getByRole("menuitem", { name: "Account" })).toBeTruthy();
-    expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "Workspace" })).toBeNull();
-    expect(screen.queryByText("Secondary")).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "Computers" })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "Admins" })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: "Account" })).toBeTruthy();
+    expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Workspace" })).toBeNull();
+    expect(within(menu).queryByText("Secondary")).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Computers" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 
   it("does not create an IM setup attempt while rendering Agent detail", async () => {
@@ -2756,18 +2759,18 @@ describe("OpenTag Web App Shell", () => {
   it("keeps account controls personal and signs out from the account menu", async () => {
     installApi();
     render(<App />);
-    await openAccountMenu();
-    expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "Workspace management" })).toBeNull();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Account" }));
+    const { menu } = await openAccountMenu();
+    expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Workspace management" })).toBeNull();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Account" }));
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
     expect(window.location.pathname).toBe("/account");
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
     expect(displayName.readOnly).toBe(false);
     fireEvent.change(displayName, { target: { value: "Account Menu" } });
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
-    await openAccountMenu();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    const { menu: accountMenu } = await openAccountMenu();
+    fireEvent.click(within(accountMenu).getByRole("menuitem", { name: "Sign out" }));
     expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       "/api/v1/auth/browser/logout",
@@ -2786,8 +2789,8 @@ describe("OpenTag Web App Shell", () => {
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);
-    await openAccountMenu();
-    const account = screen.getByRole("menuitem", { name: "Account" });
+    const { menu } = await openAccountMenu();
+    const account = within(menu).getByRole("menuitem", { name: "Account" });
     account.focus();
     fireEvent.keyDown(account, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
@@ -2796,9 +2799,9 @@ describe("OpenTag Web App Shell", () => {
   it("supports arrow-key navigation and focus return in the account menu", async () => {
     installApi();
     render(<App />);
-    await openAccountMenu();
-    const account = screen.getByRole("menuitem", { name: "Account" });
-    const signOut = screen.getByRole("menuitem", { name: "Sign out" });
+    const { menu } = await openAccountMenu();
+    const account = within(menu).getByRole("menuitem", { name: "Account" });
+    const signOut = within(menu).getByRole("menuitem", { name: "Sign out" });
     account.focus();
     fireEvent.keyDown(account, { key: "ArrowDown" });
     expect(document.activeElement).toBe(signOut);

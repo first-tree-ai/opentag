@@ -1472,7 +1472,8 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /^Name Reviewer$/ })).toBeTruthy();
     expect(screen.getByText("Computer")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: /^Computer / })).toBeNull();
+    // Every row in the list opens; a row that is a link only sometimes cannot be predicted.
+    expect(screen.getByRole("link", { name: /^Computer / })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Pause or delete/ })).toBeTruthy();
     expect(screen.getByText("Not configured")).toBeTruthy();
     expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();
@@ -1941,7 +1942,8 @@ describe("OpenTag Web App Shell", () => {
     const messaging = render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
-    expect(screen.getByText("Slack · Reviewer")).toBeTruthy();
+    expect(screen.getByText("Slack")).toBeTruthy();
+    expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Slack · @/)).toBeNull();
     expect(screen.queryByText("@reviewer")).toBeNull();
     messaging.unmount();
@@ -1950,6 +1952,32 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByRole("link", { name: "Slack · Reviewer" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Slack · @reviewer/ })).toBeNull();
+  });
+
+  it("keeps the loaded Tasks when loading the next page fails", async () => {
+    installApi({ bound: true });
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    if (!baseFetch) throw new Error("Expected the test API to be installed");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).startsWith("/api/v1/sessions?") && String(input).includes("cursor=")) {
+        return json({ error: { code: "INTERNAL_ERROR", category: "transient", message: "Paging failed" } }, 500);
+      }
+      if (String(input) === "/api/v1/sessions" || String(input).startsWith("/api/v1/sessions?")) {
+        return json({ tasks: [taskSummary], nextCursor: "cursor-2" });
+      }
+      return baseFetch(input, init);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    const task = await screen.findByRole("link", { name: "Investigate the failed deployment" });
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    // A failed append reports itself; it does not throw away the rows the viewer already has.
+    expect(await screen.findByText("Could not load more Tasks.")).toBeTruthy();
+    expect(task.isConnected).toBe(true);
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(screen.queryByText("Tasks are temporarily unavailable.")).toBeNull();
   });
 
   it("does not blame an online Computer when the Provider is what is not ready", async () => {
@@ -2306,7 +2334,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByText("Slack · Reviewer")).toBeTruthy();
+    expect(await screen.findByText("Slack")).toBeTruthy();
     expect(screen.getByText(/Messages wait until Codex is ready on this Agent's Computer\./)).toBeTruthy();
     expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,

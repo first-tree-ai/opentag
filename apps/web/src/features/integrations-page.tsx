@@ -28,7 +28,7 @@ export function IntegrationsPage() {
             <tr className="border-b border-kumo-line" key={integration.id}>
               <td className="p-3">
                 <span
-                  className="mr-2 inline-grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
+                  className="mr-2 inline-grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
                   aria-hidden="true"
                 >
                   {integration.abbreviation}

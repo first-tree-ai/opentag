@@ -9,7 +9,33 @@ const sourceFiles = readdirSync(root, { recursive: true, withFileTypes: true })
   .map((entry) => resolve(entry.parentPath, entry.name));
 const source = sourceFiles.map((file) => readFileSync(resolve(root, file), "utf8")).join("\n");
 
+/*
+ * Standalone Kumo ships a fixed stylesheet; nothing regenerates utilities from page source. A class
+ * that is not in it does nothing at all, silently, which is how a 956px icon and a one-column grid
+ * shipped past a green type-check and suite. These families are the ones whose absence rearranges a
+ * page rather than tweaking it.
+ */
+const layoutUtility = /\b(?:(?:sm|md|lg|xl):)?(?:size|grid-cols|col-span|justify-self)-[a-z0-9.]+\b/g;
+const kumoStylesheet = readFileSync(
+  resolve(root, "..", "node_modules", "@cloudflare", "kumo", "dist", "styles", "kumo-standalone.css"),
+  "utf8",
+);
+
+function classNameLiterals(text: string): string[] {
+  return [...text.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)].flatMap((match) =>
+    (match[1] ?? match[2] ?? "").split(/\s+/),
+  );
+}
+
 describe("Kumo integration contract", () => {
+  it("only uses layout utilities the shipped stylesheet defines", () => {
+    const used = new Set(
+      classNameLiterals(source).flatMap((token) => [...token.matchAll(layoutUtility)].map((match) => match[0])),
+    );
+    const missing = [...used].filter((utility) => !kumoStylesheet.includes(`.${utility.replace(/([:.])/g, "\\$1")}`));
+    expect(missing).toEqual([]);
+  });
+
   it("loads standalone styles once and keeps application styles local", () => {
     expect(source.match(/@cloudflare\/kumo\/styles\/standalone/g)?.length).toBe(1);
     expect(source).not.toMatch(/(?:styles|mock-pages|tasks-page|agent-usage)\.css/);

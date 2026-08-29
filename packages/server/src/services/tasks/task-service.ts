@@ -83,6 +83,10 @@ export interface GetTaskOptions {
   limit: number;
 }
 
+/**
+ * The timestamp travels into the query as an ISO string with an explicit cast. Binding the `Date`
+ * itself is what the driver refuses, and the refusal only surfaces on the second page.
+ */
 function parseCursor(cursor: string | undefined): { at: Date; id: string } | undefined {
   if (!cursor) return undefined;
   try {
@@ -256,7 +260,7 @@ export class TaskService {
       inner join im_messages m on m.id = d.message_id
       left join im_message_deliveries root on root.id = d.steer_target_delivery_id
       where d.session_id = ${sessionId}::uuid
-        ${cursor ? sql`and (m.occurred_at, d.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``}
+        ${cursor ? sql`and (m.occurred_at, d.id) < (${cursor.at.toISOString()}::timestamptz, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, d.id desc
       limit ${options.limit + 1}
     `);
@@ -387,7 +391,7 @@ export class TaskService {
         ${options.kind ? sql`and s.kind = ${options.kind}` : sql``}
         ${
           options.cursor
-            ? sql`and (greatest(s.created_at, coalesce(ld.activity_at, s.created_at)), s.id) < (${options.cursor.at}, ${options.cursor.id}::uuid)`
+            ? sql`and (greatest(s.created_at, coalesce(ld.activity_at, s.created_at)), s.id) < (${options.cursor.at.toISOString()}::timestamptz, ${options.cursor.id}::uuid)`
             : sql``
         }
       order by "lastActivityAt" desc, s.id desc

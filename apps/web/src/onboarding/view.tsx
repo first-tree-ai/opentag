@@ -232,7 +232,7 @@ function JourneyStep({
           <span className="flex items-center gap-2" data-ui="onboarding-step-heading">
             <span
               aria-hidden="true"
-              className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-medium"
+              className="grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-medium"
               data-ui="onboarding-step-number"
             >
               {status === "complete" ? "✓" : number}

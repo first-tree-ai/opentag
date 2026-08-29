@@ -16,6 +16,7 @@ import {
   createContext,
   type FormEvent,
   type ReactNode,
+  type Ref,
   useCallback,
   useContext,
   useEffect,
@@ -1113,8 +1114,8 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
   shownOrder.current = order;
   return (
     <section className="grid gap-4" aria-label="Agents" data-ui="agent-list">
-      <p className="justify-self-end text-sm text-kumo-subtle">Usage · last 30 days</p>
-      <div className="grid gap-4 sm:grid-cols-2" data-ui="agent-card-grid">
+      <p className="text-right text-sm text-kumo-subtle">Usage · last 30 days</p>
+      <div className="grid gap-4 md:grid-cols-2" data-ui="agent-card-grid">
         {order.map((id) => {
           const agent = byId.get(id);
           return agent ? <AgentCard agent={agent} key={agent.id} /> : null;
@@ -1138,10 +1139,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <span className="text-kumo-subtle" aria-hidden="true">
             {" · "}
           </span>
-          <Link
-            className={buttonClassName({ variant: "inline" })}
-            to={`/agents/${agent.id}/settings/${action.section}`}
-          >
+          <Link className="text-kumo-link" to={`/agents/${agent.id}/settings/${action.section}`}>
             {action.label}
           </Link>
         </>
@@ -1627,6 +1625,12 @@ function AgentDetailPage() {
 function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
   const { me } = useWorkspace();
   const showCreator = agent.createdBy.userId !== me.user.id;
+  /*
+   * The handle addresses the Agent in Feishu, where each Agent has its own bot. Slack routes one
+   * workspace Bot, so showing a per-Agent handle there names something nobody can address.
+   */
+  const handle =
+    agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack" ? undefined : agent.name;
   return (
     <header className="grid gap-4">
       <Link
@@ -1651,8 +1655,8 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
               </Text>
               <AgentAvailabilityAction agent={agent} />
             </div>
-            <p>
-              <span>@{agent.name}</span>
+            <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
+              {handle ? <span>@{agent.name}</span> : null}
               {showCreator ? <span>Created by {agent.createdBy.displayName}</span> : null}
             </p>
           </div>
@@ -1903,19 +1907,8 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                           </span>
                         </>
                       );
-                      const computerReady =
-                        item.key === "computer" && agent.availability.dependencies.computer.state === "ready";
-                      if (computerReady) {
-                        return (
-                          <div
-                            className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
-                            key={item.key}
-                            data-ui="agent-settings-entry"
-                          >
-                            {content}
-                          </div>
-                        );
-                      }
+                      const computerNeedsReview =
+                        item.key === "computer" && agent.availability.dependencies.computer.state !== "ready";
                       return (
                         <Link
                           className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
@@ -1928,7 +1921,7 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                             className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
                             aria-hidden="true"
                           >
-                            {item.key === "computer" ? <small>Review</small> : null}
+                            {computerNeedsReview ? <small>Review</small> : null}
                             <Icon name="chevron-right" />
                           </span>
                         </Link>
@@ -2432,10 +2425,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               </Text>
                             </div>
                             <div className="flex flex-wrap items-center gap-3">
-                              <ProviderIcon className="size-7" provider={binding.provider} />
+                              <ProviderIcon className="size-8" provider={binding.provider} />
                               <span className="grid min-w-0 flex-1 gap-1">
                                 <strong>{binding.bot.displayName ?? titleCase(binding.provider)}</strong>
-                                <small className="text-kumo-subtle">{messagingChannelLabel(agent, binding)}</small>
+                                <small className="text-kumo-subtle">{messagingChannelDetail(agent, binding)}</small>
                               </span>
                               <StatusIndicator
                                 detail={
@@ -2503,36 +2496,19 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             <div className="grid gap-3">
                               <fieldset
                                 aria-label={triggerModeHeading(binding.provider)}
-                                className="flex flex-wrap items-center gap-2"
+                                className="flex w-fit flex-wrap items-center gap-1 rounded-md bg-kumo-recessed p-1"
                               >
-                                {binding.receiveMode === "mention_only" ? (
-                                  <>
-                                    <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
-                                      On mention
-                                    </span>
-                                    <Button
-                                      variant="inline"
-                                      ref={allMessagesButtonRef}
-                                      type="button"
-                                      onClick={() => void changeReceiveMode("all_message")}
-                                    >
-                                      Every message
-                                    </Button>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Button
-                                      variant="inline"
-                                      type="button"
-                                      onClick={() => void changeReceiveMode("mention_only")}
-                                    >
-                                      On mention
-                                    </Button>
-                                    <span className="rounded-md bg-kumo-tint px-4 py-2 text-sm font-medium">
-                                      Every message
-                                    </span>
-                                  </>
-                                )}
+                                <TriggerModeOption
+                                  ref={allMessagesButtonRef}
+                                  label="On mention"
+                                  selected={binding.receiveMode === "mention_only"}
+                                  onSelect={() => void changeReceiveMode("mention_only")}
+                                />
+                                <TriggerModeOption
+                                  label="Every message"
+                                  selected={binding.receiveMode === "all_message"}
+                                  onSelect={() => void changeReceiveMode("all_message")}
+                                />
                               </fieldset>
                               <p className="text-sm text-kumo-subtle">
                                 {triggerModeDescription(binding.receiveMode, binding.provider)}
@@ -2901,10 +2877,46 @@ function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): string 
  * Feishu gives each Agent its own bot, so its handle addresses the Agent. Slack routes one workspace
  * Bot, so an Agent handle would name a Slack identity that does not exist.
  */
+/**
+ * Both modes are always selectable, so both are always a button: a selected option rendered as static
+ * text and an unselected one rendered as a ghost control read as a label next to a link.
+ */
+function TriggerModeOption({
+  label,
+  onSelect,
+  ref,
+  selected,
+}: {
+  label: string;
+  onSelect: () => void;
+  ref?: Ref<HTMLButtonElement>;
+  selected: boolean;
+}) {
+  return (
+    <Button
+      aria-pressed={selected}
+      ref={ref}
+      size="compact"
+      type="button"
+      variant={selected ? "secondary" : "inline"}
+      onClick={selected ? undefined : onSelect}
+    >
+      {label}
+    </Button>
+  );
+}
+
 function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {
   const provider = titleCase(binding.provider);
   if (binding.provider === "feishu") return `${provider} · @${agent.name}`;
   return binding.bot.displayName ? `${provider} · ${binding.bot.displayName}` : provider;
+}
+
+/** The row already shows the Bot name above, so the line beneath it does not repeat it. */
+function messagingChannelDetail(agent: AgentDetailView, binding: ImBindingSummary): string {
+  return binding.provider === "feishu"
+    ? `${titleCase(binding.provider)} · @${agent.name}`
+    : titleCase(binding.provider);
 }
 
 /**
@@ -3058,7 +3070,7 @@ function agentAvailabilitySummary(agent: AgentDetailView): string {
 }
 
 function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
-  if (!true || agent.availability.state === "ready") return undefined;
+  if (agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
     return { label: "Manage Agent", to: `/agents/${agent.id}/settings/manage` };
   }
@@ -3078,6 +3090,16 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
   return { label: "View Computer", to: `/agents/${agent.id}/settings/computer` };
 }
 
+/** The title names the Provider state; the sentence beneath it has to name the matching action. */
+function runtimeRecoveryMessage(agent: AgentDetailView): string {
+  const { provider, status } = agent.availability.dependencies.runtime;
+  const providerName = runtimeProviderName(provider);
+  if (status === "checking") return `Still checking ${providerName} on this Agent's Computer.`;
+  if (status === "install") return `Install ${providerName} on this Agent's Computer.`;
+  if (status === "sign-in") return `Sign in to ${providerName} on this Agent's Computer.`;
+  return `${providerName} is not available on this Agent's Computer.`;
+}
+
 function agentRecoveryMessage(agent: AgentDetailView): string {
   const messages: Record<NonNullable<AgentAvailability["reason"]>, string> = {
     agent_suspended: "This Agent is paused. Resume it to start receiving messages again.",
@@ -3086,7 +3108,7 @@ function agentRecoveryMessage(agent: AgentDetailView): string {
     computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     computer_offline: "This Agent's Computer is offline. Retrying automatically.",
-    runtime_unavailable: "The Agent runtime is not available. Set up the runtime on this Agent's Computer.",
+    runtime_unavailable: runtimeRecoveryMessage(agent),
     im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",

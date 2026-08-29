@@ -296,6 +296,43 @@ describe("Task debug queries", () => {
     }
   });
 
+  it("pages past the first page with the cursor it just issued", async () => {
+    const value = await fixture();
+    try {
+      // A second Session so the first page can fill and hand back a cursor.
+      const [second] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: value.binding.id,
+          channelId: "oc_second",
+          conversationKind: "dm",
+          kind: "channel",
+          createdAt: new Date("2026-08-26T01:00:00.000Z"),
+        })
+        .returning();
+      if (!second) throw new Error("Second Session fixture was not created");
+
+      const first = await value.service.list(value.bootstrap.userId, { limit: 1 });
+      expect(first.tasks).toHaveLength(1);
+      expect(first.nextCursor).not.toBeNull();
+      if (!first.nextCursor) throw new Error("The first page did not issue a cursor");
+
+      // The cursor carries a timestamp. Binding it as a Date made every second page fail with 500.
+      const next = await value.service.list(value.bootstrap.userId, { cursor: first.nextCursor, limit: 1 });
+      expect(next.tasks.map((task) => task.id)).toEqual([second.id]);
+      expect(next.nextCursor).toBeNull();
+
+      const turns = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 1 });
+      if (turns.nextCursor) {
+        await expect(
+          value.service.get(value.bootstrap.userId, value.session.id, { cursor: turns.nextCursor, limit: 1 }),
+        ).resolves.toBeDefined();
+      }
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("isolates Workspace data and rejects malformed cursors", async () => {
     const value = await fixture();
     try {

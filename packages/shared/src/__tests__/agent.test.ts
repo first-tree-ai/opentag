@@ -9,14 +9,17 @@ import {
   AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
+  RebindAgentComputerRequestSchema,
   UpdateAgentRequestSchema,
 } from "../agent.js";
 import {
   AGENT_BY_ID_TEMPLATE,
+  AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   agentByIdPath,
+  agentComputerRebindPath,
   agentReactivatePath,
   agentSuspendPath,
   agentUsagePath,
@@ -283,5 +286,9 @@ describe("Agent contracts", () => {
     expect(agentReactivatePath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/reactivate");
     expect(AGENT_USAGE_TEMPLATE).toBe("/api/v1/agents/:agentId/usage");
     expect(agentUsagePath("agent/value", 30)).toBe("/api/v1/agents/agent%2Fvalue/usage?days=30");
+    expect(AGENT_COMPUTER_REBIND_TEMPLATE).toBe("/api/v1/agents/:agentId/computer/rebind");
+    expect(agentComputerRebindPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/computer/rebind");
+    expect(RebindAgentComputerRequestSchema.parse({ computerId })).toEqual({ computerId });
+    expect(() => RebindAgentComputerRequestSchema.parse({ computerId, workspaceId: agent.workspaceId })).toThrow();
   });
 });

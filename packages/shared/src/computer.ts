@@ -9,6 +9,13 @@ export const IM_CLI_PROVIDERS = ["feishu", "slack"] as const;
 export const ImCliProviderSchema = z.enum(IM_CLI_PROVIDERS);
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
 
+export const ComputerConnectCodeModeSchema = z.enum(["create", "repair"]);
+
+/**
+ * Exchange identifies the local installation, not an existing Computer. The Server decides create vs
+ * repair only from the one-time code: create always allocates a new Computer, and repair names its
+ * target Computer when the code is issued.
+ */
 export const ComputerConnectCodeExchangeRequestSchema = z
   .object({
     code: z.string().trim().min(16).max(512),
@@ -35,17 +42,37 @@ export const ComputerConnectCodeExchangeResponseSchema = z
 
 export const ComputerConnectCodeIssueRequestSchema = z.object({ workspaceId: z.string().uuid() }).strict();
 
+/** Empty body and `{ mode: "create" }` both issue a create code. */
+export const AccountComputerConnectCodeCreateRequestSchema = z
+  .object({
+    mode: z.literal("create").optional(),
+  })
+  .strict();
+
+/** Repair is Account-authorized and must name an explicit Computer owned by that Account. */
+export const AccountComputerConnectCodeRepairRequestSchema = z
+  .object({
+    mode: z.literal("repair"),
+    targetComputerId: z.string().uuid(),
+  })
+  .strict();
+
 /**
- * The Account-native connect-code request carries no scope: the issuing Account comes from the access
- * token alone, so any client-selected `workspaceId` or `accountId` is rejected rather than ignored.
+ * The Account-native connect-code request carries no management scope: the issuing Account comes from
+ * the access token alone, so any client-selected `workspaceId` or `accountId` is rejected rather than
+ * ignored. Repair names its target Computer; create never infers one.
  */
-export const AccountComputerConnectCodeIssueRequestSchema = z.object({}).strict();
+export const AccountComputerConnectCodeIssueRequestSchema = z.union([
+  AccountComputerConnectCodeCreateRequestSchema,
+  AccountComputerConnectCodeRepairRequestSchema,
+]);
 
 export const ComputerConnectCodeIssueResponseSchema = z
   .object({
     bootstrapCommand: z.string().min(1),
     expiresIn: z.number().int().positive(),
     issuedAt: z.string().datetime(),
+    mode: ComputerConnectCodeModeSchema.optional(),
   })
   .strict();
 
@@ -114,10 +141,13 @@ export const ComputerImCliReadinessCollectionSchema = z
   });
 
 export type ComputerPlatform = z.infer<typeof ComputerPlatformSchema>;
+export type ComputerConnectCodeMode = z.infer<typeof ComputerConnectCodeModeSchema>;
 export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectCodeExchangeRequestSchema>;
 export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;
 export type ComputerConnectCodeIssueRequest = z.infer<typeof ComputerConnectCodeIssueRequestSchema>;
 export type ComputerConnectCodeIssueResponse = z.infer<typeof ComputerConnectCodeIssueResponseSchema>;
+export type AccountComputerConnectCodeCreateRequest = z.infer<typeof AccountComputerConnectCodeCreateRequestSchema>;
+export type AccountComputerConnectCodeRepairRequest = z.infer<typeof AccountComputerConnectCodeRepairRequestSchema>;
 export type AccountComputerConnectCodeIssueRequest = z.infer<typeof AccountComputerConnectCodeIssueRequestSchema>;
 export type ComputerConnectionStatus = z.infer<typeof ComputerConnectionStatusSchema>;
 export type ProviderReadinessStatus = z.infer<typeof ProviderReadinessStatusSchema>;

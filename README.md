@@ -117,7 +117,11 @@ cross-Agent collaboration workflows remain under development.
 - [Deployment guide](./docs/deploying.md)
 - [Security policy](./SECURITY.md)
 - [Code of Conduct](./CODE_OF_CONDUCT.md)
+- [Trademarks](./TRADEMARKS.md)
 
 ## License
 
 OpenTag is licensed under the [Apache License 2.0](./LICENSE).
+
+Marks belonging to other companies appear in the interface to identify their products. See
+[TRADEMARKS.md](./TRADEMARKS.md) for what each one is and the conditions we keep to.

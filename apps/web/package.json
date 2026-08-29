@@ -26,6 +26,7 @@
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^4.7.0",
     "jsdom": "^26.1.0",
+    "postcss": "^8.5.26",
     "vite": "^7.1.3"
   }
 }

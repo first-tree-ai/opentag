@@ -45,6 +45,7 @@ import {
   CaretRight,
   ChatCircle,
   Check,
+  Copy,
   Cpu,
   DotsThreeVertical,
   Gear,
@@ -315,6 +316,7 @@ export type IconName =
   | "check"
   | "chevron-right"
   | "close"
+  | "copy"
   | "instructions"
   | "laptop"
   | "message"
@@ -331,6 +333,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   check: Check,
   "chevron-right": CaretRight,
   close: X,
+  copy: Copy,
   instructions: List,
   laptop: Laptop,
   message: ChatCircle,

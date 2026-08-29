@@ -8,7 +8,7 @@
 
 /* Kumo's own components are class-based too, so its dist has to be scanned alongside ours. */
 @source "../src";
-@source "../../../node_modules/.pnpm/@cloudflare+kumo@*/node_modules/@cloudflare/kumo/dist";
+@source "../node_modules/@cloudflare/kumo/dist";
 
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {

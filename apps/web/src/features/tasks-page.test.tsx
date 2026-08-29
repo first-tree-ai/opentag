@@ -256,6 +256,49 @@ describe("Tasks debug view", () => {
     expect(screen.queryByRole("link", { name: "Investigate the failed deployment" })).toBeNull();
   });
 
+  it("does not let a late page land after the same Agent is loaded again", async () => {
+    const otherAgentId = "77777777-7777-4777-8777-777777777777";
+    let releaseFirstPage: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
+    vi.spyOn(browserApi, "tasks").mockImplementation((input = {}) => {
+      if (input.cursor) {
+        return new Promise((next) => {
+          releaseFirstPage = next;
+        });
+      }
+      return Promise.resolve(
+        input.agentId === otherAgentId ? { tasks: [], nextCursor: null } : { tasks: [task], nextCursor: "next-page" },
+      );
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentTasksSection agentId={agentId} />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    // Away and back: the Agent id is the same again, but the list underneath is a different load.
+    view.rerender(
+      <MemoryRouter>
+        <AgentTasksSection agentId={otherAgentId} />
+      </MemoryRouter>,
+    );
+    view.rerender(
+      <MemoryRouter>
+        <AgentTasksSection agentId={agentId} />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
+
+    releaseFirstPage({
+      tasks: [{ ...task, id: "88888888-8888-4888-8888-888888888888", title: "STALE ROW" }],
+      nextCursor: null,
+    });
+    await waitFor(() => expect(screen.getByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy());
+    expect(screen.queryByTitle("STALE ROW")).toBeNull();
+  });
+
   it("shows loading and empty states from the API", async () => {
     let resolve: (value: { tasks: []; nextCursor: null }) => void = () => undefined;
     vi.spyOn(browserApi, "tasks").mockReturnValue(

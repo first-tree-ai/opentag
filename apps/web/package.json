@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && node ../../scripts/assert-web-generated-utilities.mjs",
     "dev": "vite",
     "test": "vitest run --maxWorkers=1",
     "typecheck": "tsc --noEmit"

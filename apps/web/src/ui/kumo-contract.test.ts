@@ -21,10 +21,14 @@ describe("Kumo integration contract", () => {
     const stylesheet = readFileSync(resolve(root, "app.css"), "utf8");
     expect(stylesheet).toContain('@import "tailwindcss"');
     expect(stylesheet).toContain('@import "@cloudflare/kumo/styles/tailwind"');
-    expect(stylesheet).toMatch(/@source\s+"\.\.\/src"/);
-    expect(stylesheet).toMatch(/@source[^;]*@cloudflare\+kumo[^;]*dist/);
     expect(readFileSync(resolve(root, "..", "vite.config.ts"), "utf8")).toContain("tailwindcss()");
     expect(source).not.toMatch(/@cloudflare\/kumo\/styles\/standalone/);
+    /*
+     * Which paths `@source` names is deliberately not asserted here. An earlier version pinned their
+     * shape and would have rejected the fix for a scan that silently matched nothing -- whether the
+     * scan works is a property of the emitted stylesheet, checked by the build.
+     */
+    expect(readFileSync(resolve(root, "..", "package.json"), "utf8")).toContain("assert-web-generated-utilities.mjs");
   });
 
   it("loads the application stylesheet once and keeps application styles local", () => {

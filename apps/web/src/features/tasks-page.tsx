@@ -186,14 +186,15 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
   /*
    * The route reuses this component when `:agentId` changes, so a page requested for one Agent can
-   * resolve after another Agent's list is on screen. Every append checks that the Agent it was asked
-   * for is still the Agent being shown.
+   * resolve after another Agent's list is on screen. Comparing the Agent is not enough -- moving away
+   * and back reloads the list under the same id -- so each load gets a generation, and an append only
+   * lands on the load it was started from.
    */
-  const requestedAgentId = useRef(agentId);
+  const loadGeneration = useRef(0);
 
   useEffect(() => {
     let active = true;
-    requestedAgentId.current = agentId;
+    loadGeneration.current += 1;
     setState({ kind: "loading" });
     setLoadMoreError(null);
     setLoadingMore(false);
@@ -209,24 +210,24 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
 
   async function loadMore(): Promise<void> {
     if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    const pagedAgentId = agentId;
+    const pagedGeneration = loadGeneration.current;
     setLoadingMore(true);
     setLoadMoreError(null);
     try {
-      const next = await browserApi.tasks({ agentId: pagedAgentId, cursor: state.value.nextCursor });
-      if (requestedAgentId.current !== pagedAgentId) return;
+      const next = await browserApi.tasks({ agentId, cursor: state.value.nextCursor });
+      if (loadGeneration.current !== pagedGeneration) return;
       setState((current) =>
         current.kind === "ready"
           ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
           : current,
       );
     } catch (error) {
-      if (requestedAgentId.current !== pagedAgentId) return;
+      if (loadGeneration.current !== pagedGeneration) return;
       // The page already has these rows. Losing them to report a failed append costs the viewer more
       // than the failure itself, so the list stays and the failure is reported next to its control.
       setLoadMoreError(asError(error));
     } finally {
-      if (requestedAgentId.current === pagedAgentId) setLoadingMore(false);
+      if (loadGeneration.current === pagedGeneration) setLoadingMore(false);
     }
   }
 

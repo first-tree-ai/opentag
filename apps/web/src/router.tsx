@@ -1146,7 +1146,10 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <span className="text-kumo-subtle" aria-hidden="true">
             {" · "}
           </span>
-          <Link className="relative z-10 text-kumo-link" to={`/agents/${agent.id}/settings/${action.section}`}>
+          <Link
+            className="relative z-10 whitespace-nowrap text-kumo-link"
+            to={`/agents/${agent.id}/settings/${action.section}`}
+          >
             {action.label}
           </Link>
         </>

@@ -229,12 +229,15 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    * Moves the Agent onto a Computer and only then reports the connection. Saying "connected" before
    * the move lands would mean "this machine is yours" about a machine the Agent is not on.
    */
-  const moveAgent = useCallback((agentId: string, targetComputerId: string, computerName: string) => {
+  const moveAgent = useCallback((agentId: string, targetComputerId: string, computerName: string, mine: number) => {
     if (rebindState.current === "moving") return;
     rebindState.current = "moving";
     void browserApi.rebindAgentComputer(agentId, targetComputerId).then(
       () => {
-        if (!mounted.current) return;
+        // The run this move belongs to. A Start over while it was in flight would otherwise let it
+        // land on the run that replaced it: the connection would read as live before the new run
+        // had issued a code, and nothing on screen could move it on.
+        if (!mounted.current || attempt.current !== mine) return;
         rebindState.current = "idle";
         boundComputerId.current = targetComputerId;
         computerId.current = targetComputerId;
@@ -252,7 +255,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         );
       },
       (cause: unknown) => {
-        if (!mounted.current) return;
+        if (!mounted.current || attempt.current !== mine) return;
         rebindState.current = "refused";
         setRebindRefused(true);
         setActionError(errorMessage(cause, COPY.errors.rebind));
@@ -333,7 +336,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
             if (rebindState.current !== "idle") return;
             rebindTarget.current = arrived.computerId;
             computerNameRef.current = arrived.displayName;
-            moveAgent(resumedAgent.id, arrived.computerId, arrived.displayName);
+            moveAgent(resumedAgent.id, arrived.computerId, arrived.displayName, mine);
             return;
           }
           settled();
@@ -547,7 +550,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     rebindState.current = "idle";
     setRebindRefused(false);
     setActionError(undefined);
-    moveAgent(agentId, target, computerNameRef.current);
+    moveAgent(agentId, target, computerNameRef.current, attempt.current);
   }, [moveAgent]);
 
   const startPlanSignIn = useCallback(() => undefined, []);

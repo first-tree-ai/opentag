@@ -103,17 +103,19 @@ describe("auth contracts", () => {
     expect(() => UserProfileSchema.parse({ ...profile, displayName: "a".repeat(256) })).toThrow();
   });
 
-  it("publishes Google and local-development browser provider availability", () => {
+  it("publishes Google, local-development, and password browser provider availability", () => {
     expect(
       AuthProvidersResponseSchema.parse({
         providers: [
           { id: "google", enabled: false, startUrl: null },
           { id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" },
+          // A form rather than a link, so it is the one provider that is enabled and still has no URL to start it.
+          { id: "password", enabled: true, startUrl: null },
         ],
       }),
-    ).toMatchObject({ providers: [{ id: "google" }, { id: "dev" }] });
+    ).toMatchObject({ providers: [{ id: "google" }, { id: "dev" }, { id: "password", startUrl: null }] });
     expect(() =>
-      AuthProvidersResponseSchema.parse({ providers: [{ id: "password", enabled: true, startUrl: "/login" }] }),
+      AuthProvidersResponseSchema.parse({ providers: [{ id: "saml", enabled: true, startUrl: "/login" }] }),
     ).toThrow();
   });
 });

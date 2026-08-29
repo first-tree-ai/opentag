@@ -2,7 +2,7 @@ import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/brow
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import { Button } from "../ui/design-system.js";
+import { Banner, Button, Loader } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
@@ -27,6 +27,7 @@ const FEISHU_SETUP_MESSAGES: Record<string, string> = {
 export interface FeishuSetupControl {
   /** Starts one setup intent. False means no new attempt was started. */
   start: (intent?: FeishuSetupIntent) => Promise<boolean>;
+  loading: boolean;
   /** Opaque lifecycle feedback for the caller to place in its existing layout. */
   feedback: ReactNode;
 }
@@ -58,6 +59,7 @@ export function FeishuSetup({ agentId, children, onSuccess }: FeishuSetupProps) 
 function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps) {
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
   const [error, setError] = useState<FeishuSetupError>();
+  const [loading, setLoading] = useState(false);
   const attemptRef = useRef<FeishuSetupAttempt>(undefined);
   const creatingRef = useRef(false);
   const lifecycleRef = useRef(0);
@@ -78,6 +80,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
 
       const lifecycle = lifecycleRef.current;
       creatingRef.current = true;
+      setLoading(true);
       setError(undefined);
       try {
         const started = await browserApi.createFeishuSetupAttempt(agentId, intent);
@@ -97,7 +100,10 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         setError({ message: normalizeError(cause, "Unable to start setup"), source: "start" });
         return false;
       } finally {
-        if (lifecycleRef.current === lifecycle) creatingRef.current = false;
+        if (lifecycleRef.current === lifecycle) {
+          creatingRef.current = false;
+          setLoading(false);
+        }
       }
     },
     [agentId],
@@ -141,15 +147,12 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
   }, [activeAttemptId]);
 
   return children({
+    loading,
     start,
     feedback: (
       <>
         {attempt ? <FeishuSetupFeedback attempt={attempt} onRetry={start} /> : null}
-        {error ? (
-          <div className="notice error" role="alert">
-            {error.message}
-          </div>
-        ) : null}
+        {error ? <Banner variant="error" role="alert" description={error.message} /> : null}
       </>
     ),
   });
@@ -163,8 +166,14 @@ function FeishuSetupFeedback({
   onRetry: (intent: FeishuSetupIntent) => Promise<boolean>;
 }) {
   const recovery = setupRecovery(attempt);
+  const active = ACTIVE_STATES.includes(attempt.state);
   return (
-    <div className="notice">
+    <Banner data-ui="feishu-setup-feedback">
+      {active ? (
+        <span aria-hidden="true">
+          <Loader aria-label="Waiting for Feishu authorization" size="sm" />
+        </span>
+      ) : null}
       <strong>Feishu setup started</strong>
       <br />
       {attempt.intent === "reauthorize"
@@ -193,7 +202,7 @@ function FeishuSetupFeedback({
           <Button onClick={() => void onRetry(attempt.intent)}>Retry Feishu setup</Button>
         </>
       ) : null}
-    </div>
+    </Banner>
   );
 }
 
@@ -208,7 +217,13 @@ function FeishuQrCode({ value }: { value: string }) {
       active = false;
     };
   }, [value]);
-  return source ? <img alt="Scan this QR code in Feishu" className="setup-qr" src={source} /> : null;
+  return source ? (
+    <img
+      alt="Scan this QR code in Feishu"
+      className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
+      src={source}
+    />
+  ) : null;
 }
 
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {

@@ -3,6 +3,7 @@ import { INTERNAL_ONBOARDING_LAB_PATH } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { OnboardingResetError, OnboardingResetService } from "../services/onboarding-lab/index.js";
+import { signedInBrowser } from "./signed-in-browser.js";
 
 const PUBLIC_ORIGIN = "https://staging.example.com";
 const apps: ReturnType<typeof createApp>[] = [];
@@ -21,14 +22,13 @@ function fixture(options: { environment?: "dev" | "staging" | "prod"; registered
     workspaceAdmins: {} as never,
   });
   vi.spyOn(reset, "resetOnboarding").mockImplementation(resetOnboarding);
+  const betterAuth = signedInBrowser(accountId, { publicUrl: PUBLIC_ORIGIN });
   const app = createApp({
     authService: {
-      getAuthenticatedUser: vi.fn().mockResolvedValue({
-        me: { user: { id: accountId }, workspaces: [] },
-        tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
-      }),
+      getActiveUserById: vi.fn().mockResolvedValue({ user: { id: accountId }, workspaces: [] }),
     } as never,
-    browserAuth: { publicOrigin: PUBLIC_ORIGIN, refreshTokenTtlSeconds: 3600, secureCookies: true } as never,
+    betterAuth,
+    browserAuth: { publicOrigin: PUBLIC_ORIGIN, secureCookies: true, sessionTtlSeconds: 3600 } as never,
     ...(options.registered === false ? {} : { stagingOnboardingLab: { reset } }),
   });
   apps.push(app);
@@ -37,7 +37,7 @@ function fixture(options: { environment?: "dev" | "staging" | "prod"; registered
 
 function browserHeaders(extra: Record<string, string> = {}) {
   return {
-    cookie: "opentag_access=account-token; opentag_csrf=csrf-token",
+    cookie: "opentag.session_token=account-session; opentag_csrf=csrf-token",
     origin: PUBLIC_ORIGIN,
     "x-opentag-csrf": "csrf-token",
     ...extra,
@@ -159,7 +159,7 @@ describe("internal Onboarding Lab interface", () => {
       value.app.inject({
         method: "POST",
         url: INTERNAL_ONBOARDING_LAB_PATH,
-        headers: { cookie: "opentag_access=account-token; opentag_csrf=csrf-token", origin: PUBLIC_ORIGIN },
+        headers: { cookie: "opentag.session_token=account-session; opentag_csrf=csrf-token", origin: PUBLIC_ORIGIN },
       }),
       value.app.inject({
         method: "POST",

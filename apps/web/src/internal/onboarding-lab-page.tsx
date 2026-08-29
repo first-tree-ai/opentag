@@ -2,7 +2,7 @@ import type { UserProfile } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { OnboardingView } from "../onboarding/view.js";
-import { Button, Dialog } from "../ui/design-system.js";
+import { Button, Dialog, Text } from "../ui/design-system.js";
 import { findOnboardingScenario, ONBOARDING_LAB_ACCOUNT_ID, ONBOARDING_SCENARIOS } from "./onboarding-lab-scenarios.js";
 
 export interface OnboardingLabPageProps {
@@ -97,29 +97,41 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
         accountId={ONBOARDING_LAB_ACCOUNT_ID}
       />
 
-      <div className="onboarding-lab-switcher" ref={switcherRef}>
+      <div
+        className="fixed bottom-4 right-4 z-30 w-[min(24rem,calc(100vw-2rem))]"
+        data-ui="onboarding-lab-switcher"
+        ref={switcherRef}
+      >
         {/*
           The toggle precedes the panel it controls, so a forward Tab from it reaches the controls it
           just revealed instead of leaving the switcher and traversing the whole onboarding page. The
           panel still reads above the toggle: that is visual order, and the stylesheet owns it.
         */}
-        <button
+        <Button
           aria-controls="onboarding-lab-switcher-panel"
           aria-expanded={open}
-          className="onboarding-lab-switcher-toggle"
+          className="w-full justify-start"
           ref={toggleRef}
           type="button"
           onClick={() => setOpen((value) => !value)}
         >
-          <span className="onboarding-lab-switcher-toggle-eyebrow">Onboarding Lab</span>
-          <span className="onboarding-lab-switcher-toggle-scenario">{scenario.title}</span>
-        </button>
+          <span className="grid text-left">
+            <span className="text-xs text-kumo-subtle">Onboarding Lab</span>
+            <span>{scenario.title}</span>
+          </span>
+        </Button>
 
         {open ? (
-          <div className="onboarding-lab-switcher-panel" id="onboarding-lab-switcher-panel">
-            <div className="onboarding-lab-switcher-intro">
-              <span className="eyebrow">Staging only</span>
-              <h2>Onboarding Lab</h2>
+          <div
+            className="mb-2 grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+            data-ui="onboarding-lab-switcher-panel"
+            id="onboarding-lab-switcher-panel"
+          >
+            <div className="grid gap-1">
+              <span className="text-xs font-medium uppercase text-kumo-subtle">Staging only</span>
+              <Text as="h2" variant="heading">
+                Onboarding Lab
+              </Text>
               <p>
                 Each scenario renders the page above from fixed facts. Preview makes no request and creates no durable
                 state, so use it for screen hierarchy, copy and state communication — and the real reset for interaction
@@ -127,34 +139,37 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
               </p>
             </div>
 
-            <nav aria-label="Onboarding scenarios" className="onboarding-lab-scenarios">
+            <nav aria-label="Onboarding scenarios" className="grid gap-2">
               {ONBOARDING_SCENARIOS.map((candidate) => (
-                <button
+                <Button
                   aria-current={candidate.id === scenario.id || undefined}
-                  className="onboarding-lab-scenario"
+                  className="w-full justify-start"
                   key={candidate.id}
                   type="button"
                   onClick={() => onScenarioChange(candidate.id)}
                 >
                   <strong>{candidate.title}</strong>
                   <span>{candidate.description}</span>
-                </button>
+                </Button>
               ))}
             </nav>
 
-            <div className="onboarding-lab-switcher-reset">
-              <h3>Real reset</h3>
+            <div className="grid gap-2 border-t border-kumo-line pt-3">
+              <Text as="h3" variant="heading">
+                Real reset
+              </Text>
               <p>
                 Reset returns this Account to a first-run state and then enters the ordinary onboarding route. Your
                 local OpenTag home and Computer identity are reused, so the next run only needs a fresh Computer connect
                 command.
               </p>
-              <p className="notice" role="status">
+              <p className="rounded-md bg-kumo-info-tint p-3 text-sm" role="status">
                 <strong>This resets your own Account.</strong> It disables the Agents, Computer enrollments and
                 messaging connections belonging to {user.email}, and reaches nothing of anyone else's. Another tester
                 signed in as themselves is unaffected.
               </p>
               <Button
+                loading={resetState.kind === "pending"}
                 disabled={resetState.kind === "pending"}
                 ref={resetTriggerRef}
                 size="compact"
@@ -164,7 +179,7 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
                 {resetState.kind === "pending" ? "Resetting…" : "Reset my account and start onboarding"}
               </Button>
               {resetState.kind === "error" ? (
-                <div className="notice error" role="alert">
+                <div className="rounded-md bg-kumo-danger-tint p-3 text-sm text-kumo-danger" role="alert">
                   <p>{resetState.error.message}</p>
                   <Button size="compact" variant="secondary" onClick={() => setConfirming(true)}>
                     Retry
@@ -185,8 +200,8 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
           title="Reset your staging Account?"
           onClose={() => setConfirming(false)}
         >
-          <div className="actions">
-            <Button variant="danger" onClick={() => void reset()}>
+          <div className="flex flex-wrap gap-3">
+            <Button loading={resetState.kind === "pending"} variant="danger" onClick={() => void reset()}>
               Reset and start onboarding
             </Button>
             <Button variant="secondary" onClick={() => setConfirming(false)}>

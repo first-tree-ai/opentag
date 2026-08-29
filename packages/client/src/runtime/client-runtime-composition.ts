@@ -37,6 +37,7 @@ import {
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AdmissionController } from "./admission-controller.js";
+import { resolveAgentRuntimeExecutable } from "./agent-runtime-installation.js";
 import {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
@@ -220,8 +221,9 @@ export async function createClientRuntime(
   options.signal?.throwIfAborted();
   const defaultHome = sourceEnvironment.HOME ?? homedir();
   const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
+  const defaultClaudeCodeHome = resolve(join(defaultHome, ".claude"));
   const configuredClaudeCodeHome = resolve(
-    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? join(defaultHome, ".claude"),
+    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? defaultClaudeCodeHome,
   );
   await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
   await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
@@ -231,10 +233,12 @@ export async function createClientRuntime(
   const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
   options.signal?.throwIfAborted();
   const codexEnvironment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
-  const claudeCodeEnvironment = claudeCodeAgentRuntimeEnvironment({
-    ...sourceEnvironment,
-    CLAUDE_CONFIG_DIR: claudeCodeHome,
-  });
+  const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
+  const claudeCodeEnvironment = claudeCodeProcessEnvironment(
+    sourceEnvironment,
+    claudeCodeHome,
+    canonicalDefaultClaudeCodeHome,
+  );
   const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
     codex: codexHome,
     "claude-code": claudeCodeHome,
@@ -584,6 +588,24 @@ export interface ResolvedCodexFactoryOptions {
   readonly sourceEnvironment: NodeJS.ProcessEnv;
 }
 
+function claudeCodeProcessEnvironment(
+  sourceEnvironment: NodeJS.ProcessEnv,
+  claudeCodeHome: string,
+  defaultClaudeCodeHome: string,
+): NodeJS.ProcessEnv {
+  // Claude Code treats a set CLAUDE_CONFIG_DIR as a distinct credential record, even when the
+  // value equals its own default. Omit the variable only when the resolved home is that default.
+  if (claudeCodeHome === defaultClaudeCodeHome) {
+    const environment = { ...sourceEnvironment };
+    delete environment.CLAUDE_CONFIG_DIR;
+    return claudeCodeAgentRuntimeEnvironment(environment);
+  }
+  return claudeCodeAgentRuntimeEnvironment({
+    ...sourceEnvironment,
+    CLAUDE_CONFIG_DIR: claudeCodeHome,
+  });
+}
+
 function productionProviderRegistration(
   factory: AgentRuntimeFactory,
   artifactIdentities: Readonly<Record<"codex" | "claude-code", string>>,
@@ -622,7 +644,7 @@ export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): Agen
       let command: string;
       try {
         request.signal?.throwIfAborted();
-        command = await resolveExecutable(options.command, options.sourceEnvironment);
+        command = (await resolveAgentRuntimeExecutable("codex", options.command, options.sourceEnvironment)).path;
       } catch (error) {
         if (request.signal?.aborted) throw error;
         return { ready: false, issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }] };
@@ -664,7 +686,7 @@ export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOpti
       let command: string;
       try {
         request.signal?.throwIfAborted();
-        command = await resolveExecutable(options.command, options.sourceEnvironment);
+        command = (await resolveAgentRuntimeExecutable("claude-code", options.command, options.sourceEnvironment)).path;
       } catch (error) {
         if (request.signal?.aborted) throw error;
         return {

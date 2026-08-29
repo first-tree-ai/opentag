@@ -1,14 +1,15 @@
 # 为 OpenTag 贡献
 
 > Canonical source: [CONTRIBUTING.md](./CONTRIBUTING.md)
-> Last synced with: 2026-08-17
+> Last synced with: 2026-08-29
 
 OpenTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用户或贡献者问题，并避免在没有既定设计时增加产品能力。
 
 ## 工作流
 
 1. 使用以下前缀创建分支：`feat/`、`fix/`、`refactor/`、`test/`、`docs/`、`chore/` 或 `merge/`。
-2. 运行 `pnpm install` 安装依赖。
+2. 运行 `pnpm install` 安装依赖。该命令同时会安装 Git hooks：commit 前对暂存文件执行 lint 与格式化，push 前重新检查
+   整个仓库，详见 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md#git-hooks-与-worktree)。
 3. 完成最小且完整的改动，并更新相关测试和文档。
 4. 运行 `pnpm check`、`pnpm build`、`pnpm typecheck` 和 `pnpm test`。
 5. 使用仓库模板创建 Pull Request。

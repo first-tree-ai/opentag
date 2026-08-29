@@ -37,7 +37,7 @@ function renderLab(overrides: Partial<Parameters<typeof OnboardingLabPage>[0]> =
  * the same element production renders, and the floating switcher is the only thing outside it.
  */
 function onboardingSurface(): HTMLElement {
-  const shell = document.querySelector<HTMLElement>(".onboarding-shell");
+  const shell = document.querySelector<HTMLElement>('[data-ui="onboarding-shell"]');
   if (!shell) throw new Error("The Lab did not render the onboarding surface");
   return shell;
 }

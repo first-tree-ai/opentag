@@ -65,8 +65,8 @@ Workflow 只改变 App 运行哪个镜像。以下都是首次部署前必须在
 | `OPENTAG_PORT` | `8000` |
 | `OPENTAG_PUBLIC_URL` | App 的 HTTPS URL；hosted environment 拒绝纯 HTTP |
 | `OPENTAG_DATABASE_URL` | Staging 数据库的 `postgresql://…` |
-| `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用 |
-| `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `OPENTAG_JWT_SECRET` 不同 |
+| `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用；签发全部 Account session |
+| `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
 | `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
 

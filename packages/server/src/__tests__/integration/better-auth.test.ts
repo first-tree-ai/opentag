@@ -1,42 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { handleOAuthUserInfo } from "better-auth/oauth2";
+import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
-import { createBetterAuth } from "../../auth/better-auth.js";
-import { BetterAuthSessionTokens, BridgedSessionTokens } from "../../auth/session-tokens.js";
+import { BETTER_AUTH_BASE_PATH, createBetterAuth } from "../../auth/better-auth.js";
+import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
-import {
-  accountLegacyUpgrades,
-  authIdentities,
-  authSessions,
-  users,
-  workspaceAdminGrants,
-} from "../../db/schema/index.js";
+import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
 import { createUserAuthPreHandler, resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
-import {
-  AuthService,
-  AuthTokenService,
-  DevBrowserAuthService,
-  PostAuthenticationService,
-} from "../../services/auth/index.js";
+import { AuthService, DevBrowserAuthService, PostAuthenticationService } from "../../services/auth/index.js";
 import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const GOOGLE_ISSUER = "https://accounts.google.com";
 const PUBLIC_URL = "http://localhost:8000";
-const LEGACY_SECRET = "legacy-jwt-secret-of-at-least-32-characters";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 
-/** The composition the server runs: Better Auth issues, and credentials it did not issue still verify. */
-function bridgedAuthService(auth: ReturnType<typeof createAuth>): AuthService {
-  return new AuthService(
-    client.database,
-    new BridgedSessionTokens(
-      new BetterAuthSessionTokens(auth, client.database),
-      new AuthTokenService(LEGACY_SECRET, 900, 3600),
-    ),
-  );
+/** The composition the server runs. */
+function sessionAuthService(auth: ReturnType<typeof createAuth>): AuthService {
+  return new AuthService(client.database, new BetterAuthSessionTokens(auth, client.database));
 }
 
 let testDatabase: MigratedTestDatabase;
@@ -58,10 +41,7 @@ beforeEach(async () => {
   await testDatabase.reset();
 });
 
-function createAuth(
-  devSignIn?: () => Promise<string>,
-  legacyUpgrade?: (refreshToken: string) => Promise<{ expiresAt: Date; userId: string }>,
-) {
+function createAuth(devSignIn?: () => Promise<string>) {
   return createBetterAuth(client.database, {
     onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
@@ -69,31 +49,36 @@ function createAuth(
     secureCookies: false,
     sessionTtlSeconds: SESSION_TTL_SECONDS,
     ...(devSignIn ? { devSignIn } : {}),
-    ...(legacyUpgrade ? { legacyUpgrade: { recordExchange, resolveCredential: legacyUpgrade } } : {}),
     google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
   });
 }
 
-/** The single-statement gate the composition root supplies, so a raced exchange converges here as it does in production. */
-async function recordExchange({
-  expiresAt,
-  sessionToken,
-  tokenHash,
-}: {
-  expiresAt: Date;
-  sessionToken: string;
-  tokenHash: string;
-}): Promise<string> {
-  const [recorded] = await client.database
-    .insert(accountLegacyUpgrades)
-    .values({ expiresAt, sessionToken, tokenHash })
-    .onConflictDoUpdate({
-      target: accountLegacyUpgrades.tokenHash,
-      set: { tokenHash: sql`${accountLegacyUpgrades.tokenHash}` },
-    })
-    .returning({ winner: accountLegacyUpgrades.sessionToken });
-  if (!recorded) throw new Error("The legacy upgrade record did not return a session");
-  return recorded.winner;
+/** The same composition with the password credential turned on, which is off unless a deployment asks for it. */
+function createPasswordAuth() {
+  return createBetterAuth(client.database, {
+    onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
+    publicUrl: PUBLIC_URL,
+    secret: "better-auth-integration-secret-at-least-32-characters",
+    secureCookies: false,
+    sessionTtlSeconds: SESSION_TTL_SECONDS,
+    emailPassword: true,
+    google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
+  });
+}
+
+function callAuth(
+  auth: ReturnType<typeof createAuth>,
+  path: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return auth.handler(
+    new Request(`${PUBLIC_URL}${BETTER_AUTH_BASE_PATH}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    }),
+  );
 }
 
 /** Collects whatever a preHandler writes back, which is all these tests need from a reply. */
@@ -301,7 +286,7 @@ describe("Better Auth over the existing Account tables", () => {
       workspaceName: "example",
     });
     const auth = createAuth();
-    const authService = bridgedAuthService(auth);
+    const authService = sessionAuthService(auth);
 
     const exchanged = await authService.exchangeConnectCode(bootstrap.connectCode);
 
@@ -344,7 +329,7 @@ describe("Better Auth over the existing Account tables", () => {
     });
     const before = Date.now();
 
-    const exchanged = await bridgedAuthService(createAuth()).exchangeConnectCode(bootstrap.connectCode);
+    const exchanged = await sessionAuthService(createAuth()).exchangeConnectCode(bootstrap.connectCode);
 
     expect(exchanged.expiresIn).toBeGreaterThan(SESSION_TTL_SECONDS - 60);
     expect(exchanged.expiresIn).toBeLessThanOrEqual(SESSION_TTL_SECONDS);
@@ -366,7 +351,7 @@ describe("Better Auth over the existing Account tables", () => {
       workspaceDisplayName: "Example",
       workspaceName: "example",
     });
-    const authService = bridgedAuthService(createAuth());
+    const authService = sessionAuthService(createAuth());
     const initial = await authService.exchangeConnectCode(bootstrap.connectCode);
 
     const renewed = await authService.refresh(initial.refreshToken);
@@ -398,7 +383,7 @@ describe("Better Auth over the existing Account tables", () => {
       workspaceDisplayName: "Example",
       workspaceName: "example",
     });
-    const authService = bridgedAuthService(createAuth());
+    const authService = sessionAuthService(createAuth());
     const initial = await authService.exchangeConnectCode(bootstrap.connectCode);
 
     const raced = await Promise.allSettled([
@@ -423,38 +408,6 @@ describe("Better Auth over the existing Account tables", () => {
     expect(await client.database.select().from(authSessions)).toHaveLength(0);
   });
 
-  it("upgrades a credential the previous revision issued the first time it is refreshed", async () => {
-    /*
-     * A CLI that has not reached the server since the cutover still holds a signed pair. Verification falls back to the
-     * legacy signature, and because issuance only ever produces a session, refreshing is what moves it across.
-     */
-    const bootstrap = await bootstrapInitialAdmin(client.database, {
-      displayName: "Admin",
-      email: "admin@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
-    });
-    const auth = createAuth();
-    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
-    const legacyPair = await legacy.issuePairForUser(bootstrap.userId);
-    const authService = bridgedAuthService(auth);
-
-    const refreshed = await authService.refresh(legacyPair.refreshToken);
-
-    expect(refreshed.accessToken).not.toBe(legacyPair.accessToken);
-    const persisted = await client.database
-      .select()
-      .from(authSessions)
-      .where(eq(authSessions.userId, bootstrap.userId));
-    expect(persisted).toHaveLength(1);
-    expect(persisted[0]?.token).toBe(refreshed.accessToken);
-
-    // The legacy access token still authenticates until it expires, so the rollout signs nobody out.
-    await expect(authService.getAuthenticatedUser(legacyPair.accessToken)).resolves.toMatchObject({
-      me: { user: { id: bootstrap.userId } },
-    });
-  });
-
   it("does not let a junk bearer header turn a cookie request into a CLI one", async () => {
     /*
      * Better Auth reads the header and the cookie, and on an invalid bearer it answers from the cookie. Deciding the
@@ -475,7 +428,7 @@ describe("Better Auth over the existing Account tables", () => {
     );
     expect(signedIn.status).toBe(200);
     const cookie = cookieHeader(signedIn);
-    const preHandler = createUserAuthPreHandler(bridgedAuthService(auth), {
+    const preHandler = createUserAuthPreHandler(sessionAuthService(auth), {
       betterAuth: auth,
       publicOrigin: PUBLIC_URL,
       secureCookies: false,
@@ -529,7 +482,7 @@ describe("Better Auth over the existing Account tables", () => {
     await client.database.update(authSessions).set({ expiresAt: aged });
 
     const reply = replyStub();
-    await createUserAuthPreHandler(bridgedAuthService(auth), {
+    await createUserAuthPreHandler(sessionAuthService(auth), {
       betterAuth: auth,
       publicOrigin: PUBLIC_URL,
       secureCookies: false,
@@ -636,123 +589,22 @@ describe("Better Auth over the existing Account tables", () => {
     await expect(auth.api.getSession({ headers: new Headers({ cookie }) })).resolves.toBeNull();
   });
 
-  it("upgrades a browser the previous revision signed in, without asking it to sign in again", async () => {
-    const bootstrap = await bootstrapInitialAdmin(client.database, {
-      displayName: "Browser",
-      email: "browser@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
-    });
-    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
-    const legacyPair = await legacy.issuePairForUser(bootstrap.userId);
-    const authService = bridgedAuthService(createAuth());
-    const auth = createAuth(undefined, async (refreshToken) => {
-      const identity = await legacy.verifyRefresh(refreshToken);
-      return { expiresAt: identity.expiresAt, userId: (await authService.getActiveUserById(identity.userId)).user.id };
-    });
+  it("refuses to create a second Account for an address one already holds", async () => {
+    /*
+     * The resolver that used to serialize on the address is gone, and Better Auth's linking does not order two
+     * concurrent first sign-ins for the same one. The database enforces the invariant now — case-insensitively, so a
+     * writer that skipped normalization cannot get in through a casing variant either.
+     */
+    await seedLegacyAccount("google-subject-twin-a", "twin@example.com", "Twin One");
 
-    const upgrade = await auth.handler(
-      new Request(`${PUBLIC_URL}/api/v1/auth/legacy/upgrade`, {
-        method: "POST",
-        // The origin a browser actually sends, so a trusted-origin rejection would surface here rather than in staging.
-        headers: { "content-type": "application/json", origin: PUBLIC_URL },
-        body: JSON.stringify({ refreshToken: legacyPair.refreshToken }),
-      }),
-    );
-
-    expect(upgrade.status).toBe(200);
-    const cookie = cookieHeader(upgrade);
-    await expect(auth.api.getSession({ headers: new Headers({ cookie }) })).resolves.toMatchObject({
-      user: { id: bootstrap.userId },
+    await expect(seedLegacyAccount("google-subject-twin-b", "TWIN@example.com", "Twin Two")).rejects.toMatchObject({
+      cause: expect.objectContaining({ code: "23505" }),
     });
-    // The same Account, not a second one: the upgrade must not read as a new person signing in.
     expect(await client.database.select().from(users)).toHaveLength(1);
   });
 
-  it("converges a replayed or raced upgrade on one session that sign-out ends", async () => {
-    /*
-     * A stateless refresh token has nothing to consume, so nothing stops it being presented twice — a replay, or two
-     * requests from the same browser that met a 401 together. Each exchange that minted its own session would leave
-     * every row but the last invisible to the browser that created it, and therefore alive after the sign-out meant to
-     * end it. That is the orphan-session failure this endpoint exists to remove, reintroduced by concurrency.
-     */
-    const bootstrap = await bootstrapInitialAdmin(client.database, {
-      displayName: "Browser",
-      email: "browser@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
-    });
-    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
-    const legacyPair = await legacy.issuePairForUser(bootstrap.userId);
-    const authService = bridgedAuthService(createAuth());
-    const auth = createAuth(undefined, async (refreshToken) => {
-      const identity = await legacy.verifyRefresh(refreshToken);
-      return { expiresAt: identity.expiresAt, userId: (await authService.getActiveUserById(identity.userId)).user.id };
-    });
-    const upgrade = () =>
-      auth.handler(
-        new Request(`${PUBLIC_URL}/api/v1/auth/legacy/upgrade`, {
-          method: "POST",
-          headers: { "content-type": "application/json", origin: PUBLIC_URL },
-          body: JSON.stringify({ refreshToken: legacyPair.refreshToken }),
-        }),
-      );
-
-    const [first, second] = await Promise.all([upgrade(), upgrade()]);
-    const replay = await upgrade();
-
-    for (const response of [first, second, replay]) expect(response.status).toBe(200);
-    const sessions = await client.database.select().from(authSessions);
-    expect(sessions).toHaveLength(1);
-    /*
-     * Every exchange hands back the same session. The browser keeps whichever `Set-Cookie` arrives last, which is not
-     * necessarily the exchange that won the race — converging on one token is what stops it from being left holding a
-     * cookie for a row that was deleted.
-     */
-    for (const response of [first, second, replay]) {
-      await expect(
-        auth.api.getSession({ headers: new Headers({ cookie: cookieHeader(response) }) }),
-      ).resolves.toMatchObject({ session: { token: sessions[0]?.token }, user: { id: bootstrap.userId } });
-    }
-
-    const signOut = await auth.handler(
-      new Request(`${PUBLIC_URL}/api/v1/auth/sign-out`, {
-        method: "POST",
-        headers: { cookie: cookieHeader(first), "content-type": "application/json" },
-        body: "{}",
-      }),
-    );
-
-    expect(signOut.status).toBe(200);
-    expect(await client.database.select().from(authSessions)).toHaveLength(0);
-  });
-
-  it("refuses to upgrade a refresh credential that does not verify", async () => {
-    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
-    const authService = bridgedAuthService(createAuth());
-    const auth = createAuth(undefined, async (refreshToken) => {
-      const identity = await legacy.verifyRefresh(refreshToken);
-      return { expiresAt: identity.expiresAt, userId: (await authService.getActiveUserById(identity.userId)).user.id };
-    });
-
-    const forged = await auth.handler(
-      new Request(`${PUBLIC_URL}/api/v1/auth/legacy/upgrade`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ refreshToken: `${randomUUID()}.${randomUUID()}.${randomUUID()}` }),
-      }),
-    );
-
-    // Nothing else guards this endpoint, so a token that does not verify must produce no session at all.
-    expect(forged.status).toBe(401);
-    expect(await client.database.select().from(authSessions)).toHaveLength(0);
-    expect(forged.headers.getSetCookie()).toEqual([]);
-  });
-
-  it("refuses development sign-in when the configured Account is ambiguous", async () => {
-    await seedLegacyAccount("google-subject-twin-a", "twin@example.com", "Twin One");
-    await seedLegacyAccount("google-subject-twin-b", "TWIN@example.com", "Twin Two");
-    const developer = new DevBrowserAuthService(client.database, "twin@example.com");
+  it("refuses development sign-in when the configured Account does not exist", async () => {
+    const developer = new DevBrowserAuthService(client.database, "absent@example.com");
     const auth = createAuth(() => developer.resolveUserId());
 
     const response = await auth.handler(
@@ -767,5 +619,177 @@ describe("Better Auth over the existing Account tables", () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ code: "AUTH_DEV_USER_UNAVAILABLE" });
     expect(await client.database.select().from(authSessions)).toHaveLength(0);
+  });
+});
+
+const PASSWORD = "correct-horse-battery";
+
+/**
+ * Better Auth's own issuer for a password it stores itself.
+ *
+ * Pinned rather than derived, because `issuer` is `NOT NULL` and participates in three unique indexes on
+ * `auth_identities`. If a library upgrade changed this convention, existing credential rows would stop resolving and
+ * new ones would be written beside them; failing here is how that arrives as a test failure rather than as Accounts
+ * that silently cannot sign in.
+ */
+const CREDENTIAL_ISSUER = "local:credential";
+
+describe("email and password credentials", () => {
+  it("registers an Account and stores only a hash of its password", async () => {
+    const auth = createPasswordAuth();
+
+    const response = await callAuth(auth, "/sign-up/email", {
+      email: "Registered@Example.com",
+      name: "Registered Account",
+      password: PASSWORD,
+    });
+
+    expect(response.status).toBe(200);
+    const [user] = await client.database.select().from(users);
+    /*
+     * Lowercased by the same hook every other sign-in path goes through, so the address that reaches the unique index
+     * is the one a later sign-in is looked up by.
+     */
+    expect(user).toMatchObject({ email: "registered@example.com", displayName: "Registered Account" });
+    /*
+     * Nothing asserted this address, so it stays unverified. Registration is the one path that could quietly claim
+     * otherwise, because it is the only one where the address arrives from the person claiming it.
+     */
+    expect(user?.emailVerified).toBe(false);
+
+    const [identity] = await client.database.select().from(authIdentities);
+    expect(identity).toMatchObject({ provider: "credential", issuer: CREDENTIAL_ISSUER, userId: user?.id });
+    expect(identity?.password).toBeTruthy();
+    expect(identity?.password).not.toContain(PASSWORD);
+  });
+
+  it("signs the registration in, so a new Account arrives holding a session", async () => {
+    const auth = createPasswordAuth();
+
+    const response = await callAuth(auth, "/sign-up/email", {
+      email: "arrives@example.com",
+      name: "Arrives Signed In",
+      password: PASSWORD,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(1);
+  });
+
+  it("accepts the right password and refuses the wrong one without a session", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "member@example.com", name: "Member", password: PASSWORD });
+    await client.database.delete(authSessions);
+
+    const wrong = await callAuth(auth, "/sign-in/email", { email: "member@example.com", password: "wrong-password" });
+    expect(wrong.ok).toBe(false);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+
+    const right = await callAuth(auth, "/sign-in/email", { email: "member@example.com", password: PASSWORD });
+    expect(right.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(1);
+  });
+
+  it("signs in through a casing variant of the registered address", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "casing@example.com", name: "Casing", password: PASSWORD });
+    await client.database.delete(authSessions);
+
+    const response = await callAuth(auth, "/sign-in/email", { email: "CASING@Example.com", password: PASSWORD });
+
+    expect(response.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(1);
+  });
+
+  it("refuses a second Account for an address that already has one", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "taken@example.com", name: "First", password: PASSWORD });
+
+    const second = await callAuth(auth, "/sign-up/email", {
+      email: "TAKEN@example.com",
+      name: "Second",
+      password: `${PASSWORD}-other`,
+    });
+
+    expect(second.ok).toBe(false);
+    // One address, one Account — whether the second attempt is refused by Better Auth or by `users_email_unique`.
+    expect(await client.database.select().from(users)).toHaveLength(1);
+  });
+
+  it("refuses a suspended Account the session its password would otherwise buy", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "suspended@example.com", name: "Suspended", password: PASSWORD });
+    await client.database.update(users).set({ suspendedAt: new Date() });
+    await client.database.delete(authSessions);
+
+    const response = await callAuth(auth, "/sign-in/email", { email: "suspended@example.com", password: PASSWORD });
+
+    // The `session.create` hook is the single place suspension is enforced, and the password path runs through it too.
+    expect(response.ok).toBe(false);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+  });
+
+  /**
+   * What an unverified registration actually does to the address it claimed.
+   *
+   * Two reviews disagreed about this, so it is pinned here rather than argued. Better Auth 1.7.2 defaults
+   * `accountLinking.requireLocalEmailVerified` to true, and being a trusted provider does not lift it — that flag is
+   * only checked against the *provider's* verification, not the local Account's. So a later Google sign-in for the
+   * squatted address is refused outright: attacker and victim do not end up sharing an Account.
+   *
+   * The harm is the other one. The address is now reserved by `users_email_unique`, so the real owner can neither
+   * register it nor sign in with it, and the squatter holds an Account that OpenTag has already provisioned. That is
+   * the constraint the deferred ownership-proof work has to remove, and this test is the baseline it will change.
+   */
+  it("locks the real owner out of an address a password registration squatted, rather than sharing it", async () => {
+    const auth = createPasswordAuth();
+    await callAuth(auth, "/sign-up/email", { email: "victim@example.com", name: "Squatter", password: PASSWORD });
+    const [squatted] = await client.database.select().from(users);
+    expect(squatted?.emailVerified).toBe(false);
+
+    const linked = await handleOAuthUserInfo({ context: await auth.$context } as never, {
+      account: {
+        accountId: "google-subject-victim",
+        issuer: GOOGLE_ISSUER,
+        providerId: "google",
+        scope: null,
+        idToken: null,
+        accessToken: null,
+        refreshToken: null,
+        accessTokenExpiresAt: null,
+        refreshTokenExpiresAt: null,
+        password: null,
+      },
+      userInfo: {
+        id: "google-subject-victim",
+        email: "victim@example.com",
+        emailVerified: true,
+        name: "Real Owner",
+        image: null,
+      },
+    });
+
+    expect(linked.error).toBe("account not linked");
+    expect(linked.data).toBeNull();
+    // No second Account, and no identity attached to the squatter's: the owner is refused, not merged into it.
+    expect(await client.database.select().from(users)).toHaveLength(1);
+    expect(await client.database.select().from(authIdentities)).toHaveLength(1);
+  });
+
+  it("creates no Account through the credential endpoint on a server that did not enable it", async () => {
+    const auth = createAuth();
+
+    const response = await callAuth(auth, "/sign-up/email", {
+      email: "absent@example.com",
+      name: "Absent",
+      password: PASSWORD,
+    });
+
+    /*
+     * The library refuses rather than 404s, which is why the OpenTag route in front of it answers first and reports
+     * the provider as disabled. What matters underneath is only that no Account came of it.
+     */
+    expect(response.ok).toBe(false);
+    expect(await client.database.select().from(users)).toHaveLength(0);
   });
 });

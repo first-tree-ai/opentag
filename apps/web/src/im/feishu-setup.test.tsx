@@ -315,7 +315,7 @@ describe("FeishuSetup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     const failedState = await screen.findByText(/State: failed/);
-    expect(failedState.closest(".notice")?.textContent).toContain(
+    expect(failedState.closest('[data-ui="feishu-setup-feedback"]')?.textContent).toContain(
       "Feishu setup failed. Retry or contact the Account owner for help.",
     );
   });

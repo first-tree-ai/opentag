@@ -8,7 +8,9 @@ product capabilities without an agreed design.
 ## Workflow
 
 1. Create a branch with one of these prefixes: `feat/`, `fix/`, `refactor/`, `test/`, `docs/`, `chore/`, or `merge/`.
-2. Install dependencies with `pnpm install`.
+2. Install dependencies with `pnpm install`. This also installs the Git hooks that lint and format staged files before a
+   commit and re-check the repository before a push, described in
+   [DEVELOPMENT.md](./DEVELOPMENT.md#git-hooks-and-worktrees).
 3. Make the smallest coherent change and update relevant tests and documentation.
 4. Run `pnpm check`, `pnpm build`, `pnpm typecheck`, and `pnpm test`.
 5. Open a pull request using the repository template.

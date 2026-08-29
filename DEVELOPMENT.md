@@ -17,6 +17,37 @@ pnpm install
 
 The repository pins pnpm in `package.json`. Do not use npm or Yarn to update dependencies.
 
+## Git hooks and worktrees
+
+`pnpm install` runs the root `prepare` script, which installs three hooks into the clone's hooks directory:
+
+- `pre-commit` runs Biome over the staged files, applies the fixes it can make safely, and stages the result.
+- `pre-push` runs `biome lint .` and `biome format .` over the whole repository.
+- `post-checkout` prepares a worktree that `git worktree add` has just created: it runs `pnpm install` inside the new
+  worktree and reinstalls the hooks, so the worktree is ready to commit and push.
+
+Git shares one hooks directory between a clone and all of its linked worktrees, so a single installation covers every
+worktree. The `post-checkout` payload in `scripts/git-hooks/` is installed by `scripts/install-git-hooks.mjs` rather than
+by lefthook, because it has to run before the new worktree has a `node_modules` directory. Prepare a worktree by hand
+when it was created by a tool that bypasses Git hooks:
+
+```bash
+pnpm worktree:setup
+```
+
+`lefthook.yml` holds the shared configuration; personal overrides belong in an untracked `lefthook-local.yml`. The hooks
+stay out of the way when they are not wanted:
+
+| Variable | Effect |
+| --- | --- |
+| `LEFTHOOK=0` | skip the lefthook gates for one command |
+| `OPENTAG_SKIP_WORKTREE_BOOTSTRAP=1` | skip the worktree bootstrap |
+| `OPENTAG_SKIP_GIT_HOOKS=1` | skip hook installation during `pnpm install` |
+| `OPENTAG_HOOKS_LOG_LEVEL=debug` | print every decision the hook scripts make |
+
+A set `CI` variable disables the bootstrap and the installation as well, so automated checkouts never install local
+hooks.
+
 ## Validation
 
 ```bash
@@ -259,27 +290,81 @@ That issuer now hands out a Better Auth session rather than a signed access/refr
 the server can withdraw instead of a signature it can only wait out. The exchange response keeps its four fields and
 `accessToken` and `refreshToken` carry the same session token, which is why a CLI built before the cutover keeps working
 unchanged. `OPENTAG_SESSION_TTL_SECONDS` is that credential's whole lifetime, defaulted to what the refresh token's was
-because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates — the
-replacement is issued, then the presented token is withdrawn — so a copy taken before the last refresh stops working
-rather than running to its own expiry.
+because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates: the
+presented token is withdrawn first, and only the caller whose withdrawal succeeded gets a replacement. That ordering is
+what makes it safe to race — two refreshes of one credential cannot both mint, and a revocation landing first is not
+undone — and it means a failure in between signs the client out rather than leaving alive a credential something
+already decided to end. A copy taken before the last refresh stops working rather than running to its own expiry.
 
 One consequence is worth stating plainly: a disclosed credential is now usable for the session lifetime rather than the
 old fifteen-minute access window. What made that window necessary was that its thirty-day refresh partner could not be
 revoked at all; a session can be, immediately, which is the trade this makes.
 
-Credentials issued before the cutover still verify, and `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` and
-`OPENTAG_REFRESH_TOKEN_TTL_SECONDS` govern only those. A browser holding one moves onto a session the next time it
-refreshes; nothing is issued against them again.
+Credentials the previous revision issued are no longer accepted; the compatibility bridge and its two TTL settings are
+gone. `OPENTAG_JWT_SECRET` remains because it also signs Slack OAuth state, which is not Account authentication.
 
-An Account email is stored lowercased, and one address identifies at most one Account. The identity resolver enforces
-that by serializing on the address before deciding whether to create or attach, so it holds without a database
-constraint; a `users_email_unique` index backs it up for any writer that skips the resolver, and is added only once no
-revision predating the resolver is still serving.
+## Email and password sign-in
 
-A provider identity therefore attaches to the Account that already holds its address rather than creating a second one.
-Attachment requires the provider to have verified the address, because it hands over an existing Account; an unverified
-address that is already taken, and a provider email change onto another Account's address, are both refused with
-`AUTH_EMAIL_CONFLICT`. This is how a bootstrap Account and that person's first Google sign-in become one Account.
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` lets an address and password both register an Account and sign one in, at
+`POST /api/v1/auth/email/sign-up` and `POST /api/v1/auth/email/sign-in`. It defaults to off, because it is the only
+sign-in method whose default could hand out Accounts: every other one needs something a deployment already granted — a
+Google client, a loopback bypass, a connect code. One setting covers both routes, since a server that accepted
+passwords but issued none would have no way to give anyone a first one.
+
+Passwords are between 12 and 128 characters. The bounds live in `@opentag/shared` and configure both the request schema
+and Better Auth, so the library cannot apply a different floor underneath and turn an accepted password into a rejected
+one. The stored value is a hash on the Account's `credential` identity row; the password itself is never persisted.
+
+These two routes are fenced on the request origin alone, not the double-submit CSRF token every other browser mutation
+carries. A signed-out browser has no such token — these are the requests that mint it — so requiring one would make
+signing in impossible rather than safer. Both responses carry the session cookie and a fresh double-submit token, which
+is what lets a newly signed-in browser write at all.
+
+Both routes send the browser to the same destination allowlist every other sign-in method uses. It lives in
+`@opentag/shared` as `resolveSignInDestination` rather than on the server, because this is the one method that
+navigates the browser itself instead of handing its destination to a route; two implementations would eventually
+disagree, and the more permissive half would be the one that mattered.
+
+A rejected sign-in gives one answer whether the address is unknown or the password is wrong, so the endpoint cannot be
+used to ask which addresses hold Accounts. That uniformity covers refusals only — a server that could not answer
+reports `SERVICE_UNAVAILABLE`, and a suspended Account is named as suspended, because reaching that answer took a
+password the caller already had. Registration cannot keep the address secret and still be actionable, so a taken
+address is reported as `AUTH_EMAIL_CONFLICT` while any other refusal stays a validation failure.
+
+Sign-in attempts are counted per source address and per email address, and the counters are **per process**: each
+replica keeps its own, and a restart clears them. That is enough to make one server unattractive to hammer, and it is
+not a deployment-wide bound — enforcing that needs a shared store or a gateway in front. The table is capped and evicts
+expired entries first, because an email address is caller-chosen and an unbounded key space would let a caller spend
+the server's memory rather than only its patience.
+
+`users.email_verified` stays false for these Accounts. Nothing in the product sends mail, so there is no verification
+step to assert the address, and recording one that never happened would be worse than recording none. For the same
+reason there is no password reset: adding one means adding a mail sender first.
+
+That has a consequence an operator has to weigh before enabling self-service registration at all. Because registration
+proves nothing about the address, anyone can register an address they do not own, receive a session, and have the
+Account provisioned — all while `email_verified` stays false.
+
+What happens next is worth stating precisely, because the obvious guess is wrong. Better Auth defaults
+`accountLinking.requireLocalEmailVerified` to true, and being a trusted provider does not lift it: that setting governs
+whether the *provider* verified the address, not whether the local Account did. A later Google sign-in for the squatted
+address is therefore refused rather than linked, so the squatter and the real owner do not end up sharing an Account.
+
+The harm is a lockout instead. `users_email_unique` reserves the address, so the real owner can neither register it nor
+reach it through Google, and the squatter holds a provisioned Account for an address they never proved. An integration
+test pins that behavior. Until ownership is proven before a password credential can claim an address, enable
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` only where everyone who can reach the server is already trusted.
+
+An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
+enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The
+resolver that used to serialize on the address is gone; nothing in Better Auth's linking orders two concurrent first
+sign-ins for the same address, so the index is what takes that job. It could only be created once no revision that
+wrote unnormalized addresses was still serving, which is why it arrived after the Better Auth migration rather than
+with it.
+
+A provider identity attaches to the Account that already holds its address rather than creating a second one: Google is
+a trusted provider, so an address it has verified links to the existing Account. This is how a bootstrap Account and
+that person's first Google sign-in become one Account.
 
 `users.email_verified` records whether a provider asserted the address currently stored on the Account. It is only ever
 raised for that address, never for some other address the provider returned, and the login-code flow never sets it.
@@ -287,10 +372,12 @@ raised for that address, never for some other address the provider returned, and
 ## Google sign-in and Web App
 
 Create a Google Web OAuth client whose callback is
-`http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
-`OPENTAG_GOOGLE_CLIENT_SECRET`. The Google configuration is validated before the server listens; `staging` and `prod`
-require an HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
-same-origin request and the readable double-submit CSRF cookie.
+`http://127.0.0.1:8000/api/v1/auth/callback/google`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
+`OPENTAG_GOOGLE_CLIENT_SECRET`. That path is Better Auth's own callback and is the only one the server serves; the
+pre-migration `/api/v1/auth/google/callback` is gone and can be removed from the OAuth client. The Google configuration
+is validated before the server listens; `staging` and `prod` require an HTTPS `OPENTAG_PUBLIC_URL`. The browser session
+lives in an HttpOnly cookie Better Auth owns, while browser mutations additionally require a same-origin request and
+the readable double-submit CSRF cookie.
 
 For loopback-only development without Google credentials, explicitly enable the development bypass and select one
 existing bootstrap user:
@@ -379,7 +466,7 @@ processes.
 | `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and generated connect commands |
 | `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
-| `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
+| `OPENTAG_JWT_SECRET` | none | Required Slack OAuth state signing secret; at least 32 characters, and distinct from `BETTER_AUTH_SECRET` |
 | `BETTER_AUTH_SECRET` | none | Required Better Auth session/cookie signing secret; at least 32 characters |
 | `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
 | `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
@@ -390,14 +477,13 @@ processes.
 | `OPENTAG_SLACK_REDIRECT_URL` | none | Optional public origin or exact Slack OAuth callback URL on `OPENTAG_PUBLIC_URL` |
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | Explicitly enable loopback-only development sign-in; requires the configured email |
 | `OPENTAG_DEV_AUTH_EMAIL` | none | Existing unique bootstrap user selected by the development bypass |
+| `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` | `false` | Allow registering and signing in with an email address and password |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_OTEL_ENDPOINT` | empty | Optional OTLP/HTTP traces endpoint; see [server observability](./docs/observability.md) |
 | `OPENTAG_OTEL_HEADERS` | empty | Secret OTLP headers in comma-separated `key=value` form |
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment label |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global trace head sample rate from `0` to `1` |
 | `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session lifetime, browser and CLI alike |
-| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-JWT lifetime; only credentials issued before the Better Auth cutover |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime; only credentials issued before the Better Auth cutover |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm

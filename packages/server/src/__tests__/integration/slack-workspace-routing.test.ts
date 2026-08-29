@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   computers,
   imBindings,
@@ -55,6 +56,15 @@ async function fixture() {
     })
     .returning();
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  await client.database.insert(accountComputers).values({
+    id: workspaceComputer.id,
+    ownerAccountId: bootstrap.userId,
+    currentInstallationId: computer.id,
+    displayName: "workstation",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "0.0.1",
+  });
   const agentsService = new AgentService(client.database);
   const first = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "assistant",
@@ -103,10 +113,12 @@ async function activate(
 }
 
 describe("Slack workspace installation routing", () => {
-  it("atomically transfers the one current workspace route to the selected Agent", async () => {
+  it("rejects cross-Agent create on a current installation without side effects", async () => {
     const value = await fixture();
     try {
       const first = await activate(value.imBindingsService, value.first.id, "create");
+      const [installationBefore] = await value.database.select().from(slackInstallations);
+      if (!installationBefore) throw new Error("First installation fixture was not created");
       const [firstSession] = await value.database
         .insert(sessions)
         .values({
@@ -117,49 +129,50 @@ describe("Slack workspace installation routing", () => {
         })
         .returning();
       if (!firstSession) throw new Error("First route Session fixture was not created");
-      const second = await activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" });
-      expect(second.credentialGeneration).toBe(2);
+      await expect(
+        activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" }),
+      ).rejects.toMatchObject({ code: "SLACK_APP_TEAM_ALREADY_BOUND", statusCode: 409 });
+
       const installations = await value.database.select().from(slackInstallations);
-      expect(installations).toHaveLength(1);
-      expect(installations[0]).toMatchObject({
-        workspaceId: value.bootstrap.workspaceId,
-        credentialGeneration: 2,
-        status: "active",
-      });
-      expect(installations[0]?.encryptedCredential).not.toContain("xoxb-secret");
-      expect(installations[0]?.encryptedCredential).not.toContain("signing-secret");
+      expect(installations).toEqual([
+        expect.objectContaining({
+          id: installationBefore.id,
+          agentId: value.first.id,
+          workspaceId: value.bootstrap.workspaceId,
+          credentialGeneration: 1,
+          status: "active",
+        }),
+      ]);
       const routes = await value.database.select().from(imBindings);
-      expect(routes.every((row) => row.encryptedCredential === null)).toBe(true);
-      expect(routes.find((row) => row.agentId === value.first.id)).toMatchObject({
-        status: "disabled",
-        replacementImBindingId: second.imBindingId,
+      expect(routes).toEqual([
+        expect.objectContaining({
+          id: first.imBindingId,
+          agentId: value.first.id,
+          status: "active",
+          slackRouteKind: "default",
+          slackInstallationId: installationBefore.id,
+        }),
+      ]);
+      const [unchangedSession] = await value.database.select().from(sessions).where(eq(sessions.id, firstSession.id));
+      expect(unchangedSession).toMatchObject({ endedAt: null, revision: 1 });
+      await expect(value.imBindingsService.getForAgent(value.bootstrap.userId, value.first.id)).resolves.toMatchObject({
+        id: first.imBindingId,
       });
-      expect(routes.find((row) => row.agentId === value.second.id)).toMatchObject({
-        status: "active",
-        slackRouteKind: "default",
-      });
-      expect(routes.filter((row) => row.status !== "disabled")).toHaveLength(1);
-      const [endedSession] = await value.database.select().from(sessions).where(eq(sessions.id, firstSession.id));
-      expect(endedSession).toMatchObject({ endedAt: now, revision: 2 });
       await expect(
-        value.imBindingsService.getForAgent(value.bootstrap.userId, value.first.id),
-      ).resolves.toBeUndefined();
-      await expect(
-        value.imBindingsService.getHandoffForAgent(value.bootstrap.userId, value.first.id),
+        value.imBindingsService.getForAgent(value.bootstrap.userId, value.second.id),
       ).resolves.toBeUndefined();
       await expect(value.imBindingsService.findSlackIngressBinding("A_OPENTAG", "T_TEAM")).resolves.toMatchObject({
-        imBindingId: second.imBindingId,
-        installationId: installations[0]?.id,
-        generation: 2,
+        imBindingId: first.imBindingId,
+        installationId: installationBefore.id,
+        generation: 1,
       });
-      await expect(value.imBindingsService.resolveSlackDefaultRoute(installations[0]?.id as string)).resolves.toEqual({
-        imBindingId: second.imBindingId,
-        agentId: value.second.id,
-        installationId: installations[0]?.id,
-        generation: 2,
+      await expect(value.imBindingsService.resolveSlackDefaultRoute(installationBefore.id)).resolves.toEqual({
+        imBindingId: first.imBindingId,
+        agentId: value.first.id,
+        installationId: installationBefore.id,
+        generation: 1,
         routeKind: "default",
       });
-      expect(first.imBindingId).not.toBe(second.imBindingId);
     } finally {
       await value.sql.end();
     }
@@ -191,14 +204,27 @@ describe("Slack workspace installation routing", () => {
       });
       const [otherComputer] = await value.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
       if (!otherComputer) throw new Error("Other computer fixture was not created");
-      await value.database.insert(workspaceComputers).values({
-        workspaceId: otherWorkspace.id,
-        computerId: otherComputer.id,
+      const [otherEnrollment] = await value.database
+        .insert(workspaceComputers)
+        .values({
+          workspaceId: otherWorkspace.id,
+          computerId: otherComputer.id,
+          displayName: "other-workstation",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.1",
+          enrolledByUserId: otherUser.id,
+        })
+        .returning();
+      if (!otherEnrollment) throw new Error("Other Workspace Computer fixture was not created");
+      await value.database.insert(accountComputers).values({
+        id: otherEnrollment.id,
+        ownerAccountId: otherUser.id,
+        currentInstallationId: otherComputer.id,
         displayName: "other-workstation",
         platform: "linux",
         arch: "x64",
         clientVersion: "0.0.1",
-        enrolledByUserId: otherUser.id,
       });
       const outsider = await new AgentService(value.database).createForWorkspace(otherUser.id, otherWorkspace.id, {
         name: "outsider",
@@ -218,14 +244,27 @@ describe("Slack workspace installation routing", () => {
         installationId: installation.id,
       });
 
-      await activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" });
-      await value.imBindingsService.disable(
-        value.bootstrap.userId,
-        (await value.database.select().from(imBindings)).find((row) => row.agentId === value.second.id)?.id as string,
+      await expect(
+        activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" }),
+      ).rejects.toMatchObject({ code: "SLACK_APP_TEAM_ALREADY_BOUND", statusCode: 409 });
+      expect(await value.database.select().from(slackInstallations)).toEqual([
+        expect.objectContaining({ id: installation.id, agentId: value.first.id, status: "active" }),
+      ]);
+      expect(await value.database.select().from(imBindings)).toEqual([
+        expect.objectContaining({ agentId: value.first.id, slackInstallationId: installation.id, status: "active" }),
+      ]);
+
+      await expect(value.imBindingsService.disableSlackInstallationFromProvider(installation.id, 1)).resolves.toBe(
+        true,
       );
       await expect(value.imBindingsService.resolveSlackDefaultRoute(installation.id)).resolves.toBeUndefined();
       const remaining = await value.database.select().from(slackInstallations);
-      expect(remaining[0]).toMatchObject({ status: "disabled", id: installation.id, encryptedCredential: null });
+      expect(remaining[0]).toMatchObject({
+        status: "disabled",
+        id: installation.id,
+        agentId: value.first.id,
+        encryptedCredential: null,
+      });
     } finally {
       await value.sql.end();
     }
@@ -263,6 +302,19 @@ describe("Slack workspace installation routing", () => {
         .from(slackInstallations)
         .where(eq(slackInstallations.id, installation.id));
       expect(revoked).toMatchObject({ status: "reauthorization_required", lastErrorCode: "SLACK_TOKEN_REVOKED" });
+      await expect(
+        activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" }),
+      ).rejects.toMatchObject({ code: "SLACK_APP_TEAM_ALREADY_BOUND", statusCode: 409 });
+      const [stillRevoked] = await value.database
+        .select()
+        .from(slackInstallations)
+        .where(eq(slackInstallations.id, installation.id));
+      expect(stillRevoked).toMatchObject({
+        agentId: value.first.id,
+        status: "reauthorization_required",
+        credentialGeneration: 2,
+        lastErrorCode: "SLACK_TOKEN_REVOKED",
+      });
       await expect(value.imBindingsService.disableSlackInstallationFromProvider(installation.id, 2)).resolves.toBe(
         true,
       );
@@ -346,7 +398,7 @@ describe("Slack workspace installation routing", () => {
     }
   });
 
-  it("releases the installation on last-route disconnect so a different Slack workspace can be installed", async () => {
+  it("supports manual transfer only after explicit removal creates a fresh installation for the new Agent", async () => {
     const value = await fixture();
     try {
       const created = await activate(value.imBindingsService, value.first.id, "create");
@@ -358,26 +410,54 @@ describe("Slack workspace installation routing", () => {
         .select()
         .from(slackInstallations)
         .where(eq(slackInstallations.id, originalInstallation.id));
-      expect(disabledInstallation).toMatchObject({ status: "disabled", encryptedCredential: null, disabledAt: now });
-
-      const reinstalled = await activate(value.imBindingsService, value.first.id, "create", {
-        appId: "A_OPENTAG_NEW",
-        teamId: "T_TEAM_NEW",
-        botUserId: "U_BOT_NEW",
-        botId: "B_BOT_NEW",
-        token: "xoxb-new",
+      expect(disabledInstallation).toMatchObject({
+        id: originalInstallation.id,
+        agentId: value.first.id,
+        status: "disabled",
+        encryptedCredential: null,
+        disabledAt: now,
       });
-      expect(reinstalled).toMatchObject({ credentialGeneration: 1, agentId: value.first.id });
-      const currentInstallations = (await value.database.select().from(slackInstallations)).filter(
-        (row) => row.status !== "disabled",
-      );
-      expect(currentInstallations).toEqual([
-        expect.objectContaining({
-          externalAppId: "A_OPENTAG_NEW",
-          externalTeamId: "T_TEAM_NEW",
-          externalBotId: "U_BOT_NEW",
-        }),
-      ]);
+      const [disabledRoute] = await value.database
+        .select()
+        .from(imBindings)
+        .where(eq(imBindings.id, created.imBindingId));
+      expect(disabledRoute).toMatchObject({
+        agentId: value.first.id,
+        slackInstallationId: originalInstallation.id,
+        status: "disabled",
+      });
+
+      const reinstalled = await activate(value.imBindingsService, value.second.id, "create", {
+        token: "xoxb-second",
+      });
+      expect(reinstalled).toMatchObject({ credentialGeneration: 1, agentId: value.second.id });
+      const installations = await value.database.select().from(slackInstallations);
+      const oldInstallation = installations.find((row) => row.id === originalInstallation.id);
+      const newInstallation = installations.find((row) => row.id !== originalInstallation.id);
+      expect(installations).toHaveLength(2);
+      expect(oldInstallation).toMatchObject({ agentId: value.first.id, status: "disabled" });
+      expect(newInstallation).toMatchObject({
+        agentId: value.second.id,
+        status: "active",
+        externalAppId: "A_OPENTAG",
+        externalTeamId: "T_TEAM",
+      });
+      expect(newInstallation?.id).not.toBe(originalInstallation.id);
+      expect(
+        installations.filter(
+          (row) => row.externalAppId === "A_OPENTAG" && row.externalTeamId === "T_TEAM" && row.status !== "disabled",
+        ),
+      ).toHaveLength(1);
+      const [newRoute] = await value.database
+        .select()
+        .from(imBindings)
+        .where(eq(imBindings.id, reinstalled.imBindingId));
+      expect(newRoute).toMatchObject({
+        agentId: value.second.id,
+        slackInstallationId: newInstallation?.id,
+        status: "active",
+        slackRouteKind: "default",
+      });
     } finally {
       await value.sql.end();
     }
@@ -390,6 +470,7 @@ describe("Slack workspace installation routing", () => {
         .insert(slackInstallations)
         .values({
           workspaceId: value.bootstrap.workspaceId,
+          agentId: value.first.id,
           status: "active",
           externalAppId: "A_STRANDED",
           externalTeamId: "T_STRANDED",
@@ -432,15 +513,22 @@ describe("Slack workspace installation routing", () => {
         botAccessToken: "xoxb-secret",
       });
       expect(JSON.stringify(material)).not.toContain("signing-secret");
-      await activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" });
-      const secondRoute = (await value.database.select().from(imBindings)).find(
-        (row) => row.agentId === value.second.id,
+      await expect(
+        activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" }),
+      ).rejects.toMatchObject({ code: "SLACK_APP_TEAM_ALREADY_BOUND", statusCode: 409 });
+      const unchangedMaterial = await value.imBindingsService.getSlackConnectionMaterial(created.imBindingId);
+      expect(unchangedMaterial).toMatchObject({
+        imBindingId: created.imBindingId,
+        installationId: material?.installationId,
+        generation: 1,
+        botAccessToken: "xoxb-secret",
+      });
+      expect((await value.database.select().from(imBindings)).filter((row) => row.agentId === value.second.id)).toEqual(
+        [],
       );
-      if (!secondRoute) throw new Error("Second route was not created");
-      await value.imBindingsService.recordSlackIdentityClosure(secondRoute.id, 2);
-      const secondMaterial = await value.imBindingsService.getSlackConnectionMaterial(secondRoute.id);
-      expect(secondMaterial).toMatchObject({ generation: 2, botAccessToken: "xoxb-second" });
-      expect(secondMaterial?.installationId).toBe(material?.installationId);
+      expect(await value.database.select().from(slackInstallations)).toEqual([
+        expect.objectContaining({ agentId: value.first.id, credentialGeneration: 1, status: "active" }),
+      ]);
     } finally {
       await value.sql.end();
     }

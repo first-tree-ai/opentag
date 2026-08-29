@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus } from "@opentag/shared";
-import { and, eq, isNull, sql as sqlExpression } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
-import { BetterAuthSessionTokens, BridgedSessionTokens } from "./auth/session-tokens.js";
+import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { accountLegacyUpgrades, agents, workspaceComputers } from "./db/schema/index.js";
+import { agents, workspaceComputers } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -18,16 +18,10 @@ import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js"
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { AgentService } from "./services/agents/index.js";
 import {
-  AuthIdentityService,
   AuthService,
-  type AuthTokenProvider,
-  AuthTokenService,
   ConnectCodeService,
-  DefaultGoogleIdentityClient,
   DevBrowserAuthService,
   formatStartupError,
-  GoogleBrowserAuthService,
-  OAuthFlowService,
   PostAuthenticationService,
 } from "./services/auth/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
@@ -87,7 +81,7 @@ export {
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
-export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
+export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-lab/index.js";
 export {
@@ -96,12 +90,6 @@ export {
   type SessionCollaborationServiceOptions,
   SessionService,
 } from "./services/sessions/index.js";
-
-/** The bridge is constructed before Better Auth exists; this makes the ordering mistake loud rather than silent. */
-function requireSessionTokens(tokens: AuthTokenProvider | undefined): AuthTokenProvider {
-  if (!tokens) throw new Error("Session tokens were used before Better Auth was constructed");
-  return tokens;
-}
 
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
@@ -133,26 +121,23 @@ export async function startServer(): Promise<void> {
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
     const workspaceAdmins = new WorkspaceAdminAccess(database);
-    const legacyTokens = new AuthTokenService(
-      config.jwtSecret,
-      config.accessTokenTtlSeconds,
-      config.refreshTokenTtlSeconds,
-    );
-    // Assigned below, once Better Auth exists; the bridge reads it lazily so the two can be constructed in either order.
-    let sessionTokens: AuthTokenProvider | undefined;
-    const authService = new AuthService(
-      database,
-      new BridgedSessionTokens(
-        {
-          issuePairForUser: (userId) => requireSessionTokens(sessionTokens).issuePairForUser(userId),
-          rotate: (token, userId) => requireSessionTokens(sessionTokens).rotate(token, userId),
-          verifyAccess: (token) => requireSessionTokens(sessionTokens).verifyAccess(token),
-          verifyRefresh: (token) => requireSessionTokens(sessionTokens).verifyRefresh(token),
-        },
-        legacyTokens,
-      ),
-      { workspaceAdmins },
-    );
+    const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
+    const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
+    const betterAuth = createBetterAuth(database, {
+      onSessionCreating: async (userId) => {
+        await postAuthentication.ensureAccountReady(userId);
+      },
+      publicUrl: config.publicUrl,
+      secret: config.betterAuthSecret,
+      secureCookies: isHostedEnvironment(config.environment),
+      sessionTtlSeconds: config.sessionTtlSeconds,
+      ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
+      ...(config.emailPasswordAuth ? { emailPassword: true } : {}),
+      ...(config.google ? { google: config.google } : {}),
+    });
+    const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database), {
+      workspaceAdmins,
+    });
     const connectCodeService = new ConnectCodeService(database);
     const registry = new ConnectionRegistry();
     const machineAuthService = new MachineAuthService(database, {
@@ -269,70 +254,6 @@ export async function startServer(): Promise<void> {
       registry,
       onDiagnostic: reportDiagnostic,
     });
-    const identityService = new AuthIdentityService(database);
-    const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
-    const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
-    const betterAuth = createBetterAuth(database, {
-      onSessionCreating: async (userId) => {
-        await postAuthentication.ensureAccountReady(userId);
-      },
-      publicUrl: config.publicUrl,
-      secret: config.betterAuthSecret,
-      secureCookies: isHostedEnvironment(config.environment),
-      sessionTtlSeconds: config.sessionTtlSeconds,
-      ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
-      ...(config.google ? { google: config.google } : {}),
-      /*
-       * Verified against the legacy provider alone, never the bridge: this endpoint exists to retire a credential the
-       * previous revision issued, and a Better Auth session presented here is already what it would upgrade to. The
-       * live Account read is what keeps a suspended Account from refreshing its way back in.
-       */
-      legacyUpgrade: {
-        resolveCredential: async (refreshToken) => {
-          const identity = await legacyTokens.verifyRefresh(refreshToken);
-          return {
-            expiresAt: identity.expiresAt,
-            userId: (await authService.getActiveUserById(identity.userId)).user.id,
-          };
-        },
-        /*
-         * One statement decides the winner, so a replay or a raced tab converges without a lock — and therefore
-         * without a connection waiting on one. The conflict branch rewrites the key with its own value: a no-op that
-         * exists only so `RETURNING` reports the row already there, since `DO NOTHING` returns nothing at all.
-         */
-        recordExchange: async ({ expiresAt, sessionToken, tokenHash }) => {
-          const [recorded] = await database
-            .insert(accountLegacyUpgrades)
-            .values({ expiresAt, sessionToken, tokenHash })
-            .onConflictDoUpdate({
-              target: accountLegacyUpgrades.tokenHash,
-              set: { tokenHash: sqlExpression`${accountLegacyUpgrades.tokenHash}` },
-            })
-            .returning({ winner: accountLegacyUpgrades.sessionToken });
-          if (!recorded) throw new Error("The legacy upgrade record did not return a session");
-          return recorded.winner;
-        },
-      },
-    });
-    sessionTokens = new BetterAuthSessionTokens(betterAuth, database);
-    const google = config.google
-      ? new GoogleBrowserAuthService({
-          database,
-          flow: new OAuthFlowService(config.jwtSecret),
-          google: new DefaultGoogleIdentityClient(config.google.clientId, config.google.clientSecret),
-          identities: identityService,
-          postAuthentication,
-          publicUrl: config.publicUrl,
-          /*
-           * Deliberately the legacy issuer, not the bridge. This route only ever completes a flow that started before
-           * this revision deployed, and it writes its result into the legacy cookies. A session token written there
-           * authenticates through the fallback but is invisible to `getSession`, so sign-out could not revoke it —
-           * a pre-cutover flow therefore finishes exactly as it would have, and that browser moves across on its next
-           * refresh, where the upgrade puts the replacement in Better Auth's own cookie.
-           */
-          tokenIssuer: new AuthService(database, legacyTokens, { workspaceAdmins }),
-        })
-      : undefined;
     const stagingOnboardingLab = config.stagingOnboardingLab
       ? {
           reset: new OnboardingResetService({
@@ -352,11 +273,11 @@ export async function startServer(): Promise<void> {
       authService,
       browserAuth: {
         devSignIn: Boolean(dev),
-        google,
+        googleSignIn: Boolean(config.google),
+        passwordSignIn: config.emailPasswordAuth,
         publicOrigin: config.publicUrl,
-        refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
-        sessionTtlSeconds: config.sessionTtlSeconds,
         secureCookies: isHostedEnvironment(config.environment),
+        sessionTtlSeconds: config.sessionTtlSeconds,
       },
       connectCode: {
         environment: config.environment,

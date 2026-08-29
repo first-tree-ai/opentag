@@ -50,9 +50,13 @@ export const HTTP_PATHS = {
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
   authBrowserLogout: `${API_V1_PREFIX}/auth/browser/logout`,
-  authBrowserRefresh: `${API_V1_PREFIX}/auth/browser/refresh`,
   authDevCallback: `${API_V1_PREFIX}/auth/dev/callback`,
-  authGoogleCallback: `${API_V1_PREFIX}/auth/google/callback`,
+  /*
+   * Below `/auth/email/` rather than Better Auth's own `/sign-in/email`, so these stay OpenTag routes that call into
+   * the library server-side. Nothing under the base path is published except the OAuth callback.
+   */
+  authEmailSignIn: `${API_V1_PREFIX}/auth/email/sign-in`,
+  authEmailSignUp: `${API_V1_PREFIX}/auth/email/sign-up`,
   authGoogleStart: `${API_V1_PREFIX}/auth/google/start`,
   authProviders: `${API_V1_PREFIX}/auth/providers`,
   authRefresh: `${API_V1_PREFIX}/auth/refresh`,

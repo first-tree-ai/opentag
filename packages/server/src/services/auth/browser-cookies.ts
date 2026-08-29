@@ -1,14 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
-import type { RefreshTokenResponse } from "@opentag/shared";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { AuthServiceError, invalidCredential } from "./errors.js";
+import { AuthServiceError } from "./errors.js";
 import { generateSecret } from "./security.js";
 
 export const BROWSER_COOKIE_NAMES = {
-  access: "opentag_access",
   csrf: "opentag_csrf",
-  oauthContext: "opentag_oauth_context",
-  refresh: "opentag_refresh",
   slackOAuthContext: "opentag_slack_oauth_context",
 } as const;
 
@@ -38,34 +34,6 @@ function cookie(
   return parts.join("; ");
 }
 
-export function setBrowserSessionCookies(
-  reply: FastifyReply,
-  tokens: RefreshTokenResponse,
-  options: { refreshTtlSeconds: number; secure: boolean },
-): string {
-  const csrf = generateSecret(24);
-  appendSetCookies(reply, [
-    cookie(BROWSER_COOKIE_NAMES.access, tokens.accessToken, {
-      httpOnly: true,
-      maxAge: tokens.expiresIn,
-      path: "/",
-      secure: options.secure,
-    }),
-    cookie(BROWSER_COOKIE_NAMES.refresh, tokens.refreshToken, {
-      httpOnly: true,
-      maxAge: options.refreshTtlSeconds,
-      path: "/api/v1/auth/browser",
-      secure: options.secure,
-    }),
-    cookie(BROWSER_COOKIE_NAMES.csrf, csrf, {
-      maxAge: options.refreshTtlSeconds,
-      path: "/",
-      secure: options.secure,
-    }),
-  ]);
-  return csrf;
-}
-
 /**
  * Issues the readable half of the double-submit pair on its own.
  *
@@ -84,49 +52,9 @@ export function setBrowserCsrfCookie(
   return csrf;
 }
 
-export function clearBrowserSessionCookies(reply: FastifyReply, secure: boolean): void {
-  clearLegacyCredentialCookies(reply, secure);
+/** Retires the double-submit token, which is OpenTag's and so outlives Better Auth's own sign-out. */
+export function clearBrowserCsrfCookie(reply: FastifyReply, secure: boolean): void {
   appendSetCookies(reply, [cookie(BROWSER_COOKIE_NAMES.csrf, "", { maxAge: 0, path: "/", secure })]);
-}
-
-/**
- * Retires the credentials the previous revision issued, leaving the double-submit token alone.
- *
- * Used when a browser is moving onto a Better Auth session rather than signing out: it is still signed in, and the
- * token it needs to mutate with was just issued on the same reply.
- */
-export function clearLegacyCredentialCookies(reply: FastifyReply, secure: boolean): void {
-  appendSetCookies(reply, [
-    cookie(BROWSER_COOKIE_NAMES.access, "", { httpOnly: true, maxAge: 0, path: "/", secure }),
-    cookie(BROWSER_COOKIE_NAMES.refresh, "", {
-      httpOnly: true,
-      maxAge: 0,
-      path: "/api/v1/auth/browser",
-      secure,
-    }),
-  ]);
-}
-
-export function setOAuthContextCookie(reply: FastifyReply, value: string, secure: boolean, maxAge = 600): void {
-  appendSetCookies(reply, [
-    cookie(BROWSER_COOKIE_NAMES.oauthContext, value, {
-      httpOnly: true,
-      maxAge,
-      path: "/api/v1/auth/google/callback",
-      secure,
-    }),
-  ]);
-}
-
-export function clearOAuthContextCookie(reply: FastifyReply, secure: boolean): void {
-  appendSetCookies(reply, [
-    cookie(BROWSER_COOKIE_NAMES.oauthContext, "", {
-      httpOnly: true,
-      maxAge: 0,
-      path: "/api/v1/auth/google/callback",
-      secure,
-    }),
-  ]);
 }
 
 export function setSlackOAuthContextCookie(
@@ -155,22 +83,27 @@ export function clearSlackOAuthContextCookie(reply: FastifyReply, path: string, 
   ]);
 }
 
-export function requireBrowserMutationSecurity(request: FastifyRequest, publicOrigin: string): void {
+/**
+ * The half of the browser mutation fence that applies before any session exists.
+ *
+ * A sign-in has no double-submit token to present yet — it is the request that mints one — so the origin check is on
+ * its own what stops another site from posting credentials here. Requiring the token too would make signing in
+ * impossible rather than safer.
+ */
+export function requireBrowserOrigin(request: FastifyRequest, publicOrigin: string): void {
   if (request.headers.origin !== publicOrigin) {
     throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The browser request origin is invalid", 403);
   }
+}
+
+export function requireBrowserMutationSecurity(request: FastifyRequest, publicOrigin: string): void {
+  requireBrowserOrigin(request, publicOrigin);
   const cookies = parseCookies(request.headers.cookie);
   const cookieToken = cookies[BROWSER_COOKIE_NAMES.csrf];
   const headerToken = request.headers["x-opentag-csrf"];
   if (!cookieToken || typeof headerToken !== "string" || !safeEqual(cookieToken, headerToken)) {
     throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The browser CSRF token is invalid", 403);
   }
-}
-
-export function requireRefreshCookie(request: FastifyRequest): string {
-  const token = parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.refresh];
-  if (!token) throw invalidCredential("AUTH_INVALID_TOKEN", "The refresh token is invalid");
-  return token;
 }
 
 function safeEqual(left: string, right: string): boolean {

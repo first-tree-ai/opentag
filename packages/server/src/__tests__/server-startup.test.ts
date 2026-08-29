@@ -31,7 +31,6 @@ const state = vi.hoisted(() => ({
   workerStop: vi.fn(),
   domainOptions: undefined as unknown,
   issueRuntimeCredentialGrant: vi.fn(),
-  googleOptions: undefined as unknown,
   devAuthArgs: undefined as unknown,
   slackAdapterOptions: undefined as unknown,
 }));
@@ -102,17 +101,9 @@ vi.mock("../runtime/runtime-domain-owner.js", () => ({
 }));
 vi.mock("../services/agents/index.js", () => ({ AgentService: class {}, AgentServiceError: class extends Error {} }));
 vi.mock("../services/auth/index.js", () => ({
-  AuthIdentityService: class {},
-  AuthService: class {
-    constructor(
-      _database: unknown,
-      readonly tokens: unknown,
-    ) {}
-  },
+  AuthService: class {},
   AuthServiceError: class extends Error {},
-  AuthTokenService: class {},
   ConnectCodeService: class {},
-  DefaultGoogleIdentityClient: class {},
   DevBrowserAuthService: class {
     constructor(...args: unknown[]) {
       state.devAuthArgs = args;
@@ -123,12 +114,6 @@ vi.mock("../services/auth/index.js", () => ({
     for (const secret of knownSecrets) if (secret) detail = detail.replaceAll(secret, "[REDACTED]");
     return detail;
   },
-  GoogleBrowserAuthService: class {
-    constructor(options: unknown) {
-      state.googleOptions = options;
-    }
-  },
-  OAuthFlowService: class {},
   PostAuthenticationService: class {},
 }));
 vi.mock("../services/computers/index.js", () => ({
@@ -202,7 +187,6 @@ vi.mock("../services/workspaces/index.js", () => ({
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";
-import * as authModule from "../services/auth/index.js";
 
 const originalSecrets = {
   database: process.env.OPENTAG_DATABASE_URL,
@@ -216,7 +200,6 @@ const originalExitCode = process.exitCode;
 
 function defaultConfig() {
   return {
-    accessTokenTtlSeconds: 900,
     autoMigrate: true,
     databaseUrl: "postgres://db-user:db-password@localhost/opentag",
     encryptionKey: new Uint8Array(32),
@@ -244,7 +227,7 @@ function defaultConfig() {
     },
     port: 8000,
     publicUrl: "https://opentag.example.com",
-    refreshTokenTtlSeconds: 2_592_000,
+    sessionTtlSeconds: 2_592_000,
   };
 }
 
@@ -260,7 +243,6 @@ beforeEach(() => {
   state.feishuSetupOptions = undefined;
   state.workerOptions = undefined;
   state.domainOptions = undefined;
-  state.googleOptions = undefined;
   state.devAuthArgs = undefined;
   state.slackAdapterOptions = undefined;
   state.sql = { end: vi.fn(async () => state.events.push("sql:end")) };
@@ -349,21 +331,14 @@ describe("Server startup", () => {
     ]);
 
     const appOptions = state.appOptions as {
-      browserAuth: { devSignIn: unknown; google: unknown; secureCookies: boolean };
+      browserAuth: { devSignIn: unknown; googleSignIn: unknown; secureCookies: boolean };
       slackEvents: { createAdapter(binding: unknown): unknown };
     };
     expect(appOptions.browserAuth).toMatchObject({ secureCookies: true });
     expect(appOptions.browserAuth.devSignIn).toBe(true);
-    expect(appOptions.browserAuth.google).toBeDefined();
+    // Google sign-in is a flag now: the whole flow lives in Better Auth, so there is no service to hand a route.
+    expect(appOptions.browserAuth.googleSignIn).toBe(true);
     expect(state.devAuthArgs).toEqual(expect.arrayContaining(["dev@example.com"]));
-    expect(state.googleOptions).toMatchObject({ publicUrl: state.config.publicUrl });
-    /*
-     * The retained legacy callback only ever completes a flow that started before this revision deployed, and it
-     * writes its result into the legacy cookies. Handing it the bridged issuer would put a session token there:
-     * authenticated through the fallback, invisible to `getSession`, and therefore beyond what sign-out can revoke.
-     */
-    const googleIssuer = (state.googleOptions as { tokenIssuer: { tokens: unknown } }).tokenIssuer;
-    expect(googleIssuer.tokens).toBeInstanceOf(authModule.AuthTokenService);
 
     const slackBinding = {
       botAccessToken: "xoxb-current",
@@ -477,9 +452,10 @@ describe("Server startup", () => {
       state.config.migrationsDirectory,
     );
     expect(state.events.indexOf("migration:verify")).toBeLessThan(state.events.indexOf("listen"));
-    const browserAuth = (state.appOptions as { browserAuth: { google?: unknown; dev?: unknown } }).browserAuth;
-    expect(browserAuth.google).toBeUndefined();
-    expect(browserAuth.dev).toBeUndefined();
+    const browserAuth = (state.appOptions as { browserAuth: { googleSignIn?: unknown; devSignIn?: unknown } })
+      .browserAuth;
+    expect(browserAuth.googleSignIn).toBe(false);
+    expect(browserAuth.devSignIn).toBe(false);
   });
 
   it.each([

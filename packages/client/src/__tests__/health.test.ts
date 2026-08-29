@@ -26,7 +26,9 @@ describe("checkServerHealth", () => {
       status: "ok",
       service: "opentag-server",
     });
-    expect(fetchImpl).toHaveBeenCalledWith(new URL("http://127.0.0.1:8000/healthz"));
+    expect(fetchImpl).toHaveBeenCalledWith(new URL("http://127.0.0.1:8000/healthz"), {
+      signal: expect.any(AbortSignal),
+    });
   });
 
   it("classifies network failures", async () => {
@@ -35,6 +37,34 @@ describe("checkServerHealth", () => {
     await expect(checkServerHealth("http://127.0.0.1:8000", fetchImpl)).rejects.toBeInstanceOf(
       ServerHealthNetworkError,
     );
+  });
+
+  it("classifies the fixed deadline separately from other network failures", async () => {
+    const fetchImpl = vi.fn<typeof fetch>((_input, init) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      });
+    });
+
+    await expect(checkServerHealth("http://127.0.0.1:8000", fetchImpl, 1)).rejects.toMatchObject({
+      name: "ServerHealthTimeoutError",
+    });
+  });
+
+  it("keeps the deadline active while the health response body is read", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      return {
+        ok: true,
+        json: () =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("body aborted")), { once: true });
+          }),
+      } as Response;
+    });
+
+    await expect(checkServerHealth("http://127.0.0.1:8000", fetchImpl, 1)).rejects.toMatchObject({
+      name: "ServerHealthTimeoutError",
+    });
   });
 
   it("classifies non-success HTTP responses", async () => {

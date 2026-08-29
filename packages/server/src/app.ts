@@ -186,12 +186,31 @@ export function createApp(options: CreateAppOptions = {}) {
     app.register(async (slackApp) => registerSlackEventsRoute(slackApp, slackEvents));
   }
 
+  if (options.betterAuth) {
+    registerBetterAuthRoutes(app, options.betterAuth.instance, {
+      publicUrl: options.betterAuth.publicUrl,
+      secureCookies: options.browserAuth?.secureCookies ?? true,
+      sessionTtlSeconds: options.browserAuth?.sessionTtlSeconds ?? 60 * 60 * 24 * 7,
+    });
+  }
+  // Signing in has no authenticated caller by definition, so these routes do not depend on the authenticated surface.
+  if (options.browserAuth) {
+    registerBrowserAuthRoutes(app, {
+      ...options.browserAuth,
+      ...(options.betterAuth ? { betterAuth: options.betterAuth } : {}),
+    });
+  }
+
   if (options.authService) {
     const authService = options.authService;
     const publicOrigin = options.browserAuth?.publicOrigin;
     const authOptions = {
       ...(options.betterAuth ? { betterAuth: options.betterAuth.instance } : {}),
       ...(publicOrigin ? { publicOrigin } : {}),
+      /*
+       * The pre-handler needs both to renew the double-submit token alongside a rolling session. Without them it
+       * silently declines to, and an active browser stays readable while losing the ability to mutate or sign out.
+       */
       ...(options.browserAuth
         ? {
             secureCookies: options.browserAuth.secureCookies,
@@ -199,13 +218,6 @@ export function createApp(options: CreateAppOptions = {}) {
           }
         : {}),
     };
-    if (options.betterAuth) {
-      registerBetterAuthRoutes(app, options.betterAuth.instance, {
-        publicUrl: options.betterAuth.publicUrl,
-        secureCookies: options.browserAuth?.secureCookies ?? true,
-        sessionTtlSeconds: options.browserAuth?.sessionTtlSeconds ?? 60 * 60 * 24 * 30,
-      });
-    }
     registerAuthRoutes(app, authService);
     registerMeRoutes(app, authService, {
       ...(options.connectCode
@@ -217,12 +229,6 @@ export function createApp(options: CreateAppOptions = {}) {
         : {}),
       authOptions,
     });
-    if (options.browserAuth) {
-      registerBrowserAuthRoutes(app, authService, {
-        ...options.browserAuth,
-        ...(options.betterAuth ? { betterAuth: options.betterAuth } : {}),
-      });
-    }
     if (options.agentService) {
       registerAgentRoutes(app, authService, options.agentService, authOptions);
     }

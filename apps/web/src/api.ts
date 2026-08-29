@@ -21,6 +21,8 @@ import {
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
+  type EmailSignInRequest,
+  type EmailSignUpRequest,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
@@ -78,8 +80,6 @@ export class ApiError extends Error {
 }
 
 export class BrowserApi {
-  private refreshInFlight?: Promise<Response>;
-
   constructor(readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {}
 
   me(): Promise<MeResponse> {
@@ -95,7 +95,7 @@ export class BrowserApi {
   }
 
   authProviders(): Promise<AuthProvidersResponse> {
-    return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema, undefined, false);
+    return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema);
   }
 
   completeSetup(agentId: string): Promise<WorkspaceSetupCompletion> {
@@ -264,6 +264,26 @@ export class BrowserApi {
     };
   }
 
+  /*
+   * No CSRF header on either of these: a signed-out browser has no double-submit token, and these are the requests
+   * that mint one. The server fences them on the request origin instead.
+   */
+  async signUpWithPassword(input: EmailSignUpRequest): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.authEmailSignUp, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  async signInWithPassword(input: EmailSignInRequest): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.authEmailSignIn, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   async logout(): Promise<void> {
     return this.requestNoContent("/api/v1/auth/browser/logout", {
       method: "POST",
@@ -271,8 +291,8 @@ export class BrowserApi {
     });
   }
 
-  private async request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit = {}, retry = true): Promise<T> {
-    const response = await this.fetchWithRefresh(path, init, retry);
+  private async request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit = {}): Promise<T> {
+    const response = await this.fetchWithRefresh(path, init);
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
     const parsed = schema.safeParse(body);
@@ -295,35 +315,12 @@ export class BrowserApi {
     if (!response.ok) throw this.apiError(response, await response.json().catch(() => undefined));
   }
 
-  private async fetchWithRefresh(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
-    const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
-    if (response.status !== 401 || !retry || !this.csrfToken()) return response;
-    const refreshed = await this.refreshOnce();
-    if (!refreshed.ok) return response;
-    const headers = new Headers(init.headers);
-    const csrf = this.csrfToken();
-    if (csrf && !["GET", "HEAD", "OPTIONS"].includes(init.method?.toUpperCase() ?? "GET")) {
-      headers.set("X-OpenTag-CSRF", csrf);
-    }
-    return this.fetchWithRefresh(path, { ...init, headers }, false);
-  }
-
-  /**
-   * Collapses concurrent refreshes into one.
-   *
-   * Several requests can meet a `401` at once — the page loads more than one resource — and each would otherwise send
-   * the same cookie to an endpoint that exchanges it. The server converges those on one session regardless; this keeps
-   * the browser from asking it to.
+  /*
+   * A session renews itself as it is used, so there is nothing left to exchange a `401` for: it now means the session
+   * is genuinely gone, and the retry this used to make could only ever have failed a second time.
    */
-  private refreshOnce(): Promise<Response> {
-    this.refreshInFlight ??= this.fetchImpl("/api/v1/auth/browser/refresh", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: this.csrfHeaders(),
-    }).finally(() => {
-      this.refreshInFlight = undefined;
-    });
-    return this.refreshInFlight;
+  private fetchWithRefresh(path: string, init: RequestInit = {}): Promise<Response> {
+    return this.fetchImpl(path, { ...init, credentials: "same-origin" });
   }
 
   private apiError(response: Response, body: unknown): ApiError {

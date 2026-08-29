@@ -136,7 +136,8 @@
 }
 
 .otv2-step__header h1 {
-  margin: 0 0 var(--space-2);
+  /* Same break between a heading and the line explaining it as the agent step's sections use. */
+  margin: 0 0 var(--space-3);
   font-family: var(--font-display);
   font-size: var(--text-title);
   font-weight: var(--fw-semibold);
@@ -172,7 +173,7 @@
 }
 
 .otv2-step__header p + .otv2-privacy {
-  margin-top: var(--space-2);
+  margin-top: var(--space-1);
 }
 
 .otv2-muted {

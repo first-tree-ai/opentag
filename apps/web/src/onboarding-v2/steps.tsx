@@ -387,7 +387,12 @@ export function CheckStep({
         footer down.
       */}
       <div className="otv2-slot otv2-slot--outcome">
-        {resolving ? null : failures.length > 0 ? (
+        {resolving ? (
+          <p className="otv2-waiting" role="status">
+            <span aria-hidden="true" className="otv2-pulse" />
+            {COPY.check.waiting}
+          </p>
+        ) : failures.length > 0 ? (
           <div className="otv2-repair">
             <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
             <p className="otv2-muted">

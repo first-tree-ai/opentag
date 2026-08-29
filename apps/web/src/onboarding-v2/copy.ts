@@ -96,7 +96,7 @@ export const COPY = {
   },
 
   connect: {
-    title: "Your computer",
+    title: "Connect your computer",
     /** What the step is about, and what it means for your data: both belong with the title. */
     lead: "Your AI worker runs on your own computer. Connect that computer to OpenTag.",
     privacy: "Your code and data never leave your machine.",
@@ -115,6 +115,8 @@ export const COPY = {
 
   check: {
     title: "Computer check",
+    /** Mirrors the connect step's waiting line, so both steps say the same thing the same way. */
+    waiting: "Waiting for the computer check…",
     passed: "Everything your agent needs is ready.",
     failedIntro: (count: number) =>
       count > 1

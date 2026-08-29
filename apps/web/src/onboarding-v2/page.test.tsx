@@ -176,7 +176,7 @@ describe("OnboardingV2Page", () => {
 
     await advanceMock("Connect computer");
     expect(screen.getByText("Your computer is connected.")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Your computer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
 
     await advance(DWELL_MS);
     expect(screen.getByRole("heading", { name: "Computer check" })).toBeTruthy();
@@ -246,10 +246,10 @@ describe("OnboardingV2Page", () => {
     await reachConnectStep();
     await reachCheckStep();
 
-    // Still probing: nothing to say yet, but the space is already held.
+    // Still probing: the slot already holds its waiting line, in the same shape step 3 uses.
     const slot = () => document.querySelector(".otv2-slot--outcome");
-    expect(slot()).toBeTruthy();
-    expect((slot()?.textContent ?? "").trim()).toBe("");
+    expect(slot()?.textContent).toContain("Waiting for the computer check…");
+    expect(slot()?.querySelector(".otv2-pulse")).toBeTruthy();
 
     await settleCheck();
     expect(slot()).toBeTruthy();
@@ -378,7 +378,7 @@ describe("OnboardingV2Page", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Go back" }));
       await advance(ISSUE_MS);
-      expect(screen.getByRole("heading", { name: "Your computer" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
       expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
       expect(screen.getByText("Expires in 15:00")).toBeTruthy();
     });

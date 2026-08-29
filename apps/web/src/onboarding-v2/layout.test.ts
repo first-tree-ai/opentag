@@ -68,11 +68,11 @@ describe("onboarding flow layout", () => {
   });
 
   it("answers a press with colour rather than shrinking the control", () => {
-    // `styles.css` and the design system both apply `transform: scale(0.96)` on `:active`.
+    // Nothing on this surface may shrink under a click.
     expect(declarationValue(".otv2-shell button:active", "transform")).toBe("none");
     for (const selector of [
-      ".otv2-shell .ds-button--primary:active",
-      ".otv2-shell .ds-button--secondary:active",
+      ".otv2-nav__next button:active:not(:disabled)",
+      ".otv2-nav__back button:active",
       ".otv2-choice:active:not(:disabled)",
       ".otv2-lab__toggle:active",
     ]) {

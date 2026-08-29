@@ -254,7 +254,7 @@
   align-items: flex-start;
 }
 
-.otv2-step__header .otv2-privacy .ds-icon {
+.otv2-step__header .otv2-privacy svg {
   flex: 0 0 auto;
   margin-top: 3px;
   color: var(--brand);
@@ -270,7 +270,7 @@
   background: var(--otv2-attention-surface);
 }
 
-.otv2-note--attention .ds-icon {
+.otv2-note--attention svg {
   color: var(--otv2-attention);
 }
 
@@ -298,7 +298,7 @@
   font-size: var(--text-subsection);
 }
 
-.otv2-note .ds-icon {
+.otv2-note svg {
   flex: 0 0 auto;
   margin-top: 3px;
   color: var(--brand);
@@ -443,26 +443,23 @@
 }
 
 /*
- * Pressing something changes its colour rather than its size. Both `styles.css` and the design
- * system shrink on `:active` with `transform: scale(0.96)`; that is undone here and replaced with
- * a pressed tint, so every control on this surface answers a click the same way.
+ * Pressing something changes its colour rather than its size, and never only its outline: nothing
+ * on this surface shrinks under a click, and Kumo answers a press with a ring rather than a fill.
+ * Each control states the tint it presses to, so they all answer a click the same way.
  */
-.otv2-shell button:active,
-.otv2-shell .ds-button:active {
+.otv2-shell button:active {
   transform: none;
 }
 
-.otv2-shell .ds-button--primary:active {
+.otv2-nav__next button:active:not(:disabled) {
   background: var(--otv2-pressed-brand);
 }
 
-.otv2-shell .ds-button--secondary:active,
-.otv2-shell .ds-button--outline:active,
-.otv2-shell .ds-button--ghost:active {
+.otv2-nav__back button:active {
   background: var(--otv2-pressed);
 }
 
-.otv2-shell .ds-button--inline:active {
+.otv2-command__expired button:active {
   color: var(--otv2-pressed-brand);
   text-decoration-color: currentcolor;
 }
@@ -608,12 +605,12 @@
   min-height: 40px;
 }
 
-.otv2-nav__back .ds-button {
+.otv2-nav__back button {
   padding-inline: var(--space-2);
   color: var(--muted);
 }
 
-.otv2-nav__back .ds-button:hover {
+.otv2-nav__back button:hover {
   color: var(--foreground);
 }
 
@@ -751,11 +748,11 @@
   text-align: center;
 }
 
-.otv2-command__expired .ds-button--inline {
+.otv2-command__expired button {
   color: #cfe3a6;
 }
 
-.otv2-command__expired .ds-button--inline:hover {
+.otv2-command__expired button:hover {
   color: #e8f5cd;
 }
 
@@ -796,8 +793,8 @@
 
 /*
  * Sits on the dark block, so it carries its own colours rather than the ghost variant's. Sized as
- * a real target rather than around the icon: `.ds-icon` is 1em, which on a compact button is only
- * 13px and reads as an afterthought next to the command it belongs to.
+ * a real target rather than around the icon: a Kumo icon is 16px, which on a compact button reads
+ * as an afterthought next to the command it belongs to.
  */
 .otv2-command__copy {
   flex: 0 0 auto;
@@ -812,7 +809,7 @@
   color: #e6e9e0;
 }
 
-.otv2-command__copy .ds-icon {
+.otv2-command__copy svg {
   width: 24px;
   height: 24px;
 }

@@ -733,8 +733,11 @@ export function MessagingStep({
 
       <MessagingPicker onChoose={onChoose} provider={provider} />
       <MessagingConnection messaging={messaging} onSlackInstall={onSlackInstall} provider={provider} />
-
-      <StepNav disabled />
+      {/*
+        No footer here. The Agent already exists, so there is nothing to go back to, and this step
+        is finished by scanning a code or installing an App rather than by pressing anything on
+        this page — a Continue that can never be pressed is just something in the way.
+      */}
     </section>
   );
 }

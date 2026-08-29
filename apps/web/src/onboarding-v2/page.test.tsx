@@ -370,12 +370,15 @@ describe("OnboardingV2Page", () => {
       await advance(CREATE_MS);
     }
 
-    it("asks which app before showing any connection", async () => {
+    it("asks which app before showing any connection, and offers no footer", async () => {
       render(<OnboardingV2Page />);
       await reachMessagingStep();
 
       expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
       expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+      // The step is finished by scanning or installing, not by pressing anything on this page.
+      expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
       // Nothing is issued, and nothing is waiting, until one is picked.
       expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
       expect((screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement).disabled).toBe(true);

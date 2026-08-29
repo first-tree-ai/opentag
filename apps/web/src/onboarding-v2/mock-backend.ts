@@ -291,7 +291,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
         if (current !== "idle") return current;
         later(() => {
           setCreation("created");
-          setAgent({ id: randomId(), name: draft.name });
+          setAgent({ id: randomId(), name: draft.name, runtimeProvider: draft.runtime ?? "codex" });
         }, CREATE_AGENT_MS);
         return "creating";
       });
@@ -330,6 +330,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       readiness,
       messaging,
       planSignIn,
+      // The mock has nothing to read back; it is the flow as it runs the first time.
+      resuming: false,
       startPlanSignIn,
       issueConnectCode,
       refreshConnectCode: issue,

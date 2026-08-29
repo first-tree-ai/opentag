@@ -265,8 +265,18 @@ function messagingCliState(status: MessagingCliStatus): CheckState {
  * Creating an Agent waits on its runtime only. IM handoff readiness is provider-specific and is
  * settled at handoff, not before the Agent exists.
  */
-export function readinessPassed(readiness: ReadinessFacts | undefined): boolean {
-  return readiness?.runtime === "ready";
+/**
+ * Whether the check the reader is looking at is a pass *for the runtime they have chosen*.
+ *
+ * The provider is checked here rather than trusted upstream because this is the gate: the Agent's
+ * runtime cannot be changed once it is created, so letting a verdict from a different runtime open
+ * this door commits someone to a runtime nothing ever checked. When no runtime is asked about, the
+ * verdict answers for itself, which is what the derived flow state needs.
+ */
+export function readinessPassed(readiness: ReadinessFacts | undefined, runtime?: Runtime): boolean {
+  if (readiness?.runtime !== "ready") return false;
+  if (runtime === undefined || readiness.runtimeProvider === undefined) return true;
+  return readiness.runtimeProvider === runtime;
 }
 
 export function readinessIsResolving(readiness: ReadinessFacts | undefined): boolean {

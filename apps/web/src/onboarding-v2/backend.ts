@@ -9,7 +9,7 @@
  * rather than a fake of the API.
  */
 
-import type { AgentDraft, ConnectState, CreationState, MessagingState, ReadinessFacts } from "./flow.js";
+import type { AgentDraft, ConnectState, CreationState, MessagingState, ReadinessFacts, Runtime } from "./flow.js";
 
 export type PlanSignIn = "idle" | "pending" | "signed-in";
 
@@ -17,6 +17,7 @@ export type PlanSignIn = "idle" | "pending" | "signed-in";
 export interface CreatedAgent {
   readonly id: string;
   readonly name: string;
+  readonly runtimeProvider: Runtime;
 }
 
 export interface OnboardingBackend {
@@ -37,6 +38,15 @@ export interface OnboardingBackend {
    * is looking at.
    */
   readonly error: string | undefined;
+  /**
+   * True until the Account's existing Agents and Computers have been read.
+   *
+   * This flow sits behind the setup gate, which means it is re-entered rather than visited once: a
+   * Slack install leaves for Slack and comes back, a tab is refreshed, a laptop wakes up. Starting
+   * from an empty draft each time would ask an Account that already has an Agent to make one
+   * again — and the second attempt collides with the first on name uniqueness.
+   */
+  readonly resuming: boolean;
   readonly startPlanSignIn: () => void;
   /** Issues the first connect code. Safe to call repeatedly; only an idle connection acts on it. */
   readonly issueConnectCode: () => void;

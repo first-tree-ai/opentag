@@ -130,6 +130,10 @@ describe("Server-backed onboarding: the defects it had", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
+    // The flow now reads what the Account already has before it renders, so a fresh Account has to
+    // be stated: no Agents, and therefore no messaging binding.
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
+    vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -285,6 +289,8 @@ describe("Server-backed onboarding: the defects it had", () => {
     vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt());
 
     render(<OnboardingV2Page />);
+
+    await settle();
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));

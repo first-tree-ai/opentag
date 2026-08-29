@@ -17,6 +17,9 @@ import "./onboarding-v2.css";
 import { useServerBackend } from "./server-backend.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
+/** How many times to ask before telling the reader the Server will not mark setup complete. */
+const COMPLETE_ATTEMPTS = 3;
+
 /** Allocating the cloud Computer the Agent will be created on. */
 const ALLOCATE_COMPUTER_MS = 700;
 
@@ -27,9 +30,27 @@ const ALLOCATE_COMPUTER_MS = 700;
  * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
  * given that after it runs.
  */
-export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string) => void } = {}) {
+export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string) => Promise<void> | void } = {}) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const backend = useServerBackend(draft);
+
+  /*
+   * An Agent read back from the Server fills the draft it would have been created from, so the
+   * pages behind it read as this Account's rather than as a blank form: the name the Agent
+   * actually has, on the runtime it actually runs.
+   */
+  const resumed = backend.agent;
+  useEffect(() => {
+    if (!resumed) return;
+    setDraft((current) =>
+      current.name === resumed.name && current.runtime === resumed.runtimeProvider
+        ? current
+        : { ...current, destination: "local", name: resumed.name, runtime: resumed.runtimeProvider },
+    );
+  }, [resumed]);
+
+  if (backend.resuming) return null;
+
   return (
     <OnboardingV2Flow
       backend={backend}
@@ -90,19 +111,25 @@ function OnboardingV2Flow({
   cloudAvailable: boolean;
   draft: AgentDraft;
   lab?: React.ReactNode;
-  /** Told once, when the flow has actually finished, so setup can be marked complete. */
-  onComplete?: (agentId: string) => void;
+  /** Told when the flow has actually finished, so setup can be marked complete. */
+  onComplete?: (agentId: string) => Promise<void> | void;
   onDraftChange: (draft: AgentDraft) => void;
 }) {
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
+  /*
+   * The confirmations exist so a page is left deliberately rather than the moment its fields
+   * happen to be valid. An Agent that already exists settles both of them: the decisions they
+   * guard were made on a previous visit and cannot be taken back.
+   */
+  const resumed = backend.agent !== undefined;
   const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
 
   const facts: FlowFacts = {
     draft,
-    destinationConfirmed,
-    draftConfirmed,
+    destinationConfirmed: destinationConfirmed || resumed,
+    draftConfirmed: draftConfirmed || resumed,
     connect: backend.connect,
     readiness: backend.readiness,
     cloudComputer,
@@ -125,12 +152,30 @@ function OnboardingV2Flow({
    * keeps it true for both routes and for a reader who arrives already finished.
    */
   const reported = useRef<string | undefined>(undefined);
+  const [completionAttempt, setCompletionAttempt] = useState(0);
+  const [completionFailed, setCompletionFailed] = useState(false);
   useEffect(() => {
     const agentId = backend.agent?.id;
     if (!flow.complete || !agentId || reported.current === agentId) return;
+    // Claimed before the call so a re-render cannot send it twice, and released if it fails.
+    // Holding the claim through a refusal would leave the Account permanently un-onboarded: the
+    // gate keeps sending them back here, and this is the only page that can let them out.
     reported.current = agentId;
-    onComplete?.(agentId);
-  }, [backend.agent?.id, flow.complete, onComplete]);
+    let live = true;
+    void Promise.resolve(onComplete?.(agentId)).catch(() => {
+      if (!live) return;
+      reported.current = undefined;
+      // Asking again immediately rather than on a timer: a timer scheduled from here is a
+      // background retry nobody is watching, and this runs while the reader is looking at the
+      // finished screen. Bounded, because a Server that refuses three times is not going to be
+      // talked round, and at that point saying so beats retrying silently forever.
+      if (completionAttempt + 1 < COMPLETE_ATTEMPTS) setCompletionAttempt(completionAttempt + 1);
+      else setCompletionFailed(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, [backend.agent?.id, completionAttempt, flow.complete, onComplete]);
 
   // Held so a restart or an unmount can cancel an allocation still in flight; otherwise the stale
   // timer lands on the next run and skips its confirmation step.
@@ -191,13 +236,13 @@ function OnboardingV2Flow({
             Whatever last failed against the Server, above the step rather than inside it: it is
             about the page's ability to make progress, not about the field being filled in.
           */}
-          {backend.error ? (
+          {backend.error || completionFailed ? (
             <p
               className="flex items-start gap-2 rounded-xl bg-kumo-base p-4 mb-0 text-sm text-kumo-danger ring ring-kumo-line"
               data-ui="onboarding-v2-error"
               role="alert"
             >
-              {backend.error}
+              {backend.error ?? COPY.errors.completeSetup}
             </p>
           ) : null}
           {flow.complete ? (

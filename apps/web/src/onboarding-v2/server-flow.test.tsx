@@ -109,6 +109,10 @@ describe("the onboarding flow against the Server", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
+    // The flow now reads what the Account already has before it renders, so a fresh Account has to
+    // be stated: no Agents, and therefore no messaging binding.
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
+    vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand: COMMAND,
       expiresIn: 900,
@@ -130,6 +134,8 @@ describe("the onboarding flow against the Server", () => {
       .mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
 
     render(<OnboardingV2Page />);
+
+    await settle();
     await reachComputerStep();
 
     // The block breaks the code by character, so the command lives across two spans in one <code>.
@@ -158,9 +164,10 @@ describe("the onboarding flow against the Server", () => {
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
   });
 
-  it("gives the agent name field an accessible name despite Kumo's own warning", () => {
+  it("gives the agent name field an accessible name despite Kumo's own warning", async () => {
     computersReturning([]);
     render(<OnboardingV2Page />);
+    await settle();
     press(/Local computer/);
     press("Continue");
 
@@ -171,6 +178,8 @@ describe("the onboarding flow against the Server", () => {
     computersReturning([], [computer({ providerReadiness: undefined })]);
 
     render(<OnboardingV2Page />);
+
+    await settle();
     await reachComputerStep();
     await tick(POLL_MS);
 
@@ -187,6 +196,8 @@ describe("the onboarding flow against the Server", () => {
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
 
     render(<OnboardingV2Page />);
+
+    await settle();
     await reachComputerStep();
     await tick(POLL_MS);
 
@@ -200,6 +211,8 @@ describe("the onboarding flow against the Server", () => {
     vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValue(new Error("Service unavailable"));
 
     render(<OnboardingV2Page />);
+
+    await settle();
     await reachComputerStep();
 
     expect(screen.getByRole("alert").textContent).toContain("Service unavailable");

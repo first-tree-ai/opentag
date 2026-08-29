@@ -311,11 +311,13 @@ function MessagingPicker({
 
 function MessagingConnection({
   messaging,
+  onRetry,
   onSlackInstall,
   provider,
   readiness,
 }: {
   messaging: MessagingState;
+  onRetry: (provider: MessagingProvider) => void;
   onSlackInstall: () => void;
   provider: MessagingProvider | undefined;
   readiness: ReadinessFacts | undefined;
@@ -340,10 +342,23 @@ function MessagingConnection({
           <div className="flex size-[208px] items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
           </div>
-          <p className={WAITING} role="status">
-            <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-brand animate-pulse" />
-            {COPY.messaging.waiting}
-          </p>
+          {/*
+            A refused code is not retried on sight, so this is the only way back to one. Saying
+            "Waiting for you to scan…" over an empty box would be untrue: nothing is waiting.
+          */}
+          {messaging.kind === "failed" ? (
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-sm text-kumo-danger m-0">{COPY.messaging.failed}</p>
+              <Button onClick={() => onRetry(provider)} variant="secondary">
+                {COPY.messaging.retry}
+              </Button>
+            </div>
+          ) : (
+            <p className={WAITING} role="status">
+              <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-kumo-brand animate-pulse" />
+              {COPY.messaging.waiting}
+            </p>
+          )}
         </div>
       ) : provider === "slack" ? (
         <div className={PANEL}>
@@ -610,7 +625,9 @@ export function ComputerStep({
   const checks = deriveChecks(readiness);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
-  const passed = readinessPassed(readiness);
+  // Asked about the runtime this draft chose, so a verdict left over from a different one
+  // cannot open the gate while the next poll is still in flight.
+  const passed = readinessPassed(readiness, draft.runtime);
   const failures = checks.filter((check) => check.state === "failed");
 
   return (
@@ -816,6 +833,7 @@ export function MessagingStep({
       <MessagingPicker onChoose={onChoose} provider={provider} />
       <MessagingConnection
         messaging={messaging}
+        onRetry={onStart}
         onSlackInstall={onSlackInstall}
         provider={provider}
         readiness={readiness}

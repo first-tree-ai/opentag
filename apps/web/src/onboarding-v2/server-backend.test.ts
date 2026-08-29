@@ -125,6 +125,10 @@ describe("useServerBackend", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
+    // The flow now reads what the Account already has before it renders, so a fresh Account has to
+    // be stated: no Agents, and therefore no messaging binding.
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
+    vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -531,7 +535,7 @@ describe("useServerBackend", () => {
         computerId: COMPUTER_ID,
       });
       expect(view.result.current.creation).toBe("created");
-      expect(view.result.current.agent).toEqual({ id: AGENT_ID, name: "opentag" });
+      expect(view.result.current.agent).toEqual({ id: AGENT_ID, name: "opentag", runtimeProvider: "codex" });
     });
 
     it("returns to a pressable state after a failed creation, and the retry succeeds", async () => {

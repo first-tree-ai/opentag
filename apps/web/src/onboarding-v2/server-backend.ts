@@ -89,13 +89,21 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   const [agent, setAgent] = useState<CreatedAgent>();
   const [creation, setCreation] = useState<CreationState>("idle");
-  const [error, setError] = useState<string>();
+  /**
+   * Two kinds of failure, kept apart. The connection error belongs to the poll and is retired by
+   * the next successful one. An action error belongs to something the reader did — creating the
+   * Agent, starting a messaging app — and only that action may clear it, or a poll a second later
+   * would erase the explanation while they were still reading it.
+   */
+  const [connectionError, setConnectionError] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
   /**
    * No third-party plan sign-in exists on the Server yet, so this stays idle. It is part of the
    * cloud route, which is Coming soon; naming it here keeps the seam honest rather than pretending
    * the capability is somewhere else.
    */
   const [planSignIn] = useState<PlanSignIn>("idle");
+  const [resuming, setResuming] = useState(true);
 
   /** The Computer this run enrolled. Messaging and creation both need it after the step is left. */
   const computerId = useRef<string | undefined>(undefined);
@@ -105,8 +113,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const attempt = useRef(0);
   const creationRef = useRef<CreationState>("idle");
   const feishuTimer = useRef(0);
-  const runtime = useRef<AgentRuntimeProvider | undefined>(draft.runtime);
-  runtime.current = draft.runtime;
+  /** The connection as it stands, readable from a callback without making an updater impure. */
+  const connectRef = useRef<ConnectState>({ kind: "idle" });
+  connectRef.current = connect;
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -118,11 +127,56 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     };
   }, []);
 
+  /**
+   * What the Account already has, read once on arrival.
+   *
+   * This flow is the setup gate's only exit, which makes re-entry ordinary rather than exceptional:
+   * a Slack install leaves the page and the gate sends the return trip back here, a tab is
+   * refreshed, a machine wakes up. Starting from an empty draft each time would ask for an Agent
+   * that already exists — and the second attempt is refused, because an Account's active Agent
+   * names are unique. So the page picks up where the Server says it is.
+   */
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const { agents } = await browserApi.agents();
+        if (!active || !mounted.current) return;
+        const existing = agents.find((candidate) => candidate.status === "active");
+        if (!existing) return;
+        setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
+        creationRef.current = "created";
+        setCreation("created");
+        computerId.current = existing.computer.computerId;
+        // The Computer's readiness is not read here: marking the connection live starts the poll
+        // that reads it, on the same cadence as a first run. Reading it twice would only make this
+        // path differ from the one it is resuming.
+        //
+        // The Computer is already enrolled, so this step has nothing to ask for: it reports the
+        // machine rather than issuing a command that would spend its validity unseen.
+        setConnect({ kind: "connected", command: "", computerName: existing.computer.displayName });
+        const binding = await browserApi.imBinding(existing.id);
+        if (!active || !mounted.current) return;
+        // Only a live binding finishes the flow. One that is provisioning, broken or disabled is a
+        // messaging app still to be connected, which is exactly the step this lands on.
+        if (binding?.bindingState === "active") setMessaging({ kind: "connected" });
+      } catch {
+        // A failed read is not a failed setup. The flow simply starts from the beginning, which is
+        // what it would have done anyway, so this says nothing to the reader.
+      } finally {
+        if (active && mounted.current) setResuming(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const issue = useCallback(async () => {
     const mine = attempt.current + 1;
     attempt.current = mine;
     setConnect({ kind: "issuing" });
-    setError(undefined);
+    setConnectionError(undefined);
     try {
       // Baselined before the code is issued, never after: a Computer that enrolls between the two
       // calls would otherwise be read as this run's arrival.
@@ -136,7 +190,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     } catch (cause) {
       if (!mounted.current || attempt.current !== mine) return;
       setConnect({ kind: "idle" });
-      setError(errorMessage(cause, COPY.errors.connectCode));
+      setConnectionError(errorMessage(cause, COPY.errors.connectCode));
     }
   }, []);
 
@@ -165,20 +219,19 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         (value) => {
           if (!mounted.current || attempt.current !== mine) return;
           const arrived = findArrival(value.computers, baseline.current);
-          if (!arrived) return;
-          // A reply can land after its code expired. Claiming the Computer outside this guard let an
-          // expired attempt adopt a machine, enable Continue, and create an Agent the page could then
-          // never move past — so the adoption happens only if the connection is still the one waiting.
-          setConnect((current) => {
-            if (current.kind !== "issued") return current;
-            computerId.current = arrived.computerId;
-            setComputer(arrived);
-            setError(undefined);
-            return { kind: "connected", command: current.command, computerName: arrived.displayName };
-          });
+          // A reply can land after its code expired. Adopting outside this guard let an expired
+          // attempt claim a machine, enable Continue, and create an Agent the page could then never
+          // move past — so nothing is adopted unless the connection is still the one waiting.
+          const waiting = connectRef.current;
+          if (!arrived || waiting.kind !== "issued") return;
+          computerId.current = arrived.computerId;
+          setComputer(arrived);
+          setConnectionError(undefined);
+          setConnect({ kind: "connected", command: waiting.command, computerName: arrived.displayName });
         },
         (cause: unknown) => {
-          if (mounted.current && attempt.current === mine) setError(errorMessage(cause, COPY.errors.computers));
+          if (mounted.current && attempt.current === mine)
+            setConnectionError(errorMessage(cause, COPY.errors.computers));
         },
       );
     }, COMPUTER_POLL_MS);
@@ -200,7 +253,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           setComputer(mineNow);
           // A poll that succeeds retires whatever the last failed one put on screen; otherwise
           // "We lost contact" stays above "Your computer is connected."
-          setError(undefined);
+          setConnectionError(undefined);
         },
         () => undefined,
       );
@@ -214,7 +267,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     const mine = attempt.current;
     creationRef.current = "creating";
     setCreation("creating");
-    setError(undefined);
+    setActionError(undefined);
     void browserApi
       .createAgent({
         name: draft.name,
@@ -227,7 +280,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           if (!mounted.current || attempt.current !== mine) return;
           creationRef.current = "created";
           setCreation("created");
-          setAgent({ id: created.id, name: created.name });
+          setAgent({ id: created.id, name: created.name, runtimeProvider: created.runtimeProvider });
         },
         (cause: unknown) => {
           if (!mounted.current || attempt.current !== mine) return;
@@ -235,7 +288,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           // draft is still valid and the reader's next move is to try it again.
           creationRef.current = "idle";
           setCreation("idle");
-          setError(errorMessage(cause, COPY.errors.createAgent));
+          setActionError(errorMessage(cause, COPY.errors.createAgent));
         },
       );
   }, []);
@@ -258,7 +311,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
             (cause: unknown) => {
               if (!mounted.current || attempt.current !== mine) return;
               setMessaging({ kind: "failed" });
-              setError(errorMessage(cause, COPY.errors.messaging));
+              setActionError(errorMessage(cause, COPY.errors.messaging));
             },
           );
         });
@@ -289,7 +342,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
               if (current.state === "failed" || current.state === "expired" || current.state === "canceled") {
                 window.clearInterval(feishuTimer.current);
                 setMessaging({ kind: "failed" });
-                setError(COPY.errors.feishuAttempt);
+                setActionError(COPY.errors.feishuAttempt);
                 return;
               }
               if (current.qrUrl) setMessaging({ kind: "waiting", qrValue: current.qrUrl });
@@ -317,7 +370,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       (cause: unknown) => {
         if (!mounted.current) return;
         setMessaging({ kind: "idle" });
-        setError(errorMessage(cause, COPY.errors.messaging));
+        setActionError(errorMessage(cause, COPY.errors.messaging));
       },
     );
   }, [agent]);
@@ -334,7 +387,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setMessaging({ kind: "idle" });
     setAgent(undefined);
     setCreation("idle");
-    setError(undefined);
+    setResuming(false);
+    setActionError(undefined);
+    setConnectionError(undefined);
   }, []);
 
   const startPlanSignIn = useCallback(() => undefined, []);
@@ -350,29 +405,32 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       connect,
       createAgent,
       creation,
-      error,
+      error: actionError ?? connectionError,
       issueConnectCode,
       messaging,
       planSignIn,
       readiness,
       refreshConnectCode,
       reset,
+      resuming,
       startMessaging,
       startPlanSignIn,
       startSlackInstall,
     }),
     [
+      actionError,
       agent,
       connect,
+      connectionError,
       createAgent,
       creation,
-      error,
       issueConnectCode,
       messaging,
       planSignIn,
       readiness,
       refreshConnectCode,
       reset,
+      resuming,
       startMessaging,
       startPlanSignIn,
       startSlackInstall,

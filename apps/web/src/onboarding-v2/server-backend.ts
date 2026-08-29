@@ -142,19 +142,34 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       try {
         const { agents } = await browserApi.agents();
         if (!active || !mounted.current) return;
-        const existing = agents.find((candidate) => candidate.status === "active");
+        const existing = agents.find(
+          (candidate) => candidate.status === "active" && candidate.requiresComputerRebind !== true,
+        );
         if (!existing) return;
         setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
         computerId.current = existing.computer.computerId;
-        // The Computer's readiness is not read here: marking the connection live starts the poll
-        // that reads it, on the same cadence as a first run. Reading it twice would only make this
-        // path differ from the one it is resuming.
-        //
-        // The Computer is already enrolled, so this step has nothing to ask for: it reports the
-        // machine rather than issuing a command that would spend its validity unseen.
-        setConnect({ kind: "connected", command: "", computerName: existing.computer.displayName });
+
+        /*
+         * The Agent names its Computer, but that is a foreign key rather than a state: it says which
+         * machine was enrolled, not whether it is there now. Asserting a live connection from it
+         * would put "Your computer is connected." on screen while the Server says otherwise, and
+         * hide the command that is the only way to bring the machine back — so the connection is
+         * read, not inferred. One extra round trip buys not saying something untrue.
+         */
+        const { computers } = await browserApi.computers();
+        if (!active || !mounted.current) return;
+        const enrolled = computers.find((candidate) => candidate.computerId === existing.computer.computerId);
+        if (enrolled?.connectionStatus === "online") {
+          setComputer(enrolled);
+          // Already enrolled, so this step has nothing to ask for: it reports the machine rather
+          // than issuing a command that would spend its validity unseen.
+          setConnect({ kind: "connected", command: "", computerName: enrolled.displayName });
+        }
+        // An offline or missing Computer leaves the connection idle, which is what makes the step
+        // issue a fresh code and offer the reader a way to reconnect.
+
         const binding = await browserApi.imBinding(existing.id);
         if (!active || !mounted.current) return;
         // Only a live binding finishes the flow. One that is provisioning, broken or disabled is a

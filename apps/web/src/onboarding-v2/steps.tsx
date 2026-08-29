@@ -397,7 +397,7 @@ export function AgentStep({
   onSubmit,
 }: {
   draft: AgentDraft;
-  onBack: () => void;
+  onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
   onSubmit: () => void;
 }) {
@@ -448,7 +448,7 @@ export function CloudStep({
   cloudComputer: CloudComputerState;
   creation: CreationState;
   draft: AgentDraft;
-  onBack: () => void;
+  onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
   onSignIn: () => void;
   onSubmit: () => void;
@@ -616,7 +616,7 @@ export function ComputerStep({
   connect: ConnectState;
   creation: CreationState;
   draft: AgentDraft;
-  onBack: () => void;
+  onBack?: () => void;
   onCreate: () => void;
   onRefreshCommand: () => void;
   readiness: ReadinessFacts | undefined;

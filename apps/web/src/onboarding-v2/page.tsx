@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "../ui/design-system.js";
+import { Button, Loader } from "../ui/design-system.js";
 import type { OnboardingBackend } from "./backend.js";
 import { COPY } from "./copy.js";
 import {
@@ -49,7 +49,24 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
     );
   }, [resumed]);
 
-  if (backend.resuming) return null;
+  /*
+   * The read has to show something. This is the only route the setup gate allows, so a read that is
+   * slow would flash an empty page and one that never lands would leave one, with nothing to look
+   * at and nothing to press.
+   */
+  if (backend.resuming) {
+    return (
+      <div
+        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
+        data-ui="onboarding-v2-loading"
+      >
+        <Loader />
+        <p className="text-sm text-kumo-subtle m-0" role="status">
+          {COPY.loading}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <OnboardingV2Flow
@@ -156,7 +173,7 @@ function OnboardingV2Flow({
   const [completionFailed, setCompletionFailed] = useState(false);
   useEffect(() => {
     const agentId = backend.agent?.id;
-    if (!flow.complete || !agentId || reported.current === agentId) return;
+    if (!flow.complete || !agentId || reported.current === agentId || completionFailed) return;
     // Claimed before the call so a re-render cannot send it twice, and released if it fails.
     // Holding the claim through a refusal would leave the Account permanently un-onboarded: the
     // gate keeps sending them back here, and this is the only page that can let them out.
@@ -175,7 +192,7 @@ function OnboardingV2Flow({
     return () => {
       live = false;
     };
-  }, [backend.agent?.id, completionAttempt, flow.complete, onComplete]);
+  }, [backend.agent?.id, completionAttempt, completionFailed, flow.complete, onComplete]);
 
   // Held so a restart or an unmount can cancel an allocation still in flight; otherwise the stale
   // timer lands on the next run and skips its confirmation step.
@@ -259,7 +276,7 @@ function OnboardingV2Flow({
               cloudComputer={cloudComputer}
               creation={backend.creation}
               draft={draft}
-              onBack={backToDestination}
+              onBack={resumed ? undefined : backToDestination}
               onChange={onDraftChange}
               onSignIn={backend.startPlanSignIn}
               onSubmit={submitCloud}
@@ -268,7 +285,7 @@ function OnboardingV2Flow({
           ) : flow.page === "agent" ? (
             <AgentStep
               draft={draft}
-              onBack={backToDestination}
+              onBack={resumed ? undefined : backToDestination}
               onChange={onDraftChange}
               onSubmit={() => setDraftConfirmed(true)}
             />
@@ -277,7 +294,7 @@ function OnboardingV2Flow({
               connect={backend.connect}
               creation={backend.creation}
               draft={draft}
-              onBack={backToAgent}
+              onBack={resumed ? undefined : backToAgent}
               onCreate={() => backend.createAgent(draft)}
               onRefreshCommand={backend.refreshConnectCode}
               readiness={backend.readiness}

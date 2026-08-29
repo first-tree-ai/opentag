@@ -833,14 +833,16 @@ function NoWorkspaceAccess({ onRetry }: { onRetry: () => void }) {
  */
 function OnboardingRoute() {
   const { refreshMe } = useWorkspace();
-  return (
-    <OnboardingV2Page
-      onComplete={async (agentId) => {
-        await browserApi.completeSetup(agentId);
-        await refreshMe();
-      }}
-    />
+  // Held stable: the flow retries this a bounded number of times, and an identity that changed on
+  // every render of this route would reopen that budget each time.
+  const complete = useCallback(
+    async (agentId: string) => {
+      await browserApi.completeSetup(agentId);
+      await refreshMe();
+    },
+    [refreshMe],
   );
+  return <OnboardingV2Page onComplete={complete} />;
 }
 
 /**

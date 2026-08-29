@@ -79,6 +79,7 @@ export const CHECK_COPY: Record<
 };
 
 export const COPY = {
+  loading: "Picking up where you left off…",
   brand: "OpenTag",
 
   nav: {

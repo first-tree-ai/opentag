@@ -8,7 +8,15 @@ import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { ComputerSetup } from "../computer-setup.js";
-import { Banner, Button, Field, KumoInputControl, StatusIndicator, type StatusTone } from "../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  Field,
+  KumoInputControl,
+  StatusIndicator,
+  type StatusTone,
+  Text,
+} from "../ui/design-system.js";
 
 const CREATE_INTENT_VERSION = 3;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
@@ -489,7 +497,9 @@ function RuntimeRouteSection({
     >
       <header className="flex items-start justify-between gap-3">
         <div>
-          <h3 id="agent-runtime-heading">Where it runs</h3>
+          <Text as="h3" id="agent-runtime-heading" variant="heading">
+            Where it runs
+          </Text>
         </div>
       </header>
 

@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { agentIntegrationPreviews, agentSkillPreviews } from "./mock/agent-detail-capability-data.js";
-import { StatusIndicator } from "./ui/design-system.js";
+import { StatusIndicator, Text } from "./ui/design-system.js";
 
 export function AgentIntegrationsTab() {
   return import.meta.env.DEV ? <AgentIntegrationsPreview /> : <AgentIntegrationsUnavailable />;
@@ -107,7 +107,9 @@ function NoAgentCapabilityContract({ children, kind }: { children: string; kind:
       className="grid gap-2 rounded-lg bg-kumo-recessed p-6 text-center"
     >
       <span className="text-sm text-kumo-subtle">Not available</span>
-      <h3 id={`agent-${kind.toLowerCase()}-unavailable`}>Agent {kind} are not available yet</h3>
+      <Text as="h3" id={`agent-${kind.toLowerCase()}-unavailable`} variant="heading">
+        Agent {kind} are not available yet
+      </Text>
       <p>{children}</p>
       <p>No preview records are shown in production.</p>
     </section>

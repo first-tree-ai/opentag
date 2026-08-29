@@ -1,7 +1,7 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "./api.js";
-import { Banner, Button } from "./ui/design-system.js";
+import { Banner, Button, Text } from "./ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const COPY_FEEDBACK_MS = 2_000;
@@ -215,14 +215,18 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
 
   return (
     <section className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
-      <h2>{targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}</h2>
+      <Text as="h2" variant="heading">
+        {targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}
+      </Text>
       {/*
         Connecting a new Computer needs no machine named: whichever terminal runs the command is the
         Computer that gets enrolled, so saying "on this computer" would only be wrong for anyone who
         runs it over SSH. Reconnecting is the opposite — one enrollment is being restored, and it has
         to happen on that machine.
       */}
-      <p>Generate a command, then run it in the terminal{targetName ? ` on ${targetName}` : ""}.</p>
+      <Text as="p" variant="secondary">
+        Generate a command, then run it in the terminal{targetName ? ` on ${targetName}` : ""}.
+      </Text>
       <Button onClick={() => void connectComputer()}>Generate connection command</Button>
       {bootstrapCommand ? (
         <>

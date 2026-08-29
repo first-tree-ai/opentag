@@ -7,7 +7,7 @@ import {
 import { type ComponentProps, lazy, Suspense, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { browserApi } from "../api.js";
-import { ChartPalette, KumoSelectControl, Meter, TimeseriesChart } from "../ui/design-system.js";
+import { ChartPalette, KumoSelectControl, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
 
 const LazyTimeseriesChart = lazy(async () => {
   const [
@@ -40,7 +40,9 @@ export function AgentUsageOverview({ agentId }: { agentId: string }) {
     <section className="grid gap-4" aria-labelledby="agent-usage-overview-heading" data-ui="usage-overview">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h3 id="agent-usage-overview-heading">Recent usage</h3>
+          <Text as="h3" id="agent-usage-overview-heading" variant="heading">
+            Recent usage
+          </Text>
           <p>Token use from Tasks handled by this Agent during the last 30 days.</p>
         </div>
         <Link to={`/agents/${agentId}/usage`}>View usage details</Link>
@@ -164,13 +166,17 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
       <div className="grid gap-6 lg:grid-cols-2" data-ui="usage-analysis">
         <section aria-labelledby="agent-usage-trend-heading">
           <header>
-            <h3 id="agent-usage-trend-heading">Token usage over time</h3>
+            <Text as="h3" id="agent-usage-trend-heading" variant="heading">
+              Token usage over time
+            </Text>
           </header>
           <TokenTrendChart usage={usage} />
         </section>
         <section aria-labelledby="agent-usage-breakdown-heading">
           <header>
-            <h3 id="agent-usage-breakdown-heading">Token breakdown</h3>
+            <Text as="h3" id="agent-usage-breakdown-heading" variant="heading">
+              Token breakdown
+            </Text>
           </header>
           <TokenBreakdown usage={usage} />
         </section>

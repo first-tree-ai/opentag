@@ -513,13 +513,16 @@ describe("OpenTag Web App Shell", () => {
   it("uses the same Agents-first shell for admins", async () => {
     installApi();
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    const pageHeading = await screen.findByRole("heading", { level: 1, name: "Agents" });
+    expect(pageHeading.classList.contains("text-xl")).toBe(true);
     expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
+    const sidebarToggle = screen.getByRole("button", { name: "Toggle sidebar" });
+    expect(sidebarToggle.closest('[data-sidebar="footer"]')).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByText("Example")).toBeNull();
     const agentLink = await screen.findByRole("link", { name: "Open Reviewer" });
@@ -527,7 +530,8 @@ describe("OpenTag Web App Shell", () => {
     expect(createAgent.closest('[data-ui="page-header"]')).toBeTruthy();
     const agentCard = agentLink.closest('[data-ui="agent-card"]');
     expect(agentCard).toBeTruthy();
-    expect(screen.getByText("Monitor availability and 30-day usage across your AI teammates.")).toBeTruthy();
+    const pageDescription = screen.getByText("Monitor availability and 30-day usage across your AI teammates.");
+    expect(pageDescription.classList.contains("text-kumo-subtle")).toBe(true);
     expect(screen.queryByText("Usage · Last 30 days")).toBeNull();
     expect(within(agentCard as HTMLElement).getByText("Tasks")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();

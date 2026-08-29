@@ -9,7 +9,7 @@ import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/ag
 import { browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
-import { Button, Link as KumoLink, LinkButton } from "../ui/design-system.js";
+import { Button, Link as KumoLink, LinkButton, Text } from "../ui/design-system.js";
 import {
   deriveOnboardingState,
   type OnboardingAgent,
@@ -170,8 +170,12 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
     <aside className="grid content-start gap-4" data-ui="onboarding-journey">
       <div className="grid gap-1" data-ui="onboarding-journey-intro">
         <span className="text-xs font-medium uppercase text-kumo-subtle">Getting started</span>
-        <h1>Set up OpenTag</h1>
-        <p>An AI teammate your team mentions in Feishu, working on a Computer you connect.</p>
+        <Text as="h1" size="lg" variant="heading">
+          Set up OpenTag
+        </Text>
+        <Text as="p" variant="secondary">
+          An AI teammate your team mentions in Feishu, working on a Computer you connect.
+        </Text>
       </div>
       <nav aria-label="Onboarding steps">
         <ol className="grid gap-2" data-ui="onboarding-steps">
@@ -238,8 +242,12 @@ function OnboardingStageHeader({ journey }: { journey: OnboardingJourneyState })
         <span className="text-sm text-kumo-subtle" data-ui="onboarding-stage-status">
           {journey.stageStatus}
         </span>
-        <h2 id="onboarding-stage-title">{journey.stageTitle}</h2>
-        <p>{journey.stageDescription}</p>
+        <Text as="h2" id="onboarding-stage-title" variant="heading">
+          {journey.stageTitle}
+        </Text>
+        <Text as="p" variant="secondary">
+          {journey.stageDescription}
+        </Text>
       </div>
       <OnboardingStageContext journey={journey} />
     </header>
@@ -701,8 +709,12 @@ function ActionSection({
     <section className="grid gap-4" aria-busy={pending || undefined} data-ui="onboarding-action">
       <div data-ui="onboarding-action-heading">
         <div>
-          <h2>{title}</h2>
-          <p>{description}</p>
+          <Text as="h2" variant="heading">
+            {title}
+          </Text>
+          <Text as="p" variant="secondary">
+            {description}
+          </Text>
         </div>
       </div>
       {pending ? (

@@ -18,6 +18,9 @@ existing product vocabulary to Kumo primitives:
   `open` state. Busy dialogs reject outside, Escape, and close-button dismissal.
 - `Icon` uses the Phosphor registry. Icon-only controls must have an accessible
   name or title.
+- `PageHeader` is the owned Kumo block in `src/components/kumo/page-header`.
+  It uses Kumo `Text` for semantic `h1` titles and secondary descriptions, and
+  keeps page actions in the header row when tabs are not present.
 - `Tabs`, `SettingsList`, and `SettingsRow` retain their semantic API while
   emitting Kumo tabs and semantic utility classes.
 

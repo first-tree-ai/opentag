@@ -28,6 +28,16 @@ body {
   min-height: 100dvh;
 }
 
+.app-mobile-header {
+  display: flex;
+}
+
+@media (min-width: 48rem) {
+  .app-mobile-header {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

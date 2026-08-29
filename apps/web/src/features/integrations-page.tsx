@@ -1,18 +1,19 @@
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { integrationPreviews } from "../mock/capability-data.js";
-import { Badge, Table } from "../ui/design-system.js";
+import { Badge, Table, Text } from "../ui/design-system.js";
 
 export function IntegrationsPage() {
   return (
     <section className="grid gap-6" aria-labelledby="integrations-page-title" data-ui="integrations-page">
-      <header className="flex flex-wrap items-start justify-between gap-4" data-ui="integrations-header">
-        <div>
-          <h1 id="integrations-page-title">Integrations</h1>
-          <p>Services OpenTag could work with to find context and complete work.</p>
-        </div>
-        <span className="text-sm text-kumo-subtle" data-ui="integrations-demo-note">
+      <PageHeader
+        description="Services OpenTag could work with to find context and complete work."
+        title="Integrations"
+        titleId="integrations-page-title"
+      >
+        <Text as="span" data-ui="integrations-demo-note" variant="secondary">
           Demo data
-        </span>
-      </header>
+        </Text>
+      </PageHeader>
 
       <Table className="w-full" aria-label="Demo Integrations" data-ui="integrations-table">
         <thead>

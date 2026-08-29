@@ -3,6 +3,7 @@ import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState }
 import { Link, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import {
   Button,
   Collapsible,
@@ -12,6 +13,7 @@ import {
   StatusIndicator,
   type StatusTone,
   Table,
+  Text,
 } from "../ui/design-system.js";
 
 type TaskFilter = "all" | TaskStatus;
@@ -89,15 +91,15 @@ export function TasksPage() {
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
-      <header className="flex flex-wrap items-start justify-between gap-4" data-ui="tasks-page-header">
-        <div>
-          <h1 id="tasks-page-title">Tasks</h1>
-          <p>Inspect stored bot Sessions, inbound messages, and runtime Turn results.</p>
-        </div>
-        <span className="text-sm text-kumo-subtle" data-ui="tasks-debug-note">
+      <PageHeader
+        description="Inspect stored bot Sessions, inbound messages, and runtime Turn results."
+        title="Tasks"
+        titleId="tasks-page-title"
+      >
+        <Text as="span" data-ui="tasks-debug-note" variant="secondary">
           Read-only debug view
-        </span>
-      </header>
+        </Text>
+      </PageHeader>
 
       <form
         className="flex flex-wrap items-end gap-3"
@@ -221,8 +223,12 @@ export function TaskDetailPage() {
     const notFound = state.error instanceof ApiError && state.error.status === 404;
     return (
       <section className="grid gap-3" data-ui="task-not-found">
-        <h1>{notFound ? "Task not found" : "Task unavailable"}</h1>
-        <p>{notFound ? "This Task does not exist or is outside your Account." : state.error.message}</p>
+        <Text as="h1" size="lg" variant="heading">
+          {notFound ? "Task not found" : "Task unavailable"}
+        </Text>
+        <Text as="p" variant="secondary">
+          {notFound ? "This Task does not exist or is outside your Account." : state.error.message}
+        </Text>
         <Link to="/tasks">Back to Tasks</Link>
       </section>
     );
@@ -243,7 +249,9 @@ export function TaskDetailPage() {
       </nav>
 
       <header className="grid gap-3" data-ui="task-conversation-header">
-        <h1 title={task.title}>{task.title}</h1>
+        <Text as="h1" size="lg" title={task.title} truncate variant="heading">
+          {task.title}
+        </Text>
         <section
           className="flex flex-wrap items-center gap-3"
           aria-label="Task source"
@@ -531,8 +539,12 @@ function TaskNotice({ heading, detail }: { heading: string; detail: string }) {
       aria-live="polite"
       data-ui="task-empty-state"
     >
-      <h2>{heading}</h2>
-      <p>{detail}</p>
+      <Text as="h2" variant="heading">
+        {heading}
+      </Text>
+      <Text as="p" variant="secondary">
+        {detail}
+      </Text>
     </section>
   );
 }

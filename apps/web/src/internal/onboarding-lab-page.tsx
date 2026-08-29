@@ -2,7 +2,7 @@ import type { UserProfile } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { OnboardingView } from "../onboarding/view.js";
-import { Button, Dialog } from "../ui/design-system.js";
+import { Button, Dialog, Text } from "../ui/design-system.js";
 import { findOnboardingScenario, ONBOARDING_LAB_ACCOUNT_ID, ONBOARDING_SCENARIOS } from "./onboarding-lab-scenarios.js";
 
 export interface OnboardingLabPageProps {
@@ -129,7 +129,9 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
           >
             <div className="grid gap-1">
               <span className="text-xs font-medium uppercase text-kumo-subtle">Staging only</span>
-              <h2>Onboarding Lab</h2>
+              <Text as="h2" variant="heading">
+                Onboarding Lab
+              </Text>
               <p>
                 Each scenario renders the page above from fixed facts. Preview makes no request and creates no durable
                 state, so use it for screen hierarchy, copy and state communication — and the real reset for interaction
@@ -153,7 +155,9 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
             </nav>
 
             <div className="grid gap-2 border-t border-kumo-line pt-3">
-              <h3>Real reset</h3>
+              <Text as="h3" variant="heading">
+                Real reset
+              </Text>
               <p>
                 Reset returns this Account to a first-run state and then enters the ordinary onboarding route. Your
                 local OpenTag home and Computer identity are reused, so the next run only needs a fresh Computer connect

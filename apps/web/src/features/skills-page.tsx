@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { skillPreviews } from "../mock/capability-data.js";
-import { Button, Collapsible } from "../ui/design-system.js";
+import { Button, Collapsible, Text } from "../ui/design-system.js";
 
 export function SkillsPage() {
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -8,15 +9,15 @@ export function SkillsPage() {
 
   return (
     <section className="grid gap-6" aria-labelledby="skills-page-title" data-ui="skills-page">
-      <header className="flex flex-wrap items-start justify-between gap-4" data-ui="skills-header">
-        <div>
-          <h1 id="skills-page-title">Skills</h1>
-          <p>Reusable playbooks that give Agents the context and methods they need to do specialized work.</p>
-        </div>
+      <PageHeader
+        description="Reusable playbooks that give Agents the context and methods they need to do specialized work."
+        title="Skills"
+        titleId="skills-page-title"
+      >
         <div className="flex flex-wrap items-center gap-3" data-ui="skills-header-actions">
-          <span className="text-sm text-kumo-subtle" data-ui="skills-demo-note">
+          <Text as="span" data-ui="skills-demo-note" variant="secondary">
             Demo data
-          </span>
+          </Text>
           <div className="grid gap-2" data-ui="skills-upload-entry">
             <Button size="compact" variant="secondary" type="button" onClick={() => uploadInputRef.current?.click()}>
               Upload skill
@@ -30,18 +31,22 @@ export function SkillsPage() {
               onChange={(event) => setSelectedFileName(event.currentTarget.files?.[0]?.name ?? null)}
             />
             {selectedFileName ? (
-              <span className="text-sm text-kumo-subtle" data-ui="skills-upload-status" role="status">
+              <Text as="span" data-ui="skills-upload-status" role="status" variant="secondary">
                 {selectedFileName} selected · Demo only, not uploaded
-              </span>
+              </Text>
             ) : null}
           </div>
         </div>
-      </header>
+      </PageHeader>
 
       <section className="grid gap-4" aria-labelledby="skills-catalog-title" data-ui="skills-catalog">
         <div className="flex items-baseline justify-between gap-3" data-ui="skills-catalog-heading">
-          <h2 id="skills-catalog-title">All skills</h2>
-          <p>{skillPreviews.length} skills</p>
+          <Text as="h2" id="skills-catalog-title" variant="heading">
+            All skills
+          </Text>
+          <Text as="p" variant="secondary">
+            {skillPreviews.length} skills
+          </Text>
         </div>
 
         <ul className="grid gap-3" aria-label="Available skills" data-ui="skills-list">
@@ -55,7 +60,9 @@ export function SkillsPage() {
                   >
                     <div className="min-w-0 flex-1" data-ui="skill-row-copy">
                       <div className="flex flex-wrap items-center gap-2" data-ui="skill-row-title">
-                        <h3>{skill.name}</h3>
+                        <Text as="h3" variant="heading">
+                          {skill.name}
+                        </Text>
                         <span className="text-sm text-kumo-subtle">{skill.status}</span>
                         {skill.source === "OpenTag" ? (
                           <span className="text-sm text-kumo-subtle">Built by OpenTag</span>
@@ -74,7 +81,9 @@ export function SkillsPage() {
                     <span className="text-sm text-kumo-link">Preview</span>
                   </Collapsible.Trigger>
                   <Collapsible.Panel className="grid gap-2 border-t border-kumo-line p-4" data-ui="skill-preview-panel">
-                    <h4>Instructions preview</h4>
+                    <Text as="h4" variant="heading">
+                      Instructions preview
+                    </Text>
                     <p>{skill.instructions}</p>
                   </Collapsible.Panel>
                 </Collapsible.Root>

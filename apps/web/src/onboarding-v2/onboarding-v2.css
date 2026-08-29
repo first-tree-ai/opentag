@@ -398,10 +398,11 @@
   background: var(--brand-light);
 }
 
+/* The destination icons carry the whole meaning of their card, so they are sized to be seen. */
 .otv2-choice__icon {
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: 36px;
+  height: 36px;
   color: var(--brand);
 }
 
@@ -430,6 +431,17 @@
 .otv2-choice__go {
   flex: 0 0 auto;
   color: var(--muted);
+}
+
+/* An art mark fills its tile; a lettered stand-in keeps the tile's own background. */
+.otv2-mark--art {
+  background: none;
+}
+
+.otv2-mark__svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .otv2-mark {

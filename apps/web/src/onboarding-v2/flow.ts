@@ -28,7 +28,8 @@ export function tokenChoiceApplies(runtime: CloudRuntime | undefined): boolean {
 
 export type Destination = "local" | "cloud";
 
-export const MESSAGING_PROVIDERS = ["feishu", "slack"] as const;
+/** Display order only. The Server's own order is unrelated and stays as it is. */
+export const MESSAGING_PROVIDERS = ["slack", "feishu"] as const;
 export type MessagingProvider = (typeof MESSAGING_PROVIDERS)[number];
 
 /** Mirrors the Server's provider readiness vocabulary so the mock stays swappable for the real API. */

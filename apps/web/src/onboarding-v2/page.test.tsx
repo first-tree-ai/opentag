@@ -374,8 +374,10 @@ describe("OnboardingV2Page", () => {
       render(<OnboardingV2Page />);
       await reachMessagingStep();
 
-      expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+      // Slack leads.
+      expect(
+        [...document.querySelectorAll(".otv2-choices--grid .otv2-choice__copy strong")].map((n) => n.textContent),
+      ).toEqual(["Slack", "Lark"]);
       // The step is finished by scanning or installing, not by pressing anything on this page.
       expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();

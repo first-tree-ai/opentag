@@ -1,6 +1,7 @@
 import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import { Button, Icon, StatusIndicator } from "../ui/design-system.js";
+import { BrandMark } from "./brand-mark.js";
 import { CommandBlock } from "./command-block.js";
 import {
   CHECK_COPY,
@@ -213,11 +214,7 @@ function AgentNameField({
  * their usage terms are cleared; the layout reserves the same square either way.
  */
 function RuntimeMark({ runtime }: { runtime: Runtime }) {
-  return (
-    <span aria-hidden="true" className="otv2-mark" data-runtime={runtime}>
-      {RUNTIME_COPY[runtime].title.slice(0, 1)}
-    </span>
-  );
+  return <BrandMark brand={runtime} label={RUNTIME_COPY[runtime].title} />;
 }
 
 function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
@@ -265,9 +262,7 @@ function MessagingPicker({
             onClick={() => onChoose(candidate)}
             type="button"
           >
-            <span aria-hidden="true" className="otv2-mark" data-messaging={candidate}>
-              {COPY.messaging[candidate].title.slice(0, 1)}
-            </span>
+            <BrandMark brand={candidate} label={COPY.messaging[candidate].title} />
             <span className="otv2-choice__copy">
               <strong>{COPY.messaging[candidate].title}</strong>
               <span>{COPY.messaging[candidate].description}</span>
@@ -433,9 +428,7 @@ export function CloudStep({
                   }
                   type="button"
                 >
-                  <span aria-hidden="true" className="otv2-mark" data-runtime={runtime}>
-                    {CLOUD_RUNTIME_COPY[runtime].title.slice(0, 1)}
-                  </span>
+                  <BrandMark brand={runtime} label={CLOUD_RUNTIME_COPY[runtime].title} />
                   <span className="otv2-choice__copy">
                     <strong>{CLOUD_RUNTIME_COPY[runtime].title}</strong>
                     <span>{CLOUD_RUNTIME_COPY[runtime].description}</span>

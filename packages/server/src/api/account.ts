@@ -150,9 +150,16 @@ export function registerAccountRoutes(
     const { environment, publicUrl } = options.computerConnectCode;
 
     app.post(HTTP_PATHS.accountComputerConnectCodes, { preHandler }, async (request, reply) => {
-      parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
-      const scope = await scopeOf(request);
-      const issued = await machineAuthService.issueForWorkspaceAdmin(scope.accountId, scope.workspaceId);
+      const input = parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
+      const account = accountId(request);
+      const issued =
+        input.mode === "repair"
+          ? await machineAuthService.issueForAccount(account, input)
+          : await machineAuthService.issueForAccount(
+              account,
+              input,
+              await accountScope.resolveCompatibilityWorkspaceId(account),
+            );
       return reply
         .header("Cache-Control", "no-store")
         .code(201)
@@ -161,6 +168,7 @@ export function registerAccountRoutes(
             bootstrapCommand: buildComputerConnectCommand({ code: issued.code, environment, publicUrl }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),
+            mode: issued.mode,
           }),
         );
     });

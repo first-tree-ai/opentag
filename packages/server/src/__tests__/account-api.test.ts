@@ -131,10 +131,17 @@ function services() {
       deleteById: vi.fn(),
     },
     machineAuthService: {
+      issueForAccount: vi.fn().mockResolvedValue({
+        code: "connect-code-value",
+        expiresIn: 900,
+        issuedAt: new Date("2026-08-19T00:00:00.000Z"),
+        mode: "create",
+      }),
       issueForWorkspaceAdmin: vi.fn().mockResolvedValue({
         code: "connect-code-value",
         expiresIn: 900,
         issuedAt: new Date("2026-08-19T00:00:00.000Z"),
+        mode: "create",
       }),
     },
     taskService: {
@@ -310,6 +317,7 @@ describe("Account-native management collections", () => {
     }
 
     expect(service.agentService.createForWorkspace).not.toHaveBeenCalled();
+    expect(service.machineAuthService.issueForAccount).not.toHaveBeenCalled();
     expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
     expect(service.workspaceSetupService.complete).not.toHaveBeenCalled();
     expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
@@ -327,7 +335,8 @@ describe("Account-native management collections", () => {
       });
       expect(response.statusCode).toBe(201);
     }
-    expect(service.machineAuthService.issueForWorkspaceAdmin).toHaveBeenCalledTimes(2);
+    expect(service.machineAuthService.issueForAccount).toHaveBeenCalledTimes(2);
+    expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
   });
 
   it("does not disclose whether an Account has no compatibility scope", async () => {

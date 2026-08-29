@@ -100,12 +100,22 @@ describe("Tasks debug view", () => {
     expect(screen.getByText("Read-only debug view")).toBeTruthy();
     expect(screen.queryByText("Demo data")).toBeNull();
 
-    fireEvent.change(screen.getByLabelText("Filter by status"), { target: { value: "failed" } });
-    expect(screen.getAllByRole("row")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
+    const failedOption = await screen.findByRole("option", { name: "Failed" });
+    fireEvent.pointerMove(failedOption, { pointerType: "mouse" });
+    fireEvent.pointerDown(failedOption, { pointerType: "mouse" });
+    fireEvent.pointerUp(failedOption, { pointerType: "mouse" });
+    fireEvent.click(failedOption);
+    await waitFor(() => expect(screen.getAllByRole("row")).toHaveLength(2));
     expect(screen.getByText("Review onboarding")).toBeTruthy();
     expect(screen.queryByText("Investigate the failed deployment")).toBeNull();
 
-    fireEvent.change(screen.getByLabelText("Filter by status"), { target: { value: "all" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
+    const allStatusesOption = await screen.findByRole("option", { name: "All statuses" });
+    fireEvent.pointerMove(allStatusesOption, { pointerType: "mouse" });
+    fireEvent.pointerDown(allStatusesOption, { pointerType: "mouse" });
+    fireEvent.pointerUp(allStatusesOption, { pointerType: "mouse" });
+    fireEvent.click(allStatusesOption);
     fireEvent.change(screen.getByLabelText("Search Tasks"), { target: { value: sessionId } });
     expect(screen.getAllByRole("row")).toHaveLength(2);
     expect(screen.getByText("Investigate the failed deployment")).toBeTruthy();

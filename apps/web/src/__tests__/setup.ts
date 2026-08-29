@@ -20,6 +20,34 @@ Object.defineProperty(window, "localStorage", {
   value: memoryStorage(),
 });
 
+Object.defineProperty(window, "matchMedia", {
+  configurable: true,
+  value: (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  }),
+});
+
+if (!Element.prototype.getAnimations) {
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value: () => [],
+  });
+}
+
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", TestResizeObserver);
+
 vi.stubGlobal("fetch", vi.fn());
 
 afterEach(async () => {

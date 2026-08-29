@@ -1,28 +1,27 @@
 import { useRef, useState } from "react";
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { skillPreviews } from "../mock/capability-data.js";
-import "../mock-pages.css";
+import { Button, Collapsible, Text } from "../ui/design-system.js";
 
 export function SkillsPage() {
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
 
   return (
-    <section className="capability-page skills-page" aria-labelledby="skills-page-title">
-      <header className="skills-hero">
-        <div>
-          <h1 id="skills-page-title">Skills</h1>
-          <p>Reusable playbooks that give Agents the context and methods they need to do specialized work.</p>
-        </div>
-        <div className="skills-header-actions">
-          <span className="skills-demo-note">Demo data</span>
-          <div className="skills-upload-entry">
-            <button
-              className="ds-button ds-button--secondary ds-button--compact"
-              type="button"
-              onClick={() => uploadInputRef.current?.click()}
-            >
+    <section className="grid gap-6" aria-labelledby="skills-page-title" data-ui="skills-page">
+      <PageHeader
+        description="Reusable playbooks that give Agents the context and methods they need to do specialized work."
+        title="Skills"
+        titleId="skills-page-title"
+      >
+        <div className="flex flex-wrap items-center gap-3" data-ui="skills-header-actions">
+          <Text as="span" data-ui="skills-demo-note" variant="secondary">
+            Demo data
+          </Text>
+          <div className="grid gap-2" data-ui="skills-upload-entry">
+            <Button size="compact" variant="secondary" type="button" onClick={() => uploadInputRef.current?.click()}>
               Upload skill
-            </button>
+            </Button>
             <input
               ref={uploadInputRef}
               hidden
@@ -32,37 +31,46 @@ export function SkillsPage() {
               onChange={(event) => setSelectedFileName(event.currentTarget.files?.[0]?.name ?? null)}
             />
             {selectedFileName ? (
-              <span className="skills-upload-status" role="status">
+              <Text as="span" data-ui="skills-upload-status" role="status" variant="secondary">
                 {selectedFileName} selected · Demo only, not uploaded
-              </span>
+              </Text>
             ) : null}
           </div>
         </div>
-      </header>
+      </PageHeader>
 
-      <section className="skills-catalog" aria-labelledby="skills-catalog-title">
-        <div className="skills-catalog-heading">
-          <h2 id="skills-catalog-title">All skills</h2>
-          <p>{skillPreviews.length} skills</p>
+      <section className="grid gap-4" aria-labelledby="skills-catalog-title" data-ui="skills-catalog">
+        <div className="flex items-baseline justify-between gap-3" data-ui="skills-catalog-heading">
+          <Text as="h2" id="skills-catalog-title" variant="heading">
+            All skills
+          </Text>
+          <Text as="p" variant="secondary">
+            {skillPreviews.length} skills
+          </Text>
         </div>
 
-        <ul className="skills-list" aria-label="Available skills">
+        <ul className="grid gap-3" aria-label="Available skills" data-ui="skills-list">
           {skillPreviews.map((skill) => (
             <li key={skill.name}>
-              <article className="skill-row">
-                <details>
-                  <summary className="skill-row-summary">
-                    <div className="skill-row-copy">
-                      <div className="skill-row-title">
-                        <h3>{skill.name}</h3>
-                        <span className="skill-row-status">{skill.status}</span>
+              <article className="rounded-lg bg-kumo-base ring ring-kumo-line" data-ui="skill-row">
+                <Collapsible.Root>
+                  <Collapsible.Trigger
+                    className="flex w-full cursor-pointer flex-wrap items-center gap-4 p-4 text-left"
+                    data-ui="skill-row-summary"
+                  >
+                    <div className="min-w-0 flex-1" data-ui="skill-row-copy">
+                      <div className="flex flex-wrap items-center gap-2" data-ui="skill-row-title">
+                        <Text as="h3" variant="heading">
+                          {skill.name}
+                        </Text>
+                        <span className="text-sm text-kumo-subtle">{skill.status}</span>
                         {skill.source === "OpenTag" ? (
-                          <span className="skill-row-provider">Built by OpenTag</span>
+                          <span className="text-sm text-kumo-subtle">Built by OpenTag</span>
                         ) : null}
                       </div>
                       <p>{skill.description}.</p>
                     </div>
-                    <dl className="skill-row-meta">
+                    <dl className="text-sm text-kumo-subtle" data-ui="skill-row-meta">
                       <div>
                         <dt>Used by</dt>
                         <dd>
@@ -70,13 +78,15 @@ export function SkillsPage() {
                         </dd>
                       </div>
                     </dl>
-                    <span className="skill-row-preview-label">Preview</span>
-                  </summary>
-                  <div className="skill-preview-panel">
-                    <h4>Instructions preview</h4>
+                    <span className="text-sm text-kumo-link">Preview</span>
+                  </Collapsible.Trigger>
+                  <Collapsible.Panel className="grid gap-2 border-t border-kumo-line p-4" data-ui="skill-preview-panel">
+                    <Text as="h4" variant="heading">
+                      Instructions preview
+                    </Text>
                     <p>{skill.instructions}</p>
-                  </div>
-                </details>
+                  </Collapsible.Panel>
+                </Collapsible.Root>
               </article>
             </li>
           ))}

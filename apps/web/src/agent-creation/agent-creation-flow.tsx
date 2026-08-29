@@ -8,7 +8,16 @@ import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { ComputerSetup } from "../computer-setup.js";
-import { Button, Field, StatusIndicator, type StatusTone } from "../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  Field,
+  KumoInputControl,
+  Loader,
+  StatusIndicator,
+  type StatusTone,
+  Text,
+} from "../ui/design-system.js";
 
 const CREATE_INTENT_VERSION = 3;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
@@ -282,11 +291,10 @@ export function AgentCreationFlow({
   }
 
   return (
-    <form className="form-card agent-create-form" onSubmit={submit}>
-      <div className="agent-create-identity">
-        <Field className="agent-create-field" htmlFor="new-agent-display-name" label="Display name">
-          <input
-            className="ds-control"
+    <form className="grid gap-4" onSubmit={submit}>
+      <div className="grid gap-4">
+        <Field htmlFor="new-agent-display-name" label="Display name">
+          <KumoInputControl
             id="new-agent-display-name"
             ref={firstFieldRef}
             name="displayName"
@@ -305,15 +313,17 @@ export function AgentCreationFlow({
           />
         </Field>
         {!editingName && agentNameVisible ? (
-          <div className="agent-name-summary">
+          <div className="grid gap-1">
             {nameUnderivable ? (
-              <p className="agent-name-required">This display name cannot produce an @ name. Set one to continue.</p>
+              <p className="text-sm text-kumo-danger">
+                This display name cannot produce an @ name. Set one to continue.
+              </p>
             ) : null}
             <Button
               aria-label="Edit Agent name"
               aria-controls="agent-name-editor"
               aria-expanded="false"
-              className="agent-name-handle"
+              className="w-fit"
               disabled={submitting}
               variant="inline"
               onClick={() => setEditingName(true)}
@@ -325,7 +335,6 @@ export function AgentCreationFlow({
         {editingName ? (
           <div id="agent-name-editor">
             <Field
-              className="agent-create-field"
               error={nameError}
               errorId="agent-name-error"
               hint="Used for mentions. Lowercase letters, numbers, and hyphens only."
@@ -333,11 +342,12 @@ export function AgentCreationFlow({
               htmlFor="new-agent-name"
               label="Agent name"
             >
-              <span className="agent-name-input">
+              <span className="grid grid-cols-[auto_1fr] items-center gap-2">
                 <span aria-hidden="true">@</span>
-                <input
+                <KumoInputControl
                   aria-describedby={nameError ? "new-agent-name-hint agent-name-error" : "new-agent-name-hint"}
                   aria-invalid={nameError ? true : undefined}
+                  aria-labelledby="new-agent-name-label"
                   id="new-agent-name"
                   ref={nameFieldRef}
                   placeholder="research-assistant"
@@ -415,19 +425,24 @@ export function AgentCreationFlow({
         }}
       />
 
-      {error ? (
-        <div className="notice error" role="alert">
-          {error}
-        </div>
-      ) : null}
-      <div className="agent-create-actions">
+      {error ? <Banner variant="error" role="alert" description={error} /> : null}
+      <div className="flex flex-wrap justify-end gap-3">
         {onCancel ? (
           <Button disabled={submitting} variant="secondary" onClick={onCancel}>
             Cancel
           </Button>
         ) : null}
         <Button disabled={submitting || refreshing || !selectedRoute} type="submit">
-          {submitting ? "Creating…" : "Create Agent"}
+          {submitting ? (
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden="true">
+                <Loader aria-label="Creating Agent" size="sm" />
+              </span>
+              Creating…
+            </span>
+          ) : (
+            "Create Agent"
+          )}
         </Button>
       </div>
     </form>
@@ -486,15 +501,20 @@ function RuntimeRouteSection({
   // task. A sentence here would only say those labels again, which is one more line between the
   // Account and the single action this step asks for.
   return (
-    <section aria-labelledby="agent-runtime-heading" className="agent-create-runtime">
-      <header className="agent-create-runtime-header">
+    <section
+      aria-labelledby="agent-runtime-heading"
+      className="grid gap-4 rounded-lg bg-kumo-recessed p-4 ring ring-kumo-line"
+    >
+      <header className="flex items-start justify-between gap-3">
         <div>
-          <h3 id="agent-runtime-heading">Where it runs</h3>
+          <Text as="h3" id="agent-runtime-heading" variant="heading">
+            Where it runs
+          </Text>
         </div>
       </header>
 
       {facts.computers.length === 0 ? (
-        <div className="agent-create-runtime-setup">
+        <div className="grid gap-4">
           <ComputerSetup
             preview={preview}
             onConnected={(computer) =>
@@ -508,13 +528,13 @@ function RuntimeRouteSection({
         </div>
       ) : displayedComputer ? (
         <>
-          <div className="agent-create-route-summary">
-            <div className="agent-create-route-row">
-              <div className="agent-create-route-copy">
-                <span>Computer</span>
+          <div className="grid divide-y divide-kumo-line rounded-md bg-kumo-base ring ring-kumo-line">
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3">
+              <div className="grid gap-1">
+                <span className="text-xs text-kumo-subtle">Computer</span>
                 <strong>{displayedComputer.displayName}</strong>
               </div>
-              <div className="agent-create-route-controls">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <RouteState
                   label={displayedComputer.connectionStatus === "online" ? "Online" : "Offline"}
                   tone={displayedComputer.connectionStatus === "online" ? "success" : "warning"}
@@ -533,12 +553,12 @@ function RuntimeRouteSection({
                 </Button>
               </div>
             </div>
-            <div className="agent-create-route-row">
-              <div className="agent-create-route-copy">
-                <span>Runtime</span>
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3">
+              <div className="grid gap-1">
+                <span className="text-xs text-kumo-subtle">Runtime</span>
                 <strong>{displayedProvider ? providerLabel(displayedProvider.provider) : "No Runtime detected"}</strong>
               </div>
-              <div className="agent-create-route-controls">
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <RouteState
                   label={selectedRoute ? "Ready" : providerStatusLabel(displayedProvider)}
                   tone={selectedRoute ? "success" : providerStatusTone(displayedProvider)}
@@ -561,31 +581,31 @@ function RuntimeRouteSection({
           </div>
 
           {changingComputer ? (
-            <div className="agent-create-route-picker" id="new-agent-computer-picker">
-              <strong className="agent-create-route-picker-title">Choose Computer</strong>
-              <div className="agent-create-route-list">
+            <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-computer-picker">
+              <strong className="text-sm font-medium text-kumo-strong">Choose Computer</strong>
+              <div className="grid gap-2">
                 {computerOptions.map((computer) => {
                   const routes = readyRoutes.filter((route) => route.computer.id === computer.id);
                   return (
-                    <button
+                    <Button
                       aria-pressed={computer.id === displayedComputer.id}
-                      className="agent-create-route-option"
+                      className="h-auto w-full justify-between text-left"
                       data-selected={computer.id === displayedComputer.id ? "true" : undefined}
                       disabled={submitting || refreshing}
                       key={computer.id}
                       type="button"
                       onClick={() => onChangeComputer(computer)}
                     >
-                      <span className="agent-create-route-option-copy">
+                      <span className="grid gap-1">
                         <strong>{computer.displayName}</strong>
                         <small>{computerRouteSummary(computer, routes.length)}</small>
                       </span>
                       <span>{computer.connectionStatus === "online" ? "Online" : "Offline"}</span>
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
-              <div className="agent-create-computer-action">
+              <div className="flex justify-start">
                 <Button
                   aria-controls="new-agent-computer-setup"
                   aria-expanded={connectingComputer}
@@ -598,7 +618,7 @@ function RuntimeRouteSection({
                 </Button>
               </div>
               {connectingComputer ? (
-                <div className="agent-create-runtime-setup" id="new-agent-computer-setup">
+                <div className="grid gap-4" id="new-agent-computer-setup">
                   <ComputerSetup
                     preview={preview}
                     onConnected={(computer) =>
@@ -615,18 +635,18 @@ function RuntimeRouteSection({
           ) : null}
 
           {changingRuntime ? (
-            <div className="agent-create-route-picker" id="new-agent-runtime-picker">
-              <strong className="agent-create-route-picker-title">Choose Runtime</strong>
-              <div className="agent-create-route-list">
+            <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-runtime-picker">
+              <strong className="text-sm font-medium text-kumo-strong">Choose Runtime</strong>
+              <div className="grid gap-2">
                 {providerOptions.map((provider) => {
                   const route = readyRoutes.find(
                     (candidate) =>
                       candidate.computer.id === provider.computerId && candidate.provider === provider.provider,
                   );
                   return (
-                    <button
+                    <Button
                       aria-pressed={provider.provider === displayedProvider?.provider}
-                      className="agent-create-route-option"
+                      className="h-auto w-full justify-between text-left"
                       data-selected={provider.provider === displayedProvider?.provider ? "true" : undefined}
                       disabled={submitting || refreshing || route === undefined}
                       key={provider.provider}
@@ -635,7 +655,7 @@ function RuntimeRouteSection({
                     >
                       <strong>{providerLabel(provider.provider)}</strong>
                       <span>{providerStatusLabel(provider)}</span>
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
@@ -643,7 +663,7 @@ function RuntimeRouteSection({
           ) : null}
 
           {selectedRoute ? (
-            <div aria-live="polite" className="agent-create-runtime-status" role="status">
+            <div aria-live="polite" className="rounded-md bg-kumo-base p-3" role="status">
               <StatusIndicator label="Ready to run" tone="success" />
             </div>
           ) : displayedComputer.connectionStatus === "offline" ? (
@@ -674,12 +694,7 @@ function RuntimeRouteSection({
 }
 
 function RouteState({ label, tone }: { label: string; tone: "success" | "warning" | "neutral" }) {
-  return (
-    <span className="agent-create-route-state" data-tone={tone}>
-      <span aria-hidden="true" />
-      {label}
-    </span>
-  );
+  return <StatusIndicator label={label} tone={tone} />;
 }
 
 function computerRouteSummary(computer: AgentCreationComputer, readyRuntimeCount: number): string {
@@ -716,10 +731,19 @@ function RuntimeAttention({
   tone: StatusTone;
 }) {
   return (
-    <div className="agent-create-runtime-attention">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-kumo-base p-3">
       <StatusIndicator detail={detail} label={label} tone={tone} />
       <Button disabled={refreshing} size="compact" variant="secondary" onClick={onRefresh}>
-        {refreshing ? "Checking…" : "Check again"}
+        {refreshing ? (
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">
+              <Loader aria-label="Checking Server facts" size="sm" />
+            </span>
+            Checking…
+          </span>
+        ) : (
+          "Check again"
+        )}
       </Button>
     </div>
   );

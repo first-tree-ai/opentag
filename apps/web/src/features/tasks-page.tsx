@@ -3,8 +3,20 @@ import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState }
 import { Link, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
-import { Icon, StatusIndicator, type StatusTone } from "../ui/design-system.js";
-import "./tasks-page.css";
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import {
+  Button,
+  ClipboardText,
+  Collapsible,
+  Icon,
+  KumoInputControl,
+  KumoSelectControl,
+  Loader,
+  StatusIndicator,
+  type StatusTone,
+  Table,
+  Text,
+} from "../ui/design-system.js";
 
 type TaskFilter = "all" | TaskStatus;
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -80,25 +92,33 @@ export function TasksPage() {
   }
 
   return (
-    <section className="tasks-page" aria-labelledby="tasks-page-title">
-      <header className="tasks-page-header">
-        <div>
-          <h1 id="tasks-page-title">Tasks</h1>
-          <p>Inspect stored bot Sessions, inbound messages, and runtime Turn results.</p>
-        </div>
-        <span className="tasks-debug-note">Read-only debug view</span>
-      </header>
+    <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
+      <PageHeader
+        description="Inspect stored bot Sessions, inbound messages, and runtime Turn results."
+        title="Tasks"
+        titleId="tasks-page-title"
+      >
+        <Text as="span" data-ui="tasks-debug-note" variant="secondary">
+          Read-only debug view
+        </Text>
+      </PageHeader>
 
-      <form className="task-toolbar" aria-label="Filter Tasks" onSubmit={(event) => event.preventDefault()}>
-        <label className="task-search">
-          <span className="visually-hidden">Search Tasks</span>
-          <input
+      <form
+        className="flex flex-wrap items-end gap-3"
+        aria-label="Filter Tasks"
+        data-ui="task-toolbar"
+        onSubmit={(event) => event.preventDefault()}
+      >
+        <div className="min-w-56 flex-1">
+          <span className="sr-only">Search Tasks</span>
+          <KumoInputControl
+            aria-label="Search Tasks"
             value={query}
             type="search"
             placeholder="Search Tasks"
             onChange={(event) => setQuery(event.target.value)}
           />
-        </label>
+        </div>
         <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
           <option value="all">All Agents</option>
           {agents.map((agent) => (
@@ -127,9 +147,9 @@ export function TasksPage() {
       {state.kind === "error" ? <TaskNotice heading="Tasks unavailable" detail={state.error.message} /> : null}
       {state.kind === "ready" && tasks.length > 0 ? (
         <>
-          <table className="task-table" aria-label="Tasks">
+          <Table className="w-full" aria-label="Tasks" data-ui="task-table">
             <thead>
-              <tr className="task-table-grid task-table-header">
+              <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
                 <th scope="col">Task</th>
                 <th scope="col">Status</th>
               </tr>
@@ -139,11 +159,11 @@ export function TasksPage() {
                 <TaskRow key={task.id} task={task} />
               ))}
             </tbody>
-          </table>
+          </Table>
           {state.value.nextCursor ? (
-            <button className="task-load-more" type="button" onClick={() => void loadMore()}>
+            <Button type="button" variant="secondary" onClick={() => void loadMore()}>
               Load more
-            </button>
+            </Button>
           ) : null}
         </>
       ) : null}
@@ -204,9 +224,13 @@ export function TaskDetailPage() {
   if (state.kind === "error") {
     const notFound = state.error instanceof ApiError && state.error.status === 404;
     return (
-      <section className="task-not-found">
-        <h1>{notFound ? "Task not found" : "Task unavailable"}</h1>
-        <p>{notFound ? "This Task does not exist or is outside your Account." : state.error.message}</p>
+      <section className="grid gap-3" data-ui="task-not-found">
+        <Text as="h1" size="lg" variant="heading">
+          {notFound ? "Task not found" : "Task unavailable"}
+        </Text>
+        <Text as="p" variant="secondary">
+          {notFound ? "This Task does not exist or is outside your Account." : state.error.message}
+        </Text>
         <Link to="/tasks">Back to Tasks</Link>
       </section>
     );
@@ -215,18 +239,26 @@ export function TaskDetailPage() {
   const { task, turns, internalSessions, collaborationMessages } = state.value;
   const status = statusPresentation[task.status];
   return (
-    <article className="task-conversation-page">
-      <nav className="task-breadcrumb" aria-label="Breadcrumb">
+    <article className="grid gap-6" data-ui="task-conversation-page">
+      <nav className="flex items-center gap-3" aria-label="Breadcrumb">
         <Link to="/tasks">
           <Icon name="arrow-left" />
           Tasks
         </Link>
-        <span className="tasks-debug-note">Read-only debug view</span>
+        <span className="text-sm text-kumo-subtle" data-ui="tasks-debug-note">
+          Read-only debug view
+        </span>
       </nav>
 
-      <header className="task-conversation-header">
-        <h1 title={task.title}>{task.title}</h1>
-        <section className="task-conversation-context" aria-label="Task source">
+      <header className="grid gap-3" data-ui="task-conversation-header">
+        <Text as="h1" size="lg" title={task.title} truncate variant="heading">
+          {task.title}
+        </Text>
+        <section
+          className="flex flex-wrap items-center gap-3"
+          aria-label="Task source"
+          data-ui="task-conversation-context"
+        >
           <SourceIdentity task={task} />
           <StatusIndicator
             aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
@@ -237,19 +269,19 @@ export function TaskDetailPage() {
         </section>
       </header>
 
-      <section className="task-debug-facts" aria-label="Task debug identifiers">
+      <section className="grid gap-3 sm:grid-cols-2" aria-label="Task debug identifiers" data-ui="task-debug-facts">
         <DebugValue label="Session" value={task.id} />
         <DebugValue label="Channel" value={task.source.channelId} />
         {task.source.threadKey ? <DebugValue label="Thread" value={task.source.threadKey} /> : null}
         <DebugValue label="Agent" value={task.agent.id} />
       </section>
 
-      <p className="task-capture-boundary">
+      <p className="text-sm text-kumo-subtle" data-ui="task-capture-boundary">
         Provider outbound messages and detailed tool traces are not captured. Agent output below is the stored runtime
         final output.
       </p>
 
-      <section className="task-thread" aria-label="Task conversation">
+      <section className="grid gap-4" aria-label="Task conversation" data-ui="task-thread">
         {turns.length > 0 ? (
           turns.map((turn) => <TaskTurnView key={turn.deliveryId} task={task} turn={turn} />)
         ) : (
@@ -257,39 +289,47 @@ export function TaskDetailPage() {
         )}
       </section>
       {state.value.nextCursor ? (
-        <button className="task-load-more" type="button" disabled={loadingMore} onClick={() => void loadMoreTurns()}>
-          {loadingMore ? "Loading more Turns…" : "Load more Turns"}
-        </button>
+        <Button
+          loading={loadingMore}
+          type="button"
+          variant="secondary"
+          disabled={loadingMore}
+          onClick={() => void loadMoreTurns()}
+        >
+          Load more Turns
+        </Button>
       ) : null}
       {loadMoreError ? (
-        <p className="task-runtime-error" role="alert">
+        <p className="text-sm text-kumo-danger" data-ui="task-runtime-error" role="alert">
           {loadMoreError.message}
         </p>
       ) : null}
 
       {internalSessions.length > 0 || collaborationMessages.length > 0 ? (
-        <details className="task-related-sessions">
-          <summary>
+        <Collapsible.Root data-ui="task-related-sessions">
+          <Collapsible.DefaultTrigger>
             Internal collaboration · {internalSessions.length} Sessions · {collaborationMessages.length} messages
-          </summary>
-          <section>
-            {internalSessions.map((session) => (
-              <p key={session.id}>
-                <strong>{session.endedAt ? "Ended" : "Active"}</strong> · <code>{session.id}</code>
-                {session.runtimeModel ? ` · ${session.runtimeModel}` : ""}
-              </p>
-            ))}
-            {collaborationMessages.map((message) => (
-              <article className="task-collaboration-message" key={message.id}>
-                <p>{message.content}</p>
-                <small>
-                  {message.outcome} · {formatTimestamp(message.createdAt)} · {message.sourceSessionId} →{" "}
-                  {message.targetSessionId}
-                </small>
-              </article>
-            ))}
-          </section>
-        </details>
+          </Collapsible.DefaultTrigger>
+          <Collapsible.DefaultPanel keepMounted>
+            <section className="grid gap-3">
+              {internalSessions.map((session) => (
+                <p key={session.id}>
+                  <strong>{session.endedAt ? "Ended" : "Active"}</strong> · <code>{session.id}</code>
+                  {session.runtimeModel ? ` · ${session.runtimeModel}` : ""}
+                </p>
+              ))}
+              {collaborationMessages.map((message) => (
+                <article className="rounded-md bg-kumo-recessed p-3" key={message.id}>
+                  <p>{message.content}</p>
+                  <small>
+                    {message.outcome} · {formatTimestamp(message.createdAt)} · {message.sourceSessionId} →{" "}
+                    {message.targetSessionId}
+                  </small>
+                </article>
+              ))}
+            </section>
+          </Collapsible.DefaultPanel>
+        </Collapsible.Root>
       ) : null}
     </article>
   );
@@ -303,10 +343,17 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
     ? (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0) + (usage.outputTokens ?? 0)
     : null;
   return (
-    <section className="task-exchange" aria-label={`Message sent at ${formatTimestamp(turn.message.occurredAt)}`}>
-      <article className="task-message task-message--request">
-        <header className="task-message-author">
-          <span className="task-person-mark" aria-hidden="true">
+    <section
+      className="grid gap-3"
+      aria-label={`Message sent at ${formatTimestamp(turn.message.occurredAt)}`}
+      data-ui="task-exchange"
+    >
+      <article className="rounded-lg bg-kumo-recessed p-4" data-ui="task-message-request">
+        <header className="flex items-center gap-2" data-ui="task-message-author">
+          <span
+            className="grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
+            aria-hidden="true"
+          >
             {getInitials(turn.message.authorDisplayName ?? turn.message.authorKind)}
           </span>
           <span>
@@ -316,14 +363,17 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
             </small>
           </span>
         </header>
-        <div className="task-request-bubble">
+        <div className="mt-2 whitespace-pre-wrap">
           <p>{turn.message.fallbackText || "No text content"}</p>
         </div>
       </article>
 
-      <article className="task-message task-message--agent">
-        <header className="task-message-author task-message-author--agent">
-          <span className="task-agent-mark" aria-hidden="true">
+      <article className="rounded-lg bg-kumo-base p-4 ring ring-kumo-line" data-ui="task-message-agent">
+        <header className="flex items-center gap-2" data-ui="task-message-author-agent">
+          <span
+            className="grid size-7 place-items-center rounded-full bg-kumo-brand text-kumo-inverse"
+            aria-hidden="true"
+          >
             {task.agent.displayName.charAt(0)}
           </span>
           <span>
@@ -338,48 +388,54 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
           </span>
         </header>
         {absorbedBy ? (
-          <p className="task-progress-summary">This input was steered into the active Turn.</p>
+          <p className="text-sm text-kumo-subtle" data-ui="task-progress-summary">
+            This input was steered into the active Turn.
+          </p>
         ) : report?.finalText ? (
-          <section className="task-agent-response" aria-label="Stored runtime final output">
-            <p className="task-answer-paragraph">{report.finalText}</p>
+          <section aria-label="Stored runtime final output" data-ui="task-agent-response">
+            <p className="whitespace-pre-wrap">{report.finalText}</p>
           </section>
         ) : (
-          <p className={turn.delivery.state === "accepted" ? "task-progress-summary" : "task-attention-summary"}>
+          <p
+            className="text-sm text-kumo-subtle"
+            data-state={turn.delivery.state === "accepted" ? "progress" : "attention"}
+          >
             {turn.delivery.state === "accepted"
               ? "The Turn is running or its report has not arrived."
               : `Delivery ${turn.delivery.state}.`}
           </p>
         )}
-        <details className="task-agent-process">
-          <summary>
+        <Collapsible.Root data-ui="task-agent-process">
+          <Collapsible.DefaultTrigger>
             <span>Runtime details</span>
-            <Icon name="chevron-right" />
-          </summary>
-          <section className="task-agent-events">
-            <DebugValue label="Delivery" value={turn.deliveryId} />
-            <DebugValue label="Message" value={turn.message.externalMessageId} />
-            {absorbedBy ? <DebugValue label="Absorbed by delivery" value={absorbedBy.deliveryId} /> : null}
-            {absorbedBy ? <DebugValue label="Target Turn" value={absorbedBy.turnId} /> : null}
-            {report ? <DebugValue label="Turn" value={report.turnId} /> : null}
-            <p className="task-process-metadata">
-              {[
-                `${turn.delivery.attemptCount} ${turn.delivery.attemptCount === 1 ? "attempt" : "attempts"}`,
-                report ? `Outcome ${report.outcome}` : null,
-                report ? `Effects ${report.executionEffects}` : null,
-                tokenTotal === null ? null : `${tokenTotal.toLocaleString()} tokens`,
-                report ? `${report.traceSummary.lastSequence} trace events` : null,
-                report?.traceSummary.droppedEvents ? `${report.traceSummary.droppedEvents} dropped` : null,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-            {report?.errorReason || turn.delivery.lastErrorCode || turn.delivery.reason ? (
-              <p className="task-runtime-error">
-                {report?.errorReason ?? turn.delivery.lastErrorCode ?? turn.delivery.reason}
+          </Collapsible.DefaultTrigger>
+          <Collapsible.DefaultPanel keepMounted>
+            <section className="grid gap-3" data-ui="task-agent-events">
+              <DebugValue label="Delivery" value={turn.deliveryId} />
+              <DebugValue label="Message" value={turn.message.externalMessageId} />
+              {absorbedBy ? <DebugValue label="Absorbed by delivery" value={absorbedBy.deliveryId} /> : null}
+              {absorbedBy ? <DebugValue label="Target Turn" value={absorbedBy.turnId} /> : null}
+              {report ? <DebugValue label="Turn" value={report.turnId} /> : null}
+              <p className="text-sm text-kumo-subtle" data-ui="task-process-metadata">
+                {[
+                  `${turn.delivery.attemptCount} ${turn.delivery.attemptCount === 1 ? "attempt" : "attempts"}`,
+                  report ? `Outcome ${report.outcome}` : null,
+                  report ? `Effects ${report.executionEffects}` : null,
+                  tokenTotal === null ? null : `${tokenTotal.toLocaleString()} tokens`,
+                  report ? `${report.traceSummary.lastSequence} trace events` : null,
+                  report?.traceSummary.droppedEvents ? `${report.traceSummary.droppedEvents} dropped` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </p>
-            ) : null}
-          </section>
-        </details>
+              {report?.errorReason || turn.delivery.lastErrorCode || turn.delivery.reason ? (
+                <p className="text-sm text-kumo-danger" data-ui="task-runtime-error">
+                  {report?.errorReason ?? turn.delivery.lastErrorCode ?? turn.delivery.reason}
+                </p>
+              ) : null}
+            </section>
+          </Collapsible.DefaultPanel>
+        </Collapsible.Root>
       </article>
     </section>
   );
@@ -397,24 +453,24 @@ function TaskSelect({
   value: string;
 }) {
   return (
-    <label>
-      <span className="visually-hidden">{label}</span>
-      <select aria-label={label} value={value} onChange={onChange}>
+    <div>
+      <span className="sr-only">{label}</span>
+      <KumoSelectControl aria-label={label} size="sm" value={value} onChange={onChange}>
         {children}
-      </select>
-    </label>
+      </KumoSelectControl>
+    </div>
   );
 }
 
 function TaskRow({ task }: { task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
-    <tr className="task-table-grid task-table-row">
-      <td className="task-work-cell" data-label="Task">
+    <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
+      <td className="p-3" data-label="Task">
         <Link title={task.title} to={`/tasks/${task.id}`}>
           {task.title}
         </Link>
-        <span className="task-list-metadata">
+        <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
           <span>{task.agent.displayName}</span>
           <span aria-hidden="true">·</span>
           <ProviderIcon provider={task.source.provider} compact />
@@ -425,7 +481,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
           <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
         </span>
       </td>
-      <td className="task-status-cell" data-label="Status">
+      <td className="p-3" data-label="Status">
         <StatusIndicator
           aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
           detail={formatRelativeTime(task.lastActivityAt)}
@@ -439,7 +495,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
 
 function SourceIdentity({ task }: { task: TaskSummary }) {
   return (
-    <span className="task-source-identity">
+    <span className="inline-flex items-center gap-2" data-ui="task-source-identity">
       <ProviderIcon provider={task.source.provider} />
       <span>
         <strong>{task.agent.displayName}</strong>
@@ -460,37 +516,43 @@ function ProviderIcon({
 }) {
   if (provider !== "feishu")
     return (
-      <span className="task-provider-mark" aria-hidden="true">
+      <span className="grid size-7 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
         S
       </span>
     );
-  return (
-    <img
-      alt=""
-      aria-hidden="true"
-      className={compact ? "task-feishu-icon task-feishu-icon--compact" : "task-feishu-icon"}
-      src={feishuIconUrl}
-    />
-  );
+  return <img alt="" aria-hidden="true" className={compact ? "size-5" : "size-7"} src={feishuIconUrl} />;
 }
 
 function DebugValue({ label, value }: { label: string; value: string }) {
   return (
-    <span className="task-debug-value">
+    <span className="grid gap-1 rounded-md bg-kumo-recessed p-3" data-ui="task-debug-value">
       <strong>{label}</strong>
-      <code>{value}</code>
-      <button type="button" onClick={() => void navigator.clipboard?.writeText(value)} aria-label={`Copy ${label}`}>
-        Copy
-      </button>
+      <ClipboardText
+        labels={{ copyAction: `Copy ${label}` }}
+        size="sm"
+        text={value}
+        tooltip={{ copiedText: "Copied!", side: "top", text: `Copy ${label}` }}
+      />
     </span>
   );
 }
 
 function TaskNotice({ heading, detail }: { heading: string; detail: string }) {
   return (
-    <section className="task-empty-state" aria-live="polite">
-      <h2>{heading}</h2>
-      <p>{detail}</p>
+    <section
+      className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line"
+      aria-live="polite"
+      data-ui="task-empty-state"
+    >
+      <div className="flex items-center justify-center gap-2">
+        {heading.startsWith("Loading") ? <Loader aria-label={heading} size="sm" /> : null}
+        <Text as="h2" variant="heading">
+          {heading}
+        </Text>
+      </div>
+      <Text as="p" variant="secondary">
+        {detail}
+      </Text>
     </section>
   );
 }

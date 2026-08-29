@@ -1,0 +1,19 @@
+/* Generated from kumo-theme.tokens.ts. Do not edit node_modules Kumo styles. */
+:root[data-theme="opentag"],
+[data-theme="opentag"] {
+  --color-kumo-brand: #385a04;
+  --color-kumo-brand-hover: #4e7a06;
+  --text-color-kumo-brand: #385a04;
+  --kumo-button-emphasis-bg: #385a04;
+  --kumo-button-emphasis-ring: #385a04;
+}
+
+:root[data-theme="opentag"][data-mode="dark"],
+[data-theme="opentag"][data-mode="dark"],
+[data-theme="opentag"] [data-mode="dark"] {
+  --color-kumo-brand: #90de14;
+  --color-kumo-brand-hover: #a8ec45;
+  --text-color-kumo-brand: #90de14;
+  --kumo-button-emphasis-bg: #90de14;
+  --kumo-button-emphasis-ring: #90de14;
+}

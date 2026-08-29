@@ -6,10 +6,12 @@ import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import {
   Button,
+  ClipboardText,
   Collapsible,
   Icon,
   KumoInputControl,
   KumoSelectControl,
+  Loader,
   StatusIndicator,
   type StatusTone,
   Table,
@@ -287,8 +289,14 @@ export function TaskDetailPage() {
         )}
       </section>
       {state.value.nextCursor ? (
-        <Button type="button" variant="secondary" disabled={loadingMore} onClick={() => void loadMoreTurns()}>
-          {loadingMore ? "Loading more Turns…" : "Load more Turns"}
+        <Button
+          loading={loadingMore}
+          type="button"
+          variant="secondary"
+          disabled={loadingMore}
+          onClick={() => void loadMoreTurns()}
+        >
+          Load more Turns
         </Button>
       ) : null}
       {loadMoreError ? (
@@ -519,15 +527,12 @@ function DebugValue({ label, value }: { label: string; value: string }) {
   return (
     <span className="grid gap-1 rounded-md bg-kumo-recessed p-3" data-ui="task-debug-value">
       <strong>{label}</strong>
-      <code>{value}</code>
-      <Button
-        type="button"
-        variant="ghost"
-        onClick={() => void navigator.clipboard?.writeText(value)}
-        aria-label={`Copy ${label}`}
-      >
-        Copy
-      </Button>
+      <ClipboardText
+        labels={{ copyAction: `Copy ${label}` }}
+        size="sm"
+        text={value}
+        tooltip={{ copiedText: "Copied!", side: "top", text: `Copy ${label}` }}
+      />
     </span>
   );
 }
@@ -539,9 +544,12 @@ function TaskNotice({ heading, detail }: { heading: string; detail: string }) {
       aria-live="polite"
       data-ui="task-empty-state"
     >
-      <Text as="h2" variant="heading">
-        {heading}
-      </Text>
+      <div className="flex items-center justify-center gap-2">
+        {heading.startsWith("Loading") ? <Loader aria-label={heading} size="sm" /> : null}
+        <Text as="h2" variant="heading">
+          {heading}
+        </Text>
+      </div>
       <Text as="p" variant="secondary">
         {detail}
       </Text>

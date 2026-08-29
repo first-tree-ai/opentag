@@ -26,6 +26,7 @@ const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
 export interface SlackConfigurationControl {
   /** Starts the first-party OpenTag Slack OAuth install when the server has configured it. */
   startOAuth: (intent?: SlackOAuthIntent) => Promise<boolean>;
+  loading: boolean;
   feedback: ReactNode;
 }
 
@@ -78,6 +79,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
   }
 
   return children({
+    loading,
     startOAuth,
     feedback: (
       <>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { describe, expect, it } from "vitest";
 import {
@@ -72,7 +72,7 @@ describe("Kumo semantic adapter", () => {
     expect(screen.getByRole("combobox", { name: "Usage period" })).toBeTruthy();
   });
 
-  it("keeps dialog Escape and focus return behavior", () => {
+  it("keeps dialog Escape and focus return behavior", async () => {
     const triggerRef = createRef<HTMLButtonElement>();
     function Example() {
       const [open, setOpen] = useState(false);
@@ -92,7 +92,7 @@ describe("Kumo semantic adapter", () => {
     fireEvent.click(trigger);
     expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("keeps icon-only controls discoverable", () => {

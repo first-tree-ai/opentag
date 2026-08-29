@@ -9,7 +9,7 @@ import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/ag
 import { browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
-import { Button, Link as KumoLink, LinkButton, Text } from "../ui/design-system.js";
+import { Button, Flow, Link as KumoLink, LinkButton, Loader, Text } from "../ui/design-system.js";
 import {
   deriveOnboardingState,
   type OnboardingAgent,
@@ -177,8 +177,8 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
           An AI teammate your team mentions in Feishu, working on a Computer you connect.
         </Text>
       </div>
-      <nav aria-label="Onboarding steps">
-        <ol className="grid gap-2" data-ui="onboarding-steps">
+      <nav aria-label="Onboarding steps" data-ui="onboarding-steps">
+        <Flow align="start" canvas={false} className="w-full" orientation="vertical" padding={{ x: 0, y: 0 }}>
           <JourneyStep
             description="Computer, runtime and identity"
             number="01"
@@ -191,7 +191,7 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
             status={journey.messaging}
             title="Add to Feishu"
           />
-        </ol>
+        </Flow>
       </nav>
       <p className="text-sm text-kumo-subtle" data-ui="onboarding-journey-note">
         You can leave and return at any time.
@@ -212,23 +212,35 @@ function JourneyStep({
   title: string;
 }) {
   const statusLabel = status === "complete" ? "Complete" : status === "current" ? "In progress" : "Up next";
+  const cardClassName =
+    status === "current"
+      ? "grid w-[18rem] max-w-full gap-3 rounded-lg bg-kumo-tint p-4 ring ring-kumo-brand/40"
+      : "grid w-[18rem] max-w-full gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line";
   return (
-    <li className="flex items-start gap-3 rounded-md p-2" data-status={status} data-ui="onboarding-step">
-      <span
-        aria-hidden="true"
-        className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-medium"
-        data-ui="onboarding-step-number"
-      >
-        {status === "complete" ? "✓" : number}
-      </span>
-      <span className="grid gap-1" data-ui="onboarding-step-copy">
-        <span className="text-xs text-kumo-subtle" data-ui="onboarding-step-status">
-          {statusLabel}
-        </span>
-        <strong>{title}</strong>
-        <span>{description}</span>
-      </span>
-    </li>
+    <Flow.Node
+      disabled={status === "upcoming"}
+      id={`onboarding-step-${number}`}
+      render={
+        <li className={cardClassName} data-status={status} data-ui="onboarding-step">
+          <span className="flex items-center gap-2" data-ui="onboarding-step-heading">
+            <span
+              aria-hidden="true"
+              className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-medium"
+              data-ui="onboarding-step-number"
+            >
+              {status === "complete" ? "✓" : number}
+            </span>
+            <span className="text-xs text-kumo-subtle" data-ui="onboarding-step-status">
+              {statusLabel}
+            </span>
+          </span>
+          <span className="grid gap-1" data-ui="onboarding-step-copy">
+            <span className="font-medium text-kumo-strong">{title}</span>
+            <span className="text-sm text-kumo-subtle">{description}</span>
+          </span>
+        </li>
+      }
+    />
   );
 }
 
@@ -262,7 +274,14 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
           {journey.prepareFacts.map((fact) => (
             <div data-status={fact.status} key={fact.label}>
               <dt>{fact.label}</dt>
-              <dd>{fact.value}</dd>
+              <dd className="flex items-center gap-2">
+                {fact.status === "waiting" || fact.value === "Checking" ? (
+                  <span aria-hidden="true">
+                    <Loader aria-label={`${fact.label} ${fact.value}`} size="sm" />
+                  </span>
+                ) : null}
+                <span>{fact.value}</span>
+              </dd>
             </div>
           ))}
         </dl>
@@ -540,8 +559,14 @@ function OnboardingHeader({ preview, user }: { preview: boolean; user: UserProfi
       </KumoLink>
       <div className="flex items-center gap-3" data-ui="onboarding-account">
         <span>{user.displayName}</span>
-        <Button size="compact" variant="secondary" disabled={preview || logoutState === "pending"} onClick={logout}>
-          {logoutState === "pending" ? "Signing out…" : logoutState === "error" ? "Retry sign out" : "Sign out"}
+        <Button
+          loading={logoutState === "pending"}
+          size="compact"
+          variant="secondary"
+          disabled={preview || logoutState === "pending"}
+          onClick={logout}
+        >
+          {logoutState === "error" ? "Retry sign out" : "Sign out"}
         </Button>
       </div>
     </header>
@@ -550,10 +575,16 @@ function OnboardingHeader({ preview, user }: { preview: boolean; user: UserProfi
 
 function OnboardingLoading() {
   return (
-    <div aria-label="Loading current server state" className="grid gap-2" data-ui="onboarding-loading" role="status">
-      <span className="h-3 animate-pulse rounded bg-kumo-tint" />
-      <span className="h-3 animate-pulse rounded bg-kumo-tint" />
-      <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
+    <div
+      aria-label="Loading current server state"
+      className="flex items-center gap-3 text-sm text-kumo-subtle"
+      data-ui="onboarding-loading"
+      role="status"
+    >
+      <span aria-hidden="true">
+        <Loader size="sm" />
+      </span>
+      <span>Loading current Server state…</span>
     </div>
   );
 }
@@ -718,8 +749,11 @@ function ActionSection({
         </div>
       </div>
       {pending ? (
-        <p className="text-sm text-kumo-subtle" data-ui="onboarding-pending" role="status">
-          Working from current Server facts…
+        <p className="flex items-center gap-2 text-sm text-kumo-subtle" data-ui="onboarding-pending" role="status">
+          <span aria-hidden="true">
+            <Loader aria-label="Loading current Server facts" size="sm" />
+          </span>
+          <span>Working from current Server facts…</span>
         </p>
       ) : null}
       {children}
@@ -731,11 +765,23 @@ function ReloadButton({ onReload, pending }: { onReload: () => void; pending: bo
   return (
     <div className="grid gap-2" data-ui="onboarding-feedback">
       <Button disabled={pending} onClick={onReload}>
-        {pending ? "Checking…" : "Check again"}
+        {pending ? (
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">
+              <Loader aria-label="Checking Server facts" size="sm" />
+            </span>
+            Checking…
+          </span>
+        ) : (
+          "Check again"
+        )}
       </Button>
       {pending ? (
-        <p className="text-sm text-kumo-subtle" data-ui="onboarding-helper" role="status">
-          Refreshing Server facts…
+        <p className="flex items-center gap-2 text-sm text-kumo-subtle" data-ui="onboarding-helper" role="status">
+          <span aria-hidden="true">
+            <Loader aria-label="Loading Server facts" size="sm" />
+          </span>
+          <span>Refreshing Server facts…</span>
         </p>
       ) : null}
     </div>
@@ -743,7 +789,7 @@ function ReloadButton({ onReload, pending }: { onReload: () => void; pending: bo
 }
 
 /** Preview shows the Feishu control without mounting a setup lifecycle that could start an attempt. */
-const INERT_FEISHU_SETUP: FeishuSetupControl = { start: async () => false, feedback: null };
+const INERT_FEISHU_SETUP: FeishuSetupControl = { loading: false, start: async () => false, feedback: null };
 
 function FeishuAction({
   control,
@@ -762,7 +808,9 @@ function FeishuAction({
         : "Resume Feishu setup";
   return (
     <div className="grid gap-2" data-ui="onboarding-feedback">
-      <Button onClick={() => void control.start(intent)}>{label}</Button>
+      <Button loading={control.loading} disabled={control.loading} onClick={() => void control.start(intent)}>
+        {label}
+      </Button>
       {control.feedback}
     </div>
   );

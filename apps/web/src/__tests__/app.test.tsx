@@ -840,7 +840,7 @@ describe("OpenTag Web App Shell", () => {
     expect(name.value).toBe("custom-researcher");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("dialog", { name: "New Agent" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "New Agent" })).toBeNull());
     expect(trigger).toBe(document.activeElement);
   });
 

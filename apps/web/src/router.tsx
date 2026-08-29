@@ -60,6 +60,7 @@ import {
   type IconName,
   Input,
   KumoInputControl,
+  Loader,
   SettingsList,
   SettingsRow,
   Sidebar,
@@ -416,10 +417,15 @@ function AsyncState<T>({
   if (state.kind === "loading")
     return (
       loading ?? (
-        <div aria-label="Loading current server state" className="grid gap-2" role="status">
-          <span className="h-3 animate-pulse rounded bg-kumo-tint" />
-          <span className="h-3 animate-pulse rounded bg-kumo-tint" />
-          <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
+        <div
+          aria-label="Loading current server state"
+          className="flex items-center gap-2 text-sm text-kumo-subtle"
+          role="status"
+        >
+          <span aria-hidden="true">
+            <Loader size="sm" />
+          </span>
+          <span>Loading current Server state…</span>
         </div>
       )
     );
@@ -1004,7 +1010,16 @@ function AppShellContent() {
                       Account
                     </DropdownMenu.Item>
                     <DropdownMenu.Item disabled={loggingOut} onClick={() => void logout()}>
-                      {loggingOut ? "Signing out…" : "Sign out"}
+                      {loggingOut ? (
+                        <span className="flex items-center gap-2">
+                          <span aria-hidden="true">
+                            <Loader aria-label="Signing out" size="sm" />
+                          </span>
+                          Signing out…
+                        </span>
+                      ) : (
+                        "Sign out"
+                      )}
                     </DropdownMenu.Item>
                     {accountError ? (
                       <span className="text-sm text-kumo-danger" role="alert">
@@ -1986,27 +2001,11 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
 
 function AgentSettingsDirectoryLoading() {
   return (
-    <div aria-label="Loading Agent settings" className="grid gap-6" role="status">
-      <div aria-hidden="true" className="grid gap-6">
-        {agentSettingsGroups.map((group) => (
-          <div className="grid gap-3" key={group.key}>
-            <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
-            <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
-              {agentSettingsSections
-                .filter((item) => item.group === group.key)
-                .map((item) => (
-                  <div className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0" key={item.key}>
-                    <span className="size-8 shrink-0 animate-pulse rounded-md bg-kumo-tint" />
-                    <span className="grid min-w-0 flex-1 gap-2">
-                      <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
-                      <span className="h-3 animate-pulse rounded bg-kumo-tint" />
-                    </span>
-                  </div>
-                ))}
-            </div>
-          </div>
-        ))}
-      </div>
+    <div aria-label="Loading Agent settings" className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+      <span aria-hidden="true">
+        <Loader />
+      </span>
+      <span>Loading Agent settings…</span>
     </div>
   );
 }
@@ -2524,17 +2523,35 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             </dl>
                             {binding.bindingState === "reauthorization_required" && binding.provider === "feishu" ? (
                               <div className="flex flex-wrap gap-3">
-                                <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
+                                <Button
+                                  loading={feishuSetup.loading}
+                                  disabled={feishuSetup.loading}
+                                  onClick={() => void connectFeishu("reauthorize")}
+                                >
+                                  Reauthorize Feishu
+                                </Button>
                               </div>
                             ) : null}
                             {binding.bindingState === "reauthorization_required" && binding.provider === "slack" ? (
                               <div className="flex flex-wrap gap-3">
-                                <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
+                                <Button
+                                  loading={slackConfiguration.loading}
+                                  disabled={slackConfiguration.loading}
+                                  onClick={() => void connectSlack("reauthorize")}
+                                >
+                                  Reauthorize Slack
+                                </Button>
                               </div>
                             ) : null}
                             <div className="flex flex-wrap gap-3">
                               {binding.provider === "feishu" ? (
-                                <Button size="compact" variant="outline" onClick={() => void connectFeishu("replace")}>
+                                <Button
+                                  loading={feishuSetup.loading}
+                                  disabled={feishuSetup.loading}
+                                  size="compact"
+                                  variant="outline"
+                                  onClick={() => void connectFeishu("replace")}
+                                >
                                   Change Feishu Bot
                                 </Button>
                               ) : null}
@@ -2625,8 +2642,19 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             Teammates cannot contact this agent until a supported bot is connected.
                           </EmptyState>
                           <div className="flex flex-wrap gap-3">
-                            <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
-                            <Button variant="secondary" onClick={() => void connectSlack()}>
+                            <Button
+                              loading={feishuSetup.loading}
+                              disabled={feishuSetup.loading}
+                              onClick={() => void connectFeishu()}
+                            >
+                              Connect a Feishu Bot
+                            </Button>
+                            <Button
+                              loading={slackConfiguration.loading}
+                              disabled={slackConfiguration.loading}
+                              variant="secondary"
+                              onClick={() => void connectSlack()}
+                            >
                               Add OpenTag to Slack
                             </Button>
                           </div>
@@ -2656,8 +2684,12 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
             <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
               Keep mentions only
             </Button>
-            <Button disabled={confirmationBusy} onClick={() => void changeReceiveMode("all_message")}>
-              {confirmationBusy ? "Updating…" : "Allow every message"}
+            <Button
+              loading={confirmationBusy}
+              disabled={confirmationBusy}
+              onClick={() => void changeReceiveMode("all_message")}
+            >
+              Allow every message
             </Button>
           </div>
         </Dialog>
@@ -2676,11 +2708,12 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
               Keep connected
             </Button>
             <Button
+              loading={confirmationBusy}
               disabled={confirmationBusy}
               variant="danger"
               onClick={() => void disableBinding(confirmation.bindingId)}
             >
-              {confirmationBusy ? "Disconnecting…" : "Disconnect"}
+              Disconnect
             </Button>
           </div>
         </Dialog>

@@ -13,6 +13,7 @@ import {
   Button,
   Field,
   KumoInputControl,
+  Loader,
   StatusIndicator,
   type StatusTone,
   Text,
@@ -432,7 +433,16 @@ export function AgentCreationFlow({
           </Button>
         ) : null}
         <Button disabled={submitting || refreshing || !selectedRoute} type="submit">
-          {submitting ? "Creating…" : "Create Agent"}
+          {submitting ? (
+            <span className="flex items-center gap-1.5">
+              <span aria-hidden="true">
+                <Loader aria-label="Creating Agent" size="sm" />
+              </span>
+              Creating…
+            </span>
+          ) : (
+            "Create Agent"
+          )}
         </Button>
       </div>
     </form>
@@ -724,7 +734,16 @@ function RuntimeAttention({
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-kumo-base p-3">
       <StatusIndicator detail={detail} label={label} tone={tone} />
       <Button disabled={refreshing} size="compact" variant="secondary" onClick={onRefresh}>
-        {refreshing ? "Checking…" : "Check again"}
+        {refreshing ? (
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden="true">
+              <Loader aria-label="Checking Server facts" size="sm" />
+            </span>
+            Checking…
+          </span>
+        ) : (
+          "Check again"
+        )}
       </Button>
     </div>
   );

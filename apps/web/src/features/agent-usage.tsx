@@ -7,7 +7,7 @@ import {
 import { type ComponentProps, lazy, Suspense, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { browserApi } from "../api.js";
-import { ChartPalette, KumoSelectControl, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
+import { ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
 
 const LazyTimeseriesChart = lazy(async () => {
   const [
@@ -100,9 +100,11 @@ function useAgentUsage(agentId: string, windowDays: AgentUsageWindowDays): Usage
 function UsageSummaryState({ state, compact = false }: { state: UsageState; compact?: boolean }) {
   if (state.kind === "loading") {
     return (
-      <div aria-label="Loading Agent usage" className="grid gap-2" role="status">
-        <span className="h-3 animate-pulse rounded bg-kumo-tint" />
-        <span className="h-3 w-2/3 animate-pulse rounded bg-kumo-tint" />
+      <div aria-label="Loading Agent usage" className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+        <span aria-hidden="true">
+          <Loader size="sm" />
+        </span>
+        <span>Loading Agent usage…</span>
       </div>
     );
   }
@@ -221,7 +223,15 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
       ) : (
         <Suspense
           fallback={
-            <div aria-label="Loading usage chart" className="h-60 animate-pulse rounded bg-kumo-tint" role="status" />
+            <div
+              aria-label="Loading usage chart"
+              className="flex h-60 items-center justify-center rounded bg-kumo-tint text-kumo-subtle"
+              role="status"
+            >
+              <span aria-hidden="true">
+                <Loader size="lg" />
+              </span>
+            </div>
           }
         >
           {chart}

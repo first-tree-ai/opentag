@@ -320,7 +320,7 @@ describe("ComputerSetup", () => {
     });
 
     expect(writeText).toHaveBeenCalledWith(bootstrapCommand);
-    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    expect(screen.getAllByText("Copied!", { exact: true }).length).toBeGreaterThan(0);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
@@ -328,7 +328,7 @@ describe("ComputerSetup", () => {
     expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
   });
 
-  it("selects the command when the browser denies clipboard access", async () => {
+  it("keeps the Kumo copy affordance when the browser denies clipboard access", async () => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
@@ -346,11 +346,10 @@ describe("ComputerSetup", () => {
       fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
     });
 
-    expect(
-      screen.getByText("Copying is unavailable here. The command is selected; press Ctrl or Cmd + C."),
-    ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
-    expect(window.getSelection()?.rangeCount).toBe(1);
+    expect(
+      screen.queryByText("Copying is unavailable here. The command is selected; press Ctrl or Cmd + C."),
+    ).toBeNull();
   });
 
   it("stops showing the countdown once the Computer connects", async () => {

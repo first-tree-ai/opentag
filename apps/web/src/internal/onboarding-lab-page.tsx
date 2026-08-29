@@ -169,6 +169,7 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
                 signed in as themselves is unaffected.
               </p>
               <Button
+                loading={resetState.kind === "pending"}
                 disabled={resetState.kind === "pending"}
                 ref={resetTriggerRef}
                 size="compact"
@@ -200,7 +201,7 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
           onClose={() => setConfirming(false)}
         >
           <div className="flex flex-wrap gap-3">
-            <Button variant="danger" onClick={() => void reset()}>
+            <Button loading={resetState.kind === "pending"} variant="danger" onClick={() => void reset()}>
               Reset and start onboarding
             </Button>
             <Button variant="secondary" onClick={() => setConfirming(false)}>

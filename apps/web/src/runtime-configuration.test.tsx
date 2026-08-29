@@ -33,6 +33,7 @@ async function optionLabels(label: string): Promise<string[]> {
   const options = await screen.findAllByRole("option");
   const values = options.map((option) => option.textContent?.trim() ?? "");
   fireEvent.click(trigger);
+  await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
   return values;
 }
 

@@ -2960,8 +2960,10 @@ function messagingChannelDetail(agent: AgentDetailView, binding: ImBindingSummar
 }
 
 /**
- * The mode never changes what the Agent receives -- every message in a shared conversation reaches it
- * either way. It changes when the Agent wakes up to act, which is what costs Tokens.
+ * The mode decides which messages are delivered to the Agent at all. In `mention_only` an ordinary
+ * shared-conversation message is durable history and creates no delivery; a direct mention creates one
+ * and carries the intervening history as context. `all_message` adds an ambient delivery per message,
+ * so it can wake the runtime far more often -- which is what changes execution and Token spend.
  */
 function triggerModeHeading(provider: ImBindingSummary["provider"]): string {
   return provider === "feishu" ? "Group chat trigger mode" : "Channel trigger mode";

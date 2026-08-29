@@ -3025,8 +3025,13 @@ function agentStatusPresentation(agent: AgentStatusSource): { label: string; ton
 
   if (availability.reason === "computer_offline") return { label: "Computer offline", tone: "warning" };
   if (availability.reason === "runtime_unavailable") {
-    const { status } = availability.dependencies.runtime;
-    return { label: "Agent runtime not available", tone: status === "checking" ? "info" : "warning" };
+    // The Provider-specific wording tells a viewer what to do; a single "runtime not available" does not.
+    const { provider, status } = availability.dependencies.runtime;
+    const providerName = runtimeProviderName(provider);
+    if (status === "checking") return { label: `Checking ${providerName}`, tone: "info" };
+    if (status === "install") return { label: `${providerName} not installed`, tone: "warning" };
+    if (status === "sign-in") return { label: `${providerName} sign-in required`, tone: "warning" };
+    return { label: `${providerName} unavailable`, tone: "warning" };
   }
   /*
    * Every messaging failure blocks the same thing, and separating "not connected" from "error" from

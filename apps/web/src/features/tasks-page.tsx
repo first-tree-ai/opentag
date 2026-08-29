@@ -211,7 +211,11 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   }
 
   return (
-    <section className="grid gap-4" aria-labelledby="agent-tasks-heading" data-ui="agent-tasks">
+    <section
+      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-tasks-heading"
+      data-ui="agent-tasks"
+    >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <Text as="h2" id="agent-tasks-heading" variant="heading">
           Tasks

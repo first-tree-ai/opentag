@@ -52,7 +52,11 @@ export function AgentUsageOverview({
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
   const state = useAgentUsage(agentId, windowDays);
   return (
-    <section className="grid gap-4" aria-labelledby="agent-usage-overview-heading" data-ui="usage-overview">
+    <section
+      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-usage-overview-heading"
+      data-ui="usage-overview"
+    >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <Text as="h2" id="agent-usage-overview-heading" variant="heading">
           Usage

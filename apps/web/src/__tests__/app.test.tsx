@@ -1859,7 +1859,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents");
     render(<App />);
 
-    expect(await screen.findByText("Agent runtime not available")).toBeTruthy();
+    expect(await screen.findByText("Claude Code sign-in required")).toBeTruthy();
     expect(screen.getByText("Cannot receive new work")).toBeTruthy();
     expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,

@@ -3,13 +3,14 @@ import {
   AuthProvidersResponseSchema,
   EmailSignInRequestSchema,
   EmailSignUpRequestSchema,
+  ErrorCodeSchema,
   HTTP_PATHS,
 } from "@opentag/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { OpenTagBetterAuth } from "../auth/better-auth.js";
-import { betterAuthFailure, callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
+import { callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
 import { DEV_SIGN_IN_PATH } from "../auth/internal-sign-in.js";
 import {
   clearBrowserCsrfCookie,
@@ -55,17 +56,35 @@ function isLoopbackAddress(value: string): boolean {
   return isIP(ipv4) === 4 && ipv4.startsWith("127.");
 }
 
-class RouteRateLimiter {
+/**
+ * A per-process attempt budget, and only that.
+ *
+ * What it is for is making a single server unattractive to hammer, and keeping one caller from spending another's
+ * budget within a window. What it is **not** is a deployment-wide guarantee: every replica keeps its own counters and a
+ * restart clears them, so an attacker with more than one route to the fleet gets more than one budget. Bounding
+ * password guessing across a deployment needs a shared store or a gateway in front, and this class should not be read
+ * as standing in for either.
+ *
+ * Entry count is capped because some keys are attacker-chosen. A key space the caller controls — an email address, for
+ * one — is unbounded, so an unbounded map would be a way to spend the server's memory rather than merely its patience.
+ * Expired entries are dropped first, and the oldest survivors after that; evicting a live counter can only ever grant
+ * attempts, never deny them, so the cap costs enforcement rather than availability.
+ */
+export class RouteRateLimiter {
   readonly #entries = new Map<string, { count: number; resetAt: number }>();
   constructor(
     readonly limit = 20,
     readonly windowMs = 5 * 60 * 1000,
+    readonly maxEntries = 10_000,
   ) {}
 
   check(key: string): void {
     const now = Date.now();
     const current = this.#entries.get(key);
     if (!current || current.resetAt <= now) {
+      // Re-inserted rather than mutated, so the insertion order Map preserves is also the eviction order below.
+      this.#entries.delete(key);
+      this.#evict(now);
       this.#entries.set(key, { count: 1, resetAt: now + this.windowMs });
       return;
     }
@@ -74,6 +93,106 @@ class RouteRateLimiter {
       throw new AuthServiceError("RATE_LIMITED", "rate_limit", "Too many browser sign-in attempts", 429);
     }
   }
+
+  /** Exposed for the test that holds the bound; nothing in the routes reads it. */
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  #evict(now: number): void {
+    if (this.#entries.size < this.maxEntries) return;
+    for (const [key, entry] of this.#entries) {
+      if (entry.resetAt <= now) this.#entries.delete(key);
+    }
+    // Still full of live counters, so age decides: Map iterates in insertion order, and each entry is inserted once.
+    while (this.#entries.size >= this.maxEntries) {
+      const oldest = this.#entries.keys().next();
+      if (oldest.done) return;
+      this.#entries.delete(oldest.value);
+    }
+  }
+}
+
+/**
+ * Whether a Better Auth failure was a decision about the request or a failure to answer it at all.
+ *
+ * The distinction has to survive: a credential path that reports a database outage as "wrong password" tells the
+ * person to retype a correct password, tells the browser not to retry, and hides the incident from whoever is meant to
+ * notice it. Only a refusal the library actually made may be reported as one.
+ */
+function transientFailure(response: Response): AuthServiceError | undefined {
+  if (response.status === 429) {
+    return new AuthServiceError("RATE_LIMITED", "rate_limit", "Too many browser sign-in attempts", 429);
+  }
+  if (response.status >= 500) {
+    /*
+     * The library's own message is not forwarded. It is written for a developer reading a stack trace and can name
+     * internals; that a sign-in could not be completed is the whole of what a caller needs.
+     */
+    return new AuthServiceError("SERVICE_UNAVAILABLE", "transient", "Sign-in is temporarily unavailable", 503);
+  }
+  return undefined;
+}
+
+/**
+ * An OpenTag decision the library only carried, rather than one of its own.
+ *
+ * `onSessionCreating` raises `AUTH_USER_SUSPENDED` from inside Better Auth, and that answer should reach the caller
+ * intact. Only codes that parse as OpenTag's own survive this: the library's vocabulary — `INVALID_EMAIL_OR_PASSWORD`
+ * and the rest — does not, so nothing it decided leaks through here.
+ */
+function preservedDecision(body: unknown, status: number): AuthServiceError | undefined {
+  const envelope = body as { code?: unknown; message?: unknown } | undefined;
+  const code = ErrorCodeSchema.safeParse(envelope?.code);
+  if (!code.success || typeof envelope?.message !== "string") return undefined;
+  return new AuthServiceError(code.data, "deterministic", envelope.message, status);
+}
+
+/**
+ * Restates a refused registration.
+ *
+ * Registration cannot hide that an address is taken and still tell the caller what to do about it, so the duplicate is
+ * reported as the conflict it is — the one disclosure any self-serve registration without a verification step makes.
+ * Everything else is a rejected request rather than a conflict: reporting them all as "already exists" would make
+ * every other cause unreadable, and would tell someone registering a free address to go recover an Account that does
+ * not exist.
+ */
+async function signUpFailure(response: Response): Promise<AuthServiceError> {
+  const transient = transientFailure(response);
+  if (transient) return transient;
+  const body = await response.json().catch(() => undefined);
+  const preserved = preservedDecision(body, response.status);
+  if (preserved) return preserved;
+  const code = (body as { code?: unknown } | undefined)?.code;
+  const duplicate =
+    response.status === 409 || (typeof code === "string" && code.toUpperCase().includes("ALREADY_EXISTS"));
+  if (duplicate) {
+    return new AuthServiceError(
+      "AUTH_EMAIL_CONFLICT",
+      "deterministic",
+      "An Account already exists for that email address",
+      409,
+    );
+  }
+  return new AuthServiceError("VALIDATION_ERROR", "validation", "The registration was refused", 400);
+}
+
+/**
+ * Restates a refused sign-in.
+ *
+ * One answer for an unknown address and a wrong password alike, because distinguishing them would turn this endpoint
+ * into a way to ask which addresses hold Accounts. That uniformity covers the library's refusals only. A server that
+ * could not answer says so, or the transient case is unreachable to both the browser and whoever operates it; and a
+ * suspension is reported as itself, because reaching it took a password the caller already had.
+ */
+async function signInFailure(response: Response): Promise<AuthServiceError> {
+  const transient = transientFailure(response);
+  if (transient) return transient;
+  const preserved = preservedDecision(await response.json().catch(() => undefined), response.status);
+  return (
+    preserved ??
+    new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The email address or password is incorrect", 401)
+  );
 }
 
 export function registerBrowserAuthRoutes(app: FastifyInstance, options: BrowserAuthRoutesOptions): void {
@@ -214,19 +333,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       body: { email: body.email, name: body.displayName, password: body.password },
     });
     if (!response.ok) {
-      /*
-       * Registration cannot hide that an address is taken and still tell the caller what to do about it. Sign-in
-       * stays uniform, so this discloses only what any self-serve registration without a verification step must.
-       */
-      throw await betterAuthFailure(
-        response,
-        new AuthServiceError(
-          "AUTH_EMAIL_CONFLICT",
-          "deterministic",
-          "An Account already exists for that email address",
-          409,
-        ),
-      );
+      throw await signUpFailure(response);
     }
     establishBrowserSession(reply, response);
     return reply.code(204).send();
@@ -249,11 +356,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       body: { email: body.email, password: body.password },
     });
     if (!response.ok) {
-      /*
-       * One answer for an unknown address and a wrong password alike: distinguishing them would turn this endpoint
-       * into a way to ask which addresses hold Accounts. Better Auth's own reason is deliberately not forwarded.
-       */
-      throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The email address or password is incorrect", 401);
+      throw await signInFailure(response);
     }
     establishBrowserSession(reply, response);
     return reply.code(204).send();

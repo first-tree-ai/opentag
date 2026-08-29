@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
+import { PasswordSignInForm } from "../router.js";
 
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const secondaryWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
@@ -700,6 +701,61 @@ describe("OpenTag Web App Shell", () => {
         password: "correct-horse-battery",
       });
     });
+  });
+
+  it.each([["https://evil.example"], ["//evil.example"], ["/\\evil.example"], ["/api/v1/me"], ["/agents#/../evil"]])(
+    "refuses to land a password sign-in on %s",
+    async (next) => {
+      const navigate = vi.fn();
+      installApi({
+        authProviders: [{ id: "password", enabled: true, startUrl: null }],
+        unauthenticated: true,
+      });
+      render(<PasswordSignInForm navigate={navigate} next={next} />);
+
+      fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+      fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-horse-battery" } });
+      fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+      /*
+       * This is the one sign-in method that navigates the browser itself rather than handing its destination to a
+       * server route, so it has to apply the same allowlist the redirect providers have always been given.
+       */
+      await waitFor(() => expect(navigate).toHaveBeenCalled());
+      expect(navigate).toHaveBeenCalledWith("/agents");
+    },
+  );
+
+  it("lands a password sign-in on an allowed destination it was asked for", async () => {
+    const navigate = vi.fn();
+    installApi({
+      authProviders: [{ id: "password", enabled: true, startUrl: null }],
+      unauthenticated: true,
+    });
+    render(<PasswordSignInForm navigate={navigate} next="/settings/profile" />);
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct-horse-battery" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/settings/profile"));
+  });
+
+  it("does not navigate when the credential was refused", async () => {
+    const navigate = vi.fn();
+    installApi({
+      authProviders: [{ id: "password", enabled: true, startUrl: null }],
+      passwordSignInFails: true,
+      unauthenticated: true,
+    });
+    render(<PasswordSignInForm navigate={navigate} next="/agents" />);
+
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wrong-password-here" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await screen.findByRole("alert");
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("shows the server's reason for a rejected sign-in rather than restating it", async () => {

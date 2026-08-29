@@ -289,15 +289,33 @@ carries. A signed-out browser has no such token — these are the requests that 
 signing in impossible rather than safer. Both responses carry the session cookie and a fresh double-submit token, which
 is what lets a newly signed-in browser write at all.
 
+Both routes send the browser to the same destination allowlist every other sign-in method uses. It lives in
+`@opentag/shared` as `resolveSignInDestination` rather than on the server, because this is the one method that
+navigates the browser itself instead of handing its destination to a route; two implementations would eventually
+disagree, and the more permissive half would be the one that mattered.
+
 A rejected sign-in gives one answer whether the address is unknown or the password is wrong, so the endpoint cannot be
-used to ask which addresses hold Accounts. Registration cannot keep that secret and still be actionable, so a taken
-address is reported as `AUTH_EMAIL_CONFLICT`. Sign-in attempts are bounded per source address and per email address;
-the second bound means an attacker can spend a victim's budget for the window, which is the better failure against
-distributed guessing at one known address.
+used to ask which addresses hold Accounts. That uniformity covers refusals only — a server that could not answer
+reports `SERVICE_UNAVAILABLE`, and a suspended Account is named as suspended, because reaching that answer took a
+password the caller already had. Registration cannot keep the address secret and still be actionable, so a taken
+address is reported as `AUTH_EMAIL_CONFLICT` while any other refusal stays a validation failure.
+
+Sign-in attempts are counted per source address and per email address, and the counters are **per process**: each
+replica keeps its own, and a restart clears them. That is enough to make one server unattractive to hammer, and it is
+not a deployment-wide bound — enforcing that needs a shared store or a gateway in front. The table is capped and evicts
+expired entries first, because an email address is caller-chosen and an unbounded key space would let a caller spend
+the server's memory rather than only its patience.
 
 `users.email_verified` stays false for these Accounts. Nothing in the product sends mail, so there is no verification
 step to assert the address, and recording one that never happened would be worse than recording none. For the same
 reason there is no password reset: adding one means adding a mail sender first.
+
+That has a consequence an operator has to weigh before enabling this alongside Google. Because registration proves
+nothing about the address, someone can register an address they do not own and keep a working password on it; Google is
+a trusted provider, so when the real owner later signs in, their identity links to that existing Account rather than
+creating a new one, and both parties end up holding it. Until address ownership is proven before a password credential
+can participate in linking, treat `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` and Google sign-in as a combination to
+enable only where every address that can reach the server is already trusted.
 
 An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
 enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The

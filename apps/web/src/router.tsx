@@ -11,7 +11,7 @@ import type {
   ProviderReadinessStatus,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
-import { PASSWORD_MIN_LENGTH } from "@opentag/shared/browser";
+import { DEFAULT_SIGN_IN_DESTINATION, PASSWORD_MIN_LENGTH, resolveSignInDestination } from "@opentag/shared/browser";
 import {
   createContext,
   type FormEvent,
@@ -508,7 +508,7 @@ export function AppRouter() {
 
 function LoginPage() {
   const providers = useResource(() => browserApi.authProviders(), "auth-providers");
-  const next = new URLSearchParams(useLocation().search).get("next") ?? "/agents";
+  const next = new URLSearchParams(useLocation().search).get("next") ?? DEFAULT_SIGN_IN_DESTINATION;
   return (
     <main className="login-page decorative-page">
       <section aria-labelledby="login-title" className="login-card">
@@ -596,7 +596,14 @@ function OpenTagBrandLockup() {
  * cookies arrive on that response, and every later request reads the token out of `document.cookie`; re-entering the
  * app through a fresh load is what guarantees it is there before anything tries to use it.
  */
-function PasswordSignInForm({ next }: { next: string }) {
+export function PasswordSignInForm({
+  navigate = (to: string) => window.location.assign(to),
+  next,
+}: {
+  /** The navigation itself, so a test can observe where a sign-in decided to land rather than following it. */
+  navigate?: (to: string) => void;
+  next: string;
+}) {
   const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -615,7 +622,12 @@ function PasswordSignInForm({ next }: { next: string }) {
       } else {
         await browserApi.signInWithPassword({ email, password });
       }
-      window.location.assign(next);
+      /*
+       * Re-checked here rather than trusted from the query string. This is the one sign-in method that navigates the
+       * browser itself instead of handing its destination to a server route, so without this the same `next` the
+       * redirect providers have validated since they existed would be an open redirect on this path alone.
+       */
+      navigate(resolveSignInDestination(next) ?? DEFAULT_SIGN_IN_DESTINATION);
     } catch (cause) {
       /*
        * The server's message is shown as it is. It is written to be shown — a rejected sign-in says only that the

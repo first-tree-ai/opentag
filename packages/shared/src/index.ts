@@ -362,6 +362,7 @@ export {
 } from "./runtime-protocol.js";
 export * from "./session.js";
 export * from "./session-cli.js";
+export * from "./sign-in-destination.js";
 export * from "./task.js";
 export {
   type CompleteWorkspaceSetupRequest,

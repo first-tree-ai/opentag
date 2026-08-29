@@ -34,7 +34,7 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.215.0",
     "@opentelemetry/resources": "^2.7.0",
     "@opentelemetry/sdk-trace-base": "^2.7.0",
-    "@opentelemetry/sdk-trace-node": "^2.7.0",
+    "@opentelemetry/sdk-trace-node": "^2.10.0",
     "@slack/web-api": "^8.0.0",
     "better-auth": "^1.7.2",
     "drizzle-orm": "^0.45.2",

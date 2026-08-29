@@ -1,3 +1,14 @@
+/*
+ * Kumo ships a prebuilt Tailwind bundle, but only of the utilities its own components needed, so
+ * anything this app writes outside that set — every bracketed value among them — used to be inert.
+ * Compiling utilities here from this app's own sources is what makes them real.
+ *
+ * Theme and utilities only, never preflight: Kumo's bundle already carries a base layer, and a
+ * second reset would undo the element styling its components depend on.
+ */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--text-color-kumo-default);

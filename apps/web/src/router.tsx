@@ -2450,7 +2450,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             </div>
                             <div className="flex flex-wrap items-center gap-3">
                               <ProviderIcon className="size-6" provider={binding.provider} />
-                              <span className="grid min-w-0 flex-1 gap-1">
+                              <span className="grid min-w-0 gap-1">
                                 <strong>{binding.bot.displayName ?? titleCase(binding.provider)}</strong>
                                 <small className="text-kumo-subtle">{messagingChannelDetail(agent, binding)}</small>
                               </span>
@@ -2466,17 +2466,22 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 tone={messagingConnectionTone(binding)}
                               />
                             </div>
-                            <MessagingChannelRecovery
-                              agent={agent}
-                              binding={binding}
-                              busy={feishuSetup.loading || slackConfiguration.loading}
-                              onReconnect={() =>
-                                void (binding.provider === "feishu"
-                                  ? connectFeishu("reauthorize")
-                                  : connectSlack("reauthorize"))
-                              }
-                            />
-                            <div className="flex flex-wrap gap-3">
+                            <MessagingChannelNote agent={agent} binding={binding} />
+                            <div className="flex flex-wrap items-center gap-3">
+                              {messagingRecoveryLabel(binding) ? (
+                                <Button
+                                  disabled={feishuSetup.loading || slackConfiguration.loading}
+                                  loading={feishuSetup.loading || slackConfiguration.loading}
+                                  size="compact"
+                                  onClick={() =>
+                                    void (binding.provider === "feishu"
+                                      ? connectFeishu("reauthorize")
+                                      : connectSlack("reauthorize"))
+                                  }
+                                >
+                                  {messagingRecoveryLabel(binding)}
+                                </Button>
+                              ) : null}
                               {binding.provider === "feishu" ? (
                                 <Button
                                   loading={feishuSetup.loading}
@@ -2990,40 +2995,21 @@ function triggerModeDescription(
   return `Only an @mention wakes this Agent. It is then given what was said in the ${destination} since its last reply, so a mention never arrives without its context.`;
 }
 
-/**
- * One exit per channel state. Where the connection cannot be repaired from here, the row says what it
- * is waiting on -- and only when the evidence names it -- instead of offering an action that does nothing.
- */
-function MessagingChannelRecovery({
-  agent,
-  binding,
-  busy = false,
-  onReconnect,
-}: {
-  agent: AgentDetailView;
-  binding: ImBindingSummary;
-  busy?: boolean;
-  onReconnect: () => void;
-}) {
+/** The one repair a channel state offers, or nothing when the state cannot be repaired from here. */
+function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {
   const provider = titleCase(binding.provider);
-  if (binding.bindingState === "reauthorization_required") {
-    return (
-      <div className="flex flex-wrap gap-3">
-        <Button disabled={busy} loading={busy} onClick={onReconnect}>
-          Reauthorize {provider}
-        </Button>
-      </div>
-    );
-  }
-  if (binding.bindingState === "error" || binding.bindingState === "disabled") {
-    return (
-      <div className="flex flex-wrap gap-3">
-        <Button disabled={busy} loading={busy} onClick={onReconnect}>
-          Reconnect {provider}
-        </Button>
-      </div>
-    );
-  }
+  if (binding.bindingState === "reauthorization_required") return `Reauthorize ${provider}`;
+  if (binding.bindingState === "error" || binding.bindingState === "disabled") return `Reconnect ${provider}`;
+  return undefined;
+}
+
+/**
+ * What the channel is waiting on, when no button on this page can move it. The blocker is named only
+ * where the evidence names it: a Computer that is offline, a Provider that is not ready, or neither,
+ * in which case the note says only that delivery is not working yet.
+ */
+function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; binding: ImBindingSummary }) {
+  if (messagingRecoveryLabel(binding)) return null;
   if (binding.bindingState === "provisioning") {
     return <p className="text-sm text-kumo-subtle">Setting up. This usually finishes within a minute.</p>;
   }

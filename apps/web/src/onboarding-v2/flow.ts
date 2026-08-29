@@ -83,6 +83,12 @@ export type MessagingState =
   | { readonly kind: "waiting"; readonly qrValue: string }
   | { readonly kind: "away" }
   /**
+   * Installed, but not yet reachable. The Server observes the messaging identity for itself, and
+   * setup cannot complete before it has — so this is the wait between "the app is connected" and
+   * "the Agent can actually be reached through it".
+   */
+  | { readonly kind: "waiting-handoff" }
+  /**
    * A refused or expired attempt rests here rather than returning to `idle`. Idle is the state the
    * step starts an attempt from, so a failure that returned to it would be retried on sight, for
    * as long as the failure lasted, without the reader doing anything.

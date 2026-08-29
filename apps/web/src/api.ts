@@ -1,4 +1,5 @@
 import {
+  type AccountComputerConnectCodeIssueRequest,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -9,7 +10,6 @@ import {
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   agentByIdPath,
-  agentComputerRebindPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
@@ -160,18 +160,6 @@ export class BrowserApi {
     });
   }
 
-  /**
-   * Moves an Agent onto another Computer. The runtime provider is immutable, but the machine is
-   * not: a laptop is replaced, reinstalled, or enrolled again, and the Agent has to follow it.
-   */
-  rebindAgentComputer(agentId: string, computerId: string): Promise<AgentAdminConfig> {
-    return this.request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify({ computerId }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
   reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
     return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
       method: "POST",
@@ -238,10 +226,16 @@ export class BrowserApi {
     });
   }
 
-  issueComputerConnectCode(): Promise<ComputerConnectCodeIssueResponse> {
+  /**
+   * Issues a Computer connect code. Without a target this creates a new Computer; naming one
+   * repairs that exact Computer instead, which is what a reinstalled or re-enrolled machine needs —
+   * it keeps its identity rather than becoming a second Computer beside the one it replaced.
+   */
+  issueComputerConnectCode(input?: AccountComputerConnectCodeIssueRequest): Promise<ComputerConnectCodeIssueResponse> {
     return this.request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
       method: "POST",
-      headers: this.csrfHeaders(),
+      ...(input ? { body: JSON.stringify(input) } : {}),
+      headers: { ...(input ? { "content-type": "application/json" } : {}), ...this.csrfHeaders() },
     });
   }
 

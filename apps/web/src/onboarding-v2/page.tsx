@@ -284,16 +284,6 @@ function OnboardingV2Flow({
               role="alert"
             >
               <p className="text-sm text-kumo-danger m-0">{backend.error ?? COPY.errors.completeSetup}</p>
-              {/*
-                Some failures clear on their own — the Server refuses to move an Agent while a
-                delivery is in flight — so the way out is a control the reader can press, not a
-                loop running behind the page.
-              */}
-              {backend.retryRebind ? (
-                <Button onClick={backend.retryRebind} size="compact" variant="secondary">
-                  {COPY.nav.retry}
-                </Button>
-              ) : null}
             </div>
           ) : null}
           {flow.complete ? (

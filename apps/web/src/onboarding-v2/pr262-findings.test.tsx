@@ -27,6 +27,8 @@ const WORKSPACE_ID = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
 const POLL_MS = 1_500;
+const FEISHU_POLL_MS = 2_000;
+const HANDOFF_POLL_MS = 2_000;
 
 function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
   return {
@@ -167,6 +169,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     // be stated: no Agents, and therefore no messaging binding.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -234,6 +237,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
     vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
     const onComplete = vi.fn();
 
     render(<OnboardingV2Page onComplete={onComplete} />);
@@ -245,7 +249,10 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await settle();
     press(/Lark/);
     await settle();
-    await tick(4_000);
+    await tick(8_000);
+    await tick(8_000);
+    console.log("BODY:", document.body.textContent?.slice(0, 400));
+    console.log("handoff calls:", vi.mocked(browserApi.imBindingHandoff).mock.calls.length);
 
     expect(onComplete).toHaveBeenCalledWith(AGENT_ID);
   });
@@ -282,6 +289,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     // which is the whole point: the page has to recognise that rather than start over.
     vi.mocked(browserApi.agents).mockResolvedValue({ agents: [existingAgent()] });
     vi.mocked(browserApi.imBinding).mockResolvedValue(activeSlackBinding());
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
     const onCompleteAfterReturn = vi.fn();
     render(<OnboardingV2Page onComplete={onCompleteAfterReturn} />);
     await settle();
@@ -298,6 +306,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
     vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
     const onComplete = vi.fn().mockRejectedValueOnce(new Error("Service unavailable")).mockResolvedValue(undefined);
 
     render(<OnboardingV2Page onComplete={onComplete} />);
@@ -309,8 +318,49 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await settle();
     press(/Lark/);
     await settle();
-    await tick(10_000);
+    await tick(FEISHU_POLL_MS * 2);
+    await tick(HANDOFF_POLL_MS * 2);
+    await tick(HANDOFF_POLL_MS * 2);
 
     expect(onComplete).toHaveBeenCalledTimes(2);
+  });
+
+  /*
+   * The Server refuses to complete setup until the Agent is genuinely reachable — an active
+   * binding, a ready runtime, a ready provider CLI, and an observation of the messaging identity.
+   * Slack's install marks the binding active before that observation lands, so a page that treats
+   * "installed" as "finished" asks for something that will be refused, and spends its attempts
+   * doing it.
+   */
+  it("does not complete setup on an installed app the Server cannot yet reach", async () => {
+    computersReturning([], [computer()]);
+    issuing();
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
+    // Bound, but not yet reachable: exactly the window a real Slack callback lands in.
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: false });
+    const onComplete = vi.fn();
+
+    render(<OnboardingV2Page onComplete={onComplete} />);
+
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/Lark/);
+    await settle();
+    await tick(FEISHU_POLL_MS * 2);
+    await tick(HANDOFF_POLL_MS * 4);
+
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+
+    // Once the Server has made its observation, the flow finishes on the same poll.
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
+    await tick(HANDOFF_POLL_MS * 2);
+
+    expect(onComplete).toHaveBeenCalledWith(AGENT_ID);
   });
 });

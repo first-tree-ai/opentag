@@ -27,6 +27,8 @@ import type {
 const COMPUTER_POLL_MS = 1_500;
 /** The Feishu attempt is a QR the user scans on a phone; there is nothing to see faster than this. */
 const FEISHU_POLL_MS = 2_000;
+/** How often to ask whether the Agent has actually become reachable through its messaging app. */
+const HANDOFF_POLL_MS = 2_000;
 
 export function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback;
@@ -51,6 +53,23 @@ function findArrival(
       computer.connectedAt !== null &&
       (!baseline.has(computer.computerId) || baseline.get(computer.computerId) !== computer.connectedAt),
   );
+}
+
+/**
+ * The Computer a repair code was issued for, once it has answered.
+ *
+ * Nothing is inferred here. The code named this machine, so the only question is whether it has
+ * come back — which is a fresh `connectedAt` on that exact Computer, and cannot be satisfied by
+ * any other machine enrolling during the wait.
+ */
+function findRepaired(
+  computers: readonly WorkspaceComputerSummary[],
+  targetComputerId: string,
+  baseline: ReadonlyMap<string, string | null>,
+): WorkspaceComputerSummary | undefined {
+  const target = computers.find((computer) => computer.computerId === targetComputerId);
+  if (!target || target.connectionStatus !== "online" || target.connectedAt === null) return undefined;
+  return baseline.get(targetComputerId) === target.connectedAt ? undefined : target;
 }
 
 /**
@@ -105,7 +124,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [planSignIn] = useState<PlanSignIn>("idle");
   const [resuming, setResuming] = useState(true);
   const [resumeError, setResumeError] = useState<string>();
-  const [rebindRefused, setRebindRefused] = useState(false);
   /** Discards the reply of a read the reader has already asked to redo. */
   const resumeRun = useRef(0);
 
@@ -118,18 +136,12 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const creationRef = useRef<CreationState>("idle");
   const feishuTimer = useRef(0);
   /** The connection as it stands, readable from a callback without making an updater impure. */
-  /** The Computer the Agent is bound to on the Server, which a new machine has to replace. */
-  const boundComputerId = useRef<string | undefined>(undefined);
-  /** The name last shown for the machine being moved onto, so a retry can report the same one. */
-  const computerNameRef = useRef("");
   /**
-   * Whether a move is in flight or has been refused. Without it the poll that discovered the new
-   * machine would ask again on every tick, because a refusal changes nothing that poll can see —
-   * and this is a write that takes row locks, not a read.
+   * The Computer this run is repairing, when it is repairing one. A code issued against it names
+   * its target, so the machine that answers is that machine — there is nothing to infer, and
+   * nothing about who owns what to decide from an arrival.
    */
-  const rebindState = useRef<"idle" | "moving" | "refused">("idle");
-  /** The Computer a refused move was for, so asking again does not wait on a fresh arrival. */
-  const rebindTarget = useRef<string | undefined>(undefined);
+  const repairTarget = useRef<string | undefined>(undefined);
   /**
    * Latched once the reader is past the step the connection belongs to. Losing a Computer matters
    * on that step, where it hides the command that brings the machine back; past it the Agent
@@ -193,8 +205,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
-        boundComputerId.current = existing.computer.computerId;
         const enrolled = online.get(existing.computer.computerId);
+        // Offline or gone: the step issues a code that repairs this exact Computer.
+        repairTarget.current = enrolled ? undefined : existing.computer.computerId;
         if (enrolled) {
           computerId.current = enrolled.computerId;
           setComputer(enrolled);
@@ -205,11 +218,17 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         // An offline or missing Computer leaves the connection idle, which is what makes the step
         // issue a fresh code — and whatever machine answers it gets bound to this Agent.
 
-        const binding = await browserApi.imBinding(existing.id);
+        /*
+         * Handoff readiness, not binding state. The Server refuses to complete setup unless the
+         * Agent is genuinely reachable — an active binding, a ready runtime, a ready provider CLI
+         * and an actual observation of the messaging identity. Slack's install marks the binding
+         * active before that observation lands, so treating "installed" as "finished" is how a
+         * real callback ends up asking to complete something the Server will refuse.
+         */
+        const handoff = await browserApi.imBindingHandoff(existing.id);
         if (!live()) return;
-        // Only a live binding finishes the flow. One that is provisioning, broken or disabled is a
-        // messaging app still to be connected, which is exactly the step this lands on.
-        if (binding?.bindingState === "active") setMessaging({ kind: "connected" });
+        if (handoff?.handoffReady) setMessaging({ kind: "connected" });
+        else if (handoff) setMessaging({ kind: "waiting-handoff" });
       }
     } catch (cause) {
       // Reading is the only way to tell a returning Account from a new one, so a failed read is
@@ -225,44 +244,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     void readAccount();
   }, [readAccount]);
 
-  /**
-   * Moves the Agent onto a Computer and only then reports the connection. Saying "connected" before
-   * the move lands would mean "this machine is yours" about a machine the Agent is not on.
-   */
-  const moveAgent = useCallback((agentId: string, targetComputerId: string, computerName: string, mine: number) => {
-    if (rebindState.current === "moving") return;
-    rebindState.current = "moving";
-    void browserApi.rebindAgentComputer(agentId, targetComputerId).then(
-      () => {
-        // The run this move belongs to. A Start over while it was in flight would otherwise let it
-        // land on the run that replaced it: the connection would read as live before the new run
-        // had issued a code, and nothing on screen could move it on.
-        if (!mounted.current || attempt.current !== mine) return;
-        rebindState.current = "idle";
-        boundComputerId.current = targetComputerId;
-        computerId.current = targetComputerId;
-        setRebindRefused(false);
-        setActionError(undefined);
-        setConnectionError(undefined);
-        setConnect((current) =>
-          current.kind === "connected"
-            ? current
-            : {
-                kind: "connected",
-                command: connectRef.current.kind === "issued" ? connectRef.current.command : "",
-                computerName,
-              },
-        );
-      },
-      (cause: unknown) => {
-        if (!mounted.current || attempt.current !== mine) return;
-        rebindState.current = "refused";
-        setRebindRefused(true);
-        setActionError(errorMessage(cause, COPY.errors.rebind));
-      },
-    );
-  }, []);
-
   const issue = useCallback(async () => {
     const mine = attempt.current + 1;
     attempt.current = mine;
@@ -270,12 +251,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     // well as what they cannot. A move left mid-flight would otherwise hold its own gate shut for
     // the rest of the session, and a move that was refused would leave behind an explanation that
     // no longer applies beside a control with nothing left to try.
-    const refused = rebindState.current === "refused";
-    rebindState.current = "idle";
-    rebindTarget.current = undefined;
-    setRebindRefused(false);
-    // Only the refusal's own message. Another action's failure is still the reader's to read.
-    if (refused) setActionError(undefined);
     setConnect({ kind: "issuing" });
     setConnectionError(undefined);
     try {
@@ -284,7 +259,18 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       const before = await browserApi.computers();
       if (!mounted.current || attempt.current !== mine) return;
       baseline.current = new Map(before.computers.map((computer) => [computer.computerId, computer.connectedAt]));
-      const issued = await browserApi.issueComputerConnectCode();
+      /*
+       * A Computer this Account already has is repaired, not replaced. The Agent is bound to that
+       * exact machine, so a code that named no target would enrol a second Computer beside it and
+       * leave the Agent pointing at the one that went away — a reinstall would cost an Account a
+       * duplicate every time. Naming the target also settles which machine answered: the Server
+       * repairs the Computer the code was issued for, so nothing has to be inferred from an
+       * arrival.
+       */
+      const repairing = repairTarget.current;
+      const issued = await browserApi.issueComputerConnectCode(
+        repairing ? { mode: "repair", targetComputerId: repairing } : undefined,
+      );
       if (!mounted.current || attempt.current !== mine) return;
       expiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
       setConnect({ kind: "issued", command: issued.bootstrapCommand, expiresAt: expiresAt.current });
@@ -319,18 +305,14 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       void browserApi.computers().then(
         (value) => {
           if (!mounted.current || attempt.current !== mine) return;
-          const arrived = findArrival(value.computers, baseline.current);
+          const arrived = repairTarget.current
+            ? findRepaired(value.computers, repairTarget.current, baseline.current)
+            : findArrival(value.computers, baseline.current);
           // A reply can land after its code expired. Adopting outside this guard let an expired
           // attempt claim a machine, enable Continue, and create an Agent the page could then never
           // move past — so nothing is adopted unless the connection is still the one waiting.
           const waiting = connectRef.current;
           if (!arrived || waiting.kind !== "issued") return;
-          const settled = () => {
-            computerId.current = arrived.computerId;
-            setComputer(arrived);
-            setConnectionError(undefined);
-            setConnect({ kind: "connected", command: waiting.command, computerName: arrived.displayName });
-          };
           /*
            * A machine that is not the one the Agent is bound to has to become it. An Agent's
            * Computer can be changed after creation even though its runtime cannot, so the honest
@@ -338,18 +320,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
            * comes back, and not to quietly finish setup with the Agent still pointing at a machine
            * nobody checked. Until the move lands, this is not a connection worth reporting.
            */
-          const resumedAgent = agentRef.current;
-          if (resumedAgent && boundComputerId.current !== arrived.computerId) {
-            // Asked once. A refusal rests until the reader asks again rather than repeating on the
-            // next tick: the Server can refuse this while a delivery is in flight, and that clears
-            // on its own, so the answer is a button and not a loop nobody can see.
-            if (rebindState.current !== "idle") return;
-            rebindTarget.current = arrived.computerId;
-            computerNameRef.current = arrived.displayName;
-            moveAgent(resumedAgent.id, arrived.computerId, arrived.displayName, mine);
-            return;
-          }
-          settled();
+          computerId.current = arrived.computerId;
+          setComputer(arrived);
+          setConnectionError(undefined);
+          setConnect({ kind: "connected", command: waiting.command, computerName: arrived.displayName });
         },
         (cause: unknown) => {
           if (mounted.current && attempt.current === mine)
@@ -358,7 +332,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       );
     }, COMPUTER_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [connect.kind, moveAgent]);
+  }, [connect.kind]);
 
   // Once the Computer is here, the same cadence keeps reading its readiness. The daemon re-probes on
   // its own schedule, so a failure that gets repaired in a terminal turns green here with no page
@@ -399,6 +373,26 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     return () => window.clearInterval(timer);
   }, [connect.kind]);
 
+  /*
+   * An installed messaging app is not a reachable Agent. Between the two sits an observation the
+   * Server makes for itself, and only when it has been made will completing setup be allowed — so
+   * this waits for it rather than asking and being refused.
+   */
+  useEffect(() => {
+    if (messaging.kind !== "waiting-handoff" || !agent) return;
+    const mine = attempt.current;
+    const timer = window.setInterval(() => {
+      void browserApi.imBindingHandoff(agent.id).then(
+        (handoff) => {
+          if (!mounted.current || attempt.current !== mine) return;
+          if (handoff?.handoffReady) setMessaging({ kind: "connected" });
+        },
+        () => undefined,
+      );
+    }, HANDOFF_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [agent, messaging.kind]);
+
   const createAgent = useCallback((draft: AgentDraft) => {
     const id = computerId.current;
     if (!id || !draft.runtime || creationRef.current !== "idle") return;
@@ -418,7 +412,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           if (!mounted.current || attempt.current !== mine) return;
           creationRef.current = "created";
           setCreation("created");
-          boundComputerId.current = id;
           setAgent({ id: created.id, name: created.name, runtimeProvider: created.runtimeProvider });
         },
         (cause: unknown) => {
@@ -475,7 +468,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
               }
               if (current.state === "succeeded") {
                 window.clearInterval(feishuTimer.current);
-                setMessaging({ kind: "connected" });
+                setMessaging({ kind: "waiting-handoff" });
                 return;
               }
               if (current.state === "failed" || current.state === "expired" || current.state === "canceled") {
@@ -526,11 +519,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setMessaging({ kind: "idle" });
     setAgent(undefined);
     setCreation("idle");
-    boundComputerId.current = undefined;
-    rebindState.current = "idle";
-    rebindTarget.current = undefined;
+    repairTarget.current = undefined;
     pastConnectStep.current = false;
-    setRebindRefused(false);
     setResuming(false);
     setResumeError(undefined);
     setActionError(undefined);
@@ -546,22 +536,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const retryResume = useCallback(() => {
     void readAccount();
   }, [readAccount]);
-
-  /**
-   * Asks for a refused move again, and sends it rather than waiting for the poll to rediscover the
-   * machine. The poll's arrival branch only runs while a connect code is live, so a reader who
-   * waited out a refusal — which is the sensible thing to do with one that clears on its own —
-   * would otherwise press a button that did nothing.
-   */
-  const retryRebind = useCallback(() => {
-    const agentId = agentRef.current?.id;
-    const target = rebindTarget.current;
-    if (!agentId || !target) return;
-    rebindState.current = "idle";
-    setRebindRefused(false);
-    setActionError(undefined);
-    moveAgent(agentId, target, computerNameRef.current, attempt.current);
-  }, [moveAgent]);
 
   const startPlanSignIn = useCallback(() => undefined, []);
 
@@ -586,7 +560,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       markPastConnectStep,
       resumeError,
       resuming,
-      retryRebind: rebindRefused ? retryRebind : undefined,
       retryResume,
       startMessaging,
       startPlanSignIn,
@@ -606,10 +579,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       refreshConnectCode,
       reset,
       markPastConnectStep,
-      rebindRefused,
       resumeError,
       resuming,
-      retryRebind,
       retryResume,
       startMessaging,
       startPlanSignIn,

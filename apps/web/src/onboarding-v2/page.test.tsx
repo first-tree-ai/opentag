@@ -336,6 +336,7 @@ describe("OnboardingV2Page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
     await advance(ISSUE_MS);
     await advanceMock("Scan QR code");
+    await advanceMock("Confirm reachable");
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
   });
 
@@ -427,6 +428,7 @@ describe("OnboardingV2Page", () => {
       expect(screen.getByText("Waiting for you to finish in Slack…")).toBeTruthy();
 
       await advanceMock("Return from Slack");
+      await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
 
@@ -445,6 +447,7 @@ describe("OnboardingV2Page", () => {
       fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
       fireEvent.click(screen.getByRole("button", { name: "Add to Slack" }));
       await advanceMock("Return from Slack");
+      await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
   });
@@ -547,6 +550,7 @@ describe("OnboardingV2Page", () => {
       fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(ISSUE_MS);
       await advanceMock("Scan QR code");
+      await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
 

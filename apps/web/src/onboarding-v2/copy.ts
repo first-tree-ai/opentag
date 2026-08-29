@@ -183,6 +183,7 @@ export const COPY = {
     slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
     slackAction: "Add to Slack",
     slackWaiting: "Waiting for you to finish in Slack…",
+    confirming: "Connected. Checking your agent can be reached…",
     retry: "Try again",
     failed: "That didn't work. Try again to get a new code.",
   },
@@ -203,8 +204,6 @@ export const COPY = {
     messaging: "We couldn't start connecting your messaging app.",
     feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
     resume: "We couldn't check what your account already has.",
-    /** Rarely seen: the Server's own refusal carries a message, and that is shown instead. */
-    rebind: "We couldn't move your agent onto this computer.",
     completeSetup: "Your agent is ready, but we couldn't finish setting up your account. Reload to try again.",
   },
 } as const;

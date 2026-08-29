@@ -52,11 +52,6 @@ export interface OnboardingBackend {
   /** Reads it again. A failed read has to be recoverable: this route is the gate's only exit. */
   readonly retryResume: () => void;
   /**
-   * Present only when moving the Agent onto this Computer was refused. The Server refuses that
-   * while a delivery is in flight, which clears on its own, so asking again is the reader's to do.
-   */
-  readonly retryRebind: (() => void) | undefined;
-  /**
    * Told by the page once the reader is past the step the Computer connection belongs to. Losing a
    * Computer matters on that step; past it, interrupting them costs more than it tells them.
    */

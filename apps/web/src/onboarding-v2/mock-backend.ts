@@ -266,7 +266,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
         queueMicrotask(() => {
           later(() => {
             setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/feishu/${randomId()}` });
-            later(() => setMessaging({ kind: "connected" }), timings.scanMs);
+            later(() => setMessaging({ kind: "waiting-handoff" }), timings.scanMs);
           }, timings.issueMs);
         });
         return { kind: "issuing" };
@@ -277,7 +277,10 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
 
   const startSlackInstall = useCallback(() => {
     setMessaging((current) => (current.kind === "idle" ? { kind: "away" } : current));
-    later(() => setMessaging((current) => (current.kind === "away" ? { kind: "connected" } : current)), timings.scanMs);
+    later(
+      () => setMessaging((current) => (current.kind === "away" ? { kind: "waiting-handoff" } : current)),
+      timings.scanMs,
+    );
   }, [later, timings.scanMs]);
 
   const startPlanSignIn = useCallback(() => {
@@ -314,9 +317,12 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     if (connect.kind === "issued") return { label: "Connect computer", run: arrive };
     if (checkResult) return { label: "Return check result", run: settleCheck };
     if (planSignIn === "pending") return { label: "Approve sign-in", run: () => setPlanSignIn("signed-in") };
-    if (messaging.kind === "waiting") return { label: "Scan QR code", run: () => setMessaging({ kind: "connected" }) };
+    if (messaging.kind === "waiting")
+      return { label: "Scan QR code", run: () => setMessaging({ kind: "waiting-handoff" }) };
     if (messaging.kind === "away")
-      return { label: "Return from Slack", run: () => setMessaging({ kind: "connected" }) };
+      return { label: "Return from Slack", run: () => setMessaging({ kind: "waiting-handoff" }) };
+    if (messaging.kind === "waiting-handoff")
+      return { label: "Confirm reachable", run: () => setMessaging({ kind: "connected" }) };
     return undefined;
   }, [arrive, checkResult, connect.kind, messaging.kind, planSignIn, settleCheck]);
 
@@ -334,7 +340,6 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       resuming: false,
       resumeError: undefined,
       retryResume: () => undefined,
-      retryRebind: undefined,
       markPastConnectStep: () => undefined,
       startPlanSignIn,
       issueConnectCode,

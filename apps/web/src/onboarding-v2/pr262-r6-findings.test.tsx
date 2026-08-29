@@ -5,15 +5,14 @@
  * The gate works. What the demotion is guarded by does not match what it was meant to protect.
  */
 
-import type { AgentAdminConfig, AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { OnboardingV2Page } from "./page.js";
 
 const NOW = "2026-08-29T00:00:00.000Z";
 const AGENT_COMPUTER = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
-const OTHER_COMPUTER = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const WORKSPACE_ID = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -65,27 +64,13 @@ async function tick(ms: number) {
 }
 
 /** An Account resumed onto an offline Agent Computer, with a different machine about to answer. */
-function replacementArrives(expiresIn = 900) {
-  vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
-  vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
-    bootstrapCommand: "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABC",
-    expiresIn,
-    issuedAt: NOW,
-  });
-  let call = 0;
-  vi.spyOn(browserApi, "computers").mockImplementation(async () => {
-    call += 1;
-    const departed = machine(AGENT_COMPUTER, "Ada's old Mac", false, false);
-    if (call <= 2) return { computers: [departed] };
-    return { computers: [departed, machine(OTHER_COMPUTER, "Ada's new Mac", true)] };
-  });
-}
 
 describe("demotion and the rebind gate at 7967e49", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -117,51 +102,6 @@ describe("demotion and the rebind gate at 7967e49", () => {
 
     await tick(POLL_MS * 3);
 
-    expect(screen.queryByRole("heading", { name: "Connect your messaging app" })).not.toBeNull();
-  });
-
-  it("still lets a refused move be retried after the connect code has expired", async () => {
-    // The refusal rests, which is right. But the retry re-enters through the arrival branch, and
-    // that branch only runs while the connection is `issued` — so once the code lapses, the button
-    // is still on screen and no longer does anything.
-    replacementArrives(3);
-    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockRejectedValue(new Error("delivery in flight"));
-
-    render(<OnboardingV2Page />);
-    await settle();
-    await tick(POLL_MS * 2);
-    expect(rebind).toHaveBeenCalledTimes(1);
-
-    // The code lapses while the reader reads the failure.
-    await tick(POLL_MS * 2);
-    rebind.mockResolvedValue({} as AgentAdminConfig);
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await settle();
-    await tick(POLL_MS * 3);
-
-    expect(rebind).toHaveBeenCalledTimes(2);
-  });
-
-  it("moves the Agent when a refused move is retried in time", async () => {
-    // The path liuchao-staff asked about, end to end: refused, retried by hand, then accepted.
-    replacementArrives();
-    const rebind = vi
-      .spyOn(browserApi, "rebindAgentComputer")
-      .mockRejectedValueOnce(new Error("delivery in flight"))
-      .mockResolvedValue({} as AgentAdminConfig);
-
-    render(<OnboardingV2Page />);
-    await settle();
-    await tick(POLL_MS * 2);
-    expect(rebind).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("Your computer is connected.")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await settle();
-    await tick(POLL_MS * 2);
-
-    expect(rebind).toHaveBeenCalledTimes(2);
-    // The move lands, the machine is ready, and the flow goes on to the step after it.
     expect(screen.queryByRole("heading", { name: "Connect your messaging app" })).not.toBeNull();
   });
 });

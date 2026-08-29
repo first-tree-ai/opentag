@@ -6,7 +6,7 @@
  * true when it was made and is not any more.
  */
 
-import type { AgentAdminConfig, AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -14,7 +14,6 @@ import { OnboardingV2Page } from "./page.js";
 
 const NOW = "2026-08-29T00:00:00.000Z";
 const AGENT_COMPUTER = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
-const OTHER_COMPUTER = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const WORKSPACE_ID = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -75,34 +74,12 @@ describe("rebind at ff218a7", () => {
       issuedAt: NOW,
     });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
-  });
-
-  it("asks to move the Agent once, not on every poll while the move is refused", async () => {
-    // The rebind is fired from inside the poll that found the machine, and nothing about a refusal
-    // changes what that poll sees: the same machine is still there, the connection is still
-    // `issued`, and the bound Computer is still the old one. So the next tick asks again.
-    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
-    let call = 0;
-    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
-      call += 1;
-      const departed = machine(AGENT_COMPUTER, "Ada's old Mac", false, false);
-      if (call <= 2) return { computers: [departed] };
-      return { computers: [departed, machine(OTHER_COMPUTER, "Ada's new Mac", true)] };
-    });
-    const rebind = vi
-      .spyOn(browserApi, "rebindAgentComputer")
-      .mockRejectedValue(new Error("An Agent with work in flight cannot be moved"));
-
-    render(<OnboardingV2Page />);
-    await settle();
-    await tick(POLL_MS * 6);
-
-    expect(rebind).toHaveBeenCalledTimes(1);
   });
 
   it("stops saying the Computer is connected once the Server says it went away", async () => {
@@ -127,30 +104,6 @@ describe("rebind at ff218a7", () => {
     expect(screen.queryByText("Your computer is connected.")).toBeNull();
   });
 
-  it("lets the reader try the move again after it is refused", async () => {
-    // A refusal reports and stops. `AGENT_REBIND_BLOCKED` clears on its own once the in-flight work
-    // reports, so the reader needs a way to ask again that is not "wait for the code to expire".
-    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
-    let call = 0;
-    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
-      call += 1;
-      const departed = machine(AGENT_COMPUTER, "Ada's old Mac", false, false);
-      if (call <= 2) return { computers: [departed] };
-      return { computers: [departed, machine(OTHER_COMPUTER, "Ada's new Mac", true)] };
-    });
-    vi.spyOn(browserApi, "rebindAgentComputer")
-      .mockRejectedValueOnce(new Error("blocked"))
-      .mockResolvedValue({} as AgentAdminConfig);
-
-    render(<OnboardingV2Page />);
-    await settle();
-    await tick(POLL_MS * 2);
-    // The Server's own message is surfaced, which is right — `errorMessage` prefers it over the
-    // fallback copy. What is missing is anything the reader can press.
-    expect(screen.getByRole("alert")).toBeTruthy();
-
-    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeNull();
-  });
   it("stops saying so on a first run too, not only on a resumed one", async () => {
     // Same effect, reached the ordinary way: nothing demotes `connected`, so this is not specific
     // to resume — a daemon that stops while the check is still running does it as well.

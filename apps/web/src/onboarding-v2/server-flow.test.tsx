@@ -20,6 +20,7 @@ const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
 const POLL_MS = 1_500;
 const FEISHU_POLL_MS = 2_000;
+const HANDOFF_POLL_MS = 2_000;
 const COMMAND = "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABCDEF";
 
 function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
@@ -113,6 +114,7 @@ describe("the onboarding flow against the Server", () => {
     // be stated: no Agents, and therefore no messaging binding.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand: COMMAND,
       expiresIn: 900,
@@ -132,6 +134,7 @@ describe("the onboarding flow against the Server", () => {
     vi.spyOn(browserApi, "feishuSetupAttempt")
       .mockResolvedValueOnce(attempt())
       .mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
 
     render(<OnboardingV2Page />);
 
@@ -161,6 +164,11 @@ describe("the onboarding flow against the Server", () => {
     expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
 
     await tick(FEISHU_POLL_MS * 2);
+    // Scanning installs the app; the Server observing that the Agent can be reached is a second
+    // thing, and completing setup waits on it.
+    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    await tick(HANDOFF_POLL_MS * 2);
+    await tick(HANDOFF_POLL_MS * 2);
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
   });
 

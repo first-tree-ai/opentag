@@ -67,6 +67,7 @@ async function tick(ms: number) {
 function resumeOntoDepartedComputer() {
   vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [existingAgent()] });
   vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+  vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
   vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [departedComputer()] });
   vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
     bootstrapCommand: "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABC",

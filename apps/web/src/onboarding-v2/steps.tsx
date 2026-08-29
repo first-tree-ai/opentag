@@ -346,7 +346,12 @@ function MessagingConnection({
             A refused code is not retried on sight, so this is the only way back to one. Saying
             "Waiting for you to scan…" over an empty box would be untrue: nothing is waiting.
           */}
-          {messaging.kind === "failed" ? (
+          {messaging.kind === "waiting-handoff" ? (
+            <p className={WAITING} role="status">
+              <span aria-hidden="true" className="otv2-pulse shrink-0" />
+              {COPY.messaging.confirming}
+            </p>
+          ) : messaging.kind === "failed" ? (
             <div className="flex flex-col items-center gap-3">
               <p className="text-sm text-kumo-danger m-0">{COPY.messaging.failed}</p>
               <Button onClick={() => onRetry(provider)} variant="secondary">
@@ -368,7 +373,12 @@ function MessagingConnection({
             state here is about a page they are not on, not something to watch on this one.
           */}
           <div className="otv2-slot--signin flex items-center justify-center">
-            {messaging.kind === "away" ? (
+            {messaging.kind === "waiting-handoff" ? (
+              <p className={WAITING} role="status">
+                <span aria-hidden="true" className="otv2-pulse shrink-0" />
+                {COPY.messaging.confirming}
+              </p>
+            ) : messaging.kind === "away" ? (
               <p className={WAITING} role="status">
                 <span aria-hidden="true" className="otv2-pulse shrink-0" />
                 {COPY.messaging.slackWaiting}

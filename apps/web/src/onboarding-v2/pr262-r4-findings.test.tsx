@@ -90,6 +90,7 @@ describe("resume at a4e2662", () => {
       issuedAt: NOW,
     });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
   });
 
   afterEach(() => {

@@ -134,6 +134,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     // be stated: no Agents, and therefore no messaging binding.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
   });
 
   afterEach(() => {

@@ -7,8 +7,7 @@ import type { CheckRow, CheckState, Destination, Runtime, StepId } from "./flow.
 
 export const STEP_LABELS: Record<StepId, string> = {
   agent: "Your agent",
-  connect: "Your computer",
-  check: "Computer check",
+  computer: "Your computer",
   messaging: "Messaging app",
 };
 

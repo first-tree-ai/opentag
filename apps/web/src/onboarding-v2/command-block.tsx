@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button, Icon } from "../ui/design-system.js";
 
 const COPY_FEEDBACK_MS = 1_600;
@@ -19,19 +19,22 @@ export function CommandBlock({
   command,
   copyLabel,
   copiedLabel,
+  expiredNotice,
   fallbackHint,
   inert = false,
-  muted = false,
 }: {
   comment: string;
   command: string;
   copyLabel: string;
   copiedLabel: string;
+  /**
+   * Shown across the block once its contents are dead. It speaks from the block itself rather than
+   * from a line underneath, because the block is the thing that expired.
+   */
+  expiredNotice?: ReactNode;
   fallbackHint: string;
   /** Renders the block's shape with nothing to act on, while its real contents are still coming. */
   inert?: boolean;
-  /** Dims the block when its contents can no longer be used, such as an expired code. */
-  muted?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const [hint, setHint] = useState<string>();
@@ -67,7 +70,7 @@ export function CommandBlock({
   }
 
   return (
-    <div className="otv2-command" data-muted={muted ? "true" : undefined}>
+    <div className="otv2-command" data-expired={expiredNotice ? "true" : undefined}>
       <div className="otv2-command__body">
         <pre className="otv2-command__code">
           <code ref={codeRef}>
@@ -85,14 +88,15 @@ export function CommandBlock({
           aria-label={copied ? copiedLabel : copyLabel}
           className="otv2-command__copy"
           data-copied={copied ? "true" : undefined}
-          disabled={inert}
+          disabled={inert || expiredNotice !== undefined}
           onClick={() => void copy()}
           size="compact"
           title={copied ? copiedLabel : copyLabel}
-          variant="secondary"
+          variant="ghost"
         >
-          <Icon name={copied ? "check" : "instructions"} />
+          <Icon name={copied ? "check" : "copy"} />
         </Button>
+        {expiredNotice ? <div className="otv2-command__expired">{expiredNotice}</div> : null}
       </div>
       {hint ? (
         <p className="otv2-command__hint" role="status">

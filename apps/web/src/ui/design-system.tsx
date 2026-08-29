@@ -151,6 +151,7 @@ export type IconName =
   | "check"
   | "chevron-right"
   | "close"
+  | "copy"
   | "instructions"
   | "laptop"
   | "message"
@@ -182,6 +183,12 @@ export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement>
         <>
           <circle cx="10" cy="10" r="2.5" />
           <path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4" />
+        </>
+      ) : null}
+      {name === "copy" ? (
+        <>
+          <rect x="7" y="7" width="9" height="9" rx="2" />
+          <path d="M13 4.5H6a1.5 1.5 0 0 0-1.5 1.5v7" />
         </>
       ) : null}
       {name === "instructions" ? <path d="M4 5h12M4 10h9M4 15h12" /> : null}

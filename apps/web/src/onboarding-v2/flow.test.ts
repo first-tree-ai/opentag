@@ -59,7 +59,7 @@ describe("deriveFlowState", () => {
 
   it("stays on the agent page until the draft is explicitly confirmed", () => {
     expect(deriveFlowState(facts({ draft, destinationConfirmed: true })).page).toBe("agent");
-    expect(deriveFlowState(facts(confirmed)).page).toBe("connect");
+    expect(deriveFlowState(facts(confirmed)).page).toBe("computer");
   });
 
   it("stays on the agent page while the name is invalid, even once confirmed", () => {
@@ -67,38 +67,26 @@ describe("deriveFlowState", () => {
     expect(deriveFlowState(facts({ ...confirmed, draft: invalid })).page).toBe("agent");
   });
 
-  it("holds the connect page until the arrival has been seen", () => {
-    const arrived = facts({ ...confirmed, connect: connected });
-    expect(deriveFlowState(arrived).page).toBe("connect");
-    expect(deriveFlowState({ ...arrived, connectConfirmed: true }).page).toBe("check");
+  it("keeps connecting and checking on one step", () => {
+    // The check settles within about 100ms of the Computer arriving, so it is not its own step.
+    expect(deriveFlowState(facts({ ...confirmed })).page).toBe("computer");
+    expect(deriveFlowState(facts({ ...confirmed, connect: connected })).page).toBe("computer");
+    expect(deriveFlowState(facts({ ...confirmed, connect: connected, readiness: ready })).page).toBe("computer");
+    expect(deriveFlowState(facts({ ...confirmed })).steps.map((step) => step.id)).toEqual([
+      "agent",
+      "computer",
+      "messaging",
+    ]);
   });
 
-  it("gives the check its own step once the connect step completes", () => {
-    const state = deriveFlowState(facts({ ...confirmed, connect: connected, connectConfirmed: true }));
-    expect(state.steps.find((step) => step.id === "connect")?.status).toBe("complete");
-    expect(state.steps.find((step) => step.id === "check")?.status).toBe("current");
-    expect(state.page).toBe("check");
-  });
-
-  it("holds the check page until the Agent is actually created", () => {
-    const passing = facts({
-      ...confirmed,
-      connect: connected,
-      connectConfirmed: true,
-      readiness: ready,
-    });
-    expect(deriveFlowState(passing).page).toBe("check");
+  it("holds the computer step until the Agent is actually created", () => {
+    const passing = facts({ ...confirmed, connect: connected, readiness: ready });
+    expect(deriveFlowState(passing).page).toBe("computer");
     expect(deriveFlowState({ ...passing, creation: "created" }).page).toBe("messaging");
   });
 
   it("is complete only once messaging is connected", () => {
-    const base = facts({
-      ...confirmed,
-      connect: connected,
-      connectConfirmed: true,
-      readiness: ready,
-      creation: "created",
-    });
+    const base = facts({ ...confirmed, connect: connected, readiness: ready, creation: "created" });
     expect(deriveFlowState(base).complete).toBe(false);
     expect(deriveFlowState({ ...base, messaging: { kind: "connected" } }).complete).toBe(true);
   });

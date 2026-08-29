@@ -419,18 +419,35 @@ function RuntimeMark({ runtime }: { runtime: Runtime }) {
   );
 }
 
-export function ConnectStep({
+/**
+ * Connecting the Computer and reporting what is on it, on one page. The check settles within about
+ * a hundred milliseconds of the Computer arriving, so splitting them would put a screen change in
+ * front of a result that is already there.
+ */
+export function ComputerStep({
   connect,
+  creation,
+  draft,
   onBack,
-  onContinue,
+  onCreate,
   onRefreshCommand,
+  readiness,
 }: {
   connect: ConnectState;
+  creation: CreationState;
+  draft: AgentDraft;
   onBack: () => void;
-  onContinue: () => void;
+  onCreate: () => void;
   onRefreshCommand: () => void;
+  readiness: ReadinessFacts | undefined;
 }) {
   const connected = connect.kind === "connected";
+  const checks = deriveChecks(readiness);
+  const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
+  const resolving = readinessIsResolving(readiness);
+  const passed = readinessPassed(readiness);
+  const failures = checks.filter((check) => check.state === "failed");
+
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
@@ -441,41 +458,59 @@ export function ConnectStep({
           {COPY.connect.privacy}
         </p>
       </header>
+
       {connected ? null : (
         <div className="otv2-command-group">
-          {/* The validity rides on the end of the line that says how to run it, rather than taking a
-            row of its own beneath the block. */}
           <div className="otv2-command-lead">
             <p className="otv2-muted">{COPY.connect.commandIntro}</p>
-            <ConnectValidity connect={connect} onRefreshCommand={onRefreshCommand} />
+            <span className="otv2-command__expiry">
+              {connect.kind === "issued" ? <Countdown expiresAt={connect.expiresAt} /> : null}
+            </span>
           </div>
-          <ConnectCommand connect={connect} />
+          <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
         </div>
       )}
+
       <ConnectStatus connect={connect} />
-      <StepNav back={onBack} disabled={!connected} onNext={onContinue} />
+
+      {connected ? (
+        <>
+          <ol className="otv2-checks">
+            {checks.map((check, index) => (
+              <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
+            ))}
+          </ol>
+          <div className="otv2-slot otv2-slot--outcome">
+            {resolving ? (
+              <p className="otv2-waiting" role="status">
+                <span aria-hidden="true" className="otv2-pulse" />
+                {COPY.check.waiting}
+              </p>
+            ) : failures.length > 0 ? (
+              <div className="otv2-repair">
+                <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
+                <p className="otv2-muted">
+                  {COPY.check.repairHint} <code>{COPY.check.repairCommand}</code> {COPY.check.repairHintSuffix}
+                </p>
+              </div>
+            ) : (
+              <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" />
+            )}
+          </div>
+        </>
+      ) : null}
+
+      <StepNav
+        back={onBack}
+        disabled={!passed || creation !== "idle"}
+        label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
+        onNext={onCreate}
+      />
     </section>
   );
 }
 
-function ConnectValidity({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
-  return (
-    <span className="otv2-command__expiry">
-      {connect.kind === "issued" ? (
-        <Countdown expiresAt={connect.expiresAt} />
-      ) : connect.kind === "expired" ? (
-        <>
-          <span>{COPY.connect.expired}</span>
-          <Button onClick={onRefreshCommand} variant="inline">
-            {COPY.connect.refresh}
-          </Button>
-        </>
-      ) : null}
-    </span>
-  );
-}
-
-function ConnectCommand({ connect }: { connect: ConnectState }) {
+function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
   // Before a command exists, the block still renders — same structure, same length, so nothing
   // moves when the real one lands. It is inert: nothing to copy and nothing to announce.
   if (connect.kind === "idle" || connect.kind === "issuing") {
@@ -499,8 +534,17 @@ function ConnectCommand({ connect }: { connect: ConnectState }) {
       comment={COPY.connect.commandComment}
       copiedLabel={COPY.connect.copied}
       copyLabel={COPY.connect.copy}
+      expiredNotice={
+        connect.kind === "expired" ? (
+          <>
+            <span>{COPY.connect.expired}</span>
+            <Button onClick={onRefreshCommand} variant="inline">
+              {COPY.connect.refresh}
+            </Button>
+          </>
+        ) : undefined
+      }
       fallbackHint={COPY.connect.copyFallback}
-      muted={connect.kind === "expired"}
     />
   );
 }
@@ -537,73 +581,6 @@ function useRemaining(expiresAt: number): number {
     return () => window.clearInterval(id);
   }, [expiresAt]);
   return remaining;
-}
-
-/**
- * The report on what the Computer found. The user's attention is assumed to be in the terminal or
- * with their agent — that is where a repair actually happens — so this page is a second, calmer
- * view of the same state rather than somewhere work gets done.
- */
-export function CheckStep({
-  creation,
-  draft,
-  onBack,
-  onCreate,
-  readiness,
-}: {
-  creation: CreationState;
-  draft: AgentDraft;
-  onBack: () => void;
-  onCreate: () => void;
-  readiness: ReadinessFacts | undefined;
-}) {
-  const checks = deriveChecks(readiness);
-  const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
-  const resolving = readinessIsResolving(readiness);
-  const passed = readinessPassed(readiness);
-  const failures = checks.filter((check) => check.state === "failed");
-
-  return (
-    <section className="otv2-step">
-      <header className="otv2-step__header">
-        <h1>{COPY.check.title}</h1>
-      </header>
-      <ol className="otv2-checks">
-        {checks.map((check, index) => (
-          <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
-        ))}
-      </ol>
-
-      {/*
-        One slot for the outcome, tall enough for the longest of its three states. Results arrive
-        while the user is reading, so the summary must not appear underneath them and push the
-        footer down.
-      */}
-      <div className="otv2-slot otv2-slot--outcome">
-        {resolving ? (
-          <p className="otv2-waiting" role="status">
-            <span aria-hidden="true" className="otv2-pulse" />
-            {COPY.check.waiting}
-          </p>
-        ) : failures.length > 0 ? (
-          <div className="otv2-repair">
-            <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
-            <p className="otv2-muted">
-              {COPY.check.repairHint} <code>{COPY.check.repairCommand}</code> {COPY.check.repairHintSuffix}
-            </p>
-          </div>
-        ) : passed ? (
-          <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" />
-        ) : null}
-      </div>
-      <StepNav
-        back={onBack}
-        disabled={!passed || creation === "creating"}
-        label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
-        onNext={onCreate}
-      />
-    </section>
-  );
 }
 
 function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; position: number; runtimeLabel: string }) {

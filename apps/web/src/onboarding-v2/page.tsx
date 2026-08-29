@@ -12,16 +12,7 @@ import {
 import { LabControls } from "./lab-controls.js";
 import { type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
-import {
-  AgentStep,
-  CheckStep,
-  CloudStep,
-  ConnectStep,
-  DestinationStep,
-  DoneStep,
-  MessagingStep,
-  StepRail,
-} from "./steps.js";
+import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
 const CREATE_AGENT_MS = 900;
 
@@ -36,7 +27,6 @@ export function OnboardingV2Page() {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
-  const [connectConfirmed, setConnectConfirmed] = useState(false);
   const [creation, setCreation] = useState<CreationState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   /** Cloud is not shipped; the mock can offer it so its flow can be reviewed before it is. */
@@ -48,7 +38,6 @@ export function OnboardingV2Page() {
     destinationConfirmed,
     draftConfirmed,
     connect: backend.connect,
-    connectConfirmed,
     readiness: backend.readiness,
     creation,
     messaging: backend.messaging,
@@ -59,7 +48,7 @@ export function OnboardingV2Page() {
   // unseen code would spend its validity in the background. A Computer that is already connected
   // needs none, and `issueConnectCode` only acts on an idle connection.
   useEffect(() => {
-    if (flow.page === "connect") backend.issueConnectCode();
+    if (flow.page === "computer") backend.issueConnectCode();
   }, [backend.issueConnectCode, flow.page]);
 
   // Held so a restart or an unmount can cancel a creation that is still in flight; otherwise the
@@ -87,14 +76,12 @@ export function OnboardingV2Page() {
    */
   const backToDestination = useCallback(() => setDestinationConfirmed(false), []);
   const backToAgent = useCallback(() => setDraftConfirmed(false), []);
-  const backToConnect = useCallback(() => setConnectConfirmed(false), []);
 
   const startOver = useCallback(() => {
     window.clearTimeout(creationTimer.current);
     setDraft(emptyDraft());
     setDestinationConfirmed(false);
     setDraftConfirmed(false);
-    setConnectConfirmed(false);
     setCreation("idle");
     setMessagingProvider(undefined);
     backend.reset();
@@ -144,19 +131,14 @@ export function OnboardingV2Page() {
               onChange={setDraft}
               onSubmit={() => setDraftConfirmed(true)}
             />
-          ) : flow.page === "connect" ? (
-            <ConnectStep
+          ) : flow.page === "computer" ? (
+            <ComputerStep
               connect={backend.connect}
-              onBack={backToAgent}
-              onContinue={() => setConnectConfirmed(true)}
-              onRefreshCommand={backend.refreshConnectCode}
-            />
-          ) : flow.page === "check" ? (
-            <CheckStep
               creation={creation}
               draft={draft}
-              onBack={backToConnect}
+              onBack={backToAgent}
               onCreate={createAgent}
+              onRefreshCommand={backend.refreshConnectCode}
               readiness={backend.readiness}
             />
           ) : (

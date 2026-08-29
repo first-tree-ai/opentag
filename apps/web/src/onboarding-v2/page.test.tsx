@@ -28,10 +28,9 @@ async function reachConnectStep() {
   await advance(ISSUE_MS);
 }
 
-/** Brings the Computer in, then leaves the connect step by hand, landing on the check step. */
+/** Brings the Computer in. Its check reports on the same step, so nothing else has to happen. */
 async function reachCheckStep() {
   await advanceMock("Connect computer");
-  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 }
 
 /** Returns the check's result, so the step moves from probing to resolved. */
@@ -280,6 +279,9 @@ describe("OnboardingV2Page", () => {
     await advance(ISSUE_MS);
     expect(next().disabled).toBe(true);
     await advanceMock("Connect computer");
+    // The Computer is here but its check has not reported, so there is still nothing to leave for.
+    expect(next().disabled).toBe(true);
+    await settleCheck();
     expect(next().disabled).toBe(false);
   });
 
@@ -486,15 +488,17 @@ describe("OnboardingV2Page", () => {
       expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
     });
 
-    it("keeps the Computer when returning from the check step", async () => {
+    it("keeps the Computer when returning to the computer step", async () => {
       render(<OnboardingV2Page />);
       await reachConnectStep();
       await reachCheckStep();
+      await settleCheck();
 
-      // The enrollment is durable, so going back shows it connected rather than asking again.
+      // Back to the agent step and forward again: the enrollment is durable, so it is still here.
       fireEvent.click(screen.getByRole("button", { name: "Go back" }));
+      expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(ISSUE_MS);
-      expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
       expect(screen.getByText("Your computer is connected.")).toBeTruthy();
       expect(screen.queryByText("Waiting for your computer…")).toBeNull();
     });

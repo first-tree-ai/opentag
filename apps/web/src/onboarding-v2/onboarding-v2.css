@@ -584,6 +584,44 @@
   transition: opacity 160ms ease;
 }
 
+/*
+ * An expired command says so on the block itself, over a heavy scrim: the block is the thing that
+ * expired, and a line underneath is easy to miss when the command above it still looks runnable.
+ * The scrim sits over the content rather than fading the whole block, so the notice stays legible.
+ */
+.otv2-command__body {
+  position: relative;
+}
+
+.otv2-command[data-expired="true"] .otv2-command__code,
+.otv2-command[data-expired="true"] .otv2-command__copy {
+  opacity: 0.18;
+}
+
+.otv2-command__expired {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  border-radius: var(--radius-control);
+  background: rgb(11 16 29 / 78%);
+  color: #e6e9e0;
+  font-size: var(--text-body);
+  text-align: center;
+}
+
+.otv2-command__expired .ds-button--inline {
+  color: #cfe3a6;
+}
+
+.otv2-command__expired .ds-button--inline:hover {
+  color: #e8f5cd;
+}
+
 .otv2-command[data-muted="true"] .otv2-command__body {
   opacity: 0.45;
 }
@@ -612,18 +650,30 @@
   color: #8fa08c;
 }
 
+/* Sits on the dark block, so it carries its own colours rather than the ghost variant's. */
 .otv2-command__copy {
   flex: 0 0 auto;
   width: 32px;
   min-width: 32px;
   padding: 0;
+  background: transparent;
+  color: #9aa79a;
+}
+
+.otv2-command__copy:hover:not(:disabled) {
+  background: rgb(230 233 224 / 12%);
+  color: #e6e9e0;
+}
+
+.otv2-shell .otv2-command__copy:active {
+  background: rgb(230 233 224 / 20%);
 }
 
 /* Copying is confirmed by colour and the check icon; the button does not change size. */
-.otv2-command__copy[data-copied="true"] {
-  border-color: var(--otv2-pass);
-  background: var(--otv2-pass-surface);
-  color: var(--otv2-pass);
+.otv2-command__copy[data-copied="true"],
+.otv2-command__copy[data-copied="true"]:hover {
+  background: transparent;
+  color: #8fd07a;
 }
 
 /* The line that says how to run the command, with the command's validity on its far end. */

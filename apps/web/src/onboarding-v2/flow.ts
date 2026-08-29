@@ -64,13 +64,6 @@ export interface FlowFacts {
   readonly destinationConfirmed: boolean;
   readonly draftConfirmed: boolean;
   readonly connect: ConnectState;
-  /**
-   * Whether the reader has left the connect step themselves. Nothing here advances on a timer: a
-   * Computer arriving is news, and news is worth seeing. It also makes returning to this step
-   * work — the enrollment is durable, so coming back shows it already connected rather than
-   * asking for it again.
-   */
-  readonly connectConfirmed: boolean;
   readonly readiness: ReadinessFacts | undefined;
   readonly creation: CreationState;
   readonly messaging: MessagingState;
@@ -85,7 +78,12 @@ export interface FlowFacts {
  * run a command, wait for a machine, wait for a check. A cloud agent has none of that: naming it
  * and pointing it at a messaging app is one short piece of work, so it is one page with no rail.
  */
-export const STEP_IDS = ["agent", "connect", "check", "messaging"] as const;
+/**
+ * Connecting the Computer and checking it are one step. The check finishes within about a
+ * hundred milliseconds of the Computer arriving, so there is no wait to break up — its result is
+ * simply the rest of what connecting tells you.
+ */
+export const STEP_IDS = ["agent", "computer", "messaging"] as const;
 export type StepId = (typeof STEP_IDS)[number];
 export type PageId = "destination" | "cloud" | StepId;
 
@@ -108,7 +106,6 @@ export function initialFacts(): FlowFacts {
     destinationConfirmed: false,
     draftConfirmed: false,
     connect: { kind: "idle" },
-    connectConfirmed: false,
     readiness: undefined,
     creation: "idle",
     messaging: { kind: "idle" },
@@ -193,8 +190,7 @@ export function readinessIsResolving(readiness: ReadinessFacts | undefined): boo
 }
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
-  const { draft, destinationConfirmed, draftConfirmed, connect, connectConfirmed, readiness, creation, messaging } =
-    facts;
+  const { draft, destinationConfirmed, draftConfirmed, connect, readiness, creation, messaging } = facts;
   const destination = draft.destination;
   if (!destination || !destinationConfirmed) {
     return { page: "destination", steps: [], complete: false };
@@ -204,11 +200,10 @@ export function deriveFlowState(facts: FlowFacts): FlowState {
     return { page: "cloud", steps: [], complete: messaging.kind === "connected" };
   }
 
-  const done: Record<StepId, boolean> = { agent: false, connect: false, check: false, messaging: false };
+  const done: Record<StepId, boolean> = { agent: false, computer: false, messaging: false };
   done.agent = draftIsSubmittable(draft) && draftConfirmed;
-  done.connect = done.agent && computerIsConnected(connect) && connectConfirmed;
-  done.check = done.connect && readinessPassed(readiness) && creation === "created";
-  done.messaging = done.check && messaging.kind === "connected";
+  done.computer = done.agent && computerIsConnected(connect) && readinessPassed(readiness) && creation === "created";
+  done.messaging = done.computer && messaging.kind === "connected";
 
   const currentIndex = STEP_IDS.findIndex((id) => !done[id]);
   const steps = STEP_IDS.map((id, index) => ({ id, status: stepStatus(done[id], index, currentIndex) }));

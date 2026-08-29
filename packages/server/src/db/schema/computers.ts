@@ -171,8 +171,10 @@ export const computerConnectCodes = pgTable(
     issuedByUserId: uuid("issued_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
-    issuedByAccountId: uuid("issued_by_account_id").references(() => users.id, { onDelete: "restrict" }),
-    mode: computerConnectCodeMode("mode"),
+    issuedByAccountId: uuid("issued_by_account_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    mode: computerConnectCodeMode("mode").notNull(),
     targetComputerId: uuid("target_computer_id").references(() => accountComputers.id, { onDelete: "restrict" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -203,6 +205,19 @@ export const computerConnectCodes = pgTable(
     check(
       "computer_connect_codes_terminal_state",
       sql`not (${table.consumedAt} is not null and ${table.revokedAt} is not null)`,
+    ),
+    check("computer_connect_codes_issued_by_account_pair", sql`${table.issuedByAccountId} = ${table.issuedByUserId}`),
+    check(
+      "computer_connect_codes_consumed_computer_identity",
+      sql`${table.consumedComputerId} is not distinct from ${table.consumedWorkspaceComputerId}`,
+    ),
+    check(
+      "computer_connect_codes_consumed_computer_pair",
+      sql`(${table.consumedComputerId} is null) = (${table.consumedAt} is null)`,
+    ),
+    check(
+      "computer_connect_codes_repair_target_pair",
+      sql`(${table.mode} = 'create') = (${table.targetComputerId} is null)`,
     ),
   ],
 );

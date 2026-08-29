@@ -1077,10 +1077,10 @@ describe("database migrations", () => {
             (select count(*)::int from session_placements where computer_id is not null) as placements_filled
         `;
         expect(expansion).toEqual({
-          account_computers: 0,
+          account_computers: 4,
           computer_credentials: 0,
-          agents_filled: 0,
-          placements_filled: 0,
+          agents_filled: 2,
+          placements_filled: 2,
         });
         const repairedWorkspaces = await sql<{ completed: boolean; name: string }[]>`
           select name, setup_completed_at is not null as completed

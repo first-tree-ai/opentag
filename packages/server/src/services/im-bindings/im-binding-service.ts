@@ -1514,6 +1514,13 @@ export class ImBindingService {
       }
       const existingInstallation = currentAppTeamInstallation ?? currentWorkspaceInstallation;
       if (existingInstallation) {
+        if (existingInstallation.agentId !== input.agentId) {
+          throw new ImBindingServiceError(
+            "SLACK_APP_TEAM_ALREADY_BOUND",
+            409,
+            "This Slack App installation is already bound to another OpenTag Agent",
+          );
+        }
         const currentCredential = this.#decodeSlackCredential(existingInstallation.encryptedCredential);
         const sameIdentity =
           existingInstallation.externalAppId === input.appId &&

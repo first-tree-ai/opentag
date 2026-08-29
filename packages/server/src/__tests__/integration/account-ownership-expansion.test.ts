@@ -377,7 +377,6 @@ describe("account-owned computer expansion migrations", () => {
   });
 
   it("upgrades populated 0025 data to 0026 without backfilling target projections", async () => {
-    const journal = await readJournal();
     const legacyFolder = await truncatedMigrations(25);
     try {
       await migrateDatabase(databaseUrl, legacyFolder);
@@ -420,8 +419,12 @@ describe("account-owned computer expansion migrations", () => {
           deliveries: 2,
         });
 
-        await migrateDatabase(databaseUrl, migrationsFolder);
-        await expect(verifyDatabaseMigrations(databaseUrl, migrationsFolder)).resolves.toBeUndefined();
+        const through0026 = await truncatedMigrations(26);
+        try {
+          await migrateDatabase(databaseUrl, through0026);
+        } finally {
+          await rm(through0026, { force: true, recursive: true });
+        }
 
         const [after] = await sql<
           {
@@ -494,7 +497,7 @@ describe("account-owned computer expansion migrations", () => {
             ) as replaced_slack
         `;
         expect(after).toEqual({
-          migrations: journal.entries.length,
+          migrations: 27,
           workspace_computers: 2,
           credentials: 2,
           codes: 2,
@@ -543,8 +546,8 @@ describe("account-owned computer expansion migrations", () => {
   });
 
   it("upgrades representative 0024 Slack-install history through 0026 without filling agent_id", async () => {
-    const journal = await readJournal();
     const legacyFolder = await truncatedMigrations(24);
+    const through0026 = await truncatedMigrations(26);
     try {
       await migrateDatabase(databaseUrl, legacyFolder);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
@@ -569,7 +572,7 @@ describe("account-owned computer expansion migrations", () => {
         `;
         expect(before).toEqual({ migrations: 25, slack: 1 });
 
-        await migrateDatabase(databaseUrl, migrationsFolder);
+        await migrateDatabase(databaseUrl, through0026);
         const [after] = await sql<{ migrations: number; slack: number; filled: number; installation: string }[]>`
           select
             (select count(*)::int from drizzle.__drizzle_migrations) as migrations,
@@ -578,7 +581,7 @@ describe("account-owned computer expansion migrations", () => {
             (select external_app_id from slack_installations limit 1) as installation
         `;
         expect(after).toEqual({
-          migrations: journal.entries.length,
+          migrations: 27,
           slack: 1,
           filled: 0,
           installation: "A_HIST",
@@ -588,6 +591,7 @@ describe("account-owned computer expansion migrations", () => {
       }
     } finally {
       await rm(legacyFolder, { force: true, recursive: true });
+      await rm(through0026, { force: true, recursive: true });
     }
   });
 
@@ -683,7 +687,12 @@ describe("account-owned computer expansion migrations", () => {
   });
 
   it("preserves legacy enrollment hazards and fail-closes new projection constraints", async () => {
-    await migrateDatabase(databaseUrl, migrationsFolder);
+    const through0026 = await truncatedMigrations(26);
+    try {
+      await migrateDatabase(databaseUrl, through0026);
+    } finally {
+      await rm(through0026, { force: true, recursive: true });
+    }
     const client = createDatabaseClient(databaseUrl);
     try {
       const bootstrap = await bootstrapInitialAdmin(client.database, {

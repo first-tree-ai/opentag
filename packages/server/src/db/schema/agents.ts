@@ -31,7 +31,9 @@ export const agents = pgTable(
     creationIntentId: uuid("creation_intent_id"),
     creationIntentFingerprint: text("creation_intent_fingerprint"),
     workspaceComputerId: uuid("workspace_computer_id").notNull(),
-    computerId: uuid("computer_id").references(() => accountComputers.id, { onDelete: "restrict" }),
+    computerId: uuid("computer_id")
+      .notNull()
+      .references(() => accountComputers.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
@@ -62,6 +64,7 @@ export const agents = pgTable(
       sql`(${table.creationIntentId} is null) = (${table.creationIntentFingerprint} is null)`,
     ),
     check("agents_revision_positive", sql`${table.revision} >= 1`),
+    check("agents_computer_matches_enrollment", sql`${table.computerId} = ${table.workspaceComputerId}`),
   ],
 );
 

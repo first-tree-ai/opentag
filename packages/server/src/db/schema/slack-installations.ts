@@ -8,6 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -27,7 +28,9 @@ export const slackInstallations = pgTable(
     workspaceId: uuid("workspace_id")
       .notNull()
       .references(() => workspaces.id, { onDelete: "restrict" }),
-    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "restrict" }),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "restrict" }),
     status: slackInstallationStatus("status").notNull().default("active"),
 
     externalAppId: text("external_app_id").notNull(),
@@ -58,6 +61,7 @@ export const slackInstallations = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    unique("slack_installations_agent_id_id_unique").on(table.agentId, table.id),
     uniqueIndex("slack_installations_app_team_current_unique")
       .on(table.externalAppId, table.externalTeamId)
       .where(sql`${table.status} <> 'disabled'`),

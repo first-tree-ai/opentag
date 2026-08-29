@@ -1875,7 +1875,9 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     // The detail status names the same state as the Agent list, so one failure has one name.
-    expect(screen.getAllByText("Messaging disconnected").length).toBeGreaterThan(0);
+    // The channel is connected here; only delivery is not, and the label has to say which.
+    expect(screen.getAllByText("Cannot receive messages").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Messaging disconnected")).toBeNull();
     expect(screen.queryByText("Needs attention")).toBeNull();
     expect(screen.queryByText("Action required")).toBeNull();
     expect(screen.getByText("Messages cannot be sent to this Agent.")).toBeTruthy();
@@ -1926,7 +1928,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Group chat trigger mode" })).toBeTruthy();
     expect(
       screen.getByText(
-        "This Agent receives every message in connected group chats. This setting only decides when it wakes up to act on them.",
+        "Every message in connected group chats is kept as conversation history either way. This setting decides which of them wake this Agent up to act.",
       ),
     ).toBeTruthy();
     // A direct message is always delivered, so the row that only ever said so is gone.
@@ -2086,9 +2088,12 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, provider: "slack" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    // Receiving is unchanged either way, so widening the trigger applies without a confirmation.
+    // Widening changes what the runtime is woken for, so it takes a deliberate second click -- but
+    // not a modal: the control itself asks.
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText(/raises Token spend/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm every message" }));
     await waitFor(() =>
       expect(
         vi
@@ -2141,9 +2146,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm every message" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Unable to update message access");
 
     fireEvent.click(screen.getByRole("button", { name: "Every message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Confirm every message" }));
     await waitFor(() => expect(screen.queryByText("Unable to update message access")).toBeNull());
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Group chat trigger mode" })),

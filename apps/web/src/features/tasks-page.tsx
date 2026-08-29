@@ -1,5 +1,5 @@
 import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
-import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
@@ -184,11 +184,19 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   });
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
+  /*
+   * The route reuses this component when `:agentId` changes, so a page requested for one Agent can
+   * resolve after another Agent's list is on screen. Every append checks that the Agent it was asked
+   * for is still the Agent being shown.
+   */
+  const requestedAgentId = useRef(agentId);
 
   useEffect(() => {
     let active = true;
+    requestedAgentId.current = agentId;
     setState({ kind: "loading" });
     setLoadMoreError(null);
+    setLoadingMore(false);
     browserApi.tasks({ agentId }).then(
       (value) =>
         active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
@@ -201,17 +209,24 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
 
   async function loadMore(): Promise<void> {
     if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
+    const pagedAgentId = agentId;
     setLoadingMore(true);
     setLoadMoreError(null);
     try {
-      const next = await browserApi.tasks({ agentId, cursor: state.value.nextCursor });
-      setState({ kind: "ready", value: { tasks: [...state.value.tasks, ...next.tasks], nextCursor: next.nextCursor } });
+      const next = await browserApi.tasks({ agentId: pagedAgentId, cursor: state.value.nextCursor });
+      if (requestedAgentId.current !== pagedAgentId) return;
+      setState((current) =>
+        current.kind === "ready"
+          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
+          : current,
+      );
     } catch (error) {
+      if (requestedAgentId.current !== pagedAgentId) return;
       // The page already has these rows. Losing them to report a failed append costs the viewer more
       // than the failure itself, so the list stays and the failure is reported next to its control.
       setLoadMoreError(asError(error));
     } finally {
-      setLoadingMore(false);
+      if (requestedAgentId.current === pagedAgentId) setLoadingMore(false);
     }
   }
 

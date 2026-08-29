@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
-import { TaskDetailPage, TasksPage } from "./tasks-page.js";
+import { AgentTasksSection, TaskDetailPage, TasksPage } from "./tasks-page.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const agentId = "22222222-2222-4222-8222-222222222222";
@@ -212,6 +212,48 @@ describe("Tasks debug view", () => {
     expect(await screen.findByText("This is an older inbound message.")).toBeTruthy();
     expect(taskRequest).toHaveBeenLastCalledWith(sessionId, "older-turns");
     expect(screen.queryByRole("button", { name: "Load more Turns" })).toBeNull();
+  });
+
+  it("does not let a late page for one Agent land on another Agent's Tasks", async () => {
+    const secondAgentId = "44444444-4444-4444-8444-444444444444";
+    const secondTask = { ...task, id: "55555555-5555-4555-8555-555555555555", title: "Draft the release notes" };
+    let releaseFirstPage: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
+    vi.spyOn(browserApi, "tasks").mockImplementation((input = {}) => {
+      if (input.cursor) {
+        // The page requested for the first Agent, still in flight when the Agent changes.
+        return new Promise((next) => {
+          releaseFirstPage = next;
+        });
+      }
+      return Promise.resolve(
+        input.agentId === secondAgentId
+          ? { tasks: [secondTask], nextCursor: null }
+          : { tasks: [task], nextCursor: "next-page" },
+      );
+    });
+
+    const view = render(
+      <MemoryRouter>
+        <AgentTasksSection agentId={agentId} />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    view.rerender(
+      <MemoryRouter>
+        <AgentTasksSection agentId={secondAgentId} />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole("link", { name: "Draft the release notes" })).toBeTruthy();
+
+    releaseFirstPage({
+      tasks: [{ ...task, id: "66666666-6666-4666-8666-666666666666", title: "Older Atlas Task" }],
+      nextCursor: null,
+    });
+    await waitFor(() => expect(screen.getByRole("link", { name: "Draft the release notes" })).toBeTruthy());
+    expect(screen.queryByText("Older Atlas Task")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Investigate the failed deployment" })).toBeNull();
   });
 
   it("shows loading and empty states from the API", async () => {

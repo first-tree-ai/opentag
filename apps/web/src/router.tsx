@@ -1146,7 +1146,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <span className="text-kumo-subtle" aria-hidden="true">
             {" · "}
           </span>
-          <Link className="text-kumo-link" to={`/agents/${agent.id}/settings/${action.section}`}>
+          <Link className="relative z-10 text-kumo-link" to={`/agents/${agent.id}/settings/${action.section}`}>
             {action.label}
           </Link>
         </>
@@ -1156,7 +1156,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
     ) : undefined;
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line hover:bg-kumo-recessed"
       data-avatar-tone={agentAvatarTone(agent.id)}
       data-tone={status.tone}
       data-ui="agent-card"
@@ -1170,7 +1170,11 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
         </span>
         <div className="grid min-w-0 gap-1" data-ui="agent-card-identity-copy">
           <strong className="flex min-w-0 items-center gap-2">
-            <Link aria-label={`Open ${agent.displayName}`} to={`/agents/${agent.id}`}>
+            <Link
+              aria-label={`Open ${agent.displayName}`}
+              className="after:absolute after:inset-0 after:content-['']"
+              to={`/agents/${agent.id}`}
+            >
               {agent.displayName}
             </Link>
             {channel ? (
@@ -1670,7 +1674,7 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
           {!backToSettings ? <AgentMessagingLink agent={agent} /> : null}
-          {true && !backToSettings ? (
+          {!backToSettings ? (
             <Link
               className={buttonClassName({ variant: "secondary" })}
               state={{ agent }}
@@ -2336,6 +2340,8 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
   const [confirmationError, setConfirmationError] = useState<string>();
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [restoreFocusTarget, setRestoreFocusTarget] = useState<"messaging" | "trigger_rules">();
+  const [confirmingEveryMessage, setConfirmingEveryMessage] = useState(false);
+  const [receiveModePending, setReceiveModePending] = useState(false);
   const allMessagesButtonRef = useRef<HTMLButtonElement>(null);
   const disableBindingButtonRef = useRef<HTMLButtonElement>(null);
   const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -2350,7 +2356,9 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
     setRestoreFocusTarget(undefined);
   }, [confirmation, restoreFocusTarget]);
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
+    if (receiveModePending) return;
     try {
+      setReceiveModePending(true);
       setConfirmationBusy(true);
       setError(undefined);
       setConfirmationError(undefined);
@@ -2362,6 +2370,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to change receive mode");
     } finally {
+      setReceiveModePending(false);
       setConfirmationBusy(false);
     }
   }
@@ -2506,17 +2515,35 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 className="flex w-fit flex-wrap items-center gap-1 rounded-md bg-kumo-recessed p-1"
                               >
                                 <TriggerModeOption
-                                  ref={allMessagesButtonRef}
+                                  busy={receiveModePending}
                                   label="On mention"
                                   selected={binding.receiveMode === "mention_only"}
-                                  onSelect={() => void changeReceiveMode("mention_only")}
+                                  onSelect={() => {
+                                    setConfirmingEveryMessage(false);
+                                    void changeReceiveMode("mention_only");
+                                  }}
                                 />
                                 <TriggerModeOption
-                                  label="Every message"
+                                  busy={receiveModePending}
+                                  label={confirmingEveryMessage ? "Confirm every message" : "Every message"}
+                                  ref={allMessagesButtonRef}
                                   selected={binding.receiveMode === "all_message"}
-                                  onSelect={() => void changeReceiveMode("all_message")}
+                                  onSelect={() => {
+                                    if (!confirmingEveryMessage) {
+                                      setConfirmingEveryMessage(true);
+                                      return;
+                                    }
+                                    setConfirmingEveryMessage(false);
+                                    void changeReceiveMode("all_message");
+                                  }}
                                 />
                               </fieldset>
+                              {confirmingEveryMessage ? (
+                                <p className="text-sm text-kumo-subtle" role="status">
+                                  This wakes the Agent on every message in the conversation, which raises Token spend.
+                                  Choose <strong>Confirm every message</strong> to apply it.
+                                </p>
+                              ) : null}
                               <p className="text-sm text-kumo-subtle">
                                 {triggerModeDescription(binding.receiveMode, binding.provider)}
                               </p>
@@ -2889,11 +2916,13 @@ function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): string 
  * text and an unselected one rendered as a ghost control read as a label next to a link.
  */
 function TriggerModeOption({
+  busy = false,
   label,
   onSelect,
   ref,
   selected,
 }: {
+  busy?: boolean;
   label: string;
   onSelect: () => void;
   ref?: Ref<HTMLButtonElement>;
@@ -2902,6 +2931,7 @@ function TriggerModeOption({
   return (
     <Button
       aria-pressed={selected}
+      disabled={busy}
       ref={ref}
       size="compact"
       type="button"
@@ -2936,7 +2966,7 @@ function triggerModeHeading(provider: ImBindingSummary["provider"]): string {
 
 function triggerModeExplanation(provider: ImBindingSummary["provider"]): string {
   const destination = provider === "feishu" ? "group chats" : "channels";
-  return `This Agent receives every message in connected ${destination}. This setting only decides when it wakes up to act on them.`;
+  return `Every message in connected ${destination} is kept as conversation history either way. This setting decides which of them wake this Agent up to act.`;
 }
 
 function triggerModeDescription(
@@ -2945,9 +2975,9 @@ function triggerModeDescription(
 ): string {
   const destination = provider === "feishu" ? "group chat" : "channel";
   if (receiveMode === "all_message") {
-    return `Wakes up on each new ${destination} message and decides for itself whether to reply. Fastest to react, and uses the most Tokens.`;
+    return `Every ${destination} message is delivered and can wake this Agent, which then decides for itself whether to reply. Fastest to react, and the most Tokens.`;
   }
-  return "Waits until someone @mentions it, then reads everything said since its last reply in one go. Slower to react, and much cheaper.";
+  return `Only an @mention wakes this Agent. It is then given what was said in the ${destination} since its last reply, so a mention never arrives without its context.`;
 }
 
 /**
@@ -3053,12 +3083,20 @@ function agentStatusPresentation(agent: AgentStatusSource): { label: string; ton
     return { label: `${providerName} unavailable`, tone: "warning" };
   }
   /*
-   * Every messaging failure blocks the same thing, and separating "not connected" from "error" from
-   * "handoff" made one outcome read as four unrelated events.
+   * Messaging failures are collapsed to as few labels as stay true. "Disconnected" covers the states
+   * where no usable binding exists; a binding still being created, and one that is connected while
+   * its delivery is not, each get the label that matches what the messaging page says about them.
    */
-  if (availability.state === "not_connected" || availability.state === "setting_up") {
-    return { label: "Messaging disconnected", tone: availability.state === "setting_up" ? "info" : "neutral" };
+  if (availability.reason === "im_provisioning" || availability.state === "setting_up") {
+    return { label: "Messaging setting up", tone: "info" };
   }
+  if (availability.reason === "im_reauthorization_required") {
+    return { label: "Messaging needs re-authorization", tone: "warning" };
+  }
+  if (availability.reason === "handoff_unavailable") {
+    return { label: "Cannot receive messages", tone: "warning" };
+  }
+  if (availability.state === "not_connected") return { label: "Messaging disconnected", tone: "neutral" };
   return { label: "Messaging disconnected", tone: "warning" };
 }
 

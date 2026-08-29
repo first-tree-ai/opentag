@@ -322,12 +322,46 @@ describe("Task debug queries", () => {
       expect(next.tasks.map((task) => task.id)).toEqual([second.id]);
       expect(next.nextCursor).toBeNull();
 
+      // A second delivery on the same Session so the Turn cursor is actually issued and followed;
+      // guarding this behind `if (nextCursor)` left the Turn query's identical binding uncovered.
+      const [followUp] = await value.database
+        .insert(imMessages)
+        .values({
+          imBindingId: value.binding.id,
+          providerEventId: "event-second",
+          channelId: "oc_debug",
+          externalMessageId: "om_second",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "ou_debug",
+          authorDisplayName: "Mia",
+          content: { version: 1, fallbackText: "And once more.", blocks: [], truncated: false },
+          providerContext: { provider: "feishu", chatType: "p2p" },
+          occurredAt: new Date("2026-08-27T02:01:00.000Z"),
+        })
+        .returning();
+      if (!followUp) throw new Error("Second IM Message fixture was not created");
+      await value.database.insert(imMessageDeliveries).values({
+        messageId: followUp.id,
+        sessionId: value.session.id,
+        attention: "direct",
+        state: "pending",
+        placementGeneration: 1,
+        expiresAt: new Date("2026-08-28T02:00:00.000Z"),
+      });
+
       const turns = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 1 });
-      if (turns.nextCursor) {
-        await expect(
-          value.service.get(value.bootstrap.userId, value.session.id, { cursor: turns.nextCursor, limit: 1 }),
-        ).resolves.toBeDefined();
-      }
+      expect(turns.turns).toHaveLength(1);
+      expect(turns.nextCursor).not.toBeNull();
+      if (!turns.nextCursor) throw new Error("The first Turn page did not issue a cursor");
+      const olderTurns = await value.service.get(value.bootstrap.userId, value.session.id, {
+        cursor: turns.nextCursor,
+        limit: 1,
+      });
+      expect(olderTurns.turns).toHaveLength(1);
+      expect(olderTurns.turns[0]?.deliveryId).toBe(value.deliveryId);
     } finally {
       await value.sql.end();
     }

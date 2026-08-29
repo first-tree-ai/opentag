@@ -9,35 +9,26 @@ const sourceFiles = readdirSync(root, { recursive: true, withFileTypes: true })
   .map((entry) => resolve(entry.parentPath, entry.name));
 const source = sourceFiles.map((file) => readFileSync(resolve(root, file), "utf8")).join("\n");
 
-/*
- * Standalone Kumo ships a fixed stylesheet; nothing regenerates utilities from page source. A class
- * that is not in it does nothing at all, silently, which is how a 956px icon and a one-column grid
- * shipped past a green type-check and suite. These families are the ones whose absence rearranges a
- * page rather than tweaking it.
- */
-const layoutUtility = /\b(?:(?:sm|md|lg|xl):)?(?:size|grid-cols|col-span|justify-self)-[a-z0-9.]+\b/g;
-const kumoStylesheet = readFileSync(
-  resolve(root, "..", "node_modules", "@cloudflare", "kumo", "dist", "styles", "kumo-standalone.css"),
-  "utf8",
-);
-
-function classNameLiterals(text: string): string[] {
-  return [...text.matchAll(/className=(?:"([^"]*)"|\{`([^`]*)`\})/g)].flatMap((match) =>
-    (match[1] ?? match[2] ?? "").split(/\s+/),
-  );
-}
-
 describe("Kumo integration contract", () => {
-  it("only uses layout utilities the shipped stylesheet defines", () => {
-    const used = new Set(
-      classNameLiterals(source).flatMap((token) => [...token.matchAll(layoutUtility)].map((match) => match[0])),
-    );
-    const missing = [...used].filter((utility) => !kumoStylesheet.includes(`.${utility.replace(/([:.])/g, "\\$1")}`));
-    expect(missing).toEqual([]);
+  /*
+   * Kumo's standalone bundle ships a fixed set of utilities and regenerates nothing from page source,
+   * so a class it happens not to contain does nothing at all -- silently. That is how a 1116px icon
+   * and a one-column grid shipped past a green type-check and a green suite, and why a check that
+   * compares written classes against that fixed set can only ever chase the symptom. Tailwind builds
+   * the utilities from the sources it scans, so the set cannot be missing what the pages use.
+   */
+  it("generates utilities from application source instead of shipping a fixed set", () => {
+    const stylesheet = readFileSync(resolve(root, "app.css"), "utf8");
+    expect(stylesheet).toContain('@import "tailwindcss"');
+    expect(stylesheet).toContain('@import "@cloudflare/kumo/styles/tailwind"');
+    expect(stylesheet).toMatch(/@source\s+"\.\.\/src"/);
+    expect(stylesheet).toMatch(/@source[^;]*@cloudflare\+kumo[^;]*dist/);
+    expect(readFileSync(resolve(root, "..", "vite.config.ts"), "utf8")).toContain("tailwindcss()");
+    expect(source).not.toMatch(/@cloudflare\/kumo\/styles\/standalone/);
   });
 
-  it("loads standalone styles once and keeps application styles local", () => {
-    expect(source.match(/@cloudflare\/kumo\/styles\/standalone/g)?.length).toBe(1);
+  it("loads the application stylesheet once and keeps application styles local", () => {
+    expect(source.match(/import "\.\/app\.css"/g)?.length).toBe(1);
     expect(source).not.toMatch(/(?:styles|mock-pages|tasks-page|agent-usage)\.css/);
     expect(existsSync(resolve(root, "styles.css"))).toBe(false);
     expect(existsSync(resolve(root, "ui/design-system.css"))).toBe(false);

@@ -169,8 +169,8 @@ function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
       aria-label={`Agent usage · ${usageWindowLabel(usage.windowDays)}`}
       data-ui="usage-metrics"
     >
-      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
       <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
+      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
     </dl>
   );
 }

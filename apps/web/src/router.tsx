@@ -1554,7 +1554,7 @@ function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
 function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   const label = binding
-    ? `${titleCase(binding.provider)} · @${agent.name}`
+    ? messagingChannelLabel(agent, binding)
     : agent.messaging.kind === "unconfirmed"
       ? "Messaging status unavailable"
       : "Connect messaging";
@@ -1832,7 +1832,7 @@ function agentSettingsSummary(agent: AgentDetailView, config: AgentAdminConfig, 
       binding.bindingState === "active" && agent.availability.dependencies.handoff.state === "ready"
         ? "Connected"
         : messagingConnectionLabel(binding, agent.availability.dependencies.handoff.state);
-    return `${titleCase(binding.provider)} · @${agent.name} · ${status}`;
+    return `${messagingChannelLabel(agent, binding)} · ${status}`;
   }
   if (section === "identity") return config.displayName;
   if (section === "computer") {
@@ -2291,9 +2291,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               <ProviderIcon className="messaging-channel-icon" provider={binding.provider} />
                               <span className="messaging-channel-copy">
                                 <strong>{binding.bot.displayName}</strong>
-                                <small>
-                                  {titleCase(binding.provider)} · @{agent.name}
-                                </small>
+                                <small>{messagingChannelLabel(agent, binding)}</small>
                               </span>
                               <StatusIndicator
                                 detail={
@@ -2491,12 +2489,48 @@ function MessagingChannelRecovery({
   if (agent.availability.dependencies.handoff.state === "unconfirmed") {
     return <p className="im-section-note">Could not confirm delivery. Retrying automatically.</p>;
   }
+  /*
+   * A confirmed but unready handoff is not one situation. The Computer can be offline, or online with
+   * its Provider not ready, or neither of those and the cause is simply not observable from here, so
+   * the sentence follows the evidence rather than assuming the most common case.
+   */
+  const computerState = agent.availability.dependencies.computer.state;
+  const runtimeStatus = agent.availability.dependencies.runtime.status;
+  if (computerState === "action_required") {
+    return (
+      <p className="im-section-note">
+        The channel itself is connected. Messages wait until this Agent's Computer is online.{" "}
+        <Link to={`/agents/${agent.id}/settings/computer`}>View Computer</Link>
+      </p>
+    );
+  }
+  if (computerState === "ready" && runtimeStatus && runtimeStatus !== "ready") {
+    return (
+      <p className="im-section-note">
+        The channel itself is connected. Messages wait until {runtimeProviderLabel(agent.runtimeProvider)} is ready on
+        this Agent's Computer. <Link to={`/agents/${agent.id}/settings/computer`}>View Computer</Link>
+      </p>
+    );
+  }
   return (
     <p className="im-section-note">
-      The channel itself is connected. Messages wait until this Agent's Computer is online.{" "}
-      <Link to={`/agents/${agent.id}/settings/computer`}>View Computer</Link>
+      The channel itself is connected, but messages cannot be delivered yet. Retrying automatically.
     </p>
   );
+}
+
+function runtimeProviderLabel(provider: AgentSummary["runtimeProvider"]): string {
+  return provider === "codex" ? "Codex" : "Claude Code";
+}
+
+/**
+ * Feishu gives each Agent its own bot, so its handle addresses the Agent. Slack routes one workspace
+ * Bot, so an Agent handle would name a Slack identity that does not exist.
+ */
+function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {
+  const provider = titleCase(binding.provider);
+  if (binding.provider === "feishu") return `${provider} · @${agent.name}`;
+  return binding.bot.displayName ? `${provider} · ${binding.bot.displayName}` : provider;
 }
 
 function imBindingStateLabel(binding: ImBindingSummary): string {

@@ -1326,14 +1326,14 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Agent settings" })).toBeNull();
     // One list in the order a viewer thinks about an Agent, with the irreversible actions held apart.
-    expect(
-      screen.getByRole("region", { name: "Agent setup" }).querySelectorAll(".agent-settings-entry strong"),
-    ).toHaveLength(5);
-    expect(
-      [...screen.getByRole("region", { name: "Agent setup" }).querySelectorAll(".agent-settings-entry strong")].map(
-        (entry) => entry.textContent,
-      ),
-    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model & reasoning"]);
+    const setup = await screen.findByRole("region", { name: "Agent setup" });
+    expect([...setup.querySelectorAll(".agent-settings-entry strong")].map((entry) => entry.textContent)).toEqual([
+      "Name",
+      "Messaging",
+      "Computer",
+      "Instructions",
+      "Model & reasoning",
+    ]);
     expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /^Pause or delete/ })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
@@ -1814,6 +1814,64 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("group", { name: "Group chat trigger mode" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Change Feishu Bot" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Feishu" })).toBeTruthy();
+  });
+
+  it("names a Slack channel by its verified Bot rather than by an invented Agent handle", async () => {
+    installApi({ bound: true, handoffReady: true, provider: "slack" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    const messaging = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
+    expect(screen.getByText("Slack · Reviewer")).toBeTruthy();
+    expect(screen.queryByText(/Slack · @/)).toBeNull();
+    expect(screen.queryByText("@reviewer")).toBeNull();
+    messaging.unmount();
+
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+    expect(await screen.findByRole("link", { name: "Slack · Reviewer" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Slack · @reviewer/ })).toBeNull();
+    const home = screen.getByRole("link", { name: "Settings" });
+    home.click();
+    expect(await screen.findByRole("region", { name: "Agent setup" })).toBeTruthy();
+    expect(screen.getByText(/^Slack · Reviewer · /)).toBeTruthy();
+  });
+
+  it("does not blame an online Computer when the Provider is what is not ready", async () => {
+    installApi({
+      bound: true,
+      handoffReady: false,
+      computerProviderReadiness: [{ provider: "codex", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" }],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
+    expect(screen.getByText(/Messages wait until Codex is ready on this Agent's Computer\./)).toBeTruthy();
+    expect(screen.queryByText(/until this Agent's Computer is online/)).toBeNull();
+  });
+
+  it("keeps the delivery explanation neutral when no blocker is observable", async () => {
+    installApi({ bound: true, handoffReady: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The channel itself is connected, but messages cannot be delivered yet. Retrying automatically.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Computer is online/)).toBeNull();
+  });
+
+  it("points at the Computer only when the Computer is the blocker", async () => {
+    installApi({ bound: true, handoffReady: false, computerStatus: () => "offline" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
+    expect(screen.getByText(/Messages wait until this Agent's Computer is online\./)).toBeTruthy();
   });
 
   it("shows a Messaging error instead of inferring an empty channel", async () => {

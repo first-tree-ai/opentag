@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SCENARIOS } from "./mock-backend.js";
 import { OnboardingV2Page } from "./page.js";
 
 // The mock defaults to manual: the Computer arriving, the check returning and the QR being
@@ -44,9 +45,18 @@ function openLab() {
   fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
 }
 
+/** Drives the readiness picker the way a reviewer does: open the listbox, choose the outcome. */
 function chooseScenario(id: string) {
+  const scenario = SCENARIOS.find((candidate) => candidate.id === id);
+  if (!scenario) throw new Error(`no such scenario: ${id}`);
   openLab();
-  fireEvent.change(screen.getByLabelText("Readiness outcome"), { target: { value: id } });
+  fireEvent.click(screen.getByLabelText("Readiness outcome"));
+  // The listbox commits on a pointer sequence, not a bare click, so the choice has to be made the
+  // way a pointing device makes it.
+  const option = screen.getByRole("option", { name: scenario.title });
+  fireEvent.pointerDown(option);
+  fireEvent.pointerUp(option);
+  fireEvent.click(option);
   fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
 }
 
@@ -118,7 +128,7 @@ describe("OnboardingV2Page", () => {
       const parts = [...section.children].map((child) => child.className || child.tagName.toLowerCase());
       const heading = parts.findIndex((part) => part === "otv2-fieldset__label" || part === "legend");
       const hint = parts.indexOf("otv2-fieldset__hint");
-      const control = parts.findIndex((part) => part.includes("ds-control") || part.includes("otv2-choices"));
+      const control = parts.findIndex((part) => part.includes("otv2-name") || part.includes("otv2-choices"));
       expect(heading).toBeGreaterThanOrEqual(0);
       expect(hint).toBeGreaterThan(heading);
       expect(control).toBeGreaterThan(hint);
@@ -415,7 +425,7 @@ describe("OnboardingV2Page", () => {
     it("offers the same Slack install on the cloud route", async () => {
       render(<OnboardingV2Page />);
       openLab();
-      fireEvent.click(screen.getByLabelText("Offer the cloud computer"));
+      fireEvent.click(screen.getByRole("button", { name: "Offer the cloud computer" }));
       fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
       fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -435,7 +445,7 @@ describe("OnboardingV2Page", () => {
     /** Cloud is Coming soon in production; the panel is what makes its pages reviewable. */
     async function chooseCloud() {
       openLab();
-      fireEvent.click(screen.getByLabelText("Offer the cloud computer"));
+      fireEvent.click(screen.getByRole("button", { name: "Offer the cloud computer" }));
       fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
       fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));

@@ -1,5 +1,5 @@
 import { useId, useState } from "react";
-import { Button } from "../ui/design-system.js";
+import { Button, KumoSelectControl } from "../ui/design-system.js";
 import type { MockBackend, MockScenario, MockSpeed } from "./mock-backend.js";
 import { MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
 
@@ -46,21 +46,20 @@ export function LabControls({
         {pending?.label ?? "Nothing waiting"}
       </Button>
       <div className="otv2-lab__stack">
-        <button
+        <Button
+          variant="ghost"
           aria-controls={panelId}
           aria-expanded={open}
           className="otv2-lab__toggle"
           onClick={() => setOpen((value) => !value)}
-          type="button"
         >
           Mock controls
-        </button>
+        </Button>
         <div className="otv2-lab__panel" hidden={!open} id={panelId}>
           <label className="otv2-lab__label" htmlFor={scenarioId}>
             Readiness outcome
           </label>
-          <select
-            className="ds-control"
+          <KumoSelectControl
             id={scenarioId}
             onChange={(event) => {
               const next = SCENARIOS.find((candidate) => candidate.id === event.target.value);
@@ -73,33 +72,35 @@ export function LabControls({
                 {candidate.title}
               </option>
             ))}
-          </select>
+          </KumoSelectControl>
           <p className="otv2-lab__hint">{scenario.description}</p>
 
           <div className="otv2-lab__row">
             <span className="otv2-lab__label">Speed</span>
             <div className="otv2-lab__segmented">
               {MOCK_SPEEDS.map((candidate) => (
-                <button
+                <Button
+                  variant="ghost"
                   aria-pressed={speed === candidate}
                   key={candidate}
                   onClick={() => onSpeedChange(candidate)}
-                  type="button"
                 >
                   {candidate}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
 
-          <label className="otv2-lab__check">
-            <input
-              checked={cloudAvailable}
-              onChange={(event) => onCloudAvailableChange(event.target.checked)}
-              type="checkbox"
-            />
-            <span>Offer the cloud computer</span>
-          </label>
+          {/* A toggle rather than a checkbox, so it reads and behaves like the speed control above it. */}
+          <Button
+            aria-pressed={cloudAvailable}
+            className="otv2-lab__check"
+            onClick={() => onCloudAvailableChange(!cloudAvailable)}
+            size="compact"
+            variant="outline"
+          >
+            Offer the cloud computer
+          </Button>
 
           <div className="otv2-lab__actions">
             <Button onClick={backend.expireNow} size="compact" variant="outline">

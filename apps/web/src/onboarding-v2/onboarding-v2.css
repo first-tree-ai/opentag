@@ -4,7 +4,82 @@
  */
 
 .otv2-shell {
+  /*
+   * The roles this surface is written in. They used to come from a global token stylesheet; the app
+   * now themes through Kumo, so each role is bound here instead — to a Kumo token wherever Kumo
+   * names the same role, and to a value only where it does not. Binding rather than inlining is
+   * what keeps this surface following the theme, dark mode included, without rewriting 1100 lines
+   * of rules that were tuned against these names.
+   */
+  --background: var(--color-kumo-canvas);
+  --surface: var(--color-kumo-base);
+  --surface-soft: var(--color-kumo-recessed);
+  --foreground: var(--text-color-kumo-strong);
+  --secondary-foreground: var(--text-color-kumo-default);
+  --muted: var(--text-color-kumo-subtle);
+  --border: var(--color-kumo-line);
+  --strong-border: var(--color-kumo-hairline);
+  --color-border-control: var(--color-kumo-hairline);
+  --color-bg-hover: var(--color-kumo-fill-hover);
+  --color-on-accent: var(--text-color-kumo-inverse);
+  --warning: var(--text-color-kumo-warning);
+  --error: var(--text-color-kumo-danger);
+  --color-status-success: var(--text-color-kumo-success);
+  --color-status-success-surface: var(--color-kumo-success-tint);
+
+  /* The theme states OpenTag's green as Kumo's brand pair, so these two resolve to the exact
+     values this surface was tuned against rather than approximations of them. */
+  --brand-ink: var(--color-kumo-brand);
+  --brand: var(--color-kumo-brand-hover);
+
+  /* A brand tint behind selected choices. Kumo's tints are neutral, so this one stays stated. */
+  --brand-light: #edf3df;
+
+  /* The command block carries its own near-black surface in both modes: it is a terminal
+     quotation, and it reads as one only if it does not follow the page. */
+  --dark-surface: #0b101d;
+
+  --font-display: inherit;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "PingFang SC", monospace;
+
+  /* Whole pixels only, and no step exists that is not named here. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-control: 8px;
+  --radius-panel: 12px;
+
+  --text-micro: 0.75rem;
+  --text-meta: 0.75rem;
+  --text-ui: 0.8125rem;
+  --text-body: 0.875rem;
+  --text-subsection: 1rem;
+  --text-title: 1.5rem;
+  --text-brand: 1.5rem;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  --lh-tight: 1.2;
+  --lh-ui: 1.45;
+  --lh-prose: 1.6;
+
+  --track-tight: -0.02em;
+  --track-label: 0.06em;
+
+  --layer-sidebar: 30;
+
   --otv2-frame: 720px;
+
+  /* The OpenTag mark is drawn inline so it inherits the theme. Its parts are named here because a
+     colour belongs in the stylesheet, not in the shape. */
+  --otv2-mark-tint: var(--brand-light);
+  --otv2-mark-surface: var(--surface);
+  --otv2-mark-ink: var(--foreground);
 
   /* The check markers need to read as green and amber at 22px. The operational status palette is
      muted for large surfaces and goes indistinct at this size, so these two are stated locally. */
@@ -252,7 +327,7 @@
   gap: var(--space-2);
 }
 
-.otv2-signin__title {
+.otv2-signin h2 {
   margin: 0;
   font-size: var(--text-subsection);
   font-weight: var(--fw-medium);
@@ -851,6 +926,11 @@
 
   /* Centred on the whole row, not on its first line: every row carries two lines of copy. */
   align-items: center;
+
+  /* A row's second line is a status that changes as the check resolves, and a failure reads longer
+     than the message it replaces. Holding the tallest of those states is what keeps the rows below
+     it, and the footer under them, still while someone is reading. */
+  min-height: 73px;
   padding: var(--space-4);
 }
 
@@ -1121,7 +1201,7 @@
 
   /* Both reserved slots hold a line more once their copy wraps at this width. */
   .otv2-slot--outcome {
-    min-height: 92px;
+    min-height: 71px;
   }
 
   .otv2-field-error {
@@ -1138,5 +1218,18 @@
 
   .otv2-shell__main {
     padding-inline: var(--space-4);
+  }
+}
+
+/* Below this width a failing check's status takes a second line. */
+@media (width <= 399px) {
+  .otv2-check {
+    min-height: 90px;
+  }
+}
+
+@media (width <= 359px) {
+  .otv2-slot--outcome {
+    min-height: 114px;
   }
 }

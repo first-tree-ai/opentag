@@ -1,6 +1,6 @@
 import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { Button, Icon, StatusIndicator } from "../ui/design-system.js";
+import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
 import { CommandBlock } from "./command-block.js";
 import {
@@ -116,19 +116,19 @@ export function DestinationStep({
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
-        <h1>{COPY.destination.title}</h1>
+        <Text as="h1">{COPY.destination.title}</Text>
       </header>
       <ul className="otv2-choices">
         {destinations.map((destination) => {
           const copy = DESTINATION_COPY[destination.id];
           return (
             <li key={destination.id}>
-              <button
+              <Button
+                variant="ghost"
                 aria-pressed={draft.destination === destination.id}
                 className="otv2-choice"
                 disabled={!destination.enabled}
                 onClick={() => onChoose(destination.id)}
-                type="button"
               >
                 <Icon className="otv2-choice__icon" name={destination.icon} />
                 <span className="otv2-choice__copy">
@@ -138,7 +138,7 @@ export function DestinationStep({
                   </strong>
                   <span>{copy.description}</span>
                 </span>
-              </button>
+              </Button>
             </li>
           );
         })}
@@ -185,11 +185,11 @@ function AgentNameField({
       <p className="otv2-fieldset__hint" id={hintId}>
         {COPY.agent.nameHint}
       </p>
-      <input
+      <KumoInputControl
         aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
         aria-invalid={errorText ? true : undefined}
         autoComplete="off"
-        className="ds-control otv2-name"
+        className="otv2-name"
         id={nameId}
         onBlur={onBlur}
         onChange={(event) => onChange({ ...draft, name: event.target.value })}
@@ -227,18 +227,18 @@ function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draf
       <ul className="otv2-choices otv2-choices--grid">
         {RUNTIMES.map((runtime) => (
           <li key={runtime}>
-            <button
+            <Button
+              variant="ghost"
               aria-pressed={draft.runtime === runtime}
               className="otv2-choice otv2-choice--runtime"
               onClick={() => onChange({ ...draft, runtime })}
-              type="button"
             >
               <RuntimeMark runtime={runtime} />
               <span className="otv2-choice__copy">
                 <strong>{RUNTIME_COPY[runtime].title}</strong>
                 <span>{RUNTIME_COPY[runtime].description}</span>
               </span>
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
@@ -258,18 +258,18 @@ function MessagingPicker({
     <ul className="otv2-choices otv2-choices--grid">
       {MESSAGING_PROVIDERS.map((candidate) => (
         <li key={candidate}>
-          <button
+          <Button
+            variant="ghost"
             aria-pressed={provider === candidate}
             className="otv2-choice otv2-choice--runtime"
             onClick={() => onChoose(candidate)}
-            type="button"
           >
             <BrandMark brand={candidate} label={COPY.messaging[candidate].title} />
             <span className="otv2-choice__copy">
               <strong>{COPY.messaging[candidate].title}</strong>
               <span>{COPY.messaging[candidate].description}</span>
             </span>
-          </button>
+          </Button>
         </li>
       ))}
     </ul>
@@ -335,9 +335,9 @@ function MessagingConnection({
                * embeds rather than copied into this repository. Used unmodified, as their brand
                * guidelines require, and nothing of theirs is redistributed here.
                */
-              <button className="otv2-slack-install" onClick={onSlackInstall} type="button">
+              <Button variant="ghost" className="otv2-slack-install" onClick={onSlackInstall} type="button">
                 <img alt={COPY.messaging.slackAction} src={ADD_TO_SLACK_URL} />
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -369,7 +369,7 @@ export function AgentStep({
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
-        <h1>{COPY.agent.title}</h1>
+        <Text as="h1">{COPY.agent.title}</Text>
       </header>
       <form className="otv2-form" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
@@ -427,7 +427,7 @@ export function CloudStep({
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
-        <h1>{COPY.cloud.title}</h1>
+        <Text as="h1">{COPY.cloud.title}</Text>
       </header>
       <form className="otv2-form" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
@@ -439,7 +439,8 @@ export function CloudStep({
           <ul className="otv2-choices otv2-choices--grid otv2-choices--lead">
             {CLOUD_RUNTIMES.map((runtime) => (
               <li key={runtime}>
-                <button
+                <Button
+                  variant="ghost"
                   aria-pressed={draft.cloudRuntime === runtime}
                   className="otv2-choice otv2-choice--runtime"
                   onClick={() =>
@@ -451,14 +452,13 @@ export function CloudStep({
                       tokenSource: runtime === "opentag" ? "opentag" : undefined,
                     })
                   }
-                  type="button"
                 >
                   <BrandMark brand={runtime} label={CLOUD_RUNTIME_COPY[runtime].title} />
                   <span className="otv2-choice__copy">
                     <strong>{CLOUD_RUNTIME_COPY[runtime].title}</strong>
                     <span>{CLOUD_RUNTIME_COPY[runtime].description}</span>
                   </span>
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -479,18 +479,18 @@ export function CloudStep({
                 const available = source === "opentag" || tokenChoiceApplies(draft.cloudRuntime);
                 return (
                   <li key={source}>
-                    <button
+                    <Button
+                      variant="ghost"
                       aria-pressed={draft.tokenSource === source}
                       className="otv2-choice otv2-choice--runtime"
                       disabled={!available}
                       onClick={() => onChange({ ...draft, tokenSource: source })}
-                      type="button"
                     >
                       <span className="otv2-choice__copy">
                         <strong>{TOKEN_COPY[source].title}</strong>
                         <span>{TOKEN_COPY[source].description}</span>
                       </span>
-                    </button>
+                    </Button>
                   </li>
                 );
               })}
@@ -531,7 +531,7 @@ function PlanSignInPanel({
 }) {
   return (
     <div className="otv2-panel otv2-signin">
-      <h2 className="otv2-signin__title">{COPY.cloud.signInTitle(runtimeLabel)}</h2>
+      <Text as="h2">{COPY.cloud.signInTitle(runtimeLabel)}</Text>
       <p className="otv2-muted">{COPY.cloud.signInHint(runtimeLabel)}</p>
       <div className="otv2-slot otv2-slot--signin">
         {signIn === "signed-in" ? (
@@ -581,7 +581,7 @@ export function ComputerStep({
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
-        <h1>{COPY.connect.title}</h1>
+        <Text as="h1">{COPY.connect.title}</Text>
         <p>{COPY.connect.lead}</p>
         <p className="otv2-privacy">
           <Icon name="shield" />
@@ -753,7 +753,7 @@ export function MessagingStep({
   return (
     <section className="otv2-step">
       <header className="otv2-step__header">
-        <h1>{COPY.messaging.title}</h1>
+        <Text as="h1">{COPY.messaging.title}</Text>
         <p>{COPY.messaging.description}</p>
       </header>
 
@@ -797,7 +797,7 @@ export function DoneStep({ name }: { name: string }) {
         <Icon name="check" />
       </span>
       <header className="otv2-step__header">
-        <h1>{COPY.done.title(name)}</h1>
+        <Text as="h1">{COPY.done.title(name)}</Text>
         <p>{COPY.done.description(name)}</p>
       </header>
     </section>

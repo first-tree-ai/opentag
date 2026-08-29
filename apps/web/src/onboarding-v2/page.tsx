@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Button } from "../ui/design-system.js";
 import { COPY } from "./copy.js";
 import {
   type AgentDraft,
@@ -111,9 +112,9 @@ export function OnboardingV2Page() {
     <div className="otv2-shell">
       <header className="otv2-shell__header">
         <span className="otv2-brand">{COPY.brand}</span>
-        <button className="otv2-restart" onClick={startOver} type="button">
+        <Button variant="ghost" className="otv2-restart" onClick={startOver} type="button">
           Start over
-        </button>
+        </Button>
       </header>
 
       <main className="otv2-shell__main">

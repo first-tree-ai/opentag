@@ -1,8 +1,7 @@
 import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import addToSlack from "../assets/add-to-slack@2x.png";
 import { Button, Icon, StatusIndicator } from "../ui/design-system.js";
-import { BrandMark } from "./brand-mark.js";
+import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
 import { CommandBlock } from "./command-block.js";
 import {
   CHECK_COPY,
@@ -331,9 +330,13 @@ function MessagingConnection({
                 {COPY.messaging.slackWaiting}
               </p>
             ) : (
-              /* Slack's published install button, used unmodified as its brand guidelines require. */
+              /*
+               * Slack's published install button, referenced from the URL Slack's own documentation
+               * embeds rather than copied into this repository. Used unmodified, as their brand
+               * guidelines require, and nothing of theirs is redistributed here.
+               */
               <button className="otv2-slack-install" onClick={onSlackInstall} type="button">
-                <img alt={COPY.messaging.slackAction} src={addToSlack} />
+                <img alt={COPY.messaging.slackAction} src={ADD_TO_SLACK_URL} />
               </button>
             )}
           </div>

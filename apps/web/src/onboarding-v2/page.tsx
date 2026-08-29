@@ -33,8 +33,11 @@ export function OnboardingV2Page() {
   const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
   const [creation, setCreation] = useState<CreationState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
-  /** Cloud is not shipped; the mock can offer it so its flow can be reviewed before it is. */
-  const [cloudAvailable, setCloudAvailable] = useState(true);
+  /**
+   * Cloud is not shipped: the Server cannot allocate a cloud Computer yet, so the route is
+   * Coming soon in production. The mock panel can still offer it so its pages stay reviewable.
+   */
+  const [cloudAvailable, setCloudAvailable] = useState(false);
   const backend = useMockBackend(scenario, speed);
 
   const facts: FlowFacts = {

@@ -29,17 +29,20 @@ than using the published file.
 | File | Mark | Owner |
 | --- | --- | --- |
 | `apps/web/src/assets/slack.svg` | Slack | Slack Technologies, LLC, a Salesforce company |
-| `apps/web/src/assets/add-to-slack@2x.png` | "Add to Slack" button | Slack Technologies, LLC, a Salesforce company |
 | `apps/web/src/assets/feishu.svg` | Feishu / Lark | Beijing Feishu Technology Co., Ltd. |
 | `apps/web/src/assets/claude.svg` | Claude | Anthropic PBC |
-| `apps/web/src/assets/codex.svg` | Codex | OpenAI, Inc. |
 | `apps/web/src/assets/google-sign-in-light@2x.png` | Sign in with Google | Google LLC |
 
 ## Conditions we are keeping to
 
-- **Slack.** The "Add to Slack" button is Slack's published asset and is used unmodified, at its
-  published proportions, as [Slack's brand guidelines](https://slack.com/media-kit) require. It is
-  not restyled, recoloured, or rebuilt from our own components.
+- **Slack.** The "Add to Slack" button is **referenced from Slack's own URL**, the way Slack's
+  developer documentation embeds it, rather than copied into this repository. It is used unmodified
+  at its published proportions, as [Slack's brand guidelines](https://slack.com/media-kit) require,
+  and is never restyled, recoloured, or rebuilt from our own components.
+- **Codex.** No asset is carried. openai.com serves 403 to direct asset requests, and taking the
+  icon out of an installed application would establish where the bytes came from without
+  establishing permission to redistribute them here. It shows a neutral mark until a publisher-
+  provided asset whose terms cover this use is available.
 - **Google.** The sign-in button follows
   [Google's branding guidelines](https://developers.google.com/identity/branding-guidelines).
 - **Every mark.** Displayed at its own proportions, never altered, and never used in a way that

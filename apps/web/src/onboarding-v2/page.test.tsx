@@ -60,15 +60,9 @@ describe("OnboardingV2Page", () => {
     Reflect.deleteProperty(navigator, "clipboard");
   });
 
-  it("marks the cloud computer as coming soon when it is not on offer", () => {
+  it("marks the cloud computer as coming soon, because the Server cannot allocate one yet", () => {
     render(<OnboardingV2Page />);
     expect((screen.getByRole("button", { name: /Local computer/ }) as HTMLButtonElement).disabled).toBe(false);
-
-    // The mock offers cloud by default so its flow can be reviewed; turning it off is what
-    // production looks like today.
-    openLab();
-    fireEvent.click(screen.getByLabelText("Offer the cloud computer"));
-    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
 
     const cloud = screen.getByRole("button", { name: /Cloud computer/ }) as HTMLButtonElement;
     expect(cloud.disabled).toBe(true);
@@ -420,6 +414,9 @@ describe("OnboardingV2Page", () => {
 
     it("offers the same Slack install on the cloud route", async () => {
       render(<OnboardingV2Page />);
+      openLab();
+      fireEvent.click(screen.getByLabelText("Offer the cloud computer"));
+      fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
       fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
@@ -435,7 +432,11 @@ describe("OnboardingV2Page", () => {
   });
 
   describe("the cloud route", () => {
+    /** Cloud is Coming soon in production; the panel is what makes its pages reviewable. */
     async function chooseCloud() {
+      openLab();
+      fireEvent.click(screen.getByLabelText("Offer the cloud computer"));
+      fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
       fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     }

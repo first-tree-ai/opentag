@@ -25,16 +25,17 @@ OpenTag 自己的名称与标识属于本项目，但**不**在仓库 [LICENSE](
 | 文件 | 标识 | 权利人 |
 | --- | --- | --- |
 | `apps/web/src/assets/slack.svg` | Slack | Slack Technologies, LLC（Salesforce 旗下） |
-| `apps/web/src/assets/add-to-slack@2x.png` | "Add to Slack" 按钮 | Slack Technologies, LLC（Salesforce 旗下） |
 | `apps/web/src/assets/feishu.svg` | 飞书 / Lark | 北京飞书科技有限公司 |
 | `apps/web/src/assets/claude.svg` | Claude | Anthropic PBC |
-| `apps/web/src/assets/codex.svg` | Codex | OpenAI, Inc. |
 | `apps/web/src/assets/google-sign-in-light@2x.png` | Sign in with Google | Google LLC |
 
 ## 我们遵守的条件
 
-- **Slack。** "Add to Slack" 按钮使用 Slack 发布的原始素材，未经修改、按其发布比例展示，符合
-  [Slack 品牌规范](https://slack.com/media-kit)的要求。不重新配色、不改样式、不用我们自己的组件重做。
+- **Slack。** "Add to Slack" 按钮**直接引用 Slack 自己的 URL**（Slack 开发者文档就是这样嵌入的），
+  而不是把文件复制进本仓库。未经修改、按其发布比例展示，符合
+  [Slack 品牌规范](https://slack.com/media-kit)的要求，不重新配色、不改样式、不用我们自己的组件重做。
+- **Codex。** 仓库中不携带该素材。openai.com 对直接取素材一律返回 403；而从已安装的应用里把图标抠出来，
+  只能确立字节的来源，不能确立在此再分发的许可。在拿到条款覆盖此用途的官方素材之前，它显示为中性标记。
 - **Google。** 登录按钮遵循
   [Google 品牌规范](https://developers.google.com/identity/branding-guidelines)。
 - **所有标识。** 按各自比例展示，不作改动，也不以任何暗示合作关系的方式使用。

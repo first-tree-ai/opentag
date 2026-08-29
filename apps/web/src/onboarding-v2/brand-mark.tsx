@@ -1,5 +1,4 @@
 import claudeMark from "../assets/claude.svg";
-import codexMark from "../assets/codex.svg";
 import feishuMark from "../assets/feishu.svg";
 import slackMark from "../assets/slack.svg";
 
@@ -7,16 +6,19 @@ import slackMark from "../assets/slack.svg";
  * The marks shown beside a runtime or a messaging app. Each is the vendor's own published file,
  * carried in `assets/` with a comment recording where and when it came from. None is redrawn: an
  * imitation of a trademark is both inaccurate and the worse licensing position. Ownership and the
- * conditions each publisher sets are recorded in TRADEMARKS.md at the repository root.
+ * conditions each publisher sets are recorded in TRADEMARKS.md at the repository root. Anything we
+ * have no redistribution grant for is not carried here at all.
  */
 export type BrandId = "opentag" | "feishu" | "slack" | "claude-code" | "codex";
 
-const ART: Record<Exclude<BrandId, "opentag">, string> = {
+const ART: Partial<Record<BrandId, string>> = {
   feishu: feishuMark,
   slack: slackMark,
   "claude-code": claudeMark,
-  codex: codexMark,
 };
+
+/** Slack documents embedding this button from their own URL, so it is referenced, not copied. */
+export const ADD_TO_SLACK_URL = "https://platform.slack-edge.com/img/add_to_slack@2x.png";
 
 export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
   if (brand === "opentag") {
@@ -44,9 +46,23 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
     );
   }
 
+  const art = ART[brand];
+  if (art) {
+    return (
+      <span aria-hidden="true" className="otv2-mark otv2-mark--art" data-brand={brand}>
+        <img alt="" className="otv2-mark__svg" src={art} />
+      </span>
+    );
+  }
+
+  /*
+   * Codex has no asset here. Taking one out of an installed application establishes where the bytes
+   * came from and nothing about redistributing them from this repository, and openai.com serves 403
+   * to direct asset requests. So it keeps a neutral mark rather than a file we have no grant for.
+   */
   return (
-    <span aria-hidden="true" className="otv2-mark otv2-mark--art" data-brand={brand}>
-      <img alt="" className="otv2-mark__svg" src={ART[brand]} />
+    <span aria-hidden="true" className="otv2-mark" data-brand={brand}>
+      {label.slice(0, 1)}
     </span>
   );
 }

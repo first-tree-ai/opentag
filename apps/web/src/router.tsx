@@ -879,6 +879,7 @@ function AppShell() {
 
 function AppShellContent() {
   const { me } = useAccount();
+  const location = useLocation();
   const navigate = useNavigate();
   const { setOpenMobile } = useSidebar();
   const [openMenu, setOpenMenu] = useState<"account">();

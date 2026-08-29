@@ -639,7 +639,7 @@ function TaskProviderIcon({
   provider: TaskSummary["source"]["provider"];
   compact?: boolean;
 }) {
-  return <ProviderIcon className={compact ? "size-5" : "size-6"} provider={provider} />;
+  return <ProviderIcon className={compact ? "inline-block size-5" : "inline-block size-6"} provider={provider} />;
 }
 
 function DebugValue({ label, value }: { label: string; value: string }) {

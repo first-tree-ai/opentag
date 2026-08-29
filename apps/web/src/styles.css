@@ -700,14 +700,14 @@ pre {
   display: grid;
   align-items: center;
   gap: 20px;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(210px, 0.7fr) 206px;
+  grid-template-columns: minmax(240px, 0.8fr) 206px minmax(210px, 0.7fr);
   border-bottom: 1px solid var(--border);
   background: var(--surface-soft);
   padding: 8px 20px;
 }
 
 .agent-card-grid-heading > span {
-  grid-column: 3;
+  grid-column: 2;
   color: var(--muted);
   font-size: var(--text-micro);
   letter-spacing: var(--track-label);
@@ -721,7 +721,7 @@ pre {
   min-height: 88px;
   align-items: center;
   gap: 20px;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(210px, 0.7fr) 206px;
+  grid-template-columns: minmax(240px, 0.8fr) 206px minmax(210px, 0.7fr);
   border: 0;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
@@ -3896,22 +3896,16 @@ textarea:focus {
     padding-right: 44px;
   }
 
-  .agent-card-state {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
   .agent-card-usage {
     width: 100%;
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 2;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .agent-card-action {
+  .agent-card-state {
     grid-column: 1;
-    grid-row: 1;
-    justify-self: end;
+    grid-row: 3;
   }
 
   .overview-section .definition-list {

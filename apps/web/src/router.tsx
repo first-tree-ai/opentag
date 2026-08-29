@@ -1051,9 +1051,6 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           </strong>
         </div>
       </div>
-      <div className="agent-card-state">
-        <StatusIndicator className="agent-card-status" detail={statusDetail} label={status.label} tone={status.tone} />
-      </div>
       <dl className="agent-card-usage">
         <div>
           <dt>Tasks</dt>
@@ -1064,6 +1061,9 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
+      <div className="agent-card-state">
+        <StatusIndicator className="agent-card-status" detail={statusDetail} label={status.label} tone={status.tone} />
+      </div>
     </article>
   );
 }

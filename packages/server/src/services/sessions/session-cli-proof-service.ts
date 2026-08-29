@@ -95,7 +95,7 @@ export class SessionCliProofService {
       const proofId = randomUUID();
       const token = this.#deriveToken({ ...input, proofId });
       const now = this.#now();
-      const computerId = (await projectedComputerId(transaction, input.workspaceComputerId)) ?? null;
+      const computerId = await projectedComputerId(transaction, input.workspaceComputerId);
       await transaction
         .insert(sessionCliProofs)
         .values({

@@ -79,7 +79,9 @@ export const sessionPlacements = pgTable(
     workspaceComputerId: uuid("workspace_computer_id")
       .notNull()
       .references(() => workspaceComputers.id, { onDelete: "restrict" }),
-    computerId: uuid("computer_id").references(() => accountComputers.id, { onDelete: "restrict" }),
+    computerId: uuid("computer_id")
+      .notNull()
+      .references(() => accountComputers.id, { onDelete: "restrict" }),
     generation: bigint("generation", { mode: "number" }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -87,6 +89,7 @@ export const sessionPlacements = pgTable(
     index("session_placements_workspace_computer_id_idx").on(table.workspaceComputerId),
     index("session_placements_computer_id_idx").on(table.computerId),
     check("session_placements_generation_positive", sql`${table.generation} >= 1`),
+    check("session_placements_computer_matches_enrollment", sql`${table.computerId} = ${table.workspaceComputerId}`),
   ],
 );
 

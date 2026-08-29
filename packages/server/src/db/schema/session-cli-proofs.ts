@@ -14,7 +14,9 @@ export const sessionCliProofs = pgTable(
     workspaceComputerId: uuid("workspace_computer_id")
       .notNull()
       .references(() => workspaceComputers.id, { onDelete: "cascade" }),
-    computerId: uuid("computer_id").references(() => accountComputers.id, { onDelete: "restrict" }),
+    computerId: uuid("computer_id")
+      .notNull()
+      .references(() => accountComputers.id, { onDelete: "restrict" }),
     placementGeneration: bigint("placement_generation", { mode: "number" }).notNull(),
     connectionInstanceId: uuid("connection_instance_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -24,5 +26,6 @@ export const sessionCliProofs = pgTable(
     index("session_cli_proofs_computer_id_idx").on(table.computerId),
     check("session_cli_proofs_token_hash_shape", sql`${table.tokenHash} ~ '^[0-9a-f]{64}$'`),
     check("session_cli_proofs_generation_positive", sql`${table.placementGeneration} >= 1`),
+    check("session_cli_proofs_computer_matches_enrollment", sql`${table.computerId} = ${table.workspaceComputerId}`),
   ],
 );

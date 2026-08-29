@@ -653,7 +653,7 @@ export class SessionService {
         .update(sessionPlacements)
         .set({
           workspaceComputerId,
-          computerId: (await projectedComputerId(transaction, workspaceComputerId)) ?? null,
+          computerId: await projectedComputerId(transaction, workspaceComputerId),
           generation,
           updatedAt: now,
         })

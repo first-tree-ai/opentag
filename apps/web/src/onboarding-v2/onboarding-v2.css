@@ -219,6 +219,25 @@
   color: var(--brand);
 }
 
+/* Slack's own button, shown at its published proportions and never restyled. */
+.otv2-slack-install {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.otv2-slack-install:hover,
+.otv2-shell .otv2-slack-install:active {
+  background: none;
+}
+
+.otv2-slack-install img {
+  display: block;
+  width: 139px;
+  height: 40px;
+}
+
 .otv2-signin {
   gap: var(--space-2);
 }

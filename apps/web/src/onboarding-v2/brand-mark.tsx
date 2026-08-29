@@ -1,24 +1,20 @@
+import claudeMark from "../assets/claude.svg";
+import codexMark from "../assets/codex.svg";
 import feishuMark from "../assets/feishu.svg";
+import slackMark from "../assets/slack.svg";
 
 /**
- * The marks shown beside a runtime or a messaging app.
- *
- * Two are real: OpenTag's own, and the official Feishu mark already carried in `assets/`. The
- * others are lettered tiles standing in for assets we do not have. They are deliberately *not*
- * hand-drawn imitations of the real logos — a redrawn trademark is both inaccurate and a licensing
- * problem, and Slack in particular requires its published files unmodified — so each stays a
- * placeholder until its brand kit lands in `assets/`, at which point only this file changes.
+ * The marks shown beside a runtime or a messaging app. Each is the vendor's own published file,
+ * carried in `assets/` with a comment recording where and when it came from. None is redrawn: an
+ * imitation of a trademark is both inaccurate and the worse licensing position.
  */
 export type BrandId = "opentag" | "feishu" | "slack" | "claude-code" | "codex";
 
-/**
- * Stand-ins carry the vendor's initial, which is also the subtitle on the card, so Claude Code and
- * Codex do not both show a "C".
- */
-const PENDING_ASSET: Record<Exclude<BrandId, "opentag" | "feishu">, string> = {
-  slack: "S",
-  "claude-code": "A",
-  codex: "O",
+const ART: Record<Exclude<BrandId, "opentag">, string> = {
+  feishu: feishuMark,
+  slack: slackMark,
+  "claude-code": claudeMark,
+  codex: codexMark,
 };
 
 export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
@@ -47,17 +43,9 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
     );
   }
 
-  if (brand === "feishu") {
-    return (
-      <span aria-hidden="true" className="otv2-mark otv2-mark--art" data-brand={brand}>
-        <img alt="" className="otv2-mark__svg" src={feishuMark} />
-      </span>
-    );
-  }
-
   return (
-    <span aria-hidden="true" className="otv2-mark" data-brand={brand}>
-      {PENDING_ASSET[brand]}
+    <span aria-hidden="true" className="otv2-mark otv2-mark--art" data-brand={brand}>
+      <img alt="" className="otv2-mark__svg" src={ART[brand]} />
     </span>
   );
 }

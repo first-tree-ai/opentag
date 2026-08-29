@@ -1,5 +1,6 @@
 import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
+import addToSlack from "../assets/add-to-slack@2x.png";
 import { Button, Icon, StatusIndicator } from "../ui/design-system.js";
 import { BrandMark } from "./brand-mark.js";
 import { CommandBlock } from "./command-block.js";
@@ -314,7 +315,10 @@ function MessagingConnection({
                 {COPY.messaging.slackWaiting}
               </p>
             ) : (
-              <Button onClick={onSlackInstall}>{COPY.messaging.slackAction}</Button>
+              /* Slack's published install button, used unmodified as its brand guidelines require. */
+              <button className="otv2-slack-install" onClick={onSlackInstall} type="button">
+                <img alt={COPY.messaging.slackAction} src={addToSlack} />
+              </button>
             )}
           </div>
         </div>

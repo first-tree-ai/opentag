@@ -399,6 +399,7 @@ export class ImDeliveryWorker {
           imBinding: imBindings,
           agent: agents,
           computer: workspaceComputers,
+          computerOwnerAccountId: accountComputers.ownerAccountId,
         })
         .from(imMessageDeliveries)
         .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
@@ -406,6 +407,7 @@ export class ImDeliveryWorker {
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
         .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
         .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
         .innerJoin(
           workspaceComputers,
           and(
@@ -427,6 +429,14 @@ export class ImDeliveryWorker {
         .limit(1);
       if (!row || row.delivery.placementGeneration !== row.placement.generation) {
         await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_AUTHORITY_UNAVAILABLE", claim.claimToken);
+        return;
+      }
+      if (row.computerOwnerAccountId !== row.agent.createdByUserId) {
+        if (row.delivery.dispatchRequestId === null) {
+          await this.#reject(claim.id, "computer_owner_mismatch", claim.claimToken);
+        } else {
+          await this.#recordFailure(claim.id, "IM_DELIVERY_COMPUTER_OWNER_MISMATCH", claim.claimToken);
+        }
         return;
       }
       const instanceId = this.#registry.currentInstanceId(row.computer.id);
@@ -492,8 +502,14 @@ export class ImDeliveryWorker {
       };
       fitDeliveryFrame(request);
       if (!(await lease.assertOwned())) return;
-      const admitted = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
-        this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
+      const admitted = await this.#withActiveAgentAdmission(
+        {
+          agentId: row.agent.id,
+          computerId: row.computer.id,
+          placementGeneration: row.placement.generation,
+          sessionId: row.session.id,
+        },
+        (onDispatched) => this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
       );
       if (!admitted.admitted) {
         await this.#recordFailure(claim.id, "IM_DELIVERY_AGENT_NOT_ACTIVE", claim.claimToken);
@@ -535,7 +551,7 @@ export class ImDeliveryWorker {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .innerJoin(
         workspaceComputers,
         and(
@@ -562,9 +578,9 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE", claimToken);
       return;
     }
-    if (row.computerOwnerAccountId !== row.agent.createdByUserId) {
+    if (row.computerOwnerAccountId !== row.agent.createdByUserId && row.delivery.dispatchRequestId === null) {
       setActiveSpanAttributes(outcomeAttrs("failed", "IM_DELIVERY_COMPUTER_OWNER_MISMATCH"));
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_COMPUTER_OWNER_MISMATCH", claimToken);
+      await this.#reject(deliveryId, "computer_owner_mismatch", claimToken);
       return;
     }
     setActiveSpanAttributes({
@@ -633,7 +649,13 @@ export class ImDeliveryWorker {
     }
     if (!(await lease.assertOwned())) return;
     try {
-      const admittedReconcile = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
+      const admission = {
+        agentId: row.agent.id,
+        computerId: row.computer.id,
+        placementGeneration: row.placement.generation,
+        sessionId: row.session.id,
+      };
+      const admittedReconcile = await this.#withActiveAgentAdmission(admission, (onDispatched) =>
         this.#domain.requestReconcile(
           row.computer.id,
           instanceId,
@@ -715,7 +737,7 @@ export class ImDeliveryWorker {
       fitDeliveryFrame(request);
       if (!(await lease.assertOwned())) return;
       await this.#beforeDeliveryAdmission?.();
-      const admittedDelivery = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
+      const admittedDelivery = await this.#withActiveAgentAdmission(admission, (onDispatched) =>
         this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched),
       );
       if (!admittedDelivery.admitted) {
@@ -873,17 +895,41 @@ export class ImDeliveryWorker {
   }
 
   async #withActiveAgentAdmission<T>(
-    agentId: string,
+    expected: {
+      agentId: string;
+      computerId: string;
+      placementGeneration: number;
+      sessionId: string;
+    },
     operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
     return this.#database.transaction(async (transaction) => {
       const [agent] = await transaction
-        .select({ status: agents.status })
+        .select({ computerId: agents.computerId, createdByUserId: agents.createdByUserId, status: agents.status })
         .from(agents)
-        .where(eq(agents.id, agentId))
+        .where(eq(agents.id, expected.agentId))
         .limit(1)
         .for("update");
       if (agent?.status !== "active") return { admitted: false } as const;
+      const [placement] = await transaction
+        .select({
+          computerId: sessionPlacements.computerId,
+          generation: sessionPlacements.generation,
+          ownerAccountId: accountComputers.ownerAccountId,
+        })
+        .from(sessionPlacements)
+        .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
+        .where(eq(sessionPlacements.sessionId, expected.sessionId))
+        .limit(1);
+      if (
+        !placement ||
+        agent.computerId !== expected.computerId ||
+        placement.computerId !== expected.computerId ||
+        placement.generation !== expected.placementGeneration ||
+        placement.ownerAccountId !== agent.createdByUserId
+      ) {
+        return { admitted: false } as const;
+      }
       let markDispatched: () => void = () => undefined;
       const dispatched = new Promise<void>((resolve) => {
         markDispatched = resolve;

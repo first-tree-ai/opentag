@@ -284,6 +284,26 @@ export class AgentService {
     this.#stopSessions = options.stopSessions ?? (async () => undefined);
   }
 
+  async createForAccount(callerUserId: string, rawInput: CreateAgentRequest): Promise<AgentAdminConfig> {
+    const input = CreateAgentRequestSchema.parse(rawInput);
+    const [computer] = await this.#database
+      .select({ workspaceId: workspaceComputers.workspaceId })
+      .from(accountComputers)
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
+      .where(
+        and(
+          eq(accountComputers.id, input.computerId),
+          eq(accountComputers.ownerAccountId, callerUserId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
+      .limit(1);
+    if (!computer) {
+      throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+    }
+    return this.createForWorkspace(callerUserId, computer.workspaceId, input);
+  }
+
   async createForWorkspace(
     callerUserId: string,
     workspaceId: string,
@@ -295,7 +315,7 @@ export class AgentService {
     try {
       return await this.#database.transaction(async (transaction) => {
         await this.#afterMembershipLocked?.();
-        const computer = await this.#lockOwnedComputer(transaction, callerUserId, input.computerId);
+        const computer = await this.#lockOwnedComputer(transaction, callerUserId, input.computerId, workspaceId);
         if (input.creationIntentId && intentFingerprint) {
           const replay = await this.#findCreationIntent(
             transaction,
@@ -396,6 +416,14 @@ export class AgentService {
   }
 
   async listForWorkspace(callerUserId: string, workspaceId: string): Promise<ListAgentsResponse> {
+    return this.#listForAccount(callerUserId, workspaceId);
+  }
+
+  async listForAccount(callerUserId: string): Promise<ListAgentsResponse> {
+    return this.#listForAccount(callerUserId);
+  }
+
+  async #listForAccount(callerUserId: string, workspaceId?: string): Promise<ListAgentsResponse> {
     const creator = alias(users, "agent_creator");
     const rows = await this.#database
       .select({
@@ -421,7 +449,7 @@ export class AgentService {
       .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
       .where(
         and(
-          eq(agents.workspaceId, workspaceId),
+          workspaceId === undefined ? undefined : eq(agents.workspaceId, workspaceId),
           eq(agents.createdByUserId, callerUserId),
           ne(agents.status, "deleted"),
         ),
@@ -780,6 +808,99 @@ export class AgentService {
     });
   }
 
+  async rebindById(callerUserId: string, agentId: string, computerId: string): Promise<AgentAdminConfig> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
+      this.#requireManagePermission(scope);
+      const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
+      const active = await transaction
+        .select({
+          endedAt: sessions.endedAt,
+          generation: sessionPlacements.generation,
+          sessionId: sessions.id,
+          workspaceComputerId: sessionPlacements.workspaceComputerId,
+        })
+        .from(sessions)
+        .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+        .where(and(eq(imBindings.agentId, agentId), isNull(sessions.endedAt)))
+        .orderBy(asc(sessions.id))
+        .for("update", { of: sessionPlacements });
+      const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
+      const changesAgent = scope.agent.computerId !== target.id;
+      const changesPlacement = active.some(({ workspaceComputerId }) => workspaceComputerId !== target.id);
+      if (!changesAgent && !changesPlacement) {
+        return toAgentAdminConfig(scope.agent, runtimeConfig, target.id);
+      }
+      const sessionIds = active.map((row) => row.sessionId);
+      if (sessionIds.length > 0) {
+        const deliveries = await transaction
+          .select({
+            dispatchRequestId: imMessageDeliveries.dispatchRequestId,
+            placementGeneration: imMessageDeliveries.placementGeneration,
+            reportedAt: imMessageDeliveries.reportedAt,
+            sessionId: imMessageDeliveries.sessionId,
+            state: imMessageDeliveries.state,
+          })
+          .from(imMessageDeliveries)
+          .where(inArray(imMessageDeliveries.sessionId, sessionIds));
+        const blocked = deliveries.some(
+          (delivery) =>
+            delivery.state === "pending" ||
+            (delivery.state === "accepted" && delivery.reportedAt === null) ||
+            (delivery.state === "expired" && delivery.dispatchRequestId !== null),
+        );
+        if (blocked) {
+          throw new AgentServiceError(
+            "AGENT_REBIND_BLOCKED",
+            "deterministic",
+            "The Agent cannot rebind while Sessions have pending delivery, unreported Turns, or uncertain custody",
+            409,
+          );
+        }
+      }
+      const now = this.#now();
+      let updated = scope.agent;
+      if (changesAgent) {
+        const [changed] = await transaction
+          .update(agents)
+          .set({
+            workspaceId: target.workspaceId,
+            workspaceComputerId: target.id,
+            computerId: target.id,
+            revision: sql`${agents.revision} + 1`,
+            updatedAt: now,
+          })
+          .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+          .returning();
+        if (!changed) throw resourceNotFound();
+        updated = changed;
+      }
+      for (const row of active) {
+        if (row.workspaceComputerId === target.id) continue;
+        const [moved] = await transaction
+          .update(sessionPlacements)
+          .set({
+            workspaceComputerId: target.id,
+            computerId: target.id,
+            generation: row.generation + 1,
+            updatedAt: now,
+          })
+          .where(eq(sessionPlacements.sessionId, row.sessionId))
+          .returning({ sessionId: sessionPlacements.sessionId });
+        if (!moved) {
+          throw new AgentServiceError(
+            "AGENT_REBIND_BLOCKED",
+            "deterministic",
+            "The Agent cannot rebind while Sessions have pending delivery, unreported Turns, or uncertain custody",
+            409,
+          );
+        }
+      }
+      return toAgentAdminConfig(updated, runtimeConfig, target.id);
+    });
+  }
+
   async deleteById(callerUserId: string, agentId: string): Promise<void> {
     const targets = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
@@ -840,6 +961,7 @@ export class AgentService {
     transaction: DatabaseTransaction,
     accountId: string,
     computerId: string,
+    workspaceId?: string,
   ): Promise<{ id: string; workspaceId: string }> {
     const [computer] = await transaction
       .select({
@@ -852,6 +974,7 @@ export class AgentService {
         and(
           eq(accountComputers.id, computerId),
           eq(accountComputers.ownerAccountId, accountId),
+          workspaceId === undefined ? undefined : eq(workspaceComputers.workspaceId, workspaceId),
           isNull(workspaceComputers.revokedAt),
         ),
       )

@@ -14,7 +14,17 @@ import { createApp } from "../../app.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, workspaceAdminGrants, workspaceComputers, workspaces } from "../../db/schema/index.js";
+import {
+  accountComputers,
+  computerConnectCodes,
+  computerCredentials,
+  computers,
+  users,
+  workspaceAdminGrants,
+  workspaceComputerCredentials,
+  workspaceComputers,
+  workspaces,
+} from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
@@ -114,6 +124,31 @@ describe("Computer enrollment persistence", () => {
       expect(await value.service.heartbeat(enrollment, second)).toBe(true);
       expect(await value.database.select().from(computers)).toHaveLength(1);
       expect(await value.database.select().from(workspaceComputers)).toHaveLength(1);
+      const [legacy] = await value.database.select().from(workspaceComputers);
+      const [projected] = await value.database.select().from(accountComputers);
+      expect(projected).toMatchObject({
+        id: enrollment.workspaceComputerId,
+        ownerAccountId: value.bootstrap.userId,
+        currentInstallationId: enrollment.computerId,
+        currentInstanceId: second,
+        displayName: legacy?.displayName,
+        platform: legacy?.platform,
+      });
+      const [legacyCredential] = await value.database
+        .select()
+        .from(workspaceComputerCredentials)
+        .where(eq(workspaceComputerCredentials.id, enrollment.credentialId));
+      const [targetCredential] = await value.database
+        .select()
+        .from(computerCredentials)
+        .where(eq(computerCredentials.id, enrollment.credentialId));
+      expect(targetCredential).toMatchObject({
+        id: enrollment.credentialId,
+        computerId: enrollment.workspaceComputerId,
+        secretHash: legacyCredential?.secretHash,
+        issuedByUserId: value.bootstrap.userId,
+        revokedAt: null,
+      });
     } finally {
       await value.sql.end();
     }
@@ -188,6 +223,86 @@ describe("Computer enrollment persistence", () => {
       });
       await expect(value.machineAuth.verifyMachineToken(rotated.machineToken)).resolves.toMatchObject({
         workspaceComputerId: first.workspaceComputerId,
+      });
+      const credentials = await value.database
+        .select()
+        .from(computerCredentials)
+        .where(eq(computerCredentials.computerId, first.workspaceComputerId));
+      expect(credentials).toHaveLength(2);
+      expect(credentials.find((row) => row.id === first.credentialId)).toMatchObject({
+        revokedAt: expect.any(Date),
+        revokedByUserId: value.bootstrap.userId,
+      });
+      expect(credentials.find((row) => row.id === rotated.credentialId)).toMatchObject({
+        secretHash: (
+          await value.database
+            .select()
+            .from(workspaceComputerCredentials)
+            .where(eq(workspaceComputerCredentials.id, rotated.credentialId))
+        )[0]?.secretHash,
+        revokedAt: null,
+      });
+      const [accountComputer] = await value.database
+        .select()
+        .from(accountComputers)
+        .where(eq(accountComputers.id, first.workspaceComputerId));
+      expect(accountComputer).toMatchObject({
+        id: first.workspaceComputerId,
+        ownerAccountId: value.bootstrap.userId,
+        currentInstallationId: computerId,
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rolls back Computer exchange when the account-owned identity diverges", async () => {
+    const value = await fixture();
+    try {
+      const computerId = crypto.randomUUID();
+      const first = await enroll(value, value.bootstrap.workspaceId, value.bootstrap.userId, computerId);
+      const [otherUser] = await value.database
+        .insert(users)
+        .values({ email: "other-owner@example.com", displayName: "Other" })
+        .returning();
+      if (!otherUser) throw new Error("Other Account fixture was not created");
+      await value.database
+        .update(accountComputers)
+        .set({ ownerAccountId: otherUser.id })
+        .where(eq(accountComputers.id, first.workspaceComputerId));
+
+      const issued = await value.machineAuth.issueForWorkspaceAdmin(
+        value.bootstrap.userId,
+        value.bootstrap.workspaceId,
+      );
+      const before = {
+        enrollments: await value.database.select().from(workspaceComputers),
+        accountComputers: await value.database.select().from(accountComputers),
+        legacyCredentials: await value.database.select().from(workspaceComputerCredentials),
+        targetCredentials: await value.database.select().from(computerCredentials),
+        codes: await value.database.select().from(computerConnectCodes),
+      };
+
+      await expect(
+        value.machineAuth.exchangeConnectCode({
+          code: issued.code,
+          computerId,
+          displayName: "mutated",
+          platform: "darwin",
+          arch: "arm64",
+          clientVersion: "9.9.9",
+        }),
+      ).rejects.toThrow(/does not match the enrollment identity/);
+
+      expect(await value.database.select().from(workspaceComputers)).toEqual(before.enrollments);
+      expect(await value.database.select().from(accountComputers)).toEqual(before.accountComputers);
+      expect(await value.database.select().from(workspaceComputerCredentials)).toEqual(before.legacyCredentials);
+      expect(await value.database.select().from(computerCredentials)).toEqual(before.targetCredentials);
+      expect(await value.database.select().from(computerConnectCodes)).toEqual(before.codes);
+      expect(before.codes.filter((row) => row.consumedAt === null)).toHaveLength(1);
+      expect(before.accountComputers[0]).toMatchObject({
+        ownerAccountId: otherUser.id,
+        currentInstallationId: computerId,
       });
     } finally {
       await value.sql.end();

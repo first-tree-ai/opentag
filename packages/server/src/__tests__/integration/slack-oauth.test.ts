@@ -202,6 +202,7 @@ describe("Slack distributed OAuth adapter", () => {
       expect(installation?.encryptedCredential).toEqual(expect.any(String));
       expect(installation?.encryptedCredential).not.toContain("xoxb-distributed");
       expect(installation?.encryptedCredential).not.toContain(slackApp.signingSecret);
+      expect(installation?.agentId).toBe(value.first.id);
 
       await expect(
         value.oauth.callback({
@@ -275,6 +276,7 @@ describe("Slack distributed OAuth adapter", () => {
         externalAppId: "A_OPENTAG",
         externalTeamId: "T_TEAM",
         externalBotId: "U_BOT",
+        agentId: value.first.id,
       });
       const bindings = await value.database.select().from(imBindings);
       expect(bindings.find((row) => row.id === migrated.imBindingId)).toMatchObject({
@@ -341,6 +343,7 @@ describe("Slack distributed OAuth adapter", () => {
         workspaceId: value.bootstrap.workspaceId,
         credentialGeneration: 2,
         status: "active",
+        agentId: value.second.id,
       });
       expect(installations[0]?.encryptedCredential).not.toContain("xoxb-distributed");
     } finally {

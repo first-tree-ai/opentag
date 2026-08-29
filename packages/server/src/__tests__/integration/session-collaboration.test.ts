@@ -101,6 +101,12 @@ describe("Session collaboration authority", () => {
       expect((await fixture.database.select().from(sessions)).filter(({ kind }) => kind === "internal")).toHaveLength(
         1,
       );
+      const placements = await fixture.database.select().from(sessionPlacements);
+      expect(placements.every((row) => row.computerId === null)).toBe(true);
+      expect(placements.map((row) => row.workspaceComputerId)).toEqual([
+        fixture.workspaceComputerId,
+        fixture.workspaceComputerId,
+      ]);
 
       await expect(
         fixture.sessions.createInternalSessionWithMessage({ ...input, initialMessage: "Conflicting task" }),
@@ -479,6 +485,11 @@ describe("Session collaboration authority", () => {
 
       const moved = await fixture.sessions.movePlacement(source.session.id, fixture.workspaceComputerId);
       expect(moved.generation).toBe(2);
+      const [movedRow] = await fixture.database
+        .select()
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, source.session.id));
+      expect(movedRow).toMatchObject({ computerId: null, generation: 2 });
       const current = await proofs.mint({
         ...input,
         placementGeneration: 2,

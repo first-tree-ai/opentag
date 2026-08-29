@@ -667,14 +667,25 @@
   color: #8fa08c;
 }
 
-/* Sits on the dark block, so it carries its own colours rather than the ghost variant's. */
+/*
+ * Sits on the dark block, so it carries its own colours rather than the ghost variant's. Sized as
+ * a real target rather than around the icon: `.ds-icon` is 1em, which on a compact button is only
+ * 13px and reads as an afterthought next to the command it belongs to.
+ */
 .otv2-command__copy {
   flex: 0 0 auto;
-  width: 32px;
-  min-width: 32px;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  min-height: 40px;
   padding: 0;
   background: transparent;
   color: #9aa79a;
+}
+
+.otv2-command__copy .ds-icon {
+  width: 20px;
+  height: 20px;
 }
 
 .otv2-command__copy:hover:not(:disabled) {

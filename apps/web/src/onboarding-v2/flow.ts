@@ -93,6 +93,7 @@ export interface FlowFacts {
   readonly draftConfirmed: boolean;
   readonly connect: ConnectState;
   readonly readiness: ReadinessFacts | undefined;
+  readonly cloudComputer: CloudComputerState;
   readonly creation: CreationState;
   /** Whether the user's own coding plan has been signed into, when they chose to use one. */
   readonly planSignedIn: boolean;
@@ -145,6 +146,7 @@ export function initialFacts(): FlowFacts {
     draftConfirmed: false,
     connect: { kind: "idle" },
     readiness: undefined,
+    cloudComputer: "idle",
     creation: "idle",
     planSignedIn: false,
     messaging: { kind: "idle" },
@@ -190,19 +192,35 @@ export interface CheckRow {
   readonly state: CheckState;
 }
 
+/**
+ * A cloud Agent runs on a Computer too — OpenTag allocates one instead of the user connecting
+ * theirs. The Server requires a `computerId` either way, so the cloud route allocates before it
+ * creates rather than modelling an Agent with no Computer at all.
+ */
+export type CloudComputerState = "idle" | "allocating" | "allocated";
+
+/**
+ * The computer step answers one question: can this Agent run. The messaging CLI is not part of that
+ * — which one is even needed depends on a provider the user has not chosen yet, so a missing
+ * `lark-cli` used to block someone who was going to pick Slack. That check moved to the messaging
+ * step, where the requirement becomes real and the provider is known.
+ */
 export function deriveChecks(readiness: ReadinessFacts | undefined): readonly CheckRow[] {
   if (!readiness) {
     return [
       { id: "runtime-cli", state: "pending" },
       { id: "runtime-auth", state: "pending" },
-      { id: "messaging-cli", state: "pending" },
     ];
   }
   return [
     { id: "runtime-cli", state: runtimeCliState(readiness.runtime) },
     { id: "runtime-auth", state: runtimeAuthState(readiness.runtime) },
-    { id: "messaging-cli", state: messagingCliState(readiness.messagingCli) },
   ];
+}
+
+/** The chosen provider's CLI, probed on the messaging step once there is a provider to probe. */
+export function messagingCliCheck(readiness: ReadinessFacts | undefined): CheckState {
+  return messagingCliState(readiness?.messagingCli ?? "checking");
 }
 
 function runtimeCliState(status: RuntimeStatus): CheckState {
@@ -226,23 +244,32 @@ function messagingCliState(status: MessagingCliStatus): CheckState {
   return "failed";
 }
 
+/**
+ * Creating an Agent waits on its runtime only. IM handoff readiness is provider-specific and is
+ * settled at handoff, not before the Agent exists.
+ */
 export function readinessPassed(readiness: ReadinessFacts | undefined): boolean {
-  return readiness?.runtime === "ready" && readiness.messagingCli === "ready";
+  return readiness?.runtime === "ready";
 }
 
 export function readinessIsResolving(readiness: ReadinessFacts | undefined): boolean {
-  return readiness === undefined || readiness.runtime === "checking" || readiness.messagingCli === "checking";
+  return readiness === undefined || readiness.runtime === "checking";
 }
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
   const { draft, destinationConfirmed, draftConfirmed, connect, readiness, creation, planSignedIn, messaging } = facts;
+  const { cloudComputer } = facts;
   const destination = draft.destination;
   if (!destination || !destinationConfirmed) {
     return { page: "destination", steps: [], complete: false };
   }
 
   if (destination === "cloud") {
-    const agentDone = draftIsSubmittable(draft, planSignedIn) && draftConfirmed && creation === "created";
+    const agentDone =
+      draftIsSubmittable(draft, planSignedIn) &&
+      draftConfirmed &&
+      cloudComputer === "allocated" &&
+      creation === "created";
     const messagingDone = agentDone && messaging.kind === "connected";
     const ids = CLOUD_STEP_IDS;
     const currentIndex = ids.findIndex((id) => !(id === "agent" ? agentDone : messagingDone));

@@ -6,6 +6,8 @@ import { OnboardingV2Page } from "./page.js";
 // scanned all wait to be advanced by hand. Only these two are still on a clock.
 const ISSUE_MS = 300;
 const CREATE_MS = 900;
+/** Allocating the cloud Computer the Agent is created on. */
+const ALLOCATE_MS = 700;
 
 async function advance(ms: number) {
   await act(async () => {
@@ -194,7 +196,8 @@ describe("OnboardingV2Page", () => {
     await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
-    expect(screen.getByText("Lark CLI is installed")).toBeTruthy();
+    // The messaging CLI is not checked here: no provider has been chosen yet.
+    expect(screen.queryByText("Lark CLI is installed")).toBeNull();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 
@@ -221,13 +224,13 @@ describe("OnboardingV2Page", () => {
 
     // Mid-probe: every row already has its detail line.
     const rowsWhileChecking = document.querySelectorAll(".otv2-check");
-    expect(rowsWhileChecking).toHaveLength(3);
+    expect(rowsWhileChecking).toHaveLength(2);
     for (const row of rowsWhileChecking) {
       expect(row.querySelectorAll("span > span")).toHaveLength(1);
     }
 
     await settleCheck();
-    expect(document.querySelectorAll(".otv2-check")).toHaveLength(3);
+    expect(document.querySelectorAll(".otv2-check")).toHaveLength(2);
     for (const row of document.querySelectorAll(".otv2-check")) {
       expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
@@ -285,22 +288,23 @@ describe("OnboardingV2Page", () => {
     expect(next().disabled).toBe(false);
   });
 
-  it("counts multiple failures in its summary", async () => {
+  it("counts the runtime failures in its summary", async () => {
     render(<OnboardingV2Page />);
     chooseScenario("both-failing");
     await reachConnectStep();
     await reachCheckStep();
     await settleCheck();
-    expect(screen.getByText("2 things need fixing before your agent can run.")).toBeTruthy();
+    // Only the runtime rows can fail here now; the messaging CLI is checked at handoff.
+    expect(screen.getByText("One thing needs fixing before your agent can run.")).toBeTruthy();
   });
 
   it("turns green on its own after the terminal repair, with no page action", async () => {
     render(<OnboardingV2Page />);
-    chooseScenario("messaging-install");
+    chooseScenario("runtime-install");
     await reachConnectStep();
     await reachCheckStep();
     await settleCheck();
-    expect(screen.getByText("We need lark-cli to send Lark messages.")).toBeTruthy();
+    expect(screen.getByText("We can't find the Codex command on this computer.")).toBeTruthy();
 
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Ran doctor --fix" }));
@@ -420,6 +424,7 @@ describe("OnboardingV2Page", () => {
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await advance(ALLOCATE_MS);
       await advance(CREATE_MS);
 
       fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
@@ -517,6 +522,7 @@ describe("OnboardingV2Page", () => {
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await advance(ALLOCATE_MS);
       await advance(CREATE_MS);
 
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();

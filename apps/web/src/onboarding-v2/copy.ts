@@ -107,6 +107,7 @@ export const COPY = {
     runtimeLabel: "Agent runtime",
     runtimeHint: "The coding agent OpenTag will use.",
     runtimeFootnote: "More runtimes coming soon.",
+    allocating: "Preparing…",
     tokenLabel: "Tokens",
     /** "the token your agent rely on" — the subject is plural here, so it takes "rely". */
     tokenHint: "The tokens your agent relies on to complete tasks.",
@@ -175,6 +176,8 @@ export const COPY = {
     feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
     qrAlt: "Scan this QR code in Lark",
     waiting: "Waiting for you to scan…",
+    cliMissing: (provider: string) =>
+      `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,
     slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
     slackAction: "Add to Slack",
     slackWaiting: "Waiting for you to finish in Slack…",

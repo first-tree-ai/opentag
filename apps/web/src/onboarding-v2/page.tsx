@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { COPY } from "./copy.js";
 import {
   type AgentDraft,
+  type CloudComputerState,
   type CreationState,
   type Destination,
   deriveFlowState,
@@ -15,6 +16,8 @@ import "./onboarding-v2.css";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
 const CREATE_AGENT_MS = 900;
+/** Allocating the cloud Computer the Agent will be created on. */
+const ALLOCATE_COMPUTER_MS = 700;
 
 /**
  * The redesigned onboarding flow, running entirely against the in-page mock. It talks to no
@@ -27,6 +30,7 @@ export function OnboardingV2Page() {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
+  const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
   const [creation, setCreation] = useState<CreationState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   /** Cloud is not shipped; the mock can offer it so its flow can be reviewed before it is. */
@@ -39,6 +43,7 @@ export function OnboardingV2Page() {
     draftConfirmed,
     connect: backend.connect,
     readiness: backend.readiness,
+    cloudComputer,
     creation,
     planSignedIn: backend.planSignIn === "signed-in",
     messaging: backend.messaging,
@@ -63,11 +68,21 @@ export function OnboardingV2Page() {
     creationTimer.current = window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
   }, [creation]);
 
-  /** The cloud page creates its Agent as it is submitted: it has no Computer and no check first. */
+  /**
+   * Leaving the cloud page allocates a Computer and then creates the Agent on it. A cloud Agent
+   * sits on the same Computer boundary a local one does — the Server requires a `computerId`
+   * either way — so the difference is who provides the machine, not whether there is one.
+   */
   const submitCloud = useCallback(() => {
+    if (cloudComputer !== "idle") return;
     setDraftConfirmed(true);
-    createAgent();
-  }, [createAgent]);
+    setCloudComputer("allocating");
+    creationTimer.current = window.setTimeout(() => {
+      setCloudComputer("allocated");
+      setCreation("creating");
+      creationTimer.current = window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
+    }, ALLOCATE_COMPUTER_MS);
+  }, [cloudComputer]);
 
   /**
    * Going back undoes the decision that advanced you, rather than moving a separate cursor. That
@@ -83,6 +98,7 @@ export function OnboardingV2Page() {
     setDraft(emptyDraft());
     setDestinationConfirmed(false);
     setDraftConfirmed(false);
+    setCloudComputer("idle");
     setCreation("idle");
     setMessagingProvider(undefined);
     backend.reset();
@@ -119,6 +135,7 @@ export function OnboardingV2Page() {
               draft={draft}
               onBack={backToDestination}
               onChange={setDraft}
+              cloudComputer={cloudComputer}
               onSignIn={backend.startPlanSignIn}
               onSubmit={submitCloud}
               signIn={backend.planSignIn}
@@ -147,6 +164,7 @@ export function OnboardingV2Page() {
               onSlackInstall={backend.startSlackInstall}
               onStart={backend.startMessaging}
               provider={messagingProvider}
+              readiness={backend.readiness}
             />
           )}
         </div>

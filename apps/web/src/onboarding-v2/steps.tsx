@@ -18,6 +18,7 @@ import {
   type AgentDraft,
   type CheckRow,
   CLOUD_RUNTIMES,
+  type CloudComputerState,
   type ConnectState,
   type CreationState,
   DEFAULT_AGENT_NAME,
@@ -29,6 +30,7 @@ import {
   MESSAGING_PROVIDERS,
   type MessagingProvider,
   type MessagingState,
+  messagingCliCheck,
   needsPlanSignIn,
   type ReadinessFacts,
   RUNTIMES,
@@ -279,13 +281,27 @@ function MessagingConnection({
   messaging,
   onSlackInstall,
   provider,
+  readiness,
 }: {
   messaging: MessagingState;
   onSlackInstall: () => void;
   provider: MessagingProvider | undefined;
+  readiness: ReadinessFacts | undefined;
 }) {
+  /*
+   * The CLI that delivers messages is checked here, not on the computer step: which one is needed
+   * depends on the provider, and until this point there was no provider. A missing one used to
+   * block creating the Agent at all, which stopped a Slack user over a Lark dependency.
+   */
+  const cliState = provider ? messagingCliCheck(readiness) : "pending";
   return (
     <div className="otv2-slot otv2-slot--messaging">
+      {provider && cliState === "failed" ? (
+        <p className="otv2-note otv2-note--attention">
+          <Icon name="close" />
+          <span>{COPY.messaging.cliMissing(COPY.messaging[provider].title)}</span>
+        </p>
+      ) : null}
       {provider === "feishu" ? (
         <div className="otv2-panel otv2-panel--qr">
           <p className="otv2-muted">{COPY.messaging.feishuIntro}</p>
@@ -376,6 +392,7 @@ export function AgentStep({
  * a messaging app follows on its own step, as it does for a local agent.
  */
 export function CloudStep({
+  cloudComputer,
   creation,
   draft,
   onBack,
@@ -384,6 +401,7 @@ export function CloudStep({
   onSubmit,
   signIn,
 }: {
+  cloudComputer: CloudComputerState;
   creation: CreationState;
   draft: AgentDraft;
   onBack: () => void;
@@ -483,8 +501,14 @@ export function CloudStep({
 
         <StepNav
           back={onBack}
-          disabled={!submittable || creation !== "idle"}
-          label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
+          disabled={!submittable || cloudComputer !== "idle"}
+          label={
+            cloudComputer === "allocating"
+              ? COPY.cloud.allocating
+              : creation === "creating"
+                ? COPY.check.creating
+                : COPY.nav.next
+          }
           submit
         />
       </form>
@@ -709,12 +733,14 @@ export function MessagingStep({
   onSlackInstall,
   onStart,
   provider,
+  readiness,
 }: {
   messaging: MessagingState;
   onChoose: (provider: MessagingProvider) => void;
   onSlackInstall: () => void;
   onStart: (provider: MessagingProvider) => void;
   provider: MessagingProvider | undefined;
+  readiness: ReadinessFacts | undefined;
 }) {
   // Lark's code is issued as soon as it is picked; Slack waits for its install to be started.
   useEffect(() => {
@@ -729,7 +755,12 @@ export function MessagingStep({
       </header>
 
       <MessagingPicker onChoose={onChoose} provider={provider} />
-      <MessagingConnection messaging={messaging} onSlackInstall={onSlackInstall} provider={provider} />
+      <MessagingConnection
+        messaging={messaging}
+        onSlackInstall={onSlackInstall}
+        provider={provider}
+        readiness={readiness}
+      />
       {/*
         No footer here. The Agent already exists, so there is nothing to go back to, and this step
         is finished by scanning a code or installing an App rather than by pressing anything on

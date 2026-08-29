@@ -11,8 +11,14 @@ Every mark below belongs to its owner, not to this project. They are reproduced 
 identify the product each one names — the use a trademark owner expects and permits. Their presence
 does not imply that any owner sponsors, endorses, or is affiliated with OpenTag.
 
-OpenTag's own name and mark belong to this project and are covered by the repository
-[LICENSE](./LICENSE) along with the rest of it.
+OpenTag's own name and mark belong to this project. They are **not** covered by the repository
+[LICENSE](./LICENSE): Apache-2.0 section 6 grants no trademark rights, and the code licence says
+nothing about using our name or mark. Permission to use them is separate, and this document does
+not grant it — ask the project owners.
+
+Nor does anything here grant rights in someone else's mark. Recording where a file came from
+establishes provenance, not permission: the owner's own terms govern what may be done with it, and
+this document cannot enlarge them.
 
 ## Assets carried in this repository
 
@@ -42,5 +48,6 @@ than using the published file.
 ## Adding another
 
 Put the publisher's own file in `apps/web/src/assets/`, record its source and the date in a comment
-at the top of the file, add a row above, and check the owner's brand guidelines for anything
-stricter than the rules in this document. Do not redraw a mark.
+at the top of the file, and add a row above. Before that, confirm the owner's terms actually permit
+redistributing the file in a public repository under this licence — provenance alone is not
+permission. Do not redraw a mark.

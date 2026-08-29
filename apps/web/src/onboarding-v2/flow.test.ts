@@ -7,7 +7,9 @@ import {
   type FlowFacts,
   formatRemaining,
   initialFacts,
+  messagingCliCheck,
   type ReadinessFacts,
+  readinessPassed,
   validateAgentName,
 } from "./flow.js";
 
@@ -100,11 +102,17 @@ describe("deriveFlowState", () => {
 
 describe("deriveChecks", () => {
   it("reports every row as pending before the first probe resolves", () => {
-    expect(deriveChecks(undefined).map((check) => check.state)).toEqual(["pending", "pending", "pending"]);
+    expect(deriveChecks(undefined).map((check) => check.state)).toEqual(["pending", "pending"]);
   });
 
   it("passes both runtime rows when the runtime is ready", () => {
-    expect(deriveChecks(ready).map((check) => check.state)).toEqual(["passed", "passed", "passed"]);
+    expect(deriveChecks(ready).map((check) => check.state)).toEqual(["passed", "passed"]);
+  });
+
+  it("leaves the messaging CLI out: its provider is not chosen yet", () => {
+    // A missing lark-cli used to block a user who was going to pick Slack.
+    expect(deriveChecks(ready).map((check) => check.id)).toEqual(["runtime-cli", "runtime-auth"]);
+    expect(readinessPassed({ runtime: "ready", messagingCli: "install" })).toBe(true);
   });
 
   it("treats a sign-in failure as proof the CLI runs", () => {
@@ -119,9 +127,9 @@ describe("deriveChecks", () => {
     expect(checks[1]).toEqual({ id: "runtime-auth", state: "blocked" });
   });
 
-  it("fails the messaging row on its own, independently of the runtime", () => {
-    const checks = deriveChecks({ runtime: "ready", messagingCli: "install" });
-    expect(checks[2]).toEqual({ id: "messaging-cli", state: "failed" });
+  it("reports the chosen provider's CLI separately, at handoff", () => {
+    expect(messagingCliCheck({ runtime: "ready", messagingCli: "install" })).toBe("failed");
+    expect(messagingCliCheck({ runtime: "ready", messagingCli: "ready" })).toBe("passed");
   });
 });
 

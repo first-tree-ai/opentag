@@ -189,6 +189,16 @@
   margin-top: var(--space-1);
 }
 
+/* A requirement that is not met yet, stated where the requirement became real. */
+.otv2-note--attention {
+  border-color: var(--otv2-attention);
+  background: var(--otv2-attention-surface);
+}
+
+.otv2-note--attention .ds-icon {
+  color: var(--otv2-attention);
+}
+
 /* A fact the step states rather than a choice it offers. */
 .otv2-note {
   display: flex;

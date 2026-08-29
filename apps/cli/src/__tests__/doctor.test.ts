@@ -81,7 +81,7 @@ describe("doctor command target", () => {
 });
 
 describe("doctor local configuration", () => {
-  it("accepts multiple enrollments for the same Computer and canonical Server", async () => {
+  it("fails closed when multiple enrollments are present instead of choosing one", async () => {
     const home = await createHome({
       enrollments: [
         enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
@@ -95,9 +95,10 @@ describe("doctor local configuration", () => {
     expect(check(result.checks, "local.enrollments")).toMatchObject({ blocking: true, status: "pass" });
     expect(check(result.checks, "local.binding")).toMatchObject({
       blocking: true,
-      detail: expect.stringMatching(/2 enrollment/),
-      status: "pass",
+      detail: expect.stringMatching(/multiple enrollments/),
+      status: "fail",
     });
+    expect(result.exitCode).toBe(1);
   });
 
   it("rejects duplicate enrollment identifiers instead of accepting a partial projection", async () => {

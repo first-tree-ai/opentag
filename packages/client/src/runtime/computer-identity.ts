@@ -33,6 +33,19 @@ export async function resolveComputerIdentity(home: string, serverUrl: string): 
   return identity;
 }
 
+/** Allocates a new in-memory installation identity for create or repair without mutating the current binding. */
+export async function allocateComputerIdentity(home: string, serverUrl: string): Promise<ComputerIdentity> {
+  const existing = await readComputerIdentity(home);
+  if (existing && existing.serverUrl !== serverUrl) {
+    throw new Error("This OpenTag home is bound to another server; choose a different OPENTAG_HOME");
+  }
+  return { version: 2, computerId: randomUUID(), serverUrl };
+}
+
+export async function writeComputerIdentityAtomically(home: string, identity: ComputerIdentity): Promise<void> {
+  await writePrivateJson(home, computerIdentityPath(home), validateIdentity(identity));
+}
+
 function validateIdentity(value: unknown): ComputerIdentity {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The OpenTag computer identity file is invalid");

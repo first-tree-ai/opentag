@@ -128,6 +128,11 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       if (!credentials?.enrollments.length) {
         throw new DaemonRuntimeConfigurationError("This Computer is not enrolled; run computer connect first");
       }
+      if (credentials.enrollments.length !== 1) {
+        throw new DaemonRuntimeConfigurationError(
+          "This OpenTag home has multiple enrollments and cannot bind to one Account Computer",
+        );
+      }
       const serverUrls = new Set(credentials.enrollments.map((credential) => credential.serverUrl));
       if (serverUrls.size !== 1) {
         throw new DaemonRuntimeConfigurationError("One OpenTag home cannot connect to multiple Servers");

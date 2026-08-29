@@ -57,6 +57,17 @@ export async function inspectLocalComputerConfiguration(home: string): Promise<L
   const stored = credentialsValue.enrollments;
   const servers = new Set(stored.map((entry) => entry.serverUrl));
   const computers = new Set(stored.map((entry) => entry.computerId));
+  if (stored.length !== 1) {
+    return {
+      identity,
+      enrollments,
+      binding: {
+        status: "invalid",
+        enrollmentCount: stored.length,
+        detail: "This OpenTag home has multiple enrollments and cannot bind to one Account Computer",
+      },
+    };
+  }
   if (servers.size !== 1) {
     return {
       identity,

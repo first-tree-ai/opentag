@@ -49,21 +49,30 @@ export async function writeMachineCredentialsAtomically(
   await writePrivateJson(home, machineCredentialsPath(home), checked);
 }
 
+export type BoundAccountComputerResolution =
+  | { status: "disconnected" }
+  | { status: "bound"; credential: MachineEnrollmentCredential }
+  | { status: "ambiguous" };
+
+/**
+ * One canonical home binds at most one Account Computer. Existing files are upgraded only when they
+ * contain exactly one enrollment; zero stays disconnected; multiple fail closed.
+ */
+export function resolveBoundAccountComputer(
+  credentials: StoredMachineCredentials | undefined,
+): BoundAccountComputerResolution {
+  const enrollments = credentials?.enrollments ?? [];
+  if (enrollments.length === 0) return { status: "disconnected" };
+  const credential = enrollments[0];
+  if (enrollments.length > 1 || !credential) return { status: "ambiguous" };
+  return { status: "bound", credential };
+}
+
 export async function storeMachineEnrollmentCredential(
   credential: MachineEnrollmentCredential,
   home = resolveOpenTagHome(),
 ): Promise<StoredMachineCredentials> {
-  const current = (await readMachineCredentials(home)) ?? { version: 1 as const, enrollments: [] };
-  // The enrollment id is the identity; the legacy scope is only compared when both entries carry one,
-  // so a re-enrolment that arrives without it still replaces the credential it supersedes.
-  const enrollments = current.enrollments.filter(
-    (entry) =>
-      entry.workspaceComputerId !== credential.workspaceComputerId &&
-      !(entry.workspaceId !== undefined && entry.workspaceId === credential.workspaceId),
-  );
-  enrollments.push({ ...credential });
-  enrollments.sort((left, right) => left.workspaceComputerId.localeCompare(right.workspaceComputerId));
-  const next: StoredMachineCredentials = { version: 1, enrollments };
+  const next: StoredMachineCredentials = { version: 1, enrollments: [{ ...credential }] };
   await writeMachineCredentialsAtomically(next, home);
   return next;
 }

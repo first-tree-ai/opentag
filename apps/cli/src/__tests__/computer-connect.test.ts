@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 describe("computer connect", () => {
-  it("stores machine authority separately from Account credentials and keeps one physical identity", async () => {
+  it("stores machine authority separately from Account credentials and binds one Account Computer", async () => {
     const home = await temporaryHome();
     const accountCredentials = {
       accessToken: "account-access",
@@ -50,12 +50,10 @@ describe("computer connect", () => {
 
     expect(await readCredentials(home)).toEqual(accountCredentials);
     const stored = await readMachineCredentials(home);
-    expect(stored?.enrollments).toHaveLength(2);
-    expect(stored?.enrollments.map(({ workspaceId }) => workspaceId).sort()).toEqual(
-      [firstWorkspaceId, secondWorkspaceId].sort(),
-    );
+    expect(stored?.enrollments).toHaveLength(1);
+    expect(stored?.enrollments[0]?.workspaceId).toBe(secondWorkspaceId);
     const exchangedComputerIds = exchangeComputerConnectCode.mock.calls.map(([input]) => input.computerId);
-    expect(new Set(exchangedComputerIds).size).toBe(1);
+    expect(new Set(exchangedComputerIds).size).toBe(2);
     expect(JSON.stringify(stored)).not.toContain("account-access");
     expect(JSON.stringify(stored)).not.toContain("account-refresh");
   });

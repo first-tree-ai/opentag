@@ -6,6 +6,7 @@ import {
   type MachineEnrollmentCredential,
   machineCredentialsPath,
   readMachineCredentials,
+  resolveBoundAccountComputer,
   storeMachineEnrollmentCredential,
   writeMachineCredentialsAtomically,
 } from "../auth/machine-credentials.js";
@@ -158,7 +159,7 @@ describe("machine credentials", () => {
     expect(onDisk.enrollments[0]).not.toHaveProperty("stale");
   });
 
-  it("keeps a second Account's enrollment of the same Computer", async () => {
+  it("binds the home to the latest Account Computer instead of accumulating enrollments", async () => {
     const home = await newHome();
     await storeMachineEnrollmentCredential(credential({ workspaceId: WORKSPACE_ID }), home);
     await storeMachineEnrollmentCredential(
@@ -167,6 +168,27 @@ describe("machine credentials", () => {
     );
 
     const stored = await readMachineCredentials(home);
-    expect(stored?.enrollments.map((entry) => entry.workspaceComputerId)).toEqual([ENROLLMENT_ID, OTHER_ENROLLMENT_ID]);
+    expect(stored?.enrollments).toEqual([
+      credential({ workspaceComputerId: OTHER_ENROLLMENT_ID, workspaceId: OTHER_WORKSPACE_ID }),
+    ]);
+    expect(resolveBoundAccountComputer(stored)).toEqual({
+      status: "bound",
+      credential: credential({ workspaceComputerId: OTHER_ENROLLMENT_ID, workspaceId: OTHER_WORKSPACE_ID }),
+    });
+  });
+
+  it("upgrades exactly one legacy enrollment and fails closed when multiple remain", async () => {
+    expect(resolveBoundAccountComputer(undefined)).toEqual({ status: "disconnected" });
+    expect(resolveBoundAccountComputer({ version: 1, enrollments: [] })).toEqual({ status: "disconnected" });
+    expect(resolveBoundAccountComputer({ version: 1, enrollments: [credential()] })).toEqual({
+      status: "bound",
+      credential: credential(),
+    });
+    expect(
+      resolveBoundAccountComputer({
+        version: 1,
+        enrollments: [credential(), credential({ workspaceComputerId: OTHER_ENROLLMENT_ID })],
+      }),
+    ).toEqual({ status: "ambiguous" });
   });
 });

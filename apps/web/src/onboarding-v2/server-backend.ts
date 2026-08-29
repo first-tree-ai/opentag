@@ -105,6 +105,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [planSignIn] = useState<PlanSignIn>("idle");
   const [resuming, setResuming] = useState(true);
   const [resumeError, setResumeError] = useState<string>();
+  const [rebindRefused, setRebindRefused] = useState(false);
   /** Discards the reply of a read the reader has already asked to redo. */
   const resumeRun = useRef(0);
 
@@ -119,8 +120,16 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   /** The connection as it stands, readable from a callback without making an updater impure. */
   /** The Computer the Agent is bound to on the Server, which a new machine has to replace. */
   const boundComputerId = useRef<string | undefined>(undefined);
+  /**
+   * Whether a move is in flight or has been refused. Without it the poll that discovered the new
+   * machine would ask again on every tick, because a refusal changes nothing that poll can see —
+   * and this is a write that takes row locks, not a read.
+   */
+  const rebindState = useRef<"idle" | "moving" | "refused">("idle");
   const agentRef = useRef<CreatedAgent | undefined>(undefined);
   agentRef.current = agent;
+  const messagingRef = useRef<MessagingState>({ kind: "idle" });
+  messagingRef.current = messaging;
   const connectRef = useRef<ConnectState>({ kind: "idle" });
   connectRef.current = connect;
   const mounted = useRef(true);
@@ -274,16 +283,24 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
            */
           const resumedAgent = agentRef.current;
           if (resumedAgent && boundComputerId.current !== arrived.computerId) {
+            // Asked once. A refusal rests until the reader asks again rather than repeating on the
+            // next tick: the Server can refuse this while a delivery is in flight, and that clears
+            // on its own, so the answer is a button and not a loop nobody can see.
+            if (rebindState.current !== "idle") return;
+            rebindState.current = "moving";
             void browserApi.rebindAgentComputer(resumedAgent.id, arrived.computerId).then(
               () => {
                 if (!mounted.current || attempt.current !== mine) return;
+                rebindState.current = "idle";
                 boundComputerId.current = arrived.computerId;
+                setRebindRefused(false);
                 settled();
               },
               (cause: unknown) => {
-                if (mounted.current && attempt.current === mine) {
-                  setActionError(errorMessage(cause, COPY.errors.rebind));
-                }
+                if (!mounted.current || attempt.current !== mine) return;
+                rebindState.current = "refused";
+                setRebindRefused(true);
+                setActionError(errorMessage(cause, COPY.errors.rebind));
               },
             );
             return;
@@ -310,7 +327,23 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         (value) => {
           if (!mounted.current || attempt.current !== mine) return;
           const mineNow = value.computers.find((computer) => computer.computerId === computerId.current);
-          if (!mineNow) return;
+          /*
+           * A machine can leave after it arrived — a lid closes, a daemon stops. Checking only on
+           * the way in left the page saying "Your computer is connected." about a machine the
+           * Server had already given up on, with the command that could bring it back hidden
+           * because the command only renders when the connection is *not* live.
+           *
+           * Returning to idle is what reopens that command. It is held back once a messaging app is
+           * under way: by then the Agent exists, and pulling someone out of a QR scan over a lid
+           * they are about to open again would cost more than it tells them.
+           */
+          if (!mineNow || mineNow.connectionStatus !== "online") {
+            if (messagingRef.current.kind !== "idle") return;
+            computerId.current = undefined;
+            setComputer(undefined);
+            setConnect({ kind: "idle" });
+            return;
+          }
           setComputer(mineNow);
           // A poll that succeeds retires whatever the last failed one put on screen; otherwise
           // "We lost contact" stays above "Your computer is connected."
@@ -341,6 +374,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           if (!mounted.current || attempt.current !== mine) return;
           creationRef.current = "created";
           setCreation("created");
+          boundComputerId.current = id;
           setAgent({ id: created.id, name: created.name, runtimeProvider: created.runtimeProvider });
         },
         (cause: unknown) => {
@@ -449,6 +483,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setAgent(undefined);
     setCreation("idle");
     boundComputerId.current = undefined;
+    rebindState.current = "idle";
+    setRebindRefused(false);
     setResuming(false);
     setResumeError(undefined);
     setActionError(undefined);
@@ -459,6 +495,13 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const retryResume = useCallback(() => {
     void readAccount();
   }, [readAccount]);
+
+  /** Lets a refused move be asked for again. The next poll carries it, as the first one did. */
+  const retryRebind = useCallback(() => {
+    rebindState.current = "idle";
+    setRebindRefused(false);
+    setActionError(undefined);
+  }, []);
 
   const startPlanSignIn = useCallback(() => undefined, []);
 
@@ -482,6 +525,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       reset,
       resumeError,
       resuming,
+      retryRebind: rebindRefused ? retryRebind : undefined,
       retryResume,
       startMessaging,
       startPlanSignIn,
@@ -500,8 +544,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       readiness,
       refreshConnectCode,
       reset,
+      rebindRefused,
       resumeError,
       resuming,
+      retryRebind,
       retryResume,
       startMessaging,
       startPlanSignIn,

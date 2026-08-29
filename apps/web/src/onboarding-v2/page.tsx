@@ -272,13 +272,23 @@ function OnboardingV2Flow({
             about the page's ability to make progress, not about the field being filled in.
           */}
           {backend.error || completionFailed ? (
-            <p
-              className="flex items-start gap-2 rounded-xl bg-kumo-base p-4 mb-0 text-sm text-kumo-danger ring ring-kumo-line"
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-kumo-base p-4 ring ring-kumo-line"
               data-ui="onboarding-v2-error"
               role="alert"
             >
-              {backend.error ?? COPY.errors.completeSetup}
-            </p>
+              <p className="text-sm text-kumo-danger m-0">{backend.error ?? COPY.errors.completeSetup}</p>
+              {/*
+                Some failures clear on their own — the Server refuses to move an Agent while a
+                delivery is in flight — so the way out is a control the reader can press, not a
+                loop running behind the page.
+              */}
+              {backend.retryRebind ? (
+                <Button onClick={backend.retryRebind} size="compact" variant="secondary">
+                  {COPY.nav.retry}
+                </Button>
+              ) : null}
+            </div>
           ) : null}
           {flow.complete ? (
             <DoneStep name={backend.agent?.name ?? draft.name} />

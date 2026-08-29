@@ -334,6 +334,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       resuming: false,
       resumeError: undefined,
       retryResume: () => undefined,
+      retryRebind: undefined,
       startPlanSignIn,
       issueConnectCode,
       refreshConnectCode: issue,

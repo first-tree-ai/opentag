@@ -6,6 +6,7 @@ import type { UserAuthService } from "../services/auth/index.js";
 import { hashSecret } from "../services/auth/security.js";
 import { SlackConfigurationServiceError } from "../services/im-bindings/slack/index.js";
 import { SlackOAuthStateService } from "../services/im-bindings/slack/oauth-state.js";
+import { signedInBrowser } from "./signed-in-browser.js";
 
 const secret = "slack-oauth-state-secret-that-is-at-least-32-characters";
 const now = new Date("2026-08-19T00:00:00.000Z");
@@ -19,7 +20,10 @@ function authService(): UserAuthService {
   return {
     exchangeConnectCode: vi.fn(),
     refresh: vi.fn(),
-    getActiveUserById: vi.fn(),
+    getActiveUserById: vi.fn().mockResolvedValue({
+      user: { id: userId, email: "admin@example.com", displayName: "Admin" },
+      workspaces: [],
+    }),
     updateSelfProfile: vi.fn(),
     getAuthenticatedUser: vi.fn().mockResolvedValue({
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
@@ -93,6 +97,7 @@ describe("Slack OAuth HTTP routes", () => {
     };
     const app = createApp({
       authService: authService(),
+      betterAuth: signedInBrowser(userId),
       slackOAuth: {
         authService: authService(),
         publicOrigin: "https://opentag.example.com",
@@ -131,6 +136,7 @@ describe("Slack OAuth HTTP routes", () => {
     };
     const app = createApp({
       authService: authService(),
+      betterAuth: signedInBrowser(userId),
       slackOAuth: {
         authService: authService(),
         publicOrigin: "https://opentag.example.com",
@@ -143,7 +149,7 @@ describe("Slack OAuth HTTP routes", () => {
     const success = await app.inject({
       method: "GET",
       url: `${SLACK_OAUTH_CALLBACK_PATH}?code=slack-oauth-code&state=signed-state`,
-      headers: { cookie: "opentag_access=access; opentag_slack_oauth_context=session-binding" },
+      headers: { cookie: "opentag.session_token=session; opentag_slack_oauth_context=session-binding" },
     });
     expect(success.statusCode).toBe(302);
     expect(success.headers.location).toBe(
@@ -166,7 +172,7 @@ describe("Slack OAuth HTTP routes", () => {
     const conflict = await app.inject({
       method: "GET",
       url: `${SLACK_OAUTH_CALLBACK_PATH}?code=slack-oauth-code&state=signed-state`,
-      headers: { cookie: "opentag_access=access; opentag_slack_oauth_context=session-binding" },
+      headers: { cookie: "opentag.session_token=session; opentag_slack_oauth_context=session-binding" },
     });
     expect(conflict.statusCode).toBe(302);
     expect(conflict.headers.location).toBe(

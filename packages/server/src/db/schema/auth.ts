@@ -7,19 +7,29 @@ const timestamps = {
 };
 
 /**
- * Email is stored lowercased, and one address identifies at most one Account. That is enforced by the identity
- * resolver, which serializes on the address before deciding whether to create or attach. A case-insensitive unique
- * index backs it up for any writer that skips the resolver, and lands once no pre-resolver revision is still serving.
+ * Email is stored lowercased, and one address identifies at most one Account.
+ *
+ * The database enforces that now. Better Auth's trusted-provider linking attaches a returning address to the Account
+ * that already holds it, but nothing in it serializes two concurrent first sign-ins for the same address — the resolver
+ * that used to take a lock for exactly that is gone, and this index is what replaces it. It is case-insensitive
+ * because a writer that skipped normalization would otherwise be able to create a casing variant.
+ *
+ * It could not land earlier: a revision that wrote unnormalized addresses would have started failing against it, and
+ * no migration can assert which revision is serving.
  */
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  email: text("email").notNull(),
-  emailVerified: boolean("email_verified").notNull().default(false),
-  displayName: text("display_name").notNull(),
-  image: text("image"),
-  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
-  ...timestamps,
-});
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    emailVerified: boolean("email_verified").notNull().default(false),
+    displayName: text("display_name").notNull(),
+    image: text("image"),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [uniqueIndex("users_email_unique").on(sql`lower(${table.email})`)],
+);
 
 export const workspaces = pgTable(
   "workspaces",

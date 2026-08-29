@@ -249,22 +249,24 @@ bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 c
 该边界现在签发的是 Better Auth session，而不是签名的 access/refresh 对：CLI 凭据成为服务端可以撤销的一行记录，
 而不再是只能等它过期的一段签名。兑换响应仍是原来的四个字段，`accessToken` 与 `refreshToken` 携带同一个 session
 token，因此切换前构建的 CLI 无需升级即可继续工作。`OPENTAG_SESSION_TTL_SECONDS` 就是这个凭据的完整有效期，
-默认值取自原 refresh token 的有效期，因为它替代的正是同一件事：客户端可以闲置多久仍保持登录。refresh 采用轮换——
-先签发替代凭据，再撤销所呈现的那个——因此上次 refresh 之前被复制走的副本会立即失效，而不是继续有效到自身过期。
+默认值取自原 refresh token 的有效期，因为它替代的正是同一件事：客户端可以闲置多久仍保持登录。refresh 采用轮换：
+**先撤销所呈现的凭据**，只有撤销成功的那个调用者才会拿到替代凭据。这个顺序正是它可以安全并发的原因——同一凭据的
+两次 refresh 不会都签发成功，先落地的吊销也不会被撤销动作抹掉——同时意味着中途失败会把客户端登出，而不是让一个
+已被决定终止的凭据继续存活。上次 refresh 之前被复制走的副本会立即失效，而不是继续有效到自身过期。
 
 有一处代价需要明说：凭据一旦泄露，可用时长从原先 15 分钟的 access 窗口变成整个 session 有效期。而当初之所以需要
 这个短窗口，正是因为与之配对的 30 天 refresh token 根本无法吊销；session 则可以随时吊销，这就是这次取舍。
 
-切换前签发的凭据仍可通过校验，`OPENTAG_ACCESS_TOKEN_TTL_SECONDS` 与 `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` 只对它们
-生效。持有此类凭据的浏览器会在下一次 refresh 时换成 session；系统不会再基于它们签发任何新凭据。
+上一版本签发的凭据已不再被接受：兼容桥及其两个 TTL 配置项都已移除。`OPENTAG_JWT_SECRET` 保留，因为它同时用于
+签名 Slack OAuth state，而那不属于 Account 认证。
 
-Account email 以小写存储，且一个地址最多对应一个 Account。这由 identity resolver 保证：它在决定新建还是挂载之前先对该地址
-串行化，因此不依赖数据库约束也成立；`users_email_unique` 索引作为兜底，用于防范绕过 resolver 的写入方，并且只在没有任何
-早于该 resolver 的版本仍在服务时才创建。
+Account email 以小写存储，且一个地址最多对应一个 Account。这由 `users_email_unique` 索引保证，并且不区分大小写，
+使跳过归一化的写入方也无法通过大小写变体绕过。原先负责对地址串行化的 identity resolver 已删除；Better Auth 的
+linking 不会给同一地址的两次并发首登排序，因此这项职责由索引承担。它只能在没有任何会写入未归一化地址的版本仍在
+服务时才创建，因此是在 Better Auth 迁移之后才落地，而不是与之同批。
 
-因此 provider identity 会挂到已持有该地址的 Account 上，而不是新建第二个。挂载要求 provider 已验证该地址，因为这等于交出一个
-已存在的 Account；未验证却已被占用的地址，以及 provider 邮箱变更撞上另一个 Account 的地址，都会以 `AUTH_EMAIL_CONFLICT`
-拒绝。bootstrap Account 与本人首次 Google 登录就是这样合成同一个 Account 的。
+provider identity 会挂到已持有该地址的 Account 上，而不是新建第二个：Google 是受信任的 provider，因此它已验证的
+地址会关联到既有 Account。bootstrap Account 与本人首次 Google 登录就是这样合成同一个 Account 的。
 
 `users.email_verified` 记录 Account 当前存储的那个地址是否被 provider 断言过。它只会为该地址置位，不会为 provider 返回的
 其他地址置位；登录 code 流程不会设置它。
@@ -272,9 +274,10 @@ Account email 以小写存储，且一个地址最多对应一个 Account。这�
 ## Google 登录与 Web App
 
 创建 Google Web OAuth client，并将 callback 配置为
-`http://127.0.0.1:8000/api/v1/auth/google/callback`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
-`OPENTAG_GOOGLE_CLIENT_SECRET`。Server 会在监听前校验 Google 配置；`staging` 和 `prod` 环境的
-`OPENTAG_PUBLIC_URL` 必须使用 HTTPS。浏览器 access/refresh JWT 只保存在 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
+`http://127.0.0.1:8000/api/v1/auth/callback/google`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
+`OPENTAG_GOOGLE_CLIENT_SECRET`。该路径是 Better Auth 自身的 callback，也是 Server 唯一提供的一个；迁移前的
+`/api/v1/auth/google/callback` 已删除，可从 OAuth client 中移除。Server 会在监听前校验 Google 配置；`staging` 和 `prod` 环境的
+`OPENTAG_PUBLIC_URL` 必须使用 HTTPS。浏览器 session 保存在 Better Auth 自有的 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
 和可读 double-submit CSRF cookie 校验。
 
 若本地 loopback 开发环境没有 Google 凭据，可显式启用开发 bypass，并指定一个已有 bootstrap 用户：
@@ -355,7 +358,7 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和生成连接命令使用的必需 Server 公共 origin |
 | `OPENTAG_ENV` | `dev` | OpenTag 环境/channel：`dev`、`staging` 或 `prod`；托管值要求 HTTPS |
 | `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
-| `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |
+| `OPENTAG_JWT_SECRET` | 无 | 必需的 Slack OAuth state 签名 secret，至少 32 个字符，且与 `BETTER_AUTH_SECRET` 不同 |
 | `BETTER_AUTH_SECRET` | 无 | 必需的 Better Auth session/cookie 签名 secret，至少 32 个字符 |
 | `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |
 | `OPENTAG_GOOGLE_CLIENT_ID` | 无 | 可选 Google OIDC client id，必须与 secret 同时配置 |
@@ -372,8 +375,6 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment 标签 |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `0` 到 `1` 的全局 trace head sample rate |
 | `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session 有效期，浏览器与 CLI 相同 |
-| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access JWT 有效期；仅适用于 Better Auth 切换前签发的凭据 |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期；仅适用于 Better Auth 切换前签发的凭据 |
 | `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。

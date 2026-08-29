@@ -11,16 +11,18 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
+import { createBetterAuth } from "../../auth/better-auth.js";
+import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { computers, workspaceAdminGrants, workspaceComputers, workspaces } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
-import { AuthService, AuthTokenService } from "../../services/auth/index.js";
+import { AuthService } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { WorkspaceAdminService } from "../../services/workspaces/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
-const jwtSecret = "computer-test-secret-at-least-32-characters";
+const betterAuthSecret = "computer-test-secret-at-least-32-characters";
 let testDatabase: MigratedTestDatabase;
 let databaseUrl: string;
 
@@ -40,7 +42,19 @@ async function fixture() {
     workspaceDisplayName: "Example",
     workspaceName: "example",
   });
-  const auth = new AuthService(client.database, new AuthTokenService(jwtSecret, 900, 3600));
+  const auth = new AuthService(
+    client.database,
+    new BetterAuthSessionTokens(
+      createBetterAuth(client.database, {
+        onSessionCreating: async () => {},
+        publicUrl: "http://localhost:8000",
+        secret: betterAuthSecret,
+        secureCookies: false,
+        sessionTtlSeconds: 3600,
+      }),
+      client.database,
+    ),
+  );
   const registry = new ConnectionRegistry();
   const machineAuth = new MachineAuthService(client.database, {
     onCredentialRotated: async (workspaceComputerId) => {

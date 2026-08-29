@@ -39,7 +39,6 @@ describe("parseServerConfig", () => {
 
   it("applies safe local defaults", () => {
     expect(parseServerConfig(required)).toMatchObject({
-      accessTokenTtlSeconds: 900,
       autoMigrate: true,
       environment: "dev",
       host: "127.0.0.1",
@@ -48,7 +47,7 @@ describe("parseServerConfig", () => {
       observability: {
         tracing: { endpoint: "", environment: "dev", headers: "", sampleRate: 1 },
       },
-      refreshTokenTtlSeconds: 2_592_000,
+      sessionTtlSeconds: 2_592_000,
     });
     expect(parseServerConfig(required).devAuth).toBeUndefined();
   });

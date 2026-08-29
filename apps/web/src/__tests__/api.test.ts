@@ -133,21 +133,22 @@ describe("BrowserApi", () => {
     expect(fetchImpl.mock.contexts).toEqual([globalThis]);
   });
 
-  it("shares refresh behavior across optional and no-content requests", async () => {
-    setDocumentCookie("opentag_csrf=shared-refresh; Path=/");
-    let protectedCalls = 0;
-    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
-      if (String(input) === "/api/v1/auth/browser/refresh") return new Response(null, { status: 204 });
-      protectedCalls += 1;
-      if (protectedCalls === 1 || protectedCalls === 3 || protectedCalls === 5)
-        return new Response(null, { status: 401 });
-      return new Response(null, { status: 204 });
-    });
+  it("surfaces a 401 instead of trying to exchange it for a new credential", async () => {
+    /*
+     * A session renews itself as it is used, so a 401 means it is genuinely gone. The refresh call this used to make
+     * had nothing left to exchange: it could only fail, and the retry behind it could only fail again.
+     */
+    setDocumentCookie("opentag_csrf=no-refresh; Path=/");
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 401 }));
     const api = new BrowserApi(fetchImpl);
-    await expect(api.imBinding("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
-    await expect(api.imBindingHandoff("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
-    await expect(api.disableImBinding("2a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
-    expect(fetchImpl.mock.calls.filter(([input]) => String(input) === "/api/v1/auth/browser/refresh")).toHaveLength(3);
+
+    await expect(api.imBinding("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).rejects.toMatchObject({ status: 401 });
+    await expect(api.disableImBinding("2a63a21e-f6c7-4474-91ea-4dabf0566a24")).rejects.toMatchObject({ status: 401 });
+
+    expect(fetchImpl.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding",
+      "/api/v1/im-bindings/2a63a21e-f6c7-4474-91ea-4dabf0566a24/disable",
+    ]);
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 

@@ -259,27 +259,29 @@ That issuer now hands out a Better Auth session rather than a signed access/refr
 the server can withdraw instead of a signature it can only wait out. The exchange response keeps its four fields and
 `accessToken` and `refreshToken` carry the same session token, which is why a CLI built before the cutover keeps working
 unchanged. `OPENTAG_SESSION_TTL_SECONDS` is that credential's whole lifetime, defaulted to what the refresh token's was
-because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates — the
-replacement is issued, then the presented token is withdrawn — so a copy taken before the last refresh stops working
-rather than running to its own expiry.
+because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates: the
+presented token is withdrawn first, and only the caller whose withdrawal succeeded gets a replacement. That ordering is
+what makes it safe to race — two refreshes of one credential cannot both mint, and a revocation landing first is not
+undone — and it means a failure in between signs the client out rather than leaving alive a credential something
+already decided to end. A copy taken before the last refresh stops working rather than running to its own expiry.
 
 One consequence is worth stating plainly: a disclosed credential is now usable for the session lifetime rather than the
 old fifteen-minute access window. What made that window necessary was that its thirty-day refresh partner could not be
 revoked at all; a session can be, immediately, which is the trade this makes.
 
-Credentials issued before the cutover still verify, and `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` and
-`OPENTAG_REFRESH_TOKEN_TTL_SECONDS` govern only those. A browser holding one moves onto a session the next time it
-refreshes; nothing is issued against them again.
+Credentials the previous revision issued are no longer accepted; the compatibility bridge and its two TTL settings are
+gone. `OPENTAG_JWT_SECRET` remains because it also signs Slack OAuth state, which is not Account authentication.
 
-An Account email is stored lowercased, and one address identifies at most one Account. The identity resolver enforces
-that by serializing on the address before deciding whether to create or attach, so it holds without a database
-constraint; a `users_email_unique` index backs it up for any writer that skips the resolver, and is added only once no
-revision predating the resolver is still serving.
+An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
+enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The
+resolver that used to serialize on the address is gone; nothing in Better Auth's linking orders two concurrent first
+sign-ins for the same address, so the index is what takes that job. It could only be created once no revision that
+wrote unnormalized addresses was still serving, which is why it arrived after the Better Auth migration rather than
+with it.
 
-A provider identity therefore attaches to the Account that already holds its address rather than creating a second one.
-Attachment requires the provider to have verified the address, because it hands over an existing Account; an unverified
-address that is already taken, and a provider email change onto another Account's address, are both refused with
-`AUTH_EMAIL_CONFLICT`. This is how a bootstrap Account and that person's first Google sign-in become one Account.
+A provider identity attaches to the Account that already holds its address rather than creating a second one: Google is
+a trusted provider, so an address it has verified links to the existing Account. This is how a bootstrap Account and
+that person's first Google sign-in become one Account.
 
 `users.email_verified` records whether a provider asserted the address currently stored on the Account. It is only ever
 raised for that address, never for some other address the provider returned, and the login-code flow never sets it.
@@ -287,10 +289,12 @@ raised for that address, never for some other address the provider returned, and
 ## Google sign-in and Web App
 
 Create a Google Web OAuth client whose callback is
-`http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
-`OPENTAG_GOOGLE_CLIENT_SECRET`. The Google configuration is validated before the server listens; `staging` and `prod`
-require an HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
-same-origin request and the readable double-submit CSRF cookie.
+`http://127.0.0.1:8000/api/v1/auth/callback/google`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
+`OPENTAG_GOOGLE_CLIENT_SECRET`. That path is Better Auth's own callback and is the only one the server serves; the
+pre-migration `/api/v1/auth/google/callback` is gone and can be removed from the OAuth client. The Google configuration
+is validated before the server listens; `staging` and `prod` require an HTTPS `OPENTAG_PUBLIC_URL`. The browser session
+lives in an HttpOnly cookie Better Auth owns, while browser mutations additionally require a same-origin request and
+the readable double-submit CSRF cookie.
 
 For loopback-only development without Google credentials, explicitly enable the development bypass and select one
 existing bootstrap user:
@@ -379,7 +383,7 @@ processes.
 | `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and generated connect commands |
 | `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
-| `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
+| `OPENTAG_JWT_SECRET` | none | Required Slack OAuth state signing secret; at least 32 characters, and distinct from `BETTER_AUTH_SECRET` |
 | `BETTER_AUTH_SECRET` | none | Required Better Auth session/cookie signing secret; at least 32 characters |
 | `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
 | `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
@@ -396,8 +400,6 @@ processes.
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment label |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global trace head sample rate from `0` to `1` |
 | `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session lifetime, browser and CLI alike |
-| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-JWT lifetime; only credentials issued before the Better Auth cutover |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime; only credentials issued before the Better Auth cutover |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm

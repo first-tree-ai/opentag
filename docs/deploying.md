@@ -70,8 +70,8 @@ before the first deployment.
 | `OPENTAG_PORT` | `8000` |
 | `OPENTAG_PUBLIC_URL` | The App's HTTPS URL; hosted environments reject plain HTTP |
 | `OPENTAG_DATABASE_URL` | `postgresql://…` for the Staging database |
-| `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging |
-| `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging and distinct from `OPENTAG_JWT_SECRET` |
+| `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging; signs every Account session |
+| `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
 

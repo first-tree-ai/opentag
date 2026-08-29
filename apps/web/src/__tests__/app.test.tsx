@@ -668,9 +668,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     await waitFor(() => {
-      const call = vi
-        .mocked(fetch)
-        .mock.calls.find(([input]) => String(input) === "/api/v1/auth/email/sign-in");
+      const call = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/v1/auth/email/sign-in");
       expect(call).toBeTruthy();
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({
         email: "ada@example.com",
@@ -694,9 +692,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
 
     await waitFor(() => {
-      const call = vi
-        .mocked(fetch)
-        .mock.calls.find(([input]) => String(input) === "/api/v1/auth/email/sign-up");
+      const call = vi.mocked(fetch).mock.calls.find(([input]) => String(input) === "/api/v1/auth/email/sign-up");
       expect(call).toBeTruthy();
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({
         displayName: "New Account",

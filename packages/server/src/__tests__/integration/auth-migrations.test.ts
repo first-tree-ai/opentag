@@ -113,9 +113,9 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    // Anchored to the fixed 0010..0024 range rather than the tail: a trailing slice silently stops covering the
+    // Anchored to the fixed 0010..0025 range rather than the tail: a trailing slice silently stops covering the
     // earliest entry every time a migration is appended, which would quietly shrink what this test guarantees.
-    expect(journal.entries.slice(10, 25).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(10, 26).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -131,6 +131,7 @@ describe("database migrations", () => {
       { idx: 22, tag: "0022_short_kitty_pryde" },
       { idx: 23, tag: "0023_motionless_gideon" },
       { idx: 24, tag: "0024_icy_warlock" },
+      { idx: 25, tag: "0025_retire_legacy_credentials" },
     ]);
   });
 
@@ -139,18 +140,19 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(20, 25).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(20, 26).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 20, tag: "0020_large_jack_power" },
       { idx: 21, tag: "0021_slow_gamora" },
       { idx: 22, tag: "0022_short_kitty_pryde" },
       // Recorded which session a legacy credential was exchanged for, so a replayed exchange converged on one row.
       { idx: 23, tag: "0023_motionless_gideon" },
+      { idx: 24, tag: "0024_icy_warlock" },
       /*
        * Retires that record with the bridge it served, and takes over the one-Account-per-address invariant from the
        * resolver. It lands last because it could not exist while a revision that wrote unnormalized addresses might
        * still be serving.
        */
-      { idx: 24, tag: "0024_handy_captain_america" },
+      { idx: 25, tag: "0025_retire_legacy_credentials" },
     ]);
   });
 
@@ -670,7 +672,7 @@ describe("database migrations", () => {
         expect(duplicate).toBeDefined();
 
         /*
-         * 0024 closes that window. It is the contract step, and can only run once no revision that writes
+         * 0025 closes that window. It is the contract step, and can only run once no revision that writes
          * unnormalized addresses is still serving — which is also why its guard refuses to create the index while a
          * duplicate exists rather than choosing a row to discard.
          */

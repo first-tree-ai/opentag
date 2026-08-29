@@ -881,7 +881,7 @@ function WorkspaceSetupGate() {
 
 function AppShell() {
   return (
-    <SidebarProvider className="h-full min-h-0 overflow-hidden" collapsible="offcanvas" defaultOpen>
+    <SidebarProvider className="h-full min-h-0 overflow-hidden" collapsible="icon" defaultOpen>
       <AppShellContent />
     </SidebarProvider>
   );
@@ -965,7 +965,7 @@ function AppShellContent() {
         </Sidebar.Content>
         <Sidebar.Footer>
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <Sidebar.Menu className="min-w-0 flex-1">
+            <Sidebar.Menu className="min-w-0 flex-1 group-data-[state=collapsed]/sidebar:hidden">
               <Sidebar.MenuItem>
                 <DropdownMenu
                   open={openMenu === "account"}
@@ -1015,7 +1015,7 @@ function AppShellContent() {
                 </DropdownMenu>
               </Sidebar.MenuItem>
             </Sidebar.Menu>
-            <Sidebar.Trigger aria-label="Toggle sidebar" title="Toggle sidebar" />
+            <Sidebar.Trigger title="Toggle sidebar" />
           </div>
         </Sidebar.Footer>
       </Sidebar>

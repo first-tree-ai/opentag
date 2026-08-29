@@ -42,7 +42,9 @@ describe("Kumo integration contract", () => {
     expect(router).toContain("<Sidebar.Menu>");
     expect(router).toContain("<Sidebar.MenuButton");
     expect(router).toContain("<Sidebar.Footer>");
-    expect(router).toContain('<Sidebar.Trigger aria-label="Toggle sidebar"');
+    expect(router).toContain('<Sidebar.Trigger title="Toggle sidebar"');
+    expect(router).toContain('collapsible="icon"');
+    expect(router).toContain("group-data-[state=collapsed]/sidebar:hidden");
     expect(router).toContain('className="app-mobile-header');
     expect(router).toContain('className="h-full min-h-0 overflow-hidden"');
     expect(router).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');

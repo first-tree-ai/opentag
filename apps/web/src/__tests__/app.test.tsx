@@ -521,8 +521,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
-    const sidebarToggle = screen.getByRole("button", { name: "Toggle sidebar" });
+    const sidebarToggle = screen.getByRole("button", { name: "Collapse sidebar" });
     expect(sidebarToggle.closest('[data-sidebar="footer"]')).toBeTruthy();
+    fireEvent.click(sidebarToggle);
+    expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+    expect(screen.getByRole("button", { name: "Collapse sidebar" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByText("Example")).toBeNull();
     const agentLink = await screen.findByRole("link", { name: "Open Reviewer" });

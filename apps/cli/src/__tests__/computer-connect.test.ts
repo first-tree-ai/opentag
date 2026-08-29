@@ -1,7 +1,12 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readCredentials, readMachineCredentials, writeCredentialsAtomically } from "@opentag/client";
+import {
+  readComputerIdentity,
+  readCredentials,
+  readMachineCredentials,
+  writeCredentialsAtomically,
+} from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runComputerConnect } from "../core/computer/connect.js";
 import type { DaemonServiceManager } from "../core/daemon/service/index.js";
@@ -75,6 +80,38 @@ describe("computer connect", () => {
     ).rejects.toThrow("unsupported service manager");
     expect(exchangeComputerConnectCode).not.toHaveBeenCalled();
     expect(await readMachineCredentials(home)).toBeUndefined();
+  });
+
+  it("does not replace the current local binding when code exchange fails", async () => {
+    const home = await temporaryHome();
+    const firstExchange = vi.fn(async (input: { computerId: string }) => ({
+      workspaceComputerId: crypto.randomUUID(),
+      workspaceId: crypto.randomUUID(),
+      computerId: input.computerId,
+      machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
+    }));
+    await runComputerConnect({
+      api: { exchangeComputerConnectCode: firstExchange },
+      code: "valid-code",
+      home,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+    });
+    const identityBefore = await readComputerIdentity(home);
+    const credentialsBefore = await readMachineCredentials(home);
+
+    await expect(
+      runComputerConnect({
+        api: { exchangeComputerConnectCode: vi.fn().mockRejectedValue(new Error("invalid code")) },
+        code: "invalid-code",
+        home,
+        noStart: true,
+        serverUrl: "https://opentag.example",
+      }),
+    ).rejects.toThrow("invalid code");
+
+    expect(await readComputerIdentity(home)).toEqual(identityBefore);
+    expect(await readMachineCredentials(home)).toEqual(credentialsBefore);
   });
 
   it("restarts an active daemon after storing a machine credential without requiring Account login", async () => {

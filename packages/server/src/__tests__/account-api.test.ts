@@ -120,7 +120,9 @@ function services() {
   return {
     accountScope: { resolveCompatibilityWorkspaceId: vi.fn().mockResolvedValue(workspaceId) },
     agentService: {
+      createForAccount: vi.fn().mockResolvedValue(agent),
       createForWorkspace: vi.fn().mockResolvedValue(agent),
+      listForAccount: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
       listForWorkspace: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
       getById: vi.fn(),
       getUsageById: vi.fn(),
@@ -155,6 +157,7 @@ function services() {
       }),
     },
     workspaceService: {
+      listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
       listComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
     },
     workspaceSetupService: {
@@ -221,13 +224,13 @@ describe("Account-native management collections", () => {
     });
     expect(create.statusCode).toBe(201);
     expect(create.json()).toEqual(agent);
-    expect(service.agentService.createForWorkspace).toHaveBeenCalledWith(userId, workspaceId, createAgentPayload);
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).toHaveBeenCalledWith(userId);
+    expect(service.agentService.createForAccount).toHaveBeenCalledWith(userId, createAgentPayload);
+    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
 
     const list = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ agents: [agentListItem] });
-    expect(service.agentService.listForWorkspace).toHaveBeenCalledWith(userId, workspaceId);
+    expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
   });
 
   it("returns the same resources as the legacy Workspace-scoped routes", async () => {
@@ -285,10 +288,10 @@ describe("Account-native management collections", () => {
       url: HTTP_PATHS.accountComputers,
       headers: { ...authorization, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
-    expect(service.workspaceService.listComputers).toHaveBeenCalledWith(userId, workspaceId, true);
+    expect(service.workspaceService.listAccountComputers).toHaveBeenCalledWith(userId, true);
 
     await app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization });
-    expect(service.workspaceService.listComputers).toHaveBeenLastCalledWith(userId, workspaceId, false);
+    expect(service.workspaceService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
   });
 
   it("rejects a client-selected scope on every creation route", async () => {
@@ -316,6 +319,7 @@ describe("Account-native management collections", () => {
       }
     }
 
+    expect(service.agentService.createForAccount).not.toHaveBeenCalled();
     expect(service.agentService.createForWorkspace).not.toHaveBeenCalled();
     expect(service.machineAuthService.issueForAccount).not.toHaveBeenCalled();
     expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
@@ -339,7 +343,7 @@ describe("Account-native management collections", () => {
     expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
   });
 
-  it("does not disclose whether an Account has no compatibility scope", async () => {
+  it("keeps Account-owned collections independent of compatibility scope", async () => {
     const { app, service } = appWith({
       accountScope: {
         resolveCompatibilityWorkspaceId: vi
@@ -350,11 +354,14 @@ describe("Account-native management collections", () => {
       },
     });
 
-    for (const url of [HTTP_PATHS.accountAgents, HTTP_PATHS.accountComputers]) {
+    for (const url of [HTTP_PATHS.accountAgents, HTTP_PATHS.accountComputers, HTTP_PATHS.accountTasks]) {
       const response = await app.inject({ method: "GET", url, headers: authorization });
-      expect(response.statusCode).toBe(404);
-      expect(response.json().error.code).toBe("RESOURCE_NOT_FOUND");
+      expect(response.statusCode).toBe(200);
     }
+    expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
+    expect(service.workspaceService.listAccountComputers).toHaveBeenCalledWith(userId, false);
+    expect(service.taskService.list).toHaveBeenCalledWith(userId, { limit: 50 });
+    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
     expect(service.agentService.listForWorkspace).not.toHaveBeenCalled();
     expect(service.workspaceService.listComputers).not.toHaveBeenCalled();
   });

@@ -140,7 +140,7 @@ async function fixture() {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: computer.id,
+    computerId: workspaceComputer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingService = new ImBindingService(client.database, cipher, {
@@ -218,7 +218,7 @@ async function unboundFixture() {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: computer.id,
+    computerId: workspaceComputer.id,
   });
   await client.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, created.id));
   const agent = { ...created, receiveMode: "mention_only" as const };
@@ -646,6 +646,80 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("persists ingress without delivery while the Agent Computer requires rebind", async () => {
+    const value = await fixture();
+    try {
+      const [otherOwner] = await value.database
+        .insert(users)
+        .values({ email: `inbound-owner-${crypto.randomUUID()}@example.com`, displayName: "Other owner" })
+        .returning();
+      if (!otherOwner) throw new Error("Other Account fixture was not created");
+      await value.database
+        .update(accountComputers)
+        .set({ ownerAccountId: otherOwner.id })
+        .where(eq(accountComputers.id, value.workspaceComputer.id));
+
+      await expect(
+        new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-rebind-required")),
+      ).resolves.toMatchObject({ duplicate: false, messageId: expect.any(String), deliveryIds: [] });
+      await expect(value.database.select().from(imMessages)).resolves.toHaveLength(1);
+      await expect(value.database.select().from(imMessageDeliveries)).resolves.toEqual([]);
+      await expect(value.database.select().from(sessions)).resolves.toEqual([]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("terminally rejects queued delivery without dispatch after the Agent Computer owner diverges", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      const ingested = await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-rebind-required-after-queue"),
+      );
+      const deliveryId = ingested.deliveryIds[0];
+      if (!deliveryId) throw new Error("Queued delivery fixture was not created");
+      const [otherOwner] = await value.database
+        .insert(users)
+        .values({ email: `queued-owner-${crypto.randomUUID()}@example.com`, displayName: "Other owner" })
+        .returning();
+      if (!otherOwner) throw new Error("Other Account fixture was not created");
+      await value.database
+        .update(accountComputers)
+        .set({ ownerAccountId: otherOwner.id })
+        .where(eq(accountComputers.id, value.workspaceComputer.id));
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        workspaceComputerId: value.workspaceComputer.id,
+        workspaceId: value.bootstrap.workspaceId,
+      });
+      owners.push(runtime.domain);
+
+      await imDeliveryWorker({
+        database: value.database,
+        domain: runtime.domain,
+        registry: runtime.registry,
+      }).runOnce();
+
+      expect(runtime.frames).toEqual([]);
+      await expect(
+        value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId)),
+      ).resolves.toEqual([expect.objectContaining({ state: "terminal_rejected", reason: "computer_owner_mismatch" })]);
+    } finally {
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
   it("grants only the bound Slack Bot token across attention modes and fences placement authority", async () => {
     const value = await fixture();
     try {
@@ -787,6 +861,22 @@ describe("IM binding persistence", () => {
           computerAuthFor(value),
         ),
       ).resolves.toMatchObject({ status: "rejected", code: "agent_mismatch" });
+      await value.database.update(agents).set({ status: "active" }).where(eq(agents.id, value.agent.id));
+      const [otherOwner] = await value.database
+        .insert(users)
+        .values({ email: `credential-owner-${crypto.randomUUID()}@example.com`, displayName: "Other owner" })
+        .returning();
+      if (!otherOwner) throw new Error("Other Account fixture was not created");
+      await value.database
+        .update(accountComputers)
+        .set({ ownerAccountId: otherOwner.id })
+        .where(eq(accountComputers.id, value.workspaceComputer.id));
+      const ownerMismatch = await value.imBindingService.issueRuntimeCredentialGrant(
+        { ...request, requestId: crypto.randomUUID() },
+        computerAuthFor(value),
+      );
+      expect(ownerMismatch).toMatchObject({ status: "rejected", code: "agent_mismatch" });
+      expect(JSON.stringify(ownerMismatch)).not.toContain("xoxb-secret");
     } finally {
       await value.sql.end();
     }
@@ -1915,7 +2005,7 @@ describe("IM binding persistence", () => {
           name: "other-assistant",
           displayName: "Other Assistant",
           runtimeProvider: "codex",
-          computerId: value.computer.id,
+          computerId: value.workspaceComputer.id,
         },
       );
       const otherBindingId = await value.imBindingService.activateFeishu({
@@ -6193,7 +6283,7 @@ describe("IM binding persistence", () => {
           name: "second-agent",
           displayName: "Second Agent",
           runtimeProvider: "codex",
-          computerId: value.computer.id,
+          computerId: value.workspaceComputer.id,
         },
       );
       const firstId = await value.imBindingService.activateFeishu({

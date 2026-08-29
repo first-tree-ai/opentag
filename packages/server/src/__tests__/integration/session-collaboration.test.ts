@@ -21,6 +21,7 @@ import {
   sessionMessages,
   sessionPlacements,
   sessions,
+  users,
   workspaceComputers,
 } from "../../db/schema/index.js";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
@@ -377,7 +378,29 @@ describe("Session collaboration authority", () => {
           content: "ended",
         }),
       ).rejects.toMatchObject({ code: "SESSION_TARGET_UNAVAILABLE" });
-      for (const messageId of [staleId, crossScopeId, endedId]) {
+      const [otherOwner] = await fixture.database
+        .insert(users)
+        .values({ displayName: "Other", email: `other-${randomUUID()}@example.com` })
+        .returning();
+      if (!otherOwner) throw new Error("Other Account fixture was not created");
+      await fixture.database
+        .update(accountComputers)
+        .set({ ownerAccountId: otherOwner.id })
+        .where(eq(accountComputers.id, fixture.workspaceComputerId));
+      const ownerMismatchId = randomUUID();
+      await expect(
+        fixture.sessions.authorizeAndRecordMessage({
+          messageId: ownerMismatchId,
+          sourceSessionId: source.session.id,
+          sourceComputerId: fixture.computerId,
+          sourceConnectionInstanceId: fixture.connectionInstanceId,
+          sourceWorkspaceComputerId: fixture.workspaceComputerId,
+          sourcePlacementGeneration: 1,
+          targetSessionId: source.session.id,
+          content: "owner mismatch",
+        }),
+      ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
+      for (const messageId of [staleId, crossScopeId, endedId, ownerMismatchId]) {
         expect(await fixture.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId))).toEqual(
           [],
         );
@@ -861,7 +884,7 @@ async function createFixture() {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId,
+    computerId: workspaceComputer.id,
   });
   const [binding] = await client.database
     .insert(imBindings)

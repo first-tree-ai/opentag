@@ -108,7 +108,7 @@ async function enroll(
   value: Awaited<ReturnType<typeof fixture>>,
   workspaceId = value.bootstrap.workspaceId,
   accountId = value.bootstrap.userId,
-  computerId = crypto.randomUUID(),
+  computerId: string = crypto.randomUUID(),
 ) {
   const issued = await value.machineAuth.issueForWorkspaceAdmin(accountId, workspaceId);
   return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
@@ -168,6 +168,31 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
+  it("rolls back Account observation writes when the legacy projection diverges", async () => {
+    const value = await fixture();
+    try {
+      const enrollment = await enroll(value);
+      const instanceId = crypto.randomUUID();
+      await value.service.register(enrollment, registerFrame(enrollment.computerId, instanceId));
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: crypto.randomUUID() })
+        .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
+      const before = await value.database
+        .select()
+        .from(accountComputers)
+        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
+
+      await expect(value.service.heartbeat(enrollment, instanceId)).resolves.toBe(false);
+      await expect(value.service.disconnect(enrollment.workspaceComputerId, instanceId)).resolves.toBe(false);
+      await expect(
+        value.database.select().from(accountComputers).where(eq(accountComputers.id, enrollment.workspaceComputerId)),
+      ).resolves.toEqual(before);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("creates a new Computer for every create code and never reuses an installation", async () => {
     const value = await fixture();
     try {
@@ -218,6 +243,14 @@ describe("Computer enrollment persistence", () => {
       expect(rows.map(({ currentInstanceId }) => currentInstanceId).sort()).toEqual(
         [firstInstance, secondInstance].sort(),
       );
+      expect(
+        (await value.workspaceService.listAccountComputers(value.bootstrap.userId)).computers
+          .map(({ computerId: id }) => id)
+          .sort(),
+      ).toEqual([first.workspaceComputerId, second.workspaceComputerId].sort());
+      expect(
+        (await value.workspaceService.listComputers(value.bootstrap.userId, value.bootstrap.workspaceId)).computers,
+      ).toHaveLength(1);
     } finally {
       await value.sql.end();
     }

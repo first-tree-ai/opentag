@@ -1086,7 +1086,7 @@ describe("Agent persistence and authorization", () => {
     const value = await fixture();
     try {
       const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.workspaceId);
-      await value.service.createForWorkspace(
+      const first = await value.service.createForWorkspace(
         value.bootstrap.userId,
         value.bootstrap.workspaceId,
         createInput(computer.id, "assistant"),
@@ -1133,6 +1133,8 @@ describe("Agent persistence and authorization", () => {
         runtimeProvider: "claude-code",
         workspaceId: otherWorkspace.id,
       });
+      const accountAgents = await value.service.listForAccount(value.bootstrap.userId);
+      expect(accountAgents.agents.map(({ id }) => id).sort()).toEqual([first.id, created.id].sort());
     } finally {
       await value.sql.end();
     }

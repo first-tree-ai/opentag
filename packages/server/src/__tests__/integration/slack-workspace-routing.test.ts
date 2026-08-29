@@ -70,13 +70,13 @@ async function fixture() {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: computer.id,
+    computerId: workspaceComputer.id,
   });
   const second = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "reviewer",
     displayName: "Reviewer",
     runtimeProvider: "codex",
-    computerId: computer.id,
+    computerId: workspaceComputer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingsService = new ImBindingService(client.database, cipher, { now: () => now });
@@ -230,7 +230,7 @@ describe("Slack workspace installation routing", () => {
         name: "outsider",
         displayName: "Outsider",
         runtimeProvider: "codex",
-        computerId: otherComputer.id,
+        computerId: otherEnrollment.id,
       });
       await expect(
         activate(value.imBindingsService, outsider.id, "create", { token: "xoxb-outsider" }),

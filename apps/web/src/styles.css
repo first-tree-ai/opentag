@@ -4577,3 +4577,17 @@ textarea:focus {
     transition: none;
   }
 }
+
+.agent-settings-group.is-danger {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 22px;
+}
+
+.agent-settings-group.is-danger h2 {
+  color: var(--color-status-danger);
+}
+
+.agent-settings-group.is-danger .agent-settings-icon {
+  color: var(--color-status-danger);
+}

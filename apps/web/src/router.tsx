@@ -1362,7 +1362,7 @@ function markOwnComputersUnconfirmed(value: { computers: WorkspaceComputerSummar
 }
 
 type AgentSettingsSection = "instructions" | "execution" | "messaging" | "identity" | "computer" | "manage";
-type AgentSettingsGroup = "work" | "contact" | "details";
+type AgentSettingsGroup = "setup" | "danger";
 
 const agentSettingsSections: ReadonlyArray<{
   key: AgentSettingsSection;
@@ -1371,46 +1371,49 @@ const agentSettingsSections: ReadonlyArray<{
   icon: IconName;
 }> = [
   {
+    key: "identity",
+    label: "Name",
+    group: "setup",
+    icon: "user",
+  },
+  {
+    key: "messaging",
+    label: "Messaging",
+    group: "setup",
+    icon: "message",
+  },
+  {
+    key: "computer",
+    label: "Computer",
+    group: "setup",
+    icon: "laptop",
+  },
+  {
     key: "instructions",
     label: "Instructions",
-    group: "work",
+    group: "setup",
     icon: "instructions",
   },
   {
     key: "execution",
     label: "Model & reasoning",
-    group: "work",
+    group: "setup",
     icon: "model",
   },
   {
-    key: "messaging",
-    label: "Messaging",
-    group: "contact",
-    icon: "message",
-  },
-  {
-    key: "identity",
-    label: "Name",
-    group: "details",
-    icon: "user",
-  },
-  {
-    key: "computer",
-    label: "Connected computer",
-    group: "details",
-    icon: "laptop",
-  },
-  {
     key: "manage",
-    label: "Manage Agent",
-    group: "details",
+    label: "Pause or delete",
+    group: "danger",
     icon: "shield",
   },
 ];
+/*
+ * One list in the order a viewer thinks about an Agent -- who it is, how it is reached, where it
+ * runs, how it works -- with the irreversible actions held apart rather than sorted among them.
+ */
 const agentSettingsGroups = [
-  { key: "work", label: "How it works" },
-  { key: "contact", label: "Where it receives work" },
-  { key: "details", label: "Agent details" },
+  { key: "setup", label: null },
+  { key: "danger", label: "Danger zone" },
 ] as const;
 
 function LegacyAgentSectionRedirect() {
@@ -1726,8 +1729,13 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
         {(config) => (
           <div className="agent-settings-groups">
             {agentSettingsGroups.map((group) => (
-              <section className="agent-settings-group" key={group.key} aria-labelledby={`agent-settings-${group.key}`}>
-                <h2 id={`agent-settings-${group.key}`}>{group.label}</h2>
+              <section
+                className={`agent-settings-group is-${group.key}`}
+                key={group.key}
+                aria-label={group.label ?? "Agent setup"}
+                aria-labelledby={group.label ? `agent-settings-${group.key}` : undefined}
+              >
+                {group.label ? <h2 id={`agent-settings-${group.key}`}>{group.label}</h2> : null}
                 <div className="agent-settings-grid">
                   {agentSettingsSections
                     .filter((item) => item.group === group.key)

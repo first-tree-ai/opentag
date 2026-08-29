@@ -1325,16 +1325,24 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Agent settings" })).toBeNull();
-    expect(await screen.findByRole("heading", { name: "How it works" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Where it receives work" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Agent details" })).toBeTruthy();
+    // One list in the order a viewer thinks about an Agent, with the irreversible actions held apart.
+    expect(
+      screen.getByRole("region", { name: "Agent setup" }).querySelectorAll(".agent-settings-entry strong"),
+    ).toHaveLength(5);
+    expect(
+      [...screen.getByRole("region", { name: "Agent setup" }).querySelectorAll(".agent-settings-entry strong")].map(
+        (entry) => entry.textContent,
+      ),
+    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model & reasoning"]);
+    expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /^Pause or delete/ })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
     expect(screen.getByRole("link", { name: /^Instructions / })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Model & reasoning/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /^Name Reviewer$/ })).toBeTruthy();
-    expect(screen.getByText("Connected computer")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: /Connected computer/ })).toBeNull();
-    expect(screen.getByRole("link", { name: /Manage Agent/ })).toBeTruthy();
+    expect(screen.getByText("Computer")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /^Computer / })).toBeNull();
     expect(screen.getByText("Not configured")).toBeTruthy();
     expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();
     expect(screen.getByText("Reviewer")).toBeTruthy();
@@ -1360,7 +1368,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings`);
     render(<App />);
 
-    const computerLabel = await screen.findByText("Connected computer");
+    const computerLabel = await screen.findByText("Computer");
     const computerLink = computerLabel.closest("a");
     expect(screen.getByText("Ada's Mac · macOS · Offline")).toBeTruthy();
     expect(screen.getByText("Review")).toBeTruthy();

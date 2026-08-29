@@ -181,6 +181,12 @@ function OnboardingV2Flow({
     if (flow.page === "computer") backend.issueConnectCode();
   }, [backend.issueConnectCode, flow.page]);
 
+  // Which step the reader is on is the page's to know. The connection is watched while they are on
+  // the one that can act on it, and left alone once they are past it.
+  useEffect(() => {
+    if (flow.page === "messaging" || flow.complete) backend.markPastConnectStep();
+  }, [backend.markPastConnectStep, flow.complete, flow.page]);
+
   /*
    * Setup is completed from the finished flow, and exactly once. Reporting it from the render that
    * first sees `complete` — rather than from the button that connected the messaging app — is what

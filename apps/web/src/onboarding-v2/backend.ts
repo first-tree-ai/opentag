@@ -56,6 +56,11 @@ export interface OnboardingBackend {
    * while a delivery is in flight, which clears on its own, so asking again is the reader's to do.
    */
   readonly retryRebind: (() => void) | undefined;
+  /**
+   * Told by the page once the reader is past the step the Computer connection belongs to. Losing a
+   * Computer matters on that step; past it, interrupting them costs more than it tells them.
+   */
+  readonly markPastConnectStep: () => void;
   readonly startPlanSignIn: () => void;
   /** Issues the first connect code. Safe to call repeatedly; only an idle connection acts on it. */
   readonly issueConnectCode: () => void;

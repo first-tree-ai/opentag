@@ -120,16 +120,25 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   /** The connection as it stands, readable from a callback without making an updater impure. */
   /** The Computer the Agent is bound to on the Server, which a new machine has to replace. */
   const boundComputerId = useRef<string | undefined>(undefined);
+  /** The name last shown for the machine being moved onto, so a retry can report the same one. */
+  const computerNameRef = useRef("");
   /**
    * Whether a move is in flight or has been refused. Without it the poll that discovered the new
    * machine would ask again on every tick, because a refusal changes nothing that poll can see —
    * and this is a write that takes row locks, not a read.
    */
   const rebindState = useRef<"idle" | "moving" | "refused">("idle");
+  /** The Computer a refused move was for, so asking again does not wait on a fresh arrival. */
+  const rebindTarget = useRef<string | undefined>(undefined);
+  /**
+   * Latched once the reader is past the step the connection belongs to. Losing a Computer matters
+   * on that step, where it hides the command that brings the machine back; past it the Agent
+   * already exists, and pulling someone out of choosing or scanning a messaging app over a lid
+   * they are about to reopen costs more than it tells them.
+   */
+  const pastConnectStep = useRef(false);
   const agentRef = useRef<CreatedAgent | undefined>(undefined);
   agentRef.current = agent;
-  const messagingRef = useRef<MessagingState>({ kind: "idle" });
-  messagingRef.current = messaging;
   const connectRef = useRef<ConnectState>({ kind: "idle" });
   connectRef.current = connect;
   const mounted = useRef(true);
@@ -216,6 +225,41 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     void readAccount();
   }, [readAccount]);
 
+  /**
+   * Moves the Agent onto a Computer and only then reports the connection. Saying "connected" before
+   * the move lands would mean "this machine is yours" about a machine the Agent is not on.
+   */
+  const moveAgent = useCallback((agentId: string, targetComputerId: string, computerName: string) => {
+    if (rebindState.current === "moving") return;
+    rebindState.current = "moving";
+    void browserApi.rebindAgentComputer(agentId, targetComputerId).then(
+      () => {
+        if (!mounted.current) return;
+        rebindState.current = "idle";
+        boundComputerId.current = targetComputerId;
+        computerId.current = targetComputerId;
+        setRebindRefused(false);
+        setActionError(undefined);
+        setConnectionError(undefined);
+        setConnect((current) =>
+          current.kind === "connected"
+            ? current
+            : {
+                kind: "connected",
+                command: connectRef.current.kind === "issued" ? connectRef.current.command : "",
+                computerName,
+              },
+        );
+      },
+      (cause: unknown) => {
+        if (!mounted.current) return;
+        rebindState.current = "refused";
+        setRebindRefused(true);
+        setActionError(errorMessage(cause, COPY.errors.rebind));
+      },
+    );
+  }, []);
+
   const issue = useCallback(async () => {
     const mine = attempt.current + 1;
     attempt.current = mine;
@@ -287,22 +331,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
             // next tick: the Server can refuse this while a delivery is in flight, and that clears
             // on its own, so the answer is a button and not a loop nobody can see.
             if (rebindState.current !== "idle") return;
-            rebindState.current = "moving";
-            void browserApi.rebindAgentComputer(resumedAgent.id, arrived.computerId).then(
-              () => {
-                if (!mounted.current || attempt.current !== mine) return;
-                rebindState.current = "idle";
-                boundComputerId.current = arrived.computerId;
-                setRebindRefused(false);
-                settled();
-              },
-              (cause: unknown) => {
-                if (!mounted.current || attempt.current !== mine) return;
-                rebindState.current = "refused";
-                setRebindRefused(true);
-                setActionError(errorMessage(cause, COPY.errors.rebind));
-              },
-            );
+            rebindTarget.current = arrived.computerId;
+            computerNameRef.current = arrived.displayName;
+            moveAgent(resumedAgent.id, arrived.computerId, arrived.displayName);
             return;
           }
           settled();
@@ -314,7 +345,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       );
     }, COMPUTER_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [connect.kind]);
+  }, [connect.kind, moveAgent]);
 
   // Once the Computer is here, the same cadence keeps reading its readiness. The daemon re-probes on
   // its own schedule, so a failure that gets repaired in a terminal turns green here with no page
@@ -337,8 +368,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
            * under way: by then the Agent exists, and pulling someone out of a QR scan over a lid
            * they are about to open again would cost more than it tells them.
            */
-          if (!mineNow || mineNow.connectionStatus !== "online") {
-            if (messagingRef.current.kind !== "idle") return;
+          if (mineNow?.connectionStatus !== "online") {
+            if (pastConnectStep.current) return;
             computerId.current = undefined;
             setComputer(undefined);
             setConnect({ kind: "idle" });
@@ -484,6 +515,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setCreation("idle");
     boundComputerId.current = undefined;
     rebindState.current = "idle";
+    rebindTarget.current = undefined;
+    pastConnectStep.current = false;
     setRebindRefused(false);
     setResuming(false);
     setResumeError(undefined);
@@ -491,17 +524,31 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setConnectionError(undefined);
   }, []);
 
+  /** Told by the page when the reader has moved past the step the connection belongs to. */
+  const markPastConnectStep = useCallback(() => {
+    pastConnectStep.current = true;
+  }, []);
+
   /** Reads the Account again after a failed read, which is the only way out of that state. */
   const retryResume = useCallback(() => {
     void readAccount();
   }, [readAccount]);
 
-  /** Lets a refused move be asked for again. The next poll carries it, as the first one did. */
+  /**
+   * Asks for a refused move again, and sends it rather than waiting for the poll to rediscover the
+   * machine. The poll's arrival branch only runs while a connect code is live, so a reader who
+   * waited out a refusal — which is the sensible thing to do with one that clears on its own —
+   * would otherwise press a button that did nothing.
+   */
   const retryRebind = useCallback(() => {
+    const agentId = agentRef.current?.id;
+    const target = rebindTarget.current;
+    if (!agentId || !target) return;
     rebindState.current = "idle";
     setRebindRefused(false);
     setActionError(undefined);
-  }, []);
+    moveAgent(agentId, target, computerNameRef.current);
+  }, [moveAgent]);
 
   const startPlanSignIn = useCallback(() => undefined, []);
 
@@ -523,6 +570,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       readiness,
       refreshConnectCode,
       reset,
+      markPastConnectStep,
       resumeError,
       resuming,
       retryRebind: rebindRefused ? retryRebind : undefined,
@@ -544,6 +592,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       readiness,
       refreshConnectCode,
       reset,
+      markPastConnectStep,
       rebindRefused,
       resumeError,
       resuming,

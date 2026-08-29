@@ -1,8 +1,21 @@
-.agent-usage-overview .overview-section-heading {
-  align-items: flex-start;
+.agent-usage-overview-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
-.agent-usage-overview .overview-section-heading p,
+.agent-usage-overview-actions a {
+  color: var(--secondary-foreground);
+  font-size: var(--text-meta);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  transition: color 180ms ease;
+}
+
+.agent-usage-overview-actions a:hover {
+  color: var(--brand-ink);
+}
+
 .agent-usage-tab .agent-usage-subheading p {
   max-width: 620px;
   margin: 0;
@@ -88,12 +101,12 @@
   justify-content: flex-end;
 }
 
-.agent-usage-toolbar label {
+.agent-usage-period {
   display: block;
   width: 152px;
 }
 
-.agent-usage-toolbar label > span {
+.agent-usage-period > span {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -283,7 +296,12 @@
   }
 
   .agent-usage-toolbar,
-  .agent-usage-toolbar label {
+  .agent-usage-period {
     width: 100%;
+  }
+
+  .agent-usage-overview-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }

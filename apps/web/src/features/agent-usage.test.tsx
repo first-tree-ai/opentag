@@ -1,5 +1,5 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -35,6 +35,25 @@ describe("AgentUsageOverview", () => {
     expect(coverage.closest("[role='status']")?.textContent).toBe(
       "Partial data. Token data is available for 31 of 32 tasks. Token totals are partial.",
     );
+  });
+
+  it("offers the shortest windows on the Agent home and names the one-day window in hours", async () => {
+    const read = vi.spyOn(browserApi, "agentUsage").mockResolvedValue(usage);
+
+    render(
+      <MemoryRouter>
+        <AgentUsageOverview agentId="agent-1" />
+      </MemoryRouter>,
+    );
+
+    const period = await screen.findByLabelText("Usage period");
+    expect([...(period as HTMLSelectElement).options].map((option) => option.textContent)).toEqual([
+      "Last 24 hours",
+      "Last 7 days",
+      "Last 30 days",
+    ]);
+    fireEvent.change(period, { target: { value: "1" } });
+    await waitFor(() => expect(read).toHaveBeenCalledWith("agent-1", 1));
   });
 
   it("uses chart headings without repeating their meaning in helper copy", async () => {

@@ -2,8 +2,8 @@ import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/sha
 import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "../api.js";
-import feishuIconUrl from "../assets/feishu.svg";
 import { Icon, StatusIndicator, type StatusTone } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 import "./tasks-page.css";
 
 type TaskFilter = "all" | TaskStatus;
@@ -149,6 +149,91 @@ export function TasksPage() {
       ) : null}
       {state.kind === "ready" && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
+ * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
+ */
+export function AgentTasksSection({ agentId }: { agentId: string }) {
+  const [state, setState] = useState<LoadState<{ tasks: TaskSummary[]; nextCursor: string | null }>>({
+    kind: "loading",
+  });
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setState({ kind: "loading" });
+    browserApi.tasks({ agentId }).then(
+      (value) =>
+        active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
+      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
+    );
+    return () => {
+      active = false;
+    };
+  }, [agentId]);
+
+  async function loadMore(): Promise<void> {
+    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await browserApi.tasks({ agentId, cursor: state.value.nextCursor });
+      setState({ kind: "ready", value: { tasks: [...state.value.tasks, ...next.tasks], nextCursor: next.nextCursor } });
+    } catch (error) {
+      setState({ kind: "error", error: asError(error) });
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  return (
+    <section className="agent-home-section agent-tasks-section" aria-labelledby="agent-tasks-heading">
+      <header className="agent-home-section-heading">
+        <h2 id="agent-tasks-heading">Tasks</h2>
+        <Link className="agent-tasks-all" to="/tasks">
+          All Tasks
+        </Link>
+      </header>
+      {state.kind === "loading" ? (
+        <p className="agent-tasks-note" role="status">
+          Loading Tasks…
+        </p>
+      ) : null}
+      {state.kind === "error" ? (
+        <p className="agent-tasks-note" role="status">
+          Tasks are temporarily unavailable.
+        </p>
+      ) : null}
+      {state.kind === "ready" && state.value.tasks.length === 0 ? (
+        <p className="agent-tasks-note" role="status">
+          No Tasks yet. Work this Agent handles in Feishu or Slack appears here.
+        </p>
+      ) : null}
+      {state.kind === "ready" && state.value.tasks.length > 0 ? (
+        <>
+          <table className="task-table" aria-label="Agent Tasks">
+            <thead>
+              <tr className="task-table-grid task-table-header">
+                <th scope="col">Task</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.value.tasks.map((task) => (
+                <TaskRow key={task.id} showAgent={false} task={task} />
+              ))}
+            </tbody>
+          </table>
+          {state.value.nextCursor ? (
+            <button className="task-load-more" disabled={loadingMore} type="button" onClick={() => void loadMore()}>
+              {loadingMore ? "Loading more Tasks…" : "Load more"}
+            </button>
+          ) : null}
+        </>
       ) : null}
     </section>
   );
@@ -406,7 +491,7 @@ function TaskSelect({
   );
 }
 
-function TaskRow({ task }: { task: TaskSummary }) {
+function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
     <tr className="task-table-grid task-table-row">
@@ -415,9 +500,13 @@ function TaskRow({ task }: { task: TaskSummary }) {
           {task.title}
         </Link>
         <span className="task-list-metadata">
-          <span>{task.agent.displayName}</span>
-          <span aria-hidden="true">·</span>
-          <ProviderIcon provider={task.source.provider} compact />
+          {showAgent ? (
+            <>
+              <span>{task.agent.displayName}</span>
+              <span aria-hidden="true">·</span>
+            </>
+          ) : null}
+          <TaskProviderIcon provider={task.source.provider} compact />
           <span>{task.source.provider}</span>
           <span aria-hidden="true">·</span>
           <span>{task.sessionKind}</span>
@@ -440,7 +529,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
 function SourceIdentity({ task }: { task: TaskSummary }) {
   return (
     <span className="task-source-identity">
-      <ProviderIcon provider={task.source.provider} />
+      <TaskProviderIcon provider={task.source.provider} />
       <span>
         <strong>{task.agent.displayName}</strong>
         <small>
@@ -451,25 +540,17 @@ function SourceIdentity({ task }: { task: TaskSummary }) {
   );
 }
 
-function ProviderIcon({
+function TaskProviderIcon({
   provider,
   compact = false,
 }: {
   provider: TaskSummary["source"]["provider"];
   compact?: boolean;
 }) {
-  if (provider !== "feishu")
-    return (
-      <span className="task-provider-mark" aria-hidden="true">
-        S
-      </span>
-    );
   return (
-    <img
-      alt=""
-      aria-hidden="true"
-      className={compact ? "task-feishu-icon task-feishu-icon--compact" : "task-feishu-icon"}
-      src={feishuIconUrl}
+    <ProviderIcon
+      className={compact ? "task-provider-icon task-provider-icon--compact" : "task-provider-icon"}
+      provider={provider}
     />
   );
 }

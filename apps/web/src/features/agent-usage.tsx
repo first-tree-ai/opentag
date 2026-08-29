@@ -14,17 +14,34 @@ type UsageState =
   | { readonly kind: "error" }
   | { readonly kind: "ready"; readonly value: AgentUsageDetail };
 
-export function AgentUsageOverview({ agentId }: { agentId: string }) {
-  const state = useAgentUsage(agentId, AGENT_USAGE_WINDOW_DAYS);
+/** The Agent home answers "how much has this Agent used recently", so it offers the shortest windows. */
+const AGENT_HOME_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS] as const;
+
+export function usageWindowLabel(days: AgentUsageWindowDays): string {
+  return days === 1 ? "Last 24 hours" : `Last ${days} days`;
+}
+
+export function AgentUsageOverview({
+  agentId,
+  detailsLinkState,
+}: {
+  agentId: string;
+  /** Route state that keeps the Agent header rendered while the usage details page loads. */
+  detailsLinkState?: unknown;
+}) {
+  const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
+  const state = useAgentUsage(agentId, windowDays);
   return (
-    <section className="overview-section agent-usage-overview" aria-labelledby="agent-usage-overview-heading">
-      <div className="overview-section-heading">
-        <div>
-          <h3 id="agent-usage-overview-heading">Recent usage</h3>
-          <p>Token use from Tasks handled by this Agent during the last 30 days.</p>
+    <section className="agent-home-section agent-usage-overview" aria-labelledby="agent-usage-overview-heading">
+      <header className="agent-home-section-heading">
+        <h2 id="agent-usage-overview-heading">Usage</h2>
+        <div className="agent-usage-overview-actions">
+          <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
+          <Link state={detailsLinkState} to={`/agents/${agentId}/usage`}>
+            View details
+          </Link>
         </div>
-        <Link to={`/agents/${agentId}/usage`}>View usage details</Link>
-      </div>
+      </header>
       <UsageSummaryState state={state} compact />
     </section>
   );
@@ -36,24 +53,38 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   return (
     <div className="agent-usage-tab">
       <div className="agent-usage-toolbar">
-        <label>
-          <span>Usage period</span>
-          <select
-            aria-label="Usage period"
-            className="ds-control ds-control--compact"
-            value={windowDays}
-            onChange={(event) => setWindowDays(Number(event.currentTarget.value) as AgentUsageWindowDays)}
-          >
-            {AGENT_USAGE_WINDOW_OPTIONS.map((days) => (
-              <option key={days} value={days}>
-                Last {days} days
-              </option>
-            ))}
-          </select>
-        </label>
+        <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </div>
       <UsageSummaryState state={state} />
     </div>
+  );
+}
+
+function UsageWindowSelect({
+  onChange,
+  options,
+  value,
+}: {
+  onChange: (windowDays: AgentUsageWindowDays) => void;
+  options: readonly AgentUsageWindowDays[];
+  value: AgentUsageWindowDays;
+}) {
+  return (
+    <label className="agent-usage-period">
+      <span>Usage period</span>
+      <select
+        aria-label="Usage period"
+        className="ds-control ds-control--compact"
+        value={value}
+        onChange={(event) => onChange(Number(event.currentTarget.value) as AgentUsageWindowDays)}
+      >
+        {options.map((days) => (
+          <option key={days} value={days}>
+            {usageWindowLabel(days)}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -101,7 +132,7 @@ function UsageSummaryState({ state, compact = false }: { state: UsageState; comp
 
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
   return (
-    <dl className="agent-usage-metrics" aria-label={`Agent usage for the last ${usage.windowDays} days`}>
+    <dl className="agent-usage-metrics" aria-label={`Agent usage · ${usageWindowLabel(usage.windowDays)}`}>
       <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
       <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
     </dl>
@@ -187,7 +218,7 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   return (
     <div className="agent-usage-chart">
       <svg
-        aria-label={`${formatUsageNumber(usage.tokens)} Tokens used during the last ${usage.windowDays} days`}
+        aria-label={`${formatUsageNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
         preserveAspectRatio="none"
         role="img"
         viewBox={`0 0 ${width} ${height}`}

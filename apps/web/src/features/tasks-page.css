@@ -273,14 +273,14 @@
   font-size: var(--text-meta);
 }
 
-.task-feishu-icon {
+.task-provider-icon {
   width: 32px;
   height: 32px;
   flex: 0 0 auto;
   object-fit: contain;
 }
 
-.task-feishu-icon--compact {
+.task-provider-icon--compact {
   width: 16px;
   height: 16px;
 }
@@ -812,4 +812,31 @@
   .task-agent-response {
     margin-left: 0;
   }
+}
+
+.agent-tasks-section .task-table {
+  margin-top: 0;
+}
+
+.agent-tasks-note {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: var(--text-ui);
+  line-height: var(--lh-prose);
+  padding: 20px 22px;
+}
+
+.agent-tasks-all {
+  color: var(--secondary-foreground);
+  font-size: var(--text-meta);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  transition: color 180ms ease;
+}
+
+.agent-tasks-all:hover {
+  color: var(--brand-ink);
 }

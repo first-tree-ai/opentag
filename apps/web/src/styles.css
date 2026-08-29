@@ -696,6 +696,24 @@ pre {
   background: var(--surface);
 }
 
+.agent-card-grid-heading {
+  display: grid;
+  align-items: center;
+  gap: 20px;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(210px, 0.7fr) 206px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+  padding: 8px 20px;
+}
+
+.agent-card-grid-heading > span {
+  grid-column: 3;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+
 .agent-card {
   position: relative;
   display: grid;
@@ -703,7 +721,7 @@ pre {
   min-height: 88px;
   align-items: center;
   gap: 20px;
-  grid-template-columns: minmax(240px, 0.8fr) minmax(210px, 0.7fr) 206px 36px;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(210px, 0.7fr) 206px;
   border: 0;
   border-bottom: 1px solid var(--border);
   border-radius: 0;
@@ -779,19 +797,30 @@ pre {
   min-width: 0;
 }
 
-.agent-card-identity-copy > strong,
-.agent-card-identity-copy > small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .agent-card-identity-copy > strong {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
   color: var(--foreground);
   font-size: var(--text-body);
   font-weight: var(--fw-semibold);
   line-height: var(--lh-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-card-channel {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.agent-card-channel img {
+  width: 15px;
+  height: 15px;
+  display: block;
 }
 
 /*
@@ -812,13 +841,6 @@ pre {
 .agent-card:hover .agent-card-open {
   text-decoration: underline;
   text-underline-offset: 3px;
-}
-
-.agent-card-identity-copy > small {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: var(--text-meta);
-  line-height: var(--lh-ui);
 }
 
 .agent-card-state {
@@ -894,35 +916,6 @@ pre {
 
 .agent-card-usage div {
   min-width: 0;
-}
-
-.agent-card-action {
-  display: inline-flex;
-  width: 36px;
-  height: 36px;
-  align-items: center;
-  align-self: center;
-  justify-self: center;
-  color: var(--foreground);
-  font-size: var(--text-meta);
-  font-weight: var(--fw-semibold);
-  text-decoration: none;
-  transition: color 180ms ease;
-  white-space: nowrap;
-}
-
-.agent-card-action .ds-icon {
-  width: 16px;
-  height: 16px;
-  transition: transform 180ms ease;
-}
-
-.agent-card:hover .agent-card-action {
-  color: var(--brand-ink);
-}
-
-.agent-card:hover .agent-card-action .ds-icon {
-  transform: translateX(1px);
 }
 
 .cell-stack strong,
@@ -3586,10 +3579,18 @@ textarea:focus {
 }
 
 @media (max-width: 1040px) {
+  .agent-card-grid-heading {
+    grid-template-columns: minmax(0, 1fr) 206px;
+  }
+
+  .agent-card-grid-heading > span {
+    grid-column: 2;
+  }
+
   .agent-card {
     min-height: 104px;
     gap: 6px 24px;
-    grid-template-columns: minmax(0, 1fr) 206px 36px;
+    grid-template-columns: minmax(0, 1fr) 206px;
     grid-template-rows: auto auto;
   }
 
@@ -3605,11 +3606,6 @@ textarea:focus {
 
   .agent-card-usage {
     grid-column: 2;
-    grid-row: 1 / span 2;
-  }
-
-  .agent-card-action {
-    grid-column: 3;
     grid-row: 1 / span 2;
   }
 }
@@ -4089,20 +4085,34 @@ textarea:focus {
   height: 16px;
 }
 
-.agent-usage-link {
-  display: inline-flex;
-  min-height: 40px;
-  align-items: center;
+.agent-messaging-link {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
   color: var(--secondary-foreground);
-  font-size: var(--text-ui);
-  font-weight: var(--fw-medium);
-  padding: 0 10px;
-  text-decoration: none;
-  transition: color 180ms ease;
+  transition:
+    border-color 180ms ease,
+    color 180ms ease;
 }
 
-.agent-usage-link:hover {
+.agent-messaging-link:hover {
+  border-color: var(--strong-border);
   color: var(--brand-ink);
+}
+
+.agent-messaging-icon {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+.agent-messaging-fallback {
+  width: 20px;
+  height: 20px;
 }
 
 .agent-home {
@@ -4158,70 +4168,6 @@ textarea:focus {
   letter-spacing: var(--track-tight);
 }
 
-.agent-current-work {
-  display: flex;
-  min-height: 104px;
-  align-items: center;
-  gap: 16px;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-  padding: 20px 22px;
-}
-
-.agent-current-work > div {
-  flex: 1;
-}
-
-.agent-current-work strong,
-.agent-activity-empty strong,
-.agent-contact-copy strong {
-  color: var(--foreground);
-  font-size: var(--text-body);
-  font-weight: var(--fw-semibold);
-}
-
-.agent-current-work p,
-.agent-activity-empty,
-.agent-activity-empty span {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-ui);
-}
-
-.agent-current-work p {
-  margin-top: 6px;
-}
-
-.agent-activity-empty {
-  display: flex;
-  min-height: 54px;
-  align-items: center;
-  gap: 20px;
-  border-block: 1px solid var(--border);
-  padding: 14px 2px;
-}
-
-.agent-activity-pulse {
-  width: 9px;
-  height: 9px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: var(--color-status-info);
-  box-shadow: 0 0 0 4px var(--color-status-info-surface);
-}
-
-.agent-contact-row {
-  display: grid;
-  min-height: 78px;
-  align-items: center;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  gap: 15px;
-  border-block: 1px solid var(--border);
-  padding: 16px 0;
-}
-
-.agent-contact-mark,
 .agent-settings-icon {
   display: grid;
   place-items: center;
@@ -4229,28 +4175,6 @@ textarea:focus {
   background: var(--surface-soft);
   color: var(--brand-ink);
   font-weight: var(--fw-semibold);
-}
-
-.agent-contact-mark {
-  width: 42px;
-  height: 42px;
-}
-
-.agent-contact-copy {
-  min-width: 0;
-}
-
-.agent-contact-copy strong,
-.agent-contact-copy small {
-  display: block;
-}
-
-.agent-contact-copy small {
-  max-width: 64ch;
-  margin-top: 4px;
-  color: var(--muted);
-  font-size: var(--text-ui);
-  line-height: var(--lh-prose);
 }
 
 .agent-settings-page {
@@ -4470,15 +4394,6 @@ textarea:focus {
 
   .agent-header-actions {
     width: 100%;
-  }
-
-  .agent-contact-row {
-    grid-template-columns: 42px minmax(0, 1fr);
-  }
-
-  .agent-contact-row > .ds-button {
-    grid-column: 2;
-    justify-self: start;
   }
 
   .agent-settings-entry {

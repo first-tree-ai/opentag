@@ -40,10 +40,10 @@ import { ApiError, browserApi } from "./api.js";
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { ComputerSetup } from "./computer-setup.js";
 import { orderAgentIds } from "./features/agent-list-order.js";
-import { AgentUsageTab } from "./features/agent-usage.js";
+import { AgentUsageOverview, AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
-import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
+import { AgentTasksSection, TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackConfiguration } from "./im/slack-configuration.js";
 import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
@@ -61,6 +61,7 @@ import {
   StatusIndicator,
   type StatusTone,
 } from "./ui/design-system.js";
+import { ProviderIcon } from "./ui/provider-icon.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 type AuthProvider = AuthProvidersResponse["providers"][number];
@@ -954,7 +955,6 @@ function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Monitor availability and 30-day usage across your AI teammates."
         action={
           <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
             New Agent <Icon name="plus" />
@@ -992,6 +992,10 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
   return (
     <section className="agent-list-section" aria-label="Agents">
       <div className="agent-card-grid">
+        {/* Both usage numbers share one window, so the list states it once above the column. */}
+        <div className="agent-card-grid-heading">
+          <span>Last 30 days</span>
+        </div>
         {order.map((id) => {
           const agent = byId.get(id);
           return agent ? <AgentCard agent={agent} key={agent.id} /> : null;
@@ -1004,6 +1008,7 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 function AgentCard({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
   const action = status.action;
+  const channel = agent.availability.dependencies.channel.provider;
   const statusDetail: ReactNode =
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
@@ -1036,8 +1041,13 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
             <Link aria-label={`Open ${agent.displayName}`} className="agent-card-open" to={`/agents/${agent.id}`}>
               {agent.displayName}
             </Link>
+            {channel ? (
+              <span className="agent-card-channel">
+                <ProviderIcon provider={channel} />
+                <span className="visually-hidden">{titleCase(channel)}</span>
+              </span>
+            ) : null}
           </strong>
-          <small>@{agent.name}</small>
         </div>
       </div>
       <div className="agent-card-state">
@@ -1053,10 +1063,6 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
-      {/* The row itself is the link; the chevron only signals where it goes. */}
-      <span aria-hidden="true" className="agent-card-action">
-        <Icon name="chevron-right" />
-      </span>
     </article>
   );
 }
@@ -1469,8 +1475,8 @@ function AgentDetailPage() {
           <AgentObjectHeader agent={agent} />
           <div className="agent-home">
             {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
-            <AgentCurrentActivity agent={agent} />
-            <AgentContact agent={agent} />
+            <AgentUsageOverview agentId={agent.id} detailsLinkState={{ agent }} />
+            <AgentTasksSection agentId={agent.id} />
           </div>
         </section>
       )}
@@ -1504,11 +1510,7 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
           </div>
         </div>
         <div className="agent-header-actions">
-          {!backToSettings ? (
-            <Link className="agent-usage-link" state={{ agent }} to={`/agents/${agent.id}/usage`}>
-              Usage
-            </Link>
-          ) : null}
+          {!backToSettings ? <AgentMessagingLink agent={agent} /> : null}
           {true && !backToSettings ? (
             <Link
               className={buttonClassName({ variant: "secondary" })}
@@ -1541,84 +1543,31 @@ function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
   );
 }
 
-function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
-  return (
-    <section className="agent-home-section" aria-labelledby="current-activity-heading">
-      <header className="agent-home-section-heading">
-        <h2 id="current-activity-heading">Current work</h2>
-      </header>
-      {agent.activity.state === "working" ? (
-        <div className="agent-current-work">
-          <span className="agent-activity-pulse" aria-hidden="true" />
-          <div>
-            <strong>Handling a request</strong>
-            <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
-          </div>
-        </div>
-      ) : (
-        <p className="agent-activity-empty">
-          <strong>No active work</strong>
-        </p>
-      )}
-    </section>
-  );
-}
-
-function AgentContact({ agent }: { agent: AgentDetailView }) {
+/**
+ * The Agent's messaging channel as a single header affordance. It always opens messaging settings so
+ * that a missing or unreadable connection keeps an entry point instead of disappearing.
+ */
+function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
+  const label = binding
+    ? `${titleCase(binding.provider)} · @${agent.name}`
+    : agent.messaging.kind === "unconfirmed"
+      ? "Messaging status unavailable"
+      : "Connect messaging";
   return (
-    <section className="agent-home-section" aria-labelledby="agent-contact-heading">
-      <header className="agent-home-section-heading">
-        <h2 id="agent-contact-heading">Messaging</h2>
-      </header>
-      {agent.messaging.kind === "unconfirmed" ? (
-        <div className="agent-contact-row is-unconfirmed">
-          <span className="agent-contact-mark" aria-hidden="true">
-            ?
-          </span>
-          <span className="agent-contact-copy">
-            <strong>Unable to confirm messaging</strong>
-            <small>Try again shortly</small>
-          </span>
-        </div>
-      ) : binding ? (
-        <div className="agent-contact-row">
-          <span className="agent-contact-mark" aria-hidden="true">
-            {titleCase(binding.provider).charAt(0)}
-          </span>
-          <span className="agent-contact-copy">
-            <strong>
-              {titleCase(binding.provider)} · @{agent.name}
-            </strong>
-            <small>{agentUseInstruction(agent, binding.provider)}</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-            to={`/agents/${agent.id}/settings/messaging`}
-          >
-            Manage
-          </Link>
-        </div>
+    <Link
+      aria-label={label}
+      className="agent-messaging-link"
+      state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
+      title={label}
+      to={`/agents/${agent.id}/settings/messaging`}
+    >
+      {binding ? (
+        <ProviderIcon className="agent-messaging-icon" provider={binding.provider} />
       ) : (
-        <div className="agent-contact-row is-empty">
-          <span className="agent-contact-mark" aria-hidden="true">
-            +
-          </span>
-          <span className="agent-contact-copy">
-            <strong>No messaging connected</strong>
-            <small>Connect Feishu or Slack to start sending work</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-            to={`/agents/${agent.id}/settings/messaging`}
-          >
-            Connect
-          </Link>
-        </div>
+        <Icon className="agent-messaging-fallback" name="message" />
       )}
-    </section>
+    </Link>
   );
 }
 
@@ -1705,15 +1654,16 @@ function AccountPage() {
   );
 }
 
+/**
+ * Only the healthy states are shown beside the name. Every other state is already stated, with its
+ * recovery, by the banner at the top of the Agent home, and repeating it here read as two problems.
+ */
 function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
-  const tone = availabilityTone(agent.availability.state);
-  const working = agent.availability.state === "ready" && agent.activity.state === "working";
+  if (agent.availability.state !== "ready") return null;
+  const working = agent.activity.state === "working";
   return (
     <div className="agent-availability-line">
-      <StatusIndicator
-        label={working ? "Working" : availabilityStateLabel(agent.availability.state)}
-        tone={working ? "info" : tone}
-      />
+      <StatusIndicator label={working ? "Working" : "Ready"} tone={working ? "info" : "success"} />
     </div>
   );
 }
@@ -2798,13 +2748,6 @@ function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
   return "Linux";
 }
 
-function availabilityTone(state: AgentAvailability["state"]): StatusTone {
-  if (state === "ready") return "success";
-  if (state === "setting_up") return "info";
-  if (state === "action_required") return "warning";
-  return "neutral";
-}
-
 function availabilityStateLabel(state: AgentAvailability["state"]): string {
   const labels = {
     ready: "Ready",
@@ -2878,7 +2821,7 @@ function agentRecoveryMessage(agent: AgentDetailView): string {
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
     im_error: "The messaging connection needs attention before it can receive requests.",
-    handoff_unavailable: "Messages cannot currently be handed off to this Agent.",
+    handoff_unavailable: "Messages cannot be sent to this Agent.",
     computer_unconfirmed: "OpenTag could not confirm the assigned Computer's connection.",
     handoff_unconfirmed: "OpenTag could not confirm whether messaging is available.",
   };

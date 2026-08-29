@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   computers,
   imBindings,
@@ -81,6 +82,12 @@ async function createComputer(database: DatabaseClient, ownerUserId: string, wor
     })
     .returning();
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  await database.insert(accountComputers).values({
+    id: workspaceComputer.id,
+    ownerAccountId: ownerUserId,
+    currentInstallationId: computer.id,
+    ...profile,
+  });
   return { ...computer, ...profile, workspaceComputerId: workspaceComputer.id };
 }
 
@@ -258,7 +265,7 @@ describe("Agent persistence and authorization", () => {
         }),
       ]);
       const [stored] = await value.database.select().from(agents).where(eq(agents.id, created.id));
-      expect(stored?.computerId).toBeNull();
+      expect(stored?.computerId).toBe(computer.workspaceComputerId);
       await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
         id: created.id,
       });
@@ -1089,14 +1096,27 @@ describe("Agent persistence and authorization", () => {
           runtimeProvider: "claude-code",
         }),
       ).rejects.toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
-      await value.database.insert(workspaceComputers).values({
-        workspaceId: otherWorkspace.id,
-        computerId: computer.id,
+      const [otherEnrollment] = await value.database
+        .insert(workspaceComputers)
+        .values({
+          workspaceId: otherWorkspace.id,
+          computerId: computer.id,
+          displayName: computer.displayName,
+          platform: computer.platform,
+          arch: computer.arch,
+          clientVersion: computer.clientVersion,
+          enrolledByUserId: value.bootstrap.userId,
+        })
+        .returning();
+      if (!otherEnrollment) throw new Error("Other Workspace Computer fixture was not created");
+      await value.database.insert(accountComputers).values({
+        id: otherEnrollment.id,
+        ownerAccountId: value.bootstrap.userId,
+        currentInstallationId: computer.id,
         displayName: computer.displayName,
         platform: computer.platform,
         arch: computer.arch,
         clientVersion: computer.clientVersion,
-        enrolledByUserId: value.bootstrap.userId,
       });
       const created = await value.service.createForWorkspace(value.bootstrap.userId, otherWorkspace.id, {
         ...createInput(computer.id, "assistant"),
@@ -1160,7 +1180,7 @@ describe("Agent persistence and authorization", () => {
       expect(stored).toMatchObject({
         createdByUserId: other.id,
         workspaceComputerId: computer.workspaceComputerId,
-        computerId: null,
+        computerId: computer.workspaceComputerId,
       });
     } finally {
       await value.sql.end();

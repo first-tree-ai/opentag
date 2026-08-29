@@ -14,6 +14,7 @@ import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import {
+  accountComputers,
   agents,
   computers,
   imBindings,
@@ -102,7 +103,7 @@ describe("Session collaboration authority", () => {
         1,
       );
       const placements = await fixture.database.select().from(sessionPlacements);
-      expect(placements.every((row) => row.computerId === null)).toBe(true);
+      expect(placements.every((row) => row.computerId === fixture.workspaceComputerId)).toBe(true);
       expect(placements.map((row) => row.workspaceComputerId)).toEqual([
         fixture.workspaceComputerId,
         fixture.workspaceComputerId,
@@ -489,7 +490,7 @@ describe("Session collaboration authority", () => {
         .select()
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, source.session.id));
-      expect(movedRow).toMatchObject({ computerId: null, generation: 2 });
+      expect(movedRow).toMatchObject({ computerId: fixture.workspaceComputerId, generation: 2 });
       const current = await proofs.mint({
         ...input,
         placementGeneration: 2,
@@ -586,10 +587,20 @@ describe("Session collaboration authority", () => {
         })
         .returning({ id: workspaceComputers.id });
       if (!otherWorkspaceComputer) throw new Error("Second Workspace Computer fixture was not created");
+      await fixture.database.insert(accountComputers).values({
+        id: otherWorkspaceComputer.id,
+        ownerAccountId: fixture.userId,
+        currentInstallationId: otherComputerId,
+        displayName: "other-workstation",
+        platform: "linux",
+        arch: "x64",
+        clientVersion: "0.0.1",
+        currentInstanceId: connectionInstanceId,
+      });
       proof = await mint();
       await fixture.database
         .update(sessionPlacements)
-        .set({ workspaceComputerId: otherWorkspaceComputer.id })
+        .set({ workspaceComputerId: otherWorkspaceComputer.id, computerId: otherWorkspaceComputer.id })
         .where(eq(sessionPlacements.sessionId, source.session.id));
       await expect(proofs.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
     } finally {
@@ -836,6 +847,16 @@ async function createFixture() {
     })
     .returning({ id: workspaceComputers.id });
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  await client.database.insert(accountComputers).values({
+    id: workspaceComputer.id,
+    ownerAccountId: bootstrap.userId,
+    currentInstallationId: computerId,
+    displayName: "workstation",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "0.0.1",
+    currentInstanceId: connectionInstanceId,
+  });
   const agent = await new AgentService(client.database).createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "assistant",
     displayName: "Assistant",

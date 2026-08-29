@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   computers,
   imBindings,
@@ -52,12 +53,22 @@ async function fixture() {
     })
     .returning();
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  await client.database.insert(accountComputers).values({
+    id: workspaceComputer.id,
+    ownerAccountId: bootstrap.userId,
+    currentInstallationId: computer.id,
+    displayName: "workstation",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "0.0.1",
+  });
   const [agent] = await client.database
     .insert(agents)
     .values({
       workspaceId: bootstrap.workspaceId,
       createdByUserId: bootstrap.userId,
       workspaceComputerId: workspaceComputer.id,
+      computerId: workspaceComputer.id,
       name: "atlas",
       displayName: "Atlas",
       runtimeProvider: "codex",

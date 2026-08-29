@@ -24,6 +24,7 @@ import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agentRuntimeConfigs,
   agents,
   computers,
@@ -129,6 +130,12 @@ async function fixture() {
     })
     .returning();
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  await client.database.insert(accountComputers).values({
+    id: workspaceComputer.id,
+    ownerAccountId: bootstrap.userId,
+    currentInstallationId: computer.id,
+    ...computerProfile,
+  });
   const agent = await new AgentService(client.database).createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "assistant",
     displayName: "Assistant",
@@ -201,6 +208,12 @@ async function unboundFixture() {
     })
     .returning();
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  await client.database.insert(accountComputers).values({
+    id: workspaceComputer.id,
+    ownerAccountId: bootstrap.userId,
+    currentInstallationId: computer.id,
+    ...computerProfile,
+  });
   const created = await new AgentService(client.database).createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "assistant",
     displayName: "Assistant",
@@ -6476,6 +6489,7 @@ describe("IM binding persistence", () => {
             workspaceId: value.bootstrap.workspaceId,
             createdByUserId: value.bootstrap.userId,
             workspaceComputerId: value.workspaceComputer.id,
+            computerId: value.workspaceComputer.id,
             name: `feishu-${String(index).padStart(3, "0")}`,
             displayName: `Feishu ${index}`,
             runtimeProvider: "codex" as const,

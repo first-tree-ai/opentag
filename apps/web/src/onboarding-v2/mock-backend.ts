@@ -10,7 +10,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConnectState, MessagingCliStatus, MessagingState, ReadinessFacts, RuntimeStatus } from "./flow.js";
+import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
+import type {
+  AgentDraft,
+  ConnectState,
+  CreationState,
+  MessagingCliStatus,
+  MessagingState,
+  ReadinessFacts,
+  RuntimeStatus,
+} from "./flow.js";
 
 export interface MockScenario {
   readonly id: string;
@@ -139,27 +148,17 @@ export interface PendingEvent {
   readonly run: () => void;
 }
 
-export type PlanSignIn = "idle" | "pending" | "signed-in";
+export type { PlanSignIn } from "./backend.js";
 
-export interface MockBackend {
-  readonly connect: ConnectState;
-  readonly planSignIn: PlanSignIn;
-  readonly startPlanSignIn: () => void;
-  readonly readiness: ReadinessFacts | undefined;
-  readonly messaging: MessagingState;
-  /** Issues the first connect code. Safe to call repeatedly; only the idle state acts on it. */
-  readonly issueConnectCode: () => void;
-  /** Replaces an expired code with a fresh one, restarting the arrival. */
-  readonly refreshConnectCode: () => void;
-  readonly startMessaging: (provider: "feishu" | "slack") => void;
-  /** Slack's install is a link out; this stands in for the user leaving for Slack. */
-  readonly startSlackInstall: () => void;
+/** How long the mock pretends creating an Agent takes. */
+const CREATE_AGENT_MS = 900;
+
+export interface MockBackend extends OnboardingBackend {
   /** What is waiting to happen, if anything: the Computer arriving, the probe, or the scan. */
   readonly pending: PendingEvent | undefined;
   /** Lab controls — the page itself never offers these. */
   readonly expireNow: () => void;
   readonly repairNow: () => void;
-  readonly reset: () => void;
 }
 
 export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBackend {
@@ -170,6 +169,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   /** The result a running check will settle on, held so it can be applied on a clock or by hand. */
   const [checkResult, setCheckResult] = useState<ReadinessFacts | undefined>(undefined);
   const [planSignIn, setPlanSignIn] = useState<PlanSignIn>("idle");
+  const [creation, setCreation] = useState<CreationState>("idle");
+  const [agent, setAgent] = useState<CreatedAgent>();
 
   const timers = useRef<number[]>([]);
   const clearTimers = useCallback(() => {
@@ -280,9 +281,26 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     setPlanSignIn((current) => (current === "idle" ? "pending" : current));
   }, []);
 
+  /** The Agent the real backend would have created, on the same seam and the same states. */
+  const createAgent = useCallback(
+    (draft: AgentDraft) => {
+      setCreation((current) => {
+        if (current !== "idle") return current;
+        later(() => {
+          setCreation("created");
+          setAgent({ id: randomId(), name: draft.name });
+        }, CREATE_AGENT_MS);
+        return "creating";
+      });
+    },
+    [later],
+  );
+
   const reset = useCallback(() => {
     clearTimers();
     setPlanSignIn("idle");
+    setCreation("idle");
+    setAgent(undefined);
     setConnect({ kind: "idle" });
     setReadiness(undefined);
     setCheckResult(undefined);
@@ -301,7 +319,11 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
 
   return useMemo(
     () => ({
+      agent,
       connect,
+      createAgent,
+      creation,
+      error: undefined,
       readiness,
       messaging,
       planSignIn,
@@ -317,7 +339,10 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       reset,
     }),
     [
+      agent,
       connect,
+      createAgent,
+      creation,
       issue,
       issueConnectCode,
       messaging,

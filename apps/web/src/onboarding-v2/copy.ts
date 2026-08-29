@@ -187,4 +187,16 @@ export const COPY = {
     title: (name: string) => `${name} is ready.`,
     description: (name: string) => `Tag @${name} in Lark to put it to work.`,
   },
+
+  /**
+   * What to say when the Server does not answer. Each names the thing that failed rather than the
+   * call that failed, because the reader is standing in a step, not in a network log.
+   */
+  errors: {
+    connectCode: "We couldn't get a connection command. Check your network and try again.",
+    computers: "We lost contact while waiting for your computer.",
+    createAgent: "We couldn't create your agent.",
+    messaging: "We couldn't start connecting your messaging app.",
+    feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
+  },
 } as const;

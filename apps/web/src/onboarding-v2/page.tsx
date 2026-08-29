@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../ui/design-system.js";
+import type { OnboardingBackend } from "./backend.js";
 import { COPY } from "./copy.js";
 import {
   type AgentDraft,
   type CloudComputerState,
-  type CreationState,
   type Destination,
   deriveFlowState,
   emptyDraft,
@@ -14,32 +14,79 @@ import {
 import { LabControls } from "./lab-controls.js";
 import { type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
+import { useServerBackend } from "./server-backend.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
-const CREATE_AGENT_MS = 900;
 /** Allocating the cloud Computer the Agent will be created on. */
 const ALLOCATE_COMPUTER_MS = 700;
 
 /**
- * The redesigned onboarding flow, running entirely against the in-page mock. It talks to no
- * Server and reuses none of the existing onboarding surface: this exists to develop the pages and
- * tune the interactions, so the only thing it needs to be faithful to is the flow itself.
+ * The redesigned onboarding flow, against the real Server.
+ *
+ * The draft is held here rather than inside the flow because the backend is built from it: a
+ * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
+ * given that after it runs.
  */
 export function OnboardingV2Page() {
+  const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
+  const backend = useServerBackend(draft);
+  return <OnboardingV2Flow backend={backend} cloudAvailable={false} draft={draft} onDraftChange={setDraft} />;
+}
+
+/**
+ * The same flow against the in-page mock, for developing and reviewing the pages without a Server.
+ * It is a separate entry point rather than a mode of the one above, because a page that could
+ * choose its backend at runtime would have to hold both, and the real one issues Server state.
+ */
+export function OnboardingV2MockPage() {
   const [scenario, setScenario] = useState<MockScenario>(SCENARIOS[0] as MockScenario);
   const [speed, setSpeed] = useState<MockSpeed>("manual");
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
-  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
-  const [draftConfirmed, setDraftConfirmed] = useState(false);
-  const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
-  const [creation, setCreation] = useState<CreationState>("idle");
-  const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   /**
    * Cloud is not shipped: the Server cannot allocate a cloud Computer yet, so the route is
-   * Coming soon in production. The mock panel can still offer it so its pages stay reviewable.
+   * Coming soon in production. The panel can still offer it so its pages stay reviewable.
    */
   const [cloudAvailable, setCloudAvailable] = useState(false);
   const backend = useMockBackend(scenario, speed);
+
+  return (
+    <OnboardingV2Flow
+      backend={backend}
+      cloudAvailable={cloudAvailable}
+      draft={draft}
+      lab={
+        <LabControls
+          backend={backend}
+          cloudAvailable={cloudAvailable}
+          onCloudAvailableChange={setCloudAvailable}
+          onScenarioChange={setScenario}
+          onSpeedChange={setSpeed}
+          scenario={scenario}
+          speed={speed}
+        />
+      }
+      onDraftChange={setDraft}
+    />
+  );
+}
+
+function OnboardingV2Flow({
+  backend,
+  cloudAvailable,
+  draft,
+  lab,
+  onDraftChange,
+}: {
+  backend: OnboardingBackend;
+  cloudAvailable: boolean;
+  draft: AgentDraft;
+  lab?: React.ReactNode;
+  onDraftChange: (draft: AgentDraft) => void;
+}) {
+  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
+  const [draftConfirmed, setDraftConfirmed] = useState(false);
+  const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
+  const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
 
   const facts: FlowFacts = {
     draft,
@@ -48,7 +95,7 @@ export function OnboardingV2Page() {
     connect: backend.connect,
     readiness: backend.readiness,
     cloudComputer,
-    creation,
+    creation: backend.creation,
     planSignedIn: backend.planSignIn === "signed-in",
     messaging: backend.messaging,
   };
@@ -61,16 +108,10 @@ export function OnboardingV2Page() {
     if (flow.page === "computer") backend.issueConnectCode();
   }, [backend.issueConnectCode, flow.page]);
 
-  // Held so a restart or an unmount can cancel a creation that is still in flight; otherwise the
-  // stale timer lands on the next run and skips its confirmation step.
-  const creationTimer = useRef(0);
-  useEffect(() => () => window.clearTimeout(creationTimer.current), []);
-
-  const createAgent = useCallback(() => {
-    if (creation !== "idle") return;
-    setCreation("creating");
-    creationTimer.current = window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
-  }, [creation]);
+  // Held so a restart or an unmount can cancel an allocation still in flight; otherwise the stale
+  // timer lands on the next run and skips its confirmation step.
+  const cloudTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(cloudTimer.current), []);
 
   /**
    * Leaving the cloud page allocates a Computer and then creates the Agent on it. A cloud Agent
@@ -81,12 +122,11 @@ export function OnboardingV2Page() {
     if (cloudComputer !== "idle") return;
     setDraftConfirmed(true);
     setCloudComputer("allocating");
-    creationTimer.current = window.setTimeout(() => {
+    cloudTimer.current = window.setTimeout(() => {
       setCloudComputer("allocated");
-      setCreation("creating");
-      creationTimer.current = window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
+      backend.createAgent(draft);
     }, ALLOCATE_COMPUTER_MS);
-  }, [cloudComputer]);
+  }, [backend, cloudComputer, draft]);
 
   /**
    * Going back undoes the decision that advanced you, rather than moving a separate cursor. That
@@ -98,21 +138,20 @@ export function OnboardingV2Page() {
   const backToAgent = useCallback(() => setDraftConfirmed(false), []);
 
   const startOver = useCallback(() => {
-    window.clearTimeout(creationTimer.current);
-    setDraft(emptyDraft());
+    window.clearTimeout(cloudTimer.current);
+    onDraftChange(emptyDraft());
     setDestinationConfirmed(false);
     setDraftConfirmed(false);
     setCloudComputer("idle");
-    setCreation("idle");
     setMessagingProvider(undefined);
     backend.reset();
-  }, [backend]);
+  }, [backend, onDraftChange]);
 
   return (
     <div className="otv2-shell">
       <header className="otv2-shell__header">
         <span className="otv2-brand">{COPY.brand}</span>
-        <Button variant="ghost" className="otv2-restart" onClick={startOver} type="button">
+        <Button className="otv2-restart" onClick={startOver} variant="ghost">
           Start over
         </Button>
       </header>
@@ -124,22 +163,31 @@ export function OnboardingV2Page() {
         */}
         {flow.steps.length > 0 ? <StepRail steps={flow.steps} /> : null}
         <div className="otv2-shell__content">
+          {/*
+            Whatever last failed against the Server, above the step rather than inside it: it is
+            about the page's ability to make progress, not about the field being filled in.
+          */}
+          {backend.error ? (
+            <p className="otv2-note otv2-note--attention" data-ui="onboarding-v2-error" role="alert">
+              {backend.error}
+            </p>
+          ) : null}
           {flow.complete ? (
-            <DoneStep name={draft.name} />
+            <DoneStep name={backend.agent?.name ?? draft.name} />
           ) : flow.page === "destination" ? (
             <DestinationStep
               cloudAvailable={cloudAvailable}
               draft={draft}
-              onChoose={(destination: Destination) => setDraft({ ...draft, destination })}
+              onChoose={(destination: Destination) => onDraftChange({ ...draft, destination })}
               onSubmit={() => setDestinationConfirmed(true)}
             />
           ) : flow.page === "cloud" ? (
             <CloudStep
-              creation={creation}
+              cloudComputer={cloudComputer}
+              creation={backend.creation}
               draft={draft}
               onBack={backToDestination}
-              onChange={setDraft}
-              cloudComputer={cloudComputer}
+              onChange={onDraftChange}
               onSignIn={backend.startPlanSignIn}
               onSubmit={submitCloud}
               signIn={backend.planSignIn}
@@ -148,16 +196,16 @@ export function OnboardingV2Page() {
             <AgentStep
               draft={draft}
               onBack={backToDestination}
-              onChange={setDraft}
+              onChange={onDraftChange}
               onSubmit={() => setDraftConfirmed(true)}
             />
           ) : flow.page === "computer" ? (
             <ComputerStep
               connect={backend.connect}
-              creation={creation}
+              creation={backend.creation}
               draft={draft}
               onBack={backToAgent}
-              onCreate={createAgent}
+              onCreate={() => backend.createAgent(draft)}
               onRefreshCommand={backend.refreshConnectCode}
               readiness={backend.readiness}
             />
@@ -174,15 +222,7 @@ export function OnboardingV2Page() {
         </div>
       </main>
 
-      <LabControls
-        backend={backend}
-        cloudAvailable={cloudAvailable}
-        onCloudAvailableChange={setCloudAvailable}
-        onScenarioChange={setScenario}
-        onSpeedChange={setSpeed}
-        scenario={scenario}
-        speed={speed}
-      />
+      {lab}
     </div>
   );
 }

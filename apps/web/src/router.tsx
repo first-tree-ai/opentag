@@ -48,7 +48,7 @@ import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackConfiguration } from "./im/slack-configuration.js";
 import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
 import { OnboardingPage } from "./onboarding/page.js";
-import { OnboardingV2Page } from "./onboarding-v2/page.js";
+import { OnboardingV2MockPage, OnboardingV2Page } from "./onboarding-v2/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
   Banner,
@@ -478,12 +478,18 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       {/*
-        The redesigned onboarding flow, built against an in-page mock. It sits outside every gate
-        on purpose: it reaches no Server, so requiring an Account to look at it would only slow
-        down the page and interaction work it exists for.
+        The redesigned flow against the in-page mock. It stays outside every gate because it
+        reaches no Server: requiring an Account to look at it would only slow down the page and
+        interaction work it exists for, and it can issue nothing that would need one.
       */}
-      <Route path="/internal/onboarding-v2" element={<OnboardingV2Page />} />
+      <Route path="/internal/onboarding-v2/mock" element={<OnboardingV2MockPage />} />
       <Route element={<AuthenticatedAccountGate />}>
+        {/*
+          The same flow against the real Server. It issues connect codes and creates Agents, so it
+          lives behind the Account gate — but outside the Workspace and setup gates, because it is
+          the surface that completes setup and would otherwise send itself away.
+        */}
+        <Route path="/internal/onboarding-v2" element={<OnboardingV2Page />} />
         {/*
           Outside AppShell because the Lab renders the onboarding surface verbatim, and onboarding
           has no primary navigation. Outside the setup-completion gate so a stuck run can always

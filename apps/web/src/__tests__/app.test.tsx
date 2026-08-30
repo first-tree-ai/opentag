@@ -2711,6 +2711,49 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("reports a failed Check again instead of announcing a Computer update", async () => {
+    let computerReadStatus: number | undefined;
+    installApi({
+      computerProviderReadiness: [{ provider: "codex", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" }],
+      computerReadStatus: () => computerReadStatus,
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(await within(dialog).findByText("Sign in to Codex")).toBeTruthy();
+
+    // The Account asked a question by pressing the button. A 503 is the answer "I could not check",
+    // and the cached Computer is not a substitute for it.
+    computerReadStatus = 503;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check again" }));
+
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Request failed");
+    // Not the degraded state a background re-read would have left: that reads as an answer about
+    // the Computer, when what happened is that the check did not complete.
+    expect(within(dialog).queryByText("Readiness unconfirmed")).toBeNull();
+    expect(within(dialog).queryByText("Computer connection updated")).toBeNull();
+  });
+
+  it("keeps a background Computer refresh failure on the retained Computers", async () => {
+    let computerReadStatus: number | undefined;
+    installApi({
+      computerProviderReadiness: [{ provider: "codex", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" }],
+      computerReadStatus: () => computerReadStatus,
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(await within(dialog).findByText("Sign in to Codex")).toBeTruthy();
+
+    // The control: revalidation nobody asked for still degrades rather than replacing the dialog.
+    computerReadStatus = 503;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await within(dialog).findByText("Readiness unconfirmed")).toBeTruthy();
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+  });
+
   it("removes a retained creation route after a terminal Computer refresh error", async () => {
     let computerReadStatus: number | undefined;
     installApi({ computerReadStatus: () => computerReadStatus });

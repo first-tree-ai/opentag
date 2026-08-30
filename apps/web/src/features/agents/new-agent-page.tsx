@@ -21,6 +21,11 @@ import { agentDetailLink } from "./agent-routes.js";
  * depends on that distinction: it restores focus and announces the outcome by watching a refresh
  * begin and end, and a background re-read is not something the Account asked for and should not be
  * narrated. The page keeps showing the Computers it already has either way.
+ *
+ * The same distinction decides what a failure means. Degrading to the Computers already in hand is
+ * right for revalidation nobody asked for, but the Account that pressed the button asked a
+ * question, and answering a failed check with `Computer connection updated` reports the opposite of
+ * what happened. So an explicit refresh keeps its own error until a read succeeds.
  */
 export function useOwnComputersResource(): {
   state: LoadState<{ computers: WorkspaceComputerSummary[] }>;
@@ -28,22 +33,34 @@ export function useOwnComputersResource(): {
 } {
   const queryClient = useQueryClient();
   const query = useComputersQuery(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [refresh, setRefresh] = useState<{ pending: boolean; error?: Error }>({ pending: false });
   // The re-read starts from an effect rather than from the caller, so the render that reports
   // loading is committed before it can finish. Starting it inline would let a fast response land in
   // the same batch, leaving the flow no transition to notice.
   useEffect(() => {
-    if (!refreshing) return;
+    if (!refresh.pending) return;
     let watching = true;
     void queryClient.invalidateQueries({ queryKey: queryKeys.computers() }).finally(() => {
-      if (watching) setRefreshing(false);
+      if (!watching) return;
+      // Invalidating resolves whether or not the re-read succeeded, so the outcome is read off the
+      // query rather than off this promise.
+      const settled = queryClient.getQueryState<{ computers: WorkspaceComputerSummary[] }, Error>(
+        queryKeys.computers(),
+      );
+      setRefresh({ pending: false, error: settled?.status === "error" ? (settled.error ?? undefined) : undefined });
     });
     return () => {
       watching = false;
     };
-  }, [refreshing, queryClient]);
+  }, [refresh.pending, queryClient]);
   const state = toResourceState(query, markOwnComputersUnconfirmed);
-  return { state: refreshing ? { kind: "loading" } : state, refresh: () => setRefreshing(true) };
+  // A later success is what retires it: the Computers became readable again, so the failed check is
+  // no longer what the Account is looking at.
+  const refreshError = query.isSuccess ? undefined : refresh.error;
+  return {
+    state: refresh.pending ? { kind: "loading" } : refreshError ? { kind: "error", error: refreshError } : state,
+    refresh: () => setRefresh({ pending: true }),
+  };
 }
 
 export function NewAgentPage() {

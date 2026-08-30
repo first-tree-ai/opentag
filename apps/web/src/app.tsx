@@ -1,6 +1,7 @@
 import { type LinkComponentProps, LinkProvider, TooltipProvider } from "@cloudflare/kumo";
 import { Link as RouterLink, RouterProvider } from "@tanstack/react-router";
 import { forwardRef, useEffect, useState } from "react";
+import { AppErrorBoundary } from "./features/error-boundary.js";
 import { type AppRouter, createAppRouter } from "./router.js";
 
 const AppLink = forwardRef<HTMLAnchorElement, LinkComponentProps>(function AppLink({ href, ...props }, ref) {
@@ -27,10 +28,12 @@ export function App({ router }: { router?: AppRouter } = {}) {
     return () => instance.history.destroy();
   }, [instance, owned]);
   return (
-    <LinkProvider component={AppLink}>
-      <TooltipProvider>
-        <RouterProvider router={instance} />
-      </TooltipProvider>
-    </LinkProvider>
+    <AppErrorBoundary>
+      <LinkProvider component={AppLink}>
+        <TooltipProvider>
+          <RouterProvider router={instance} />
+        </TooltipProvider>
+      </LinkProvider>
+    </AppErrorBoundary>
   );
 }

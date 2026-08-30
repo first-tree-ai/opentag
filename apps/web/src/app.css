@@ -37,6 +37,17 @@ body {
   display: flex;
 }
 
+.app-error-boundary {
+  min-height: 100%;
+  place-items: center;
+}
+
+.app-error-boundary__card {
+  width: 100%;
+  max-width: 36rem;
+  margin-inline: auto;
+}
+
 @media (min-width: 48rem) {
   .app-mobile-header {
     display: none;

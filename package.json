@@ -35,10 +35,6 @@
   },
   "pnpm": {
     "overrides": {
-      "@babel/helper-string-parser": "8.0.0-rc.2",
-      "@babel/helper-validator-identifier": "8.0.0-rc.2",
-      "@babel/parser": "8.0.0-rc.2",
-      "@babel/types": "8.0.0-rc.2",
       "ast-kit": "3.0.0-beta.1",
       "rollup": "4.59.0",
       "tsdown": "0.21.4"

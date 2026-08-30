@@ -2795,10 +2795,19 @@ describe("OpenTag Web App Shell", () => {
     const account = within(menu).getByRole("menuitem", { name: "Account" });
     account.focus();
     fireEvent.keyDown(account, { key: "Escape" });
-    // The menu is named after its trigger — "Account menu" — so a query for a menu named "Account"
-    // matches nothing whether or not Escape closed anything. Close on the menu this test opened.
-    await waitFor(() => expect(document.getElementById(menu.id)).toBeNull());
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    /*
+     * Closing is asynchronous: the menu is still in the document on the tick after Escape and
+     * leaves a frame or two later. This waits for it rather than asserting immediately, which also
+     * means the close finishes inside the test instead of racing whatever runs next.
+     *
+     * The old assertion asked for a menu accessibly named "Account" and got null at every moment,
+     * open or closed — so it passed with the Escape line deleted entirely, and never checked the
+     * focus return its name promises.
+     */
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
     expect(document.activeElement).toBe(trigger);
   });
 
@@ -2814,8 +2823,10 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
     fireEvent.keyDown(account, { key: "End" });
     fireEvent.keyDown(signOut, { key: "Escape" });
-    await waitFor(() => expect(document.getElementById(menu.id)).toBeNull());
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    // Same as above: closing is asynchronous, and a menu named "Account" never existed to be null.
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
     expect(document.activeElement).toBe(trigger);
   });
 

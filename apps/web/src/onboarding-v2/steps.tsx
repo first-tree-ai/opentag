@@ -165,6 +165,7 @@ function AgentNameField({
   showError: boolean;
 }) {
   const nameId = useId();
+  const labelId = `${nameId}-label`;
   const hintId = `${nameId}-hint`;
   const errorId = `${nameId}-error`;
   const error = showError ? validateAgentName(draft.name) : undefined;
@@ -179,7 +180,7 @@ function AgentNameField({
 
   return (
     <div className="otv2-fieldset">
-      <label className="otv2-fieldset__label" htmlFor={nameId}>
+      <label className="otv2-fieldset__label" htmlFor={nameId} id={labelId}>
         {COPY.agent.nameLabel}
       </label>
       <p className="otv2-fieldset__hint" id={hintId}>
@@ -188,6 +189,7 @@ function AgentNameField({
       <KumoInputControl
         aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
         aria-invalid={errorText ? true : undefined}
+        aria-labelledby={labelId}
         autoComplete="off"
         className="otv2-name"
         id={nameId}

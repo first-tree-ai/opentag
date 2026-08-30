@@ -262,6 +262,78 @@ describe("Task debug queries", () => {
     }
   });
 
+  it("follows list and Turn cursors past the first page", async () => {
+    const value = await fixture();
+    try {
+      const [secondSession] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: value.binding.id,
+          channelId: "oc_second",
+          conversationKind: "dm",
+          kind: "channel",
+          createdAt: new Date("2026-08-26T01:00:00.000Z"),
+        })
+        .returning();
+      if (!secondSession) throw new Error("Second Session fixture was not created");
+
+      const firstPage = await value.service.list(value.bootstrap.userId, { limit: 1 });
+      expect(firstPage.tasks).toHaveLength(1);
+      expect(firstPage.nextCursor).not.toBeNull();
+      if (!firstPage.nextCursor) throw new Error("The first Task page did not issue a cursor");
+
+      const secondPage = await value.service.list(value.bootstrap.userId, {
+        cursor: firstPage.nextCursor,
+        limit: 1,
+      });
+      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondSession.id]);
+      expect(secondPage.nextCursor).toBeNull();
+
+      const [followUpMessage] = await value.database
+        .insert(imMessages)
+        .values({
+          imBindingId: value.binding.id,
+          providerEventId: "event-second",
+          channelId: "oc_debug",
+          externalMessageId: "om_second",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "ou_debug",
+          authorDisplayName: "Mia",
+          content: { version: 1, fallbackText: "And once more.", blocks: [], truncated: false },
+          providerContext: { provider: "feishu", chatType: "p2p" },
+          occurredAt: new Date("2026-08-27T02:01:00.000Z"),
+        })
+        .returning();
+      if (!followUpMessage) throw new Error("Second IM Message fixture was not created");
+      await value.database.insert(imMessageDeliveries).values({
+        messageId: followUpMessage.id,
+        sessionId: value.session.id,
+        attention: "direct",
+        state: "pending",
+        placementGeneration: 1,
+        expiresAt: new Date("2026-08-28T02:00:00.000Z"),
+      });
+
+      const firstTurnPage = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 1 });
+      expect(firstTurnPage.turns).toHaveLength(1);
+      expect(firstTurnPage.nextCursor).not.toBeNull();
+      if (!firstTurnPage.nextCursor) throw new Error("The first Turn page did not issue a cursor");
+
+      const secondTurnPage = await value.service.get(value.bootstrap.userId, value.session.id, {
+        cursor: firstTurnPage.nextCursor,
+        limit: 1,
+      });
+      expect(secondTurnPage.turns).toHaveLength(1);
+      expect(secondTurnPage.turns[0]?.deliveryId).toBe(value.deliveryId);
+      expect(secondTurnPage.nextCursor).toBeNull();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("titles a Session from a follow-up message that no longer addresses the Agent", async () => {
     const value = await fixture();
     try {
@@ -291,77 +363,6 @@ describe("Task debug queries", () => {
 
       const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
       expect(listed.tasks[0]?.title).toBe("@Alice take another look at the regression");
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("pages past the first page with the cursor it just issued", async () => {
-    const value = await fixture();
-    try {
-      // A second Session so the first page can fill and hand back a cursor.
-      const [second] = await value.database
-        .insert(sessions)
-        .values({
-          imBindingId: value.binding.id,
-          channelId: "oc_second",
-          conversationKind: "dm",
-          kind: "channel",
-          createdAt: new Date("2026-08-26T01:00:00.000Z"),
-        })
-        .returning();
-      if (!second) throw new Error("Second Session fixture was not created");
-
-      const first = await value.service.list(value.bootstrap.userId, { limit: 1 });
-      expect(first.tasks).toHaveLength(1);
-      expect(first.nextCursor).not.toBeNull();
-      if (!first.nextCursor) throw new Error("The first page did not issue a cursor");
-
-      // The cursor carries a timestamp. Binding it as a Date made every second page fail with 500.
-      const next = await value.service.list(value.bootstrap.userId, { cursor: first.nextCursor, limit: 1 });
-      expect(next.tasks.map((task) => task.id)).toEqual([second.id]);
-      expect(next.nextCursor).toBeNull();
-
-      // A second delivery on the same Session so the Turn cursor is actually issued and followed;
-      // guarding this behind `if (nextCursor)` left the Turn query's identical binding uncovered.
-      const [followUp] = await value.database
-        .insert(imMessages)
-        .values({
-          imBindingId: value.binding.id,
-          providerEventId: "event-second",
-          channelId: "oc_debug",
-          externalMessageId: "om_second",
-          providerRevisionKey: "1",
-          operation: "created",
-          direction: "inbound",
-          authorKind: "human",
-          authorExternalId: "ou_debug",
-          authorDisplayName: "Mia",
-          content: { version: 1, fallbackText: "And once more.", blocks: [], truncated: false },
-          providerContext: { provider: "feishu", chatType: "p2p" },
-          occurredAt: new Date("2026-08-27T02:01:00.000Z"),
-        })
-        .returning();
-      if (!followUp) throw new Error("Second IM Message fixture was not created");
-      await value.database.insert(imMessageDeliveries).values({
-        messageId: followUp.id,
-        sessionId: value.session.id,
-        attention: "direct",
-        state: "pending",
-        placementGeneration: 1,
-        expiresAt: new Date("2026-08-28T02:00:00.000Z"),
-      });
-
-      const turns = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 1 });
-      expect(turns.turns).toHaveLength(1);
-      expect(turns.nextCursor).not.toBeNull();
-      if (!turns.nextCursor) throw new Error("The first Turn page did not issue a cursor");
-      const olderTurns = await value.service.get(value.bootstrap.userId, value.session.id, {
-        cursor: turns.nextCursor,
-        limit: 1,
-      });
-      expect(olderTurns.turns).toHaveLength(1);
-      expect(olderTurns.turns[0]?.deliveryId).toBe(value.deliveryId);
     } finally {
       await value.sql.end();
     }

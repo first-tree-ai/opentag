@@ -41,6 +41,16 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
           },
         }),
     ).toThrowError(expect.objectContaining({ code: "spawn", message: "Codex could not be started" }));
+    expect(
+      () =>
+        new CodexAppServerProcess({
+          cwd: "/tmp",
+          env: {},
+          spawnProcess: () => {
+            throw Object.assign(new Error("again"), { code: "EAGAIN" });
+          },
+        }),
+    ).toThrowError(expect.objectContaining({ code: "spawn", errno: "EAGAIN" }));
   });
 
   it("uses default process options, exposes pid, initializes, notifies, interrupts, and rejects request errors", async () => {
@@ -384,6 +394,30 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
     await failureProcess.close();
   });
 
+  it("records exit code, crash signal, and spawn errno on App Server failures", async () => {
+    const exited = new FakeChild({ exitOnEnd: false });
+    const exitedProcess = processWith(exited);
+    const exitedFailure = processFailure(exitedProcess);
+    exited.exit(1, null);
+    await expect(exitedFailure).resolves.toMatchObject({ code: "exited", exitCode: 1, signal: null });
+    await exitedProcess.close();
+
+    const crashed = new FakeChild({ exitOnEnd: false });
+    const crashedProcess = processWith(crashed);
+    const crashedFailure = processFailure(crashedProcess);
+    crashed.exit(null, "SIGSEGV");
+    await expect(crashedFailure).resolves.toMatchObject({ code: "exited", signal: "SIGSEGV" });
+    await crashedProcess.close();
+
+    const busy = new FakeChild({ exitOnEnd: false });
+    const busyProcess = processWith(busy);
+    const busyFailure = processFailure(busyProcess);
+    busy.emit("error", Object.assign(new Error("again"), { code: "ENOMEM" }));
+    await expect(busyFailure).resolves.toMatchObject({ code: "spawn", errno: "ENOMEM" });
+    busy.exit();
+    await busyProcess.close();
+  });
+
   it("distinguishes clean exit, truncated exit, child errors, forced kill, and unkillable process trees", async () => {
     for (const truncated of [false, true]) {
       const child = new FakeChild({ exitOnEnd: false });
@@ -490,10 +524,10 @@ class FakeChild extends EventEmitter {
     for (const write of this.#heldWrites.splice(0)) write();
   }
 
-  exit(): void {
+  exit(code: number | null = 0, signal: NodeJS.Signals | null = null): void {
     if (this.#exited) return;
     this.#exited = true;
-    this.emit("exit", 0, null);
+    this.emit("exit", code, signal);
   }
 
   send(message: unknown): void {

@@ -83,10 +83,6 @@ export interface GetTaskOptions {
   limit: number;
 }
 
-/**
- * The timestamp travels into the query as an ISO string with an explicit cast. Binding the `Date`
- * itself is what the driver refuses, and the refusal only surfaces on the second page.
- */
 function parseCursor(cursor: string | undefined): { at: Date; id: string } | undefined {
   if (!cursor) return undefined;
   try {
@@ -95,6 +91,15 @@ function parseCursor(cursor: string | undefined): { at: Date; id: string } | und
   } catch {
     throw new TaskQueryError("VALIDATION_ERROR", "The pagination cursor is invalid", 400);
   }
+}
+
+/**
+ * Keep cursor timestamps explicit when they cross the SQL boundary. The postgres driver rejects
+ * binding the decoded Date directly in a tuple comparison, which only affects requests after the
+ * first page. An ISO value with a timestamptz cast preserves the cursor's instant and its ordering.
+ */
+function cursorTimestamp(cursor: { at: Date; id: string }): string {
+  return cursor.at.toISOString();
 }
 
 function toIso(value: Date | string): string {
@@ -260,7 +265,7 @@ export class TaskService {
       inner join im_messages m on m.id = d.message_id
       left join im_message_deliveries root on root.id = d.steer_target_delivery_id
       where d.session_id = ${sessionId}::uuid
-        ${cursor ? sql`and (m.occurred_at, d.id) < (${cursor.at.toISOString()}::timestamptz, ${cursor.id}::uuid)` : sql``}
+        ${cursor ? sql`and (m.occurred_at, d.id) < (${cursorTimestamp(cursor)}::timestamptz, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, d.id desc
       limit ${options.limit + 1}
     `);
@@ -391,7 +396,7 @@ export class TaskService {
         ${options.kind ? sql`and s.kind = ${options.kind}` : sql``}
         ${
           options.cursor
-            ? sql`and (greatest(s.created_at, coalesce(ld.activity_at, s.created_at)), s.id) < (${options.cursor.at.toISOString()}::timestamptz, ${options.cursor.id}::uuid)`
+            ? sql`and (greatest(s.created_at, coalesce(ld.activity_at, s.created_at)), s.id) < (${cursorTimestamp(options.cursor)}::timestamptz, ${options.cursor.id}::uuid)`
             : sql``
         }
       order by "lastActivityAt" desc, s.id desc

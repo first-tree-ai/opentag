@@ -1,5 +1,5 @@
 import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { browserApi } from "../api.js";
@@ -115,6 +115,48 @@ describe("Tasks debug view", () => {
     fireEvent.change(screen.getByLabelText("Search Tasks"), { target: { value: sessionId } });
     expect(screen.getAllByRole("row")).toHaveLength(2);
     expect(screen.getByText("Investigate the failed deployment")).toBeTruthy();
+  });
+
+  it("keeps the loaded rows and retries a failed page append", async () => {
+    const second = {
+      ...task,
+      id: "66666666-6666-4666-8666-666666666666",
+      title: "Review onboarding",
+    } satisfies TaskSummary;
+    const taskRequest = vi
+      .spyOn(browserApi, "tasks")
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "next-page" })
+      .mockRejectedValueOnce(new Error("Temporary pagination failure"))
+      .mockResolvedValueOnce({ tasks: [second], nextCursor: null });
+
+    await renderInRouter(<TasksPage />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(taskRequest).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText("Temporary pagination failure")).toBeTruthy();
+    expect(screen.getByRole("link", { name: task.title })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("link", { name: second.title })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(taskRequest).toHaveBeenLastCalledWith({ cursor: "next-page" });
+  });
+
+  it("retries an initial Tasks load after displaying the request error", async () => {
+    const taskRequest = vi
+      .spyOn(browserApi, "tasks")
+      .mockRejectedValueOnce(new Error("Temporary initial load failure"))
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<TasksPage />);
+
+    expect(await screen.findByText("Temporary initial load failure")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    expect(taskRequest).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 
   it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {
@@ -255,6 +297,85 @@ describe("Tasks debug view", () => {
     });
     await waitFor(() => expect(screen.getByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy());
     expect(screen.queryByTitle("STALE ROW")).toBeNull();
+  });
+
+  it.each(["success", "error"] as const)(
+    "ignores a delayed Task A append %s after switching to Task B",
+    async (outcome) => {
+      const firstPage = { ...detail, nextCursor: "older-turns" } satisfies TaskDetail;
+      const secondTaskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const secondDetail = {
+        ...detail,
+        task: { ...detail.task, id: secondTaskId, title: "Task B" },
+        nextCursor: "task-b-older-turns",
+      } satisfies TaskDetail;
+      const baseTurn = detail.turns[0];
+      if (!baseTurn) throw new Error("Expected the Task fixture to include a Turn");
+      const staleTurn = {
+        ...baseTurn,
+        deliveryId: "88888888-8888-4888-8888-888888888888",
+        message: {
+          ...baseTurn.message,
+          id: "99999999-9999-4999-8999-999999999999",
+          externalMessageId: "om_stale",
+          fallbackText: "Stale Task A Turn",
+        },
+      } satisfies TaskDetail["turns"][number];
+      let resolveTaskA: (value: TaskDetail) => void = () => undefined;
+      let rejectTaskA: (reason: Error) => void = () => undefined;
+      vi.spyOn(browserApi, "task").mockImplementation((requestedTaskId, cursor) => {
+        if (requestedTaskId === sessionId && !cursor) return Promise.resolve(firstPage);
+        if (requestedTaskId === sessionId && cursor === "older-turns") {
+          return new Promise((resolve, reject) => {
+            resolveTaskA = resolve;
+            rejectTaskA = reject;
+          });
+        }
+        if (requestedTaskId === secondTaskId && !cursor) return Promise.resolve(secondDetail);
+        return Promise.reject(new Error("Unexpected Task request"));
+      });
+
+      const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+      fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+
+      view.rerender(<TaskDetailPage taskId={secondTaskId} />);
+      expect(await screen.findByRole("heading", { name: "Task B" })).toBeTruthy();
+      expect((screen.getByRole("button", { name: "Load more Turns" }) as HTMLButtonElement).disabled).toBe(false);
+
+      await act(async () => {
+        if (outcome === "success") {
+          resolveTaskA({ ...detail, turns: [staleTurn], nextCursor: null });
+        } else {
+          rejectTaskA(new Error("Stale Task A pagination failure"));
+        }
+      });
+
+      expect(screen.getByRole("heading", { name: "Task B" })).toBeTruthy();
+      expect(screen.queryByText("Stale Task A Turn")).toBeNull();
+      expect(screen.queryByText("Stale Task A pagination failure")).toBeNull();
+    },
+  );
+
+  it("clears a Task append error when taskId changes", async () => {
+    const firstPage = { ...detail, nextCursor: "older-turns" } satisfies TaskDetail;
+    const secondTaskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const secondDetail = {
+      ...detail,
+      task: { ...detail.task, id: secondTaskId, title: "Task B" },
+      nextCursor: null,
+    } satisfies TaskDetail;
+    vi.spyOn(browserApi, "task")
+      .mockResolvedValueOnce(firstPage)
+      .mockRejectedValueOnce(new Error("Task A pagination failure"))
+      .mockResolvedValueOnce(secondDetail);
+
+    const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+    expect(await screen.findByText("Task A pagination failure")).toBeTruthy();
+
+    view.rerender(<TaskDetailPage taskId={secondTaskId} />);
+    expect(await screen.findByRole("heading", { name: "Task B" })).toBeTruthy();
+    expect(screen.queryByText("Task A pagination failure")).toBeNull();
   });
 
   it("shows loading and empty states from the API", async () => {

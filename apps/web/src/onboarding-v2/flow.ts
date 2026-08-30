@@ -272,7 +272,7 @@ export function deriveFlowState(facts: FlowFacts): FlowState {
       creation === "created";
     const messagingDone = agentDone && messaging.kind === "connected";
     const ids = CLOUD_STEP_IDS;
-    const currentIndex = ids.findIndex((id) => !(id === "agent" ? agentDone : messagingDone));
+    const currentIndex = agentDone && messagingDone ? -1 : ids.indexOf(agentDone ? "messaging" : "agent");
     return {
       page: currentIndex === -1 ? "messaging" : ids[currentIndex] === "agent" ? "cloud" : "messaging",
       steps: ids.map((id, index) => ({

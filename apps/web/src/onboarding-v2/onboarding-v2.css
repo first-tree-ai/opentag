@@ -248,32 +248,6 @@
   gap: var(--space-3);
 }
 
-.otv2-step__header .otv2-privacy {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-
-.otv2-step__header .otv2-privacy svg {
-  flex: 0 0 auto;
-  margin-top: 3px;
-  color: var(--brand);
-}
-
-.otv2-step__header p + .otv2-privacy {
-  margin-top: var(--space-1);
-}
-
-/* A requirement that is not met yet, stated where the requirement became real. */
-.otv2-note--attention {
-  border-color: var(--otv2-attention);
-  background: var(--otv2-attention-surface);
-}
-
-.otv2-note--attention svg {
-  color: var(--otv2-attention);
-}
-
 /* A fact the step states rather than a choice it offers. */
 .otv2-note {
   display: flex;
@@ -289,6 +263,22 @@
   line-height: var(--lh-prose);
 }
 
+.otv2-note svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  color: var(--brand);
+}
+
+/* A requirement that is not met yet, stated where the requirement became real. */
+.otv2-note--attention {
+  border-color: var(--otv2-attention);
+  background: var(--otv2-attention-surface);
+}
+
+.otv2-note--attention svg {
+  color: var(--otv2-attention);
+}
+
 /* The cloud route's offer, stated where it is the first thing read. Declared after the base rule
    so its colours win on equal specificity. */
 .otv2-note--offer {
@@ -298,10 +288,20 @@
   font-size: var(--text-subsection);
 }
 
-.otv2-note svg {
+.otv2-step__header .otv2-privacy {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.otv2-step__header .otv2-privacy svg {
   flex: 0 0 auto;
   margin-top: 3px;
   color: var(--brand);
+}
+
+.otv2-step__header p + .otv2-privacy {
+  margin-top: var(--space-1);
 }
 
 /* Slack's own button, shown at its published proportions and never restyled. */
@@ -727,39 +727,6 @@
   position: relative;
 }
 
-.otv2-command[data-expired="true"] .otv2-command__code,
-.otv2-command[data-expired="true"] .otv2-command__copy {
-  opacity: 0.18;
-}
-
-.otv2-command__expired {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-  border-radius: var(--radius-control);
-  background: rgb(11 16 29 / 78%);
-  color: #e6e9e0;
-  font-size: var(--text-body);
-  text-align: center;
-}
-
-.otv2-command__expired button {
-  color: #cfe3a6;
-}
-
-.otv2-command__expired button:hover {
-  color: #e8f5cd;
-}
-
-.otv2-command[data-muted="true"] .otv2-command__body {
-  opacity: 0.45;
-}
-
 .otv2-command__code {
   flex: 1;
   min-width: 0;
@@ -812,6 +779,39 @@
 .otv2-command__copy svg {
   width: 24px;
   height: 24px;
+}
+
+.otv2-command[data-expired="true"] .otv2-command__code,
+.otv2-command[data-expired="true"] .otv2-command__copy {
+  opacity: 0.18;
+}
+
+.otv2-command__expired {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  border-radius: var(--radius-control);
+  background: rgb(11 16 29 / 78%);
+  color: #e6e9e0;
+  font-size: var(--text-body);
+  text-align: center;
+}
+
+.otv2-command__expired button {
+  color: #cfe3a6;
+}
+
+.otv2-command__expired button:hover {
+  color: #e8f5cd;
+}
+
+.otv2-command[data-muted="true"] .otv2-command__body {
+  opacity: 0.45;
 }
 
 .otv2-command__copy:hover:not(:disabled) {

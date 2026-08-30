@@ -1,11 +1,20 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { AgentAdminConfig, ImBindingDiagnostics } from "@opentag/shared";
+import type { AgentAdminConfig, FeishuSetupAttempt, ImBindingAdminDetail, ImBindingDiagnostics } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
-import { formatImBindingDiagnostics } from "../core/agent/im.js";
+import {
+  formatFeishuSetup,
+  formatImBinding,
+  formatImBindingDiagnostics,
+  runImBindingConnectFeishu,
+  runImBindingDiagnose,
+  runImBindingDisable,
+  runImBindingShow,
+  runReceiveModeSet,
+} from "../core/agent/im.js";
 import {
   runAgentCreate,
   runAgentDelete,
@@ -134,6 +143,105 @@ describe("Agent CLI core", () => {
         slackIdentityClosure: { status: "pending", verifiedAt: null },
       }),
     ).toContain("slackIdentityClosure\tpending");
+  });
+
+  it("runs IM binding commands through the shared Agent context", async () => {
+    const client = api();
+    const binding: ImBindingAdminDetail = {
+      id: crypto.randomUUID(),
+      agentId,
+      provider: "feishu",
+      identity: { provider: "feishu", appId: "cli-app", teamId: null, botOpenId: "bot-open", teamBrand: null },
+      receiveMode: "mention_only",
+      credentialGeneration: 2,
+      reauthorizationRequired: false,
+      lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
+      grantedCapabilities: ["im:message"],
+      lastErrorCode: null,
+      displayName: "Feishu",
+      avatarUrl: null,
+    };
+    client.getAgentImBindingConfig.mockResolvedValue(binding);
+    const attempt: FeishuSetupAttempt = {
+      id: crypto.randomUUID(),
+      agentId,
+      intent: "reauthorize",
+      state: "awaiting_user",
+      qrUrl: "https://opentag.example/qr",
+      expiresAt: "2026-08-19T00:01:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    };
+    client.createFeishuSetupAttempt.mockResolvedValue(attempt);
+    client.getImBindingDiagnostics.mockResolvedValue({
+      imBindingId: binding.id,
+      provider: "feishu",
+      ready: true,
+      agentRuntimeReadiness: "ready",
+      providerCliReadiness: "ready",
+      credentialGeneration: 2,
+      credentialStatus: "valid",
+      requiredCapabilities: ["im:message"],
+      grantedCapabilities: ["im:message"],
+      missingCapabilities: [],
+      reauthorizationRequired: false,
+      slackAppId: null,
+      slackIdentityClosure: null,
+      connection: { state: "connected", observedAt: "2026-08-19T00:00:00.000Z" },
+      lastInboundAt: "2026-08-19T00:00:00.000Z",
+      lastValidatedAt: "2026-08-19T00:00:00.000Z",
+      lastRuntimeObservationAt: "2026-08-19T00:00:00.000Z",
+      lastErrorCode: null,
+    });
+    client.updateAgent.mockResolvedValue({ ...agent, receiveMode: "all_message", revision: 2 });
+
+    await expect(runImBindingShow(agentId, { accessToken: "access", api: client })).resolves.toEqual(binding);
+    await expect(
+      runImBindingConnectFeishu(agentId, "reauthorize", { accessToken: "access", api: client }),
+    ).resolves.toEqual(attempt);
+    await expect(runImBindingDiagnose(agentId, { accessToken: "access", api: client })).resolves.toMatchObject({
+      ready: true,
+    });
+    await expect(
+      runReceiveModeSet(agentId, "all_message", { accessToken: "access", api: client }),
+    ).resolves.toMatchObject({
+      receiveMode: "all_message",
+    });
+    await expect(runImBindingDisable(agentId, { accessToken: "access", api: client })).resolves.toBeUndefined();
+
+    expect(formatImBinding(binding)).toContain("identity\tcli-app · provider Team pending first event");
+    expect(
+      formatImBinding({
+        ...binding,
+        provider: "slack",
+        identity: {
+          provider: "slack",
+          appId: "slack-app",
+          teamId: "team",
+          enterpriseId: null,
+          botUserId: "bot",
+          appIdEvidence: "configured",
+        },
+      }),
+    ).toContain("identity\tslack-app · team · bot");
+    expect(formatImBinding(undefined)).toBe("No IM binding configured");
+    expect(formatFeishuSetup(attempt)).toContain("qrUrl\thttps://opentag.example/qr");
+    expect(formatFeishuSetup({ ...attempt, qrUrl: null, errorCode: "EXPIRED" })).toContain("errorCode\tEXPIRED");
+    expect(client.disableImBinding).toHaveBeenCalledWith("access", binding.id);
+    expect(client.getImBindingDiagnostics).toHaveBeenCalledWith("access", binding.id);
+  });
+
+  it("handles missing IM bindings without making disable calls", async () => {
+    const client = api();
+    client.getAgentImBindingConfig.mockResolvedValue(undefined);
+    await expect(runImBindingDiagnose(agentId, { accessToken: "access", api: client })).rejects.toThrow(
+      "The Agent has no IM binding",
+    );
+    await expect(runImBindingDisable(agentId, { accessToken: "access", api: client })).resolves.toBeUndefined();
+    expect(client.disableImBinding).not.toHaveBeenCalled();
   });
 
   it("sends no management scope and never asks the Account to choose one", async () => {

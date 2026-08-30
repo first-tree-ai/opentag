@@ -1,7 +1,30 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as client from "@opentag/client";
 import { OpenTagApi } from "@opentag/client";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
-import { formatSessionCommandError, requestWithRetryKey, SessionCommandRequestError } from "../core/session/index.js";
+import {
+  formatSessionCommandError,
+  formatSessionCommandResult,
+  formatSessionList,
+  requestWithRetryKey,
+  runSessionCreate,
+  runSessionList,
+  runSessionSend,
+  SessionCommandRequestError,
+} from "../core/session/index.js";
+
+vi.mock("@opentag/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@opentag/client")>();
+  return {
+    ...actual,
+    readComputerIdentity: vi.fn(),
+    readSessionCliProofFile: vi.fn(),
+    resolveOpenTagHome: vi.fn(),
+  };
+});
 
 describe("session CLI", () => {
   it("exposes only create, send, and bounded list commands with implicit source identity", () => {
@@ -33,5 +56,198 @@ describe("session CLI", () => {
       code: "SERVICE_UNAVAILABLE",
       message: "The OpenTag server is unavailable",
     });
+  });
+
+  it("formats accepted and rejected command results and tabular list rows", () => {
+    expect(formatSessionCommandResult({ status: "accepted", messageId: "m1", sessionId: "s1", code: "queued" })).toBe(
+      "status=accepted messageId=m1 sessionId=s1 code=queued",
+    );
+    expect(formatSessionCommandResult({ status: "rejected", messageId: "m2" })).toBe("status=rejected messageId=m2");
+    expect(
+      formatSessionList({
+        items: [
+          {
+            sessionId: "s1",
+            parentSessionId: null,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            lastMessageAt: null,
+            lastDeliveryOutcome: "accepted",
+            taskPreview: "line\tone\nline two",
+          },
+        ],
+        nextCursor: "next",
+      }),
+    ).toContain("s1\t\t2026-01-01T00:00:00.000Z\t\taccepted\tline one line two\nNext cursor: next");
+    expect(formatSessionList({ items: [], nextCursor: null })).toBe(
+      "SESSION ID\tPARENT SESSION\tCREATED\tLAST MESSAGE\tOUTCOME\tTASK",
+    );
+  });
+
+  it("maps API rejections to the stable rejected request contract", async () => {
+    const apiError = new client.OpenTagApiError("VALIDATION_ERROR", "permanent", "bad message", 400);
+    const error = await requestWithRetryKey("message-rejected", async () => {
+      throw apiError;
+    }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(SessionCommandRequestError);
+    if (!(error instanceof SessionCommandRequestError)) throw error;
+    expect(error.status).toBe("rejected");
+    expect(error.code).toBe("VALIDATION_ERROR");
+    expect(error.cause).toBe(apiError);
+  });
+
+  it("runs create, send, and list inside the managed session context", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-session-cli-"));
+    const proofPath = join(home, "proof.json");
+    await writeFile(proofPath, "ignored");
+    vi.mocked(client.resolveOpenTagHome).mockReturnValue(home);
+    vi.mocked(client.readComputerIdentity).mockResolvedValue({
+      version: 2,
+      computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      serverUrl: "https://opentag.example",
+    });
+    vi.mocked(client.readSessionCliProofFile).mockResolvedValue({
+      proofId: "11111111-1111-4111-8111-111111111111",
+      token: "p".repeat(40),
+    });
+    const create = vi.spyOn(OpenTagApi.prototype, "createInternalSession").mockResolvedValue({
+      status: "accepted",
+      messageId: "22222222-2222-4222-8222-222222222222",
+      sessionId: "33333333-3333-4333-8333-333333333333",
+    });
+    const send = vi.spyOn(OpenTagApi.prototype, "sendSessionMessage").mockResolvedValue({
+      status: "accepted",
+      messageId: "44444444-4444-4444-8444-444444444444",
+      sessionId: "33333333-3333-4333-8333-333333333333",
+    });
+    const list = vi.spyOn(OpenTagApi.prototype, "listInternalSessions").mockResolvedValue({
+      items: [],
+      nextCursor: null,
+    });
+
+    const previousProof = process.env.OPENTAG_SESSION_PROOF_FILE;
+    process.env.OPENTAG_SESSION_PROOF_FILE = proofPath;
+    try {
+      await expect(
+        runSessionCreate({
+          message: "create task",
+          messageId: "22222222-2222-4222-8222-222222222222",
+          model: "gpt-5",
+          maxDurationMs: 5000,
+        }),
+      ).resolves.toMatchObject({ sessionId: "33333333-3333-4333-8333-333333333333" });
+      await expect(
+        runSessionSend("33333333-3333-4333-8333-333333333333", {
+          message: "follow up",
+          messageId: "44444444-4444-4444-8444-444444444444",
+        }),
+      ).resolves.toMatchObject({ sessionId: "33333333-3333-4333-8333-333333333333" });
+      await expect(
+        runSessionList({ recursive: true, limit: 5, cursor: "c", since: "2026-01-01T00:00:00.000Z" }),
+      ).resolves.toEqual({
+        items: [],
+        nextCursor: null,
+      });
+      expect(create).toHaveBeenCalledWith(
+        "p".repeat(40),
+        expect.objectContaining({ message: "create task", model: "gpt-5" }),
+      );
+      expect(send).toHaveBeenCalledWith(
+        "p".repeat(40),
+        expect.objectContaining({ targetSessionId: "33333333-3333-4333-8333-333333333333" }),
+      );
+      expect(list).toHaveBeenCalledWith("p".repeat(40), expect.objectContaining({ recursive: true, limit: 5 }));
+    } finally {
+      if (previousProof === undefined) delete process.env.OPENTAG_SESSION_PROOF_FILE;
+      else process.env.OPENTAG_SESSION_PROOF_FILE = previousProof;
+      await rm(home, { recursive: true, force: true });
+      create.mockRestore();
+      send.mockRestore();
+      list.mockRestore();
+    }
+  });
+
+  it("reads message files and rejects missing or empty session context", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-session-file-"));
+    const messageFile = join(home, "message.txt");
+    await writeFile(messageFile, "from file");
+    const proofPath = join(home, "proof.json");
+    vi.mocked(client.resolveOpenTagHome).mockReturnValue(home);
+    vi.mocked(client.readComputerIdentity).mockResolvedValue({
+      version: 2,
+      computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      serverUrl: "https://opentag.example",
+    });
+    vi.mocked(client.readSessionCliProofFile).mockResolvedValue({
+      proofId: "11111111-1111-4111-8111-111111111111",
+      token: "p".repeat(40),
+    });
+    const create = vi.spyOn(OpenTagApi.prototype, "createInternalSession").mockResolvedValue({
+      status: "accepted",
+      messageId: "55555555-5555-4555-8555-555555555555",
+    });
+    const previousProof = process.env.OPENTAG_SESSION_PROOF_FILE;
+    process.env.OPENTAG_SESSION_PROOF_FILE = proofPath;
+    try {
+      await runSessionCreate({ messageFile, messageId: "55555555-5555-4555-8555-555555555555" });
+      await expect(runSessionCreate({ message: "both", messageFile })).rejects.toThrow(
+        "Exactly one of --message and --message-file is required",
+      );
+      await expect(runSessionCreate({ message: "" })).rejects.toThrow("Session messages cannot be empty");
+    } finally {
+      if (previousProof === undefined) delete process.env.OPENTAG_SESSION_PROOF_FILE;
+      else process.env.OPENTAG_SESSION_PROOF_FILE = previousProof;
+      await rm(home, { recursive: true, force: true });
+      create.mockRestore();
+    }
+  });
+
+  it("fails closed when session proof or Computer binding is absent", async () => {
+    const previousProof = process.env.OPENTAG_SESSION_PROOF_FILE;
+    delete process.env.OPENTAG_SESSION_PROOF_FILE;
+    await expect(runSessionList({})).rejects.toThrow("runtime context missing");
+    process.env.OPENTAG_SESSION_PROOF_FILE = "/tmp/session-proof";
+    vi.mocked(client.resolveOpenTagHome).mockReturnValue("/tmp/opentag-home");
+    vi.mocked(client.readComputerIdentity).mockResolvedValue(undefined);
+    await expect(runSessionList({})).rejects.toThrow("Computer binding missing");
+    if (previousProof === undefined) delete process.env.OPENTAG_SESSION_PROOF_FILE;
+    else process.env.OPENTAG_SESSION_PROOF_FILE = previousProof;
+  });
+
+  it("accepts stdin as the message source", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-session-stdin-"));
+    const proofPath = join(home, "proof.json");
+    vi.mocked(client.resolveOpenTagHome).mockReturnValue(home);
+    vi.mocked(client.readComputerIdentity).mockResolvedValue({
+      version: 2,
+      computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      serverUrl: "https://opentag.example",
+    });
+    vi.mocked(client.readSessionCliProofFile).mockResolvedValue({
+      proofId: "11111111-1111-4111-8111-111111111111",
+      token: "p".repeat(40),
+    });
+    const create = vi.spyOn(OpenTagApi.prototype, "createInternalSession").mockResolvedValue({
+      status: "accepted",
+      messageId: "66666666-6666-4666-8666-666666666666",
+    });
+    const previousProof = process.env.OPENTAG_SESSION_PROOF_FILE;
+    const originalIterator = process.stdin[Symbol.asyncIterator];
+    process.env.OPENTAG_SESSION_PROOF_FILE = proofPath;
+    Object.defineProperty(process.stdin, Symbol.asyncIterator, {
+      configurable: true,
+      value: async function* () {
+        yield "stdin task";
+      },
+    });
+    try {
+      await runSessionCreate({ messageFile: "-", messageId: "66666666-6666-4666-8666-666666666666" });
+      expect(create).toHaveBeenCalledWith("p".repeat(40), expect.objectContaining({ message: "stdin task" }));
+    } finally {
+      Object.defineProperty(process.stdin, Symbol.asyncIterator, { configurable: true, value: originalIterator });
+      if (previousProof === undefined) delete process.env.OPENTAG_SESSION_PROOF_FILE;
+      else process.env.OPENTAG_SESSION_PROOF_FILE = previousProof;
+      await rm(home, { recursive: true, force: true });
+      create.mockRestore();
+    }
   });
 });

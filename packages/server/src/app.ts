@@ -239,6 +239,8 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
         ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
+        // Same service the Lab exposes, on a path that does not depend on the Lab existing.
+        ...(options.stagingOnboardingLab ? { setupResetService: options.stagingOnboardingLab.reset } : {}),
         authOptions,
       });
     }

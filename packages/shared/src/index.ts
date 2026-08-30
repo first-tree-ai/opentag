@@ -380,6 +380,10 @@ export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
 export * from "./task.js";
 export {
+  type AccountSetupResetMode,
+  AccountSetupResetModeSchema,
+  type AccountSetupResetRequest,
+  AccountSetupResetRequestSchema,
   type CompleteWorkspaceSetupRequest,
   CompleteWorkspaceSetupRequestSchema,
   type ListWorkspaceComputersResponse,

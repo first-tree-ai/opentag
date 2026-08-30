@@ -488,6 +488,9 @@ describe("staging Onboarding Lab reset", () => {
 
       await expect(guarded.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({ statusCode: 404 });
       await expect(guarded.resetOnboarding(other.accountId)).rejects.toMatchObject({ statusCode: 404 });
+      // Re-boarding is the lighter operation, not the less guarded one.
+      await expect(guarded.reboard(value.lab.accountId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(guarded.reboard(other.accountId)).rejects.toMatchObject({ statusCode: 404 });
     }
 
     expect((await facts(value.database, value.lab)).activeAgents).toBe(1);
@@ -628,5 +631,32 @@ describe("staging Onboarding Lab reset", () => {
 
     const [row] = await value.database.select().from(users).where(eq(users.id, empty.id));
     expect(row?.setupCompletedAt).toBeNull();
+  });
+});
+
+describe("re-boarding an Account without taking anything down", () => {
+  it("clears setup completion and keeps every resource the Account has", async () => {
+    const value = await fixture();
+    const before = await facts(value.database, value.lab);
+    expect(before).toMatchObject({ activeAgents: 1, activeBindings: 1, openSessions: 1, ownedComputers: 1 });
+    expect(before.accountSetupCompletedAt).not.toBeNull();
+    expect(before.activeCredentials).toBeGreaterThan(0);
+
+    await value.reset.reboard(value.lab.accountId);
+
+    const after = await facts(value.database, value.lab);
+    // The whole point: onboarding is reachable again, and nothing had to be rebuilt to get there.
+    expect(after.accountSetupCompletedAt).toBeNull();
+    expect(after).toMatchObject({
+      activeAgents: before.activeAgents,
+      activeBindings: before.activeBindings,
+      openSessions: before.openSessions,
+      ownedComputers: before.ownedComputers,
+      // Still enrolled: the machine token survives, so the Computer is not connected again.
+      activeCredentials: before.activeCredentials,
+    });
+    expect(after.binding).toMatchObject({ status: before.binding?.status });
+    // A reset closes the live enrollment; re-boarding has no reason to.
+    expect(value.closeEnrollment).not.toHaveBeenCalled();
   });
 });

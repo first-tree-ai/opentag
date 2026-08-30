@@ -11,6 +11,11 @@
       "!apps/web/src/routeTree.gen.ts"
     ]
   },
+  "vcs": {
+    "clientKind": "git",
+    "enabled": true,
+    "useIgnoreFile": true
+  },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",

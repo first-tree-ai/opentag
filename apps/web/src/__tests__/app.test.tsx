@@ -1,7 +1,7 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import { App } from "../app.js";
 import { PasswordSignInForm } from "../features/auth/password-sign-in-form.js";
 
@@ -2645,6 +2645,41 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
+    /*
+     * This one fails intermittently — once in 41 whole-file runs, on two different machines, and
+     * not reproduced in isolation (opentag#273). Chasing another failure costs dozens of runs, so
+     * instead the next one describes itself.
+     *
+     * Only on the failure path: `onTestFailed` runs before the DOM is torn down, and printing on
+     * every run would put noise back into a file we just finished clearing it out of.
+     */
+    onTestFailed(() => {
+      const active = document.activeElement;
+      const menus = [...document.querySelectorAll('[role="menu"]')];
+      // eslint-disable-next-line no-console -- diagnostic for a failure we cannot reproduce on demand
+      console.log(
+        "[opentag#273]",
+        JSON.stringify(
+          {
+            activeElement: active
+              ? {
+                  tag: active.tagName,
+                  role: active.getAttribute("role"),
+                  name: active.getAttribute("aria-label") ?? active.textContent?.slice(0, 40),
+                }
+              : null,
+            menus: menus.map((menu) => ({
+              name: menu.getAttribute("aria-label") ?? menu.getAttribute("aria-labelledby"),
+              items: menu.querySelectorAll('[role="menuitem"]').length,
+            })),
+            menuitems: document.querySelectorAll('[role="menuitem"]').length,
+          },
+          null,
+          1,
+        ),
+      );
+    });
+
     installApi({ multipleMemberships: true });
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });

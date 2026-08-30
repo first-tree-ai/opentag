@@ -34,6 +34,10 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 
+// The router scrolls to the top of every navigation, which jsdom does not implement and reports as
+// an unhandled error on each route change. Scroll position is not something these tests assert on.
+Object.defineProperty(window, "scrollTo", { configurable: true, value: () => undefined });
+
 if (!Element.prototype.getAnimations) {
   Object.defineProperty(Element.prototype, "getAnimations", {
     configurable: true,

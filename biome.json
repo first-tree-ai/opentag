@@ -1,7 +1,15 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
   "files": {
-    "includes": ["**", "!**/node_modules", "!**/dist", "!**/coverage", "!**/.turbo", "!packages/server/drizzle"]
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/coverage",
+      "!**/.turbo",
+      "!packages/server/drizzle",
+      "!apps/web/src/routeTree.gen.ts"
+    ]
   },
   "formatter": {
     "enabled": true,

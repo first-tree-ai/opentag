@@ -57,27 +57,27 @@ describe("Kumo integration contract", () => {
   });
 
   it("uses the Kumo compound sidebar layout for the application shell", () => {
-    const router = readFileSync(resolve(root, "router.tsx"), "utf8");
-    expect(router).toContain("<Sidebar.Header>");
-    expect(router).toContain("<Sidebar.Content>");
-    expect(router).toContain("<Sidebar.Menu>");
-    expect(router).toContain("<Sidebar.MenuButton");
-    expect(router).toContain("<Sidebar.Footer>");
-    expect(router).toContain('<Sidebar.Trigger title="Toggle sidebar"');
-    expect(router).toContain('collapsible="icon"');
-    expect(router).toContain("group-data-[state=collapsed]/sidebar:hidden");
-    expect(router).toContain('className="app-mobile-header');
-    expect(router).toContain('className="h-full min-h-0 overflow-hidden"');
-    expect(router).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
-    expect(router).toContain("min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto");
-    expect(router).not.toContain("max-w-6xl");
-    expect(router).not.toContain('data-ui="sidebar-content"');
+    const shell = readFileSync(resolve(root, "features/shell/app-shell.tsx"), "utf8");
+    expect(shell).toContain("<Sidebar.Header>");
+    expect(shell).toContain("<Sidebar.Content>");
+    expect(shell).toContain("<Sidebar.Menu>");
+    expect(shell).toContain("<Sidebar.MenuButton");
+    expect(shell).toContain("<Sidebar.Footer>");
+    expect(shell).toContain('<Sidebar.Trigger title="Toggle sidebar"');
+    expect(shell).toContain('collapsible="icon"');
+    expect(shell).toContain("group-data-[state=collapsed]/sidebar:hidden");
+    expect(shell).toContain('className="app-mobile-header');
+    expect(shell).toContain('className="h-full min-h-0 overflow-hidden"');
+    expect(shell).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
+    expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto");
+    expect(shell).not.toContain("max-w-6xl");
+    expect(shell).not.toContain('data-ui="sidebar-content"');
   });
 
   it("uses the owned Kumo PageHeader block and semantic Text variants", () => {
-    const router = readFileSync(resolve(root, "router.tsx"), "utf8");
     const pageHeader = readFileSync(resolve(root, "components/kumo/page-header/page-header.tsx"), "utf8");
-    expect(router).toContain('"./components/kumo/page-header/page-header.js"');
+    // Pages import the block from their own depth, so the contract is on the specifier's tail.
+    expect(source).toContain("components/kumo/page-header/page-header.js");
     expect(pageHeader).toContain('from "@cloudflare/kumo"');
     expect(pageHeader).toContain('<Text as="h1" id={titleId} size="lg" variant="heading">');
     expect(pageHeader).toContain('<Text as="p" variant="secondary">');

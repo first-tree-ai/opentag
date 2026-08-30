@@ -262,6 +262,78 @@ describe("Task debug queries", () => {
     }
   });
 
+  it("follows list and Turn cursors past the first page", async () => {
+    const value = await fixture();
+    try {
+      const [secondSession] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: value.binding.id,
+          channelId: "oc_second",
+          conversationKind: "dm",
+          kind: "channel",
+          createdAt: new Date("2026-08-26T01:00:00.000Z"),
+        })
+        .returning();
+      if (!secondSession) throw new Error("Second Session fixture was not created");
+
+      const firstPage = await value.service.list(value.bootstrap.userId, { limit: 1 });
+      expect(firstPage.tasks).toHaveLength(1);
+      expect(firstPage.nextCursor).not.toBeNull();
+      if (!firstPage.nextCursor) throw new Error("The first Task page did not issue a cursor");
+
+      const secondPage = await value.service.list(value.bootstrap.userId, {
+        cursor: firstPage.nextCursor,
+        limit: 1,
+      });
+      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondSession.id]);
+      expect(secondPage.nextCursor).toBeNull();
+
+      const [followUpMessage] = await value.database
+        .insert(imMessages)
+        .values({
+          imBindingId: value.binding.id,
+          providerEventId: "event-second",
+          channelId: "oc_debug",
+          externalMessageId: "om_second",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "ou_debug",
+          authorDisplayName: "Mia",
+          content: { version: 1, fallbackText: "And once more.", blocks: [], truncated: false },
+          providerContext: { provider: "feishu", chatType: "p2p" },
+          occurredAt: new Date("2026-08-27T02:01:00.000Z"),
+        })
+        .returning();
+      if (!followUpMessage) throw new Error("Second IM Message fixture was not created");
+      await value.database.insert(imMessageDeliveries).values({
+        messageId: followUpMessage.id,
+        sessionId: value.session.id,
+        attention: "direct",
+        state: "pending",
+        placementGeneration: 1,
+        expiresAt: new Date("2026-08-28T02:00:00.000Z"),
+      });
+
+      const firstTurnPage = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 1 });
+      expect(firstTurnPage.turns).toHaveLength(1);
+      expect(firstTurnPage.nextCursor).not.toBeNull();
+      if (!firstTurnPage.nextCursor) throw new Error("The first Turn page did not issue a cursor");
+
+      const secondTurnPage = await value.service.get(value.bootstrap.userId, value.session.id, {
+        cursor: firstTurnPage.nextCursor,
+        limit: 1,
+      });
+      expect(secondTurnPage.turns).toHaveLength(1);
+      expect(secondTurnPage.turns[0]?.deliveryId).toBe(value.deliveryId);
+      expect(secondTurnPage.nextCursor).toBeNull();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("titles a Session from a follow-up message that no longer addresses the Agent", async () => {
     const value = await fixture();
     try {

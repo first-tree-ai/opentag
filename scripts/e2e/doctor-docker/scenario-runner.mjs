@@ -46,10 +46,11 @@ async function record(name, operation) {
 function doctorEnvironment(home, options = {}) {
   return {
     ...process.env,
-    HOME: process.env.HOME ?? "/home/node",
+    HOME: options.userHome ?? process.env.HOME ?? "/home/node",
     OPENTAG_HOME: home,
     OPENTAG_SERVER_URL: "http://caller-controlled.invalid:65535",
     PATH: options.path ?? defaultPath,
+    ...(options.shell ? { SHELL: options.shell } : {}),
   };
 }
 
@@ -247,7 +248,7 @@ async function runCoreSuite() {
       }),
     ]);
     const result = runDoctor(home);
-    expectIncludes(result.stdout, "more than one Server origin", "binding result", result);
+    expectIncludes(result.stdout, "multiple enrollments", "binding result", result);
     expect((await requestCount(18081)) === beforeA, "doctor contacted the first ambiguous Server");
     expect((await requestCount(18082)) === beforeB, "doctor contacted the second ambiguous Server");
   });
@@ -335,6 +336,33 @@ async function runCoreSuite() {
       "runtime result",
       result,
     );
+  });
+
+  await record("login-shell-only Runtime artifact is reported as login-shell", async () => {
+    const userHome = join(root, "login-shell-home");
+    const loginBin = join(userHome, "login-bin");
+    await mkdir(loginBin, { mode: 0o700, recursive: true });
+    const executable = join(loginBin, "codex");
+    await writeFile(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await chmod(executable, 0o755);
+    const exportLine = `export PATH="${loginBin}:$PATH"
+`;
+    await writeFile(join(userHome, ".bash_profile"), exportLine, { mode: 0o644 });
+    await writeFile(join(userHome, ".bashrc"), exportLine, { mode: 0o644 });
+    await writeFile(join(userHome, ".profile"), exportLine, { mode: 0o644 });
+    const home = await createHome("runtime-login-shell");
+    const result = runDoctor(home, {
+      path: "/usr/bin:/bin",
+      shell: "/bin/bash",
+      userHome,
+    });
+    expectIncludes(
+      result.stdout,
+      "Agent Runtime CLI: at least one supported Runtime is installed",
+      "runtime result",
+      result,
+    );
+    expectIncludes(result.stdout, `${executable} (login-shell)`, "runtime result", result);
   });
 
   await record("executable directory is not a Runtime artifact", async () => {

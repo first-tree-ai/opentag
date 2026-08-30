@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link } from "@tanstack/react-router";
 import { agentIntegrationPreviews, agentSkillPreviews } from "./mock/agent-detail-capability-data.js";
 import { StatusIndicator, Text } from "./ui/design-system.js";
 

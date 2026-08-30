@@ -1,6 +1,6 @@
 import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
-import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link } from "@tanstack/react-router";
+import { type ChangeEventHandler, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
@@ -20,6 +20,7 @@ import {
 
 type TaskFilter = "all" | TaskStatus;
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
+type TaskCollection = { tasks: TaskSummary[]; nextCursor: string | null };
 
 const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
   queued: { label: "Queued", tone: "info" },
@@ -32,24 +33,36 @@ const statusPresentation: Record<TaskStatus, { readonly label: string; readonly 
 };
 
 export function TasksPage() {
-  const [state, setState] = useState<LoadState<{ tasks: TaskSummary[]; nextCursor: string | null }>>({
-    kind: "loading",
-  });
+  const [state, setState] = useState<LoadState<TaskCollection>>({ kind: "loading" });
   const [query, setQuery] = useState("");
   const [agentId, setAgentId] = useState("all");
   const [status, setStatus] = useState<TaskFilter>("all");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
+  const initialLoadGeneration = useRef(0);
+
+  const loadTasks = useCallback(async (): Promise<void> => {
+    const generation = initialLoadGeneration.current + 1;
+    initialLoadGeneration.current = generation;
+    setState({ kind: "loading" });
+    setLoadMoreError(null);
+    try {
+      const value = await browserApi.tasks();
+      if (initialLoadGeneration.current !== generation) return;
+      setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } });
+    } catch (error) {
+      if (initialLoadGeneration.current !== generation) return;
+      setState({ kind: "error", error: asError(error) });
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    browserApi.tasks().then(
-      (value) =>
-        active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
-      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
-    );
+    void loadTasks();
     return () => {
-      active = false;
+      // Invalidate an in-flight request when this page unmounts.
+      initialLoadGeneration.current += 1;
     };
-  }, []);
+  }, [loadTasks]);
 
   const agents = useMemo(() => {
     if (state.kind !== "ready") return [];
@@ -82,12 +95,22 @@ export function TasksPage() {
   }, [agentId, query, state, status]);
 
   async function loadMore(): Promise<void> {
-    if (state.kind !== "ready" || !state.value.nextCursor) return;
+    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setLoadMoreError(null);
     try {
       const next = await browserApi.tasks({ cursor: state.value.nextCursor });
-      setState({ kind: "ready", value: { tasks: [...state.value.tasks, ...next.tasks], nextCursor: next.nextCursor } });
+      setState((current) =>
+        current.kind === "ready"
+          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
+          : current,
+      );
     } catch (error) {
-      setState({ kind: "error", error: asError(error) });
+      // Keep the rows already on screen. A failed append should be recoverable without making the
+      // viewer lose the page that was loaded successfully.
+      setLoadMoreError(asError(error));
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -144,7 +167,17 @@ export function TasksPage() {
       {state.kind === "loading" ? (
         <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
       ) : null}
-      {state.kind === "error" ? <TaskNotice heading="Tasks unavailable" detail={state.error.message} /> : null}
+      {state.kind === "error" ? (
+        <TaskNotice
+          action={
+            <Button type="button" variant="secondary" onClick={() => void loadTasks()}>
+              Try again
+            </Button>
+          }
+          heading="Tasks unavailable"
+          detail={state.error.message}
+        />
+      ) : null}
       {state.kind === "ready" && tasks.length > 0 ? (
         <>
           <Table className="w-full" aria-label="Tasks" data-ui="task-table">
@@ -161,9 +194,22 @@ export function TasksPage() {
             </tbody>
           </Table>
           {state.value.nextCursor ? (
-            <Button type="button" variant="secondary" onClick={() => void loadMore()}>
-              Load more
-            </Button>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                disabled={loadingMore}
+                loading={loadingMore}
+                type="button"
+                variant="secondary"
+                onClick={() => void loadMore()}
+              >
+                {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+              </Button>
+              {loadMoreError ? (
+                <span className="text-sm text-kumo-danger" role="alert">
+                  {loadMoreError.message}
+                </span>
+              ) : null}
+            </div>
           ) : null}
         </>
       ) : null}
@@ -174,35 +220,45 @@ export function TasksPage() {
   );
 }
 
-export function TaskDetailPage() {
-  const { taskId } = useParams();
+export function TaskDetailPage({ taskId }: { taskId?: string }) {
   const [state, setState] = useState<LoadState<TaskDetail>>({ kind: "loading" });
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
+  const taskLoadGeneration = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    const generation = taskLoadGeneration.current + 1;
+    taskLoadGeneration.current = generation;
+    setState({ kind: "loading" });
+    setLoadingMore(false);
+    setLoadMoreError(null);
     if (!taskId) {
       setState({ kind: "error", error: new Error("Task not found") });
-      return () => undefined;
+      return () => {
+        if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
+      };
     }
     browserApi.task(taskId).then(
-      (value) => active && setState({ kind: "ready", value }),
-      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
+      (value) => taskLoadGeneration.current === generation && setState({ kind: "ready", value }),
+      (error: unknown) =>
+        taskLoadGeneration.current === generation && setState({ kind: "error", error: asError(error) }),
     );
     return () => {
-      active = false;
+      if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
     };
   }, [taskId]);
 
   async function loadMoreTurns(): Promise<void> {
     if (!taskId || state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
+    const generation = taskLoadGeneration.current;
+    const cursor = state.value.nextCursor;
     setLoadingMore(true);
     setLoadMoreError(null);
     try {
-      const next = await browserApi.task(taskId, state.value.nextCursor);
+      const next = await browserApi.task(taskId, cursor);
+      if (taskLoadGeneration.current !== generation) return;
       setState((current) =>
-        current.kind === "ready"
+        current.kind === "ready" && current.value.task.id === taskId
           ? {
               kind: "ready",
               value: {
@@ -214,9 +270,10 @@ export function TaskDetailPage() {
           : current,
       );
     } catch (error) {
+      if (taskLoadGeneration.current !== generation) return;
       setLoadMoreError(asError(error));
     } finally {
-      setLoadingMore(false);
+      if (taskLoadGeneration.current === generation) setLoadingMore(false);
     }
   }
 
@@ -467,7 +524,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
       <td className="p-3" data-label="Task">
-        <Link title={task.title} to={`/tasks/${task.id}`}>
+        <Link params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
@@ -537,7 +594,7 @@ function DebugValue({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TaskNotice({ heading, detail }: { heading: string; detail: string }) {
+function TaskNotice({ action, heading, detail }: { action?: ReactNode; heading: string; detail: string }) {
   return (
     <section
       className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line"
@@ -553,6 +610,7 @@ function TaskNotice({ heading, detail }: { heading: string; detail: string }) {
       <Text as="p" variant="secondary">
         {detail}
       </Text>
+      {action ? <div className="flex justify-center">{action}</div> : null}
     </section>
   );
 }

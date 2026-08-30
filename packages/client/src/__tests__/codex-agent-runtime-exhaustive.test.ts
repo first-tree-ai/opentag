@@ -1092,10 +1092,133 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         throw new Error("missing");
       },
     });
-    await expect(missing.probe({})).resolves.toEqual({
-      ready: false,
-      issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }],
-    });
+    await expect(missing.probe({})).rejects.toThrow("missing");
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw "bare-string";
+        },
+      }).probe({}),
+    ).rejects.toBe("bare-string");
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw null;
+        },
+      }).probe({}),
+    ).rejects.toBeNull();
+    const transientCases = [
+      { code: "ETIMEDOUT" },
+      { code: "EAGAIN" },
+      { code: "ENOMEM" },
+      { killed: true, signal: "SIGKILL" },
+    ];
+    for (const extra of transientCases) {
+      const transient = new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw Object.assign(new Error("busy"), extra);
+        },
+      });
+      await expect(transient.probe({})).resolves.toMatchObject({
+        ready: false,
+        issues: [{ code: "temporarily_unavailable" }],
+      });
+    }
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw Object.assign(new Error("crash-killed"), { killed: true, signal: "SIGSEGV" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("spawn", "missing");
+        },
+      }).probe({}),
+    ).rejects.toMatchObject({ code: "spawn", message: "missing" });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("spawn", "enoent", { errno: "ENOENT" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("exited", "clean", { exitCode: 0, signal: null });
+        },
+      }).probe({}),
+    ).rejects.toMatchObject({ code: "exited", exitCode: 0 });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("exited", "timeout-kill", { killed: true, signal: "SIGKILL" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "temporarily_unavailable" }] });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("spawn", "busy", { errno: "EAGAIN" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "temporarily_unavailable" }] });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("exited", "dead", { exitCode: 1, signal: null });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("exited", "fault", { exitCode: null, signal: "SIGABRT" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    await expect(
+      new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw new CodexAppServerError("exited", "host", { signal: "SIGUSR1" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "temporarily_unavailable" }] });
+    const crashCases = [
+      { signal: "SIGSEGV" },
+      { signal: "SIGABRT" },
+      { signal: "SIGILL" },
+      { signal: "SIGBUS" },
+      { signal: "SIGFPE" },
+      { code: 1 },
+    ];
+    for (const extra of crashCases) {
+      const crashed = new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        probeRunner: async () => {
+          throw Object.assign(new Error("broken"), extra);
+        },
+      });
+      await expect(crashed.probe({})).resolves.toMatchObject({
+        ready: false,
+        issues: [{ code: "artifact_missing" }],
+      });
+    }
     const incompatibleProtocol = new CodexAgentRuntimeFactory({
       clientVersion: "test",
       probeRunner: async () => {
@@ -1376,10 +1499,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       clientVersion: "test",
       process: { command: emptyVersionCommand, env: { PATH: process.env.PATH, OPENAI_API_KEY: "key" } },
     });
-    await expect(emptyVersion.probe({})).resolves.toMatchObject({
-      ready: false,
-      issues: [{ code: "artifact_missing" }],
-    });
+    await expect(emptyVersion.probe({})).rejects.toThrow("Codex CLI returned no version");
 
     const loginStarted = join(directory, "login-started");
     const hangingLoginCommand = join(directory, "codex-hanging-login");

@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { initials } from "../../i18n/format.js";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { AgentUsageOverview } from "../agent-usage.js";
@@ -11,7 +12,6 @@ import {
   agentAvailabilityRecovery,
   agentRecoveryMessage,
   agentStatusPresentation,
-  initials,
   messagingChannelLabel,
 } from "./agent-presentation.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "./agent-routes.js";

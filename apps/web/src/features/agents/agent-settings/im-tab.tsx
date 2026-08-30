@@ -2,6 +2,7 @@ import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
 import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import { formatDateTime } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
@@ -9,7 +10,6 @@ import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, useResource } from "../../resource/use-resource.js";
 import type { AgentDetailView } from "../agent-model.js";
 import {
-  formatDate,
   messagingConnectionLabel,
   messagingConnectionTone,
   runtimeProviderName,
@@ -133,9 +133,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               <StatusIndicator
                                 detail={
                                   binding.lastRuntimeObservationAt
-                                    ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
+                                    ? `Last observed ${formatDateTime(binding.lastRuntimeObservationAt)}`
                                     : binding.lastValidatedAt
-                                      ? `Validated ${formatDate(binding.lastValidatedAt)}`
+                                      ? `Validated ${formatDateTime(binding.lastValidatedAt)}`
                                       : "Not yet observed"
                                 }
                                 label={messagingConnectionLabel(binding)}

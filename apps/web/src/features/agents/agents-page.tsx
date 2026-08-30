@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
+import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
 import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
@@ -8,14 +9,7 @@ import { AsyncState, useResource } from "../resource/use-resource.js";
 import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
 import { loadAgentList, markAgentListUnconfirmed } from "./agent-model.js";
-import {
-  agentAvatarTone,
-  agentCardStatus,
-  formatElapsedCompact,
-  formatUsageNumber,
-  initials,
-  titleCase,
-} from "./agent-presentation.js";
+import { agentAvatarTone, agentCardStatus, titleCase } from "./agent-presentation.js";
 import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
 
@@ -135,11 +129,11 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
       <dl className="grid grid-cols-2 gap-4 border-t border-kumo-line pt-3" data-ui="agent-card-usage">
         <div>
           <dt>Tasks</dt>
-          <dd>{formatUsageNumber(agent.usage.tasks)}</dd>
+          <dd>{formatCompactNumber(agent.usage.tasks)}</dd>
         </div>
         <div>
           <dt>Tokens</dt>
-          <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
+          <dd>{formatCompactNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
       <div data-ui="agent-card-state">

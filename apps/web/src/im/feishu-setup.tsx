@@ -2,6 +2,7 @@ import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/brow
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import { formatDateTime } from "../i18n/format.js";
 import { Banner, Button, Loader } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
@@ -180,7 +181,7 @@ function FeishuSetupFeedback({
         ? "Confirm the updated permissions for the current Feishu Bot."
         : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
       <br />
-      State: {attempt.state}. Expires {formatSetupDate(attempt.expiresAt)}.
+      State: {attempt.state}. Expires {formatDateTime(attempt.expiresAt)}.
       {recovery ? (
         <>
           <br />
@@ -242,8 +243,4 @@ function normalizeError(cause: unknown, fallback: string): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
   if (code && FEISHU_SETUP_MESSAGES[code]) return FEISHU_SETUP_MESSAGES[code];
   return cause instanceof Error ? cause.message : fallback;
-}
-
-function formatSetupDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }

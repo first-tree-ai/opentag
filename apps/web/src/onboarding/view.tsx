@@ -8,6 +8,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
+import { compareText } from "../i18n/format.js";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
 import { Button, Flow, Link as KumoLink, LinkButton, Loader, Text } from "../ui/design-system.js";
 import {
@@ -410,14 +411,15 @@ function onboardingJourney(
     const relevantComputers = snapshot.computers;
     const onlineComputers = relevantComputers
       .filter((computer) => computer.connectionStatus === "online")
-      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+      .sort((left, right) => compareText(left.displayName, right.displayName));
     const computerById = new Map(onlineComputers.map((computer) => [computer.computerId, computer]));
     const readyRoute =
       snapshot.runtime.kind === "available"
         ? snapshot.runtime.providers
             .filter((provider) => provider.runtimeReady && computerById.has(provider.computerId))
             .sort((left, right) => {
-              const computerOrder = (computerById.get(left.computerId)?.displayName ?? "").localeCompare(
+              const computerOrder = compareText(
+                computerById.get(left.computerId)?.displayName ?? "",
                 computerById.get(right.computerId)?.displayName ?? "",
               );
               return computerOrder !== 0 ? computerOrder : compareProviderFacts(left, right);

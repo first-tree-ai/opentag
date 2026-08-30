@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
   Button,
   buttonClassName,
   Dialog,
   Field,
   Icon,
+  type KumoInputControlProps,
   KumoSelectControl,
   SettingsList,
   SettingsRow,
@@ -70,6 +71,31 @@ describe("Kumo semantic adapter", () => {
       </KumoSelectControl>,
     );
     expect(screen.getByRole("combobox", { name: "Usage period" })).toBeTruthy();
+  });
+
+  it("normalizes non-string option identities for controlled selection", () => {
+    const { rerender } = render(
+      <KumoSelectControl aria-label="Identity" value="42">
+        <option value={42}>Numeric</option>
+        <option value={["region", "one"]}>Array</option>
+      </KumoSelectControl>,
+    );
+    const select = screen.getByRole("combobox", { name: "Identity" });
+    fireEvent.click(select);
+    expect(screen.getByRole("option", { name: "Numeric" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("option", { name: "Array" }).getAttribute("aria-selected")).toBe("false");
+
+    rerender(
+      <KumoSelectControl aria-label="Identity" value="region,one">
+        <option value={42}>Numeric</option>
+        <option value={["region", "one"]}>Array</option>
+      </KumoSelectControl>,
+    );
+    expect(screen.getByRole("option", { name: "Array" }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps Kumo input sizes as named tokens", () => {
+    expectTypeOf<KumoInputControlProps["size"]>().toEqualTypeOf<"xs" | "sm" | "base" | "lg" | undefined>();
   });
 
   it("keeps dialog Escape and focus return behavior", async () => {

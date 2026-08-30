@@ -370,7 +370,8 @@ export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement>
   );
 }
 
-export type KumoInputControlProps = InputHTMLAttributes<HTMLInputElement> & Pick<KumoInputProps, "size" | "variant">;
+export type KumoInputControlProps = Omit<InputHTMLAttributes<HTMLInputElement>, "size"> &
+  Pick<KumoInputProps, "size" | "variant">;
 
 export const KumoInputControl = forwardRef<HTMLInputElement, KumoInputControlProps>(
   function KumoInputControl(props, ref) {
@@ -410,23 +411,24 @@ type SelectOptionProps = {
   children?: ReactNode;
 };
 
-export const KumoSelectControl = forwardRef<HTMLButtonElement, KumoSelectControlProps>(function KumoSelectControl(
-  { children, onChange, onValueChange, value, ...props },
-  _ref,
-) {
+function normalizeSelectOptionValue(value: SelectOptionProps["value"]): string {
+  return Array.isArray(value) ? value.join(",") : String(value ?? "");
+}
+
+export function KumoSelectControl({ children, onChange, onValueChange, value, ...props }: KumoSelectControlProps) {
   const options = Children.toArray(children).filter((child): child is ReactElement<SelectOptionProps> =>
     isValidElement<SelectOptionProps>(child),
   );
-  const labels = new Map(
-    options.map((option) => [
-      String(option.props.value ?? ""),
-      String(option.props.children ?? option.props.value ?? ""),
-    ]),
-  );
+  const normalizedOptions = options.map((option) => ({
+    label: String(option.props.children ?? option.props.value ?? ""),
+    option,
+    value: normalizeSelectOptionValue(option.props.value),
+  }));
+  const labels = new Map(normalizedOptions.map(({ label, value: optionValue }) => [optionValue, label]));
   const kumoProps: KumoSelectProps = {
     ...props,
     itemToStringLabel: (item) => labels.get(String(item)) ?? String(item ?? ""),
-    value,
+    value: value === undefined ? undefined : normalizeSelectOptionValue(value),
     onValueChange: (nextValue) => {
       const stringValue = String(nextValue ?? "");
       onValueChange?.(stringValue);
@@ -435,18 +437,14 @@ export const KumoSelectControl = forwardRef<HTMLButtonElement, KumoSelectControl
   };
   return (
     <KumoSelect {...kumoProps}>
-      {options.map((option) => (
-        <KumoSelect.Option
-          disabled={option.props.disabled}
-          key={String(option.props.value)}
-          value={option.props.value ?? ""}
-        >
+      {normalizedOptions.map(({ option, value: optionValue }) => (
+        <KumoSelect.Option disabled={option.props.disabled} key={optionValue} value={optionValue}>
           {option.props.children}
         </KumoSelect.Option>
       ))}
     </KumoSelect>
   );
-});
+}
 
 /** Kumo compound dialog with a controlled open state and busy dismissal guard. */
 export function Dialog({

@@ -11,7 +11,7 @@ import { StandaloneNotFoundPage } from "./not-found.js";
 
 function ExplodingChild(): never {
   throw new Error(
-    'Authorization: Bearer root-bearer-secret; "token": "json-token-secret"; password: \'quoted-password-secret\'',
+    'Authorization: Bearer root-bearer-secret; Authorization: Basic dXNlcjpwYXNz; "token": "json-token-secret"; password: \'quoted-password-secret\'',
   );
 }
 
@@ -42,20 +42,25 @@ describe("application error boundaries", () => {
 
       const logged = consoleError.mock.calls.map((args) => JSON.stringify(args)).join("\n");
       expect(logged).not.toContain("root-bearer-secret");
+      expect(logged).not.toContain("dXNlcjpwYXNz");
       expect(logged).not.toContain("json-token-secret");
       expect(logged).not.toContain("quoted-password-secret");
       expect(consoleError).toHaveBeenCalledWith(
         "[OpenTag] Unhandled UI error",
         expect.objectContaining({
           boundary: "root",
-          error: expect.objectContaining({ message: expect.stringContaining("Bearer [REDACTED]") }),
+          error: expect.objectContaining({
+            message: expect.stringContaining("Authorization: Bearer [REDACTED]"),
+          }),
         }),
       );
       expect(consoleError).toHaveBeenCalledWith(
         "[OpenTag] Unhandled UI error",
         expect.objectContaining({
           boundary: "app",
-          error: expect.objectContaining({ message: expect.stringContaining('"token": [REDACTED]') }),
+          error: expect.objectContaining({
+            message: expect.stringContaining("Authorization: [REDACTED]"),
+          }),
         }),
       );
     } finally {

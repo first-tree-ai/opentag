@@ -141,10 +141,16 @@ export const rootErrorHandlers = {
 };
 
 const credentialKey =
-  "(?:authorization|cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
+  "(?:cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
+const authorizationField = /(["']?authorization["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,;}\n]+)/gi;
 
 function redactErrorMessage(message: string): string {
   return message
+    .replace(
+      authorizationField,
+      (_match, prefix: string, value: string) =>
+        `${prefix}${/^['"]?Bearer\s/i.test(value.trim()) ? "Bearer [REDACTED]" : "[REDACTED]"}`,
+    )
     .replace(
       new RegExp(
         `(["']?${credentialKey}["']?\\s*[:=]\\s*)(Bearer\\s+(?:"[^"]*"|'[^']*'|[^\\s,;}\\]]+)|"[^"]*"|'[^']*'|[^\\s,;}\\]]+)`,

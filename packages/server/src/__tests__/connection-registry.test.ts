@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { RUNTIME_CAPABILITY, RUNTIME_CLIENT_CAPABILITY_TTL_MS, RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
+import {
+  RUNTIME_CAPABILITY,
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  RUNTIME_MAX_FRAME_BYTES,
+  RUNTIME_PROTOCOL_V2,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
@@ -223,6 +228,40 @@ describe("ConnectionRegistry", () => {
     expect(registry.supports(computerId, verifiedInstanceId, "imCredentialGrant", 4)).toBe(true);
   });
 
+  it("falls back to a fresh legacy credential-grant capability", async () => {
+    const registry = new ConnectionRegistry();
+    const workspaceComputerId = randomUUID();
+    const instanceId = randomUUID();
+    await registry.register(
+      {
+        capabilities: { imCredentialGrant: 1 },
+        capabilitiesUpdatedAt: 100,
+        computerId: workspaceComputerId,
+        instanceId,
+        lastHeartbeatAt: 100,
+        socket: socket(),
+        workspaceComputerId,
+        workspaceId: randomUUID(),
+      },
+      async () => undefined,
+    );
+
+    expect(registry.capabilityVersion(workspaceComputerId, instanceId, RUNTIME_CAPABILITY.imCredentialGrant, 100)).toBe(
+      1,
+    );
+    expect(
+      registry.capabilityVersion(
+        workspaceComputerId,
+        instanceId,
+        RUNTIME_CAPABILITY.imCredentialGrant,
+        100 + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1,
+      ),
+    ).toBeUndefined();
+    expect(
+      registry.capabilityVersion(workspaceComputerId, instanceId, RUNTIME_CAPABILITY.sessionCollaboration, 100),
+    ).toBeUndefined();
+  });
+
   it("adds the current v2 connection fence without changing the domain frame", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
@@ -307,6 +346,10 @@ describe("ConnectionRegistry", () => {
       },
     ]);
     expect(
+      registry.touch(computerId, instanceId, currentSocket, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 4, undefined, []),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 4)).toEqual([]);
+    expect(
       registry.touch(
         computerId,
         instanceId,
@@ -374,6 +417,225 @@ describe("ConnectionRegistry", () => {
     expect(registry.providerReadiness(computerId, 2)).toEqual([]);
     expect(registry.supportsProvider(computerId, oldInstanceId, "codex", 2)).toBe(false);
     expect(registry.supportsProvider(computerId, newInstanceId, "codex", 2)).toBe(false);
+  });
+
+  it("tracks IM CLI readiness with freshness and active-instance fences", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        instanceId,
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+        imCliReadiness: [{ provider: "slack", status: "ready" }],
+        imCliReadinessObservedAt: 10,
+      },
+      async () => undefined,
+    );
+    expect(registry.imCliReadiness(computerId, 10)).toEqual([
+      { observation: { provider: "slack", status: "ready" }, observedAt: 10 },
+    ]);
+    expect(registry.supportsImCli(computerId, "slack", 10)).toBe(true);
+    expect(registry.supportsImCli(computerId, "feishu", 10)).toBe(false);
+    expect(registry.imCliReadiness(computerId, 10 + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1)).toEqual([]);
+    expect(registry.imCliReadiness(randomUUID(), 10)).toEqual([]);
+    expect(registry.touch(computerId, instanceId, runtimeSocket, 20, undefined, undefined, [])).toBe(true);
+    expect(registry.imCliReadiness(computerId, 20)).toEqual([]);
+    expect(
+      registry.touch(computerId, instanceId, runtimeSocket, 30, undefined, undefined, [
+        { provider: "feishu", status: "install" },
+      ]),
+    ).toBe(true);
+    expect(registry.imCliReadiness(computerId, 30)).toMatchObject([
+      { observation: { provider: "feishu", status: "install" } },
+    ]);
+    expect(registry.touch(computerId, instanceId, runtimeSocket, 31, undefined, undefined, undefined)).toBe(true);
+    expect(registry.activate(computerId, randomUUID(), runtimeSocket)).toBe(false);
+  });
+
+  it("maps send failures to explicit registry errors and protects v2 fences", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const sendErrorSocket = {
+      ...socket(),
+      readyState: WebSocket.OPEN,
+      send: vi.fn((_data: string, callback: (error?: Error) => void) => callback(new Error("send failed"))),
+    } as unknown as WebSocket;
+    await registry.register(
+      {
+        computerId,
+        instanceId,
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
+        lastHeartbeatAt: 1,
+        socket: sendErrorSocket,
+      },
+      async () => undefined,
+    );
+    await expect(registry.send(randomUUID(), instanceId, {})).rejects.toMatchObject({ code: "instance_replaced" });
+    await expect(registry.send(computerId, randomUUID(), {})).rejects.toMatchObject({ code: "instance_replaced" });
+    await expect(registry.send(computerId, instanceId, {})).rejects.toMatchObject({ code: "unavailable" });
+
+    const closedSocket = { ...socket(), readyState: WebSocket.CLOSED } as unknown as WebSocket;
+    await registry.register(
+      {
+        computerId,
+        instanceId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
+        lastHeartbeatAt: 1,
+        socket: closedSocket,
+      },
+      async () => undefined,
+    );
+    await expect(registry.send(computerId, registry.currentInstanceId(computerId) as string, {})).rejects.toMatchObject(
+      { code: "unavailable" },
+    );
+
+    const v2 = {
+      ...socket(),
+      readyState: WebSocket.OPEN,
+      send: vi.fn((_data: string, callback: (error?: Error) => void) => callback()),
+    } as unknown as WebSocket;
+    await registry.register(
+      {
+        computerId,
+        instanceId,
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
+        connectionId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        lastHeartbeatAt: 1,
+        socket: v2,
+      },
+      async () => undefined,
+    );
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    await expect(registry.send(computerId, instanceId, circular)).rejects.toMatchObject({ code: "frame_too_large" });
+    const tooLarge = { text: "x".repeat(RUNTIME_MAX_FRAME_BYTES * 2) };
+    await expect(registry.send(computerId, instanceId, tooLarge)).rejects.toMatchObject({ code: "frame_too_large" });
+    const callbackError = vi.fn((_data: string, callback: (error?: Error) => void) => callback(new Error("failed")));
+    const callbackSocket = { ...v2, readyState: WebSocket.OPEN, send: callbackError } as unknown as WebSocket;
+    await registry.register(
+      {
+        computerId,
+        instanceId,
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
+        connectionId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        lastHeartbeatAt: 1,
+        socket: callbackSocket,
+      },
+      async () => undefined,
+    );
+    await expect(registry.send(computerId, instanceId, {})).rejects.toMatchObject({ code: "unavailable" });
+
+    const missingFence = { ...socket(), readyState: WebSocket.OPEN, send: vi.fn() } as unknown as WebSocket;
+    const missingFenceInstance = randomUUID();
+    await registry.register(
+      {
+        computerId,
+        instanceId: missingFenceInstance,
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        lastHeartbeatAt: 1,
+        socket: missingFence,
+      },
+      async () => undefined,
+    );
+    await expect(registry.send(computerId, missingFenceInstance, {})).rejects.toMatchObject({
+      code: "instance_replaced",
+    });
+
+    const staleFence = randomUUID();
+    const fencedInstance = randomUUID();
+    await registry.register(
+      {
+        computerId,
+        instanceId: fencedInstance,
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
+        connectionId: staleFence,
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        lastHeartbeatAt: 1,
+        socket: missingFence,
+      },
+      async () => undefined,
+    );
+    await expect(registry.send(computerId, fencedInstance, { connectionId: randomUUID() })).rejects.toMatchObject({
+      code: "instance_replaced",
+    });
+
+    const raceRegistry = new ConnectionRegistry();
+    const raceComputerId = randomUUID();
+    const raceInstanceId = randomUUID();
+    let finishSend: ((error?: Error) => void) | undefined;
+    const raceSocket = {
+      ...socket(),
+      readyState: WebSocket.OPEN,
+      send: vi.fn((_data: string, callback: (error?: Error) => void) => {
+        finishSend = callback;
+      }),
+    } as unknown as WebSocket;
+    await raceRegistry.register(
+      {
+        computerId: raceComputerId,
+        instanceId: raceInstanceId,
+        workspaceComputerId: raceComputerId,
+        workspaceId: randomUUID(),
+        lastHeartbeatAt: 1,
+        socket: raceSocket,
+      },
+      async () => undefined,
+    );
+    const sending = raceRegistry.send(raceComputerId, raceInstanceId, {});
+    await raceRegistry.register(
+      {
+        computerId: raceComputerId,
+        instanceId: randomUUID(),
+        workspaceComputerId: raceComputerId,
+        workspaceId: randomUUID(),
+        lastHeartbeatAt: 2,
+        socket: socket(),
+      },
+      async () => undefined,
+    );
+    finishSend?.();
+    await expect(sending).rejects.toMatchObject({ code: "instance_replaced" });
+  });
+
+  it("does not publish or retain a registration when persistence fails", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const publish = vi.fn();
+    await expect(
+      registry.register(
+        {
+          computerId,
+          instanceId,
+          workspaceComputerId: computerId,
+          workspaceId: randomUUID(),
+          lastHeartbeatAt: 1,
+          socket: socket(),
+        },
+        async () => {
+          throw new Error("persist failed");
+        },
+        publish,
+      ),
+    ).rejects.toThrow("persist failed");
+    expect(publish).not.toHaveBeenCalled();
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
   });
 });
 

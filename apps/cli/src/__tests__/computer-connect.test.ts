@@ -1,14 +1,21 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as client from "@opentag/client";
 import {
+  AccessTokenProvider,
+  OpenTagApi,
   readComputerIdentity,
   readCredentials,
   readMachineCredentials,
   writeCredentialsAtomically,
 } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createProgram } from "../cli/program.js";
+import * as computerCore from "../core/computer/connect.js";
 import { runComputerConnect } from "../core/computer/connect.js";
+import { formatComputerList } from "../core/computer/formatting.js";
+import { listComputers } from "../core/computer/queries.js";
 import type { DaemonServiceManager } from "../core/daemon/service/index.js";
 
 const homes: string[] = [];
@@ -18,6 +25,116 @@ afterEach(async () => {
 });
 
 describe("computer connect", () => {
+  it("executes the Computer connect command and reports service state", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      credentialsPath: `${home}/config/computer-credentials.json`,
+      message: "Connected this Computer",
+      service: {
+        currentHome: home,
+        definitionPath: `${home}/service`,
+        logHint: "logs",
+        platform: "systemd",
+        serviceId: "opentag-dev",
+        state: "active",
+      },
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home]);
+      expect(runSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "code", home, noStart: false, serverUrl: channelServerUrl() }),
+      );
+      expect(stdout).toHaveBeenCalledWith("Connected this Computer\n");
+      expect(stdout).toHaveBeenCalledWith("Daemon service opentag-dev is active\n");
+    } finally {
+      stdout.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
+  it("preserves credentials and returns a clean error when daemon reload fails", async () => {
+    const home = await temporaryHome();
+    const connectResult = { credentialsPath: `${home}/credentials.json`, message: "Connected this Computer" };
+    const runSpy = vi
+      .spyOn(computerCore, "runComputerConnect")
+      .mockRejectedValue(new computerCore.ComputerConnectServiceInstallError(connectResult));
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home]);
+      expect(stdout).toHaveBeenCalledWith("Connected this Computer\n");
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("machine credentials were preserved"));
+      expect(process.exitCode).toBe(1);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      process.exitCode = previousExitCode;
+      runSpy.mockRestore();
+    }
+  });
+
+  it("formats empty and populated Computer lists", () => {
+    expect(formatComputerList({ computers: [] })).toBe("No Computers registered");
+    expect(
+      formatComputerList({
+        computers: [
+          {
+            computerId: "computer-1",
+            connectionStatus: "online",
+            displayName: "Workstation",
+            connectedAt: "2026-08-19T00:00:00.000Z",
+            lastSeenAt: "2026-08-19T00:00:00.000Z",
+            observedAt: "2026-08-19T00:00:00.000Z",
+            enrolledAt: "2026-08-19T00:00:00.000Z",
+            agentIds: [],
+            platform: "linux",
+          },
+        ],
+      }),
+    ).toBe("Workstation\tcomputer-1\tonline\tlinux\t2026-08-19T00:00:00.000Z");
+  });
+
+  it("lists Computers through the authenticated Account client", async () => {
+    const home = await temporaryHome();
+    const response = {
+      computers: [
+        {
+          computerId: "computer-1",
+          connectionStatus: "online" as const,
+          displayName: "Workstation",
+          connectedAt: "2026-08-19T00:00:00.000Z",
+          lastSeenAt: "2026-08-19T00:00:00.000Z",
+          observedAt: "2026-08-19T00:00:00.000Z",
+          enrolledAt: "2026-08-19T00:00:00.000Z",
+          agentIds: [],
+          platform: "linux" as const,
+        },
+      ],
+    };
+    const credentials = { serverUrl: "https://opentag.example" } as Awaited<ReturnType<typeof readCredentials>>;
+    const readCredentialsSpy = vi.spyOn(client, "readCredentials").mockResolvedValue(credentials);
+    const tokenSpy = vi.spyOn(AccessTokenProvider.prototype, "getAccessToken").mockResolvedValue("access-token");
+    const listSpy = vi.spyOn(OpenTagApi.prototype, "listAccountComputers").mockResolvedValue(response);
+    try {
+      await expect(listComputers(home)).resolves.toEqual(response);
+      expect(readCredentialsSpy).toHaveBeenCalledWith(home);
+      expect(tokenSpy).toHaveBeenCalledOnce();
+      expect(listSpy).toHaveBeenCalledWith("access-token");
+    } finally {
+      readCredentialsSpy.mockRestore();
+      tokenSpy.mockRestore();
+      listSpy.mockRestore();
+    }
+  });
+
+  it("requires Account login before listing Computers", async () => {
+    const home = await temporaryHome();
+    await expect(listComputers(home)).rejects.toThrow("OpenTag is not logged in; run login first");
+  });
+
   it("stores machine authority separately from Account credentials and binds one Account Computer", async () => {
     const home = await temporaryHome();
     const accountCredentials = {
@@ -162,6 +279,10 @@ describe("computer connect", () => {
     expect(manager.restart).not.toHaveBeenCalled();
   });
 });
+
+function channelServerUrl(): string {
+  return "http://127.0.0.1:8000";
+}
 
 async function temporaryHome(): Promise<string> {
   // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.

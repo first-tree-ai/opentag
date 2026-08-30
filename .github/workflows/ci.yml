@@ -516,6 +516,8 @@ jobs:
       - node-compatibility
       - cli-pack-smoke
       - container-smoke
+      - workflow-validation
+      - secret-scan
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -524,8 +526,11 @@ jobs:
           NODE_COMPATIBILITY_RESULT: ${{ needs.node-compatibility.result }}
           CLI_PACK_RESULT: ${{ needs.cli-pack-smoke.result }}
           CONTAINER_RESULT: ${{ needs.container-smoke.result }}
+          WORKFLOW_VALIDATION_RESULT: ${{ needs.workflow-validation.result }}
+          SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
         run: |
-          for result in "$CHECKS_RESULT" "$NODE_COMPATIBILITY_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT"; do
+          for result in "$CHECKS_RESULT" "$NODE_COMPATIBILITY_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT" \
+            "$WORKFLOW_VALIDATION_RESULT" "$SECRET_SCAN_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "Required CI job did not succeed: $result" >&2
               exit 1

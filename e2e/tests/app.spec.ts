@@ -43,7 +43,7 @@ test("Agent creation form creates an Agent visible in the list and detail page",
 test("sign-in rejects bad credentials and accepts the configured admin", async ({ page, browser }) => {
   const rejected = await page.request.post("/api/v1/auth/email/sign-in", {
     data: { email: "password-e2e@opentag.local", password: "definitely-wrong-password" },
-    headers: { Origin: page.url().split("/").slice(0, 3).join("/") },
+    headers: { Origin: baseURL },
   });
   expect([401, 403]).toContain(rejected.status());
   await expect(rejected.json()).resolves.toMatchObject({ error: { code: "AUTH_INVALID_TOKEN" } });

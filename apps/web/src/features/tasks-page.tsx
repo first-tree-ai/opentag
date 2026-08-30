@@ -50,10 +50,15 @@ export function TasksPage() {
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
   const loaded = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
-  const loadMoreError = tasksQuery.isFetchNextPageError ? asError(tasksQuery.error) : null;
   const taskError = asError(tasksQuery.error);
-  const terminalTasksError =
-    tasksQuery.isError && !tasksQuery.isFetchNextPageError && isTerminalResourceError(taskError) ? taskError : null;
+  /*
+   * Which page failed does not change what a terminal status means. The Server resolves the Task
+   * scope before it parses a cursor — an unusable cursor is a 400 — so a 401, 403, 404 or 410 on an
+   * append says the same thing it says on the first read, and the rows already in hand are exactly
+   * what must stop being shown.
+   */
+  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
 
   const agents = useMemo(
     () =>
@@ -97,43 +102,51 @@ export function TasksPage() {
         </Text>
       </PageHeader>
 
-      <form
-        className="flex flex-wrap items-end gap-3"
-        aria-label="Filter Tasks"
-        data-ui="task-toolbar"
-        onSubmit={(event) => event.preventDefault()}
-      >
-        <div className="min-w-56 flex-1">
-          <span className="sr-only">Search Tasks</span>
-          <KumoInputControl
-            aria-label="Search Tasks"
-            value={query}
-            type="search"
-            placeholder="Search Tasks"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
-        <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-          <option value="all">All Agents</option>
-          {agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.displayName}
-            </option>
-          ))}
-        </TaskSelect>
-        <TaskSelect
-          label="Filter by status"
-          value={status}
-          onChange={(event) => setStatus(event.target.value as TaskFilter)}
+      {/*
+       * The toolbar is built out of the rows themselves — the Agent options are the Agents named by
+       * the Tasks that were read. A terminal response withdraws those rows, so it has to withdraw
+       * what was derived from them too, or the Account keeps reading Agent names off a list the
+       * Server has just refused. The typed filters are React state and come back on recovery.
+       */}
+      {terminalTasksError ? null : (
+        <form
+          className="flex flex-wrap items-end gap-3"
+          aria-label="Filter Tasks"
+          data-ui="task-toolbar"
+          onSubmit={(event) => event.preventDefault()}
         >
-          <option value="all">All statuses</option>
-          {Object.entries(statusPresentation).map(([value, presentation]) => (
-            <option key={value} value={value}>
-              {presentation.label}
-            </option>
-          ))}
-        </TaskSelect>
-      </form>
+          <div className="min-w-56 flex-1">
+            <span className="sr-only">Search Tasks</span>
+            <KumoInputControl
+              aria-label="Search Tasks"
+              value={query}
+              type="search"
+              placeholder="Search Tasks"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+            <option value="all">All Agents</option>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.displayName}
+              </option>
+            ))}
+          </TaskSelect>
+          <TaskSelect
+            label="Filter by status"
+            value={status}
+            onChange={(event) => setStatus(event.target.value as TaskFilter)}
+          >
+            <option value="all">All statuses</option>
+            {Object.entries(statusPresentation).map(([value, presentation]) => (
+              <option key={value} value={value}>
+                {presentation.label}
+              </option>
+            ))}
+          </TaskSelect>
+        </form>
+      )}
 
       {!terminalTasksError && tasksQuery.isPending ? (
         <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
@@ -223,10 +236,11 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   });
   const first = taskQuery.data?.pages[0];
   const turns = useMemo(() => taskQuery.data?.pages.flatMap((page) => page.turns) ?? [], [taskQuery.data]);
-  const loadMoreError = taskQuery.isFetchNextPageError ? asError(taskQuery.error) : null;
   const taskError = asError(taskQuery.error);
-  const terminalTaskError =
-    taskQuery.isError && !taskQuery.isFetchNextPageError && isTerminalResourceError(taskError) ? taskError : null;
+  // `TaskService.get` resolves the Task before it parses a cursor, so a terminal status on a Turn
+  // append is about the Task, not the page boundary. It withdraws the conversation with it.
+  const terminalTaskError = taskQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = taskQuery.isFetchNextPageError && !terminalTaskError ? taskError : null;
 
   if (terminalTaskError) return <TaskUnavailable error={terminalTaskError} />;
   if (taskId !== undefined && taskQuery.isPending) {

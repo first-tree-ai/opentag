@@ -200,10 +200,10 @@ describe("Feishu adapter", () => {
       received = message;
     });
     const raw = rawMessage("ev-mention", "om-mention", "6");
-    raw.event.sender.sender_id = { user_id: "ou_user" };
+    (raw.event.sender.sender_id as { open_id?: string; user_id?: string }) = { user_id: "ou_user" };
     raw.event.sender.sender_type = "app";
     raw.event.message.content = JSON.stringify({ text: "hello @_all" });
-    raw.event.message.mentions = [
+    (raw.event.message as { mentions?: unknown[] }).mentions = [
       { key: "@bot", id: { open_id: "ou_bot" }, mentioned_type: "app", name: "Bot" },
       { key: "@user", id: { user_id: "u_user" }, name: "User" },
     ];
@@ -315,7 +315,7 @@ describe("Feishu adapter", () => {
       createLarkChannel: vi.fn(() => outbound),
     }));
     try {
-      const module = await import("../services/im-bindings/feishu/adapter.js?reliable-channel");
+      const module = await import("../services/im-bindings/feishu/adapter.js");
       const adapter = new module.FeishuAdapter({ appId: "cli_default", appSecret: "secret", teamId: null });
       await expect(adapter.validateBinding()).resolves.toEqual({
         externalAppId: "cli_default",
@@ -728,7 +728,7 @@ describe("FeishuConnectionManager", () => {
       appSecret: "secret",
       teamId: "tenant_maint",
       botOpenId: "ou_maint",
-      grantedScopes: FEISHU_REQUIRED_TENANT_SCOPES,
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
     });
     const first = fakeConnectionAdapter({ appId: "cli_maint", botOpenId: "ou_maint" });
     const manager = new FeishuConnectionManager({
@@ -847,7 +847,7 @@ describe("FeishuConnectionManager", () => {
       appSecret: "secret",
       teamId: "tenant_release",
       botOpenId: "ou_expected",
-      grantedScopes: FEISHU_REQUIRED_TENANT_SCOPES,
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
     });
     const invalid = fakeConnectionAdapter({ appId: "cli_release", botOpenId: "ou_wrong" });
     const manager = new FeishuConnectionManager({

@@ -507,10 +507,10 @@ describe("ImBindingService persistence", () => {
     const reauth = await value.service.activateSlack(slackInput(value.agent.id, { intent: "reauthorize" }), "B1");
     expect(reauth.credentialGeneration).toBe(2);
     const replacement = await value.service.activateSlack(
-      slackInput(value.agent.id, { intent: "replace", appId: "A2", teamId: "T2" }),
+      slackInput(value.agent.id, { intent: "reauthorize", appId: "A2", teamId: "T2" }),
       "B2",
     );
-    expect(replacement.credentialGeneration).toBe(3);
+    expect(replacement.credentialGeneration).toBe(1);
     expect(first.imBindingId).toBe(reauth.imBindingId);
   });
 

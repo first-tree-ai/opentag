@@ -189,7 +189,7 @@ describe("FeishuSetupService persistence", () => {
           teamId: "tenant_setup",
           botOpenId: "ou_setup",
           teamBrand: input.teamBrand,
-          grantedScopes: FEISHU_REQUIRED_TENANT_SCOPES,
+          grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
         };
       }),
     };

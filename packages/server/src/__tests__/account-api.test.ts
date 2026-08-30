@@ -102,15 +102,7 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-        workspaces: [
-          {
-            id: workspaceId,
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2026-08-20T00:00:00.000Z",
-          },
-        ],
+        setupCompletedAt: null,
       },
     }),
   };
@@ -162,6 +154,7 @@ function services() {
     },
     workspaceSetupService: {
       complete: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
+      completeForAccount: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
     },
   };
 }
@@ -324,6 +317,7 @@ describe("Account-native management collections", () => {
     expect(service.machineAuthService.issueForAccount).not.toHaveBeenCalled();
     expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
     expect(service.workspaceSetupService.complete).not.toHaveBeenCalled();
+    expect(service.workspaceSetupService.completeForAccount).not.toHaveBeenCalled();
     expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
   });
 
@@ -358,9 +352,18 @@ describe("Account-native management collections", () => {
       const response = await app.inject({ method: "GET", url, headers: authorization });
       expect(response.statusCode).toBe(200);
     }
+    const setup = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupComplete,
+      headers: authorization,
+      payload: { agentId },
+    });
+    expect(setup.statusCode).toBe(200);
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
     expect(service.workspaceService.listAccountComputers).toHaveBeenCalledWith(userId, false);
     expect(service.taskService.list).toHaveBeenCalledWith(userId, { limit: 50 });
+    expect(service.workspaceSetupService.completeForAccount).toHaveBeenCalledWith(userId, agentId);
+    expect(service.workspaceSetupService.complete).not.toHaveBeenCalled();
     expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
     expect(service.agentService.listForWorkspace).not.toHaveBeenCalled();
     expect(service.workspaceService.listComputers).not.toHaveBeenCalled();
@@ -395,13 +398,16 @@ describe("Account-native management collections", () => {
     expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
   });
 
-  it("registers no Account-native collection without the compatibility resolver", async () => {
+  it("registers Account-native collections without the compatibility resolver", async () => {
+    const service = services();
     const app = createApp({
       authService: authService(),
-      agentService: services().agentService as unknown as AgentService,
+      agentService: service.agentService as unknown as AgentService,
     });
     apps.push(app);
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(200);
+    expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
+    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
   });
 });

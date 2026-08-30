@@ -57,25 +57,22 @@ describe("auth contracts", () => {
     }
   });
 
-  it("validates the current Account and ordered Workspace response", () => {
+  it("validates the current Account without a management Workspace projection", () => {
     const response = {
       user: {
         id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
         email: "admin@example.com",
         displayName: "Admin",
       },
-      workspaces: [
-        {
-          id: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-          name: "example",
-          displayName: "Example",
-          setupCompletedAt: null,
-          grantedAt: "2026-08-20T00:00:00.000Z",
-        },
-      ],
+      setupCompletedAt: null,
     };
 
     expect(MeResponseSchema.parse(response)).toEqual(response);
+    expect(MeResponseSchema.parse({ ...response, setupCompletedAt: "2026-08-20T00:00:00.000Z" })).toEqual({
+      ...response,
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+    });
+    expect(() => MeResponseSchema.parse({ ...response, workspaces: [] })).toThrow();
     expect(() => MeResponseSchema.parse({ ...response, state: "active" })).toThrow();
   });
 

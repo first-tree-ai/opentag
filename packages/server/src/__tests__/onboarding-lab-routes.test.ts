@@ -25,7 +25,7 @@ function fixture(options: { environment?: "dev" | "staging" | "prod"; registered
   const betterAuth = signedInBrowser(accountId, { publicUrl: PUBLIC_ORIGIN });
   const app = createApp({
     authService: {
-      getActiveUserById: vi.fn().mockResolvedValue({ user: { id: accountId }, workspaces: [] }),
+      getActiveUserById: vi.fn().mockResolvedValue({ user: { id: accountId }, setupCompletedAt: null }),
     } as never,
     betterAuth,
     browserAuth: { publicOrigin: PUBLIC_ORIGIN, secureCookies: true, sessionTtlSeconds: 3600 } as never,

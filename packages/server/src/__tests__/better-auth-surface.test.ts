@@ -175,7 +175,7 @@ describe("published Better Auth surface", () => {
         ...authService(),
         getActiveUserById: vi.fn().mockResolvedValue({
           user: { id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", email: "admin@example.com", displayName: "Admin" },
-          workspaces: [],
+          setupCompletedAt: null,
         }),
       },
       betterAuth,

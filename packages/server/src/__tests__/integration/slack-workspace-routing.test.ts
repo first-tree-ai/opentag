@@ -113,6 +113,47 @@ async function activate(
 }
 
 describe("Slack workspace installation routing", () => {
+  it("allows different Agents in one legacy Workspace to own different current Slack installations", async () => {
+    const value = await fixture();
+    try {
+      const first = await activate(value.imBindingsService, value.first.id, "create");
+      const second = await activate(value.imBindingsService, value.second.id, "create", {
+        appId: "A_SECOND",
+        teamId: "T_SECOND",
+        botUserId: "U_SECOND",
+        botId: "B_SECOND",
+        token: "xoxb-second",
+      });
+
+      expect(await value.database.select().from(slackInstallations)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            agentId: value.first.id,
+            externalAppId: "A_OPENTAG",
+            externalTeamId: "T_TEAM",
+            status: "active",
+            workspaceId: value.bootstrap.workspaceId,
+          }),
+          expect.objectContaining({
+            agentId: value.second.id,
+            externalAppId: "A_SECOND",
+            externalTeamId: "T_SECOND",
+            status: "active",
+            workspaceId: value.bootstrap.workspaceId,
+          }),
+        ]),
+      );
+      expect(await value.database.select().from(imBindings)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: first.imBindingId, agentId: value.first.id, status: "active" }),
+          expect.objectContaining({ id: second.imBindingId, agentId: value.second.id, status: "active" }),
+        ]),
+      );
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("rejects cross-Agent create on a current installation without side effects", async () => {
     const value = await fixture();
     try {
@@ -178,7 +219,7 @@ describe("Slack workspace installation routing", () => {
     }
   });
 
-  it("fails closed for unconfigured, cross-workspace, and deleted default Agents", async () => {
+  it("fails closed for unconfigured, cross-Agent, and deleted default Agents", async () => {
     const value = await fixture();
     try {
       await expect(
@@ -501,7 +542,7 @@ describe("Slack workspace installation routing", () => {
     }
   });
 
-  it("projects outbound Bot tokens from the workspace installation without the signing secret", async () => {
+  it("projects outbound Bot tokens from the Agent installation without the signing secret", async () => {
     const value = await fixture();
     try {
       const created = await activate(value.imBindingsService, value.first.id, "create");

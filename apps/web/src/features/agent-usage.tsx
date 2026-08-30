@@ -4,10 +4,11 @@ import {
   type AgentUsageDetail,
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
+import { Link } from "@tanstack/react-router";
 import { type ComponentProps, lazy, Suspense, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { browserApi } from "../api.js";
 import { ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
+import type { AgentDetailView } from "./agents/agent-model.js";
 
 const LazyTimeseriesChart = lazy(async () => {
   const [
@@ -42,12 +43,12 @@ export function usageWindowLabel(days: AgentUsageWindowDays): string {
 }
 
 export function AgentUsageOverview({
+  agent,
   agentId,
-  detailsLinkState,
 }: {
+  /** Carried into history state so the usage page opens with the Agent already on screen. */
+  agent?: AgentDetailView;
   agentId: string;
-  /** Route state that keeps the Agent header rendered while the usage details page loads. */
-  detailsLinkState?: unknown;
 }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
   const state = useAgentUsage(agentId, windowDays);
@@ -63,7 +64,7 @@ export function AgentUsageOverview({
         </Text>
         <div className="flex flex-wrap items-center gap-4">
           <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
-          <Link className="text-sm text-kumo-link" state={detailsLinkState} to={`/agents/${agentId}/usage`}>
+          <Link className="text-sm text-kumo-link" params={{ agentId }} state={{ agent }} to="/agents/$agentId/usage">
             View details
           </Link>
         </div>

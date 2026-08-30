@@ -1,7 +1,7 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderInRouter } from "../__tests__/support/router.js";
 import { browserApi } from "../api.js";
 import { AgentUsageOverview, AgentUsageTab } from "./agent-usage.js";
 
@@ -25,11 +25,7 @@ describe("AgentUsageOverview", () => {
   it("describes partial totals without referring to charts that are not shown", async () => {
     vi.spyOn(browserApi, "agentUsage").mockResolvedValue(usage);
 
-    render(
-      <MemoryRouter>
-        <AgentUsageOverview agentId="agent-1" />
-      </MemoryRouter>,
-    );
+    await renderInRouter(<AgentUsageOverview agentId="agent-1" />);
 
     const coverage = await screen.findByText("Partial data.");
     expect(coverage.closest("[role='status']")?.textContent).toBe(
@@ -40,11 +36,7 @@ describe("AgentUsageOverview", () => {
   it("uses chart headings without repeating their meaning in helper copy", async () => {
     vi.spyOn(browserApi, "agentUsage").mockResolvedValue(usage);
 
-    render(
-      <MemoryRouter>
-        <AgentUsageTab agentId="agent-1" />
-      </MemoryRouter>,
-    );
+    await renderInRouter(<AgentUsageTab agentId="agent-1" />);
 
     expect(await screen.findByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();

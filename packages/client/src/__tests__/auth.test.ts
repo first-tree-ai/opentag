@@ -79,6 +79,9 @@ describe("OpenTagApi", () => {
   it("rejects server URLs that could persist or print embedded credentials", () => {
     expect(() => normalizeServerUrl("https://user:secret@opentag.example")).toThrow();
     expect(() => normalizeServerUrl("file:///tmp/server")).toThrow();
+    expect(() => normalizeServerUrl("https://opentag.example/api")).toThrow(
+      "The OpenTag server URL must be an origin without a path, query, or fragment",
+    );
     expect(normalizeServerUrl("https://opentag.example/")).toBe("https://opentag.example");
   });
 

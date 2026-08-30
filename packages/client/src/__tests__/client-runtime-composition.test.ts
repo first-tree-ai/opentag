@@ -372,6 +372,27 @@ describe("createClientRuntime production composition", () => {
     await expect(factory.probe({ signal: aborted.signal })).rejects.toThrow("stop resolution");
   });
 
+  it("does not execute a login shell during pre-connect createClientRuntime readiness", async () => {
+    const home = await temporaryDirectory("opentag-client-preconnect-shell-");
+    const empty = resolve(home, "empty-bin");
+    await mkdir(empty);
+    const marker = resolve(home, "login-shell-invoked");
+    const fakeShell = resolve(home, "fake-shell");
+    await writeFile(fakeShell, `#!/bin/sh\nprintf invoked > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+    await chmod(fakeShell, 0o755);
+    const runtime = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      claudeCodeCommand: "claude",
+      codexCommand: "codex",
+      environment: { HOME: home, PATH: empty, SHELL: fakeShell },
+      home,
+      larkCliCommand: resolve(empty, "missing-lark"),
+      slackCliCommand: resolve(empty, "missing-slack"),
+    });
+    runtime.stop();
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("resolves the production Claude Code factory and enforces its reviewed runtime policy", async () => {
     const home = await temporaryDirectory("opentag-client-claude-factory-");
     const command = resolve(home, "claude-fixture");

@@ -157,6 +157,7 @@ export {
   AgentRuntimeExecutableNotFoundError,
   type AgentRuntimeExecutableSource,
   codexDesktopAppBinDirs,
+  iterateAgentRuntimeExecutables,
   type ProbeAgentRuntimeCliInstallationsOptions,
   probeAgentRuntimeCliInstallations,
   type ResolveAgentRuntimeExecutableOptions,

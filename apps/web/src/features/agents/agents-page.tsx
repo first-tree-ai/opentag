@@ -3,10 +3,9 @@ import { type ReactNode, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { Button, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { EmptyState, Page } from "../layout/page.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/use-resource.js";
 import { useWorkspace } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
-import { loadAgentList, markAgentListUnconfirmed } from "./agent-model.js";
 import {
   agentAvatarTone,
   agentCardStatus,
@@ -14,6 +13,7 @@ import {
   formatUsageNumber,
   initials,
 } from "./agent-presentation.js";
+import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
 
@@ -21,11 +21,7 @@ export function AgentsPage() {
   const { me } = useWorkspace();
   const [createOpen, setCreateOpen] = useState(false);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
-  const state = useResource(() => loadAgentList(), me.user.id, {
-    onBackgroundError: markAgentListUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  const state = useAgentListView(me.user.id);
   return (
     <>
       <Page

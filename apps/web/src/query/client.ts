@@ -1,4 +1,23 @@
-import { QueryClient } from "@tanstack/react-query";
+import { focusManager, QueryClient } from "@tanstack/react-query";
+
+/*
+ * The cache watches only `visibilitychange` on its own, which fires when a tab is switched but not
+ * when the window itself regains focus — an Account that clicked away to a terminal and back would
+ * see the state it left. The hook this replaced listened to both, so both are restored here.
+ */
+focusManager.setEventListener((handleFocus) => {
+  // Called with no argument on purpose: a focus event says the Account is looking at this now, so
+  // re-read. Passing `true` would instead assert a state, and the cache only reacts when that state
+  // changes — so every focus after the first would be ignored.
+  const onFocus = () => handleFocus();
+  const onVisibilityChange = () => handleFocus(document.visibilityState === "visible");
+  window.addEventListener("focus", onFocus, false);
+  document.addEventListener("visibilitychange", onVisibilityChange, false);
+  return () => {
+    window.removeEventListener("focus", onFocus);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  };
+});
 
 /**
  * The cache the application reads every Server resource through.

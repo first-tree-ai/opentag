@@ -1,11 +1,13 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useState } from "react";
 import { browserApi } from "../../../api.js";
+import { queryKeys } from "../../../query/keys.js";
 import { Icon, Loader, Text } from "../../../ui/design-system.js";
 import { NotFoundPage } from "../../not-found.js";
-import { AsyncState, useResource } from "../../resource/use-resource.js";
+import { toResourceState } from "../../resource/query-state.js";
+import { AsyncState } from "../../resource/use-resource.js";
 import type { AgentDetailView } from "../agent-model.js";
-import { loadAgentDetail, markAgentDetailUnconfirmed } from "../agent-model.js";
+import { useAgentDetailView } from "../agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "../agent-routes.js";
 import { AgentComputerSettings } from "./agent-computer-settings.js";
 import { AgentManageSettings } from "./agent-manage-settings.js";
@@ -18,16 +20,10 @@ import { agentSettingsGroups, agentSettingsSections, agentSettingsSummary } from
 export function AgentSettingsPage({ agentId, section }: { agentId: string; section?: string }) {
   const routeState = useRouterState({ select: (state) => state.location.state });
   const initialAgent = routeState.agent?.id === agentId ? routeState.agent : undefined;
-  const [refreshVersion, setRefreshVersion] = useState(0);
-  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
-    initialValue: initialAgent,
-    keepPreviousData: true,
-    onBackgroundError: markAgentDetailUnconfirmed,
-    // Failure exits land here, so the page has to observe recovery on its own; it is where an
-    // operator waits while a Computer reconnects or a Provider finishes installing.
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  const queryClient = useQueryClient();
+  // Failure exits land here, so the page has to observe recovery on its own; it is where an
+  // operator waits while a Computer reconnects or a Provider finishes installing.
+  const state = useAgentDetailView(agentId, { watched: true, initialAgent });
   const selected = section as AgentSettingsSection | undefined;
   if (selected && !agentSettingsSections.some((item) => item.key === selected)) return <NotFoundPage />;
   return (
@@ -51,7 +47,8 @@ export function AgentSettingsPage({ agentId, section }: { agentId: string; secti
                 <AgentSettingsContent
                   agent={agent}
                   section={selected}
-                  onAgentChanged={() => setRefreshVersion((value) => value + 1)}
+                  // A write can change the Agent and its config together, so both are dropped.
+                  onAgentChanged={() => void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all(agentId) })}
                 />
               </div>
             </div>
@@ -86,7 +83,11 @@ export function AgentConfigSettingsContent({
   section: Exclude<AgentSettingsSection, "computer" | "messaging">;
   onAgentChanged: () => void;
 }) {
-  const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:${section}`);
+  // The section is not part of the key: the config does not vary by section, so switching between
+  // them reads what is already cached instead of asking again.
+  const configState = toResourceState(
+    useQuery({ queryKey: queryKeys.agents.config(agent.id), queryFn: () => browserApi.agentConfig(agent.id) }),
+  );
   return (
     <AsyncState state={configState}>
       {(config) => {
@@ -109,7 +110,9 @@ export function AgentConfigSettingsContent({
 }
 
 export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
-  const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:settings-overview`);
+  const configState = toResourceState(
+    useQuery({ queryKey: queryKeys.agents.config(agent.id), queryFn: () => browserApi.agentConfig(agent.id) }),
+  );
   return (
     <div className="grid gap-6">
       <header className="grid gap-2">

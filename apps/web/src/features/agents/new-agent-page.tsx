@@ -1,30 +1,57 @@
 import type { AgentAdminConfig, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../../agent-creation/agent-creation-flow.js";
-import { browserApi } from "../../api.js";
 import { FeishuSetup } from "../../im/feishu-setup.js";
+import { queryKeys } from "../../query/keys.js";
 import { Button, Dialog, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
+import { toResourceState } from "../resource/query-state.js";
 import type { LoadState } from "../resource/use-resource.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/use-resource.js";
 import { useWorkspace } from "../session/session-context.js";
+import { useComputersQuery } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 
-export function useOwnComputersResource(accountId: string, refreshVersion = 0) {
-  return useResource(() => browserApi.computers(), `${accountId}:${refreshVersion}`, {
-    onBackgroundError: markOwnComputersUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+/**
+ * The Account's Computers, plus the refresh the creation flow drives when a Computer it is waiting
+ * for connects.
+ *
+ * The refresh reports loading, while the interval and focus re-reads behind it do not. The flow
+ * depends on that distinction: it restores focus and announces the outcome by watching a refresh
+ * begin and end, and a background re-read is not something the Account asked for and should not be
+ * narrated. The page keeps showing the Computers it already has either way.
+ */
+export function useOwnComputersResource(): {
+  state: LoadState<{ computers: WorkspaceComputerSummary[] }>;
+  refresh: () => void;
+} {
+  const queryClient = useQueryClient();
+  const query = useComputersQuery(true);
+  const [refreshing, setRefreshing] = useState(false);
+  // The re-read starts from an effect rather than from the caller, so the render that reports
+  // loading is committed before it can finish. Starting it inline would let a fast response land in
+  // the same batch, leaving the flow no transition to notice.
+  useEffect(() => {
+    if (!refreshing) return;
+    let watching = true;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.computers() }).finally(() => {
+      if (watching) setRefreshing(false);
+    });
+    return () => {
+      watching = false;
+    };
+  }, [refreshing, queryClient]);
+  const state = toResourceState(query, markOwnComputersUnconfirmed);
+  return { state: refreshing ? { kind: "loading" } : state, refresh: () => setRefreshing(true) };
 }
 
 export function NewAgentPage() {
   const { me } = useWorkspace();
   const navigate = useNavigate();
-  const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
   const [created, setCreated] = useState<AgentAdminConfig>();
-  const computers = useOwnComputersResource(me.user.id, computerRefreshVersion);
+  const { state: computers, refresh: refreshComputers } = useOwnComputersResource();
   return (
     <Page
       title={created ? "Agent created" : "Create Agent"}
@@ -41,7 +68,7 @@ export function NewAgentPage() {
           computers={computers}
           accountId={me.user.id}
           onCreated={setCreated}
-          onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
+          onRefresh={refreshComputers}
         />
       )}
     </Page>
@@ -59,8 +86,7 @@ export function NewAgentDialog({
 }) {
   const { me } = useWorkspace();
   const navigate = useNavigate();
-  const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
-  const computers = useOwnComputersResource(me.user.id, computerRefreshVersion);
+  const { state: computers, refresh: refreshComputers } = useOwnComputersResource();
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<AgentAdminConfig>();
   const finish = () => {
@@ -89,7 +115,7 @@ export function NewAgentDialog({
           accountId={me.user.id}
           onCancel={onClose}
           onCreated={setCreated}
-          onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
+          onRefresh={refreshComputers}
           onSubmittingChange={setSubmitting}
         />
       )}

@@ -925,7 +925,9 @@ describe("OpenTag Web App Shell", () => {
       expect(dialog.contains(document.activeElement)).toBe(true);
       await act(async () => {
         finishRefresh?.();
-        await Promise.resolve();
+        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
+        // starts settles across several microtask turns; drain them rather than counting them.
+        await vi.advanceTimersByTimeAsync(0);
       });
 
       expect(within(dialog).getByText("Ada's Linux Computer")).toBeTruthy();
@@ -1088,7 +1090,9 @@ describe("OpenTag Web App Shell", () => {
       expect(dialog.contains(document.activeElement)).toBe(true);
       await act(async () => {
         finishRefresh?.();
-        await Promise.resolve();
+        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
+        // starts settles across several microtask turns; drain them rather than counting them.
+        await vi.advanceTimersByTimeAsync(0);
       });
 
       expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();

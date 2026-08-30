@@ -145,7 +145,7 @@ function appWith(
 ) {
   const service = { ...services(), ...overrides };
   const app = createApp({
-    ...(setupReset ? { stagingOnboardingLab: { reset: setupReset as never } } : {}),
+    ...(setupReset ? { setupResetService: setupReset as never } : {}),
     authService: authService(),
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,

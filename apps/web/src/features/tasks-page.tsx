@@ -1,8 +1,10 @@
-import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type { TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import { queryKeys } from "../query/keys.js";
 import {
   Button,
   ClipboardText,
@@ -18,10 +20,9 @@ import {
   Text,
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
+import { isTerminalResourceError } from "./resource/resource-state.js";
 
 type TaskFilter = "all" | TaskStatus;
-type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
-type TaskCollection = { tasks: TaskSummary[]; nextCursor: string | null };
 
 const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
   queued: { label: "Queued", tone: "info" },
@@ -34,47 +35,41 @@ const statusPresentation: Record<TaskStatus, { readonly label: string; readonly 
 };
 
 export function TasksPage() {
-  const [state, setState] = useState<LoadState<TaskCollection>>({ kind: "loading" });
   const [query, setQuery] = useState("");
   const [agentId, setAgentId] = useState("all");
   const [status, setStatus] = useState<TaskFilter>("all");
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
-  const initialLoadGeneration = useRef(0);
+  /*
+   * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
+   * stays retryable — the behavior the hand-rolled append kept its own error state for.
+   */
+  const tasksQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.list(),
+    queryFn: ({ pageParam }) => browserApi.tasks({ cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    // The API reports the end of the list as null; the cache reads undefined as "no page after this".
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const loaded = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
+  const taskError = asError(tasksQuery.error);
+  /*
+   * Which page failed does not change what a terminal status means. The Server resolves the Task
+   * scope before it parses a cursor — an unusable cursor is a 400 — so a 401, 403, 404 or 410 on an
+   * append says the same thing it says on the first read, and the rows already in hand are exactly
+   * what must stop being shown.
+   */
+  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
 
-  const loadTasks = useCallback(async (): Promise<void> => {
-    const generation = initialLoadGeneration.current + 1;
-    initialLoadGeneration.current = generation;
-    setState({ kind: "loading" });
-    setLoadMoreError(null);
-    try {
-      const value = await browserApi.tasks();
-      if (initialLoadGeneration.current !== generation) return;
-      setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } });
-    } catch (error) {
-      if (initialLoadGeneration.current !== generation) return;
-      setState({ kind: "error", error: asError(error) });
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadTasks();
-    return () => {
-      // Invalidate an in-flight request when this page unmounts.
-      initialLoadGeneration.current += 1;
-    };
-  }, [loadTasks]);
-
-  const agents = useMemo(() => {
-    if (state.kind !== "ready") return [];
-    return [...new Map(state.value.tasks.map((task) => [task.agent.id, task.agent])).values()].sort((left, right) =>
-      left.displayName.localeCompare(right.displayName),
-    );
-  }, [state]);
+  const agents = useMemo(
+    () =>
+      [...new Map(loaded.map((task) => [task.agent.id, task.agent])).values()].sort((left, right) =>
+        left.displayName.localeCompare(right.displayName),
+      ),
+    [loaded],
+  );
   const tasks = useMemo(() => {
-    if (state.kind !== "ready") return [];
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    return state.value.tasks.filter((task) => {
+    return loaded.filter((task) => {
       const matchesQuery =
         normalizedQuery.length === 0 ||
         [
@@ -93,27 +88,7 @@ export function TasksPage() {
         matchesQuery && (agentId === "all" || task.agent.id === agentId) && (status === "all" || task.status === status)
       );
     });
-  }, [agentId, query, state, status]);
-
-  async function loadMore(): Promise<void> {
-    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.tasks({ cursor: state.value.nextCursor });
-      setState((current) =>
-        current.kind === "ready"
-          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
-          : current,
-      );
-    } catch (error) {
-      // Keep the rows already on screen. A failed append should be recoverable without making the
-      // viewer lose the page that was loaded successfully.
-      setLoadMoreError(asError(error));
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  }, [agentId, loaded, query, status]);
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
@@ -127,59 +102,78 @@ export function TasksPage() {
         </Text>
       </PageHeader>
 
-      <form
-        className="flex flex-wrap items-end gap-3"
-        aria-label="Filter Tasks"
-        data-ui="task-toolbar"
-        onSubmit={(event) => event.preventDefault()}
-      >
-        <div className="min-w-56 flex-1">
-          <span className="sr-only">Search Tasks</span>
-          <KumoInputControl
-            aria-label="Search Tasks"
-            value={query}
-            type="search"
-            placeholder="Search Tasks"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
-        <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-          <option value="all">All Agents</option>
-          {agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.displayName}
-            </option>
-          ))}
-        </TaskSelect>
-        <TaskSelect
-          label="Filter by status"
-          value={status}
-          onChange={(event) => setStatus(event.target.value as TaskFilter)}
+      {/*
+       * The toolbar is built out of the rows themselves — the Agent options are the Agents named by
+       * the Tasks that were read. A terminal response withdraws those rows, so it has to withdraw
+       * what was derived from them too, or the Account keeps reading Agent names off a list the
+       * Server has just refused. The typed filters are React state and come back on recovery.
+       */}
+      {terminalTasksError ? null : (
+        <form
+          className="flex flex-wrap items-end gap-3"
+          aria-label="Filter Tasks"
+          data-ui="task-toolbar"
+          onSubmit={(event) => event.preventDefault()}
         >
-          <option value="all">All statuses</option>
-          {Object.entries(statusPresentation).map(([value, presentation]) => (
-            <option key={value} value={value}>
-              {presentation.label}
-            </option>
-          ))}
-        </TaskSelect>
-      </form>
+          <div className="min-w-56 flex-1">
+            <span className="sr-only">Search Tasks</span>
+            <KumoInputControl
+              aria-label="Search Tasks"
+              value={query}
+              type="search"
+              placeholder="Search Tasks"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+            <option value="all">All Agents</option>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.displayName}
+              </option>
+            ))}
+          </TaskSelect>
+          <TaskSelect
+            label="Filter by status"
+            value={status}
+            onChange={(event) => setStatus(event.target.value as TaskFilter)}
+          >
+            <option value="all">All statuses</option>
+            {Object.entries(statusPresentation).map(([value, presentation]) => (
+              <option key={value} value={value}>
+                {presentation.label}
+              </option>
+            ))}
+          </TaskSelect>
+        </form>
+      )}
 
-      {state.kind === "loading" ? (
+      {!terminalTasksError && tasksQuery.isPending ? (
         <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
       ) : null}
-      {state.kind === "error" ? (
+      {terminalTasksError ? (
         <TaskNotice
           action={
-            <Button type="button" variant="secondary" onClick={() => void loadTasks()}>
+            <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
               Try again
             </Button>
           }
           heading="Tasks unavailable"
-          detail={state.error.message}
+          detail={terminalTasksError.message}
         />
       ) : null}
-      {state.kind === "ready" && tasks.length > 0 ? (
+      {!terminalTasksError && tasksQuery.isError && !tasksQuery.data ? (
+        <TaskNotice
+          action={
+            <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
+              Try again
+            </Button>
+          }
+          heading="Tasks unavailable"
+          detail={asError(tasksQuery.error).message}
+        />
+      ) : null}
+      {!terminalTasksError && tasksQuery.data && tasks.length > 0 ? (
         <>
           <section
             aria-label="Tasks table"
@@ -201,16 +195,16 @@ export function TasksPage() {
               </tbody>
             </Table>
           </section>
-          {state.value.nextCursor ? (
+          {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
-                disabled={loadingMore}
-                loading={loadingMore}
+                disabled={tasksQuery.isFetchingNextPage}
+                loading={tasksQuery.isFetchingNextPage}
                 type="button"
                 variant="secondary"
-                onClick={() => void loadMore()}
+                onClick={() => void tasksQuery.fetchNextPage()}
               >
-                {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
               </Button>
               {loadMoreError ? (
                 <span className="text-sm text-kumo-danger" role="alert">
@@ -221,7 +215,7 @@ export function TasksPage() {
           ) : null}
         </>
       ) : null}
-      {state.kind === "ready" && tasks.length === 0 ? (
+      {!terminalTasksError && tasksQuery.data && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
       ) : null}
     </section>
@@ -233,57 +227,25 @@ export function TasksPage() {
  * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
  */
 export function AgentTasksSection({ agentId }: { agentId: string }) {
-  const [state, setState] = useState<LoadState<{ tasks: TaskSummary[]; nextCursor: string | null }>>({
-    kind: "loading",
-  });
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
   /*
-   * The route reuses this component when `:agentId` changes, so a page requested for one Agent can
-   * resolve after another Agent's list is on screen. Comparing the Agent is not enough -- moving away
-   * and back reloads the list under the same id -- so each load gets a generation, and an append only
-   * lands on the load it was started from.
+   * Keyed by the Agent, so the route reusing this component for a different `:agentId` reads a
+   * different entry rather than a load that has to be told apart from the one before it. An append
+   * belongs to the entry that started it, and the pages it accumulated are still there on the way
+   * back — which is what the generation counter here had to imitate by hand.
    */
-  const loadGeneration = useRef(0);
-
-  useEffect(() => {
-    let active = true;
-    loadGeneration.current += 1;
-    setState({ kind: "loading" });
-    setLoadMoreError(null);
-    setLoadingMore(false);
-    browserApi.tasks({ agentId }).then(
-      (value) =>
-        active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
-      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
-    );
-    return () => {
-      active = false;
-    };
-  }, [agentId]);
-
-  async function loadMore(): Promise<void> {
-    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    const pagedGeneration = loadGeneration.current;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.tasks({ agentId, cursor: state.value.nextCursor });
-      if (loadGeneration.current !== pagedGeneration) return;
-      setState((current) =>
-        current.kind === "ready"
-          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
-          : current,
-      );
-    } catch (error) {
-      if (loadGeneration.current !== pagedGeneration) return;
-      // The page already has these rows. Losing them to report a failed append costs the viewer more
-      // than the failure itself, so the list stays and the failure is reported next to its control.
-      setLoadMoreError(asError(error));
-    } finally {
-      if (loadGeneration.current === pagedGeneration) setLoadingMore(false);
-    }
-  }
+  const tasksQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.byAgent(agentId),
+    queryFn: ({ pageParam }) => browserApi.tasks({ agentId, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const tasks = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
+  const taskError = asError(tasksQuery.error);
+  // The same rule the workspace list follows: a refusal withdraws the rows it refused, whichever
+  // page asked for them. Only a transient append failure keeps them, reported beside its control.
+  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
+  const unavailable = terminalTasksError !== null || (tasksQuery.isError && !tasksQuery.data);
 
   return (
     <section
@@ -299,22 +261,22 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
           All Tasks
         </Link>
       </div>
-      {state.kind === "loading" ? (
+      {!unavailable && tasksQuery.isPending ? (
         <p className="text-sm text-kumo-subtle" role="status">
           Loading Tasks…
         </p>
       ) : null}
-      {state.kind === "error" ? (
+      {unavailable ? (
         <p className="text-sm text-kumo-subtle" role="status">
           Tasks are temporarily unavailable.
         </p>
       ) : null}
-      {state.kind === "ready" && state.value.tasks.length === 0 ? (
+      {!unavailable && tasksQuery.data && tasks.length === 0 ? (
         <p className="text-sm text-kumo-subtle" role="status">
           No Tasks yet. Work this Agent handles in Feishu or Slack appears here.
         </p>
       ) : null}
-      {state.kind === "ready" && state.value.tasks.length > 0 ? (
+      {!unavailable && tasks.length > 0 ? (
         <>
           <div className="overflow-x-auto">
             <Table className="w-full" aria-label="Agent Tasks" data-ui="task-table">
@@ -325,16 +287,21 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
                 </tr>
               </thead>
               <tbody>
-                {state.value.tasks.map((task) => (
+                {tasks.map((task) => (
                   <TaskRow key={task.id} showAgent={false} task={task} />
                 ))}
               </tbody>
             </Table>
           </div>
-          {state.value.nextCursor ? (
+          {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
-              <Button disabled={loadingMore} type="button" variant="secondary" onClick={() => void loadMore()}>
-                {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+              <Button
+                disabled={tasksQuery.isFetchingNextPage}
+                type="button"
+                variant="secondary"
+                onClick={() => void tasksQuery.fetchNextPage()}
+              >
+                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
               </Button>
               {loadMoreError ? (
                 <span className="text-sm text-kumo-subtle" role="status">
@@ -350,79 +317,36 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
 }
 
 export function TaskDetailPage({ taskId }: { taskId?: string }) {
-  const [state, setState] = useState<LoadState<TaskDetail>>({ kind: "loading" });
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
-  const taskLoadGeneration = useRef(0);
+  /*
+   * The Task itself, its internal Sessions and its collaboration messages come from the first page
+   * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
+   */
+  const taskQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.detail(taskId ?? ""),
+    queryFn: ({ pageParam }) => browserApi.task(taskId as string, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: taskId !== undefined,
+  });
+  const first = taskQuery.data?.pages[0];
+  const turns = useMemo(() => taskQuery.data?.pages.flatMap((page) => page.turns) ?? [], [taskQuery.data]);
+  const taskError = asError(taskQuery.error);
+  // `TaskService.get` resolves the Task before it parses a cursor, so a terminal status on a Turn
+  // append is about the Task, not the page boundary. It withdraws the conversation with it.
+  const terminalTaskError = taskQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = taskQuery.isFetchNextPageError && !terminalTaskError ? taskError : null;
 
-  useEffect(() => {
-    const generation = taskLoadGeneration.current + 1;
-    taskLoadGeneration.current = generation;
-    setState({ kind: "loading" });
-    setLoadingMore(false);
-    setLoadMoreError(null);
-    if (!taskId) {
-      setState({ kind: "error", error: new Error("Task not found") });
-      return () => {
-        if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
-      };
-    }
-    browserApi.task(taskId).then(
-      (value) => taskLoadGeneration.current === generation && setState({ kind: "ready", value }),
-      (error: unknown) =>
-        taskLoadGeneration.current === generation && setState({ kind: "error", error: asError(error) }),
-    );
-    return () => {
-      if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
-    };
-  }, [taskId]);
-
-  async function loadMoreTurns(): Promise<void> {
-    if (!taskId || state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    const generation = taskLoadGeneration.current;
-    const cursor = state.value.nextCursor;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.task(taskId, cursor);
-      if (taskLoadGeneration.current !== generation) return;
-      setState((current) =>
-        current.kind === "ready" && current.value.task.id === taskId
-          ? {
-              kind: "ready",
-              value: {
-                ...current.value,
-                turns: [...current.value.turns, ...next.turns],
-                nextCursor: next.nextCursor,
-              },
-            }
-          : current,
-      );
-    } catch (error) {
-      if (taskLoadGeneration.current !== generation) return;
-      setLoadMoreError(asError(error));
-    } finally {
-      if (taskLoadGeneration.current === generation) setLoadingMore(false);
-    }
+  if (terminalTaskError) return <TaskUnavailable error={terminalTaskError} />;
+  if (taskId !== undefined && taskQuery.isPending) {
+    return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
+  }
+  if (!first) {
+    // No Task id at all is the same answer as one the Server does not have.
+    const error = taskId === undefined ? new ApiError(404, "Task not found") : asError(taskQuery.error);
+    return <TaskUnavailable error={error} />;
   }
 
-  if (state.kind === "loading") return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
-  if (state.kind === "error") {
-    const notFound = state.error instanceof ApiError && state.error.status === 404;
-    return (
-      <section className="grid gap-3" data-ui="task-not-found">
-        <Text as="h1" size="lg" variant="heading">
-          {notFound ? "Task not found" : "Task unavailable"}
-        </Text>
-        <Text as="p" variant="secondary">
-          {notFound ? "This Task does not exist or is outside your Account." : state.error.message}
-        </Text>
-        <Link to="/tasks">Back to Tasks</Link>
-      </section>
-    );
-  }
-
-  const { task, turns, internalSessions, collaborationMessages } = state.value;
+  const { task, internalSessions, collaborationMessages } = first;
   const status = statusPresentation[task.status];
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
@@ -478,13 +402,13 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
           <TaskNotice heading="No Turns recorded" detail="This Session has no stored IM deliveries." />
         )}
       </section>
-      {state.value.nextCursor ? (
+      {taskQuery.hasNextPage ? (
         <Button
-          loading={loadingMore}
+          loading={taskQuery.isFetchingNextPage}
           type="button"
           variant="secondary"
-          disabled={loadingMore}
-          onClick={() => void loadMoreTurns()}
+          disabled={taskQuery.isFetchingNextPage}
+          onClick={() => void taskQuery.fetchNextPage()}
         >
           Load more Turns
         </Button>
@@ -522,6 +446,21 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
         </Collapsible.Root>
       ) : null}
     </article>
+  );
+}
+
+function TaskUnavailable({ error }: { error: Error }) {
+  const notFound = error instanceof ApiError && error.status === 404;
+  return (
+    <section className="grid gap-3" data-ui="task-not-found">
+      <Text as="h1" size="lg" variant="heading">
+        {notFound ? "Task not found" : "Task unavailable"}
+      </Text>
+      <Text as="p" variant="secondary">
+        {notFound ? "This Task does not exist or is outside your Account." : error.message}
+      </Text>
+      <Link to="/tasks">Back to Tasks</Link>
+    </section>
   );
 }
 

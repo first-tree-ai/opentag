@@ -61,8 +61,9 @@ import {
   X,
 } from "@phosphor-icons/react";
 import {
-  type ButtonHTMLAttributes,
+  type ChangeEvent,
   Children,
+  type ComponentPropsWithoutRef,
   cloneElement,
   forwardRef,
   type HTMLAttributes,
@@ -70,6 +71,7 @@ import {
   isValidElement,
   type ReactElement,
   type ReactNode,
+  type Ref,
   type RefObject,
   type SelectHTMLAttributes,
   type SVGAttributes,
@@ -114,16 +116,24 @@ export const Select: typeof KumoSelect = KumoSelect;
 export const Checkbox: typeof KumoCheckbox = KumoCheckbox;
 export const Switch: typeof KumoSwitch = KumoSwitch;
 
+type KumoSelectProps = ComponentPropsWithoutRef<typeof KumoSelect>;
+
 function classes(...values: Array<string | false | null | undefined>): string {
   return cn(values.filter(Boolean).join(" "));
 }
 
 export type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger" | "inline";
 
-export type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "color"> & {
+type KumoButtonAdapterProps = KumoButtonProps extends infer Props
+  ? Props extends unknown
+    ? Omit<Props, "size" | "variant">
+    : never
+  : never;
+
+export type ButtonProps = KumoButtonAdapterProps & {
   size?: "default" | "compact";
   variant?: ButtonVariant;
-} & Partial<Pick<KumoButtonProps, "loading" | "shape" | "icon" | "title">>;
+};
 
 function kumoButtonVariant(variant: ButtonVariant): "primary" | "secondary" | "outline" | "ghost" | "destructive" {
   if (variant === "danger") return "destructive";
@@ -150,19 +160,24 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   { className, size = "default", variant = "primary", type = "button", ...props },
   ref,
 ) {
-  return (
-    <KumoButton
-      {...(props as KumoButtonProps)}
-      className={buttonClassName({ className, size, variant })}
-      ref={ref}
-      size={size === "compact" ? "sm" : "base"}
-      type={type}
-      variant={kumoButtonVariant(variant)}
-    />
-  );
+  const kumoProps: KumoButtonProps = {
+    ...props,
+    className: buttonClassName({ className, size, variant }),
+    size: size === "compact" ? "sm" : "base",
+    type,
+    variant: kumoButtonVariant(variant),
+  };
+  return <KumoButton {...kumoProps} ref={ref} />;
 });
 
 /** A controlled Kumo tab strip that keeps React Router links as its triggers. */
+type TabTriggerProps = HTMLAttributes<HTMLElement> & {
+  children?: ReactNode;
+  href?: string;
+  ref?: Ref<HTMLElement>;
+  "aria-current"?: HTMLAttributes<HTMLElement>["aria-current"];
+};
+
 export function Tabs({
   children,
   className,
@@ -174,11 +189,9 @@ export function Tabs({
   collapseOnMobile?: boolean;
   label: string;
 }) {
-  const items = Children.toArray(children).filter(isValidElement) as ReactElement<{
-    children?: ReactNode;
-    className?: string;
-    "aria-current"?: string;
-  }>[];
+  const items = Children.toArray(children).filter((child): child is ReactElement<TabTriggerProps> =>
+    isValidElement<TabTriggerProps>(child),
+  );
   if (items.length === 0) return <nav aria-label={label} className={className} />;
   const selected = items.findIndex(
     (item) => item.props["aria-current"] === "page" || item.props.className?.includes("active"),
@@ -194,7 +207,7 @@ export function Tabs({
           label: item.props.children,
           nativeButton: false,
           value: String(index),
-          render: (tabProps) => cloneElement(item, tabProps as never),
+          render: (tabProps) => cloneElement(item, tabProps),
         }))}
         variant="underline"
       />
@@ -253,15 +266,16 @@ export function Field({
   label: ReactNode;
 }) {
   const labelId = `${_htmlFor}-label`;
-  const childProps = isValidElement(children)
-    ? (children.props as { "aria-label"?: string; "aria-labelledby"?: string })
-    : undefined;
-  const childType = isValidElement(children) ? children.type : undefined;
+  type LabelableControlProps = {
+    "aria-label"?: string;
+    "aria-labelledby"?: string;
+  };
+  const child = isValidElement<LabelableControlProps>(children) ? children : undefined;
   const isKumoControl =
-    childType === KumoInputControl || childType === KumoInputAreaControl || childType === KumoSelectControl;
+    child?.type === KumoInputControl || child?.type === KumoInputAreaControl || child?.type === KumoSelectControl;
   const labelledChildren =
-    isKumoControl && !childProps?.["aria-label"] && !childProps?.["aria-labelledby"]
-      ? cloneElement(children as ReactElement<{ "aria-labelledby"?: string }>, { "aria-labelledby": labelId })
+    isKumoControl && !child.props["aria-label"] && !child.props["aria-labelledby"]
+      ? cloneElement(child, { "aria-labelledby": labelId })
       : children;
   return (
     <div className={classes("min-w-0", className)} data-ui="field">
@@ -357,52 +371,89 @@ export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement>
   );
 }
 
-export const KumoInputControl = forwardRef<
-  HTMLInputElement,
-  InputHTMLAttributes<HTMLInputElement> & Pick<KumoInputProps, "size" | "variant">
->(function KumoInputControl(props, ref) {
-  return <KumoInput {...props} ref={ref} />;
-});
+export type KumoInputControlProps = InputHTMLAttributes<HTMLInputElement> & Pick<KumoInputProps, "size" | "variant">;
 
-export const KumoInputAreaControl = forwardRef<
-  HTMLTextAreaElement,
-  TextareaHTMLAttributes<HTMLTextAreaElement> & Pick<KumoInputAreaProps, "size" | "variant">
->(function KumoInputAreaControl(props, ref) {
-  return <KumoInputArea {...props} ref={ref} />;
-});
+export const KumoInputControl = forwardRef<HTMLInputElement, KumoInputControlProps>(
+  function KumoInputControl(props, ref) {
+    return <KumoInput {...props} ref={ref} />;
+  },
+);
+
+export type KumoInputAreaControlProps = TextareaHTMLAttributes<HTMLTextAreaElement> &
+  Pick<KumoInputAreaProps, "size" | "variant">;
+
+export const KumoInputAreaControl = forwardRef<HTMLTextAreaElement, KumoInputAreaControlProps>(
+  function KumoInputAreaControl(props, ref) {
+    return <KumoInputArea {...props} ref={ref} />;
+  },
+);
 
 /** Compatibility select bridge. New fields should use KumoSelect directly. */
-export const KumoSelectControl = forwardRef<
-  HTMLButtonElement,
-  Omit<SelectHTMLAttributes<HTMLSelectElement>, "size" | "value"> & {
-    size?: "xs" | "sm" | "base" | "lg";
-    value?: string;
-    onValueChange?: (value: string) => void;
-  }
->(function KumoSelectControl({ children, onChange, onValueChange, ...props }, _ref) {
-  const options = Children.toArray(children).filter(isValidElement) as ReactElement<{
-    value?: string;
-    disabled?: boolean;
-    children?: ReactNode;
-  }>[];
+export type KumoSelectControlProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, "size" | "value"> & {
+  size?: KumoSelectProps["size"];
+  value?: string;
+  onValueChange?: (value: string) => void;
+};
+
+type SelectOptionProps = {
+  value?: string | number | readonly string[];
+  disabled?: boolean;
+  children?: ReactNode;
+};
+
+function selectChangeEvent(value: string): ChangeEvent<HTMLSelectElement> {
+  const target = document.createElement("select");
+  const option = document.createElement("option");
+  option.value = value;
+  target.append(option);
+  target.value = value;
+  const nativeEvent = new Event("change", { bubbles: true });
+  return {
+    bubbles: nativeEvent.bubbles,
+    cancelable: nativeEvent.cancelable,
+    currentTarget: target,
+    defaultPrevented: nativeEvent.defaultPrevented,
+    eventPhase: nativeEvent.eventPhase,
+    isDefaultPrevented: () => nativeEvent.defaultPrevented,
+    isPropagationStopped: () => false,
+    isTrusted: nativeEvent.isTrusted,
+    nativeEvent,
+    persist: () => undefined,
+    preventDefault: () => nativeEvent.preventDefault(),
+    stopPropagation: () => nativeEvent.stopPropagation(),
+    target,
+    timeStamp: nativeEvent.timeStamp,
+    type: nativeEvent.type,
+  };
+}
+
+export const KumoSelectControl = forwardRef<HTMLButtonElement, KumoSelectControlProps>(function KumoSelectControl(
+  { children, onChange, onValueChange, value, ...props },
+  _ref,
+) {
+  const options = Children.toArray(children).filter((child): child is ReactElement<SelectOptionProps> =>
+    isValidElement<SelectOptionProps>(child),
+  );
   const labels = new Map(
     options.map((option) => [
       String(option.props.value ?? ""),
       String(option.props.children ?? option.props.value ?? ""),
     ]),
   );
+  const kumoProps: KumoSelectProps = {
+    ...props,
+    itemToStringLabel: (item) => labels.get(String(item)) ?? String(item ?? ""),
+    value,
+    onValueChange: (nextValue) => {
+      const stringValue = String(nextValue ?? "");
+      onValueChange?.(stringValue);
+      onChange?.(selectChangeEvent(stringValue));
+    },
+  };
   return (
-    <KumoSelect
-      {...(props as Parameters<typeof KumoSelect>[0])}
-      itemToStringLabel={(value) => labels.get(String(value)) ?? String(value ?? "")}
-      onValueChange={(value) => {
-        onValueChange?.(String(value));
-        if (onChange) onChange({ currentTarget: { value: String(value) }, target: { value: String(value) } } as never);
-      }}
-    >
+    <KumoSelect {...kumoProps}>
       {options.map((option) => (
         <KumoSelect.Option
-          data-value={String(option.props.value ?? "")}
           disabled={option.props.disabled}
           key={String(option.props.value)}
           value={option.props.value ?? ""}

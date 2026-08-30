@@ -162,6 +162,10 @@ describe("AgentModelSettings", () => {
       "historical-effort",
     );
     fireEvent.change(within(dialog).getByLabelText("Custom model ID"), {
+      target: { value: "workspace/private-model   " },
+    });
+    expect((within(dialog).getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(within(dialog).getByLabelText("Custom model ID"), {
       target: { value: "  workspace/private-model-v2  " },
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
@@ -186,7 +190,7 @@ describe("AgentModelSettings", () => {
     expect(within(dialog).getByRole("combobox", { name: "Reasoning level" }).textContent).toContain("medium");
   });
 
-  it("uses a newer config revision supplied by the settings shell", async () => {
+  it("adopts a newer config revision supplied before editing", async () => {
     const refreshedConfig: AgentAdminConfig = { ...config, revision: 9 };
     const updated: AgentAdminConfig = {
       ...refreshedConfig,
@@ -207,6 +211,34 @@ describe("AgentModelSettings", () => {
       expectedRevision: 9,
       runtimeConfig: { model: "gpt-5.6-terra", reasoningEffort: "medium" },
     });
+  });
+
+  it("keeps the edit snapshot together when config refreshes mid-dialog", async () => {
+    const concurrentConfig: AgentAdminConfig = {
+      ...config,
+      revision: 9,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, model: "gpt-5.6-luna" },
+    };
+    const save = vi.spyOn(browserApi, "updateAgent").mockRejectedValue(new Error("Revision changed"));
+    const view = render(<AgentModelSettings agent={agent} config={config} onAgentChanged={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const dialog = await screen.findByRole("dialog", { name: "Change model" });
+    await chooseOption(dialog, "Reasoning level", "medium");
+    view.rerender(<AgentModelSettings agent={agent} config={concurrentConfig} onAgentChanged={vi.fn()} />);
+
+    expect(screen.queryByText("gpt-5.6-luna")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith(agentId, {
+      expectedRevision: 4,
+      runtimeConfig: { model: "gpt-5.6-terra", reasoningEffort: "medium" },
+    });
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Revision changed");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Change model" })).toBeNull());
+    expect(screen.getByText("gpt-5.6-luna")).toBeTruthy();
   });
 });
 
@@ -260,7 +292,17 @@ describe("AgentResourcesSettings", () => {
     expect(screen.queryByRole("link")).toBeNull();
   });
 
-  it("uses the latest shell revision when saving instructions", async () => {
+  it("reports the stored length of whitespace-only custom instructions", () => {
+    const whitespaceConfig: AgentAdminConfig = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, instructions: "   " },
+    };
+    render(<AgentResourcesSettings agent={agent} config={whitespaceConfig} onAgentChanged={vi.fn()} />);
+
+    expect(screen.getByText("Custom · 3 characters")).toBeTruthy();
+  });
+
+  it("uses the latest shell revision when editing starts after a refresh", async () => {
     const refreshedConfig: AgentAdminConfig = { ...config, revision: 9 };
     const updated: AgentAdminConfig = {
       ...refreshedConfig,
@@ -281,5 +323,37 @@ describe("AgentResourcesSettings", () => {
       expectedRevision: 9,
       runtimeConfig: { instructions: "Updated." },
     });
+  });
+
+  it("does not enable a stale instructions draft when config refreshes mid-dialog", async () => {
+    const concurrentInstructions = "Updated by someone else.";
+    const concurrentConfig: AgentAdminConfig = {
+      ...config,
+      revision: 9,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, instructions: concurrentInstructions },
+    };
+    const save = vi.spyOn(browserApi, "updateAgent").mockRejectedValue(new Error("Revision changed"));
+    const view = render(<AgentResourcesSettings agent={agent} config={config} onAgentChanged={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit instructions" });
+    view.rerender(<AgentResourcesSettings agent={agent} config={concurrentConfig} onAgentChanged={vi.fn()} />);
+
+    expect((within(dialog).getByRole("button", { name: "Save changes" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Custom · 17 characters")).toBeTruthy();
+    expect(screen.queryByText(`Custom · ${concurrentInstructions.length} characters`)).toBeNull();
+
+    fireEvent.change(within(dialog).getByLabelText("Instructions"), { target: { value: "My draft." } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith(agentId, {
+      expectedRevision: 4,
+      runtimeConfig: { instructions: "My draft." },
+    });
+    expect((await within(dialog).findByRole("alert")).textContent).toBe("Revision changed");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit instructions" })).toBeNull());
+    expect(screen.getByText(`Custom · ${concurrentInstructions.length} characters`)).toBeTruthy();
   });
 });

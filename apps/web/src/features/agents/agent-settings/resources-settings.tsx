@@ -28,14 +28,16 @@ export function AgentResourcesSettings({
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
   const editButtonRef = useRef<HTMLButtonElement>(null);
+  const editingRef = useRef(false);
   const dirty = instructionsDraft !== config.runtimeConfig.instructions;
   const instructionsId = `resources-instructions-${config.id}`;
 
   useEffect(() => {
-    setConfig(initialConfig);
+    if (!editingRef.current) setConfig(initialConfig);
   }, [initialConfig]);
 
   function openEditor() {
+    editingRef.current = true;
     setInstructionsDraft(config.runtimeConfig.instructions);
     setError(undefined);
     setMessage(undefined);
@@ -43,6 +45,8 @@ export function AgentResourcesSettings({
   }
 
   function closeEditor() {
+    editingRef.current = false;
+    setConfig(initialConfig);
     setEditing(false);
     setError(undefined);
   }
@@ -60,6 +64,7 @@ export function AgentResourcesSettings({
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
       setMessage("Instructions saved.");
+      editingRef.current = false;
       setEditing(false);
       onAgentChanged();
     } catch (cause) {
@@ -137,7 +142,7 @@ export function AgentResourcesSettings({
 }
 
 function instructionsSummary(instructions: string): string {
-  if (instructions.trim().length === 0) return "Not customized · 0 characters";
+  if (instructions.length === 0) return "Not customized · 0 characters";
   const length = Array.from(instructions).length;
   return `Custom · ${length} ${length === 1 ? "character" : "characters"}`;
 }

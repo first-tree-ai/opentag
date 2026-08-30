@@ -37,20 +37,23 @@ export function AgentModelSettings({
   const [error, setError] = useState<string>();
   const [message, setMessage] = useState<string>();
   const changeButtonRef = useRef<HTMLButtonElement>(null);
+  const editingRef = useRef(false);
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
   const hasHistoricalReasoningDraft =
     reasoningDraft !== "" && !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningDraft);
-  const customModelInvalid = modelSelection === CUSTOM_MODEL_OPTION && modelDraft.trim().length === 0;
+  const normalizedModelDraft = nullableText(modelDraft);
+  const customModelInvalid = modelSelection === CUSTOM_MODEL_OPTION && normalizedModelDraft === null;
   const dirty =
-    modelDraft !== (config.runtimeConfig.model ?? "") ||
+    normalizedModelDraft !== config.runtimeConfig.model ||
     reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
   const fieldId = (name: string) => `model-settings-${name}-${config.id}`;
 
   useEffect(() => {
-    setConfig(initialConfig);
+    if (!editingRef.current) setConfig(initialConfig);
   }, [initialConfig]);
 
   function openEditor() {
+    editingRef.current = true;
     setModelDraft(config.runtimeConfig.model ?? "");
     setModelSelection(modelSelectionFor(config));
     setReasoningDraft(config.runtimeConfig.reasoningEffort ?? "");
@@ -60,6 +63,8 @@ export function AgentModelSettings({
   }
 
   function closeEditor() {
+    editingRef.current = false;
+    setConfig(initialConfig);
     setEditing(false);
     setError(undefined);
   }
@@ -71,7 +76,7 @@ export function AgentModelSettings({
     setError(undefined);
     try {
       const runtimeConfig: UpdateAgentRuntimeConfig = {
-        model: nullableText(modelDraft),
+        model: normalizedModelDraft,
         reasoningEffort: nullableText(reasoningDraft),
       };
       const updated = await browserApi.updateAgent(config.id, {
@@ -83,6 +88,7 @@ export function AgentModelSettings({
       setModelSelection(modelSelectionFor(updated));
       setReasoningDraft(updated.runtimeConfig.reasoningEffort ?? "");
       setMessage("Model settings saved.");
+      editingRef.current = false;
       setEditing(false);
       onAgentChanged();
     } catch (cause) {
@@ -128,7 +134,6 @@ export function AgentModelSettings({
             <Field htmlFor={fieldId("model")} label="Model">
               <KumoSelectControl
                 id={fieldId("model")}
-                aria-label="Model"
                 value={modelSelection}
                 onChange={(event) => {
                   const selection = event.currentTarget.value;
@@ -167,7 +172,6 @@ export function AgentModelSettings({
             <Field htmlFor={fieldId("reasoning-effort")} label="Reasoning level">
               <KumoSelectControl
                 id={fieldId("reasoning-effort")}
-                aria-label="Reasoning level"
                 value={reasoningDraft}
                 onChange={(event) => {
                   setReasoningDraft(event.currentTarget.value);

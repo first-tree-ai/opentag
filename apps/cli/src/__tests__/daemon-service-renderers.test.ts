@@ -82,7 +82,7 @@ describe("systemd service backend", () => {
       username: "test",
     });
     await expect(manager.installAndStart()).rejects.toThrow("not enrolled");
-    await writeFileWithParents(resolveDaemonPaths(home).config + "/computer-credentials.json", "malformed");
+    await writeFileWithParents(`${resolveDaemonPaths(home).config}/computer-credentials.json`, "malformed");
     await expect(manager.installAndStart()).rejects.toThrow("credentials are invalid");
   });
 

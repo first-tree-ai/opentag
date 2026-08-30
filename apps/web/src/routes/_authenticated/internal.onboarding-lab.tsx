@@ -36,7 +36,7 @@ function OnboardingLabRoute() {
               // The Lab never infers success from client state: it enters onboarding only once the
               // refreshed Account actually reports incomplete setup.
               const account = await refreshMe();
-              if (account.workspaces[0]?.setupCompletedAt) {
+              if (account.setupCompletedAt) {
                 throw new Error("The Account still reports completed setup; retry the reset.");
               }
               await navigate({ replace: true, to: "/onboarding" });

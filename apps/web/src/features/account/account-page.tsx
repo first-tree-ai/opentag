@@ -3,10 +3,10 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { Button, Field, KumoInputControl, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
-import { useWorkspace } from "../session/session-context.js";
+import { useAccount } from "../session/session-context.js";
 
 export function AccountPage() {
-  const { me, refreshMe } = useWorkspace();
+  const { me, refreshMe } = useAccount();
   return (
     <Page title="Account" description="Manage your personal account details.">
       <AccountSettings refreshMe={refreshMe} user={me.user} />

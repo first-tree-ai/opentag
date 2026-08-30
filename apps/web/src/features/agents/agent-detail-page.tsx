@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
-import { useWorkspace } from "../session/session-context.js";
+import { useAccount } from "../session/session-context.js";
 import type { AgentDetailView } from "./agent-model.js";
 import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
 import {
@@ -38,7 +38,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
 }
 
 export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
   return (
     <header className="grid gap-4">

@@ -141,12 +141,17 @@ export const rootErrorHandlers = {
 };
 
 const credentialKey = "(?:password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
-const authorizationField = /(["']?authorization["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\n,;}]*?\S)(?=\s*(?:[,;}\n]|$))/gi;
-const cookieQuotedValue = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`;
-const cookieArrayValue = String.raw`\[(?:${cookieQuotedValue}|[^\[\]"'])*\]`;
-const cookieObjectValue = String.raw`\{(?:${cookieQuotedValue}|[^{}"'])*\}`;
+const quotedValue = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`;
+const arrayValue = String.raw`\[(?:${quotedValue}|[^\[\]"'])*\]`;
+const objectValue = String.raw`\{(?:${quotedValue}|[^{}"'])*\}`;
+const structuredValue = `(?:${arrayValue}|${objectValue}|${quotedValue})`;
+const structuredValueWithBoundary = String.raw`${structuredValue}(?=\s*(?:[,}\n]|$))`;
+const authorizationField = new RegExp(
+  String.raw`(["']?authorization["']?\s*[:=]\s*)(${structuredValueWithBoundary}|[^\r\n]*)`,
+  "gi",
+);
 const cookieField = new RegExp(
-  String.raw`(["']?(?:cookie|set-cookie)["']?\s*[:=]\s*)(?:${cookieArrayValue}(?=\s*(?:[,}\n]|$))|${cookieObjectValue}(?=\s*(?:[,}\n]|$))|${cookieQuotedValue}(?=\s*(?:[,}\n]|$))|[^\r\n]*)`,
+  String.raw`(["']?(?:cookie|set-cookie)["']?\s*[:=]\s*)(${structuredValueWithBoundary}|[^\r\n]*)`,
   "gi",
 );
 
@@ -154,8 +159,7 @@ function redactErrorMessage(message: string): string {
   return message
     .replace(
       authorizationField,
-      (_match, prefix: string, value: string) =>
-        `${prefix}${/^['"]?Bearer\s/i.test(value.trim()) ? "Bearer [REDACTED]" : "[REDACTED]"}`,
+      (_match, prefix: string, value: string) => `${prefix}${redactAuthorizationValue(value)}`,
     )
     .replace(cookieField, (_match, prefix: string) => `${prefix}[REDACTED]`)
     .replace(
@@ -166,6 +170,13 @@ function redactErrorMessage(message: string): string {
       (_match, prefix: string, value: string) =>
         `${prefix}${/^Bearer\s/i.test(value) ? "Bearer [REDACTED]" : "[REDACTED]"}`,
     )
-    .replace(/\bBearer\s+(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "Bearer [REDACTED]")
+    .replace(/\bBearer\s+(?!\[REDACTED\])(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "Bearer [REDACTED]")
     .replace(/([?&](?:code|client_secret|token|secret|password|key)=)[^&#\s]+/gi, "$1[REDACTED]");
+}
+
+function redactAuthorizationValue(value: string): string {
+  const trimmed = value.trim();
+  const quote = /^(["'])Bearer\s/i.exec(trimmed)?.[1] ?? "";
+  if (!/^['"]?Bearer\s/i.test(trimmed)) return "[REDACTED]";
+  return `${quote}Bearer [REDACTED]${quote && trimmed.endsWith(quote) ? quote : ""}`;
 }

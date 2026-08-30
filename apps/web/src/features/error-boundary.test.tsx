@@ -11,7 +11,7 @@ import { StandaloneNotFoundPage } from "./not-found.js";
 
 function ExplodingChild(): never {
   throw new Error(
-    'Authorization: Bearer root-bearer-secret; Authorization: Basic dXNlcjpwYXNz; "token": "json-token-secret"; password: \'quoted-password-secret\'',
+    'Authorization: Bearer root-bearer-secret\nAuthorization: Basic dXNlcjpwYXNz\n"token": "json-token-secret"; password: \'quoted-password-secret\'',
   );
 }
 
@@ -92,6 +92,37 @@ describe("application error boundaries", () => {
       }),
     );
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain("dXNlcjpwYXNz");
+  });
+
+  it("redacts complete Digest authorization parameters", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    reportBoundaryError(
+      "app",
+      new Error('Authorization: Digest username="u", response="secret-response", nonce="secret-nonce"'),
+    );
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[OpenTag] Unhandled UI error",
+      expect.objectContaining({
+        error: expect.objectContaining({ message: "Authorization: [REDACTED]" }),
+      }),
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("secret-response");
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("secret-nonce");
+  });
+
+  it("preserves JSON structure after a quoted authorization value", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    reportBoundaryError("app", new Error('{"authorization": "Bearer x", "safe": true}'));
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[OpenTag] Unhandled UI error",
+      expect.objectContaining({
+        error: expect.objectContaining({ message: '{"authorization": "Bearer [REDACTED]", "safe": true}' }),
+      }),
+    );
   });
 
   it("redacts complete multi-cookie and Set-Cookie header values", () => {

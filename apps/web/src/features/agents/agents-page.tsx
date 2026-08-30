@@ -3,7 +3,7 @@ import { type ReactNode, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { Button, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { EmptyState, Page } from "../layout/page.js";
-import { AsyncState } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { useWorkspace } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
 import {

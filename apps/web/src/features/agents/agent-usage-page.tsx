@@ -1,7 +1,7 @@
 import { useRouterState } from "@tanstack/react-router";
 import { AgentUsageTab } from "../../features/agent-usage.js";
 import { Text } from "../../ui/design-system.js";
-import { AsyncState } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { AgentObjectHeader } from "./agent-detail-page.js";
 import { useAgentDetailView } from "./agent-queries.js";
 

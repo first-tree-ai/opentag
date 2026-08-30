@@ -16,8 +16,7 @@ import {
   Text,
 } from "../../../ui/design-system.js";
 import { EmptyState } from "../../layout/page.js";
-import { toResourceState } from "../../resource/query-state.js";
-import { AsyncState } from "../../resource/use-resource.js";
+import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
 import {
   agentAvailabilityRecovery,

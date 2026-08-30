@@ -2,7 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { buttonClassName, Text } from "../../ui/design-system.js";
 import { Redirect } from "../navigation/redirect.js";
 import { NotFoundPage } from "../not-found.js";
-import { AsyncState } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { AgentObjectHeader } from "./agent-detail-page.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";

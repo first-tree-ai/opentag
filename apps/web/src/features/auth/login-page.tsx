@@ -4,8 +4,7 @@ import { browserApi } from "../../api.js";
 import googleSignInButton from "../../assets/google-sign-in-light@2x.png";
 import { queryKeys } from "../../query/keys.js";
 import { Icon, Text } from "../../ui/design-system.js";
-import { toResourceState } from "../resource/query-state.js";
-import { AsyncState } from "../resource/use-resource.js";
+import { AsyncState, toResourceState } from "../resource/resource-state.js";
 import { PasswordSignInForm } from "./password-sign-in-form.js";
 
 export type AuthProvider = AuthProvidersResponse["providers"][number];

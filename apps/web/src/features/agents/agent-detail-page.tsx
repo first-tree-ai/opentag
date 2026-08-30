@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
-import { AsyncState } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { useWorkspace } from "../session/session-context.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {

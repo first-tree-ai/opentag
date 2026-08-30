@@ -3,8 +3,7 @@ import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
-import { toResourceState } from "../features/resource/query-state.js";
-import { AsyncState } from "../features/resource/use-resource.js";
+import { AsyncState, toResourceState } from "../features/resource/resource-state.js";
 import { AccountContext } from "../features/session/session-context.js";
 import { queryKeys } from "../query/keys.js";
 

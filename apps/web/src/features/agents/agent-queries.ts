@@ -2,8 +2,8 @@ import type { ImBindingHandoffStatus, ImBindingSummary } from "@opentag/shared/b
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
-import { toResourceState } from "../resource/query-state.js";
-import type { LoadState } from "../resource/use-resource.js";
+import type { LoadState } from "../resource/resource-state.js";
+import { toResourceState } from "../resource/resource-state.js";
 import type { AgentDetailView, AgentListItem } from "./agent-model.js";
 import { markAgentDetailUnconfirmed, markAgentListUnconfirmed, projectAgentAvailability } from "./agent-model.js";
 

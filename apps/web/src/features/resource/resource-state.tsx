@@ -1,4 +1,45 @@
-import { isTerminalResourceError, type LoadState } from "./use-resource.js";
+import type { ReactNode } from "react";
+import { ApiError } from "../../api.js";
+import { Loader } from "../../ui/design-system.js";
+
+export type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
+
+export function isTerminalResourceError(error: Error): boolean {
+  return error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
+}
+
+export function AsyncState<T>({
+  state,
+  children,
+  loading,
+}: {
+  state: LoadState<T>;
+  children: (value: T) => ReactNode;
+  loading?: ReactNode;
+}) {
+  if (state.kind === "loading")
+    return (
+      loading ?? (
+        <div
+          aria-label="Loading current server state"
+          className="flex items-center gap-2 text-sm text-kumo-subtle"
+          role="status"
+        >
+          <span aria-hidden="true">
+            <Loader size="sm" />
+          </span>
+          <span>Loading current Server state…</span>
+        </div>
+      )
+    );
+  if (state.kind === "error")
+    return (
+      <div className="rounded-md bg-kumo-danger-tint p-3 text-sm text-kumo-danger" role="alert">
+        {state.error.message}
+      </div>
+    );
+  return children(state.value);
+}
 
 /** The part of a query result this reads. Taking a plain object keeps it a pure function to test. */
 export interface ResourceQueryResult {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../api.js";
-import { toResourceState } from "./query-state.js";
+import { toResourceState } from "./resource-state.js";
 
 interface Value {
   label: string;

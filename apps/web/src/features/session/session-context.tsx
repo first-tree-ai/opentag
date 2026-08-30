@@ -1,10 +1,9 @@
-import type { MeResponse, MeWorkspace } from "@opentag/shared/browser";
+import type { MeResponse } from "@opentag/shared/browser";
 import { createContext, useContext } from "react";
 
 /**
- * Authentication proves the Account identity and nothing more. The Server says the same: an Account
- * may hold no active resource grant and still be signed in, so a page that needs only the Account
- * reads this rather than the Workspace session below.
+ * Authentication proves the Account identity and nothing more. Resource pages use the same Account
+ * session; they no longer depend on a management Workspace membership.
  */
 export interface AccountSession {
   me: MeResponse;
@@ -14,26 +13,12 @@ export interface AccountSession {
   refreshMe: () => Promise<MeResponse>;
 }
 
-export interface WorkspaceSession extends AccountSession {
-  membership: MeWorkspace;
-}
-
 export const accountContext = createContext<AccountSession | undefined>(undefined);
 
 export const AccountContext = accountContext.Provider;
 
-export const workspaceContext = createContext<WorkspaceSession | undefined>(undefined);
-
-export const WorkspaceContext = workspaceContext.Provider;
-
 export function useAccount(): AccountSession {
   const value = useContext(accountContext);
   if (!value) throw new Error("Account context is missing");
-  return value;
-}
-
-export function useWorkspace(): WorkspaceSession {
-  const value = useContext(workspaceContext);
-  if (!value) throw new Error("Workspace context is missing");
   return value;
 }

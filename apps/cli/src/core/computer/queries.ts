@@ -6,5 +6,5 @@ export async function listComputers(home = resolveOpenTagHome()): Promise<ListWo
   if (!credentials) throw new Error("OpenTag is not logged in; run login first");
   const accessToken = await new AccessTokenProvider({ home }).getAccessToken();
   const api = new OpenTagApi(credentials.serverUrl);
-  return api.listWorkspaceComputers(accessToken);
+  return api.listAccountComputers(accessToken);
 }

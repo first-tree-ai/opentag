@@ -22,14 +22,14 @@ function authService(): UserAuthService {
     refresh: vi.fn(),
     getActiveUserById: vi.fn().mockResolvedValue({
       user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-      workspaces: [],
+      setupCompletedAt: null,
     }),
     updateSelfProfile: vi.fn(),
     getAuthenticatedUser: vi.fn().mockResolvedValue({
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-        workspaces: [],
+        setupCompletedAt: null,
       },
     }),
   };

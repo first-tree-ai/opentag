@@ -235,9 +235,16 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.workspaceService) {
       registerWorkspaceRoutes(app, authService, options.workspaceService, authOptions, options.workspaceSetupService);
     }
-    if (options.accountScope) {
+    if (
+      options.accountScope ||
+      options.agentService ||
+      options.taskService ||
+      options.workspaceService ||
+      options.workspaceSetupService ||
+      (options.machineAuthService && options.computerConnectCode)
+    ) {
       registerAccountRoutes(app, authService, {
-        accountScope: options.accountScope,
+        ...(options.accountScope ? { accountScope: options.accountScope } : {}),
         ...(options.agentService ? { agentService: options.agentService } : {}),
         ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),

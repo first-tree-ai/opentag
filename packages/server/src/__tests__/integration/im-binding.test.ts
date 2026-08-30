@@ -601,6 +601,12 @@ describe("IM binding persistence", () => {
       await expect(
         value.database.select({ setupCompletedAt: workspaces.setupCompletedAt }).from(workspaces).limit(1),
       ).resolves.toEqual([{ setupCompletedAt: null }]);
+      await expect(
+        value.database
+          .select({ setupCompletedAt: users.setupCompletedAt })
+          .from(users)
+          .where(eq(users.id, value.bootstrap.userId)),
+      ).resolves.toEqual([{ setupCompletedAt: null }]);
 
       const setup = new WorkspaceSetupService(value.database, value.imBindingService, {
         now: () => completedAt,
@@ -610,6 +616,12 @@ describe("IM binding persistence", () => {
       ).resolves.toEqual({
         setupCompletedAt: completedAt.toISOString(),
       });
+      await expect(
+        value.database
+          .select({ setupCompletedAt: users.setupCompletedAt })
+          .from(users)
+          .where(eq(users.id, value.bootstrap.userId)),
+      ).resolves.toEqual([{ setupCompletedAt: completedAt }]);
 
       await value.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
       await expect(
@@ -622,7 +634,7 @@ describe("IM binding persistence", () => {
         .returning();
       if (!member) throw new Error("Setup member fixture was not created");
       await expect(setup.complete(member.id, value.bootstrap.workspaceId, value.agent.id)).rejects.toMatchObject({
-        code: "RESOURCE_NOT_FOUND",
+        code: "WORKSPACE_SETUP_AGENT_NOT_FOUND",
         statusCode: 404,
       });
     } finally {
@@ -1393,54 +1405,25 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("waits for an in-flight admin downgrade and rejects the IM mutation after revocation commits", async () => {
+  it("keeps IM mutations authorized by the Agent creator after Workspace grant revocation", async () => {
     const value = await fixture();
-    const revoker = createDatabaseClient(databaseUrl);
-    const workspaceLocked = deferred<void>();
-    const releaseRevocation = deferred<void>();
     try {
-      const revocation = revoker.database.transaction(async (transaction) => {
-        await transaction
-          .select({ id: workspaces.id })
-          .from(workspaces)
-          .where(eq(workspaces.id, value.bootstrap.workspaceId))
-          .limit(1)
-          .for("update");
-        await transaction
-          .update(workspaceAdminGrants)
-          .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
-          .where(
-            and(
-              eq(workspaceAdminGrants.workspaceId, value.bootstrap.workspaceId),
-              eq(workspaceAdminGrants.userId, value.bootstrap.userId),
-              isNull(workspaceAdminGrants.revokedAt),
-            ),
-          );
-        workspaceLocked.resolve();
-        await releaseRevocation.promise;
-      });
-      await workspaceLocked.promise;
-      const mutation = value.imBindingService.disable(value.bootstrap.userId, value.imBindingId);
-      let settled = false;
-      void mutation.then(
-        () => {
-          settled = true;
-        },
-        () => {
-          settled = true;
-        },
-      );
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(settled).toBe(false);
-      releaseRevocation.resolve();
-      await revocation;
-      await expect(mutation).rejects.toMatchObject({ code: "IM_BINDING_NOT_FOUND", statusCode: 404 });
+      await value.database
+        .update(workspaceAdminGrants)
+        .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
+        .where(
+          and(
+            eq(workspaceAdminGrants.workspaceId, value.bootstrap.workspaceId),
+            eq(workspaceAdminGrants.userId, value.bootstrap.userId),
+            isNull(workspaceAdminGrants.revokedAt),
+          ),
+        );
+      await expect(value.imBindingService.disable(value.bootstrap.userId, value.imBindingId)).resolves.toBeUndefined();
       expect(
         (await value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)))[0]?.status,
-      ).toBe("active");
+      ).toBe("disabled");
     } finally {
-      releaseRevocation.resolve();
-      await Promise.all([revoker.sql.end(), value.sql.end()]);
+      await value.sql.end();
     }
   });
 
@@ -6881,8 +6864,13 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("rechecks Admin authority after Slack token inspection before committing configuration", async () => {
+  it("rechecks Agent creator authority after Slack token inspection before committing configuration", async () => {
     const value = await unboundFixture();
+    const [outsider] = await value.database
+      .insert(users)
+      .values({ email: "authority-outsider@example.com", displayName: "Authority Outsider" })
+      .returning();
+    if (!outsider) throw new Error("Authority outsider fixture was not created");
     const service = new SlackConfigurationService({
       api: {
         inspectInstallation: vi.fn().mockResolvedValue({
@@ -6897,15 +6885,7 @@ describe("IM binding persistence", () => {
       database: value.database,
       imBindings: value.imBindingService,
       beforeConfigurationTransaction: async () => {
-        await value.database
-          .update(workspaceAdminGrants)
-          .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
-          .where(
-            and(
-              eq(workspaceAdminGrants.workspaceId, value.bootstrap.workspaceId),
-              eq(workspaceAdminGrants.userId, value.bootstrap.userId),
-            ),
-          );
+        await value.database.update(agents).set({ createdByUserId: outsider.id }).where(eq(agents.id, value.agent.id));
       },
     });
     try {

@@ -98,15 +98,7 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-        workspaces: [
-          {
-            id: workspaceId,
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2026-08-20T00:00:00.000Z",
-          },
-        ],
+        setupCompletedAt: null,
       },
     }),
   };

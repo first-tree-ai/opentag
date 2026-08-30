@@ -1489,8 +1489,9 @@ describe("authentication persistence", () => {
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
-        me: { workspaces: [{ id: fixture.bootstrap.workspaceId }] },
+        me: { user: { id: fixture.bootstrap.userId }, setupCompletedAt: null },
       });
+      expect((await fixture.auth.getAuthenticatedUser(tokens.accessToken)).me).not.toHaveProperty("workspaces");
 
       await fixture.database
         .update(workspaceAdminGrants)
@@ -1499,9 +1500,9 @@ describe("authentication persistence", () => {
           revokedByUserId: fixture.bootstrap.userId,
         })
         .where(eq(workspaceAdminGrants.userId, fixture.bootstrap.userId));
-      // Losing every Admin grant drops Workspace authority but keeps the Account session.
+      // Losing every Admin grant does not change Account identity or invalidate the session.
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
-        me: { user: { id: fixture.bootstrap.userId }, workspaces: [] },
+        me: { user: { id: fixture.bootstrap.userId }, setupCompletedAt: null },
       });
       // Refreshing withdraws what it replaces, so the renewed credential is the one that carries on from here.
       const renewed = await fixture.auth.refresh(tokens.refreshToken);

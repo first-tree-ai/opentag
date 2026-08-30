@@ -9,7 +9,7 @@ import { Button, Dialog, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
 import type { LoadState } from "../resource/resource-state.js";
 import { AsyncState, toResourceState } from "../resource/resource-state.js";
-import { useWorkspace } from "../session/session-context.js";
+import { useAccount } from "../session/session-context.js";
 import { useComputersQuery } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 
@@ -47,7 +47,7 @@ export function useOwnComputersResource(): {
 }
 
 export function NewAgentPage() {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const navigate = useNavigate();
   const [created, setCreated] = useState<AgentAdminConfig>();
   const { state: computers, refresh: refreshComputers } = useOwnComputersResource();
@@ -83,7 +83,7 @@ export function NewAgentDialog({
   onClose: () => void;
   returnFocusRef: { current: HTMLButtonElement | null };
 }) {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const navigate = useNavigate();
   const { state: computers, refresh: refreshComputers } = useOwnComputersResource();
   const [submitting, setSubmitting] = useState(false);

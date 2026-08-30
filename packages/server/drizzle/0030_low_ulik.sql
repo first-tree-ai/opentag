@@ -1,0 +1,1 @@
+DROP INDEX "slack_installations_workspace_current_unique";

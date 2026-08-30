@@ -1,12 +1,10 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { PasswordSignInForm } from "../features/auth/password-sign-in-form.js";
 
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
-const secondaryWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -177,33 +175,9 @@ function installApi(
           503,
         );
       }
-      const existing = options.workspaceless
-        ? []
-        : [
-            {
-              id: workspaceId,
-              name: "example",
-              displayName: "Example",
-              setupCompletedAt,
-              grantedAt: "2026-08-20T00:00:00.000Z",
-            },
-          ];
       return json({
         user: { id: userId, email: "ada@example.com", displayName: currentDisplayName },
-        workspaces: [
-          ...existing,
-          ...(options.multipleMemberships
-            ? [
-                {
-                  id: secondaryWorkspaceId,
-                  name: "secondary",
-                  displayName: "Secondary",
-                  setupCompletedAt: "2026-08-20T00:00:00.000Z",
-                  grantedAt: "2026-08-20T00:00:00.000Z",
-                },
-              ]
-            : []),
-        ],
+        setupCompletedAt: options.workspaceless ? null : setupCompletedAt,
       });
     }
     if (path === "/api/v1/me/setup/complete" && init?.method === "POST") {
@@ -844,7 +818,7 @@ describe("OpenTag Web App Shell", () => {
     expect(trigger).toBe(document.activeElement);
   });
 
-  it("lets a Workspace Admin connect another Computer from New Agent", async () => {
+  it("lets the Account owner connect another Computer from New Agent", async () => {
     installApi();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
@@ -2549,38 +2523,29 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).queryByRole("button", { name: "Create Agent" })).toBeNull();
   });
 
-  it("keeps an unprovisioned authenticated account read-only while the server finishes setup", async () => {
+  it("routes an Account with incomplete setup into onboarding without a Workspace grant", async () => {
     installApi({ workspaceless: true });
-    render(
-      <StrictMode>
-        <App />
-      </StrictMode>,
-    );
-    expect(await screen.findByRole("heading", { name: "OpenTag is not ready for this account" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents");
-    expect(screen.getByRole("status").textContent).toContain("Retry after provisioning finishes");
-    expect(screen.getByText(/contact an operator/)).toBeTruthy();
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
-    const initialMeReads = vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me").length;
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
-    await waitFor(() =>
-      expect(vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me")).toHaveLength(initialMeReads + 1),
-    );
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
+    ).toBe(false);
   });
 
-  it("keeps standalone onboarding behind the read-only Workspace setup gate", async () => {
+  it("keeps standalone onboarding reachable without a management Workspace", async () => {
     installApi({ workspaceless: true });
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "OpenTag is not ready for this account" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(
       vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
     ).toBe(false);
   });
 
-  it("routes an admin with incomplete Workspace setup into onboarding", async () => {
+  it("routes an Account with incomplete setup into onboarding", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
@@ -2600,7 +2565,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getAllByRole("link", { name: "OpenTag" })).toHaveLength(1);
   });
 
-  it("keeps completed Workspaces out of onboarding even when it is requested directly", async () => {
+  it("keeps completed Accounts out of onboarding even when it is requested directly", async () => {
     installApi();
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);

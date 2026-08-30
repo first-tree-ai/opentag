@@ -4,7 +4,7 @@ import { orderAgentIds } from "../../features/agent-list-order.js";
 import { Button, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
-import { useWorkspace } from "../session/session-context.js";
+import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
 import {
   agentAvatarTone,
@@ -18,7 +18,7 @@ import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
 
 export function AgentsPage() {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const [createOpen, setCreateOpen] = useState(false);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
   const state = useAgentListView(me.user.id);

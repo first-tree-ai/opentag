@@ -126,10 +126,15 @@ export class OpenTagApi {
     });
   }
 
-  listWorkspaceComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
+  listAccountComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
     return this.#request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
+  }
+
+  /** @deprecated Use `listAccountComputers`; retained for the rolling client compatibility window. */
+  listWorkspaceComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
+    return this.listAccountComputers(accessToken);
   }
 
   createAgent(accessToken: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {

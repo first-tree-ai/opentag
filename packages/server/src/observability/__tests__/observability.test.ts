@@ -998,7 +998,7 @@ function runtimeAuthService() {
     getAuthenticatedUser: vi.fn().mockResolvedValue({
       me: {
         user: { id: randomUUID(), email: "admin@example.com", displayName: "Admin" },
-        workspaces: [],
+        setupCompletedAt: null,
       },
       tokenExpiresAt: new Date(Date.now() + 60_000),
     }),

@@ -61,7 +61,6 @@ import {
   X,
 } from "@phosphor-icons/react";
 import {
-  type ChangeEvent,
   Children,
   type ComponentPropsWithoutRef,
   cloneElement,
@@ -389,43 +388,27 @@ export const KumoInputAreaControl = forwardRef<HTMLTextAreaElement, KumoInputAre
 );
 
 /** Compatibility select bridge. New fields should use KumoSelect directly. */
-export type KumoSelectControlProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, "size" | "value"> & {
-  size?: KumoSelectProps["size"];
-  value?: string;
-  onValueChange?: (value: string) => void;
+export type SelectControlChangeEvent = {
+  currentTarget: { value: string };
+  target: { value: string };
 };
+
+type SelectControlChangeProps = {
+  onChange?(event: SelectControlChangeEvent): void;
+};
+
+export type KumoSelectControlProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, "onChange" | "size" | "value"> &
+  SelectControlChangeProps & {
+    size?: KumoSelectProps["size"];
+    value?: string;
+    onValueChange?: (value: string) => void;
+  };
 
 type SelectOptionProps = {
   value?: string | number | readonly string[];
   disabled?: boolean;
   children?: ReactNode;
 };
-
-function selectChangeEvent(value: string): ChangeEvent<HTMLSelectElement> {
-  const target = document.createElement("select");
-  const option = document.createElement("option");
-  option.value = value;
-  target.append(option);
-  target.value = value;
-  const nativeEvent = new Event("change", { bubbles: true });
-  return {
-    bubbles: nativeEvent.bubbles,
-    cancelable: nativeEvent.cancelable,
-    currentTarget: target,
-    defaultPrevented: nativeEvent.defaultPrevented,
-    eventPhase: nativeEvent.eventPhase,
-    isDefaultPrevented: () => nativeEvent.defaultPrevented,
-    isPropagationStopped: () => false,
-    isTrusted: nativeEvent.isTrusted,
-    nativeEvent,
-    persist: () => undefined,
-    preventDefault: () => nativeEvent.preventDefault(),
-    stopPropagation: () => nativeEvent.stopPropagation(),
-    target,
-    timeStamp: nativeEvent.timeStamp,
-    type: nativeEvent.type,
-  };
-}
 
 export const KumoSelectControl = forwardRef<HTMLButtonElement, KumoSelectControlProps>(function KumoSelectControl(
   { children, onChange, onValueChange, value, ...props },
@@ -447,7 +430,7 @@ export const KumoSelectControl = forwardRef<HTMLButtonElement, KumoSelectControl
     onValueChange: (nextValue) => {
       const stringValue = String(nextValue ?? "");
       onValueChange?.(stringValue);
-      onChange?.(selectChangeEvent(stringValue));
+      onChange?.({ currentTarget: { value: stringValue }, target: { value: stringValue } });
     },
   };
   return (

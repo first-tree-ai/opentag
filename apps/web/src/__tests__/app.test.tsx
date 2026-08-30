@@ -2687,7 +2687,6 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("menu")).toBeTruthy();
     account.focus();
     note("after focus");
-    expect("x").toBe("forced-failure");
     fireEvent.keyDown(account, { key: "Escape" });
     note("after escape");
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();

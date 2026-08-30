@@ -433,6 +433,56 @@ jobs:
           docker rm --force opentag-postgres-ci || true
           docker network rm opentag-ci || true
 
+  workflow-validation:
+    name: Workflow and Shell Validation
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      SHELLCHECK_VERSION: "0.11.0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          archive_path="$RUNNER_TEMP/$archive"
+          install_dir="$RUNNER_TEMP/actionlint"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}" \
+            --output "$archive_path"
+          mkdir -p "$install_dir"
+          tar --extract --gzip --file "$archive_path" --directory "$install_dir"
+          chmod +x "$install_dir/actionlint"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Install pinned ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          archive_path="$RUNNER_TEMP/$archive"
+          install_dir="$RUNNER_TEMP/shellcheck"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}" \
+            --output "$archive_path"
+          mkdir -p "$install_dir"
+          tar --extract --xz --file "$archive_path" --directory "$install_dir"
+          chmod +x "$install_dir/shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$install_dir/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Validate GitHub Actions workflows
+        run: actionlint
+
+      - name: Validate shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          shellcheck scripts/**/*.sh
+
   ci:
     name: CI
     if: always()

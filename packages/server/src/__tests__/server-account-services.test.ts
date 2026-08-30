@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { BootstrapAdminInputSchema, bootstrapInitialAdmin } from "../admin/bootstrap.js";
-import { createBetterAuth } from "../auth/better-auth.js";
+import { createBetterAuth, type OpenTagBetterAuth } from "../auth/better-auth.js";
 import { betterAuthFailure, callBetterAuth, sendBetterAuthResponse } from "../auth/fastify-handler.js";
 import { BetterAuthSessionTokens } from "../auth/session-tokens.js";
 import {
@@ -79,10 +80,12 @@ async function machineFixture() {
   return { bootstrap, issued, machine };
 }
 
+type TestUuid = `${string}-${string}-${string}-${string}-${string}`;
+
 function enrollmentInput(code: string, computerId = randomUUID(), version = "0.0.2") {
   return {
     code,
-    computerId,
+    computerId: computerId as TestUuid,
     displayName: "Workstation",
     platform: "linux" as const,
     arch: "x64",
@@ -273,9 +276,9 @@ describe("machine authentication and Computer services", () => {
     ).rejects.toMatchObject({ code: "AUTH_CODE_EXPIRED" });
     const first = await value.machine.exchangeConnectCode(enrollmentInput(value.issued.code));
     const duplicate = await value.machine.issueForAccount(value.bootstrap.userId, {});
-    await expect(value.machine.exchangeConnectCode(enrollmentInput(duplicate.code, first.computerId))).rejects.toThrow(
-      "Failed query",
-    );
+    await expect(
+      value.machine.exchangeConnectCode(enrollmentInput(duplicate.code, first.computerId as TestUuid)),
+    ).rejects.toThrow("Failed query");
     const repairCode = await value.machine.issueForAccount(value.bootstrap.userId, {
       mode: "repair",
       targetComputerId: first.workspaceComputerId,
@@ -332,7 +335,9 @@ describe("machine authentication and Computer services", () => {
       code: "AUTH_USER_SUSPENDED",
     });
     const target = await value.machine.exchangeConnectCode(enrollmentInput(value.issued.code));
-    await expect(value.machine.issueForAccount(value.bootstrap.userId, { mode: "repair" })).rejects.toMatchObject({
+    await expect(
+      value.machine.issueForAccount(value.bootstrap.userId, { mode: "repair" } as never),
+    ).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
     });
     await expect(
@@ -345,7 +350,7 @@ describe("machine authentication and Computer services", () => {
       value.machine.exchangeConnectCode(enrollmentInput(value.issued.code, randomUUID(), "0.0.1")),
     ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED" });
     await expect(
-      value.machine.exchangeConnectCode(enrollmentInput(value.issued.code, target.computerId)),
+      value.machine.exchangeConnectCode(enrollmentInput(value.issued.code, target.computerId as TestUuid)),
     ).rejects.toMatchObject({ code: "AUTH_CODE_CONSUMED" });
     const fresh = await value.machine.issueForAccount(value.bootstrap.userId, {});
     await unit.database.update(users).set({ suspendedAt: NOW }).where(eq(users.id, value.bootstrap.userId));
@@ -756,13 +761,13 @@ describe("small authentication service boundaries", () => {
         return new Response("payload", { status: 201, headers: { "x-answer": "yes", "set-cookie": "a=1; Path=/" } });
       }),
       $context: Promise.resolve({ authCookies: { sessionToken: { name: "session" } } }),
-    } as never;
+    } as unknown as OpenTagBetterAuth;
     const request = {
       url: "/api/v1/auth/callback/google",
       method: "POST",
       headers: { "content-type": "application/json", "content-length": "10" },
       body: Buffer.from('{"x":1}'),
-    } as never;
+    } as unknown as FastifyRequest;
     const forwarded = await callBetterAuth(auth, "https://public.example", request);
     expect(forwarded.status).toBe(201);
     expect(seen[0]?.url).toBe("https://public.example/api/v1/auth/callback/google");
@@ -774,7 +779,7 @@ describe("small authentication service boundaries", () => {
     expect(overridden.status).toBe(201);
     expect(seen[1]?.url).toBe("https://public.example/api/v1/auth/sign-out");
     const written: Record<string, unknown> = {};
-    const reply = {
+    const replyMock = {
       status: vi.fn((value) => {
         written.status = value;
         return reply;
@@ -788,13 +793,14 @@ describe("small authentication service boundaries", () => {
         return reply;
       }),
       getHeader: vi.fn(() => undefined),
-    } as never;
+    };
+    const reply = replyMock as unknown as FastifyReply;
     await sendBetterAuthResponse(
       reply,
       new Response("hello", { status: 202, headers: { "x-test": "ok", "set-cookie": "b=2; Path=/" } }),
     );
     expect(written.status).toBe(202);
-    expect(reply.send).toHaveBeenCalledWith(expect.any(Buffer));
+    expect(replyMock.send).toHaveBeenCalledWith(expect.any(Buffer));
     await sendBetterAuthResponse(reply, new Response(null, { status: 204 }));
     const fallback = new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "fallback", 401);
     await expect(
@@ -872,7 +878,8 @@ describe("bootstrap CLI entrypoint", () => {
     }));
     process.env.OPENTAG_BOOTSTRAP_DISPLAY_NAME = "Unit Admin";
     process.env.OPENTAG_BOOTSTRAP_EMAIL = "unit@example.com";
-    await import("../admin/bootstrap-cli.js?unit");
+    const entrypoint = "../admin/bootstrap-cli.js";
+    await import(entrypoint);
     expect(parse).toHaveBeenCalled();
     expect(migrate).toHaveBeenCalledWith("postgresql://unit", "/migrations");
     expect(bootstrap).toHaveBeenCalledWith({}, { displayName: "Unit Admin", email: "unit@example.com" });

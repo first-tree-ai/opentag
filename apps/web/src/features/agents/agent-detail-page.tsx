@@ -154,7 +154,7 @@ function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
     >
       {binding ? <ProviderIcon className="size-4 shrink-0" provider={binding.provider} /> : <Icon name="message" />}
       <span className="truncate">{label}</span>
-      <Icon className="text-kumo-subtle" name="settings" />
+      <Icon className="text-kumo-subtle" data-ui="agent-messaging-manage" name="settings" />
     </Link>
   );
 }

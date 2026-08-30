@@ -1995,22 +1995,35 @@ describe("OpenTag Web App Shell", () => {
     expect(link.getAttribute("data-ui")).toBe("agent-messaging-link");
     expect(link.textContent).toContain("Slack");
     expect(link.getAttribute("href")).toBe(`/agents/${agentId}/settings/messaging`);
-    // The gear is what says this control manages the channel rather than only naming it.
-    expect(link.querySelectorAll("svg")).toHaveLength(1);
+    /*
+     * The gear is what says this control manages the channel rather than only naming it, and it
+     * trails the label. Asserted by its own hook rather than by counting glyphs: a glyph count
+     * happens to equal one today only because the provider mark is an `img`, so it would stop
+     * guarding the gear the day `ProviderIcon` renders an svg.
+     */
+    const manage = link.querySelector('[data-ui="agent-messaging-manage"]');
+    expect(manage).toBeTruthy();
+    expect(link.lastElementChild).toBe(manage);
     const connectedClassName = link.className;
     expect(connectedClassName).toMatch(/\bh-\d/);
     connected.unmount();
 
-    installApi({ bound: false });
-    window.history.replaceState({}, "", `/agents/${agentId}`);
-    render(<App />);
-
-    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const unconnected = screen.getByRole("link", { name: "Connect messaging" });
-    expect(unconnected.getAttribute("data-ui")).toBe("agent-messaging-link");
-    expect(unconnected.textContent).toContain("Connect messaging");
     // Same control, same size: the header must not resize as the messaging state changes.
-    expect(unconnected.className).toBe(connectedClassName);
+    for (const state of [{ bound: false }, { bound: true, bindingEvidenceFails: true }]) {
+      installApi(state);
+      window.history.replaceState({}, "", `/agents/${agentId}`);
+      const rendered = render(<App />);
+
+      expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+      const control = screen.getByRole("link", {
+        name: state.bound ? "Messaging status unavailable" : "Connect messaging",
+      });
+      expect(control.getAttribute("data-ui")).toBe("agent-messaging-link");
+      expect(control.textContent).toContain(state.bound ? "Messaging status unavailable" : "Connect messaging");
+      expect(control.querySelector('[data-ui="agent-messaging-manage"]')).toBe(control.lastElementChild);
+      expect(control.className).toBe(connectedClassName);
+      rendered.unmount();
+    }
   });
 
   it("offers messaging setup only when the missing binding is confirmed", async () => {

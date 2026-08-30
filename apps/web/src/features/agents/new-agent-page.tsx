@@ -8,7 +8,7 @@ import { Button, Dialog, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
 import type { LoadState } from "../resource/use-resource.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
-import { useWorkspace } from "../session/session-context.js";
+import { useAccount } from "../session/session-context.js";
 import { agentDetailLink } from "./agent-routes.js";
 
 export function useOwnComputersResource(accountId: string, refreshVersion = 0) {
@@ -20,7 +20,7 @@ export function useOwnComputersResource(accountId: string, refreshVersion = 0) {
 }
 
 export function NewAgentPage() {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const navigate = useNavigate();
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
   const [created, setCreated] = useState<AgentAdminConfig>();
@@ -57,7 +57,7 @@ export function NewAgentDialog({
   onClose: () => void;
   returnFocusRef: { current: HTMLButtonElement | null };
 }) {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const navigate = useNavigate();
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
   const computers = useOwnComputersResource(me.user.id, computerRefreshVersion);

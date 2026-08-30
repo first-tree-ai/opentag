@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { browserApi } from "../../../api.js";
 import { Redirect } from "../../../features/navigation/redirect.js";
-import { useWorkspace } from "../../../features/session/session-context.js";
+import { useAccount } from "../../../features/session/session-context.js";
 import { OnboardingPage } from "../../../onboarding/page.js";
 
 export const Route = createFileRoute("/_authenticated/_workspace/onboarding")({
@@ -17,10 +17,10 @@ export const Route = createFileRoute("/_authenticated/_workspace/onboarding")({
  * brand mark beside the one onboarding renders itself.
  */
 function OnboardingRoute() {
-  const { me, membership, refreshMe } = useWorkspace();
+  const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
   const { agentId: targetAgentId } = Route.useSearch();
-  if (membership.setupCompletedAt) return <Redirect replace to="/agents" />;
+  if (me.setupCompletedAt) return <Redirect replace to="/agents" />;
   return (
     <OnboardingPage
       targetAgentId={targetAgentId}

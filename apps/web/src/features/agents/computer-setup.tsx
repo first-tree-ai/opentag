@@ -1,7 +1,7 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
-import { browserApi } from "./api.js";
-import { Banner, Button, ClipboardText, Loader, Text } from "./ui/design-system.js";
+import { browserApi } from "../../api.js";
+import { Banner, Button, ClipboardText, Loader, Text } from "../../ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. Generate a new one to continue.";

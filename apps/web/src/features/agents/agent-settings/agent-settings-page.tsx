@@ -1,7 +1,6 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 import { browserApi } from "../../../api.js";
-import { RuntimeConfigurationForm } from "../../../runtime-configuration.js";
 import { Icon, Loader, Text } from "../../../ui/design-system.js";
 import { NotFoundPage } from "../../not-found.js";
 import { AsyncState, useResource } from "../../resource/use-resource.js";
@@ -12,6 +11,7 @@ import { AgentComputerSettings } from "./agent-computer-settings.js";
 import { AgentManageSettings } from "./agent-manage-settings.js";
 import { GeneralConfigForm } from "./general-config-form.js";
 import { ImTab } from "./im-tab.js";
+import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import type { AgentSettingsSection } from "./sections.js";
 import { agentSettingsGroups, agentSettingsSections, agentSettingsSummary } from "./sections.js";
 

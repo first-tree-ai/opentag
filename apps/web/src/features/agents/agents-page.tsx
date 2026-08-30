@@ -5,7 +5,7 @@ import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
-import { useWorkspace } from "../session/session-context.js";
+import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
 import { loadAgentList, markAgentListUnconfirmed } from "./agent-model.js";
 import {
@@ -20,7 +20,7 @@ import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
 
 export function AgentsPage() {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const [createOpen, setCreateOpen] = useState(false);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
   const state = useResource(() => loadAgentList(), me.user.id, {

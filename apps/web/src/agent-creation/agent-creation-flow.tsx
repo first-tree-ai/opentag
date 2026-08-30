@@ -7,7 +7,7 @@ import type {
 import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import { ComputerSetup } from "../computer-setup.js";
+import { ComputerSetup } from "../features/agents/computer-setup.js";
 import {
   Banner,
   Button,

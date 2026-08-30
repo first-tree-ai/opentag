@@ -122,7 +122,7 @@ describe("BrowserApi", () => {
               email: "admin@example.com",
               displayName: "Admin",
             },
-            workspaces: [],
+            setupCompletedAt: null,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         ),

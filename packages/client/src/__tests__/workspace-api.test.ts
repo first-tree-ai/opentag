@@ -18,6 +18,7 @@ describe("OpenTagApi Workspace surface", () => {
     expect("previewAdminInvitation" in api).toBe(false);
     expect("acceptAdminInvitation" in api).toBe(false);
     expect("issueComputerConnectCode" in api).toBe(true);
+    expect("listAccountComputers" in api).toBe(true);
     expect("listWorkspaceComputers" in api).toBe(true);
     expect("createAgent" in api).toBe(true);
     expect("listAgents" in api).toBe(true);

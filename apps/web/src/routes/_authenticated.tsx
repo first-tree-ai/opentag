@@ -11,8 +11,8 @@ export const Route = createFileRoute("/_authenticated")({
 });
 
 /**
- * Resolves the authenticated Account and publishes it. Workspace authority is a separate question,
- * asked below only by the routes that act on stored resources.
+ * Resolves the authenticated Account and publishes it. Resource pages use this Account session; they
+ * no longer depend on a management Workspace membership.
  *
  * The Account is read while rendering rather than in `beforeLoad` because the application has no
  * request cache: a loader would re-request /me on every navigation.

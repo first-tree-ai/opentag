@@ -20,16 +20,9 @@ const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
-const workspace = {
-  id: workspaceId,
-  name: "example",
-  displayName: "Example",
-  setupCompletedAt: null,
-  grantedAt: "2026-08-19T00:00:00.000Z",
-};
 const me = {
   user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-  workspaces: [workspace],
+  setupCompletedAt: null,
 };
 const computer = {
   computerId,
@@ -90,7 +83,7 @@ const agentSummary = {
 function api() {
   return {
     me: vi.fn().mockResolvedValue(me),
-    listWorkspaceComputers: vi.fn().mockResolvedValue({ computers: [computer] }),
+    listAccountComputers: vi.fn().mockResolvedValue({ computers: [computer] }),
     createAgent: vi.fn().mockResolvedValue(agent),
     listAgents: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
     getAgent: vi.fn().mockResolvedValue(agent),
@@ -149,7 +142,7 @@ describe("Agent CLI core", () => {
     const client = api();
     client.me = vi.fn().mockResolvedValue({
       ...me,
-      workspaces: [workspace, { ...workspace, id: crypto.randomUUID(), name: "second" }],
+      setupCompletedAt: "2026-08-19T00:00:00.000Z",
     });
 
     await runAgentList({ accessToken: "access", api: client });
@@ -162,7 +155,7 @@ describe("Agent CLI core", () => {
     });
 
     expect(client.listAgents).toHaveBeenCalledWith("access");
-    expect(client.listWorkspaceComputers).toHaveBeenCalledWith("access");
+    expect(client.listAccountComputers).toHaveBeenCalledWith("access");
     expect(client.createAgent).toHaveBeenCalledWith("access", expect.objectContaining({ name: "code-reviewer" }));
     expect(client.me).not.toHaveBeenCalled();
   });
@@ -185,7 +178,7 @@ describe("Agent CLI core", () => {
 
   it("creates without a management scope and preserves an offline warning", async () => {
     const client = api();
-    client.listWorkspaceComputers.mockResolvedValue({
+    client.listAccountComputers.mockResolvedValue({
       computers: [{ ...computer, connectionStatus: "offline" as const }],
     });
     const result = await runAgentCreate({

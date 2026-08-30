@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { ComputerSetup } from "../../../computer-setup.js";
 import { Button, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, formatDate, formatRelativeTime, platformLabel } from "../agent-presentation.js";
+import { ComputerSetup } from "../computer-setup.js";
 
 export function AgentComputerSettings({
   agent,

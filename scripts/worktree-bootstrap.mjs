@@ -100,6 +100,16 @@ export async function bootstrapWorktree({ argv = [], cwd = process.cwd(), env = 
 
   log.info(`preparing worktree ${repositoryRoot} (${classification.reason})`);
   installDependencies({ repositoryRoot, env, logger: log });
+  const paraglide = spawnSync("pnpm", ["--filter", "@opentag/web", "paraglide"], {
+    cwd: repositoryRoot,
+    env: childEnvironment(env),
+    stdio: "inherit",
+  });
+  if (paraglide.error || paraglide.status !== 0) {
+    log.warn(
+      `Paraglide generation failed during worktree bootstrap${paraglide.error ? `: ${paraglide.error.message}` : ` with status ${paraglide.status ?? "unknown"}`}; continuing`,
+    );
+  }
   // `pnpm install` already runs the `prepare` lifecycle, but a developer may have disabled install
   // scripts, and the hooks are the whole point of the bootstrap.
   await installGitHooks({ cwd: repositoryRoot, env: childEnvironment(env), logger: log });

@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2023"],
     "strict": true,
+    "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true,
     "verbatimModuleSyntax": true,
     "declaration": true,

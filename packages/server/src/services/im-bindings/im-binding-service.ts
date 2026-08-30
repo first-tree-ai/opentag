@@ -31,9 +31,7 @@ import {
   slackInstallations,
   workspaceComputers,
 } from "../../db/schema/index.js";
-import { AuthServiceError } from "../auth/index.js";
 import type { ApplicationCipher } from "../crypto.js";
-import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -67,6 +65,7 @@ export interface VerifiedFeishuBinding {
 export interface SlackInstallationIngress {
   installationId: string;
   generation: number;
+  agentId: string;
   workspaceId: string;
   appId: string;
   teamId: string;
@@ -307,7 +306,6 @@ export class ImBindingService {
   readonly #now: () => Date;
   readonly #agentRuntimeReadiness: (agentId: string) => Promise<ProviderReadinessStatus>;
   readonly #imCliReadiness: (agentId: string, provider: "feishu" | "slack") => Promise<ImCliReadinessStatus>;
-  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(
     database: DatabaseClient,
@@ -320,7 +318,6 @@ export class ImBindingService {
         agentId: string,
         provider: "feishu" | "slack",
       ) => Promise<ImCliReadinessStatus> | ImCliReadinessStatus;
-      workspaceAdmins?: WorkspaceAdminAccess;
     } = {},
   ) {
     this.#database = database;
@@ -329,7 +326,6 @@ export class ImBindingService {
     this.#now = options.now ?? (() => new Date());
     this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
     this.#imCliReadiness = async (agentId, provider) => (await options.imCliReadiness?.(agentId, provider)) ?? "ready";
-    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async getAgentWorkspaceComputerId(agentId: string): Promise<string | undefined> {
@@ -455,7 +451,7 @@ export class ImBindingService {
     if (!installation) return rejected("binding_inactive");
     if (
       installation.status !== "active" ||
-      installation.workspaceId !== row.workspaceId ||
+      installation.agentId !== row.boundAgentId ||
       !installation.observedConnectedAt
     ) {
       return rejected("binding_inactive");
@@ -512,14 +508,7 @@ export class ImBindingService {
         throw new ImBindingServiceError(
           "SLACK_APP_TEAM_ALREADY_BOUND",
           409,
-          "This Slack App installation is already bound to another OpenTag workspace",
-        );
-      }
-      if (isImBindingUniqueViolation(error, "slack_installations_workspace_current_unique")) {
-        throw new ImBindingServiceError(
-          "SLACK_CONFIGURATION_CONFLICT",
-          409,
-          "This OpenTag workspace already has a Slack installation",
+          "This Slack App installation is already bound to another OpenTag Agent",
         );
       }
       throw error;
@@ -589,7 +578,7 @@ export class ImBindingService {
           eq(imBindings.provider, "slack"),
           eq(imBindings.status, "active"),
           eq(slackInstallations.status, "active"),
-          eq(slackInstallations.workspaceId, agents.workspaceId),
+          eq(slackInstallations.agentId, agentId),
           ne(agents.status, "deleted"),
         ),
       )
@@ -623,7 +612,7 @@ export class ImBindingService {
 
   async getSlackConnectionMaterial(imBindingId: string): Promise<SlackConnectionMaterial | undefined> {
     const [row] = await this.#database
-      .select({ imBinding: imBindings, installation: slackInstallations, workspaceId: agents.workspaceId })
+      .select({ imBinding: imBindings, installation: slackInstallations })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
@@ -633,11 +622,12 @@ export class ImBindingService {
           eq(imBindings.provider, "slack"),
           eq(imBindings.status, "active"),
           eq(slackInstallations.status, "active"),
+          eq(slackInstallations.agentId, imBindings.agentId),
           ne(agents.status, "deleted"),
         ),
       )
       .limit(1);
-    if (!row || row.installation.workspaceId !== row.workspaceId || !row.installation.observedConnectedAt) {
+    if (!row?.installation.observedConnectedAt) {
       return undefined;
     }
     const ingress = this.#slackInstallationIngressFromRow(row.installation);
@@ -1113,14 +1103,12 @@ export class ImBindingService {
     agentId: string,
     executor: QueryExecutor = this.#database,
   ): Promise<void> {
-    try {
-      await this.#workspaceAdmins.requireAdminForAgent(callerUserId, agentId, executor);
-    } catch (error) {
-      if (error instanceof AuthServiceError && error.statusCode === 404) {
-        throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
-      }
-      throw error;
-    }
+    const [agent] = await executor
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .limit(1);
+    if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
   }
 
   async assertCanManageForMutation(
@@ -1128,18 +1116,10 @@ export class ImBindingService {
     agentId: string,
     transaction: DatabaseTransaction,
   ): Promise<void> {
-    try {
-      await this.#workspaceAdmins.requireAdminForAgentMutation(transaction, callerUserId, agentId);
-    } catch (error) {
-      if (error instanceof AuthServiceError && error.statusCode === 404) {
-        throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
-      }
-      throw error;
-    }
     const [agent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
@@ -1334,6 +1314,7 @@ export class ImBindingService {
     return {
       installationId: installation.id,
       generation: installation.credentialGeneration,
+      agentId: installation.agentId,
       workspaceId: installation.workspaceId,
       appId: installation.externalAppId,
       teamId: installation.externalTeamId,
@@ -1348,7 +1329,6 @@ export class ImBindingService {
     const rows = await this.#database
       .select({
         imBinding: imBindings,
-        agentWorkspaceId: agents.workspaceId,
         agentStatus: agents.status,
         installation: slackInstallations,
       })
@@ -1363,13 +1343,14 @@ export class ImBindingService {
           eq(imBindings.slackRouteKind, "default"),
           eq(slackInstallations.id, installationId),
           eq(slackInstallations.status, "active"),
+          eq(slackInstallations.agentId, imBindings.agentId),
           ...(agentId ? [eq(imBindings.agentId, agentId)] : []),
         ),
       )
       .limit(2);
     if (rows.length !== 1) return undefined;
     const row = rows[0];
-    if (!row || row.agentStatus === "deleted" || row.agentWorkspaceId !== row.installation.workspaceId) {
+    if (!row || row.agentStatus === "deleted") {
       return undefined;
     }
     if (row.imBinding.slackRouteKind !== "default") return undefined;
@@ -1446,17 +1427,17 @@ export class ImBindingService {
         )
         .limit(1)
         .for("update");
-      if (appTeamInstallation && appTeamInstallation.workspaceId !== agent.workspaceId) {
+      if (appTeamInstallation && appTeamInstallation.agentId !== input.agentId) {
         throw new ImBindingServiceError(
           "SLACK_APP_TEAM_ALREADY_BOUND",
           409,
-          "This Slack App installation is already bound to another OpenTag workspace",
+          "This Slack App installation is already bound to another OpenTag Agent",
         );
       }
-      const [workspaceInstallation] = await transaction
+      const [sameAgentInstallation] = await transaction
         .select()
         .from(slackInstallations)
-        .where(and(eq(slackInstallations.workspaceId, agent.workspaceId), ne(slackInstallations.status, "disabled")))
+        .where(and(eq(slackInstallations.agentId, input.agentId), ne(slackInstallations.status, "disabled")))
         .limit(1)
         .for("update");
       const configuredRoute = currentRoute?.status === "provisioning" ? undefined : currentRoute;
@@ -1475,57 +1456,50 @@ export class ImBindingService {
         );
       }
       const now = this.#now();
-      let currentWorkspaceInstallation = workspaceInstallation;
       let currentAppTeamInstallation = appTeamInstallation;
-      let releasedWorkspaceInstallationId: string | undefined;
-      if (currentWorkspaceInstallation) {
+      let currentSameAgentInstallation = sameAgentInstallation;
+      let releasedInstallationId: string | undefined;
+      if (currentSameAgentInstallation) {
         const [installationRoute] = await transaction
           .select({ id: imBindings.id })
           .from(imBindings)
           .where(
             and(
-              eq(imBindings.slackInstallationId, currentWorkspaceInstallation.id),
+              eq(imBindings.slackInstallationId, currentSameAgentInstallation.id),
               eq(imBindings.provider, "slack"),
               ne(imBindings.status, "disabled"),
             ),
           )
           .limit(1);
         if (!installationRoute) {
-          await this.#disableSlackInstallation(transaction, currentWorkspaceInstallation.id, now);
-          releasedWorkspaceInstallationId = currentWorkspaceInstallation.id;
-          if (currentAppTeamInstallation?.id === currentWorkspaceInstallation.id) {
+          await this.#disableSlackInstallation(transaction, currentSameAgentInstallation.id, now);
+          releasedInstallationId = currentSameAgentInstallation.id;
+          if (currentAppTeamInstallation?.id === currentSameAgentInstallation.id) {
             currentAppTeamInstallation = undefined;
           }
-          currentWorkspaceInstallation = undefined;
+          currentSameAgentInstallation = undefined;
         }
       }
       if (
-        currentWorkspaceInstallation &&
+        currentSameAgentInstallation &&
         currentAppTeamInstallation &&
-        currentWorkspaceInstallation.id !== currentAppTeamInstallation.id
+        currentSameAgentInstallation.id !== currentAppTeamInstallation.id
       ) {
         throw new ImBindingServiceError(
           "SLACK_CONFIGURATION_CONFLICT",
           409,
-          "This OpenTag workspace already has a different Slack installation",
+          "This Agent already has a different Slack installation",
         );
       }
-      if (input.intent === "create" && currentWorkspaceInstallation && !currentAppTeamInstallation) {
+      if (input.intent === "create" && currentSameAgentInstallation && !currentAppTeamInstallation) {
         throw new ImBindingServiceError(
           "SLACK_CONFIGURATION_CONFLICT",
           409,
-          "This OpenTag workspace already has a Slack installation",
+          "This Agent already has a Slack installation",
         );
       }
-      const existingInstallation = currentAppTeamInstallation ?? currentWorkspaceInstallation;
+      const existingInstallation = currentAppTeamInstallation ?? currentSameAgentInstallation;
       if (existingInstallation) {
-        if (existingInstallation.agentId !== input.agentId) {
-          throw new ImBindingServiceError(
-            "SLACK_APP_TEAM_ALREADY_BOUND",
-            409,
-            "This Slack App installation is already bound to another OpenTag Agent",
-          );
-        }
         const currentCredential = this.#decodeSlackCredential(existingInstallation.encryptedCredential);
         const sameIdentity =
           existingInstallation.externalAppId === input.appId &&
@@ -1537,7 +1511,7 @@ export class ImBindingService {
             throw new ImBindingServiceError(
               "SLACK_CONFIGURATION_CONFLICT",
               409,
-              "The configured Slack route does not belong to the current workspace installation",
+              "The configured Slack route does not belong to the current Agent installation",
             );
           }
           await this.#disableSlackInstallation(transaction, existingInstallation.id, now);
@@ -1570,7 +1544,6 @@ export class ImBindingService {
           .update(slackInstallations)
           .set({
             status: "active",
-            agentId: input.agentId,
             externalAppId: input.appId,
             externalTeamId: input.teamId,
             externalEnterpriseId: input.enterpriseId ?? null,
@@ -1586,7 +1559,7 @@ export class ImBindingService {
             lastErrorCode: null,
             updatedAt: now,
           })
-          .where(eq(slackInstallations.id, existingInstallation.id))
+          .where(and(eq(slackInstallations.id, existingInstallation.id), eq(slackInstallations.agentId, input.agentId)))
           .returning();
         if (!updatedInstallation) throw new Error("Slack installation update did not return a row");
         await this.#syncSlackRoutesFromInstallation(transaction, updatedInstallation, now);
@@ -1622,11 +1595,11 @@ export class ImBindingService {
         },
         now,
       );
-      if (releasedWorkspaceInstallationId) {
+      if (releasedInstallationId) {
         await transaction
           .update(slackInstallations)
           .set({ replacementSlackInstallationId: created.installationId, updatedAt: now })
-          .where(eq(slackInstallations.id, releasedWorkspaceInstallationId));
+          .where(eq(slackInstallations.id, releasedInstallationId));
       }
       return created;
     };

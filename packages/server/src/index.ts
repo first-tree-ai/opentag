@@ -183,7 +183,6 @@ export async function startServer(): Promise<void> {
           observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
         );
       },
-      workspaceAdmins,
     });
     const workspaceSetupService = new WorkspaceSetupService(database, imBindingService, { workspaceAdmins });
     const imMessageInbox = new ImMessageInbox(database);

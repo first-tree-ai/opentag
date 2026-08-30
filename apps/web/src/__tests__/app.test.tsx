@@ -2645,51 +2645,28 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
-    /*
-     * This one fails intermittently — once in about forty whole-file runs, on two machines, and
-     * never reproduced in isolation (opentag#273). Chasing another failure costs dozens of runs, so
-     * the next one describes itself instead.
-     *
-     * The record is taken *during* the test rather than after it. `onTestFailed` runs after this
-     * suite's `afterEach(cleanup)`, so by then the DOM is gone: a handler that inspects it there
-     * reports an empty document no matter what actually happened.
-     *
-     * It is a trail rather than a snapshot because we do not know which line gives way first. Menu
-     * never opened, opened and did not close, focus never landed — each leaves a different
-     * sequence, and one occurrence should be enough to tell them apart.
-     */
-    const trail: string[] = [];
-    const note = (label: string) => {
-      const active = document.activeElement;
-      /*
-       * The record asks the question the assertion asks — a menu accessibly named "Account" —
-       * rather than a bare count of menus. A menu element stays in the document after Escape and
-       * only stops matching that name, so a count reads identically on a passing run and explains
-       * nothing about a failing one.
-       */
-      trail.push(
-        `${label}: active=${active?.tagName}/${active?.getAttribute("role") ?? "-"} ` +
-          `accountMenus=${screen.queryAllByRole("menu", { name: "Account" }).length} ` +
-          `menus=${document.querySelectorAll('[role="menu"]').length} ` +
-          `items=${document.querySelectorAll('[role="menuitem"]').length}`,
-      );
-    };
-    // Nothing is printed on a green run; the trail is a few strings that go out of scope.
-    onTestFailed(() => console.log(`[opentag#273]\n${trail.join("\n")}`));
-
     installApi({ multipleMemberships: true });
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
-    note("before open");
     fireEvent.click(trigger);
-    note("after open");
     const account = screen.getByRole("menuitem", { name: "Account" });
     expect(screen.getByRole("menu")).toBeTruthy();
     account.focus();
-    note("after focus");
     fireEvent.keyDown(account, { key: "Escape" });
-    note("after escape");
-    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+
+    /*
+     * Closing is asynchronous: the menu is still in the document on the tick after Escape and
+     * leaves a frame or two later. This waits for it rather than asserting immediately, which also
+     * means the close finishes inside the test instead of racing whatever runs next.
+     *
+     * The old assertion asked for a menu accessibly named "Account" and got null at every moment,
+     * open or closed — so it passed with the Escape line deleted entirely, and never checked the
+     * focus return its name promises.
+     */
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("supports arrow-key navigation and focus return in the account menu", async () => {
@@ -2706,7 +2683,11 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
     fireEvent.keyDown(account, { key: "End" });
     fireEvent.keyDown(signOut, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+    // Same as above: closing is asynchronous, and a menu named "Account" never existed to be null.
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("removes the old admin product shell without a redirect", async () => {

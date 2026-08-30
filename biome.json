@@ -32,6 +32,9 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "correctness": {
+        "noUndeclaredDependencies": "error"
+      },
       "suspicious": {
         "noExplicitAny": "error"
       },

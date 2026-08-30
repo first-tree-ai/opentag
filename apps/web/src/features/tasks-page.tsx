@@ -180,19 +180,26 @@ export function TasksPage() {
       ) : null}
       {state.kind === "ready" && tasks.length > 0 ? (
         <>
-          <Table className="w-full" aria-label="Tasks" data-ui="task-table">
-            <thead>
-              <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-                <th scope="col">Task</th>
-                <th scope="col">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tasks.map((task) => (
-                <TaskRow key={task.id} task={task} />
-              ))}
-            </tbody>
-          </Table>
+          <section
+            aria-label="Tasks table"
+            className="min-w-0 overflow-x-auto rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus the horizontal scroll region.
+            tabIndex={0}
+          >
+            <Table className="min-w-[36rem]" aria-label="Tasks" data-ui="task-table">
+              <thead>
+                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
+                  <th scope="col">Task</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.map((task) => (
+                  <TaskRow key={task.id} task={task} />
+                ))}
+              </tbody>
+            </Table>
+          </section>
           {state.value.nextCursor ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
@@ -326,7 +333,11 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
         </section>
       </header>
 
-      <section className="grid gap-3 sm:grid-cols-2" aria-label="Task debug identifiers" data-ui="task-debug-facts">
+      <section
+        className="grid gap-3 @min-[36rem]/workspace:grid-cols-2"
+        aria-label="Task debug identifiers"
+        data-ui="task-debug-facts"
+      >
         <DebugValue label="Session" value={task.id} />
         <DebugValue label="Channel" value={task.source.channelId} />
         {task.source.threadKey ? <DebugValue label="Thread" value={task.source.threadKey} /> : null}

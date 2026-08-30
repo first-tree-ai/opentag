@@ -39,6 +39,7 @@ describe("capability entry pages", () => {
     expect(screen.getByText("GitHub")).toBeTruthy();
     expect(screen.getByText("Google Drive")).toBeTruthy();
     expect(screen.getAllByText("Demo")).toHaveLength(6);
+    expect(screen.getByRole("region", { name: "Integrations table" }).tabIndex).toBe(0);
     expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
       "Name",
       "Category",

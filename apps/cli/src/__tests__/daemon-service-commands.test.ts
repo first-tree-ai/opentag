@@ -4,11 +4,14 @@ import { join } from "node:path";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
+import { createProgram } from "../cli/program.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
+import * as daemonShared from "../commands/daemon/shared.js";
 import { executeDaemonServiceCommand } from "../commands/daemon/shared.js";
 import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
+import * as daemonRuntime from "../core/daemon/runtime.js";
 import { runDaemonServiceEntry } from "../core/daemon/runtime.js";
 import { createDaemonServiceManager, type DaemonServiceManager } from "../core/daemon/service/index.js";
 import type { ServiceRunner } from "../core/daemon/service/types.js";
@@ -26,6 +29,34 @@ describe("daemon service commands", () => {
     expect(daemon?.helpInformation()).not.toContain("service-run");
     expect(daemon?.helpInformation()).not.toContain("ensure-service");
     expect(daemon?.helpInformation()).not.toMatch(/^\s+run\b/mu);
+  });
+
+  it("dispatches every daemon lifecycle wrapper to its shared executor", async () => {
+    const execute = vi.spyOn(daemonShared, "executeDaemonServiceCommand").mockResolvedValue(0);
+    const serviceRun = vi.spyOn(daemonRuntime, "runDaemonServiceEntry").mockResolvedValue(0);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      for (const [command, action] of [
+        ["install", "installAndStart"],
+        ["start", "start"],
+        ["stop", "stop"],
+        ["restart", "restart"],
+        ["status", "status"],
+        ["uninstall", "uninstall"],
+      ] as const) {
+        await createProgram().parseAsync(["node", "opentag", "daemon", command]);
+        expect(execute).toHaveBeenLastCalledWith(action);
+      }
+      await createProgram().parseAsync(["node", "opentag", "daemon", "service-run"]);
+      await createProgram().parseAsync(["node", "opentag", "daemon", "ensure-service"]);
+      expect(serviceRun).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = previousExitCode;
+      execute.mockRestore();
+      serviceRun.mockRestore();
+    }
   });
 
   it("maps status to a stable exit code and redacted presentation", async () => {

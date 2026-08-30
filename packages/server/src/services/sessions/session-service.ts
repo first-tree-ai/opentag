@@ -549,7 +549,7 @@ export class SessionService {
       lastDeliveryOutcome: SessionCliListItem["lastDeliveryOutcome"];
       taskPreview: string;
     };
-    const result = await this.#database.execute<ListRow>(sql`
+    const rows = await this.#database.execute<ListRow>(sql`
       select
         link.descendant_session_id as "sessionId",
         child.created_by_session_id as "parentSessionId",
@@ -572,9 +572,6 @@ export class SessionService {
       order by link.last_message_created_at desc, link.last_message_id desc, link.descendant_session_id desc
       limit ${query.limit + 1}
     `);
-    // PostgreSQL drivers return rows directly, while the PGlite unit driver wraps them in a result object.
-    // Normalize both shapes here so the service keeps one query path in production and unit tests.
-    const rows: readonly ListRow[] = Array.isArray(result) ? result : (result as unknown as { rows: ListRow[] }).rows;
     const page = [...rows].slice(0, query.limit);
     const last = page.at(-1);
     return {

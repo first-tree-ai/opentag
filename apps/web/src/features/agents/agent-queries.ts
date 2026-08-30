@@ -68,11 +68,11 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
     })),
   });
 
-  if (agentsQuery.isPending || computersQuery.isPending) return { kind: "loading" };
+  if (!agentsQuery.isFetched || !computersQuery.isFetched) return { kind: "loading" };
   if (!agentsQuery.data) return { kind: "error", error: agentsQuery.error ?? new Error("The request failed") };
-  // Pending only counts while the evidence reads are actually running; a failed Computer read leaves
-  // them disabled and permanently pending, which would otherwise hold the page in loading forever.
-  if (evidenceOffered && [...bindings, ...handoffs].some((query) => query.isPending)) return { kind: "loading" };
+  // Only the first read is waited on, and only while the evidence reads are actually offered: a
+  // failed Computer read leaves them disabled and never fetched, which would hold the page forever.
+  if (evidenceOffered && [...bindings, ...handoffs].some((query) => !query.isFetched)) return { kind: "loading" };
 
   const computers = computersQuery.data?.computers ?? [];
   const view = {
@@ -129,7 +129,13 @@ export function useAgentDetailView(
     ...watch,
   });
 
-  const settling = agentQuery.isPending || computersQuery.isPending || bindingQuery.isPending || handoffQuery.isPending;
+  /*
+   * Waiting on the first read of each, not on whether one is in flight now. A re-read must not put
+   * the page back into loading: doing so unmounts what the page is showing, and anything below that
+   * reads the same evidence would be remounted into re-reading it, which never settles.
+   */
+  const settling =
+    !agentQuery.isFetched || !computersQuery.isFetched || !bindingQuery.isFetched || !handoffQuery.isFetched;
   if (settling) return initialAgent ? { kind: "ready", value: initialAgent } : { kind: "loading" };
   if (!agentQuery.data) {
     return initialAgent

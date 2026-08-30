@@ -1,8 +1,10 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
+import { queryKeys } from "../../../query/keys.js";
 import {
   Banner,
   Button,
@@ -14,7 +16,8 @@ import {
   Text,
 } from "../../../ui/design-system.js";
 import { EmptyState } from "../../layout/page.js";
-import { AsyncState, useResource } from "../../resource/use-resource.js";
+import { toResourceState } from "../../resource/query-state.js";
+import { AsyncState } from "../../resource/use-resource.js";
 import type { AgentDetailView } from "../agent-model.js";
 import {
   agentAvailabilityRecovery,
@@ -29,7 +32,7 @@ import {
 } from "../agent-presentation.js";
 
 export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const [reload, setReload] = useState(0);
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
   const [confirmation, setConfirmation] = useState<
     { kind: "all_messages" } | { bindingId: string; kind: "disable_binding" }
@@ -41,9 +44,15 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   const disableBindingButtonRef = useRef<HTMLButtonElement>(null);
   const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
   const triggerRulesHeadingRef = useRef<HTMLHeadingElement>(null);
-  const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`, {
-    keepPreviousData: true,
-  });
+  // Re-reading the same key keeps the binding on screen while the write settles, so there is no
+  // need for the placeholder the composite key used to require.
+  const reload = () => void queryClient.invalidateQueries({ queryKey: queryKeys.agents.imBinding(agent.id) });
+  const state = toResourceState(
+    useQuery({
+      queryKey: queryKeys.agents.imBinding(agent.id),
+      queryFn: () => browserApi.imBinding(agent.id).then((binding) => binding ?? null),
+    }),
+  );
   useEffect(() => {
     if (confirmation || !restoreFocusTarget) return;
     const target = restoreFocusTarget === "messaging" ? messagingHeadingRef.current : triggerRulesHeadingRef.current;
@@ -57,7 +66,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setConfirmationError(undefined);
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
-      setReload((value) => value + 1);
+      reload();
       if (receiveMode === "all_message") setRestoreFocusTarget("trigger_rules");
       setConfirmation(undefined);
       onAgentChanged();
@@ -75,7 +84,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setError(undefined);
       setConfirmationError(undefined);
       await browserApi.disableImBinding(bindingId);
-      setReload((value) => value + 1);
+      reload();
       setRestoreFocusTarget("messaging");
       setConfirmation(undefined);
       onAgentChanged();
@@ -99,7 +108,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       <FeishuSetup
         agentId={agent.id}
         onSuccess={() => {
-          setReload((value) => value + 1);
+          reload();
           onAgentChanged();
         }}
       >
@@ -107,7 +116,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
           <SlackConfiguration
             agentId={agent.id}
             onSuccess={() => {
-              setReload((value) => value + 1);
+              reload();
               onAgentChanged();
             }}
           >

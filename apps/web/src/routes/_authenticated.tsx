@@ -1,10 +1,12 @@
-import type { MeResponse } from "@opentag/shared/browser";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
-import { AsyncState, useResource } from "../features/resource/use-resource.js";
+import { toResourceState } from "../features/resource/query-state.js";
+import { AsyncState } from "../features/resource/use-resource.js";
 import { AccountContext } from "../features/session/session-context.js";
+import { queryKeys } from "../query/keys.js";
 
 export const Route = createFileRoute("/_authenticated")({
   component: AuthenticatedAccountGate,
@@ -28,18 +30,22 @@ function AuthenticatedAccountGate() {
     const { pathname, searchStr } = router.state.location;
     return pathname === "/" ? "/agents" : `${pathname}${searchStr}`;
   });
-  const [meRevision, setMeRevision] = useState(0);
-  const [refreshed, setRefreshed] = useState<{ revision: number; me: MeResponse }>();
-  const state = useResource(() => browserApi.me(), `me:${meRevision}`);
+  const queryClient = useQueryClient();
+  const state = toResourceState(useQuery({ queryKey: queryKeys.me(), queryFn: () => browserApi.me() }));
   /**
    * Installs the authoritative response before resolving, so a caller that navigates on the result
    * cannot have a gate re-evaluate the state this refresh was meant to replace.
+   *
+   * The read is made directly and only its success is written, rather than going through the cache's
+   * own fetch. A failure here belongs to the caller that asked for the refresh — it is reported to
+   * them and handled where they stand. Letting the cache record it would instead surface it on this
+   * gate, replacing the whole signed-in surface with an error over a refresh the Account never saw.
    */
   const refreshMe = useCallback(async () => {
     const next = await browserApi.me();
-    setRefreshed({ revision: meRevision, me: next });
+    queryClient.setQueryData(queryKeys.me(), next);
     return next;
-  }, [meRevision]);
+  }, [queryClient]);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     return <Redirect replace search={{ next: requested }} to="/login" />;
   }
@@ -48,9 +54,11 @@ function AuthenticatedAccountGate() {
       {(loaded) => (
         <AccountContext
           value={{
-            me: refreshed?.revision === meRevision ? refreshed.me : loaded,
+            me: loaded,
             refreshMe,
-            reloadMe: () => setMeRevision((value) => value + 1),
+            // Resetting rather than invalidating, because this one is documented to show the loading
+            // state again: invalidating would keep the Account on screen while it re-reads.
+            reloadMe: () => void queryClient.resetQueries({ queryKey: queryKeys.me() }),
           }}
         >
           <Outlet />

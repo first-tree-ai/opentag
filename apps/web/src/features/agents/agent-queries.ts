@@ -1,5 +1,6 @@
 import type { ImBindingHandoffStatus, ImBindingSummary } from "@opentag/shared/browser";
 import { useQueries, useQuery } from "@tanstack/react-query";
+import { useRef } from "react";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import type { LoadState } from "../resource/resource-state.js";
@@ -24,6 +25,30 @@ const readImBinding = (agentId: string): Promise<ImBindingSummary | null> =>
 
 const readImBindingHandoff = (agentId: string): Promise<ImBindingHandoffStatus | null> =>
   browserApi.imBindingHandoff(agentId).then((handoff) => handoff ?? null);
+
+/** The part of a query this remembers. Taking a plain object keeps the reads it accepts explicit. */
+interface SettlingQuery {
+  error: Error | null;
+  isError: boolean;
+  isSuccess: boolean;
+}
+
+/**
+ * The last answer the Server actually gave, held across the re-read that follows it.
+ *
+ * The cache clears `error` the moment a fetch starts on a query that has never held data, so
+ * `isError` describes only the attempt in flight. A terminal response is not an attempt that failed
+ * but an answer — the Agent is gone or forbidden — and forgetting it on every interval and every
+ * focus is what let route state put a deleted Agent back on screen between re-reads. Only a success
+ * retires it, and the resource it was recorded for keys it so a different Agent never inherits it.
+ */
+function useSettledError(key: string, query: SettlingQuery): Error | null {
+  const settled = useRef<{ key: string; error: Error | null }>({ key, error: null });
+  if (settled.current.key !== key) settled.current = { key, error: null };
+  if (query.isSuccess) settled.current.error = null;
+  else if (query.isError) settled.current.error = query.error ?? new Error("The request failed");
+  return settled.current.error;
+}
 
 /** The Account's Computers. One cache entry, so every surface that needs them shares one read. */
 export function useComputersQuery(watched = false) {
@@ -68,8 +93,13 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
     })),
   });
 
+  const agentsError = useSettledError(accountId, agentsQuery);
+
+  // A terminal response is an answer about the list itself, so it outranks the reads still settling
+  // beside it as well as any rows the cache still holds.
+  if (agentsError && isTerminalResourceError(agentsError)) return { kind: "error", error: agentsError };
   if (!agentsQuery.isFetched || !computersQuery.isFetched) return { kind: "loading" };
-  if (!agentsQuery.data) return { kind: "error", error: agentsQuery.error ?? new Error("The request failed") };
+  if (!agentsQuery.data) return { kind: "error", error: agentsError ?? new Error("The request failed") };
   // Only the first read is waited on, and only while the evidence reads are actually offered: a
   // failed Computer read leaves them disabled and never fetched, which would hold the page forever.
   if (evidenceOffered && [...bindings, ...handoffs].some((query) => !query.isFetched)) return { kind: "loading" };
@@ -93,10 +123,7 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
       };
     }),
   };
-  return toResourceState(
-    { data: view, error: agentsQuery.error, isError: agentsQuery.isError },
-    markAgentListUnconfirmed,
-  );
+  return toResourceState({ data: view, error: agentsError, isError: agentsError !== null }, markAgentListUnconfirmed);
 }
 
 /**
@@ -136,10 +163,11 @@ export function useAgentDetailView(
    */
   const settling =
     !agentQuery.isFetched || !computersQuery.isFetched || !bindingQuery.isFetched || !handoffQuery.isFetched;
-  const agentError = agentQuery.error ?? new Error("The request failed");
-  if (agentQuery.isError && isTerminalResourceError(agentError)) {
-    // A terminal primary response wins even while the evidence reads are still settling. Route
-    // state must not keep a deleted or forbidden Agent visible during that window.
+  const agentError = useSettledError(agentId, agentQuery);
+  if (agentError && isTerminalResourceError(agentError)) {
+    // A terminal primary response wins even while the evidence reads are still settling, and it
+    // keeps winning while the next re-read is in flight. Route state must not keep a deleted or
+    // forbidden Agent visible during either window.
     return { kind: "error", error: agentError };
   }
   if (settling) return initialAgent ? { kind: "ready", value: initialAgent } : { kind: "loading" };
@@ -149,7 +177,7 @@ export function useAgentDetailView(
     if (initialAgent) {
       return { kind: "ready", value: markAgentDetailUnconfirmed(initialAgent) };
     }
-    return { kind: "error", error: agentError };
+    return { kind: "error", error: agentError ?? new Error("The request failed") };
   }
 
   const agent = agentQuery.data;
@@ -159,15 +187,16 @@ export function useAgentDetailView(
     messaging: bindingQuery.isSuccess ? { kind: "ready", value: binding } : { kind: "unconfirmed" },
     availability: projectAgentAvailability(
       agent,
-      computersQuery.data?.computers.find((computer) => computer.computerId === agent.computer.computerId),
+      // Evidence counts only while the read that carries it is confirmed, as it does on the list. A
+      // Computer the cache still holds after a failed re-read is not evidence of anything.
+      computersQuery.isSuccess
+        ? computersQuery.data.computers.find((computer) => computer.computerId === agent.computer.computerId)
+        : undefined,
       binding,
       handoffQuery.isSuccess ? (handoffQuery.data ?? undefined) : undefined,
       bindingQuery.isSuccess,
       handoffQuery.isSuccess,
     ),
   };
-  return toResourceState(
-    { data: view, error: agentQuery.error, isError: agentQuery.isError },
-    markAgentDetailUnconfirmed,
-  );
+  return toResourceState({ data: view, error: agentError, isError: agentError !== null }, markAgentDetailUnconfirmed);
 }

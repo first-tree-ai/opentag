@@ -5,7 +5,7 @@ import {
   normalizeServerUrl,
   OpenTagApi,
   resolveOpenTagHome,
-  storeMachineEnrollmentCredential,
+  storeBoundAccountComputer,
   writeComputerIdentityAtomically,
 } from "@opentag/client";
 import { CLI_VERSION } from "../../build-info.js";
@@ -62,7 +62,7 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
     clientVersion: CLI_VERSION,
   });
   await writeComputerIdentityAtomically(home, identity);
-  await storeMachineEnrollmentCredential({ ...enrollment, serverUrl }, home);
+  await storeBoundAccountComputer({ ...enrollment, serverUrl }, home);
   const result: ComputerConnectResult = {
     credentialsPath: machineCredentialsPath(home),
     message: "Connected this Computer",

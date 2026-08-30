@@ -1,7 +1,6 @@
 import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
@@ -21,6 +20,7 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "../../services/im-bindings/slack/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const now = new Date("2026-08-25T00:00:00.000Z");
@@ -60,7 +60,7 @@ async function fixture() {
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.2",
       enrolledByUserId: bootstrap.userId,
     })
     .returning();
@@ -72,16 +72,16 @@ async function fixture() {
     displayName: "workstation",
     platform: "linux",
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
   });
   const agentsService = new AgentService(client.database);
-  const first = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
+  const first = await agentsService.createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
     computerId: workspaceComputer.id,
   });
-  const second = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
+  const second = await agentsService.createForAccount(bootstrap.userId, {
     name: "reviewer",
     displayName: "Reviewer",
     runtimeProvider: "codex",

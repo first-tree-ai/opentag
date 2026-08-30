@@ -11,7 +11,7 @@ import { asc, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
 import { sessionMessages } from "../../db/schema/index.js";
-import { workspaceNotFound } from "../workspace-admin-access/workspace-admin-access.js";
+import { AuthServiceError } from "../auth/index.js";
 import { deriveTaskTitle } from "./task-title.js";
 
 const CursorSchema = z.object({ at: z.string().datetime(), id: z.string().uuid() }).strict();
@@ -236,7 +236,7 @@ export class TaskService {
 
   async get(accountId: string, sessionId: string, options: GetTaskOptions): Promise<TaskDetail> {
     const [row] = await this.#summaryRows(accountId, { sessionId, limit: 1 });
-    if (!row) throw workspaceNotFound();
+    if (!row) throw taskNotFound();
     const cursor = parseCursor(options.cursor);
     const turns = await this.database.execute<TaskTurnRow>(sql`
       select
@@ -404,4 +404,8 @@ export class TaskService {
     `);
     return [...rows];
   }
+}
+
+function taskNotFound(): AuthServiceError {
+  return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
 }

@@ -1,6 +1,6 @@
 import { userInfo } from "node:os";
 import { resolve } from "node:path";
-import { readMachineCredentials, resolveOpenTagHome } from "@opentag/client";
+import { readMachineCredentials, resolveBoundAccountComputer, resolveOpenTagHome } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
 import { CHANNEL } from "../../../build-info.js";
 import { channelConfig } from "../../channel/config.js";
@@ -118,14 +118,9 @@ export async function createDaemonServiceManager(
           { cause: error },
         );
       }
-      if (!credentials?.enrollments.length) {
+      const bound = resolveBoundAccountComputer(credentials);
+      if (bound.status === "disconnected") {
         throw new DaemonServiceError("CONFIGURATION", "This Computer is not enrolled; run computer connect first");
-      }
-      if (credentials.enrollments.length !== 1) {
-        throw new DaemonServiceError(
-          "CONFIGURATION",
-          "This OpenTag home has multiple enrollments and cannot bind to one Account Computer",
-        );
       }
       return mutate("install", () => backend.installAndStart());
     },

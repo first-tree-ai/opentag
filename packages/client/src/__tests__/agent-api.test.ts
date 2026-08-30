@@ -1,14 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi, OpenTagApiError } from "../api.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const createdByUserId = "bfcdab09-b57a-44ac-a170-09f7c3af20df";
 const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 const agent = {
   id: agentId,
-  workspaceId,
   createdByUserId,
   computerId,
   name: "code-reviewer",

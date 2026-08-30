@@ -27,11 +27,10 @@ describe("computer connect", () => {
       serverUrl: "https://opentag.example",
     };
     await writeCredentialsAtomically(accountCredentials, home);
-    const firstWorkspaceId = crypto.randomUUID();
-    const secondWorkspaceId = crypto.randomUUID();
+    const firstComputerId = crypto.randomUUID();
+    const secondComputerId = crypto.randomUUID();
     const exchangeComputerConnectCode = vi.fn(async (input: { code: string; computerId: string }) => ({
-      workspaceComputerId: crypto.randomUUID(),
-      workspaceId: input.code === "first-code" ? firstWorkspaceId : secondWorkspaceId,
+      workspaceComputerId: input.code === "first-code" ? firstComputerId : secondComputerId,
       computerId: input.computerId,
       machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
     }));
@@ -44,7 +43,7 @@ describe("computer connect", () => {
       serverUrl: "https://opentag.example",
     });
     expect(result.message).toBe("Connected this Computer");
-    expect(result.message).not.toContain(firstWorkspaceId);
+    expect(result.message).not.toContain(firstComputerId);
     await runComputerConnect({
       api: { exchangeComputerConnectCode },
       code: "second-code",
@@ -55,8 +54,7 @@ describe("computer connect", () => {
 
     expect(await readCredentials(home)).toEqual(accountCredentials);
     const stored = await readMachineCredentials(home);
-    expect(stored?.enrollments).toHaveLength(1);
-    expect(stored?.enrollments[0]?.workspaceId).toBe(secondWorkspaceId);
+    expect(stored?.computer.workspaceComputerId).toBe(secondComputerId);
     const exchangedComputerIds = exchangeComputerConnectCode.mock.calls.map(([input]) => input.computerId);
     expect(new Set(exchangedComputerIds).size).toBe(2);
     expect(JSON.stringify(stored)).not.toContain("account-access");
@@ -135,7 +133,7 @@ describe("computer connect", () => {
     ).resolves.toMatchObject({ service: { state: "active" } });
 
     expect(await readCredentials(home)).toBeUndefined();
-    expect(await readMachineCredentials(home)).toMatchObject({ enrollments: [expect.any(Object)] });
+    expect(await readMachineCredentials(home)).toMatchObject({ computer: expect.any(Object), version: 2 });
     expect(manager.status).toHaveBeenCalledOnce();
     expect(manager.restart).toHaveBeenCalledOnce();
     expect(manager.installAndStart).not.toHaveBeenCalled();

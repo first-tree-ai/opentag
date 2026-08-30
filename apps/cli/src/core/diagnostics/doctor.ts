@@ -218,11 +218,11 @@ function localChecks(result: PromiseSettledResult<LocalComputerConfigurationInsp
     const detail = safeErrorDetail(result.reason, "Local Computer configuration could not be inspected");
     return [
       localCheck("local.identity", "Computer identity", "unknown", detail),
-      localCheck("local.enrollments", "Computer enrollments", "unknown", detail),
+      localCheck("local.credentials", "Computer credentials", "unknown", detail),
       localCheck("local.binding", "Local Computer binding", "unknown", "Local binding could not be verified"),
     ];
   }
-  const { identity, enrollments, binding } = result.value;
+  const { identity, credentials, binding } = result.value;
   return [
     localCheck(
       "local.identity",
@@ -231,19 +231,17 @@ function localChecks(result: PromiseSettledResult<LocalComputerConfigurationInsp
       identity.status === "valid" ? "valid for one Computer and one Server" : (identity.detail ?? "invalid"),
     ),
     localCheck(
-      "local.enrollments",
-      "Computer enrollments",
-      localStatus(enrollments.status),
-      enrollments.status === "valid"
-        ? `${enrollments.value?.enrollments.length ?? 0} valid enrollment(s)`
-        : (enrollments.detail ?? "invalid"),
+      "local.credentials",
+      "Computer credentials",
+      localStatus(credentials.status),
+      credentials.status === "valid" ? "1 valid Computer credential" : (credentials.detail ?? "invalid"),
     ),
     localCheck(
       "local.binding",
       "Local Computer configuration",
       localStatus(binding.status),
       binding.status === "valid"
-        ? `${binding.enrollmentCount} enrollment(s), one Computer, one Server`
+        ? `${binding.credentialCount} credential(s), one Computer, one Server`
         : (binding.detail ?? "invalid"),
     ),
   ];

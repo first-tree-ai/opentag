@@ -132,11 +132,6 @@ export class OpenTagApi {
     });
   }
 
-  /** @deprecated Use `listAccountComputers`; retained for the rolling client compatibility window. */
-  listWorkspaceComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
-    return this.listAccountComputers(accessToken);
-  }
-
   createAgent(accessToken: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
     return this.#request(HTTP_PATHS.accountAgents, AgentAdminConfigSchema, {
       method: "POST",

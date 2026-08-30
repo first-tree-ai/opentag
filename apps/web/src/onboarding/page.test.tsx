@@ -13,7 +13,6 @@ import { browserApi } from "../api.js";
 import { OnboardingPage } from "./page.js";
 import type { RuntimeFactsAdapter, RuntimeFactsResult, RuntimeProviderStatus } from "./runtime-facts.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const computerAId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const computerBId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
@@ -38,7 +37,6 @@ const computerB: WorkspaceComputerSummary = {
 };
 const agent: AgentListItem = {
   id: agentId,
-  workspaceId,
   name: "opentag",
   displayName: "OpenTag",
   createdBy: { userId, displayName: "Ada" },
@@ -59,7 +57,6 @@ const agent: AgentListItem = {
 function adminConfig(): AgentAdminConfig {
   return {
     id: agent.id,
-    workspaceId,
     name: agent.name,
     displayName: agent.displayName,
     runtimeProvider: agent.runtimeProvider,
@@ -904,11 +901,9 @@ describe("OnboardingPage", () => {
   });
 
   it("publishes an explicit Agent choice for the route URL anchor", async () => {
-    const storageWorkspaceId = "b3fda800-7ce2-4338-aae8-3d2120401ed6";
     const researchAgent: AgentListItem = {
       ...agent,
       id: "2a63a21e-f6c7-4474-91ea-4dabf0566a24",
-      workspaceId: storageWorkspaceId,
       name: "research",
       displayName: "Research Agent",
     };
@@ -916,7 +911,7 @@ describe("OnboardingPage", () => {
     const onTargetAgentChange = vi.fn();
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "agents").mockResolvedValue({
-      agents: [{ ...agent, workspaceId: storageWorkspaceId }, researchAgent],
+      agents: [agent, researchAgent],
     });
     vi.spyOn(browserApi, "logout").mockResolvedValue();
 

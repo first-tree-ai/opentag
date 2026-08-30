@@ -5,6 +5,7 @@ import * as client from "@opentag/client";
 import { OpenTagApi } from "@opentag/client";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
+import * as sessionCore from "../core/session/index.js";
 import {
   formatSessionCommandError,
   formatSessionCommandResult,
@@ -37,6 +38,84 @@ describe("session CLI", () => {
     const listHelp = session?.commands.find((command) => command.name() === "list")?.helpInformation() ?? "";
     expect(listHelp).not.toContain("--all");
     expect(listHelp).toContain("--cursor");
+  });
+
+  it("executes session command actions with text, JSON, rejection, and list output", async () => {
+    const create = vi.spyOn(sessionCore, "runSessionCreate").mockResolvedValue({
+      status: "accepted",
+      messageId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "22222222-2222-4222-8222-222222222222",
+      code: "queued",
+    });
+    const send = vi.spyOn(sessionCore, "runSessionSend").mockResolvedValue({
+      status: "rejected",
+      messageId: "33333333-3333-4333-8333-333333333333",
+      code: "VALIDATION_ERROR",
+    });
+    const list = vi.spyOn(sessionCore, "runSessionList").mockResolvedValue({ items: [], nextCursor: null });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync([
+        "node",
+        "opentag",
+        "session",
+        "create",
+        "--message",
+        "task",
+        "--message-id",
+        "11111111-1111-4111-8111-111111111111",
+      ]);
+      await createProgram().parseAsync([
+        "node",
+        "opentag",
+        "session",
+        "send",
+        "22222222-2222-4222-8222-222222222222",
+        "--message",
+        "follow-up",
+        "--json",
+      ]);
+      await createProgram().parseAsync(["node", "opentag", "session", "list", "--recursive", "--limit", "5"]);
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ message: "task", messageId: expect.any(String) }));
+      expect(send).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({ message: "follow-up" }),
+      );
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ recursive: true, limit: 5 }));
+      expect(stdout).toHaveBeenCalledWith(expect.stringContaining('"status":"rejected"'));
+      expect(process.exitCode).toBe(1);
+      expect(stderr).not.toHaveBeenCalled();
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      process.exitCode = previousExitCode;
+      create.mockRestore();
+      send.mockRestore();
+      list.mockRestore();
+    }
+  });
+
+  it("renders a stable error when a session request is rejected", async () => {
+    const error = new SessionCommandRequestError(
+      "44444444-4444-4444-8444-444444444444",
+      new client.OpenTagApiError("VALIDATION_ERROR", "permanent", "bad request", 400),
+    );
+    const create = vi.spyOn(sessionCore, "runSessionCreate").mockRejectedValue(error);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "session", "create", "--message", "task", "--json"]);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"status":"rejected"'));
+      expect(process.exitCode).toBe(1);
+    } finally {
+      stderr.mockRestore();
+      process.exitCode = previousExitCode;
+      create.mockRestore();
+    }
   });
 
   it("keeps the retry key visible when a sent request loses its response", async () => {

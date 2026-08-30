@@ -1,9 +1,11 @@
-import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type { TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ChangeEventHandler, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEventHandler, type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import { queryKeys } from "../query/keys.js";
 import {
   Button,
   ClipboardText,
@@ -19,8 +21,6 @@ import {
 } from "../ui/design-system.js";
 
 type TaskFilter = "all" | TaskStatus;
-type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
-type TaskCollection = { tasks: TaskSummary[]; nextCursor: string | null };
 
 const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
   queued: { label: "Queued", tone: "info" },
@@ -33,47 +33,33 @@ const statusPresentation: Record<TaskStatus, { readonly label: string; readonly 
 };
 
 export function TasksPage() {
-  const [state, setState] = useState<LoadState<TaskCollection>>({ kind: "loading" });
   const [query, setQuery] = useState("");
   const [agentId, setAgentId] = useState("all");
   const [status, setStatus] = useState<TaskFilter>("all");
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
-  const initialLoadGeneration = useRef(0);
+  /*
+   * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
+   * stays retryable — the behavior the hand-rolled append kept its own error state for.
+   */
+  const tasksQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.list(),
+    queryFn: ({ pageParam }) => browserApi.tasks({ cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    // The API reports the end of the list as null; the cache reads undefined as "no page after this".
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const loaded = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
+  const loadMoreError = tasksQuery.isFetchNextPageError ? asError(tasksQuery.error) : null;
 
-  const loadTasks = useCallback(async (): Promise<void> => {
-    const generation = initialLoadGeneration.current + 1;
-    initialLoadGeneration.current = generation;
-    setState({ kind: "loading" });
-    setLoadMoreError(null);
-    try {
-      const value = await browserApi.tasks();
-      if (initialLoadGeneration.current !== generation) return;
-      setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } });
-    } catch (error) {
-      if (initialLoadGeneration.current !== generation) return;
-      setState({ kind: "error", error: asError(error) });
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadTasks();
-    return () => {
-      // Invalidate an in-flight request when this page unmounts.
-      initialLoadGeneration.current += 1;
-    };
-  }, [loadTasks]);
-
-  const agents = useMemo(() => {
-    if (state.kind !== "ready") return [];
-    return [...new Map(state.value.tasks.map((task) => [task.agent.id, task.agent])).values()].sort((left, right) =>
-      left.displayName.localeCompare(right.displayName),
-    );
-  }, [state]);
+  const agents = useMemo(
+    () =>
+      [...new Map(loaded.map((task) => [task.agent.id, task.agent])).values()].sort((left, right) =>
+        left.displayName.localeCompare(right.displayName),
+      ),
+    [loaded],
+  );
   const tasks = useMemo(() => {
-    if (state.kind !== "ready") return [];
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    return state.value.tasks.filter((task) => {
+    return loaded.filter((task) => {
       const matchesQuery =
         normalizedQuery.length === 0 ||
         [
@@ -92,27 +78,7 @@ export function TasksPage() {
         matchesQuery && (agentId === "all" || task.agent.id === agentId) && (status === "all" || task.status === status)
       );
     });
-  }, [agentId, query, state, status]);
-
-  async function loadMore(): Promise<void> {
-    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.tasks({ cursor: state.value.nextCursor });
-      setState((current) =>
-        current.kind === "ready"
-          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
-          : current,
-      );
-    } catch (error) {
-      // Keep the rows already on screen. A failed append should be recoverable without making the
-      // viewer lose the page that was loaded successfully.
-      setLoadMoreError(asError(error));
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  }, [agentId, loaded, query, status]);
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
@@ -164,21 +130,19 @@ export function TasksPage() {
         </TaskSelect>
       </form>
 
-      {state.kind === "loading" ? (
-        <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
-      ) : null}
-      {state.kind === "error" ? (
+      {tasksQuery.isPending ? <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." /> : null}
+      {tasksQuery.isError && !tasksQuery.data ? (
         <TaskNotice
           action={
-            <Button type="button" variant="secondary" onClick={() => void loadTasks()}>
+            <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
               Try again
             </Button>
           }
           heading="Tasks unavailable"
-          detail={state.error.message}
+          detail={asError(tasksQuery.error).message}
         />
       ) : null}
-      {state.kind === "ready" && tasks.length > 0 ? (
+      {tasksQuery.data && tasks.length > 0 ? (
         <>
           <Table className="w-full" aria-label="Tasks" data-ui="task-table">
             <thead>
@@ -193,16 +157,16 @@ export function TasksPage() {
               ))}
             </tbody>
           </Table>
-          {state.value.nextCursor ? (
+          {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
-                disabled={loadingMore}
-                loading={loadingMore}
+                disabled={tasksQuery.isFetchingNextPage}
+                loading={tasksQuery.isFetchingNextPage}
                 type="button"
                 variant="secondary"
-                onClick={() => void loadMore()}
+                onClick={() => void tasksQuery.fetchNextPage()}
               >
-                {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
               </Button>
               {loadMoreError ? (
                 <span className="text-sm text-kumo-danger" role="alert">
@@ -213,7 +177,7 @@ export function TasksPage() {
           ) : null}
         </>
       ) : null}
-      {state.kind === "ready" && tasks.length === 0 ? (
+      {tasksQuery.data && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
       ) : null}
     </section>
@@ -221,79 +185,42 @@ export function TasksPage() {
 }
 
 export function TaskDetailPage({ taskId }: { taskId?: string }) {
-  const [state, setState] = useState<LoadState<TaskDetail>>({ kind: "loading" });
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
-  const taskLoadGeneration = useRef(0);
+  /*
+   * The Task itself, its internal Sessions and its collaboration messages come from the first page
+   * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
+   */
+  const taskQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.detail(taskId ?? ""),
+    queryFn: ({ pageParam }) => browserApi.task(taskId as string, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: taskId !== undefined,
+  });
+  const first = taskQuery.data?.pages[0];
+  const turns = useMemo(() => taskQuery.data?.pages.flatMap((page) => page.turns) ?? [], [taskQuery.data]);
+  const loadMoreError = taskQuery.isFetchNextPageError ? asError(taskQuery.error) : null;
 
-  useEffect(() => {
-    const generation = taskLoadGeneration.current + 1;
-    taskLoadGeneration.current = generation;
-    setState({ kind: "loading" });
-    setLoadingMore(false);
-    setLoadMoreError(null);
-    if (!taskId) {
-      setState({ kind: "error", error: new Error("Task not found") });
-      return () => {
-        if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
-      };
-    }
-    browserApi.task(taskId).then(
-      (value) => taskLoadGeneration.current === generation && setState({ kind: "ready", value }),
-      (error: unknown) =>
-        taskLoadGeneration.current === generation && setState({ kind: "error", error: asError(error) }),
-    );
-    return () => {
-      if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
-    };
-  }, [taskId]);
-
-  async function loadMoreTurns(): Promise<void> {
-    if (!taskId || state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    const generation = taskLoadGeneration.current;
-    const cursor = state.value.nextCursor;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.task(taskId, cursor);
-      if (taskLoadGeneration.current !== generation) return;
-      setState((current) =>
-        current.kind === "ready" && current.value.task.id === taskId
-          ? {
-              kind: "ready",
-              value: {
-                ...current.value,
-                turns: [...current.value.turns, ...next.turns],
-                nextCursor: next.nextCursor,
-              },
-            }
-          : current,
-      );
-    } catch (error) {
-      if (taskLoadGeneration.current !== generation) return;
-      setLoadMoreError(asError(error));
-    } finally {
-      if (taskLoadGeneration.current === generation) setLoadingMore(false);
-    }
+  if (taskId !== undefined && taskQuery.isPending) {
+    return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
   }
-
-  if (state.kind === "loading") return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
-  if (state.kind === "error") {
-    const notFound = state.error instanceof ApiError && state.error.status === 404;
+  if (!first) {
+    // No Task id at all is the same answer as one the Server does not have.
+    const error = taskId === undefined ? new ApiError(404, "Task not found") : asError(taskQuery.error);
+    const notFound = error instanceof ApiError && error.status === 404;
     return (
       <section className="grid gap-3" data-ui="task-not-found">
         <Text as="h1" size="lg" variant="heading">
           {notFound ? "Task not found" : "Task unavailable"}
         </Text>
         <Text as="p" variant="secondary">
-          {notFound ? "This Task does not exist or is outside your Account." : state.error.message}
+          {notFound ? "This Task does not exist or is outside your Account." : error.message}
         </Text>
         <Link to="/tasks">Back to Tasks</Link>
       </section>
     );
   }
 
-  const { task, turns, internalSessions, collaborationMessages } = state.value;
+  const { task, internalSessions, collaborationMessages } = first;
   const status = statusPresentation[task.status];
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
@@ -345,13 +272,13 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
           <TaskNotice heading="No Turns recorded" detail="This Session has no stored IM deliveries." />
         )}
       </section>
-      {state.value.nextCursor ? (
+      {taskQuery.hasNextPage ? (
         <Button
-          loading={loadingMore}
+          loading={taskQuery.isFetchingNextPage}
           type="button"
           variant="secondary"
-          disabled={loadingMore}
-          onClick={() => void loadMoreTurns()}
+          disabled={taskQuery.isFetchingNextPage}
+          onClick={() => void taskQuery.fetchNextPage()}
         >
           Load more Turns
         </Button>

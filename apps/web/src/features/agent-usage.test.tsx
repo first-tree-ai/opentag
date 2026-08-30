@@ -44,6 +44,20 @@ describe("AgentUsageOverview", () => {
     expect(screen.queryByText("Input and output within the selected period.")).toBeNull();
   });
 
+  it("reads one window once for the overview and the tab that show it together", async () => {
+    const loadUsage = vi.spyOn(browserApi, "agentUsage").mockResolvedValue(usage);
+
+    await renderInRouter(
+      <>
+        <AgentUsageOverview agentId="agent-1" />
+        <AgentUsageTab agentId="agent-1" />
+      </>,
+    );
+
+    expect((await screen.findAllByText("Partial data.")).length).toBe(2);
+    expect(loadUsage).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the failure reason visible and retries the same usage request", async () => {
     const loadUsage = vi
       .spyOn(browserApi, "agentUsage")

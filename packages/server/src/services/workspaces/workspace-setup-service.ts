@@ -1,7 +1,7 @@
 import type { WorkspaceSetupCompletion } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { agents, users, workspaces } from "../../db/schema/index.js";
+import { agents, users } from "../../db/schema/index.js";
 import type { ImBindingService } from "../im-bindings/index.js";
 
 export class WorkspaceSetupServiceError extends Error {
@@ -30,22 +30,9 @@ export class WorkspaceSetupService {
   }
 
   async completeForAccount(callerUserId: string, agentId: string): Promise<WorkspaceSetupCompletion> {
-    return this.#complete(callerUserId, agentId);
-  }
-
-  async complete(callerUserId: string, workspaceId: string, agentId: string): Promise<WorkspaceSetupCompletion> {
-    return this.#complete(callerUserId, agentId, workspaceId);
-  }
-
-  /**
-   * Completes Account onboarding from an Agent this Account created. Canonical state is
-   * `users.setup_completed_at`. The selected creator-Agent's Workspace is dual-written for rollback.
-   * Workspace administrator grants never contribute.
-   */
-  async #complete(callerUserId: string, agentId: string, workspaceId?: string): Promise<WorkspaceSetupCompletion> {
     const current = await this.#existingCompletion(callerUserId);
     if (current) return current;
-    await this.#ownedActiveAgent(callerUserId, agentId, workspaceId);
+    await this.#ownedActiveAgent(callerUserId, agentId);
 
     const handoff = await this.#imBindings.getHandoffForAgent(callerUserId, agentId);
     if (!handoff?.handoffReady) {
@@ -73,16 +60,9 @@ export class WorkspaceSetupService {
       if (lockedUser.setupCompletedAt) return this.#projection(lockedUser.setupCompletedAt);
 
       const [lockedAgent] = await transaction
-        .select({ id: agents.id, workspaceId: agents.workspaceId })
+        .select({ id: agents.id })
         .from(agents)
-        .where(
-          and(
-            eq(agents.id, agentId),
-            eq(agents.createdByUserId, callerUserId),
-            eq(agents.status, "active"),
-            ...(workspaceId === undefined ? [] : [eq(agents.workspaceId, workspaceId)]),
-          ),
-        )
+        .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
         .limit(1)
         .for("update");
       if (!lockedAgent) {
@@ -93,25 +73,13 @@ export class WorkspaceSetupService {
         );
       }
 
-      const [lockedWorkspace] = await transaction
-        .select({ setupCompletedAt: workspaces.setupCompletedAt })
-        .from(workspaces)
-        .where(eq(workspaces.id, lockedAgent.workspaceId))
-        .limit(1)
-        .for("update");
-      const completedAt = lockedWorkspace?.setupCompletedAt ?? this.#now();
+      const completedAt = this.#now();
       const [completed] = await transaction
         .update(users)
         .set({ setupCompletedAt: completedAt, updatedAt: completedAt })
         .where(eq(users.id, callerUserId))
         .returning({ setupCompletedAt: users.setupCompletedAt });
       if (!completed?.setupCompletedAt) throw new Error("Account setup completion did not return a timestamp");
-      if (!lockedWorkspace?.setupCompletedAt) {
-        await transaction
-          .update(workspaces)
-          .set({ setupCompletedAt: completedAt, updatedAt: completedAt })
-          .where(eq(workspaces.id, lockedAgent.workspaceId));
-      }
       return this.#projection(completed.setupCompletedAt);
     });
   }
@@ -125,22 +93,11 @@ export class WorkspaceSetupService {
     return row?.setupCompletedAt ? this.#projection(row.setupCompletedAt) : undefined;
   }
 
-  async #ownedActiveAgent(
-    callerUserId: string,
-    agentId: string,
-    workspaceId?: string,
-  ): Promise<{ id: string; workspaceId: string }> {
+  async #ownedActiveAgent(callerUserId: string, agentId: string): Promise<void> {
     const [agent] = await this.#database
-      .select({ id: agents.id, workspaceId: agents.workspaceId })
+      .select({ id: agents.id })
       .from(agents)
-      .where(
-        and(
-          eq(agents.id, agentId),
-          eq(agents.createdByUserId, callerUserId),
-          eq(agents.status, "active"),
-          ...(workspaceId === undefined ? [] : [eq(agents.workspaceId, workspaceId)]),
-        ),
-      )
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
       .limit(1);
     if (!agent) {
       throw new WorkspaceSetupServiceError(
@@ -149,7 +106,6 @@ export class WorkspaceSetupService {
         "The active setup Agent was not found",
       );
     }
-    return agent;
   }
 
   #projection(setupCompletedAt: Date): WorkspaceSetupCompletion {

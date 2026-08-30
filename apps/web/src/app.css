@@ -1,3 +1,8 @@
+@import "@cloudflare/kumo/styles/tailwind";
+@import "tailwindcss";
+@import "./ui/kumo-theme.css";
+@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--text-color-kumo-default);
@@ -30,6 +35,17 @@ body {
 
 .app-mobile-header {
   display: flex;
+}
+
+.app-error-boundary {
+  min-height: 100%;
+  place-items: center;
+}
+
+.app-error-boundary__card {
+  width: 100%;
+  max-width: 36rem;
+  margin-inline: auto;
 }
 
 @media (min-width: 48rem) {

@@ -1,19 +1,11 @@
-import {
-  HTTP_PATHS,
-  PROVIDER_READINESS_V1_HEADER,
-  workspaceAgentsPath,
-  workspaceComputerConnectCodesPath,
-  workspaceComputersPath,
-  workspaceSetupCompletePath,
-} from "@opentag/shared";
+import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER, workspaceComputersPath } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AccountScopeResolver } from "../api/account.js";
 import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
-import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
+import type { UserAuthService } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
 import type { TaskService } from "../services/tasks/index.js";
-import type { WorkspaceAdminService, WorkspaceSetupService } from "../services/workspaces/index.js";
+import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
@@ -23,7 +15,6 @@ const authorization = { authorization: "Bearer access" };
 
 const agent = {
   id: agentId,
-  workspaceId,
   createdByUserId: userId,
   computerId,
   name: "code-reviewer",
@@ -44,7 +35,6 @@ const agent = {
 };
 const agentListItem = {
   id: agentId,
-  workspaceId,
   name: agent.name,
   displayName: agent.displayName,
   runtimeProvider: agent.runtimeProvider,
@@ -110,12 +100,9 @@ function authService(): UserAuthService {
 
 function services() {
   return {
-    accountScope: { resolveCompatibilityWorkspaceId: vi.fn().mockResolvedValue(workspaceId) },
     agentService: {
       createForAccount: vi.fn().mockResolvedValue(agent),
-      createForWorkspace: vi.fn().mockResolvedValue(agent),
       listForAccount: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
-      listForWorkspace: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
       getById: vi.fn(),
       getUsageById: vi.fn(),
       getConfigById: vi.fn(),
@@ -126,12 +113,6 @@ function services() {
     },
     machineAuthService: {
       issueForAccount: vi.fn().mockResolvedValue({
-        code: "connect-code-value",
-        expiresIn: 900,
-        issuedAt: new Date("2026-08-19T00:00:00.000Z"),
-        mode: "create",
-      }),
-      issueForWorkspaceAdmin: vi.fn().mockResolvedValue({
         code: "connect-code-value",
         expiresIn: 900,
         issuedAt: new Date("2026-08-19T00:00:00.000Z"),
@@ -148,9 +129,8 @@ function services() {
         nextCursor: null,
       }),
     },
-    workspaceService: {
+    computerService: {
       listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
-      listComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
     },
     workspaceSetupService: {
       complete: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
@@ -163,14 +143,10 @@ function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
   const service = { ...services(), ...overrides };
   const app = createApp({
     authService: authService(),
-    accountScope: service.accountScope as unknown as AccountScopeResolver,
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
     taskService: service.taskService as unknown as TaskService,
-    // The legacy connect-code route is gated behind the runtime Computer service; the Account-native
-    // route is not, so the equivalence comparison needs both registered.
-    computerService: {} as unknown as ComputerService,
-    workspaceService: service.workspaceService as unknown as WorkspaceAdminService,
+    computerService: service.computerService as unknown as ComputerService,
     workspaceSetupService: service.workspaceSetupService as unknown as WorkspaceSetupService,
     computerConnectCode: { environment: "dev", publicUrl: "https://opentag.example" },
   });
@@ -218,7 +194,6 @@ describe("Account-native management collections", () => {
     expect(create.statusCode).toBe(201);
     expect(create.json()).toEqual(agent);
     expect(service.agentService.createForAccount).toHaveBeenCalledWith(userId, createAgentPayload);
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
 
     const list = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
     expect(list.statusCode).toBe(200);
@@ -226,52 +201,14 @@ describe("Account-native management collections", () => {
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
   });
 
-  it("returns the same resources as the legacy Workspace-scoped routes", async () => {
+  it("does not register management Workspace routes", async () => {
     const { app } = appWith();
-
-    const [accountAgents, legacyAgents] = await Promise.all([
-      app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization }),
-      app.inject({ method: "GET", url: workspaceAgentsPath(workspaceId), headers: authorization }),
-    ]);
-    expect(accountAgents.statusCode).toBe(legacyAgents.statusCode);
-    expect(accountAgents.json()).toEqual(legacyAgents.json());
-
-    const [accountComputers, legacyComputers] = await Promise.all([
-      app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization }),
-      app.inject({ method: "GET", url: workspaceComputersPath(workspaceId), headers: authorization }),
-    ]);
-    expect(accountComputers.statusCode).toBe(legacyComputers.statusCode);
-    expect(accountComputers.json()).toEqual(legacyComputers.json());
-
-    const [accountSetup, legacySetup] = await Promise.all([
-      app.inject({
-        method: "POST",
-        url: HTTP_PATHS.accountSetupComplete,
-        headers: authorization,
-        payload: { agentId },
-      }),
-      app.inject({
-        method: "POST",
-        url: workspaceSetupCompletePath(workspaceId),
-        headers: authorization,
-        payload: { agentId },
-      }),
-    ]);
-    expect(accountSetup.statusCode).toBe(legacySetup.statusCode);
-    expect(accountSetup.json()).toEqual(legacySetup.json());
-
-    const [accountCode, legacyCode] = await Promise.all([
-      app.inject({ method: "POST", url: HTTP_PATHS.accountComputerConnectCodes, headers: authorization }),
-      app.inject({
-        method: "POST",
-        url: workspaceComputerConnectCodesPath(workspaceId),
-        headers: authorization,
-      }),
-    ]);
-    expect(accountCode.statusCode).toBe(201);
-    expect(accountCode.statusCode).toBe(legacyCode.statusCode);
-    expect(accountCode.json()).toEqual(legacyCode.json());
-    expect(accountCode.headers["cache-control"]).toBe("no-store");
+    const response = await app.inject({
+      method: "GET",
+      url: workspaceComputersPath(workspaceId),
+      headers: authorization,
+    });
+    expect(response.statusCode).toBe(404);
   });
 
   it("forwards the provider readiness opt-in header", async () => {
@@ -281,10 +218,10 @@ describe("Account-native management collections", () => {
       url: HTTP_PATHS.accountComputers,
       headers: { ...authorization, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
-    expect(service.workspaceService.listAccountComputers).toHaveBeenCalledWith(userId, true);
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, true);
 
     await app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization });
-    expect(service.workspaceService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
   });
 
   it("rejects a client-selected scope on every creation route", async () => {
@@ -313,12 +250,8 @@ describe("Account-native management collections", () => {
     }
 
     expect(service.agentService.createForAccount).not.toHaveBeenCalled();
-    expect(service.agentService.createForWorkspace).not.toHaveBeenCalled();
     expect(service.machineAuthService.issueForAccount).not.toHaveBeenCalled();
-    expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
-    expect(service.workspaceSetupService.complete).not.toHaveBeenCalled();
     expect(service.workspaceSetupService.completeForAccount).not.toHaveBeenCalled();
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
   });
 
   it("still issues a connect code for an empty or absent body", async () => {
@@ -334,19 +267,10 @@ describe("Account-native management collections", () => {
       expect(response.statusCode).toBe(201);
     }
     expect(service.machineAuthService.issueForAccount).toHaveBeenCalledTimes(2);
-    expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
   });
 
-  it("keeps Account-owned collections independent of compatibility scope", async () => {
-    const { app, service } = appWith({
-      accountScope: {
-        resolveCompatibilityWorkspaceId: vi
-          .fn()
-          .mockRejectedValue(
-            new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404),
-          ),
-      },
-    });
+  it("lists Account-owned collections without a compatibility Workspace", async () => {
+    const { app, service } = appWith();
 
     for (const url of [HTTP_PATHS.accountAgents, HTTP_PATHS.accountComputers, HTTP_PATHS.accountTasks]) {
       const response = await app.inject({ method: "GET", url, headers: authorization });
@@ -360,26 +284,9 @@ describe("Account-native management collections", () => {
     });
     expect(setup.statusCode).toBe(200);
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
-    expect(service.workspaceService.listAccountComputers).toHaveBeenCalledWith(userId, false);
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, false);
     expect(service.taskService.list).toHaveBeenCalledWith(userId, { limit: 50 });
     expect(service.workspaceSetupService.completeForAccount).toHaveBeenCalledWith(userId, agentId);
-    expect(service.workspaceSetupService.complete).not.toHaveBeenCalled();
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
-    expect(service.agentService.listForWorkspace).not.toHaveBeenCalled();
-    expect(service.workspaceService.listComputers).not.toHaveBeenCalled();
-  });
-
-  it("keeps the legacy routes usable for older clients", async () => {
-    const { app, service } = appWith();
-    const response = await app.inject({
-      method: "POST",
-      url: workspaceAgentsPath(workspaceId),
-      headers: authorization,
-      payload: createAgentPayload,
-    });
-    expect(response.statusCode).toBe(201);
-    expect(service.agentService.createForWorkspace).toHaveBeenCalledWith(userId, workspaceId, createAgentPayload);
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
   });
 
   it("requires an authenticated Account on every collection", async () => {
@@ -395,7 +302,7 @@ describe("Account-native management collections", () => {
       const response = await app.inject({ method, url });
       expect(response.statusCode).toBe(401);
     }
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
+    expect(service.agentService.listForAccount).not.toHaveBeenCalled();
   });
 
   it("registers Account-native collections without the compatibility resolver", async () => {
@@ -408,6 +315,5 @@ describe("Account-native management collections", () => {
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
     expect(response.statusCode).toBe(200);
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
   });
 });

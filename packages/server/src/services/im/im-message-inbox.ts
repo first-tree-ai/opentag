@@ -112,7 +112,11 @@ export class ImMessageInbox {
               throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
             }
             const [agent] = await transaction
-              .select()
+              .select({
+                computerId: agents.computerId,
+                createdByUserId: agents.createdByUserId,
+                status: agents.status,
+              })
               .from(agents)
               .where(and(eq(agents.id, candidate.agentId), ne(agents.status, "deleted")))
               .limit(1)
@@ -141,7 +145,13 @@ export class ImMessageInbox {
                 ),
               );
             const [scope] = await transaction
-              .select({ imBinding: imBindings, agent: agents })
+              .select({
+                imBinding: imBindings,
+                agent: {
+                  computerId: agents.computerId,
+                  receiveMode: agents.receiveMode,
+                },
+              })
               .from(imBindings)
               .innerJoin(agents, eq(agents.id, imBindings.agentId))
               .where(
@@ -396,7 +406,7 @@ export class ImMessageInbox {
                       conversationKind,
                       kind: "thread",
                       threadKey,
-                      workspaceComputerId: scope.agent.workspaceComputerId,
+                      workspaceComputerId: scope.agent.computerId,
                       now,
                     }));
                   deliveries.push({
@@ -411,7 +421,7 @@ export class ImMessageInbox {
                     channelId: event.conversation.externalId,
                     conversationKind,
                     kind: "channel",
-                    workspaceComputerId: scope.agent.workspaceComputerId,
+                    workspaceComputerId: scope.agent.computerId,
                     now,
                   });
                   deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
@@ -422,7 +432,7 @@ export class ImMessageInbox {
                   channelId: event.conversation.externalId,
                   conversationKind,
                   kind: "channel",
-                  workspaceComputerId: scope.agent.workspaceComputerId,
+                  workspaceComputerId: scope.agent.computerId,
                   now,
                 });
                 deliveries.push({
@@ -503,7 +513,7 @@ export class ImMessageInbox {
                   conversationKind,
                   kind: "thread",
                   threadKey: pending.threadKey,
-                  workspaceComputerId: scope.agent.workspaceComputerId,
+                  workspaceComputerId: scope.agent.computerId,
                   now,
                 });
                 const [upgraded] = await transaction

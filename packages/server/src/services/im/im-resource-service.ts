@@ -2,13 +2,13 @@ import { Transform } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   imMessageDeliveries,
   imMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../../db/schema/index.js";
 import type { ComputerAuthContext } from "../computers/index.js";
 import type { ImProviderAdapter, ReadableResource } from "../im-bindings/index.js";
@@ -75,19 +75,16 @@ export class ImResourceService {
           sessionPlacements,
           and(
             eq(sessionPlacements.sessionId, sessions.id),
-            eq(sessionPlacements.workspaceComputerId, computerAuth.workspaceComputerId),
+            eq(sessionPlacements.computerId, computerAuth.workspaceComputerId),
             eq(sessionPlacements.generation, runtime.placementGeneration),
           ),
         )
         .innerJoin(
-          workspaceComputers,
+          accountComputers,
           and(
-            eq(workspaceComputers.id, computerAuth.workspaceComputerId),
-            eq(workspaceComputers.workspaceId, computerAuth.workspaceId),
-            eq(workspaceComputers.workspaceId, agents.workspaceId),
-            eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-            eq(workspaceComputers.currentInstanceId, runtime.instanceId),
-            isNull(workspaceComputers.revokedAt),
+            eq(accountComputers.id, computerAuth.workspaceComputerId),
+            eq(accountComputers.id, sessionPlacements.computerId),
+            eq(accountComputers.currentInstanceId, runtime.instanceId),
           ),
         )
         .where(and(eq(imMessages.id, imMessageId), eq(imBindings.status, "active"), eq(agents.status, "active")))

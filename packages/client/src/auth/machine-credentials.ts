@@ -2,21 +2,16 @@ import { join } from "node:path";
 import { resolveOpenTagHome, resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { readPrivateJson, writePrivateJson } from "../storage/private-json-file.js";
 
-export interface MachineEnrollmentCredential {
+export interface MachineComputerCredential {
   workspaceComputerId: string;
-  /**
-   * @deprecated The enrollment identifies its own scope. Optional so credentials written before and
-   * after the ownership cutover are both readable by the same Client.
-   */
-  workspaceId?: string;
   computerId: string;
   machineToken: string;
   serverUrl: string;
 }
 
 export interface StoredMachineCredentials {
-  version: 1;
-  enrollments: MachineEnrollmentCredential[];
+  version: 2;
+  computer: MachineComputerCredential;
 }
 
 export const MACHINE_CREDENTIALS_FILE_NAME = "computer-credentials.json";
@@ -31,7 +26,7 @@ export function readMachineCredentials(home = resolveOpenTagHome()): Promise<Sto
 
 /**
  * Strict, read-only projection for diagnostics. Unlike the runtime reader, this rejects the whole
- * file when any stored enrollment is unusable, so corruption cannot be reported as a healthy
+ * file when any stored Computer credential is unusable, so corruption cannot be reported as a healthy
  * partial configuration.
  */
 export function readMachineCredentialsStrict(
@@ -51,53 +46,35 @@ export async function writeMachineCredentialsAtomically(
 
 export type BoundAccountComputerResolution =
   | { status: "disconnected" }
-  | { status: "bound"; credential: MachineEnrollmentCredential }
-  | { status: "ambiguous" };
+  | { status: "bound"; credential: MachineComputerCredential };
 
-/**
- * One canonical home binds at most one Account Computer. Existing files are upgraded only when they
- * contain exactly one enrollment; zero stays disconnected; multiple fail closed.
- */
+/** One canonical home binds at most one Account Computer. */
 export function resolveBoundAccountComputer(
   credentials: StoredMachineCredentials | undefined,
 ): BoundAccountComputerResolution {
-  const enrollments = credentials?.enrollments ?? [];
-  if (enrollments.length === 0) return { status: "disconnected" };
-  const credential = enrollments[0];
-  if (enrollments.length > 1 || !credential) return { status: "ambiguous" };
-  return { status: "bound", credential };
+  if (!credentials) return { status: "disconnected" };
+  return { status: "bound", credential: credentials.computer };
 }
 
-export async function storeMachineEnrollmentCredential(
-  credential: MachineEnrollmentCredential,
+export async function storeBoundAccountComputer(
+  credential: MachineComputerCredential,
   home = resolveOpenTagHome(),
 ): Promise<StoredMachineCredentials> {
-  const next: StoredMachineCredentials = { version: 1, enrollments: [{ ...credential }] };
+  const next: StoredMachineCredentials = { version: 2, computer: { ...credential } };
   await writeMachineCredentialsAtomically(next, home);
   return next;
 }
 
-/**
- * Reading and writing disagree on purpose. A file on disk may hold entries this Client cannot use, and
- * one of them must not strand every other enrollment on the host, so unusable entries are dropped.
- */
-function validateMachineCredentials(value: unknown): StoredMachineCredentials {
-  const enrollmentIds = new Set<string>();
-  const enrollments: MachineEnrollmentCredential[] = [];
-  for (const entry of readCredentialsEnvelope(value)) {
-    const credential = readEnrollmentEntry(entry);
-    if (!credential || enrollmentIds.has(credential.workspaceComputerId)) continue;
-    enrollmentIds.add(credential.workspaceComputerId);
-    enrollments.push(credential);
+function validateMachineCredentials(value: unknown): StoredMachineCredentials | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).length !== 2 || record.version !== 2) {
+    throw new Error("The OpenTag Computer credentials file uses an unsupported format; reconnect this Computer");
   }
-  return { version: 1, enrollments };
+  const computer = readComputerEntry(record.computer);
+  return computer ? { version: 2, computer } : undefined;
 }
 
-/**
- * A write is the opposite case: the caller is asking for specific credentials to be persisted, so
- * dropping one would report success while losing an enrollment, and the next read would discard the
- * bytes just written. Unusable input is rejected, and the validated projection is what reaches disk.
- */
 function checkMachineCredentialsToWrite(value: StoredMachineCredentials): StoredMachineCredentials {
   return checkMachineCredentialsStrict(value, "Refusing to write");
 }
@@ -106,35 +83,21 @@ function checkMachineCredentialsStrict(
   value: unknown,
   failurePrefix = "The stored OpenTag Computer credentials contain",
 ): StoredMachineCredentials {
-  const enrollmentIds = new Set<string>();
-  const enrollments: MachineEnrollmentCredential[] = [];
-  for (const [index, entry] of readCredentialsEnvelope(value).entries()) {
-    const credential = readEnrollmentEntry(entry);
-    if (!credential) {
-      throw new Error(`${failurePrefix} an unusable OpenTag Computer credential (entry ${index})`);
-    }
-    if (enrollmentIds.has(credential.workspaceComputerId)) {
-      throw new Error(`${failurePrefix} a duplicate OpenTag Computer enrollment (entry ${index})`);
-    }
-    enrollmentIds.add(credential.workspaceComputerId);
-    enrollments.push(credential);
-  }
-  return { version: 1, enrollments };
-}
-
-function readCredentialsEnvelope(value: unknown): readonly unknown[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The OpenTag Computer credentials file is invalid");
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== 2 || record.version !== 1 || !Array.isArray(record.enrollments)) {
-    throw new Error("The OpenTag Computer credentials file is invalid");
+  if (Object.keys(record).length !== 2 || record.version !== 2) {
+    throw new Error("The OpenTag Computer credentials file uses an unsupported format; reconnect this Computer");
   }
-  return record.enrollments;
+  const computer = readComputerEntry(record.computer);
+  if (!computer) {
+    throw new Error(`${failurePrefix} an unusable OpenTag Computer credential`);
+  }
+  return { version: 2, computer };
 }
 
-/** Accepts an entry written before or after the ownership cutover; returns undefined when unusable. */
-function readEnrollmentEntry(value: unknown): MachineEnrollmentCredential | undefined {
+function readComputerEntry(value: unknown): MachineComputerCredential | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const entry = value as Record<string, unknown>;
   if (
@@ -142,8 +105,7 @@ function readEnrollmentEntry(value: unknown): MachineEnrollmentCredential | unde
     !isUuid(entry.computerId) ||
     typeof entry.machineToken !== "string" ||
     !entry.machineToken.startsWith("otmc_") ||
-    typeof entry.serverUrl !== "string" ||
-    (entry.workspaceId !== undefined && !isUuid(entry.workspaceId))
+    typeof entry.serverUrl !== "string"
   ) {
     return undefined;
   }
@@ -152,7 +114,6 @@ function readEnrollmentEntry(value: unknown): MachineEnrollmentCredential | unde
     computerId: entry.computerId,
     machineToken: entry.machineToken,
     serverUrl: entry.serverUrl,
-    ...(entry.workspaceId === undefined ? {} : { workspaceId: entry.workspaceId }),
   };
 }
 

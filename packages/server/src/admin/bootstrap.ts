@@ -1,18 +1,15 @@
-import { UserDisplayNameSchema, WorkspaceDisplayNameSchema, WorkspaceNameInputSchema } from "@opentag/shared";
+import { UserDisplayNameSchema } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client.js";
-import { users, workspaces } from "../db/schema/index.js";
+import { users } from "../db/schema/index.js";
 import { CONNECT_CODE_TTL_SECONDS, issueConnectCodeInTransaction } from "../services/auth/index.js";
-import { WorkspaceAdminService } from "../services/workspaces/index.js";
 
 export const BootstrapAdminInputSchema = z
   .object({
     connectCodeTtlSeconds: z.number().int().positive().default(CONNECT_CODE_TTL_SECONDS),
     displayName: UserDisplayNameSchema,
     email: z.string().trim().toLowerCase().email(),
-    workspaceDisplayName: WorkspaceDisplayNameSchema,
-    workspaceName: WorkspaceNameInputSchema,
   })
   .strict();
 
@@ -21,7 +18,6 @@ export type BootstrapAdminInput = z.input<typeof BootstrapAdminInputSchema>;
 export interface BootstrapAdminResult {
   connectCode: string;
   expiresAt: Date;
-  workspaceId: string;
   userId: string;
 }
 
@@ -31,7 +27,6 @@ export async function bootstrapInitialAdmin(
   now = new Date(),
 ): Promise<BootstrapAdminResult> {
   const validated = BootstrapAdminInputSchema.parse(input);
-  const workspaceAdminService = new WorkspaceAdminService(database, { now: () => now });
 
   return database.transaction(async (transaction) => {
     await transaction.execute(sql`select pg_advisory_xact_lock(8621303412)`);
@@ -44,15 +39,10 @@ export async function bootstrapInitialAdmin(
       .insert(users)
       .values({ email: validated.email, displayName: validated.displayName })
       .returning({ id: users.id });
-    const [workspace] = await transaction
-      .insert(workspaces)
-      .values({ name: validated.workspaceName, displayName: validated.workspaceDisplayName })
-      .returning({ id: workspaces.id });
-    if (!user || !workspace) {
+    if (!user) {
       throw new Error("Failed to create the initial account");
     }
 
-    await workspaceAdminService.bootstrapAdminInTransaction(transaction, user.id, workspace.id);
     const issued = await issueConnectCodeInTransaction(
       transaction,
       {
@@ -63,6 +53,6 @@ export async function bootstrapInitialAdmin(
       now,
     );
 
-    return { connectCode: issued.code, expiresAt: issued.expiresAt, workspaceId: workspace.id, userId: user.id };
+    return { connectCode: issued.code, expiresAt: issued.expiresAt, userId: user.id };
   });
 }

@@ -1,7 +1,6 @@
 import { computeDirectInputHash, type DirectImMessageDeliveryRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
@@ -15,10 +14,10 @@ import {
   sessions,
   users,
   workspaceComputers,
-  workspaces,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -55,21 +54,17 @@ function exchangeInput(code: string, computerId = crypto.randomUUID()) {
     displayName: "workstation" as const,
     platform: "linux" as const,
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
   };
 }
 
 async function enroll(value: Awaited<ReturnType<typeof fixture>>) {
-  return enrollInWorkspace(value, value.bootstrap.workspaceId);
-}
-
-async function enrollInWorkspace(value: Awaited<ReturnType<typeof fixture>>, workspaceId: string) {
-  const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, { mode: "create" }, workspaceId);
+  const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
   return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code));
 }
 
 async function createAgent(value: Awaited<ReturnType<typeof fixture>>, computerId: string, name = "reviewer") {
-  return value.agents.createForWorkspace(value.bootstrap.userId, value.bootstrap.workspaceId, {
+  return value.agents.createForAccount(value.bootstrap.userId, {
     name,
     displayName: name,
     runtimeProvider: "codex",
@@ -285,12 +280,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
     const value = await fixture();
     try {
       const first = await enroll(value);
-      const [otherWorkspace] = await value.database
-        .insert(workspaces)
-        .values({ displayName: "Other compatibility scope", name: `other-${crypto.randomUUID()}` })
-        .returning();
-      if (!otherWorkspace) throw new Error("Other Workspace fixture was not created");
-      const second = await enrollInWorkspace(value, otherWorkspace.id);
+      const second = await enroll(value);
       const agent = await createAgent(value, first.workspaceComputerId);
       const active = await bindSession(value.database, {
         agentId: agent.id,
@@ -319,7 +309,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
       const [agentRow] = await value.database.select().from(agents).where(eq(agents.id, agent.id));
       expect(agentRow).toMatchObject({
         computerId: second.workspaceComputerId,
-        workspaceId: otherWorkspace.id,
+        workspaceId: value.bootstrap.workspaceId,
         workspaceComputerId: second.workspaceComputerId,
       });
       const [moved] = await value.database
@@ -508,7 +498,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
           displayName: "foreign",
           platform: "linux",
           arch: "x64",
-          clientVersion: "0.0.1",
+          clientVersion: "0.0.2",
           enrolledByUserId: other.id,
         })
         .returning();
@@ -520,7 +510,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
         displayName: "foreign",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
       });
       await expect(
         value.agents.rebindById(value.bootstrap.userId, agent.id, foreignEnrollment.id),
@@ -530,7 +520,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
         .update(accountComputers)
         .set({ ownerAccountId: other.id })
         .where(eq(accountComputers.id, owned.workspaceComputerId));
-      const listed = await value.agents.listForWorkspace(value.bootstrap.userId, value.bootstrap.workspaceId);
+      const listed = await value.agents.listForAccount(value.bootstrap.userId);
       expect(listed.agents).toEqual([expect.objectContaining({ id: agent.id, requiresComputerRebind: true })]);
     } finally {
       await value.sql.end();

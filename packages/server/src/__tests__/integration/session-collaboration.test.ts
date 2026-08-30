@@ -10,7 +10,6 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import {
@@ -28,6 +27,7 @@ import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../
 import { AgentService } from "../../services/agents/index.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -457,9 +457,9 @@ describe("Session collaboration authority", () => {
       );
       let currentInstanceId = randomUUID();
       await fixture.database
-        .update(workspaceComputers)
+        .update(accountComputers)
         .set({ currentInstanceId })
-        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+        .where(eq(accountComputers.id, fixture.workspaceComputerId));
       const registry = {
         currentInstanceId: (workspaceComputerId: string) =>
           workspaceComputerId === fixture.workspaceComputerId ? currentInstanceId : undefined,
@@ -499,9 +499,9 @@ describe("Session collaboration authority", () => {
       const replacementInstanceId = randomUUID();
       currentInstanceId = replacementInstanceId;
       await fixture.database
-        .update(workspaceComputers)
+        .update(accountComputers)
         .set({ currentInstanceId: replacementInstanceId })
-        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+        .where(eq(accountComputers.id, fixture.workspaceComputerId));
       await expect(proofs.authenticate(first.token)).rejects.toMatchObject({ code: "invalid_proof" });
       const replacement = await proofs.mint({ ...input, connectionInstanceId: replacementInstanceId });
       expect(replacement).not.toEqual(first);
@@ -557,9 +557,9 @@ describe("Session collaboration authority", () => {
       );
       const connectionInstanceId = randomUUID();
       await fixture.database
-        .update(workspaceComputers)
+        .update(accountComputers)
         .set({ currentInstanceId: connectionInstanceId })
-        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+        .where(eq(accountComputers.id, fixture.workspaceComputerId));
       const registry = {
         currentInstanceId: () => connectionInstanceId,
         supportsCapability: () => true,
@@ -604,7 +604,7 @@ describe("Session collaboration authority", () => {
           displayName: "other-workstation",
           platform: "linux",
           arch: "x64",
-          clientVersion: "0.0.1",
+          clientVersion: "0.0.2",
           enrolledByUserId: fixture.userId,
           currentInstanceId: connectionInstanceId,
         })
@@ -617,7 +617,7 @@ describe("Session collaboration authority", () => {
         displayName: "other-workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
         currentInstanceId: connectionInstanceId,
       });
       proof = await mint();
@@ -772,9 +772,9 @@ describe("Session collaboration authority", () => {
       await assemblyStarted.promise;
 
       await fixture.database
-        .update(workspaceComputers)
+        .update(accountComputers)
         .set({ currentInstanceId: randomUUID() })
-        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+        .where(eq(accountComputers.id, fixture.workspaceComputerId));
       continueAssembly.resolve();
 
       await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
@@ -829,9 +829,9 @@ describe("Session collaboration authority", () => {
       await deliveryRequested.promise;
 
       await fixture.database
-        .update(workspaceComputers)
+        .update(accountComputers)
         .set({ currentInstanceId: randomUUID() })
-        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+        .where(eq(accountComputers.id, fixture.workspaceComputerId));
       continueDeliveryAdmission.resolve();
 
       await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
@@ -864,7 +864,7 @@ async function createFixture() {
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.2",
       enrolledByUserId: bootstrap.userId,
       currentInstanceId: connectionInstanceId,
     })
@@ -877,10 +877,10 @@ async function createFixture() {
     displayName: "workstation",
     platform: "linux",
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
     currentInstanceId: connectionInstanceId,
   });
-  const agent = await new AgentService(client.database).createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
+  const agent = await new AgentService(client.database).createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",

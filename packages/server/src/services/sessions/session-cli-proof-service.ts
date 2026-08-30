@@ -3,13 +3,14 @@ import { RUNTIME_CAPABILITY, type SessionReconcileRequest } from "@opentag/share
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   sessionCliProofs,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../../db/schema/index.js";
+import { schemaRequiredComputerProjection } from "../../db/schema-required-legacy.js";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { projectedComputerId } from "../computers/ownership-projections.js";
 
@@ -64,7 +65,7 @@ export class SessionCliProofService {
       const [placement] = await transaction
         .select({
           generation: sessionPlacements.generation,
-          workspaceComputerId: sessionPlacements.workspaceComputerId,
+          workspaceComputerId: sessionPlacements.computerId,
         })
         .from(sessionPlacements)
         .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
@@ -79,17 +80,26 @@ export class SessionCliProofService {
       }
       this.#assertRuntimeBinding(input);
       const [existing] = await transaction
-        .select()
+        .select({
+          computerId: sessionCliProofs.computerId,
+          connectionInstanceId: sessionCliProofs.connectionInstanceId,
+          placementGeneration: sessionCliProofs.placementGeneration,
+          proofId: sessionCliProofs.proofId,
+          sessionId: sessionCliProofs.sessionId,
+        })
         .from(sessionCliProofs)
         .where(eq(sessionCliProofs.sessionId, input.sessionId))
         .limit(1)
         .for("update");
       if (
-        existing?.workspaceComputerId === input.workspaceComputerId &&
+        existing?.computerId === input.workspaceComputerId &&
         existing.placementGeneration === input.placementGeneration &&
         existing.connectionInstanceId === input.connectionInstanceId
       ) {
-        return { proofId: existing.proofId, token: this.#deriveToken(existing) };
+        return {
+          proofId: existing.proofId,
+          token: this.#deriveToken({ ...existing, workspaceComputerId: existing.computerId }),
+        };
       }
 
       const proofId = randomUUID();
@@ -102,7 +112,7 @@ export class SessionCliProofService {
           sessionId: input.sessionId,
           proofId,
           tokenHash: hashToken(token),
-          workspaceComputerId: input.workspaceComputerId,
+          ...schemaRequiredComputerProjection(input.workspaceComputerId),
           computerId,
           placementGeneration: input.placementGeneration,
           connectionInstanceId: input.connectionInstanceId,
@@ -114,7 +124,7 @@ export class SessionCliProofService {
           set: {
             proofId,
             tokenHash: hashToken(token),
-            workspaceComputerId: input.workspaceComputerId,
+            ...schemaRequiredComputerProjection(input.workspaceComputerId),
             computerId,
             placementGeneration: input.placementGeneration,
             connectionInstanceId: input.connectionInstanceId,
@@ -167,7 +177,7 @@ export class SessionCliProofService {
       const [placement] = await transaction
         .select({
           generation: sessionPlacements.generation,
-          workspaceComputerId: sessionPlacements.workspaceComputerId,
+          workspaceComputerId: sessionPlacements.computerId,
         })
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, input.sessionId))
@@ -184,7 +194,7 @@ export class SessionCliProofService {
         .where(
           and(
             eq(sessionCliProofs.sessionId, input.sessionId),
-            eq(sessionCliProofs.workspaceComputerId, input.workspaceComputerId),
+            eq(sessionCliProofs.computerId, input.workspaceComputerId),
             eq(sessionCliProofs.placementGeneration, input.placementGeneration),
             eq(sessionCliProofs.connectionInstanceId, input.connectionInstanceId),
           ),
@@ -199,30 +209,28 @@ export class SessionCliProofService {
         agentId: imBindings.agentId,
         agentStatus: agents.status,
         bindingStatus: imBindings.status,
-        computerId: workspaceComputers.computerId,
+        computerId: accountComputers.currentInstallationId,
         connectionInstanceId: sessionCliProofs.connectionInstanceId,
         creatorSessionId: sessions.createdBySessionId,
-        currentInstanceId: workspaceComputers.currentInstanceId,
+        currentInstanceId: accountComputers.currentInstanceId,
         placementGeneration: sessionCliProofs.placementGeneration,
         placementGenerationCurrent: sessionPlacements.generation,
-        proofWorkspaceComputerId: sessionCliProofs.workspaceComputerId,
+        proofWorkspaceComputerId: sessionCliProofs.computerId,
         sessionId: sessions.id,
         sessionKind: sessions.kind,
-        workspaceComputerId: sessionPlacements.workspaceComputerId,
-        workspaceComputerRevokedAt: workspaceComputers.revokedAt,
+        workspaceComputerId: sessionPlacements.computerId,
       })
       .from(sessionCliProofs)
       .innerJoin(sessions, eq(sessions.id, sessionCliProofs.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(workspaceComputers, eq(workspaceComputers.id, sessionPlacements.workspaceComputerId))
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .where(and(eq(sessionCliProofs.tokenHash, hashToken(token)), isNull(sessions.endedAt)))
       .limit(1);
     if (
       row?.agentStatus !== "active" ||
       row.bindingStatus !== "active" ||
-      row.workspaceComputerRevokedAt !== null ||
       row.proofWorkspaceComputerId !== row.workspaceComputerId ||
       row.placementGeneration !== row.placementGenerationCurrent ||
       row.currentInstanceId !== row.connectionInstanceId ||

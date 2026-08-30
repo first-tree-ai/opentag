@@ -30,11 +30,6 @@ export const ComputerConnectCodeExchangeRequestSchema = z
 export const ComputerConnectCodeExchangeResponseSchema = z
   .object({
     workspaceComputerId: z.string().uuid(),
-    /**
-     * @deprecated The enrollment identifies its own scope. Optional so a Client published before the
-     * ownership cutover keeps parsing the response once the Server stops sending it.
-     */
-    workspaceId: z.string().uuid().optional(),
     computerId: z.string().uuid(),
     machineToken: z.string().min(1).max(4096),
   })

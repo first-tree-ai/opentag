@@ -9,13 +9,13 @@ import type {
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   imMessageDeliveries,
   imMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../db/schema/index.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -102,7 +102,7 @@ interface DeliveryScope {
   message: typeof imMessages.$inferSelect;
   placement: typeof sessionPlacements.$inferSelect;
   session: typeof sessions.$inferSelect;
-  workspaceComputer: typeof workspaceComputers.$inferSelect;
+  workspaceComputer: typeof accountComputers.$inferSelect;
   agentId: string;
 }
 
@@ -355,7 +355,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .where(
           and(
             eq(sessionPlacements.sessionId, request.sessionId),
-            eq(sessionPlacements.workspaceComputerId, context.workspaceComputerId),
+            eq(sessionPlacements.computerId, context.workspaceComputerId),
             eq(sessionPlacements.generation, request.placementGeneration),
             isNull(sessions.endedAt),
           ),
@@ -415,7 +415,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .select({
         delivery: imMessageDeliveries,
         placement: sessionPlacements,
-        workspaceComputer: workspaceComputers,
+        workspaceComputer: accountComputers,
         agentId: agents.id,
       })
       .from(imMessageDeliveries)
@@ -423,14 +423,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1);
     return row ? acceptedRecord(row.delivery, row.workspaceComputer.id, row.agentId) : undefined;
@@ -451,21 +444,14 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         report: imMessageDeliveries.turnReport,
         resultHash: imMessageDeliveries.resultHash,
         instanceId: imMessageDeliveries.reportOwnerInstanceId,
-        workspaceComputerId: workspaceComputers.id,
+        workspaceComputerId: accountComputers.id,
       })
       .from(imMessageDeliveries)
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
       .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .where(eq(imMessageDeliveries.turnId, turnId))
       .limit(1);
     return row?.report && row.resultHash && row.instanceId
@@ -539,7 +525,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         message: imMessages,
         placement: sessionPlacements,
         session: sessions,
-        workspaceComputer: workspaceComputers,
+        workspaceComputer: accountComputers,
         agentId: agents.id,
       })
       .from(imMessageDeliveries)
@@ -548,14 +534,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1)
       .for("update", { of: imMessageDeliveries });

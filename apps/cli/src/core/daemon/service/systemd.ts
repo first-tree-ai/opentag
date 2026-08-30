@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { resolveDaemonPaths } from "../paths.js";
 import {
@@ -27,7 +27,6 @@ export interface SystemdBackendOptions {
   uid?: number;
   userHome?: string;
   username?: string;
-  xdgConfigHome?: string;
 }
 
 export function renderSystemdUnit(options: {
@@ -66,15 +65,17 @@ WantedBy=default.target
 export function createSystemdBackend(options: SystemdBackendOptions): DaemonServiceBackend {
   const identity = deriveServiceIdentity(options.serviceId);
   const paths = resolveDaemonPaths(options.home);
-  const userHome = options.userHome ?? homedir();
-  const uid = options.uid ?? userInfo().uid;
-  const username = options.username ?? userInfo().username;
-  const unitPath = join(
-    options.xdgConfigHome ?? join(userHome, ".config"),
-    "systemd",
-    "user",
-    identity.systemdUnitName,
-  );
+  const account =
+    options.userHome === undefined || options.uid === undefined || options.username === undefined
+      ? userInfo()
+      : undefined;
+  const userHome = options.userHome ?? account?.homedir;
+  const uid = options.uid ?? account?.uid;
+  const username = options.username ?? account?.username;
+  if (userHome === undefined || uid === undefined || username === undefined) {
+    throw new DaemonServiceError("CONFIGURATION", "The operating system account record is incomplete");
+  }
+  const unitPath = join(userHome, ".config", "systemd", "user", identity.systemdUnitName);
   const systemctl = options.systemctl ?? "systemctl";
   const servicePath = buildServicePath(options.invocation, "linux", options.sourcePath);
   const expected = renderSystemdUnit({

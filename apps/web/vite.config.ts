@@ -1,3 +1,4 @@
+import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
@@ -12,7 +13,11 @@ const generateRoutes = !process.env.VITEST;
 export default defineConfig({
   base: "/",
   // The route generator must run before the React plugin so the generated tree is transformed too.
-  plugins: [...(generateRoutes ? [tanstackRouter({ autoCodeSplitting: true, target: "react" })] : []), react()],
+  plugins: [
+    ...(generateRoutes ? [tanstackRouter({ autoCodeSplitting: true, target: "react" })] : []),
+    tailwindcss(),
+    react(),
+  ],
   server: {
     proxy: {
       "/api": "http://localhost:8000",

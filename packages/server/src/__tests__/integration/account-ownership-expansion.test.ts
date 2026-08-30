@@ -7,7 +7,6 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "../../db/migrate.js";
 import {
@@ -23,6 +22,7 @@ import {
 import { AgentService } from "../../services/agents/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { SessionCliProofService, SessionService } from "../../services/sessions/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -893,7 +893,7 @@ describe("account-owned computer expansion migrations", () => {
     }
   });
 
-  it("accepts representative reads and dual-writes after the real migration runner", async () => {
+  it("accepts representative canonical reads and writes after the real migration runner", async () => {
     await migrateDatabase(databaseUrl, migrationsFolder);
     await expect(verifyDatabaseMigrations(databaseUrl, migrationsFolder)).resolves.toBeUndefined();
     const client = createDatabaseClient(databaseUrl);
@@ -910,14 +910,14 @@ describe("account-owned computer expansion migrations", () => {
           throw new Error("unused");
         },
       });
-      const issued = await machineAuth.issueForWorkspaceAdmin(bootstrap.userId, bootstrap.workspaceId);
+      const issued = await machineAuth.issueForAccount(bootstrap.userId, {});
       const enrollment = await machineAuth.exchangeConnectCode({
         code: issued.code,
         computerId: crypto.randomUUID(),
         displayName: "workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
       });
       const instanceId = crypto.randomUUID();
       await computers.register(enrollment, {
@@ -928,7 +928,7 @@ describe("account-owned computer expansion migrations", () => {
         displayName: "workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
         capabilities: { imCredentialGrant: 0 as const },
         protocolVersion: RUNTIME_PROTOCOL_V2,
         supportedCapabilities: { imCredentialGrant: { min: 1, max: 1 } },
@@ -950,7 +950,7 @@ describe("account-owned computer expansion migrations", () => {
         currentInstanceId: instanceId,
         displayName: legacy?.displayName,
       });
-      const [legacyCredential] = await client.database
+      const legacyCredentials = await client.database
         .select()
         .from(workspaceComputerCredentials)
         .where(eq(workspaceComputerCredentials.id, enrollment.credentialId));
@@ -961,10 +961,11 @@ describe("account-owned computer expansion migrations", () => {
       expect(targetCredential).toMatchObject({
         id: enrollment.credentialId,
         computerId: enrollment.workspaceComputerId,
-        secretHash: legacyCredential?.secretHash,
+        secretHash: expect.any(String),
         issuedByUserId: bootstrap.userId,
         revokedAt: null,
       });
+      expect(legacyCredentials).toHaveLength(0);
       const codes = await client.database.select().from(computerConnectCodes);
       expect(codes).toHaveLength(1);
       expect(codes[0]).toMatchObject({
@@ -974,16 +975,12 @@ describe("account-owned computer expansion migrations", () => {
         consumedWorkspaceComputerId: enrollment.workspaceComputerId,
       });
 
-      const agent = await new AgentService(client.database).createForWorkspace(
-        bootstrap.userId,
-        bootstrap.workspaceId,
-        {
-          name: "assistant",
-          displayName: "Assistant",
-          runtimeProvider: "codex",
-          computerId: enrollment.workspaceComputerId,
-        },
-      );
+      const agent = await new AgentService(client.database).createForAccount(bootstrap.userId, {
+        name: "assistant",
+        displayName: "Assistant",
+        runtimeProvider: "codex",
+        computerId: enrollment.workspaceComputerId,
+      });
       const [agentRow] = await client.database.select().from(agents).where(eq(agents.id, agent.id));
       expect(agentRow).toMatchObject({
         createdByUserId: bootstrap.userId,

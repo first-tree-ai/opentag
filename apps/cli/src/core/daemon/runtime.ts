@@ -9,6 +9,7 @@ import {
   RuntimeConnection,
   RuntimeConnectionError,
   readMachineCredentials,
+  resolveBoundAccountComputer,
   resolveComputerIdentity,
   resolveOpenTagHome,
 } from "@opentag/client";
@@ -125,20 +126,12 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         );
       }
       signal.throwIfAborted();
-      if (!credentials?.enrollments.length) {
+      const bound = resolveBoundAccountComputer(credentials);
+      if (bound.status === "disconnected") {
         throw new DaemonRuntimeConfigurationError("This Computer is not enrolled; run computer connect first");
       }
-      if (credentials.enrollments.length !== 1) {
-        throw new DaemonRuntimeConfigurationError(
-          "This OpenTag home has multiple enrollments and cannot bind to one Account Computer",
-        );
-      }
-      const serverUrls = new Set(credentials.enrollments.map((credential) => credential.serverUrl));
-      if (serverUrls.size !== 1) {
-        throw new DaemonRuntimeConfigurationError("One OpenTag home cannot connect to multiple Servers");
-      }
-      const serverUrl = credentials.enrollments[0]?.serverUrl;
-      if (!serverUrl) throw new DaemonRuntimeConfigurationError("This Computer is not enrolled");
+      const credential = bound.credential;
+      const serverUrl = credential.serverUrl;
       let identity: Awaited<ReturnType<typeof resolveComputerIdentity>>;
       try {
         identity = await resolveComputerIdentity(home, serverUrl);
@@ -150,66 +143,42 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         throw new DaemonRuntimeConfigurationError(`Unsupported daemon service platform: ${currentPlatform}`);
       }
       terminalLogger = logger.child({ computerId: identity.computerId });
-      const runtimes = await Promise.all(
-        credentials.enrollments.map(async (credential) => {
-          if (credential.computerId !== identity.computerId) {
-            throw new DaemonRuntimeConfigurationError("A machine credential belongs to another Computer");
-          }
-          const connectionInstanceId = randomUUID();
-          const runtimeLogger = gatedRuntimeLogger.logger.child({
-            computerId: identity.computerId,
-            instanceId: connectionInstanceId,
-            workspaceComputerId: credential.workspaceComputerId,
-            workspaceId: credential.workspaceId,
-          });
-          const api = new OpenTagApi(credential.serverUrl);
-          const connection = new RuntimeConnection({
-            arch: arch(),
-            clientVersion: CLI_VERSION,
-            computer: identity,
-            displayName: hostname(),
-            instanceId: connectionInstanceId,
-            logger: runtimeLogger.child({ module: "connection" }),
-            machineToken: credential.machineToken,
-            platform: currentPlatform,
-          });
-          const runtime = await createClientRuntime(connection, {
-            home,
-            clientVersion: CLI_VERSION,
-            cliCommand: channelConfig.binName,
-            logger: runtimeLogger,
-            signal,
-            api,
-            machineToken: credential.machineToken,
-          });
-          void connection.whenRegistered(signal).then(
-            () => runtimeLogger.info({}, "Workspace Computer runtime is ready"),
-            () => undefined,
-          );
-          return { credential, logger: runtimeLogger, runtime };
-        }),
+      if (credential.computerId !== identity.computerId) {
+        throw new DaemonRuntimeConfigurationError("A machine credential belongs to another Computer");
+      }
+      const connectionInstanceId = randomUUID();
+      const runtimeLogger = gatedRuntimeLogger.logger.child({
+        computerId: identity.computerId,
+        instanceId: connectionInstanceId,
+        workspaceComputerId: credential.workspaceComputerId,
+      });
+      const api = new OpenTagApi(credential.serverUrl);
+      const connection = new RuntimeConnection({
+        arch: arch(),
+        clientVersion: CLI_VERSION,
+        computer: identity,
+        displayName: hostname(),
+        instanceId: connectionInstanceId,
+        logger: runtimeLogger.child({ module: "connection" }),
+        machineToken: credential.machineToken,
+        platform: currentPlatform,
+      });
+      const runtime = await createClientRuntime(connection, {
+        home,
+        clientVersion: CLI_VERSION,
+        cliCommand: channelConfig.binName,
+        logger: runtimeLogger,
+        signal,
+        api,
+        machineToken: credential.machineToken,
+      });
+      void connection.whenRegistered(signal).then(
+        () => runtimeLogger.info({}, "Computer runtime is ready"),
+        () => undefined,
       );
       return {
-        run: async () => {
-          const results = await Promise.allSettled(
-            runtimes.map(async ({ credential, logger: runtimeLogger, runtime }) => {
-              try {
-                await runtime.run();
-              } catch (error) {
-                runtimeLogger.warn(
-                  { category: "enrollment_runtime_stopped", workspaceComputerId: credential.workspaceComputerId },
-                  "Workspace Computer runtime stopped independently",
-                );
-                throw error;
-              }
-            }),
-          );
-          const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-          if (failure) throw failure.reason;
-        },
-        stop: () => {
-          for (const { runtime } of runtimes) runtime.stop();
-        },
+        run: () => runtime.run(),
+        stop: () => runtime.stop(),
       };
     }, signals);
   } catch (error) {

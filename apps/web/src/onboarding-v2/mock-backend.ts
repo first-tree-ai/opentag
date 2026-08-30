@@ -337,6 +337,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       error: undefined,
       readiness,
       messaging,
+      messagingProvider: undefined,
       planSignIn,
       // The mock has nothing to read back; it is the flow as it runs the first time.
       resuming: false,

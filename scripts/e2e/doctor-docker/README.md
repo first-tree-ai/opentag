@@ -22,8 +22,10 @@ then creates an isolated Docker network containing:
 
 The scenarios execute the built CLI entrypoint and assert the command's process
 exit status, stdout/stderr contract, filesystem immutability, network request
-counts, response redaction, wall-clock deadline, Runtime artifact rules, and
-systemd service state. The systemd scenarios perform a real `daemon install`,
+counts, response redaction, wall-clock deadline, Runtime artifact rules
+(including a login-shell-only Codex fixture that is absent from caller `PATH`),
+and systemd service state. Doctor reports the first install-only candidate and
+does not run readiness fallback. The systemd scenarios perform a real `daemon install`,
 reach a fully passing P0 baseline, and then inject wrong-Home, drifted,
 malformed, and stopped-service failures.
 

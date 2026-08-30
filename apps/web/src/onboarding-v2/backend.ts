@@ -9,7 +9,15 @@
  * rather than a fake of the API.
  */
 
-import type { AgentDraft, ConnectState, CreationState, MessagingState, ReadinessFacts, Runtime } from "./flow.js";
+import type {
+  AgentDraft,
+  ConnectState,
+  CreationState,
+  MessagingProvider,
+  MessagingState,
+  ReadinessFacts,
+  Runtime,
+} from "./flow.js";
 
 export type PlanSignIn = "idle" | "pending" | "signed-in";
 
@@ -24,6 +32,16 @@ export interface OnboardingBackend {
   readonly connect: ConnectState;
   readonly readiness: ReadinessFacts | undefined;
   readonly messaging: MessagingState;
+  /**
+   * Which messaging app a resumed run is already bound to.
+   *
+   * The choice a reader made lives on the page, which a Slack callback destroys: the browser leaves
+   * for Slack's pages and comes back to a fresh mount. `messaging` alone cannot rebuild it, because
+   * "waiting to be observed" says nothing about which app is waiting — so the step would render
+   * neither branch and show an empty page until readiness happened to flip. A resumed run reports
+   * the provider its binding already names; a first run has none and reports nothing.
+   */
+  readonly messagingProvider: MessagingProvider | undefined;
   readonly planSignIn: PlanSignIn;
   /**
    * Creating the Agent belongs here rather than to the page: it is the one step that writes to the

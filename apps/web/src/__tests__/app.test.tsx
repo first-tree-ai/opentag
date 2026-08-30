@@ -2653,7 +2653,20 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("menu")).toBeTruthy();
     account.focus();
     fireEvent.keyDown(account, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+
+    /*
+     * Closing is asynchronous: the menu is still in the document on the tick after Escape and
+     * leaves a frame or two later. This waits for it rather than asserting immediately, which also
+     * means the close finishes inside the test instead of racing whatever runs next.
+     *
+     * The old assertion asked for a menu accessibly named "Account" and got null at every moment,
+     * open or closed — so it passed with the Escape line deleted entirely, and never checked the
+     * focus return its name promises.
+     */
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("supports arrow-key navigation and focus return in the account menu", async () => {
@@ -2670,7 +2683,11 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
     fireEvent.keyDown(account, { key: "End" });
     fireEvent.keyDown(signOut, { key: "Escape" });
-    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+    // Same as above: closing is asynchronous, and a menu named "Account" never existed to be null.
+    await waitFor(() => {
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("removes the old admin product shell without a redirect", async () => {

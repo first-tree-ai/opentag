@@ -1,16 +1,26 @@
 import { constants, type Stats } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { AgentRuntimeProvider } from "@opentag/shared";
+import { type ActiveVersionManager, versionManagerBinDirs } from "./install-locations.js";
+import { type LoginShellPathDeps, probeLoginShellPath } from "./login-shell-path.js";
 import { automaticCandidateAllowed } from "./protected-paths.js";
 
-export type AgentRuntimeExecutableSource = "explicit" | "caller-path" | "well-known" | "desktop-app";
+export type AgentRuntimeExecutableSource =
+  | "explicit"
+  | "caller-path"
+  | "well-known"
+  | "login-shell"
+  | "version-manager"
+  | "desktop-app";
 
 export interface ResolvedAgentRuntimeExecutable {
   provider: AgentRuntimeProvider;
   path: string;
   source: AgentRuntimeExecutableSource;
+  /** Directory of the search hit; used to prepend PATH for automatic candidates. */
+  searchDir?: string;
 }
 
 export type AgentRuntimeCliInstallation =
@@ -45,6 +55,18 @@ export interface ResolveAgentRuntimeExecutableOptions {
   wellKnownDirs?: (home: string, platform: NodeJS.Platform) => readonly string[];
   desktopAppDirs?: (home: string, platform: NodeJS.Platform) => readonly string[];
   candidateAllowed?: (path: string, options: { platform: NodeJS.Platform; home: string }) => boolean;
+  /**
+   * Whether to consult the login-shell PATH (which may spawn a shell) and the
+   * version-manager fallback that depends on it. Default `true`. Set `false` on
+   * the daemon's pre-connect readiness path so startup never blocks on a login
+   * shell. Later refresh and Turn-triggered readiness pass `true`.
+   */
+  includeLoginShell?: boolean | (() => boolean);
+  loginShellPathDirs?: () => Promise<readonly string[]> | readonly string[];
+  loginShellEnv?: () => ActiveVersionManager | Promise<ActiveVersionManager>;
+  runShell?: LoginShellPathDeps["runShell"];
+  loginShellSpawn?: LoginShellPathDeps["spawn"];
+  versionManagerDirs?: (home: string, active: ActiveVersionManager) => readonly string[];
 }
 
 export interface ProbeAgentRuntimeCliInstallationsOptions extends ResolveAgentRuntimeExecutableOptions {
@@ -94,12 +116,50 @@ export function codexDesktopAppBinDirs(home: string, platform: NodeJS.Platform =
   ];
 }
 
+export function includeLoginShellEnabled(options: ResolveAgentRuntimeExecutableOptions = {}): boolean {
+  const value = options.includeLoginShell;
+  if (typeof value === "function") return value();
+  return value !== false;
+}
+
+/**
+ * Same-Provider candidate fallback is allowed only when the full readiness
+ * result contains at least one issue and every issue is binary-shaped.
+ * Credential, configuration, transient, mixed, or empty results must not
+ * advance, and another Provider must never be substituted.
+ */
+export function canAdvanceRuntimeCandidate(result: {
+  readonly ready: boolean;
+  readonly issues: readonly { readonly code: string }[];
+}): boolean {
+  if (result.ready || result.issues.length === 0) return false;
+  return result.issues.every((issue) => issue.code === "artifact_missing" || issue.code === "version_incompatible");
+}
+
 export async function resolveAgentRuntimeExecutable(
   provider: AgentRuntimeProvider,
   command: string,
   environment: NodeJS.ProcessEnv,
   options: ResolveAgentRuntimeExecutableOptions = {},
 ): Promise<ResolvedAgentRuntimeExecutable> {
+  for await (const candidate of iterateAgentRuntimeExecutables(provider, command, environment, options)) {
+    return candidate;
+  }
+  throw new AgentRuntimeExecutableNotFoundError(`The ${provider} Agent Runtime CLI is not installed`);
+}
+
+/**
+ * Lazy installed-candidate sequence. Later, more expensive sources are only
+ * evaluated when the consumer asks for the next candidate — the common case of
+ * a single working hit therefore keeps today's cost. An absolute explicit
+ * command remains one candidate and never gains fallback sources.
+ */
+export async function* iterateAgentRuntimeExecutables(
+  provider: AgentRuntimeProvider,
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  options: ResolveAgentRuntimeExecutableOptions = {},
+): AsyncGenerator<ResolvedAgentRuntimeExecutable> {
   const dependencies = {
     access: options.access ?? access,
     realpath: options.realpath ?? realpath,
@@ -111,7 +171,8 @@ export async function resolveAgentRuntimeExecutable(
       if (outcome.status === "unknown") throw new AgentRuntimeExecutableDiscoveryError(outcome.detail);
       throw new AgentRuntimeExecutableNotFoundError(`The ${provider} Agent Runtime CLI is not installed`);
     }
-    return { provider, path: outcome.path, source: "explicit" };
+    yield { provider, path: outcome.path, source: "explicit" };
+    return;
   }
 
   const platform = options.platform ?? process.platform;
@@ -121,32 +182,52 @@ export async function resolveAgentRuntimeExecutable(
   const desktopAppDirs = options.desktopAppDirs ?? codexDesktopAppBinDirs;
   const candidateAllowed = options.candidateAllowed ?? automaticCandidateAllowed;
   const extensions = platform === "win32" ? (environment.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
-  const seen = new Set<string>();
+  const seenSearchPaths = new Set<string>();
+  const seenResolvedPaths = new Set<string>();
   let firstUnknown: string | undefined;
+  let yielded = false;
 
-  for (const candidate of executableCandidates({
-    command,
-    desktopAppDirs: provider === "codex" ? desktopAppDirs(home, platform) : [],
-    extensions,
-    pathDirs: (environment.PATH ?? "").split(pathDelimiter).filter(Boolean),
-    wellKnownDirs: wellKnownDirs(home, platform),
-  })) {
-    if (seen.has(candidate.path)) continue;
-    seen.add(candidate.path);
-    try {
-      if (!candidateAllowed(candidate.path, { platform, home })) continue;
-    } catch {
-      firstUnknown ??= "An automatic Runtime candidate could not be inspected safely";
-      continue;
+  const fromDirectories = async function* (
+    directories: readonly string[],
+    source: Exclude<AgentRuntimeExecutableSource, "explicit">,
+  ): AsyncGenerator<ResolvedAgentRuntimeExecutable> {
+    for (const candidate of executableCandidatesFrom({ command, directories, extensions, source })) {
+      if (seenSearchPaths.has(candidate.path)) continue;
+      seenSearchPaths.add(candidate.path);
+      try {
+        if (!candidateAllowed(candidate.path, { platform, home })) continue;
+      } catch {
+        firstUnknown ??= "An automatic Runtime candidate could not be inspected safely";
+        continue;
+      }
+      const outcome = await inspectExecutableCandidate(candidate.path, dependencies);
+      if (outcome.status === "installed") {
+        if (seenResolvedPaths.has(outcome.path)) continue;
+        seenResolvedPaths.add(outcome.path);
+        yielded = true;
+        yield { provider, path: outcome.path, source: candidate.source, searchDir: dirname(candidate.path) };
+        continue;
+      }
+      if (outcome.status === "unknown") firstUnknown ??= outcome.detail;
     }
-    const outcome = await inspectExecutableCandidate(candidate.path, dependencies);
-    if (outcome.status === "installed") {
-      return { provider, path: outcome.path, source: candidate.source };
-    }
-    if (outcome.status === "unknown") firstUnknown ??= outcome.detail;
+  };
+
+  yield* fromDirectories((environment.PATH ?? "").split(pathDelimiter).filter(Boolean), "caller-path");
+  yield* fromDirectories(wellKnownDirs(home, platform), "well-known");
+
+  if (provider === "codex") {
+    yield* fromDirectories(desktopAppDirs(home, platform), "desktop-app");
   }
-  if (firstUnknown) throw new AgentRuntimeExecutableDiscoveryError(firstUnknown);
-  throw new AgentRuntimeExecutableNotFoundError(`The ${provider} Agent Runtime CLI is not installed`);
+
+  if (includeLoginShellEnabled(options) && platform !== "win32") {
+    const login = await resolveLoginShellLayer(home, platform, environment, options);
+    if (login) {
+      yield* fromDirectories(login.dirs, "login-shell");
+      yield* fromDirectories(login.versionManagerDirs, "version-manager");
+    }
+  }
+
+  if (!yielded && firstUnknown) throw new AgentRuntimeExecutableDiscoveryError(firstUnknown);
 }
 
 export async function probeAgentRuntimeCliInstallations(
@@ -176,6 +257,35 @@ export async function probeAgentRuntimeCliInstallations(
       }
     }),
   );
+}
+
+async function resolveLoginShellLayer(
+  home: string,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  options: ResolveAgentRuntimeExecutableOptions,
+): Promise<{ dirs: readonly string[]; versionManagerDirs: readonly string[] } | undefined> {
+  const versionManagerOptions = { env: environment, home, platform } as const;
+  if (options.loginShellPathDirs) {
+    const dirs = await options.loginShellPathDirs();
+    const active = (await options.loginShellEnv?.()) ?? {};
+    const versionDirs = options.versionManagerDirs
+      ? options.versionManagerDirs(home, active)
+      : versionManagerBinDirs(home, { ...versionManagerOptions, active });
+    return { dirs, versionManagerDirs: versionDirs };
+  }
+  const probed = await probeLoginShellPath({
+    environment,
+    home,
+    platform,
+    runShell: options.runShell,
+    spawn: options.loginShellSpawn,
+  });
+  if (!probed.ok) return undefined;
+  const versionDirs = options.versionManagerDirs
+    ? options.versionManagerDirs(home, probed.env)
+    : versionManagerBinDirs(home, { ...versionManagerOptions, active: probed.env });
+  return { dirs: probed.dirs, versionManagerDirs: versionDirs };
 }
 
 async function inspectExecutableCandidate(
@@ -218,23 +328,16 @@ function safeErrorDetail(error: unknown, fallback: string): string {
   return error.message.slice(0, 300);
 }
 
-function* executableCandidates(options: {
+function* executableCandidatesFrom(options: {
   command: string;
   extensions: readonly string[];
-  pathDirs: readonly string[];
-  wellKnownDirs: readonly string[];
-  desktopAppDirs: readonly string[];
+  directories: readonly string[];
+  source: Exclude<AgentRuntimeExecutableSource, "explicit">;
 }): Generator<Candidate> {
-  for (const [source, directories] of [
-    ["caller-path", options.pathDirs],
-    ["well-known", options.wellKnownDirs],
-    ["desktop-app", options.desktopAppDirs],
-  ] as const) {
-    for (const directory of directories) {
-      if (!isAbsolute(directory)) continue;
-      for (const extension of options.extensions) {
-        yield { path: join(directory, `${options.command}${extension}`), source };
-      }
+  for (const directory of options.directories) {
+    if (!isAbsolute(directory)) continue;
+    for (const extension of options.extensions) {
+      yield { path: join(directory, `${options.command}${extension}`), source: options.source };
     }
   }
 }

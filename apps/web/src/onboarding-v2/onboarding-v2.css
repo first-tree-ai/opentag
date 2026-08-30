@@ -9,6 +9,19 @@
  * lists; stating them here keeps each in one place.
  */
 
+/* Brand mark ------------------------------------------------------------- */
+
+/*
+ * The OpenTag mark is drawn inline so it inherits the theme, which means its parts are named here
+ * rather than in the shape. An undefined custom property makes the whole presentation attribute
+ * invalid, so the mark would fall back to solid black rather than to a sensible colour.
+ */
+:root {
+  --otv2-mark-tint: var(--color-kumo-tint);
+  --otv2-mark-surface: var(--color-kumo-base);
+  --otv2-mark-ink: var(--text-color-kumo-strong);
+}
+
 /* Choice cards ----------------------------------------------------------- */
 
 .otv2-choice {

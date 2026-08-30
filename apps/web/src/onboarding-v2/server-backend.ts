@@ -120,6 +120,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [connect, setConnect] = useState<ConnectState>({ kind: "idle" });
   const [computer, setComputer] = useState<WorkspaceComputerSummary>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
+  const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   const [agent, setAgent] = useState<CreatedAgent>();
   const [creation, setCreation] = useState<CreationState>("idle");
   /**
@@ -240,6 +241,30 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         const handoff = await browserApi.imBindingHandoff(existing.id);
         if (!live()) return;
         setMessaging(readMessaging(handoff));
+
+        /*
+         * Which app is being waited on. The reader chose it on a page that a Slack install
+         * destroys — the browser leaves for Slack and returns to a fresh mount — so the choice has
+         * to come back from the binding rather than from state that did not survive the trip.
+         * Without it the step knows it is waiting and not what for, and renders nothing.
+         */
+        if (handoff !== undefined) {
+          /*
+           * Best effort, and deliberately its own failure. Which app is waiting decides what this
+           * step draws, not whether the run can continue — so a read that fails costs the reader
+           * the branch and nothing else. Letting it join the resume would mean an unrelated
+           * outage on this call strands a returning Account on an error instead.
+           */
+          try {
+            const binding = await browserApi.imBinding(existing.id);
+            if (!live()) return;
+            if (binding?.provider === "feishu" || binding?.provider === "slack") {
+              setMessagingProvider(binding.provider);
+            }
+          } catch {
+            // The step falls back to asking, which is what it did before it could restore anything.
+          }
+        }
       }
     } catch (cause) {
       // Reading is the only way to tell a returning Account from a new one, so a failed read is
@@ -578,6 +603,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       error: actionError ?? connectionError,
       issueConnectCode,
       messaging,
+      messagingProvider,
       planSignIn,
       readiness,
       refreshConnectCode,
@@ -600,6 +626,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       creation,
       issueConnectCode,
       messaging,
+      messagingProvider,
       planSignIn,
       readiness,
       refreshConnectCode,

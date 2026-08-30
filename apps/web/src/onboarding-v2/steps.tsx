@@ -200,6 +200,7 @@ function AgentNameField({
   showError: boolean;
 }) {
   const nameId = useId();
+  const labelId = `${nameId}-label`;
   const hintId = `${nameId}-hint`;
   const errorId = `${nameId}-error`;
   const error = showError ? validateAgentName(draft.name) : undefined;
@@ -214,7 +215,7 @@ function AgentNameField({
 
   return (
     <div className={FIELDSET} data-ui="onboarding-v2-field">
-      <label className="font-medium text-kumo-strong" data-ui="onboarding-v2-field-label" htmlFor={nameId}>
+      <label className="font-medium text-kumo-strong" data-ui="onboarding-v2-field-label" htmlFor={nameId} id={labelId}>
         {COPY.agent.nameLabel}
       </label>
       <p className={HINT} data-ui="onboarding-v2-field-hint" id={hintId}>
@@ -222,8 +223,8 @@ function AgentNameField({
       </p>
       <KumoInputControl
         aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
-        aria-label={COPY.agent.nameLabel}
         aria-invalid={errorText ? true : undefined}
+        aria-labelledby={labelId}
         autoComplete="off"
         data-ui="onboarding-v2-field-control"
         id={nameId}

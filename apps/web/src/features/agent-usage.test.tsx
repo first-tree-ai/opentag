@@ -1,5 +1,5 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { browserApi } from "../api.js";
@@ -42,5 +42,24 @@ describe("AgentUsageOverview", () => {
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.queryByText("Total Tokens recorded each day.")).toBeNull();
     expect(screen.queryByText("Input and output within the selected period.")).toBeNull();
+  });
+
+  it("keeps the failure reason visible and retries the same usage request", async () => {
+    const loadUsage = vi
+      .spyOn(browserApi, "agentUsage")
+      .mockRejectedValueOnce(new Error("Usage aggregation is delayed. Try again shortly."))
+      .mockResolvedValueOnce(usage);
+
+    await renderInRouter(<AgentUsageOverview agentId="agent-1" />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Usage aggregation is delayed. Try again shortly.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry Agent usage" }));
+
+    expect(await screen.findByText("Partial data.")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(loadUsage).toHaveBeenCalledTimes(2);
+    expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
   });
 });

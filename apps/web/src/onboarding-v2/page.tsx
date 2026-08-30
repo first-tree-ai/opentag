@@ -330,7 +330,7 @@ function OnboardingV2Flow({
               onChoose={setMessagingProvider}
               onSlackInstall={backend.startSlackInstall}
               onStart={backend.startMessaging}
-              provider={messagingProvider}
+              provider={messagingProvider ?? backend.messagingProvider}
               readiness={backend.readiness}
             />
           )}

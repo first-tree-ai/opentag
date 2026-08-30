@@ -3,6 +3,8 @@ import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "
 import { Button, Text } from "../ui/design-system.js";
 
 type BoundaryError = Error & { digest?: string };
+type BoundaryErrorInfo = { componentStack?: string | null };
+type BoundaryName = "app" | "route" | "root";
 
 export type AppErrorBoundaryProps = {
   children: ReactNode;
@@ -80,7 +82,7 @@ export function RouteErrorPage({ reset }: ErrorComponentProps) {
 
 export function StandaloneErrorPage({ actionLabel, onAction }: { actionLabel: string; onAction: () => void }) {
   return (
-    <main className="grid min-h-full place-items-center bg-kumo-canvas p-6" data-ui="app-error-boundary">
+    <main className="app-error-boundary grid bg-kumo-canvas p-6" data-ui="app-error-boundary">
       <BoundaryCard>
         <Text as="span" variant="secondary">
           OpenTag
@@ -106,7 +108,7 @@ function BoundaryCard({ children, ...props }: { children: ReactNode } & HTMLAttr
   return (
     <section
       {...props}
-      className="grid w-full max-w-xl gap-3 rounded-lg bg-kumo-base p-6 shadow-sm ring ring-kumo-line"
+      className="app-error-boundary__card grid w-full gap-3 rounded-lg bg-kumo-base p-6 shadow-sm ring ring-kumo-line"
     >
       {children}
     </section>
@@ -119,23 +121,38 @@ function normalizeError(value: unknown): BoundaryError {
 }
 
 /** Logs diagnostics without copying credential-shaped values into the browser console. */
-export function reportBoundaryError(boundary: "app" | "route", error: unknown, errorInfo?: ErrorInfo) {
+export function reportBoundaryError(boundary: BoundaryName, error: unknown, errorInfo?: BoundaryErrorInfo) {
   const normalized = normalizeError(error);
   console.error("[OpenTag] Unhandled UI error", {
     boundary,
     error: {
-      name: normalized.name,
+      name: redactErrorMessage(normalized.name),
       message: redactErrorMessage(normalized.message),
     },
     componentStack: errorInfo?.componentStack ? redactErrorMessage(errorInfo.componentStack) : undefined,
   });
 }
 
+/** Replaces React 19's default root reporting so caught and uncaught errors stay sanitized. */
+export const rootErrorHandlers = {
+  onCaughtError: (error: unknown, errorInfo: BoundaryErrorInfo) => reportBoundaryError("root", error, errorInfo),
+  onRecoverableError: (error: unknown, errorInfo: BoundaryErrorInfo) => reportBoundaryError("root", error, errorInfo),
+  onUncaughtError: (error: unknown, errorInfo: BoundaryErrorInfo) => reportBoundaryError("root", error, errorInfo),
+};
+
+const credentialKey =
+  "(?:authorization|cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
+
 function redactErrorMessage(message: string): string {
   return message
     .replace(
-      /\b(authorization|cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token)\b\s*[:=]\s*[^\s,;]+/gi,
-      "$1=[REDACTED]",
+      new RegExp(
+        `(["']?${credentialKey}["']?\\s*[:=]\\s*)(Bearer\\s+(?:"[^"]*"|'[^']*'|[^\\s,;}\\]]+)|"[^"]*"|'[^']*'|[^\\s,;}\\]]+)`,
+        "gi",
+      ),
+      (_match, prefix: string, value: string) =>
+        `${prefix}${/^Bearer\s/i.test(value) ? "Bearer [REDACTED]" : "[REDACTED]"}`,
     )
+    .replace(/\bBearer\s+(?:"[^"]*"|'[^']*'|[^\s,;}\]]+)/gi, "Bearer [REDACTED]")
     .replace(/([?&](?:code|client_secret|token|secret|password|key)=)[^&#\s]+/gi, "$1[REDACTED]");
 }

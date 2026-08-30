@@ -4,10 +4,11 @@ import "@cloudflare/kumo/styles/standalone";
 import "./ui/kumo-theme.css";
 import { App } from "./app.js";
 import "./app.css";
+import { rootErrorHandlers } from "./features/error-boundary.js";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("OpenTag root element is missing");
-createRoot(root).render(
+createRoot(root, rootErrorHandlers).render(
   <StrictMode>
     <App />
   </StrictMode>,

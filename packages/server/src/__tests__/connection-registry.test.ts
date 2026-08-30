@@ -432,27 +432,27 @@ describe("ConnectionRegistry", () => {
         workspaceId: randomUUID(),
         lastHeartbeatAt: 1,
         socket: runtimeSocket,
-        imCliReadiness: [{ provider: "codex", status: "ready" }],
+        imCliReadiness: [{ provider: "slack", status: "ready" }],
         imCliReadinessObservedAt: 10,
       },
       async () => undefined,
     );
     expect(registry.imCliReadiness(computerId, 10)).toEqual([
-      { observation: { provider: "codex", status: "ready" }, observedAt: 10 },
+      { observation: { provider: "slack", status: "ready" }, observedAt: 10 },
     ]);
-    expect(registry.supportsImCli(computerId, "codex", 10)).toBe(true);
-    expect(registry.supportsImCli(computerId, "claude-code", 10)).toBe(false);
+    expect(registry.supportsImCli(computerId, "slack", 10)).toBe(true);
+    expect(registry.supportsImCli(computerId, "feishu", 10)).toBe(false);
     expect(registry.imCliReadiness(computerId, 10 + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1)).toEqual([]);
     expect(registry.imCliReadiness(randomUUID(), 10)).toEqual([]);
     expect(registry.touch(computerId, instanceId, runtimeSocket, 20, undefined, undefined, [])).toBe(true);
     expect(registry.imCliReadiness(computerId, 20)).toEqual([]);
     expect(
       registry.touch(computerId, instanceId, runtimeSocket, 30, undefined, undefined, [
-        { provider: "claude-code", status: "install" },
+        { provider: "feishu", status: "install" },
       ]),
     ).toBe(true);
     expect(registry.imCliReadiness(computerId, 30)).toMatchObject([
-      { observation: { provider: "claude-code", status: "install" } },
+      { observation: { provider: "feishu", status: "install" } },
     ]);
     expect(registry.touch(computerId, instanceId, runtimeSocket, 31, undefined, undefined, undefined)).toBe(true);
     expect(registry.activate(computerId, randomUUID(), runtimeSocket)).toBe(false);

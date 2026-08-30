@@ -354,7 +354,7 @@ describe("RuntimeDomainOwner", () => {
   it("fences accepted and absorbed delivery results by custody status", async () => {
     const fixture = await ownerFixture();
     const staleCustody = new MemoryRuntimeCustodyStore();
-    vi.spyOn(staleCustody, "acceptDelivery").mockResolvedValue("stale_generation");
+    vi.spyOn(staleCustody, "acceptDelivery").mockResolvedValue("stale_generation" as never);
     const staleOwner = new RuntimeDomainOwner(fixture.registry, staleCustody);
     const staleRequest = deliveryRequest();
     const stalePending = staleOwner.requestDelivery(fixture.computerId, fixture.instanceId, staleRequest);
@@ -375,7 +375,7 @@ describe("RuntimeDomainOwner", () => {
     await expect(conflictPending).rejects.toMatchObject({ code: "stopped" });
 
     const absorbedCustody = new MemoryRuntimeCustodyStore();
-    vi.spyOn(absorbedCustody, "recordAbsorbed").mockResolvedValue("stale_generation");
+    vi.spyOn(absorbedCustody, "recordAbsorbed").mockResolvedValue("stale_generation" as never);
     const absorbedOwner = new RuntimeDomainOwner(fixture.registry, absorbedCustody);
     const absorbedRequest = { ...deliveryRequest(), requestId: randomUUID(), deliveryId: "delivery-absorbed" };
     const absorbedPending = absorbedOwner.requestDelivery(fixture.computerId, fixture.instanceId, absorbedRequest);

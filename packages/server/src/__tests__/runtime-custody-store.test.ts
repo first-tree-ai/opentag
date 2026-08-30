@@ -304,9 +304,29 @@ describe("PostgresRuntimeCustodyStore", () => {
   });
 });
 
-type Fixture = Awaited<ReturnType<typeof createFixture>>;
+type Fixture = {
+  direct: DirectImMessageDeliveryRequest;
+  deliveryId: string;
+  instanceId: string;
+  context: RuntimeBusinessContext;
+  dispatchContext: { workspaceComputerId: string; instanceId: string };
+  now: Date;
+  sessionId: string;
+  agentId: string;
+  rootDeliveryId: string;
+  reconcile: SessionReconcileRequest;
+};
 
-async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean } = {}) {
+type RootFixture = Fixture & {
+  steer: RuntimeImSteerRequest;
+  absorbedDeliveryId: string;
+  absorbedMessageId: string;
+  releaseDeliveryId: string;
+};
+
+async function createFixture(unit: UnitDatabase): Promise<Fixture>;
+async function createFixture(unit: UnitDatabase, options: { withRoot: true }): Promise<RootFixture>;
+async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean } = {}): Promise<Fixture | RootFixture> {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const userId = randomUUID();
   const workspaceId = randomUUID();
@@ -372,7 +392,7 @@ async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean }
     content: { fallbackText: "hello" },
     providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "1" },
     occurredAt: now,
-  });
+  } as never);
   const direct: DirectImMessageDeliveryRequest = {
     type: "im:deliver",
     requestId: randomUUID(),
@@ -467,7 +487,7 @@ async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean }
       content: { fallbackText: externalMessageId },
       providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: externalMessageId },
       occurredAt: now,
-    });
+    } as never);
   }
   await unit.database
     .update(imMessageDeliveries)

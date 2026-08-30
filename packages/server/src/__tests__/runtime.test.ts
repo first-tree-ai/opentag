@@ -18,7 +18,7 @@ import WebSocket from "ws";
 import { z } from "zod";
 import { createApp } from "../app.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
-import { RuntimeSession } from "../runtime/runtime-session.js";
+import { type RuntimeBusinessOptions, RuntimeSession } from "../runtime/runtime-session.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService } from "../services/computers/index.js";
@@ -1166,7 +1166,7 @@ describe("RuntimeSession direct protocol coverage", () => {
 function directRuntimeSession(
   input: {
     providerReadiness?: readonly ("codex" | "claude-code")[];
-    business?: Parameters<typeof RuntimeSession>[4];
+    business?: RuntimeBusinessOptions;
     computers?: Partial<{
       assertActiveCredential: ReturnType<typeof vi.fn>;
       register: ReturnType<typeof vi.fn>;
@@ -1257,7 +1257,7 @@ function heartbeatFrame(computerId: string, instanceId: string) {
 }
 
 class RuntimeTestSocket extends EventEmitter {
-  readyState = WebSocket.OPEN;
+  readyState: number = WebSocket.OPEN;
   readonly frames: unknown[] = [];
   closeCode?: number;
 

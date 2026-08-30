@@ -131,7 +131,7 @@ describe("ImDeliveryWorker database workflow", () => {
         placementGeneration: 2,
         dispatchRequestId: randomUUID(),
         dispatchInputHash: "bad",
-        dispatchPayload: { invalid: true },
+        dispatchPayload: { invalid: true } as never,
       })
       .where(eq(imMessageDeliveries.id, stale.deliveryId));
     const staleDiagnostic = vi.fn();
@@ -157,7 +157,7 @@ describe("ImDeliveryWorker database workflow", () => {
         state: "expired",
         dispatchRequestId: malformedRequest.requestId,
         dispatchInputHash: "bad",
-        dispatchPayload: { invalid: true },
+        dispatchPayload: { invalid: true } as never,
       })
       .where(eq(imMessageDeliveries.id, malformed.deliveryId));
     const malformedDiagnostic = vi.fn();
@@ -288,7 +288,7 @@ describe("ImDeliveryWorker database workflow", () => {
         state: "accepted",
         dispatchRequestId: randomUUID(),
         dispatchInputHash: "bad",
-        dispatchPayload: { nope: true },
+        dispatchPayload: { nope: true } as never,
         inputHash: "bad",
         turnId: "turn-invalid",
         reportOwnerInstanceId: invalid.instanceId,
@@ -427,7 +427,7 @@ describe("ImDeliveryWorker database workflow", () => {
         providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "history" },
         occurredAt: new Date(now.getTime() - 1_000),
       },
-    ]);
+    ] as never);
     await unit.database.insert(imMessageDeliveries).values({
       id: acceptedDeliveryId,
       messageId: acceptedMessageId,
@@ -451,21 +451,26 @@ describe("ImDeliveryWorker database workflow", () => {
         executionEffects: "completed",
         finalText: "ok",
         resultHash: "history-result",
+        traceSummary: { lastSequence: 0, droppedEvents: 0 },
       },
       reportedAt: now,
       acceptedAt: now,
       expiresAt: new Date(now.getTime() + 60_000),
-    });
+    } as never);
     await unit.database
       .update(imMessages)
       .set({
         content: {
+          version: 1,
           fallbackText: "x".repeat(20_000),
+          blocks: [],
+          truncated: false,
           resources: Array.from({ length: 900 }, (_, index) => ({
             kind: "file",
             filename: `file-${index}.txt`,
             mediaType: "text/plain",
             sizeBytes: 10,
+            providerResourceKey: `resource-${index}`,
           })),
         },
       })
@@ -860,7 +865,7 @@ async function workerFixture(unit: UnitDatabase) {
     content,
     providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "1" },
     occurredAt: now,
-  });
+  } as never);
   await unit.database.insert(imMessageDeliveries).values({
     id: deliveryId,
     messageId,
@@ -945,7 +950,7 @@ async function steerFixture(unit: UnitDatabase) {
     content: { fallbackText: "root" },
     providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "root" },
     occurredAt: now,
-  });
+  } as never);
   await unit.database.insert(imMessageDeliveries).values({
     id: rootDeliveryId,
     messageId: rootMessageId,

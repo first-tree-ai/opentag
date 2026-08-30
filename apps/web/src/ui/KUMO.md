@@ -4,7 +4,6 @@ OpenTag uses Kumo `2.12.0` with Tailwind CSS v4. `src/app.css` is the only
 application stylesheet entry: it registers Kumo's distribution as a Tailwind
 source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
 generated OpenTag theme and the small application boundary stylesheet.
-
 The authenticated application shell keeps its navigation and scroll viewport
 fluid. Its route outlet sits inside a centered `max-w-5xl` content frame, so
 Workspace pages share one 1024px maximum width while still filling the available

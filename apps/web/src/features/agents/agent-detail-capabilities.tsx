@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { agentIntegrationPreviews, agentSkillPreviews } from "./mock/agent-detail-capability-data.js";
-import { StatusIndicator, Text } from "./ui/design-system.js";
+import { agentIntegrationPreviews, agentSkillPreviews } from "../../mock/agent-detail-capability-data.js";
+import { StatusIndicator, Text } from "../../ui/design-system.js";
 
 export function AgentIntegrationsTab() {
   return import.meta.env.DEV ? <AgentIntegrationsPreview /> : <AgentIntegrationsUnavailable />;

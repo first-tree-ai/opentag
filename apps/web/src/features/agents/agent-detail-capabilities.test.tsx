@@ -1,6 +1,6 @@
 import { screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderInRouter } from "./__tests__/support/router.js";
+import { renderInRouter } from "../../__tests__/support/router.js";
 import {
   AgentIntegrationsPreview,
   AgentIntegrationsTab,

@@ -5,7 +5,7 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
-import { Button, Field, KumoInputAreaControl, KumoInputControl, KumoSelectControl } from "./ui/design-system.js";
+import { Button, Field, KumoInputAreaControl, KumoInputControl, KumoSelectControl } from "../../../ui/design-system.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 

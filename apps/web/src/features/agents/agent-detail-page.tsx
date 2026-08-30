@@ -76,7 +76,7 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
               Usage
             </Link>
           ) : null}
-          {true && !backToSettings ? (
+          {!backToSettings ? (
             <Link
               className={buttonClassName({ variant: "secondary" })}
               state={{ agent }}

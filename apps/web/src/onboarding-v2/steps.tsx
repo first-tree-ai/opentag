@@ -310,12 +310,14 @@ function MessagingPicker({
 }
 
 function MessagingConnection({
+  computerOnline,
   messaging,
   onRetry,
   onSlackInstall,
   provider,
   readiness,
 }: {
+  computerOnline: boolean | undefined;
   messaging: MessagingState;
   onRetry: (provider: MessagingProvider) => void;
   onSlackInstall: () => void;
@@ -329,12 +331,19 @@ function MessagingConnection({
    */
   const cliState = provider ? messagingCliCheck(readiness, provider) : "pending";
   /*
-   * Reachability needs the messaging CLI as well as the binding, and the Server's handoff status
-   * carries no reason — so a reader without that CLI would watch an unexplained wait forever. The
-   * page already knows this much from the Computer's own readiness, so the wait says it.
+   * Reachability needs more than the binding: the Computer has to be reachable and both the runtime
+   * and the messaging CLI ready. The Server's handoff status carries no reason, so a wait on any of
+   * them would otherwise be an unexplained spinner — and every one of these can regress *after* the
+   * reader passed the step that checked it. The page knows all three, so the wait says which.
    */
   const waitingReason =
-    cliState === "failed" && provider ? COPY.messaging.cliMissing(COPY.messaging[provider].title) : undefined;
+    computerOnline === false
+      ? COPY.messaging.computerOffline
+      : readiness?.runtime !== undefined && readiness.runtime !== "ready"
+        ? COPY.messaging.runtimeNotReady
+        : cliState === "failed" && provider
+          ? COPY.messaging.cliMissing(COPY.messaging[provider].title)
+          : undefined;
   return (
     <div className="flex flex-col items-center gap-3">
       {/*
@@ -358,10 +367,17 @@ function MessagingConnection({
             "Waiting for you to scan…" over an empty box would be untrue: nothing is waiting.
           */}
           {messaging.kind === "waiting-handoff" ? (
-            <p className={WAITING} role="status">
-              <span aria-hidden="true" className="otv2-pulse shrink-0" />
-              {waitingReason ?? COPY.messaging.confirming}
-            </p>
+            waitingReason ? (
+              <p className="flex items-start gap-2 text-sm text-kumo-warning m-0" role="status">
+                <Icon className="shrink-0 mt-1" name="close" />
+                <span>{waitingReason}</span>
+              </p>
+            ) : (
+              <p className={WAITING} role="status">
+                <span aria-hidden="true" className="otv2-pulse shrink-0" />
+                {COPY.messaging.confirming}
+              </p>
+            )
           ) : messaging.kind === "failed" ? (
             <div className="flex flex-col items-center gap-3">
               <p className="text-sm text-kumo-danger m-0">{COPY.messaging.failed}</p>
@@ -385,10 +401,17 @@ function MessagingConnection({
           */}
           <div className="otv2-slot--signin flex items-center justify-center">
             {messaging.kind === "waiting-handoff" ? (
-              <p className={WAITING} role="status">
-                <span aria-hidden="true" className="otv2-pulse shrink-0" />
-                {waitingReason ?? COPY.messaging.confirming}
-              </p>
+              waitingReason ? (
+                <p className="flex items-start gap-2 text-sm text-kumo-warning m-0" role="status">
+                  <Icon className="shrink-0 mt-1" name="close" />
+                  <span>{waitingReason}</span>
+                </p>
+              ) : (
+                <p className={WAITING} role="status">
+                  <span aria-hidden="true" className="otv2-pulse shrink-0" />
+                  {COPY.messaging.confirming}
+                </p>
+              )
             ) : messaging.kind === "away" ? (
               <p className={WAITING} role="status">
                 <span aria-hidden="true" className="otv2-pulse shrink-0" />
@@ -824,6 +847,7 @@ function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; positio
 }
 
 export function MessagingStep({
+  computerOnline,
   messaging,
   onChoose,
   onSlackInstall,
@@ -831,6 +855,7 @@ export function MessagingStep({
   provider,
   readiness,
 }: {
+  computerOnline: boolean | undefined;
   messaging: MessagingState;
   onChoose: (provider: MessagingProvider) => void;
   onSlackInstall: () => void;
@@ -854,6 +879,7 @@ export function MessagingStep({
 
       <MessagingPicker onChoose={onChoose} provider={provider} />
       <MessagingConnection
+        computerOnline={computerOnline}
         messaging={messaging}
         onRetry={onStart}
         onSlackInstall={onSlackInstall}

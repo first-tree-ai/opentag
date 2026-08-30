@@ -184,6 +184,8 @@ export const COPY = {
     slackAction: "Add to Slack",
     slackWaiting: "Waiting for you to finish in Slack…",
     confirming: "Connected. Checking your agent can be reached…",
+    computerOffline: "Your computer is offline. Reconnect it and this will finish on its own.",
+    runtimeNotReady: "Your agent's runtime isn't ready on your computer. Run opentag doctor there.",
     retry: "Try again",
     failed: "That didn't work. Try again to get a new code.",
   },

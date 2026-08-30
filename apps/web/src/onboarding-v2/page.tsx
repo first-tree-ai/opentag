@@ -325,6 +325,7 @@ function OnboardingV2Flow({
             />
           ) : (
             <MessagingStep
+              computerOnline={backend.computerOnline}
               messaging={backend.messaging}
               onChoose={setMessagingProvider}
               onSlackInstall={backend.startSlackInstall}

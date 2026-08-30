@@ -367,6 +367,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
            * they are about to open again would cost more than it tells them.
            */
           if (mineNow?.connectionStatus !== "online") {
+            // Held here, the reader is not pulled off a step they are working through — but the
+            // Computer is still recorded, because reachability depends on it and a wait that has
+            // gone stale cannot say what it is waiting for.
+            if (mineNow) setComputer(mineNow);
             if (pastConnectStep.current) return;
             computerId.current = undefined;
             setComputer(undefined);
@@ -553,6 +557,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   const startPlanSignIn = useCallback(() => undefined, []);
 
+  const computerOnline = computer === undefined ? undefined : computer.connectionStatus === "online";
+
   const readiness = useMemo(
     () => (computer ? readReadiness(computer, draft.runtime) : undefined),
     [computer, draft.runtime],
@@ -561,6 +567,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   return useMemo(
     () => ({
       agent,
+      computerOnline,
       connect,
       createAgent,
       creation,
@@ -582,6 +589,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     [
       actionError,
       agent,
+      computerOnline,
       connect,
       connectionError,
       createAgent,

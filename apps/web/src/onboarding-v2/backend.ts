@@ -31,6 +31,12 @@ export interface OnboardingBackend {
    * real one — two shapes for one fact.
    */
   readonly creation: CreationState;
+  /**
+   * Whether the Computer the Agent runs on is reachable right now, once one is known. Being
+   * reachable is one of the things setup completion waits on, and the wait cannot name what it is
+   * waiting for without it.
+   */
+  readonly computerOnline: boolean | undefined;
   readonly agent: CreatedAgent | undefined;
   /**
    * The last thing that failed, in words a person can act on. Held rather than thrown: none of

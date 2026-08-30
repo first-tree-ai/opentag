@@ -329,6 +329,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   return useMemo(
     () => ({
       agent,
+      // The mock's Computer does not leave once it has arrived.
+      computerOnline: connect.kind === "connected" ? true : undefined,
       connect,
       createAgent,
       creation,

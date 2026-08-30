@@ -224,30 +224,41 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   const [state, setState] = useState<LoadState<TaskDetail>>({ kind: "loading" });
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
+  const taskLoadGeneration = useRef(0);
 
   useEffect(() => {
-    let active = true;
+    const generation = taskLoadGeneration.current + 1;
+    taskLoadGeneration.current = generation;
+    setState({ kind: "loading" });
+    setLoadingMore(false);
+    setLoadMoreError(null);
     if (!taskId) {
       setState({ kind: "error", error: new Error("Task not found") });
-      return () => undefined;
+      return () => {
+        if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
+      };
     }
     browserApi.task(taskId).then(
-      (value) => active && setState({ kind: "ready", value }),
-      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
+      (value) => taskLoadGeneration.current === generation && setState({ kind: "ready", value }),
+      (error: unknown) =>
+        taskLoadGeneration.current === generation && setState({ kind: "error", error: asError(error) }),
     );
     return () => {
-      active = false;
+      if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
     };
   }, [taskId]);
 
   async function loadMoreTurns(): Promise<void> {
     if (!taskId || state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
+    const generation = taskLoadGeneration.current;
+    const cursor = state.value.nextCursor;
     setLoadingMore(true);
     setLoadMoreError(null);
     try {
-      const next = await browserApi.task(taskId, state.value.nextCursor);
+      const next = await browserApi.task(taskId, cursor);
+      if (taskLoadGeneration.current !== generation) return;
       setState((current) =>
-        current.kind === "ready"
+        current.kind === "ready" && current.value.task.id === taskId
           ? {
               kind: "ready",
               value: {
@@ -259,9 +270,10 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
           : current,
       );
     } catch (error) {
+      if (taskLoadGeneration.current !== generation) return;
       setLoadMoreError(asError(error));
     } finally {
-      setLoadingMore(false);
+      if (taskLoadGeneration.current === generation) setLoadingMore(false);
     }
   }
 

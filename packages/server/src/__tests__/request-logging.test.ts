@@ -27,7 +27,7 @@ describe("request logging", () => {
     const app = createApp({
       authService: {
         getAuthenticatedUser: vi.fn().mockResolvedValue({
-          me: { user: { id: crypto.randomUUID() }, workspaces: [] },
+          me: { user: { id: crypto.randomUUID() }, setupCompletedAt: null },
           tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
         }),
       } as never,

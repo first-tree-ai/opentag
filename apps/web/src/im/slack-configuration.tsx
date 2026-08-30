@@ -10,7 +10,7 @@ const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
   IM_BINDING_PROVIDER_IMMUTABLE:
     "This Agent is connected to a different IM provider. Disable that binding before connecting Slack.",
   SLACK_APP_TEAM_ALREADY_BOUND:
-    "This Slack App installation is already connected to another OpenTag workspace. Disconnect that workspace first, or use a different Slack workspace.",
+    "This Slack App installation is already connected to another OpenTag Agent. Disconnect that Agent first, or use a different Slack workspace.",
   SLACK_AUTH_IDENTITY_INCOMPLETE:
     "Slack did not identify this authorization as an installed Bot. Start OpenTag Slack again from this Agent.",
   SLACK_AUTH_INVALID: "Slack rejected this authorization. Start OpenTag Slack again from this Agent.",

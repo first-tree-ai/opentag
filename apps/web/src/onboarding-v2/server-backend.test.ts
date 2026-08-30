@@ -19,7 +19,6 @@ const NOW = "2026-08-29T00:00:00.000Z";
 const COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const OTHER_COMPUTER_ID = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
-const WORKSPACE_ID = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 
 /** The poll cadence the hook waits on, and one full expiry window. */
@@ -52,7 +51,6 @@ function draft(runtime: Runtime | undefined = "codex"): AgentDraft {
 function adminConfig(): AgentAdminConfig {
   return {
     id: AGENT_ID,
-    workspaceId: WORKSPACE_ID,
     name: "opentag",
     displayName: "opentag",
     runtimeProvider: "codex",

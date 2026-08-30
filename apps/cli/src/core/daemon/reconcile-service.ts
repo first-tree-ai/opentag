@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { readMachineCredentials, resolveOpenTagHome } from "@opentag/client";
+import { readMachineCredentials, resolveBoundAccountComputer, resolveOpenTagHome } from "@opentag/client";
 import { createDaemonServiceManager, type DaemonServiceInfo, type DaemonServiceManager } from "./service/index.js";
 import { DaemonServiceError } from "./service/types.js";
 
@@ -26,7 +26,9 @@ export async function reconcileDaemonService(
 
   const hasCredentials =
     options.hasCredentials ??
-    (async () => Boolean((await readMachineCredentials(resolve(resolveOpenTagHome(process.env))))?.enrollments.length));
+    (async () =>
+      resolveBoundAccountComputer(await readMachineCredentials(resolve(resolveOpenTagHome(process.env)))).status ===
+      "bound");
   if (!(await hasCredentials())) {
     return { reason: "credentials-missing", service: current, status: "deferred" };
   }

@@ -1,8 +1,15 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
-import { browserApi } from "./api.js";
-import { Banner, Button, ClipboardText, Loader, Text } from "./ui/design-system.js";
+import { browserApi } from "../../api.js";
+import { Banner, Button, ClipboardText, Loader, Text } from "../../ui/design-system.js";
 
+/*
+ * This stays outside the query cache on purpose. It is not a resource the page subscribes to but a
+ * wait on a mutation's side effect: a connect code is issued, and the Computer list is compared
+ * against a baseline captured at that moment, bounded by the code's own expiry. The baseline has to
+ * be genuinely fresh at click time, which a shared cache entry cannot promise, and the countdown
+ * beside it is a clock rather than Server state.
+ */
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. Generate a new one to continue.";
 /**

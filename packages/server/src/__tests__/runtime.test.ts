@@ -26,15 +26,7 @@ afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 const workspaceId = randomUUID();
 const me = {
   user: { id: randomUUID(), email: "admin@example.com", displayName: "Admin" },
-  workspaces: [
-    {
-      id: workspaceId,
-      name: "example",
-      displayName: "Example",
-      setupCompletedAt: null,
-      grantedAt: "2030-01-01T00:00:00.000Z",
-    },
-  ],
+  setupCompletedAt: null,
 };
 
 const machineContext = {

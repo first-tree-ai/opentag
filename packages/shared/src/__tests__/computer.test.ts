@@ -8,14 +8,16 @@ import {
 } from "../computer.js";
 
 describe("computer contracts", () => {
-  it("returns enrollment-scoped machine authority", () => {
+  it("returns Computer-scoped machine authority without a management Workspace alias", () => {
     const response = {
       workspaceComputerId: crypto.randomUUID(),
-      workspaceId: crypto.randomUUID(),
       computerId: crypto.randomUUID(),
       machineToken: "opaque-secret",
     };
     expect(ComputerConnectCodeExchangeResponseSchema.parse(response)).toEqual(response);
+    expect(() =>
+      ComputerConnectCodeExchangeResponseSchema.parse({ ...response, workspaceId: crypto.randomUUID() }),
+    ).toThrow();
     expect(() => ComputerConnectCodeExchangeResponseSchema.parse({ ...response, accessToken: "human" })).toThrow();
   });
 
@@ -40,7 +42,7 @@ describe("computer contracts", () => {
       displayName: "workstation",
       platform: "linux" as const,
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.2",
     };
     expect(ComputerConnectCodeExchangeRequestSchema.parse(request)).toEqual(request);
     expect(() =>

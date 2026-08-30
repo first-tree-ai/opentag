@@ -1,7 +1,6 @@
 import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
@@ -18,6 +17,7 @@ import {
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const now = new Date("2026-08-27T00:00:00.000Z");
@@ -51,7 +51,7 @@ async function fixture() {
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.2",
       enrolledByUserId: bootstrap.userId,
     })
     .returning();
@@ -63,16 +63,16 @@ async function fixture() {
     displayName: "workstation",
     platform: "linux",
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
   });
   const agentsService = new AgentService(client.database);
-  const first = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
+  const first = await agentsService.createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
     computerId: workspaceComputer.id,
   });
-  const second = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
+  const second = await agentsService.createForAccount(bootstrap.userId, {
     name: "reviewer",
     displayName: "Reviewer",
     runtimeProvider: "codex",
@@ -113,6 +113,47 @@ async function activate(
 }
 
 describe("Slack workspace installation routing", () => {
+  it("allows different Agents in one legacy Workspace to own different current Slack installations", async () => {
+    const value = await fixture();
+    try {
+      const first = await activate(value.imBindingsService, value.first.id, "create");
+      const second = await activate(value.imBindingsService, value.second.id, "create", {
+        appId: "A_SECOND",
+        teamId: "T_SECOND",
+        botUserId: "U_SECOND",
+        botId: "B_SECOND",
+        token: "xoxb-second",
+      });
+
+      expect(await value.database.select().from(slackInstallations)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            agentId: value.first.id,
+            externalAppId: "A_OPENTAG",
+            externalTeamId: "T_TEAM",
+            status: "active",
+            workspaceId: value.bootstrap.workspaceId,
+          }),
+          expect.objectContaining({
+            agentId: value.second.id,
+            externalAppId: "A_SECOND",
+            externalTeamId: "T_SECOND",
+            status: "active",
+            workspaceId: value.bootstrap.workspaceId,
+          }),
+        ]),
+      );
+      expect(await value.database.select().from(imBindings)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: first.imBindingId, agentId: value.first.id, status: "active" }),
+          expect.objectContaining({ id: second.imBindingId, agentId: value.second.id, status: "active" }),
+        ]),
+      );
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("rejects cross-Agent create on a current installation without side effects", async () => {
     const value = await fixture();
     try {
@@ -178,7 +219,7 @@ describe("Slack workspace installation routing", () => {
     }
   });
 
-  it("fails closed for unconfigured, cross-workspace, and deleted default Agents", async () => {
+  it("fails closed for unconfigured, cross-Agent, and deleted default Agents", async () => {
     const value = await fixture();
     try {
       await expect(
@@ -212,7 +253,7 @@ describe("Slack workspace installation routing", () => {
           displayName: "other-workstation",
           platform: "linux",
           arch: "x64",
-          clientVersion: "0.0.1",
+          clientVersion: "0.0.2",
           enrolledByUserId: otherUser.id,
         })
         .returning();
@@ -224,9 +265,9 @@ describe("Slack workspace installation routing", () => {
         displayName: "other-workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
       });
-      const outsider = await new AgentService(value.database).createForWorkspace(otherUser.id, otherWorkspace.id, {
+      const outsider = await new AgentService(value.database).createForAccount(otherUser.id, {
         name: "outsider",
         displayName: "Outsider",
         runtimeProvider: "codex",
@@ -501,7 +542,7 @@ describe("Slack workspace installation routing", () => {
     }
   });
 
-  it("projects outbound Bot tokens from the workspace installation without the signing secret", async () => {
+  it("projects outbound Bot tokens from the Agent installation without the signing secret", async () => {
     const value = await fixture();
     try {
       const created = await activate(value.imBindingsService, value.first.id, "create");

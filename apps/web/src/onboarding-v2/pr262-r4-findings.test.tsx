@@ -17,13 +17,11 @@ const AGENT_COMPUTER = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const OTHER_COMPUTER = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
-const WORKSPACE_ID = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 
 function agentOn(computerId: string, displayName: string, extra: Partial<AgentListItem> = {}): AgentListItem {
   return {
     id: AGENT_ID,
-    workspaceId: WORKSPACE_ID,
     name: "opentag",
     displayName: "opentag",
     createdBy: { userId: USER_ID, displayName: "Ada" },

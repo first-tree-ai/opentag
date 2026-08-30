@@ -19,13 +19,12 @@ function fixture(options: { environment?: "dev" | "staging" | "prod"; registered
     agents: { suspendById: vi.fn(), deleteById: vi.fn() },
     database: {} as never,
     environment: options.environment ?? "staging",
-    workspaceAdmins: {} as never,
   });
   vi.spyOn(reset, "resetOnboarding").mockImplementation(resetOnboarding);
   const betterAuth = signedInBrowser(accountId, { publicUrl: PUBLIC_ORIGIN });
   const app = createApp({
     authService: {
-      getActiveUserById: vi.fn().mockResolvedValue({ user: { id: accountId }, workspaces: [] }),
+      getActiveUserById: vi.fn().mockResolvedValue({ user: { id: accountId }, setupCompletedAt: null }),
     } as never,
     betterAuth,
     browserAuth: { publicOrigin: PUBLIC_ORIGIN, secureCookies: true, sessionTtlSeconds: 3600 } as never,

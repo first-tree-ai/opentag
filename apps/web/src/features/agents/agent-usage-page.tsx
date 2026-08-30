@@ -1,17 +1,14 @@
 import { useRouterState } from "@tanstack/react-router";
 import { AgentUsageTab } from "../../features/agent-usage.js";
 import { Text } from "../../ui/design-system.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { AgentObjectHeader } from "./agent-detail-page.js";
-import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
+import { useAgentDetailView } from "./agent-queries.js";
 
 export function AgentUsagePage({ agentId }: { agentId: string }) {
   const routeState = useRouterState({ select: (state) => state.location.state });
   const initialAgent = routeState.agent?.id === agentId ? routeState.agent : undefined;
-  const state = useResource(() => loadAgentDetail(agentId), agentId, {
-    initialValue: initialAgent,
-    onBackgroundError: markAgentDetailUnconfirmed,
-  });
+  const state = useAgentDetailView(agentId, { initialAgent });
   return (
     <AsyncState state={state}>
       {(agent) => (

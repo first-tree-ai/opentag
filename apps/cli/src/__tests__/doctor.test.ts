@@ -81,34 +81,19 @@ describe("doctor command target", () => {
 });
 
 describe("doctor local configuration", () => {
-  it("fails closed when multiple enrollments are present instead of choosing one", async () => {
+  it("rejects the retired enrollment-array credential format", async () => {
     const home = await createHome({
-      enrollments: [
-        enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
-        enrollment("e8ffbc17-a769-42c2-9214-76f28b7d2a42"),
-      ],
+      rawCredentials: {
+        version: 1,
+        enrollments: [enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4")],
+      },
     });
-
-    const result = await runHealthyDoctor(home);
-
-    expect(check(result.checks, "local.identity")).toMatchObject({ blocking: true, status: "pass" });
-    expect(check(result.checks, "local.enrollments")).toMatchObject({ blocking: true, status: "pass" });
-    expect(check(result.checks, "local.binding")).toMatchObject({
-      blocking: true,
-      detail: expect.stringMatching(/multiple enrollments/),
-      status: "fail",
-    });
-    expect(result.exitCode).toBe(1);
-  });
-
-  it("rejects duplicate enrollment identifiers instead of accepting a partial projection", async () => {
-    const duplicateId = "19eb4f37-2cc0-49d4-85e2-b9987f9c71a4";
-    const home = await createHome({ enrollments: [enrollment(duplicateId), enrollment(duplicateId)] });
     const healthChecker = vi.fn();
 
     const result = await runHealthyDoctor(home, { healthChecker });
 
-    expect(check(result.checks, "local.enrollments")).toMatchObject({ blocking: true, status: "fail" });
+    expect(check(result.checks, "local.credentials")).toMatchObject({ blocking: true, status: "fail" });
+    expect(check(result.checks, "local.binding")).toMatchObject({ blocking: true, status: "fail" });
     expect(check(result.checks, "server.health")).toMatchObject({ status: "skipped" });
     expect(healthChecker).not.toHaveBeenCalled();
   });
@@ -140,26 +125,23 @@ describe("doctor local configuration", () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it("does not silently discard a malformed enrollment or disclose its token", async () => {
+  it("does not silently discard a malformed credential or disclose its token", async () => {
     const home = await createHome({
       rawCredentials: {
-        version: 1,
-        enrollments: [
-          enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
-          {
-            computerId,
-            machineToken: secretToken,
-            serverUrl,
-            workspaceComputerId: "not-a-uuid",
-          },
-        ],
+        version: 2,
+        computer: {
+          computerId,
+          machineToken: secretToken,
+          serverUrl,
+          workspaceComputerId: "not-a-uuid",
+        },
       },
     });
     const healthChecker = vi.fn();
 
     const result = await runHealthyDoctor(home, { healthChecker });
 
-    expect(check(result.checks, "local.enrollments")).toMatchObject({ blocking: true, status: "fail" });
+    expect(check(result.checks, "local.credentials")).toMatchObject({ blocking: true, status: "fail" });
     expect(check(result.checks, "server.health")).toMatchObject({ status: "skipped" });
     expect(healthChecker).not.toHaveBeenCalled();
     expect(result.exitCode).toBe(1);
@@ -179,17 +161,16 @@ describe("doctor local configuration", () => {
     const result = await runHealthyDoctor(home, { healthChecker });
 
     expect(check(result.checks, "local.identity")).toMatchObject({ blocking: true, status: "fail" });
-    expect(check(result.checks, "local.enrollments")).toMatchObject({ blocking: true, status: "fail" });
+    expect(check(result.checks, "local.credentials")).toMatchObject({ blocking: true, status: "fail" });
     expect(check(result.checks, "server.health")).toMatchObject({ status: "skipped" });
     expect(healthChecker).not.toHaveBeenCalled();
   });
 
-  it("rejects enrollments for different Servers without contacting either Server", async () => {
+  it("rejects a credential for a different Server without contacting either Server", async () => {
     const home = await createHome({
-      enrollments: [
-        enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
-        enrollment("e8ffbc17-a769-42c2-9214-76f28b7d2a42", { serverUrl: "https://other.example" }),
-      ],
+      credential: enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4", {
+        serverUrl: "https://other.example",
+      }),
     });
     const healthChecker = vi.fn();
 
@@ -201,9 +182,9 @@ describe("doctor local configuration", () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it("rejects an enrollment whose Computer differs from the local identity", async () => {
+  it("rejects a credential whose Computer differs from the local identity", async () => {
     const home = await createHome({
-      enrollments: [enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4", { computerId: otherComputerId })],
+      credential: enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4", { computerId: otherComputerId }),
     });
 
     const result = await runHealthyDoctor(home);
@@ -397,7 +378,7 @@ describe("doctor report and exit contract", () => {
     expect(result.checks.map((item) => item.code)).toEqual([
       "target.home",
       "local.identity",
-      "local.enrollments",
+      "local.credentials",
       "local.binding",
       "daemon.service",
       "server.health",
@@ -489,7 +470,7 @@ function enrollment(workspaceComputerId: string, overrides: EnrollmentOverrides 
 }
 
 interface CreateHomeOptions {
-  enrollments?: ReturnType<typeof enrollment>[];
+  credential?: ReturnType<typeof enrollment>;
   identity?: { computerId: string; serverUrl: string; version: 2 } | undefined;
   rawCredentials?: unknown;
 }
@@ -510,8 +491,8 @@ async function createHome(options: CreateHomeOptions = {}): Promise<string> {
   const credentials =
     options.rawCredentials ??
     ({
-      enrollments: options.enrollments ?? [enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4")],
-      version: 1,
+      computer: options.credential ?? enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
+      version: 2,
     } as const);
   await writeFile(join(config, "computer-credentials.json"), `${JSON.stringify(credentials)}\n`, { mode: 0o600 });
   return home;

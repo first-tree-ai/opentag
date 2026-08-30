@@ -70,12 +70,6 @@ export const UpdateAgentRuntimeConfigSchema = z
 const AgentIdentitySchema = z
   .object({
     id: z.string().uuid(),
-    /**
-     * @deprecated The management scope is derived from the authenticated Account. Optional so that
-     * removing it at the ownership cutover is not a breaking contract change for already-published
-     * clients; no Account-native consumer reads it.
-     */
-    workspaceId: z.string().uuid().optional(),
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
@@ -114,11 +108,12 @@ export const RebindAgentComputerRequestSchema = z
   .strict();
 
 export const AGENT_USAGE_WINDOW_DAYS = 30;
-export const AGENT_USAGE_WINDOW_OPTIONS = [7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
+export const AGENT_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
 export const AgentUsageWindowDaysSchema = z.union([
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[0]),
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[1]),
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[2]),
+  z.literal(AGENT_USAGE_WINDOW_OPTIONS[3]),
 ]);
 
 export const AgentListActivitySchema = z.discriminatedUnion("state", [

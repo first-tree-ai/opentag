@@ -1,11 +1,11 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
 import type { IconName } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
-import { messagingConnectionLabel, platformLabel, titleCase } from "../agent-presentation.js";
+import { messagingChannelLabel, messagingConnectionLabel, platformLabel, titleCase } from "../agent-presentation.js";
 
 export type AgentSettingsSection = "instructions" | "execution" | "messaging" | "identity" | "computer" | "manage";
 
-export type AgentSettingsGroup = "work" | "contact" | "details";
+export type AgentSettingsGroup = "setup" | "danger";
 
 export const agentSettingsSections: ReadonlyArray<{
   key: AgentSettingsSection;
@@ -14,47 +14,50 @@ export const agentSettingsSections: ReadonlyArray<{
   icon: IconName;
 }> = [
   {
+    key: "identity",
+    label: "Name",
+    group: "setup",
+    icon: "user",
+  },
+  {
+    key: "messaging",
+    label: "Messaging",
+    group: "setup",
+    icon: "message",
+  },
+  {
+    key: "computer",
+    label: "Computer",
+    group: "setup",
+    icon: "laptop",
+  },
+  {
     key: "instructions",
     label: "Instructions",
-    group: "work",
+    group: "setup",
     icon: "instructions",
   },
   {
     key: "execution",
     label: "Model & reasoning",
-    group: "work",
+    group: "setup",
     icon: "model",
   },
   {
-    key: "messaging",
-    label: "Messaging",
-    group: "contact",
-    icon: "message",
-  },
-  {
-    key: "identity",
-    label: "Name",
-    group: "details",
-    icon: "user",
-  },
-  {
-    key: "computer",
-    label: "Connected computer",
-    group: "details",
-    icon: "laptop",
-  },
-  {
     key: "manage",
-    label: "Manage Agent",
-    group: "details",
+    label: "Pause or delete",
+    group: "danger",
     icon: "shield",
   },
 ];
 
+/*
+ * One list in the order a viewer thinks about an Agent -- who it is, how it is reached, where it
+ * runs, how it works -- with the irreversible actions held apart rather than sorted among them.
+ */
 export const agentSettingsGroups = [
-  { key: "work", label: "How it works" },
-  { key: "contact", label: "Where it receives work" },
-  { key: "details", label: "Agent details" },
+  { key: "setup", label: null },
+  { key: "danger", label: "Danger zone" },
 ] as const;
 
 export function agentSettingsSummary(
@@ -79,7 +82,7 @@ export function agentSettingsSummary(
     const binding = agent.messaging.value;
     if (!binding) return "No messaging channel connected";
     const status = messagingConnectionLabel(binding);
-    return `${titleCase(binding.provider)} · @${agent.name} · ${status}`;
+    return `${messagingChannelLabel(agent, binding)} · ${status}`;
   }
   if (section === "identity") return config.displayName;
   if (section === "computer") {

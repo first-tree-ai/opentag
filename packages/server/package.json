@@ -46,6 +46,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.10"

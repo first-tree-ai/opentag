@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, BrowserApi } from "../api.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 
 function setDocumentCookie(value: string): void {
@@ -39,7 +38,6 @@ describe("BrowserApi", () => {
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
     const config = {
       id: agentId,
-      workspaceId,
       createdByUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
       computerId: "98db056b-730c-4263-9d3d-8ec079833dba",
       name: "reviewer",
@@ -122,7 +120,7 @@ describe("BrowserApi", () => {
               email: "admin@example.com",
               displayName: "Admin",
             },
-            workspaces: [],
+            setupCompletedAt: null,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         ),

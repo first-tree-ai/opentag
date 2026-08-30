@@ -1,16 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { handleOAuthUserInfo } from "better-auth/oauth2";
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { BETTER_AUTH_BASE_PATH, createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
+import { authIdentities, authSessions, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
 import { createUserAuthPreHandler, resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
 import { AuthService, DevBrowserAuthService, PostAuthenticationService } from "../../services/auth/index.js";
-import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const GOOGLE_ISSUER = "https://accounts.google.com";
@@ -29,7 +28,7 @@ let postAuthentication: PostAuthenticationService;
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
   client = createDatabaseClient(testDatabase.databaseUrl);
-  postAuthentication = new PostAuthenticationService(client.database, new WorkspaceAdminAccess(client.database));
+  postAuthentication = new PostAuthenticationService(client.database);
 }, 120_000);
 
 afterAll(async () => {
@@ -190,12 +189,7 @@ describe("Better Auth over the existing Account tables", () => {
     expect(await client.database.select().from(authSessions).where(eq(authSessions.userId, userId))).toHaveLength(0);
   });
 
-  it("provisions a never-granted Account before its first session exists", async () => {
-    /*
-     * Better Auth owns account creation on its own sign-in paths, so first-time provisioning happens at session
-     * issuance rather than in the legacy resolver. This is about an Account that has never been provisioned; the
-     * revocation case below is what shows the rule is "never granted", not "no active grant".
-     */
+  it("creates a first session without provisioning management Workspace grants", async () => {
     const userId = await seedLegacyAccount("google-subject-grant", "grant@example.com", "Grant Account");
     expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
     const auth = createAuth();
@@ -204,38 +198,36 @@ describe("Better Auth over the existing Account tables", () => {
     const session = await context.internalAdapter.createSession(userId);
 
     expect(session.token).toBeTruthy();
-    const grants = await client.database
-      .select()
-      .from(workspaceAdminGrants)
-      .where(and(eq(workspaceAdminGrants.userId, userId), isNull(workspaceAdminGrants.revokedAt)));
-    expect(grants).toHaveLength(1);
+    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
 
-    // Idempotent: a returning Account keeps the one grant it already had.
+    // Idempotent: a returning Account still receives no legacy authority.
     await context.internalAdapter.createSession(userId);
-    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(1);
+    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
   });
 
-  it("does not restore a Workspace grant that was revoked", async () => {
-    /*
-     * "Has no active grant" is not the same as "is new". Provisioning on that basis would hand a revoked Account a
-     * fresh Workspace and Admin grant on its next sign-in, undoing the revocation. Only an Account with no grant in
-     * its history is new.
-     */
+  it("leaves a historical revoked Workspace grant untouched", async () => {
     const userId = await seedLegacyAccount("google-subject-revoked", "revoked@example.com", "Revoked Account");
+    const revokedAt = new Date("2026-08-01T00:00:00.000Z");
+    const [workspace] = await client.database
+      .insert(workspaces)
+      .values({ displayName: "Historical", name: `historical-${userId}` })
+      .returning({ id: workspaces.id });
+    if (!workspace) throw new Error("The historical Workspace fixture was not created");
+    const [granted] = await client.database
+      .insert(workspaceAdminGrants)
+      .values({
+        workspaceId: workspace.id,
+        userId,
+        grantedByUserId: userId,
+        grantedAt: new Date("2026-07-01T00:00:00.000Z"),
+        revokedAt,
+        revokedByUserId: userId,
+      })
+      .returning();
+    if (!granted) throw new Error("The historical grant fixture was not created");
     const auth = createAuth();
     const context = await auth.$context;
     await context.internalAdapter.createSession(userId);
-    const [granted] = await client.database
-      .select({ id: workspaceAdminGrants.id })
-      .from(workspaceAdminGrants)
-      .where(eq(workspaceAdminGrants.userId, userId));
-    if (!granted) throw new Error("The Account was not provisioned");
-
-    await client.database
-      .update(workspaceAdminGrants)
-      .set({ revokedAt: new Date(), revokedByUserId: userId })
-      .where(eq(workspaceAdminGrants.id, granted.id));
-
     await context.internalAdapter.createSession(userId);
 
     const grants = await client.database
@@ -243,7 +235,7 @@ describe("Better Auth over the existing Account tables", () => {
       .from(workspaceAdminGrants)
       .where(eq(workspaceAdminGrants.userId, userId));
     expect(grants).toHaveLength(1);
-    expect(grants[0]?.revokedAt).not.toBeNull();
+    expect(grants[0]).toEqual(granted);
   });
 
   it("refuses a session's identity once the Account is suspended", async () => {

@@ -6,7 +6,6 @@ import { App } from "../app.js";
 import { OnboardingLabPage } from "./onboarding-lab-page.js";
 import { ONBOARDING_SCENARIOS } from "./onboarding-lab-scenarios.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const user: UserProfile = { id: userId, email: "onboarding-test@company.example", displayName: "Onboarding Test" };
 
@@ -253,18 +252,10 @@ describe("Onboarding Lab route", () => {
           );
         }
         if (options.meDelayMs) await new Promise((resolve) => setTimeout(resolve, options.meDelayMs));
-        if (options.workspaces === "none") return json({ user, workspaces: [] });
+        if (options.workspaces === "none") return json({ user, setupCompletedAt: null });
         return json({
           user,
-          workspaces: [
-            {
-              id: workspaceId,
-              name: "lab",
-              displayName: "Lab",
-              setupCompletedAt: resetRequests > 0 ? afterReset : completed,
-              grantedAt: "2026-08-20T00:00:00.000Z",
-            },
-          ],
+          setupCompletedAt: resetRequests > 0 ? afterReset : completed,
         });
       }
       if (path === "/api/v1/internal/onboarding-lab") {

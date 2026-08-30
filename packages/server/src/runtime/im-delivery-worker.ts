@@ -44,7 +44,6 @@ import {
   imMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../db/schema/index.js";
 import {
   imAttrs,
@@ -178,7 +177,7 @@ export class ImDeliveryWorker {
           generation: sessionPlacements.generation,
           agentId: imBindings.agentId,
           sessionId: imMessageDeliveries.sessionId,
-          workspaceComputerId: sessionPlacements.workspaceComputerId,
+          workspaceComputerId: sessionPlacements.computerId,
           steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
         })
         .from(imMessageDeliveries)
@@ -398,7 +397,7 @@ export class ImDeliveryWorker {
           placement: sessionPlacements,
           imBinding: imBindings,
           agent: agents,
-          computer: workspaceComputers,
+          computer: accountComputers,
           computerOwnerAccountId: accountComputers.ownerAccountId,
         })
         .from(imMessageDeliveries)
@@ -408,14 +407,6 @@ export class ImDeliveryWorker {
         .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
         .innerJoin(agents, eq(agents.id, imBindings.agentId))
         .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
-        .innerJoin(
-          workspaceComputers,
-          and(
-            eq(workspaceComputers.workspaceId, agents.workspaceId),
-            eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-            isNull(workspaceComputers.revokedAt),
-          ),
-        )
         .where(
           and(
             eq(imMessageDeliveries.id, claim.id),
@@ -542,7 +533,7 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         imBinding: imBindings,
         agent: agents,
-        computer: workspaceComputers,
+        computer: accountComputers,
         computerOwnerAccountId: accountComputers.ownerAccountId,
       })
       .from(imMessageDeliveries)
@@ -552,14 +543,6 @@ export class ImDeliveryWorker {
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
@@ -595,7 +578,7 @@ export class ImDeliveryWorker {
         messageId: row.message.id,
         sessionId: row.session.id,
         agentId: row.agent.id,
-        computerId: row.computer.computerId,
+        computerId: row.computer.currentInstallationId,
         workspaceComputerId: row.computer.id,
         placementGeneration: row.placement.generation,
         attempt: row.delivery.attemptCount,
@@ -662,7 +645,7 @@ export class ImDeliveryWorker {
           {
             type: "session:reconcile",
             requestId: randomUUID(),
-            computerId: row.computer.computerId,
+            computerId: row.computer.currentInstallationId,
             sessionId: row.session.id,
             agentId: row.agent.id,
             placementGeneration: row.placement.generation,
@@ -767,21 +750,14 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         imBinding: imBindings,
         agent: agents,
-        computer: workspaceComputers,
+        computer: accountComputers,
       })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
@@ -806,7 +782,7 @@ export class ImDeliveryWorker {
         messageId: row.delivery.messageId,
         sessionId: row.session.id,
         agentId: row.agent.id,
-        computerId: row.computer.computerId,
+        computerId: row.computer.currentInstallationId,
         workspaceComputerId: row.computer.id,
         placementGeneration: row.placement.generation,
         attempt: row.delivery.attemptCount,
@@ -849,7 +825,7 @@ export class ImDeliveryWorker {
       await this.#domain.requestReconcile(row.computer.id, instanceId, {
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: row.computer.computerId,
+        computerId: row.computer.currentInstallationId,
         sessionId: row.session.id,
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,

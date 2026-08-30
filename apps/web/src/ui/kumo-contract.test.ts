@@ -8,10 +8,19 @@ const sourceFiles = readdirSync(root, { recursive: true, withFileTypes: true })
   .filter((entry) => entry.isFile() && entry.name.endsWith(".tsx") && !entry.name.includes(".test."))
   .map((entry) => resolve(entry.parentPath, entry.name));
 const source = sourceFiles.map((file) => readFileSync(resolve(root, file), "utf8")).join("\n");
+const appCss = readFileSync(resolve(root, "app.css"), "utf8");
+const main = readFileSync(resolve(root, "main.tsx"), "utf8");
+const viteConfig = readFileSync(resolve(root, "..", "vite.config.ts"), "utf8");
 
 describe("Kumo integration contract", () => {
-  it("loads standalone styles once and keeps application styles local", () => {
-    expect(source.match(/@cloudflare\/kumo\/styles\/standalone/g)?.length).toBe(1);
+  it("compiles application and Kumo utilities through Tailwind", () => {
+    expect(source).not.toContain("@cloudflare/kumo/styles/standalone");
+    expect(main).toContain('import "./app.css"');
+    expect(appCss).toContain('@import "@cloudflare/kumo/styles/tailwind"');
+    expect(appCss).toContain('@import "tailwindcss"');
+    expect(appCss).toContain('@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}"');
+    expect(viteConfig).toContain('from "@tailwindcss/vite"');
+    expect(viteConfig).toContain("tailwindcss()");
     expect(source).not.toMatch(/(?:styles|mock-pages|tasks-page|agent-usage)\.css/);
     expect(existsSync(resolve(root, "styles.css"))).toBe(false);
     expect(existsSync(resolve(root, "ui/design-system.css"))).toBe(false);
@@ -48,8 +57,10 @@ describe("Kumo integration contract", () => {
     expect(shell).toContain('className="app-mobile-header');
     expect(shell).toContain('className="h-full min-h-0 overflow-hidden"');
     expect(shell).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
-    expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto");
-    expect(shell).not.toContain("max-w-6xl");
+    expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");
+    expect(shell).toContain(
+      'className="@container/workspace mx-auto w-full min-w-0 max-w-5xl" data-ui="workspace-page-frame"',
+    );
     expect(shell).not.toContain('data-ui="sidebar-content"');
   });
 
@@ -72,7 +83,6 @@ describe("Kumo integration contract", () => {
   });
 
   it("keeps application CSS to the root and accessibility boundary", () => {
-    const css = readFileSync(resolve(root, "app.css"), "utf8");
-    expect(css).not.toMatch(/\[data-ui=|\b(?:button|input|textarea|select|h1|h2|h3)\b/);
+    expect(appCss).not.toMatch(/\[data-ui=|\b(?:button|input|textarea|select|h1|h2|h3)\b/);
   });
 });

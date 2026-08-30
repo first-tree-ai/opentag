@@ -2,11 +2,19 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useCallback } from "react";
 import { browserApi } from "../../../api.js";
 import { Redirect } from "../../../features/navigation/redirect.js";
-import { useWorkspace } from "../../../features/session/session-context.js";
+import { useAccount } from "../../../features/session/session-context.js";
 import { OnboardingV2Page } from "../../../onboarding-v2/page.js";
 
 export const Route = createFileRoute("/_authenticated/_workspace/onboarding")({
   component: OnboardingRoute,
+  /**
+   * The Agent this run is finishing, when something already knows it. The flow does not read it
+   * yet, but a Slack install leaves and returns through this route, so a target that arrives in
+   * the URL has to survive the trip rather than being dropped on the way in.
+   */
+  validateSearch: (search: Record<string, unknown>): { agentId?: string } => ({
+    agentId: typeof search.agentId === "string" ? search.agentId : undefined,
+  }),
 });
 
 /**
@@ -18,7 +26,7 @@ export const Route = createFileRoute("/_authenticated/_workspace/onboarding")({
  * to mark setup complete once the flow reports it finished.
  */
 function OnboardingRoute() {
-  const { membership, refreshMe } = useWorkspace();
+  const { me, refreshMe } = useAccount();
   // Held stable: the flow retries this a bounded number of times, and an identity that changed on
   // every render of this route would reopen that budget each time.
   const complete = useCallback(
@@ -28,6 +36,6 @@ function OnboardingRoute() {
     },
     [refreshMe],
   );
-  if (membership.setupCompletedAt) return <Redirect replace to="/agents" />;
+  if (me.setupCompletedAt) return <Redirect replace to="/agents" />;
   return <OnboardingV2Page onComplete={complete} />;
 }

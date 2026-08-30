@@ -1,33 +1,28 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useState } from "react";
 import { browserApi } from "../../../api.js";
-import { RuntimeConfigurationForm } from "../../../runtime-configuration.js";
+import { queryKeys } from "../../../query/keys.js";
 import { Icon, Loader, Text } from "../../../ui/design-system.js";
 import { NotFoundPage } from "../../not-found.js";
-import { AsyncState, useResource } from "../../resource/use-resource.js";
+import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
-import { loadAgentDetail, markAgentDetailUnconfirmed } from "../agent-model.js";
+import { useAgentDetailView } from "../agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "../agent-routes.js";
 import { AgentComputerSettings } from "./agent-computer-settings.js";
 import { AgentManageSettings } from "./agent-manage-settings.js";
 import { GeneralConfigForm } from "./general-config-form.js";
 import { ImTab } from "./im-tab.js";
+import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import type { AgentSettingsSection } from "./sections.js";
 import { agentSettingsGroups, agentSettingsSections, agentSettingsSummary } from "./sections.js";
 
 export function AgentSettingsPage({ agentId, section }: { agentId: string; section?: string }) {
   const routeState = useRouterState({ select: (state) => state.location.state });
   const initialAgent = routeState.agent?.id === agentId ? routeState.agent : undefined;
-  const [refreshVersion, setRefreshVersion] = useState(0);
-  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
-    initialValue: initialAgent,
-    keepPreviousData: true,
-    onBackgroundError: markAgentDetailUnconfirmed,
-    // Failure exits land here, so the page has to observe recovery on its own; it is where an
-    // operator waits while a Computer reconnects or a Provider finishes installing.
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  const queryClient = useQueryClient();
+  // Failure exits land here, so the page has to observe recovery on its own; it is where an
+  // operator waits while a Computer reconnects or a Provider finishes installing.
+  const state = useAgentDetailView(agentId, { watched: true, initialAgent });
   const selected = section as AgentSettingsSection | undefined;
   if (selected && !agentSettingsSections.some((item) => item.key === selected)) return <NotFoundPage />;
   return (
@@ -51,7 +46,8 @@ export function AgentSettingsPage({ agentId, section }: { agentId: string; secti
                 <AgentSettingsContent
                   agent={agent}
                   section={selected}
-                  onAgentChanged={() => setRefreshVersion((value) => value + 1)}
+                  // A write can change the Agent and its config together, so both are dropped.
+                  onAgentChanged={() => void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all(agentId) })}
                 />
               </div>
             </div>
@@ -86,7 +82,11 @@ export function AgentConfigSettingsContent({
   section: Exclude<AgentSettingsSection, "computer" | "messaging">;
   onAgentChanged: () => void;
 }) {
-  const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:${section}`);
+  // The section is not part of the key: the config does not vary by section, so switching between
+  // them reads what is already cached instead of asking again.
+  const configState = toResourceState(
+    useQuery({ queryKey: queryKeys.agents.config(agent.id), queryFn: () => browserApi.agentConfig(agent.id) }),
+  );
   return (
     <AsyncState state={configState}>
       {(config) => {
@@ -109,7 +109,9 @@ export function AgentConfigSettingsContent({
 }
 
 export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
-  const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:settings-overview`);
+  const configState = toResourceState(
+    useQuery({ queryKey: queryKeys.agents.config(agent.id), queryFn: () => browserApi.agentConfig(agent.id) }),
+  );
   return (
     <div className="grid gap-6">
       <header className="grid gap-2">
@@ -121,10 +123,17 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
         {(config) => (
           <div className="grid gap-6">
             {agentSettingsGroups.map((group) => (
-              <section className="grid gap-3" key={group.key} aria-labelledby={`agent-settings-${group.key}`}>
-                <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
-                  {group.label}
-                </Text>
+              <section
+                className={group.label ? "mt-4 grid gap-3 border-t border-kumo-line pt-2" : "grid gap-3"}
+                key={group.key}
+                aria-label={group.label ?? "Agent setup"}
+                aria-labelledby={group.label ? `agent-settings-${group.key}` : undefined}
+              >
+                {group.label ? (
+                  <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
+                    {group.label}
+                  </Text>
+                ) : null}
                 <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
                   {agentSettingsSections
                     .filter((item) => item.group === group.key)
@@ -134,6 +143,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                           <span
                             className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint"
                             aria-hidden="true"
+                            data-ui="agent-settings-entry-icon"
                           >
                             <Icon name={item.icon} />
                           </span>
@@ -143,22 +153,18 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                           </span>
                         </>
                       );
-                      const computerReady =
-                        item.key === "computer" && agent.availability.dependencies.computer.state === "ready";
-                      if (computerReady) {
-                        return (
-                          <div
-                            className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
-                            key={item.key}
-                          >
-                            {content}
-                          </div>
-                        );
-                      }
+                      /*
+                       * Every row opens its page. A row that is a link only sometimes cannot be
+                       * predicted from looking at the list, and the Computer page is worth reading
+                       * whether or not the Computer currently needs attention.
+                       */
+                      const computerNeedsReview =
+                        item.key === "computer" && agent.availability.dependencies.computer.state !== "ready";
                       return (
                         <Link
                           className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
                           key={item.key}
+                          data-ui="agent-settings-entry"
                           {...agentSettingsSectionLink(agent.id, item.key)}
                         >
                           {content}
@@ -166,7 +172,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                             className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
                             aria-hidden="true"
                           >
-                            {item.key === "computer" ? <small>Review</small> : null}
+                            {computerNeedsReview ? <small>Review</small> : null}
                             <Icon name="chevron-right" />
                           </span>
                         </Link>

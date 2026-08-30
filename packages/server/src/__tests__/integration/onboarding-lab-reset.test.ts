@@ -1,10 +1,11 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   computerConnectCodes,
+  computerCredentials,
   computers,
   imBindings,
   sessionPlacements,
@@ -19,7 +20,8 @@ import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AgentService } from "../../services/agents/index.js";
 import { AuthServiceError } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
-import { OnboardingResetError, OnboardingResetService } from "../../services/onboarding-lab/index.js";
+import { OnboardingResetService } from "../../services/onboarding-lab/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -72,7 +74,6 @@ async function fixture(
   });
   const lab = await seedAccount(client.database, agentService, machineAuth, {
     accountId: bootstrap.userId,
-    workspaceId: bootstrap.workspaceId,
     agentName: "lab-agent",
     externalAppId: "cli_lab",
   });
@@ -96,20 +97,20 @@ async function seedAccount(
   database: DatabaseClient,
   agentService: AgentService,
   machineAuth: MachineAuthService,
-  input: { accountId: string; workspaceId: string; agentName: string; externalAppId: string },
+  input: { accountId: string; agentName: string; externalAppId: string },
 ): Promise<SeededAccount> {
   const computerId = crypto.randomUUID();
-  const issued = await machineAuth.issueForWorkspaceAdmin(input.accountId, input.workspaceId);
+  const issued = await machineAuth.issueForAccount(input.accountId, {});
   const enrollment = await machineAuth.exchangeConnectCode({
     code: issued.code,
     computerId,
     displayName: "workstation",
     platform: "linux",
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
   });
-  const outstanding = await machineAuth.issueForWorkspaceAdmin(input.accountId, input.workspaceId);
-  const agent = await agentService.createForWorkspace(input.accountId, input.workspaceId, {
+  const outstanding = await machineAuth.issueForAccount(input.accountId, {});
+  const agent = await agentService.createForAccount(input.accountId, {
     computerId: enrollment.workspaceComputerId,
     displayName: "Lab Agent",
     name: input.agentName,
@@ -150,7 +151,8 @@ async function seedAccount(
     computerId: enrollment.workspaceComputerId,
     generation: 1,
   });
-  await database.update(workspaces).set({ setupCompletedAt: now }).where(eq(workspaces.id, input.workspaceId));
+  await database.update(workspaces).set({ setupCompletedAt: now }).where(eq(workspaces.id, enrollment.workspaceId));
+  await database.update(users).set({ setupCompletedAt: now }).where(eq(users.id, input.accountId));
   return {
     accountId: input.accountId,
     agentId: agent.id,
@@ -160,7 +162,7 @@ async function seedAccount(
     machineToken: enrollment.machineToken,
     outstandingConnectCode: outstanding.code,
     sessionId: session.id,
-    workspaceId: input.workspaceId,
+    workspaceId: enrollment.workspaceId,
   };
 }
 
@@ -173,17 +175,9 @@ async function seedOtherAccount(
     .insert(users)
     .values({ displayName: "Other", email: "other@example.com" })
     .returning({ id: users.id });
-  const [workspace] = await database
-    .insert(workspaces)
-    .values({ name: "other", displayName: "Other" })
-    .returning({ id: workspaces.id });
-  if (!account || !workspace) throw new Error("Other Account fixture was not created");
-  await database
-    .insert(workspaceAdminGrants)
-    .values({ workspaceId: workspace.id, userId: account.id, grantedByUserId: account.id });
+  if (!account) throw new Error("Other Account fixture was not created");
   return seedAccount(database, agentService, machineAuth, {
     accountId: account.id,
-    workspaceId: workspace.id,
     agentName: "other-agent",
     externalAppId: "cli_other",
   });
@@ -194,7 +188,7 @@ async function facts(database: DatabaseClient, scope: SeededAccount) {
     activeAgents,
     activeBindings,
     openSessions,
-    activeEnrollments,
+    ownedComputers,
     activeCredentials,
     usableCodes,
     workspaceRow,
@@ -203,7 +197,7 @@ async function facts(database: DatabaseClient, scope: SeededAccount) {
     database
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.workspaceId, scope.workspaceId), eq(agents.status, "active"))),
+      .where(and(eq(agents.createdByUserId, scope.accountId), eq(agents.status, "active"))),
     database
       .select({ id: imBindings.id })
       .from(imBindings)
@@ -213,22 +207,20 @@ async function facts(database: DatabaseClient, scope: SeededAccount) {
       .from(sessions)
       .where(and(eq(sessions.id, scope.sessionId), isNull(sessions.endedAt))),
     database
-      .select({ id: workspaceComputers.id })
-      .from(workspaceComputers)
-      .where(and(eq(workspaceComputers.workspaceId, scope.workspaceId), isNull(workspaceComputers.revokedAt))),
+      .select({ id: accountComputers.id })
+      .from(accountComputers)
+      .where(eq(accountComputers.ownerAccountId, scope.accountId)),
     database
-      .select({ id: workspaceComputerCredentials.id })
-      .from(workspaceComputerCredentials)
-      .innerJoin(workspaceComputers, eq(workspaceComputers.id, workspaceComputerCredentials.workspaceComputerId))
-      .where(
-        and(eq(workspaceComputers.workspaceId, scope.workspaceId), isNull(workspaceComputerCredentials.revokedAt)),
-      ),
+      .select({ id: computerCredentials.id })
+      .from(computerCredentials)
+      .innerJoin(accountComputers, eq(accountComputers.id, computerCredentials.computerId))
+      .where(and(eq(accountComputers.ownerAccountId, scope.accountId), isNull(computerCredentials.revokedAt))),
     database
       .select({ id: computerConnectCodes.id })
       .from(computerConnectCodes)
       .where(
         and(
-          eq(computerConnectCodes.workspaceId, scope.workspaceId),
+          eq(computerConnectCodes.issuedByAccountId, scope.accountId),
           isNull(computerConnectCodes.consumedAt),
           isNull(computerConnectCodes.revokedAt),
         ),
@@ -246,24 +238,43 @@ async function facts(database: DatabaseClient, scope: SeededAccount) {
       .from(imBindings)
       .where(eq(imBindings.id, scope.imBindingId)),
   ]);
+  const [accountRow] = await database
+    .select({ setupCompletedAt: users.setupCompletedAt })
+    .from(users)
+    .where(eq(users.id, scope.accountId));
   return {
     activeAgents: activeAgents.length,
     activeBindings: activeBindings.length,
     openSessions: openSessions.length,
-    activeEnrollments: activeEnrollments.length,
+    ownedComputers: ownedComputers.length,
     activeCredentials: activeCredentials.length,
     usableCodes: usableCodes.length,
     setupCompletedAt: workspaceRow[0]?.setupCompletedAt ?? null,
+    accountSetupCompletedAt: accountRow?.setupCompletedAt ?? null,
     binding: bindingRow[0],
   };
 }
 
+async function legacySnapshot(database: DatabaseClient, scope: SeededAccount) {
+  const [workspace, computer, credentials] = await Promise.all([
+    database.select().from(workspaces).where(eq(workspaces.id, scope.workspaceId)),
+    database.select().from(workspaceComputers).where(eq(workspaceComputers.id, scope.enrollmentId)),
+    database
+      .select()
+      .from(workspaceComputerCredentials)
+      .where(eq(workspaceComputerCredentials.workspaceComputerId, scope.enrollmentId)),
+  ]);
+  return { workspace, computer, credentials };
+}
+
 describe("staging Onboarding Lab reset", () => {
-  it("returns the Lab Account to a verified first-run state", async () => {
+  it("returns only canonical Account resources to a verified first-run state", async () => {
     const value = await fixture();
     const before = await facts(value.database, value.lab);
-    expect(before).toMatchObject({ activeAgents: 1, activeBindings: 1, openSessions: 1, activeEnrollments: 1 });
+    const legacyBefore = await legacySnapshot(value.database, value.lab);
+    expect(before).toMatchObject({ activeAgents: 1, activeBindings: 1, openSessions: 1, ownedComputers: 1 });
     expect(before.setupCompletedAt).not.toBeNull();
+    expect(before.accountSetupCompletedAt).not.toBeNull();
 
     await value.reset.resetOnboarding(value.lab.accountId);
 
@@ -272,11 +283,13 @@ describe("staging Onboarding Lab reset", () => {
       activeAgents: 0,
       activeBindings: 0,
       openSessions: 0,
-      activeEnrollments: 0,
+      ownedComputers: 1,
       activeCredentials: 0,
       usableCodes: 0,
-      setupCompletedAt: null,
+      accountSetupCompletedAt: null,
     });
+    expect(after.setupCompletedAt).toEqual(before.setupCompletedAt);
+    expect(await legacySnapshot(value.database, value.lab)).toEqual(legacyBefore);
     expect(after.binding).toMatchObject({
       status: "disabled",
       encryptedCredential: null,
@@ -328,16 +341,19 @@ describe("staging Onboarding Lab reset", () => {
         displayName: "workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
       }),
     ).rejects.toBeInstanceOf(AuthServiceError);
   });
 
-  it("reuses the stable Computer identity for the next enrollment", async () => {
+  it("repairs the stable logical Computer after reset without creating a new legacy projection", async () => {
     const value = await fixture();
     await value.reset.resetOnboarding(value.lab.accountId);
 
-    const issued = await value.machineAuth.issueForWorkspaceAdmin(value.lab.accountId, value.lab.workspaceId);
+    const issued = await value.machineAuth.issueForAccount(value.lab.accountId, {
+      mode: "repair",
+      targetComputerId: value.lab.enrollmentId,
+    });
     const reconnected = await value.machineAuth.exchangeConnectCode({
       code: issued.code,
       computerId: value.lab.computerId,
@@ -348,7 +364,7 @@ describe("staging Onboarding Lab reset", () => {
     });
 
     expect(reconnected.computerId).toBe(value.lab.computerId);
-    expect(reconnected.workspaceComputerId).not.toBe(value.lab.enrollmentId);
+    expect(reconnected.workspaceComputerId).toBe(value.lab.enrollmentId);
     expect(reconnected.machineToken).not.toBe(value.lab.machineToken);
     const rows = await value.database
       .select({ id: computers.id })
@@ -363,7 +379,9 @@ describe("staging Onboarding Lab reset", () => {
     await value.reset.resetOnboarding(value.lab.accountId);
     await expect(value.reset.resetOnboarding(value.lab.accountId)).resolves.toBeUndefined();
 
-    expect((await facts(value.database, value.lab)).setupCompletedAt).toBeNull();
+    const after = await facts(value.database, value.lab);
+    expect(after.accountSetupCompletedAt).toBeNull();
+    expect(after.setupCompletedAt).not.toBeNull();
   });
 
   it("keeps setup completion until cleanup is verified and converges on retry", async () => {
@@ -382,12 +400,12 @@ describe("staging Onboarding Lab reset", () => {
       "The Computer connection could not be closed",
     );
     const staged = await facts(value.database, value.lab);
-    expect(staged.setupCompletedAt).not.toBeNull();
-    expect(staged).toMatchObject({ activeAgents: 0, activeEnrollments: 0 });
+    expect(staged.accountSetupCompletedAt).not.toBeNull();
+    expect(staged).toMatchObject({ activeAgents: 0, ownedComputers: 1, activeCredentials: 0 });
 
     await value.reset.resetOnboarding(value.lab.accountId);
 
-    expect((await facts(value.database, value.lab)).setupCompletedAt).toBeNull();
+    expect((await facts(value.database, value.lab)).accountSetupCompletedAt).toBeNull();
   });
 
   it("refuses to clear setup completion when a writer interleaves before the commit", async () => {
@@ -397,7 +415,7 @@ describe("staging Onboarding Lab reset", () => {
       afterCleanup: async ({ lab, machineAuth }) => {
         if (interleaved) return;
         interleaved = true;
-        await machineAuth.issueForWorkspaceAdmin(lab.accountId, lab.workspaceId);
+        await machineAuth.issueForAccount(lab.accountId, {});
       },
     });
 
@@ -406,12 +424,12 @@ describe("staging Onboarding Lab reset", () => {
     });
 
     const staged = await facts(value.database, value.lab);
-    expect(staged.setupCompletedAt).not.toBeNull();
+    expect(staged.accountSetupCompletedAt).not.toBeNull();
     expect(staged.usableCodes).toBe(1);
 
     // The retry revokes the interleaved code and converges.
     await value.reset.resetOnboarding(value.lab.accountId);
-    expect(await facts(value.database, value.lab)).toMatchObject({ setupCompletedAt: null, usableCodes: 0 });
+    expect(await facts(value.database, value.lab)).toMatchObject({ accountSetupCompletedAt: null, usableCodes: 0 });
   });
 
   it("holds the scope lock across verification and the setup marker", async () => {
@@ -421,7 +439,7 @@ describe("staging Onboarding Lab reset", () => {
     const value = await fixture({
       afterVerified: async () => {
         // A writer that starts between verification and the marker must wait for this commit.
-        pending = value.machineAuth.issueForWorkspaceAdmin(value.lab.accountId, value.lab.workspaceId).finally(() => {
+        pending = value.machineAuth.issueForAccount(value.lab.accountId, {}).finally(() => {
           settled = true;
         });
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -434,7 +452,7 @@ describe("staging Onboarding Lab reset", () => {
 
     expect(blockedWhileCommitting).toBe(true);
     // The interleaved command belongs to the new run: the marker cleared before it was issued.
-    expect(await facts(value.database, value.lab)).toMatchObject({ setupCompletedAt: null, usableCodes: 1 });
+    expect(await facts(value.database, value.lab)).toMatchObject({ accountSetupCompletedAt: null, usableCodes: 1 });
   });
 
   it("leaves another Account's resources unchanged", async () => {
@@ -448,7 +466,7 @@ describe("staging Onboarding Lab reset", () => {
       activeAgents: 1,
       activeBindings: 1,
       openSessions: 1,
-      activeEnrollments: 1,
+      ownedComputers: 1,
       activeCredentials: 1,
       usableCodes: 1,
     });
@@ -476,29 +494,6 @@ describe("staging Onboarding Lab reset", () => {
     expect((await facts(value.database, other)).activeAgents).toBe(1);
   });
 
-  it("reports a Lab Account with no active scope as a retryable ownership inconsistency", async () => {
-    const value = await fixture();
-    const now = new Date();
-    await value.database
-      .update(workspaceAdminGrants)
-      .set({ revokedByUserId: value.lab.accountId, revokedAt: now })
-      .where(
-        and(
-          eq(workspaceAdminGrants.workspaceId, value.lab.workspaceId),
-          eq(workspaceAdminGrants.userId, value.lab.accountId),
-        ),
-      );
-
-    // The canonical resolver answers 404 here; the Lab has already identified this Account, so it
-    // must surface the retryable ownership error rather than look like an unauthorized Account.
-    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({
-      code: "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
-      statusCode: 409,
-    });
-    expect(await facts(value.database, value.lab)).toMatchObject({ activeAgents: 1, activeEnrollments: 1 });
-    expect((await facts(value.database, value.lab)).setupCompletedAt).not.toBeNull();
-  });
-
   it("leaves another tester's Account untouched, so two testers never collide", async () => {
     const value = await fixture();
     const [other] = await value.database
@@ -506,17 +501,8 @@ describe("staging Onboarding Lab reset", () => {
       .values({ displayName: "Other tester", email: "other-tester@company.example" })
       .returning({ id: users.id });
     if (!other) throw new Error("Second tester fixture was not created");
-    const [otherWorkspace] = await value.database
-      .insert(workspaces)
-      .values({ name: "other", displayName: "Other" })
-      .returning({ id: workspaces.id });
-    if (!otherWorkspace) throw new Error("Second tester scope fixture was not created");
-    await value.database
-      .insert(workspaceAdminGrants)
-      .values({ workspaceId: otherWorkspace.id, userId: other.id, grantedByUserId: other.id });
     const second = await seedAccount(value.database, value.agentService, value.machineAuth, {
       accountId: other.id,
-      workspaceId: otherWorkspace.id,
       agentName: "other-agent",
       externalAppId: "cli_other",
     });
@@ -524,46 +510,32 @@ describe("staging Onboarding Lab reset", () => {
 
     await value.reset.resetOnboarding(value.lab.accountId);
 
-    expect(await facts(value.database, value.lab)).toMatchObject({ activeAgents: 0, activeEnrollments: 0 });
+    expect(await facts(value.database, value.lab)).toMatchObject({ activeAgents: 0, ownedComputers: 1 });
     expect(await facts(value.database, second)).toEqual(before);
 
     // And the second tester resets their own Account without disturbing the first, in either order.
     await value.reset.resetOnboarding(other.id);
-    expect(await facts(value.database, second)).toMatchObject({ activeAgents: 0, activeEnrollments: 0 });
+    expect(await facts(value.database, second)).toMatchObject({ activeAgents: 0, ownedComputers: 1 });
   });
 
-  it("refuses to proceed when the Lab Account owns more than one active scope", async () => {
+  it("resets every Computer owned by the Account instead of selecting one Workspace scope", async () => {
     const value = await fixture();
-    const [second] = await value.database
-      .insert(workspaces)
-      .values({ name: "second", displayName: "Second" })
-      .returning({ id: workspaces.id });
-    if (!second) throw new Error("Second scope fixture was not created");
-    await value.database
-      .insert(workspaceAdminGrants)
-      .values({ workspaceId: second.id, userId: value.lab.accountId, grantedByUserId: value.lab.accountId });
-
-    // The canonical seam would still pick one scope; reset must refuse rather than reset whichever
-    // one selection happens to return.
-    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({
-      code: "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
+    const second = await seedAccount(value.database, value.agentService, value.machineAuth, {
+      accountId: value.lab.accountId,
+      agentName: "second-agent",
+      externalAppId: "cli_second",
     });
-    expect((await facts(value.database, value.lab)).activeAgents).toBe(1);
-  });
+    expect(await facts(value.database, value.lab)).toMatchObject({ activeAgents: 2, ownedComputers: 2 });
 
-  it("refuses to proceed when the Lab Account scope is not owned exclusively", async () => {
-    const value = await fixture();
-    const [intruder] = await value.database
-      .insert(users)
-      .values({ displayName: "Intruder", email: "intruder@example.com" })
-      .returning({ id: users.id });
-    if (!intruder) throw new Error("Intruder fixture was not created");
-    await value.database
-      .insert(workspaceAdminGrants)
-      .values({ workspaceId: value.lab.workspaceId, userId: intruder.id, grantedByUserId: intruder.id });
+    await value.reset.resetOnboarding(value.lab.accountId);
 
-    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toBeInstanceOf(OnboardingResetError);
-    expect((await facts(value.database, value.lab)).activeAgents).toBe(1);
+    expect(await facts(value.database, value.lab)).toMatchObject({
+      activeAgents: 0,
+      ownedComputers: 2,
+      activeCredentials: 0,
+      accountSetupCompletedAt: null,
+    });
+    await expect(value.machineAuth.verifyMachineToken(second.machineToken)).rejects.toBeInstanceOf(AuthServiceError);
   });
 
   it("closes the live Computer connection in the registry", async () => {
@@ -586,5 +558,75 @@ describe("staging Onboarding Lab reset", () => {
 
     expect(socket.close).toHaveBeenCalledWith(4002, "Machine credential rotated or revoked");
     expect(value.registry.currentInstanceId(value.lab.enrollmentId)).toBeUndefined();
+  });
+
+  it("does not read grants or rewrite historical Workspace evidence", async () => {
+    const value = await fixture();
+    const [foreign] = await value.database
+      .insert(users)
+      .values({ displayName: "Foreign", email: "foreign@example.com" })
+      .returning({ id: users.id });
+    if (!foreign) throw new Error("Foreign Account fixture was not created");
+    await value.database.insert(agents).values({
+      workspaceId: value.lab.workspaceId,
+      createdByUserId: foreign.id,
+      workspaceComputerId: value.lab.enrollmentId,
+      computerId: value.lab.enrollmentId,
+      name: "foreign-agent",
+      displayName: "Foreign Agent",
+      runtimeProvider: "codex",
+      status: "deleted",
+    });
+    const grantedAt = new Date("2026-07-01T00:00:00.000Z");
+    await value.database.insert(workspaceAdminGrants).values([
+      {
+        workspaceId: value.lab.workspaceId,
+        userId: value.lab.accountId,
+        grantedByUserId: value.lab.accountId,
+        grantedAt,
+      },
+      {
+        workspaceId: value.lab.workspaceId,
+        userId: foreign.id,
+        grantedByUserId: foreign.id,
+        grantedAt,
+      },
+    ]);
+    await value.database.insert(workspaceComputerCredentials).values({
+      workspaceComputerId: value.lab.enrollmentId,
+      secretHash: "a".repeat(64),
+      issuedByUserId: foreign.id,
+      issuedAt: grantedAt,
+    });
+    const legacyBefore = await legacySnapshot(value.database, value.lab);
+    const grantsBefore = await value.database.select().from(workspaceAdminGrants);
+
+    await value.reset.resetOnboarding(value.lab.accountId);
+
+    expect(await legacySnapshot(value.database, value.lab)).toEqual(legacyBefore);
+    expect(await value.database.select().from(workspaceAdminGrants)).toEqual(grantsBefore);
+    expect(await facts(value.database, value.lab)).toMatchObject({
+      activeAgents: 0,
+      accountSetupCompletedAt: null,
+      setupCompletedAt: expect.any(Date),
+    });
+  });
+
+  it("clears setup for an Account with no Workspace, grant, Agent, or Computer", async () => {
+    const value = await fixture();
+    const [empty] = await value.database
+      .insert(users)
+      .values({
+        displayName: "Empty",
+        email: "empty@example.com",
+        setupCompletedAt: new Date("2026-08-01T00:00:00.000Z"),
+      })
+      .returning({ id: users.id });
+    if (!empty) throw new Error("Empty Account fixture was not created");
+
+    await value.reset.resetOnboarding(empty.id);
+
+    const [row] = await value.database.select().from(users).where(eq(users.id, empty.id));
+    expect(row?.setupCompletedAt).toBeNull();
   });
 });

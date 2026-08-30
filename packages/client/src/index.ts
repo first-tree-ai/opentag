@@ -64,13 +64,13 @@ export {
 export {
   type BoundAccountComputerResolution,
   MACHINE_CREDENTIALS_FILE_NAME,
-  type MachineEnrollmentCredential,
+  type MachineComputerCredential,
   machineCredentialsPath,
   readMachineCredentials,
   readMachineCredentialsStrict,
   resolveBoundAccountComputer,
   type StoredMachineCredentials,
-  storeMachineEnrollmentCredential,
+  storeBoundAccountComputer,
   writeMachineCredentialsAtomically,
 } from "./auth/machine-credentials.js";
 export { type AccessTokenLease, AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";

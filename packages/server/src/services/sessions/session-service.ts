@@ -20,8 +20,8 @@ import {
   sessionMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../../db/schema/index.js";
+import { schemaRequiredComputerProjection } from "../../db/schema-required-legacy.js";
 import { projectedComputerId } from "../computers/ownership-projections.js";
 
 type SessionRow = typeof sessions.$inferSelect;
@@ -123,7 +123,7 @@ function toSession(row: SessionRow): Session {
 function toPlacement(row: PlacementRow): SessionPlacement {
   return {
     sessionId: row.sessionId,
-    workspaceComputerId: row.workspaceComputerId,
+    workspaceComputerId: row.computerId,
     generation: row.generation,
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -265,8 +265,8 @@ export class SessionService {
         .insert(sessionPlacements)
         .values({
           sessionId: created.id,
-          workspaceComputerId: creator.placement.workspaceComputerId,
-          computerId: await projectedComputerId(transaction, creator.placement.workspaceComputerId),
+          ...schemaRequiredComputerProjection(creator.placement.computerId),
+          computerId: await projectedComputerId(transaction, creator.placement.computerId),
           generation: 1,
           updatedAt: now,
         })
@@ -450,7 +450,7 @@ export class SessionService {
           computerId: sessionPlacements.computerId,
           generation: sessionPlacements.generation,
           sessionId: sessionPlacements.sessionId,
-          workspaceComputerId: sessionPlacements.workspaceComputerId,
+          workspaceComputerId: sessionPlacements.computerId,
         })
         .from(sessionPlacements)
         .where(inArray(sessionPlacements.sessionId, authorityPlacementIds))
@@ -484,18 +484,13 @@ export class SessionService {
 
       const [sourceComputer] = await transaction
         .select({
-          currentInstanceId: workspaceComputers.currentInstanceId,
-          revokedAt: workspaceComputers.revokedAt,
+          currentInstanceId: accountComputers.currentInstanceId,
         })
-        .from(workspaceComputers)
-        .where(eq(workspaceComputers.id, route.sourceWorkspaceComputerId))
+        .from(accountComputers)
+        .where(eq(accountComputers.id, route.sourceWorkspaceComputerId))
         .limit(1)
         .for("update");
-      if (
-        !sourceComputer ||
-        sourceComputer.revokedAt !== null ||
-        sourceComputer.currentInstanceId !== route.sourceConnectionInstanceId
-      ) {
+      if (!sourceComputer || sourceComputer.currentInstanceId !== route.sourceConnectionInstanceId) {
         return { admitted: false } as const;
       }
 
@@ -668,7 +663,7 @@ export class SessionService {
       const [placement] = await transaction
         .update(sessionPlacements)
         .set({
-          workspaceComputerId,
+          ...schemaRequiredComputerProjection(workspaceComputerId),
           computerId: await projectedComputerId(transaction, workspaceComputerId),
           generation,
           updatedAt: now,
@@ -688,7 +683,7 @@ export class SessionService {
       .where(
         and(
           eq(sessionPlacements.sessionId, sessionId),
-          eq(sessionPlacements.workspaceComputerId, workspaceComputerId),
+          eq(sessionPlacements.computerId, workspaceComputerId),
           eq(sessionPlacements.generation, generation),
           isNull(sessions.endedAt),
         ),
@@ -713,24 +708,16 @@ export class SessionService {
         placement: sessionPlacements,
         agentId: agents.id,
         agentCreatedByUserId: agents.createdByUserId,
-        computerId: workspaceComputers.computerId,
+        computerId: accountComputers.currentInstallationId,
         computerOwnerAccountId: accountComputers.ownerAccountId,
-        connectionInstanceId: workspaceComputers.currentInstanceId,
-        workspaceComputerId: workspaceComputers.id,
+        connectionInstanceId: accountComputers.currentInstanceId,
+        workspaceComputerId: accountComputers.id,
       })
       .from(sessions)
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
       .where(
         and(
           eq(sessions.id, input.sessionId),
@@ -766,23 +753,15 @@ export class SessionService {
         session: sessions,
         placement: sessionPlacements,
         agentCreatedByUserId: agents.createdByUserId,
-        computerId: workspaceComputers.computerId,
+        computerId: accountComputers.currentInstallationId,
         computerOwnerAccountId: accountComputers.ownerAccountId,
-        workspaceComputerId: workspaceComputers.id,
+        workspaceComputerId: accountComputers.id,
       })
       .from(sessions)
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
       .where(and(eq(sessions.id, targetSessionId), isNull(sessions.endedAt)))
       .limit(1)
       .for("update");
@@ -869,7 +848,7 @@ export class SessionService {
       .limit(1);
     if (!candidate) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
     const [agent] = await transaction
-      .select({ workspaceComputerId: agents.workspaceComputerId })
+      .select({ workspaceComputerId: agents.computerId })
       .from(agents)
       .where(and(eq(agents.id, candidate.agentId), eq(agents.status, "active")))
       .limit(1)
@@ -927,7 +906,7 @@ export class SessionService {
           .insert(sessionPlacements)
           .values({
             sessionId: session.id,
-            workspaceComputerId,
+            ...schemaRequiredComputerProjection(workspaceComputerId),
             computerId: await projectedComputerId(transaction, workspaceComputerId),
             generation: 1,
             updatedAt: now,

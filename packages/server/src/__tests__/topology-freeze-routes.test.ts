@@ -23,12 +23,11 @@ function fixture() {
   const app = createApp({
     authService: {
       getAuthenticatedUser: vi.fn().mockResolvedValue({
-        me: { user: { id: accountId }, workspaces: [] },
+        me: { user: { id: accountId }, setupCompletedAt: null },
         tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       }),
     } as never,
-    workspaceService: { listComputers: vi.fn().mockResolvedValue({ computers: [] }) } as never,
-    workspaceSetupService: { complete: vi.fn() } as never,
+    workspaceSetupService: { completeForAccount: vi.fn() } as never,
   });
   apps.push(app);
   return { app, workspaceId };
@@ -57,7 +56,7 @@ describe("Workspace topology freeze", () => {
     expect(invitationResponse.statusCode).toBe(404);
   });
 
-  it("retires Workspace profile, Admin, and invitation routes while preserving compatibility routes", async () => {
+  it("retires Workspace profile, Admin, invitation, Computer, and setup routes", async () => {
     const value = fixture();
     const token = "A".repeat(43);
     const targetAccountId = randomUUID();
@@ -68,8 +67,8 @@ describe("Workspace topology freeze", () => {
     expect(value.app.hasRoute({ method: "PATCH", url: WORKSPACE_BY_ID_TEMPLATE })).toBe(false);
     expect(value.app.hasRoute({ method: "GET", url: WORKSPACE_ADMINS_TEMPLATE })).toBe(false);
     expect(value.app.hasRoute({ method: "DELETE", url: WORKSPACE_ADMIN_TEMPLATE })).toBe(false);
-    expect(value.app.hasRoute({ method: "GET", url: WORKSPACE_COMPUTERS_TEMPLATE })).toBe(true);
-    expect(value.app.hasRoute({ method: "POST", url: WORKSPACE_SETUP_COMPLETE_TEMPLATE })).toBe(true);
+    expect(value.app.hasRoute({ method: "GET", url: WORKSPACE_COMPUTERS_TEMPLATE })).toBe(false);
+    expect(value.app.hasRoute({ method: "POST", url: WORKSPACE_SETUP_COMPLETE_TEMPLATE })).toBe(false);
 
     const retired = await Promise.all([
       value.app.inject({ method: "GET", url: `/api/v1/admin-invitations/${token}/preview` }),

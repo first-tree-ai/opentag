@@ -1,9 +1,11 @@
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { browserApi } from "../../api.js";
 import { StandaloneNotFoundPage } from "../../features/not-found.js";
-import { AsyncState, useResource } from "../../features/resource/use-resource.js";
+import { AsyncState, toResourceState } from "../../features/resource/resource-state.js";
 import { useAccount } from "../../features/session/session-context.js";
 import { OnboardingLabPage } from "../../internal/onboarding-lab-page.js";
+import { queryKeys } from "../../query/keys.js";
 
 export const Route = createFileRoute("/_authenticated/internal/onboarding-lab")({
   component: OnboardingLabRoute,
@@ -21,7 +23,9 @@ function OnboardingLabRoute() {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
   const { scenario } = Route.useSearch();
-  const offered = useResource(() => browserApi.onboardingLabOffered(), "onboarding-lab");
+  const offered = toResourceState(
+    useQuery({ queryKey: queryKeys.onboardingLabOffered(), queryFn: () => browserApi.onboardingLabOffered() }),
+  );
   return (
     <AsyncState state={offered}>
       {(value) =>
@@ -36,7 +40,7 @@ function OnboardingLabRoute() {
               // The Lab never infers success from client state: it enters onboarding only once the
               // refreshed Account actually reports incomplete setup.
               const account = await refreshMe();
-              if (account.workspaces[0]?.setupCompletedAt) {
+              if (account.setupCompletedAt) {
                 throw new Error("The Account still reports completed setup; retry the reset.");
               }
               await navigate({ replace: true, to: "/onboarding" });

@@ -3,7 +3,7 @@ import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
 import Fastify, { type FastifyLoggerOptions } from "fastify";
-import { type AccountScopeResolver, registerAccountRoutes } from "./api/account.js";
+import { registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
@@ -17,7 +17,7 @@ import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
-import { registerWorkspaceRoutes } from "./api/workspaces.js";
+
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
@@ -32,16 +32,10 @@ import { SlackConfigurationServiceError } from "./services/im-bindings/slack/ind
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
-import {
-  type WorkspaceAdminService,
-  type WorkspaceSetupService,
-  WorkspaceSetupServiceError,
-} from "./services/workspaces/index.js";
+import { type WorkspaceSetupService, WorkspaceSetupServiceError } from "./services/workspaces/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
-  /** Enables the Account-native management collections that back the Workspace-free client contracts. */
-  accountScope?: AccountScopeResolver;
   authService?: UserAuthService;
   /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
@@ -74,7 +68,6 @@ export interface CreateAppOptions {
    */
   stagingOnboardingLab?: { reset: OnboardingResetService };
   taskService?: TaskService;
-  workspaceService?: WorkspaceAdminService;
   workspaceSetupService?: WorkspaceSetupService;
 }
 
@@ -232,16 +225,18 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.agentService) {
       registerAgentRoutes(app, authService, options.agentService, authOptions);
     }
-    if (options.workspaceService) {
-      registerWorkspaceRoutes(app, authService, options.workspaceService, authOptions, options.workspaceSetupService);
-    }
-    if (options.accountScope) {
+    if (
+      options.agentService ||
+      options.taskService ||
+      options.computerService ||
+      options.workspaceSetupService ||
+      (options.machineAuthService && options.computerConnectCode)
+    ) {
       registerAccountRoutes(app, authService, {
-        accountScope: options.accountScope,
         ...(options.agentService ? { agentService: options.agentService } : {}),
         ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
+        ...(options.computerService ? { computerService: options.computerService } : {}),
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
-        ...(options.workspaceService ? { workspaceService: options.workspaceService } : {}),
         ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
         authOptions,
@@ -260,14 +255,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.computerService && options.machineAuthService) {
       const computerService = options.computerService;
       const machineAuthService = options.machineAuthService;
-      registerComputerRoutes(
-        app,
-        authService,
-        machineAuthService,
-        authOptions,
-        options.computerConnectCode?.environment,
-        options.computerConnectCode?.publicUrl,
-      );
+      registerComputerRoutes(app, machineAuthService);
       app.register(async (runtimeApp) => {
         await runtimeApp.register(websocket, { options: { maxPayload: 64 * 1024 } });
         registerRuntimeRoutes(runtimeApp, machineAuthService, computerService, options.runtime);

@@ -6,7 +6,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
+import { bootstrapInitialAdmin as bootstrapProductAccount } from "../../admin/bootstrap.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
@@ -24,6 +24,7 @@ import {
   ConnectCodeService,
   hashSecret,
 } from "../../services/auth/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const betterAuthSecret = "im-binding-test-secret-at-least-32-characters";
@@ -1235,29 +1236,21 @@ describe("authentication persistence", () => {
     const client = createDatabaseClient(databaseUrl);
     try {
       await expect(
-        bootstrapInitialAdmin(client.database, {
+        bootstrapProductAccount(client.database, {
           connectCodeTtlSeconds: 0,
           displayName: "   ",
           email: "not-an-email",
-          workspaceDisplayName: "   ",
-          workspaceName: "Not Valid",
         }),
       ).rejects.toThrow();
       expect(await client.database.select().from(users)).toHaveLength(0);
 
-      const result = await bootstrapInitialAdmin(client.database, {
+      const result = await bootstrapProductAccount(client.database, {
         displayName: "  Admin  ",
         email: "  ADMIN@EXAMPLE.COM  ",
-        workspaceDisplayName: "  Example  ",
-        workspaceName: "  EXAMPLE  ",
       });
       const [storedUser] = await client.database.select().from(users).where(eq(users.id, result.userId));
-      const [storedWorkspace] = await client.database
-        .select()
-        .from(workspaces)
-        .where(eq(workspaces.id, result.workspaceId));
       expect(storedUser).toMatchObject({ displayName: "Admin", email: "admin@example.com" });
-      expect(storedWorkspace).toMatchObject({ displayName: "Example", name: "example" });
+      expect(await client.database.select().from(workspaces)).toEqual([]);
     } finally {
       await client.sql.end();
     }
@@ -1489,8 +1482,9 @@ describe("authentication persistence", () => {
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
-        me: { workspaces: [{ id: fixture.bootstrap.workspaceId }] },
+        me: { user: { id: fixture.bootstrap.userId }, setupCompletedAt: null },
       });
+      expect((await fixture.auth.getAuthenticatedUser(tokens.accessToken)).me).not.toHaveProperty("workspaces");
 
       await fixture.database
         .update(workspaceAdminGrants)
@@ -1499,9 +1493,9 @@ describe("authentication persistence", () => {
           revokedByUserId: fixture.bootstrap.userId,
         })
         .where(eq(workspaceAdminGrants.userId, fixture.bootstrap.userId));
-      // Losing every Admin grant drops Workspace authority but keeps the Account session.
+      // Losing every Admin grant does not change Account identity or invalidate the session.
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
-        me: { user: { id: fixture.bootstrap.userId }, workspaces: [] },
+        me: { user: { id: fixture.bootstrap.userId }, setupCompletedAt: null },
       });
       // Refreshing withdraws what it replaces, so the renewed credential is the one that carries on from here.
       const renewed = await fixture.auth.refresh(tokens.refreshToken);

@@ -126,7 +126,7 @@ export class OpenTagApi {
     });
   }
 
-  listWorkspaceComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
+  listAccountComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
     return this.#request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });

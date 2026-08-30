@@ -59,7 +59,7 @@ export function selectComputer(
 export async function runAgentCreate(options: AgentCreateOptions): Promise<AgentCreateResult> {
   const runtimeConfig = await createRuntimeConfig(options);
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  const computers = await api.listWorkspaceComputers(accessToken);
+  const computers = await api.listAccountComputers(accessToken);
   const computer = selectComputer(computers, options.computerId);
   const input = CreateAgentRequestSchema.parse({
     name: options.name,

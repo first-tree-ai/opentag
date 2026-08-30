@@ -13,7 +13,6 @@ export interface OnboardingScenario {
   readonly load: OnboardingLoadState;
 }
 
-const WORKSPACE_ID = "00000000-0000-4000-8000-00000000fa00";
 const COMPUTER_ID = "00000000-0000-4000-8000-00000000fc01";
 const AGENT_ID = "00000000-0000-4000-8000-00000000fa01";
 const ACCOUNT_ID = "00000000-0000-4000-8000-00000000ac01";
@@ -35,7 +34,6 @@ const computer: WorkspaceComputerSummary = {
 
 const agent: AgentSummary = {
   id: AGENT_ID,
-  workspaceId: WORKSPACE_ID,
   name: "opentag",
   displayName: "OpenTag",
   createdBy: { userId: ACCOUNT_ID, displayName: "Onboarding Test" },

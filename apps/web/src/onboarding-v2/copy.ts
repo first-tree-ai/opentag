@@ -79,9 +79,11 @@ export const CHECK_COPY: Record<
 };
 
 export const COPY = {
+  loading: "Picking up where you left off…",
   brand: "OpenTag",
 
   nav: {
+    retry: "Try again",
     back: "Go back",
     next: "Continue",
   },
@@ -181,10 +183,28 @@ export const COPY = {
     slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
     slackAction: "Add to Slack",
     slackWaiting: "Waiting for you to finish in Slack…",
+    confirming: "Connected. Checking your agent can be reached…",
+    computerOffline: "Your computer is offline. Reconnect it and this will finish on its own.",
+    retry: "Try again",
+    failed: "That didn't work. Try again to get a new code.",
   },
 
   done: {
     title: (name: string) => `${name} is ready.`,
     description: (name: string) => `Tag @${name} in Lark to put it to work.`,
+  },
+
+  /**
+   * What to say when the Server does not answer. Each names the thing that failed rather than the
+   * call that failed, because the reader is standing in a step, not in a network log.
+   */
+  errors: {
+    connectCode: "We couldn't get a connection command. Check your network and try again.",
+    computers: "We lost contact while waiting for your computer.",
+    createAgent: "We couldn't create your agent.",
+    messaging: "We couldn't start connecting your messaging app.",
+    feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
+    resume: "We couldn't check what your account already has.",
+    completeSetup: "Your agent is ready, but we couldn't finish setting up your account. Reload to try again.",
   },
 } as const;

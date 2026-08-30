@@ -9,7 +9,6 @@ import {
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { accountCliLoginCodes, users } from "../../db/schema/index.js";
-import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
 import { hashSecret } from "./security.js";
 import type { AuthTokenProvider } from "./token-provider.js";
@@ -43,17 +42,11 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
   readonly #authTokens: AuthTokenProvider;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
-  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(
-    database: DatabaseClient,
-    authTokens: AuthTokenProvider,
-    options: AuthServiceOptions & { workspaceAdmins?: WorkspaceAdminAccess } = {},
-  ) {
+  constructor(database: DatabaseClient, authTokens: AuthTokenProvider, options: AuthServiceOptions = {}) {
     this.#database = database;
     this.#authTokens = authTokens;
     this.#now = options.now ?? (() => new Date());
-    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   /**
@@ -161,21 +154,9 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
     }
 
-    /**
-     * Authentication proves the Account identity, not ownership of every stored resource. A legacy or revoked
-     * Account may have no active Workspace grant, and resource-scoped authority is always checked separately.
-     */
-    const activeWorkspaces = await this.#workspaceAdmins.listActiveAdminWorkspaces(userId);
-
     return {
       user: { id: user.id, email: user.email, displayName: user.displayName },
-      workspaces: activeWorkspaces.map((workspace) => ({
-        id: workspace.workspaceId,
-        name: workspace.workspaceName,
-        displayName: workspace.workspaceDisplayName,
-        setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
-        grantedAt: workspace.grantedAt.toISOString(),
-      })),
+      setupCompletedAt: user.setupCompletedAt?.toISOString() ?? null,
     };
   }
 }

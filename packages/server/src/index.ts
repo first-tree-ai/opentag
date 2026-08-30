@@ -135,9 +135,7 @@ export async function startServer(): Promise<void> {
       ...(config.emailPasswordAuth ? { emailPassword: true } : {}),
       ...(config.google ? { google: config.google } : {}),
     });
-    const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database), {
-      workspaceAdmins,
-    });
+    const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database));
     const connectCodeService = new ConnectCodeService(database);
     const registry = new ConnectionRegistry();
     const machineAuthService = new MachineAuthService(database, {
@@ -184,7 +182,7 @@ export async function startServer(): Promise<void> {
         );
       },
     });
-    const workspaceSetupService = new WorkspaceSetupService(database, imBindingService, { workspaceAdmins });
+    const workspaceSetupService = new WorkspaceSetupService(database, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
     const sessionService = new SessionService(database);
     const taskService = new TaskService(database);

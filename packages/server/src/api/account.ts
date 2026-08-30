@@ -41,16 +41,15 @@ const TaskDetailQuerySchema = z
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 
 /**
- * Resolves the authenticated Account to the compatibility Workspace that still backs management storage.
- * `WorkspaceAdminAccess` is the only implementation; the seam exists so that removing it is a single
- * deletion once Agents and enrollments carry a direct Account owner.
+ * Resolves the authenticated Account to the compatibility Workspace that still backs hidden dual-write
+ * persistence. Canonical Account resource authority uses `created_by_user_id` and `owner_account_id`.
  */
 export interface AccountScopeResolver {
   resolveCompatibilityWorkspaceId(accountId: string): Promise<string>;
 }
 
 export interface AccountRoutesOptions {
-  accountScope: AccountScopeResolver;
+  accountScope?: AccountScopeResolver;
   agentService?: AgentService;
   computerConnectCode?: { environment: ChannelName; publicUrl: string };
   machineAuthService?: MachineAuthService;
@@ -78,11 +77,6 @@ export function registerAccountRoutes(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
   const { accountScope } = options;
-
-  async function scopeOf(request: FastifyRequest): Promise<{ accountId: string; workspaceId: string }> {
-    const account = accountId(request);
-    return { accountId: account, workspaceId: await accountScope.resolveCompatibilityWorkspaceId(account) };
-  }
 
   if (options.agentService) {
     const agentService = options.agentService;
@@ -144,7 +138,7 @@ export function registerAccountRoutes(
           : await machineAuthService.issueForAccount(
               account,
               input,
-              await accountScope.resolveCompatibilityWorkspaceId(account),
+              await accountScope?.resolveCompatibilityWorkspaceId(account),
             );
       return reply
         .header("Cache-Control", "no-store")
@@ -165,12 +159,11 @@ export function registerAccountRoutes(
 
     app.post(HTTP_PATHS.accountSetupComplete, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(CompleteWorkspaceSetupRequestSchema, request.body);
-      const scope = await scopeOf(request);
       return reply
         .code(200)
         .send(
           WorkspaceSetupCompletionSchema.parse(
-            await workspaceSetupService.complete(scope.accountId, scope.workspaceId, agentId),
+            await workspaceSetupService.completeForAccount(accountId(request), agentId),
           ),
         );
     });

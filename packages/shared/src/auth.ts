@@ -55,11 +55,14 @@ export const UserProfileSchema = z
 
 export const UpdateUserProfileRequestSchema = z.object({ displayName: UserDisplayNameSchema }).strict();
 
-/** Workspaces are ordered by setup-complete, earliest grant, then UUID. */
+/**
+ * Authentication proves Account identity only. `setupCompletedAt` is durable Account state from
+ * `users.setup_completed_at`; it is never derived from Agents, Workspaces, or grants.
+ */
 export const MeResponseSchema = z
   .object({
     user: UserProfileSchema,
-    workspaces: z.array(MeWorkspaceSchema),
+    setupCompletedAt: z.string().datetime().nullable(),
   })
   .strict();
 

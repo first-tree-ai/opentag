@@ -1,1 +1,0 @@
-CLI unit line coverage reached 95.94% (3147/3280) with `node scripts/unit-coverage.mjs --project cli`; `pnpm check`, `pnpm typecheck`, and `pnpm test` passed.

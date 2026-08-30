@@ -328,9 +328,20 @@ function MessagingConnection({
    * block creating the Agent at all, which stopped a Slack user over a Lark dependency.
    */
   const cliState = provider ? messagingCliCheck(readiness, provider) : "pending";
+  /*
+   * Reachability needs the messaging CLI as well as the binding, and the Server's handoff status
+   * carries no reason — so a reader without that CLI would watch an unexplained wait forever. The
+   * page already knows this much from the Computer's own readiness, so the wait says it.
+   */
+  const waitingReason =
+    cliState === "failed" && provider ? COPY.messaging.cliMissing(COPY.messaging[provider].title) : undefined;
   return (
     <div className="flex flex-col items-center gap-3">
-      {provider && cliState === "failed" ? (
+      {/*
+        Said once. While reachability is being waited on, the wait itself carries this reason, and
+        the same sentence standing twice on one screen reads as two different problems.
+      */}
+      {provider && cliState === "failed" && messaging.kind !== "waiting-handoff" ? (
         <p className="flex items-start gap-2 text-sm text-kumo-warning m-0">
           <Icon className="shrink-0 mt-1" name="close" />
           <span>{COPY.messaging.cliMissing(COPY.messaging[provider].title)}</span>
@@ -349,7 +360,7 @@ function MessagingConnection({
           {messaging.kind === "waiting-handoff" ? (
             <p className={WAITING} role="status">
               <span aria-hidden="true" className="otv2-pulse shrink-0" />
-              {COPY.messaging.confirming}
+              {waitingReason ?? COPY.messaging.confirming}
             </p>
           ) : messaging.kind === "failed" ? (
             <div className="flex flex-col items-center gap-3">
@@ -376,7 +387,7 @@ function MessagingConnection({
             {messaging.kind === "waiting-handoff" ? (
               <p className={WAITING} role="status">
                 <span aria-hidden="true" className="otv2-pulse shrink-0" />
-                {COPY.messaging.confirming}
+                {waitingReason ?? COPY.messaging.confirming}
               </p>
             ) : messaging.kind === "away" ? (
               <p className={WAITING} role="status">

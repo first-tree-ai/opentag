@@ -7,7 +7,7 @@
  * never has two clocks disagreeing about the same moment.
  */
 
-import type { AgentRuntimeProvider, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
@@ -53,6 +53,20 @@ function findArrival(
       computer.connectedAt !== null &&
       (!baseline.has(computer.computerId) || baseline.get(computer.computerId) !== computer.connectedAt),
   );
+}
+
+/**
+ * What a handoff status means for the step the reader is on.
+ *
+ * The status separates two unlike things that both report `handoffReady: false`. An *active*
+ * binding is connected and waiting to be observed, which resolves on its own. Any other state —
+ * provisioning, revoked, errored, disabled — is a messaging app that is not connected, and no
+ * amount of waiting fixes it: the answer is the step that connects one.
+ */
+function readMessaging(handoff: ImBindingHandoffStatus | undefined): MessagingState {
+  if (handoff?.handoffReady) return { kind: "connected" };
+  if (handoff?.bindingState === "active") return { kind: "waiting-handoff" };
+  return { kind: "idle" };
 }
 
 /**
@@ -149,8 +163,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    * they are about to reopen costs more than it tells them.
    */
   const pastConnectStep = useRef(false);
-  const agentRef = useRef<CreatedAgent | undefined>(undefined);
-  agentRef.current = agent;
   const connectRef = useRef<ConnectState>({ kind: "idle" });
   connectRef.current = connect;
   const mounted = useRef(true);
@@ -227,8 +239,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
          */
         const handoff = await browserApi.imBindingHandoff(existing.id);
         if (!live()) return;
-        if (handoff?.handoffReady) setMessaging({ kind: "connected" });
-        else if (handoff) setMessaging({ kind: "waiting-handoff" });
+        setMessaging(readMessaging(handoff));
       }
     } catch (cause) {
       // Reading is the only way to tell a returning Account from a new one, so a failed read is
@@ -385,7 +396,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       void browserApi.imBindingHandoff(agent.id).then(
         (handoff) => {
           if (!mounted.current || attempt.current !== mine) return;
-          if (handoff?.handoffReady) setMessaging({ kind: "connected" });
+          // A binding can break while this waits — an authorization is revoked, the App is
+          // disabled. That is not a longer wait, it is a messaging app to connect again, and the
+          // step this returns to is the one that can do it.
+          setMessaging(readMessaging(handoff));
         },
         () => undefined,
       );

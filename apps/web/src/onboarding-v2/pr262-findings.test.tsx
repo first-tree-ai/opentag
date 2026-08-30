@@ -363,4 +363,35 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
 
     expect(onComplete).toHaveBeenCalledWith(AGENT_ID);
   });
+
+  /*
+   * Reachability needs the messaging CLI too, so an Account without it waits forever — and the
+   * Server's handoff status carries no reason. The page knows this one from the Computer's own
+   * readiness, so an unexplained spinner is a choice rather than a limitation.
+   */
+  it("says what a wait for reachability is waiting on, when it knows", async () => {
+    computersReturning(
+      [],
+      [computer({ imCliReadiness: [{ provider: "feishu", status: "install", observedAt: NOW }] })],
+    );
+    issuing();
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: false });
+
+    render(<OnboardingV2Page />);
+
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/Lark/);
+    await settle();
+    await tick(FEISHU_POLL_MS * 2);
+    await tick(HANDOFF_POLL_MS * 2);
+
+    expect(screen.getByText(/Lark messages are sent through its CLI/)).toBeTruthy();
+  });
 });

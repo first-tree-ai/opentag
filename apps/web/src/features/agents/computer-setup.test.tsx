@@ -2,6 +2,7 @@ import type { WorkspaceComputerSummary as Computer } from "@opentag/shared/brows
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
+import { AgentComputerSettings } from "./agent-settings/agent-computer-settings.js";
 import { ComputerSetup } from "./computer-setup.js";
 
 const bootstrapCommand = "opentag computer connect --server https://opentag.example.com -- connect-code";
@@ -501,5 +502,28 @@ describe("ComputerSetup", () => {
     expect(vi.getTimerCount()).toBe(0);
     expect(screen.queryByRole("alert")).toBeNull();
     expect(computers).not.toHaveBeenCalled();
+  });
+
+  it("explains when the assigned Computer status cannot be confirmed", () => {
+    const agent = {
+      id: "agent-1",
+      runtimeProvider: "codex",
+      computer: {
+        computerId: existingComputer.computerId,
+        displayName: existingComputer.displayName,
+        platform: "darwin",
+      },
+      availability: {
+        state: "unconfirmed",
+        reason: "computer_unconfirmed",
+        dependencies: {
+          computer: { state: "unconfirmed", lastConfirmedAt: null },
+          runtime: { provider: "codex", status: "ready" },
+        },
+      },
+    } as never;
+    render(<AgentComputerSettings agent={agent} onAgentChanged={vi.fn()} />);
+    expect(screen.getByText("Unable to confirm")).toBeTruthy();
+    expect(screen.getByText(/could not confirm this Computer/i)).toBeTruthy();
   });
 });

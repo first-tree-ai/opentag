@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CommandBlock } from "./command-block.js";
 import { SCENARIOS } from "./mock-backend.js";
 import { OnboardingV2Page } from "./page.js";
 
@@ -188,6 +189,27 @@ describe("OnboardingV2Page", () => {
     const payload = writeText.mock.calls[0]?.[0] as string;
     expect(payload.startsWith("# Install the OpenTag CLI")).toBe(true);
     expect(payload).toContain("install.sh | sh");
+    await advance(1_600);
+    expect(screen.getAllByRole("button", { name: /Copy/ })[0]).toBeTruthy();
+  });
+
+  it("falls back to selecting the command when clipboard access fails", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard unavailable"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(
+      <CommandBlock
+        command="opentag computer connect --code abc"
+        comment="# Connect this computer"
+        copyLabel="Copy command"
+        copiedLabel="Copied"
+        fallbackHint="Select the command and copy it manually."
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    await act(async () => undefined);
+    expect(screen.getByRole("status").textContent).toBe("Select the command and copy it manually.");
+    expect(writeText).toHaveBeenCalledWith("# Connect this computer\nopentag computer connect --code abc");
   });
 
   it("counts the command's validity down and offers a fresh one once it expires", async () => {

@@ -23,6 +23,10 @@ yarn-debug.log*
 yarn-error.log*
 /run_*.sh
 
+# Generated Web i18n output
+apps/web/src/paraglide/
+apps/web/project.inlang/cache/
+
 # OS and editor files
 .DS_Store
 Thumbs.db

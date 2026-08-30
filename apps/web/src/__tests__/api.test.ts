@@ -292,7 +292,7 @@ describe("BrowserApi", () => {
       api.computers(),
       api.issueComputerConnectCode(),
       api.resetOnboardingLab(),
-      api.signUpWithPassword({ email: "ada@example.com", password: "password-password", name: "Ada" }),
+      api.signUpWithPassword({ email: "ada@example.com", password: "password-password", displayName: "Ada" }),
       api.signInWithPassword({ email: "ada@example.com", password: "password-password" }),
       api.logout(),
     ];

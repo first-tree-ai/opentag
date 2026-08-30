@@ -83,7 +83,17 @@ describe("AgentUsageOverview", () => {
       tokens: 10,
       inputTokens: 6,
       outputTokens: 4,
-      daily: [{ date: "2026-08-25", tokens: 10 }],
+      daily: [
+        {
+          date: "2026-08-25",
+          inputTokens: 6,
+          cachedInputTokens: 0,
+          outputTokens: 4,
+          tokens: 10,
+          tasks: 2,
+          measuredTasks: 0,
+        },
+      ],
     });
     await renderInRouter(<AgentUsageTab agentId="agent-covered" />);
     expect(await screen.findByText("Token data unavailable.")).toBeTruthy();

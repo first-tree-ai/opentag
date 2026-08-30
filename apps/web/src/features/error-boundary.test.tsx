@@ -92,7 +92,7 @@ describe("application error boundaries", () => {
 
   it("renders the route fallback and retries the failed match", async () => {
     const reset = vi.fn();
-    await renderInRouter(<RouteErrorPage reset={reset} />);
+    await renderInRouter(<RouteErrorPage error={new Error("route failed")} reset={reset} />);
 
     expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Agents" }).getAttribute("href")).toBe("/agents");

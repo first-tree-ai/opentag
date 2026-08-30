@@ -498,10 +498,12 @@ describe("Tasks debug view", () => {
       createdAt: "2026-08-27T01:20:00.000Z",
       updatedAt: "2026-08-27T01:21:00.000Z",
     };
+    const firstSession = detail.internalSessions[0];
+    if (!firstSession) throw new Error("Expected an internal session");
     vi.spyOn(browserApi, "task").mockResolvedValue({
       ...detail,
       turns: [pending, failed],
-      internalSessions: [{ ...detail.internalSessions[0], endedAt: "2026-08-27T01:30:00.000Z", runtimeModel: null }],
+      internalSessions: [{ ...firstSession, endedAt: "2026-08-27T01:30:00.000Z", runtimeModel: null }],
       collaborationMessages: [collaboration],
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });

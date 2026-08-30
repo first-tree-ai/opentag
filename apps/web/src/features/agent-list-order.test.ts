@@ -210,7 +210,9 @@ describe("Agent availability model and presentation", () => {
   it("presents provider, messaging, recovery, and formatting states", () => {
     const base = detail(projectAgentAvailability(agent, computer, binding("active"), handoff(true), true, true));
     expect(agentStatusPresentation(base)).toEqual({ label: "Ready", tone: "success" });
-    expect(agentStatusPresentation({ ...base, activity: { state: "working" } })).toEqual({
+    expect(
+      agentStatusPresentation({ ...base, activity: { state: "working", startedAt: "2026-08-20T00:00:00.000Z" } }),
+    ).toEqual({
       label: "Working",
       tone: "info",
     });
@@ -335,7 +337,10 @@ describe("Agent availability model and presentation", () => {
         ...base,
         availability: {
           ...base.availability,
-          dependencies: { ...base.availability.dependencies, channel: { state: "ready", provider: null } },
+          dependencies: {
+            ...base.availability.dependencies,
+            channel: { state: "connected", provider: null, botDisplayName: null },
+          },
         },
       }),
     ).toBe("Ready for new work");
@@ -356,9 +361,12 @@ describe("Agent availability model and presentation", () => {
       "every message in connected Slack channels",
     );
     expect(messagingAgentStatusDescription(base, "feishu")).toContain("Ready to receive");
-    expect(messagingAgentStatusDescription({ ...base, activity: { state: "working" } }, "slack")).toContain(
-      "handling a request",
-    );
+    expect(
+      messagingAgentStatusDescription(
+        { ...base, activity: { state: "working", startedAt: "2026-08-20T00:00:00.000Z" } },
+        "slack",
+      ),
+    ).toContain("handling a request");
     for (const reason of ["computer_offline", "runtime_unavailable"] as const) {
       expect(
         messagingAgentStatusDescription(

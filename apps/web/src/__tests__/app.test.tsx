@@ -2646,48 +2646,50 @@ describe("OpenTag Web App Shell", () => {
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
     /*
-     * This one fails intermittently — once in 41 whole-file runs, on two different machines, and
-     * not reproduced in isolation (opentag#273). Chasing another failure costs dozens of runs, so
-     * instead the next one describes itself.
+     * This one fails intermittently — once in about forty whole-file runs, on two machines, and
+     * never reproduced in isolation (opentag#273). Chasing another failure costs dozens of runs, so
+     * the next one describes itself instead.
      *
-     * Only on the failure path: `onTestFailed` runs before the DOM is torn down, and printing on
-     * every run would put noise back into a file we just finished clearing it out of.
+     * The record is taken *during* the test rather than after it. `onTestFailed` runs after this
+     * suite's `afterEach(cleanup)`, so by then the DOM is gone: a handler that inspects it there
+     * reports an empty document no matter what actually happened.
+     *
+     * It is a trail rather than a snapshot because we do not know which line gives way first. Menu
+     * never opened, opened and did not close, focus never landed — each leaves a different
+     * sequence, and one occurrence should be enough to tell them apart.
      */
-    onTestFailed(() => {
+    const trail: string[] = [];
+    const note = (label: string) => {
       const active = document.activeElement;
-      const menus = [...document.querySelectorAll('[role="menu"]')];
-      // eslint-disable-next-line no-console -- diagnostic for a failure we cannot reproduce on demand
-      console.log(
-        "[opentag#273]",
-        JSON.stringify(
-          {
-            activeElement: active
-              ? {
-                  tag: active.tagName,
-                  role: active.getAttribute("role"),
-                  name: active.getAttribute("aria-label") ?? active.textContent?.slice(0, 40),
-                }
-              : null,
-            menus: menus.map((menu) => ({
-              name: menu.getAttribute("aria-label") ?? menu.getAttribute("aria-labelledby"),
-              items: menu.querySelectorAll('[role="menuitem"]').length,
-            })),
-            menuitems: document.querySelectorAll('[role="menuitem"]').length,
-          },
-          null,
-          1,
-        ),
+      /*
+       * The record asks the question the assertion asks — a menu accessibly named "Account" —
+       * rather than a bare count of menus. A menu element stays in the document after Escape and
+       * only stops matching that name, so a count reads identically on a passing run and explains
+       * nothing about a failing one.
+       */
+      trail.push(
+        `${label}: active=${active?.tagName}/${active?.getAttribute("role") ?? "-"} ` +
+          `accountMenus=${screen.queryAllByRole("menu", { name: "Account" }).length} ` +
+          `menus=${document.querySelectorAll('[role="menu"]').length} ` +
+          `items=${document.querySelectorAll('[role="menuitem"]').length}`,
       );
-    });
+    };
+    // Nothing is printed on a green run; the trail is a few strings that go out of scope.
+    onTestFailed(() => console.log(`[opentag#273]\n${trail.join("\n")}`));
 
     installApi({ multipleMemberships: true });
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
+    note("before open");
     fireEvent.click(trigger);
+    note("after open");
     const account = screen.getByRole("menuitem", { name: "Account" });
     expect(screen.getByRole("menu")).toBeTruthy();
     account.focus();
+    note("after focus");
+    expect("x").toBe("forced-failure");
     fireEvent.keyDown(account, { key: "Escape" });
+    note("after escape");
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
   });
 

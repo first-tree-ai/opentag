@@ -62,20 +62,38 @@ export function useResource<T>(
         });
     };
     const revalidate = () => load(false);
-    load(!options.keepPreviousData && options.initialValue === undefined);
-    const interval = options.revalidateMs ? window.setInterval(revalidate, options.revalidateMs) : undefined;
-    const refreshVisible = () => {
+    const revalidateVisible = () => {
       if (document.visibilityState === "visible") revalidate();
     };
-    if (options.refreshOnFocus) {
-      window.addEventListener("focus", revalidate);
-      document.addEventListener("visibilitychange", refreshVisible);
+    load(!options.keepPreviousData && options.initialValue === undefined);
+    let interval: number | undefined;
+    const stopPolling = () => {
+      if (interval === undefined) return;
+      window.clearInterval(interval);
+      interval = undefined;
+    };
+    const startPolling = () => {
+      if (!options.revalidateMs || document.visibilityState !== "visible" || interval !== undefined) return;
+      interval = window.setInterval(revalidateVisible, options.revalidateMs);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        stopPolling();
+        return;
+      }
+      startPolling();
+      if (options.refreshOnFocus) revalidate();
+    };
+    startPolling();
+    if (options.refreshOnFocus) window.addEventListener("focus", revalidateVisible);
+    if (options.refreshOnFocus || options.revalidateMs) {
+      document.addEventListener("visibilitychange", handleVisibilityChange);
     }
     return () => {
       active = false;
-      if (interval !== undefined) window.clearInterval(interval);
-      window.removeEventListener("focus", revalidate);
-      document.removeEventListener("visibilitychange", refreshVisible);
+      stopPolling();
+      window.removeEventListener("focus", revalidateVisible);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [key, options.initialValue, options.keepPreviousData, options.refreshOnFocus, options.revalidateMs]);
   return state;

@@ -415,7 +415,14 @@ function normalizeSelectOptionValue(value: SelectOptionProps["value"]): string {
   return Array.isArray(value) ? value.join(",") : String(value ?? "");
 }
 
-export function KumoSelectControl({ children, onChange, onValueChange, value, ...props }: KumoSelectControlProps) {
+export function KumoSelectControl({
+  children,
+  defaultValue,
+  onChange,
+  onValueChange,
+  value,
+  ...props
+}: KumoSelectControlProps) {
   const options = Children.toArray(children).filter((child): child is ReactElement<SelectOptionProps> =>
     isValidElement<SelectOptionProps>(child),
   );
@@ -427,6 +434,7 @@ export function KumoSelectControl({ children, onChange, onValueChange, value, ..
   const labels = new Map(normalizedOptions.map(({ label, value: optionValue }) => [optionValue, label]));
   const kumoProps: KumoSelectProps = {
     ...props,
+    defaultValue: defaultValue === undefined ? undefined : normalizeSelectOptionValue(defaultValue),
     itemToStringLabel: (item) => labels.get(String(item)) ?? String(item ?? ""),
     value: value === undefined ? undefined : normalizeSelectOptionValue(value),
     onValueChange: (nextValue) => {

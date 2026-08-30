@@ -94,6 +94,17 @@ describe("Kumo semantic adapter", () => {
     expect(screen.getByRole("option", { name: "Array" }).getAttribute("aria-selected")).toBe("true");
   });
 
+  it("normalizes numeric default values for uncontrolled selection", () => {
+    render(
+      <KumoSelectControl aria-label="Identity" defaultValue={42}>
+        <option value={42}>Numeric</option>
+        <option value="other">Other</option>
+      </KumoSelectControl>,
+    );
+    fireEvent.click(screen.getByRole("combobox", { name: "Identity" }));
+    expect(screen.getByRole("option", { name: "Numeric" }).getAttribute("aria-selected")).toBe("true");
+  });
+
   it("keeps Kumo input sizes as named tokens", () => {
     expectTypeOf<KumoInputControlProps["size"]>().toEqualTypeOf<"xs" | "sm" | "base" | "lg" | undefined>();
   });

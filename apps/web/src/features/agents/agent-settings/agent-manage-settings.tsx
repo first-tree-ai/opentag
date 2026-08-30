@@ -70,6 +70,12 @@ export function AgentManageSettings({
       // A confirmed delete is stronger than a later list revalidation. Evict the Agent from every
       // cached list and remove its detail/config/evidence entries before the navigation can render
       // stale data after a transient list failure.
+      //
+      // Cancel first: the list is watched on a 30-second interval and on focus, so a read that left
+      // before the delete is an ordinary thing to be holding here, and its late success would write
+      // the Agent straight back over the eviction.
+      await queryClient.cancelQueries({ queryKey: queryKeys.agents.listRoot() });
+      await queryClient.cancelQueries({ queryKey: queryKeys.agents.all(config.id) });
       queryClient.setQueriesData<ListAgentsResponse>({ queryKey: queryKeys.agents.listRoot() }, (current) =>
         current ? { ...current, agents: current.agents.filter((item) => item.id !== config.id) } : current,
       );

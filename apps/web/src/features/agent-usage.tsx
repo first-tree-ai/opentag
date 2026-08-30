@@ -8,6 +8,7 @@ import { Link } from "@tanstack/react-router";
 import { type ComponentProps, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { Button, ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
+import type { AgentDetailView } from "./agents/agent-model.js";
 
 const LazyTimeseriesChart = lazy(async () => {
   const { echarts } = await import("./agent-usage-echarts.js");
@@ -23,23 +24,74 @@ type UsageState =
   | { readonly kind: "error"; readonly error: Error }
   | { readonly kind: "ready"; readonly value: AgentUsageDetail };
 
-export function AgentUsageOverview({ agentId }: { agentId: string }) {
-  const { retry, state } = useAgentUsage(agentId, AGENT_USAGE_WINDOW_DAYS);
+/** The Agent home answers "how much has this Agent used recently", so it offers the shortest windows. */
+const AGENT_HOME_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS] as const;
+
+export function usageWindowLabel(days: AgentUsageWindowDays): string {
+  return days === 1 ? "Last 24 hours" : `Last ${days} days`;
+}
+
+export function AgentUsageOverview({
+  agent,
+  agentId,
+}: {
+  /** Carried into history state so the usage page opens with the Agent already on screen. */
+  agent?: AgentDetailView;
+  agentId: string;
+}) {
+  const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
+  const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
-    <section className="grid gap-4" aria-labelledby="agent-usage-overview-heading" data-ui="usage-overview">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <Text as="h3" id="agent-usage-overview-heading" variant="heading">
-            Recent usage
-          </Text>
-          <p>Token use from Tasks handled by this Agent during the last 30 days.</p>
+    <section
+      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-usage-overview-heading"
+      data-ui="usage-overview"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <Text as="h2" id="agent-usage-overview-heading" variant="heading">
+          Usage
+        </Text>
+        <div className="flex flex-wrap items-center gap-4">
+          <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
+          <Link className="text-sm text-kumo-link" params={{ agentId }} state={{ agent }} to="/agents/$agentId/usage">
+            View details
+          </Link>
         </div>
-        <Link params={{ agentId }} to="/agents/$agentId/usage">
-          View usage details
-        </Link>
       </div>
       <UsageSummaryState state={state} compact onRetry={retry} />
     </section>
+  );
+}
+
+function UsageWindowSelect({
+  onChange,
+  options,
+  value,
+}: {
+  onChange: (windowDays: AgentUsageWindowDays) => void;
+  options: readonly AgentUsageWindowDays[];
+  value: AgentUsageWindowDays;
+}) {
+  return (
+    <div>
+      <span className="sr-only" id="usage-period-label">
+        Usage period
+      </span>
+      <KumoSelectControl
+        aria-label="Usage period"
+        aria-labelledby="usage-period-label"
+        className="w-fit"
+        size="sm"
+        value={String(value)}
+        onChange={(event) => onChange(Number(event.currentTarget.value) as AgentUsageWindowDays)}
+      >
+        {options.map((days) => (
+          <option key={days} value={days}>
+            {usageWindowLabel(days)}
+          </option>
+        ))}
+      </KumoSelectControl>
+    </div>
   );
 }
 
@@ -49,23 +101,7 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   return (
     <div className="grid gap-6" data-ui="usage-tab">
       <div className="flex items-end justify-end" data-ui="usage-toolbar">
-        <div>
-          <span id="usage-period-label">Usage period</span>
-          <KumoSelectControl
-            aria-label="Usage period"
-            aria-labelledby="usage-period-label"
-            className="w-fit"
-            size="sm"
-            value={String(windowDays)}
-            onChange={(event) => setWindowDays(Number(event.currentTarget.value) as AgentUsageWindowDays)}
-          >
-            {AGENT_USAGE_WINDOW_OPTIONS.map((days) => (
-              <option key={days} value={days}>
-                Last {days} days
-              </option>
-            ))}
-          </KumoSelectControl>
-        </div>
+        <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </div>
       <UsageSummaryState state={state} onRetry={retry} />
     </div>
@@ -154,12 +190,12 @@ function UsageSummaryState({
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
   return (
     <dl
-      className="grid gap-3 @min-[36rem]/workspace:grid-cols-3"
-      aria-label={`Agent usage for the last ${usage.windowDays} days`}
+      className="grid gap-3 @min-[36rem]/workspace:grid-cols-2"
+      aria-label={`Agent usage · ${usageWindowLabel(usage.windowDays)}`}
       data-ui="usage-metrics"
     >
-      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
       <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
+      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
     </dl>
   );
 }
@@ -224,7 +260,7 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   }
   const chart = (
     <LazyTimeseriesChart
-      ariaDescription={`${formatUsageNumber(usage.tokens)} Tokens used during the last ${usage.windowDays} days`}
+      ariaDescription={`${formatUsageNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
       data={[
         {
           color: ChartPalette.categorical(0),
@@ -242,7 +278,7 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
     <div className="grid gap-2" data-ui="usage-chart">
       {import.meta.env.MODE === "test" ? (
         <div
-          aria-label={`${formatUsageNumber(usage.tokens)} Tokens used during the last ${usage.windowDays} days`}
+          aria-label={`${formatUsageNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
           className="h-60 rounded bg-kumo-recessed"
           role="img"
         />

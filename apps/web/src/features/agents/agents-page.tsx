@@ -1,7 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
-import { Button, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
+import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
+import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
 import { useAccount } from "../session/session-context.js";
@@ -13,6 +14,7 @@ import {
   formatElapsedCompact,
   formatUsageNumber,
   initials,
+  titleCase,
 } from "./agent-presentation.js";
 import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
@@ -30,7 +32,6 @@ export function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Monitor availability and 30-day usage across your AI teammates."
         action={
           <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
             New Agent <Icon name="plus" />
@@ -67,6 +68,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
   shownOrder.current = order;
   return (
     <section className="grid gap-4" aria-label="Agents" data-ui="agent-list">
+      <p className="text-right text-sm text-kumo-subtle">Usage · last 30 days</p>
       <div className="grid gap-4 @min-[48rem]/workspace:grid-cols-2" data-ui="agent-card-grid">
         {order.map((id) => {
           const agent = byId.get(id);
@@ -80,6 +82,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
 export function AgentCard({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
   const action = status.action;
+  const channel = agent.availability.dependencies.channel.provider;
   const statusDetail: ReactNode =
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
@@ -91,7 +94,9 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
             {" · "}
           </span>
           <Link
-            className={buttonClassName({ variant: "inline" })}
+            // Inline text, not a button: this exit sits inside the status sentence, and a control
+            // with its own height and padding breaks the line and strands the separator before it.
+            className="relative z-10 whitespace-nowrap text-kumo-link"
             {...agentSettingsSectionLink(agent.id, action.section)}
           >
             {action.label}
@@ -103,7 +108,7 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
     ) : undefined;
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line hover:bg-kumo-tint"
       data-avatar-tone={agentAvatarTone(agent.id)}
       data-tone={status.tone}
       data-ui="agent-card"
@@ -116,16 +121,16 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
           {initials(agent.displayName)}
         </span>
         <div className="grid min-w-0 gap-1" data-ui="agent-card-identity-copy">
-          <strong>
-            <Link aria-label={`Open ${agent.displayName}`} {...agentDetailLink(agent.id)}>
-              {agent.displayName}
-            </Link>
+          <strong className="flex min-w-0 items-center gap-2">
+            <span className="truncate">{agent.displayName}</span>
+            {channel ? (
+              <span className="inline-flex shrink-0 items-center" data-ui="agent-card-channel">
+                <ProviderIcon className="size-4" provider={channel} />
+                <span className="sr-only">{titleCase(channel)}</span>
+              </span>
+            ) : null}
           </strong>
-          <small>@{agent.name}</small>
         </div>
-      </div>
-      <div data-ui="agent-card-state">
-        <StatusIndicator detail={statusDetail} label={status.label} tone={status.tone} />
       </div>
       <dl className="grid grid-cols-2 gap-4 border-t border-kumo-line pt-3" data-ui="agent-card-usage">
         <div>
@@ -137,10 +142,20 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
-      {/* The row itself is the link; the chevron only signals where it goes. */}
-      <span aria-hidden="true" className="absolute right-4 top-4 text-kumo-subtle" data-ui="agent-card-action">
-        <Icon name="chevron-right" />
-      </span>
+      <div data-ui="agent-card-state">
+        <StatusIndicator detail={statusDetail} label={status.label} tone={status.tone} />
+      </div>
+      {/*
+       * Last, and covering the row: the whole card opens the Agent, while the recovery exit above it
+       * keeps its own target. Kumo ships no `after:inset-0`, so this is an overlay rather than a
+       * stretched pseudo-element.
+       */}
+      <Link
+        aria-label={`Open ${agent.displayName}`}
+        className="absolute inset-0"
+        data-ui="agent-card-open"
+        {...agentDetailLink(agent.id)}
+      />
     </article>
   );
 }

@@ -2,7 +2,6 @@ import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/sha
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import {
   Button,
@@ -18,6 +17,7 @@ import {
   Table,
   Text,
 } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 
 type TaskFilter = "all" | TaskStatus;
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -223,6 +223,127 @@ export function TasksPage() {
       ) : null}
       {state.kind === "ready" && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
+ * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
+ */
+export function AgentTasksSection({ agentId }: { agentId: string }) {
+  const [state, setState] = useState<LoadState<{ tasks: TaskSummary[]; nextCursor: string | null }>>({
+    kind: "loading",
+  });
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
+  /*
+   * The route reuses this component when `:agentId` changes, so a page requested for one Agent can
+   * resolve after another Agent's list is on screen. Comparing the Agent is not enough -- moving away
+   * and back reloads the list under the same id -- so each load gets a generation, and an append only
+   * lands on the load it was started from.
+   */
+  const loadGeneration = useRef(0);
+
+  useEffect(() => {
+    let active = true;
+    loadGeneration.current += 1;
+    setState({ kind: "loading" });
+    setLoadMoreError(null);
+    setLoadingMore(false);
+    browserApi.tasks({ agentId }).then(
+      (value) =>
+        active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
+      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
+    );
+    return () => {
+      active = false;
+    };
+  }, [agentId]);
+
+  async function loadMore(): Promise<void> {
+    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
+    const pagedGeneration = loadGeneration.current;
+    setLoadingMore(true);
+    setLoadMoreError(null);
+    try {
+      const next = await browserApi.tasks({ agentId, cursor: state.value.nextCursor });
+      if (loadGeneration.current !== pagedGeneration) return;
+      setState((current) =>
+        current.kind === "ready"
+          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
+          : current,
+      );
+    } catch (error) {
+      if (loadGeneration.current !== pagedGeneration) return;
+      // The page already has these rows. Losing them to report a failed append costs the viewer more
+      // than the failure itself, so the list stays and the failure is reported next to its control.
+      setLoadMoreError(asError(error));
+    } finally {
+      if (loadGeneration.current === pagedGeneration) setLoadingMore(false);
+    }
+  }
+
+  return (
+    <section
+      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-tasks-heading"
+      data-ui="agent-tasks"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <Text as="h2" id="agent-tasks-heading" variant="heading">
+          Tasks
+        </Text>
+        <Link className="text-sm text-kumo-link" to="/tasks">
+          All Tasks
+        </Link>
+      </div>
+      {state.kind === "loading" ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Loading Tasks…
+        </p>
+      ) : null}
+      {state.kind === "error" ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Tasks are temporarily unavailable.
+        </p>
+      ) : null}
+      {state.kind === "ready" && state.value.tasks.length === 0 ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          No Tasks yet. Work this Agent handles in Feishu or Slack appears here.
+        </p>
+      ) : null}
+      {state.kind === "ready" && state.value.tasks.length > 0 ? (
+        <>
+          <div className="overflow-x-auto">
+            <Table className="w-full" aria-label="Agent Tasks" data-ui="task-table">
+              <thead>
+                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
+                  <th scope="col">Task</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.value.tasks.map((task) => (
+                  <TaskRow key={task.id} showAgent={false} task={task} />
+                ))}
+              </tbody>
+            </Table>
+          </div>
+          {state.value.nextCursor ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button disabled={loadingMore} type="button" variant="secondary" onClick={() => void loadMore()}>
+                {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+              </Button>
+              {loadMoreError ? (
+                <span className="text-sm text-kumo-subtle" role="status">
+                  Could not load more Tasks.
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </>
       ) : null}
     </section>
   );
@@ -531,7 +652,7 @@ function TaskSelect({
   );
 }
 
-function TaskRow({ task }: { task: TaskSummary }) {
+function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
@@ -540,13 +661,17 @@ function TaskRow({ task }: { task: TaskSummary }) {
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
-          <span>{task.agent.displayName}</span>
-          <span aria-hidden="true">·</span>
-          <ProviderIcon provider={task.source.provider} compact />
+          {showAgent ? (
+            <>
+              <span>{task.agent.displayName}</span>
+              <span aria-hidden="true"> · </span>
+            </>
+          ) : null}
+          <TaskProviderIcon provider={task.source.provider} compact />
           <span>{task.source.provider}</span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true"> · </span>
           <span>{task.sessionKind}</span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true"> · </span>
           <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
         </span>
       </td>
@@ -565,7 +690,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
 function SourceIdentity({ task }: { task: TaskSummary }) {
   return (
     <span className="inline-flex items-center gap-2" data-ui="task-source-identity">
-      <ProviderIcon provider={task.source.provider} />
+      <TaskProviderIcon provider={task.source.provider} />
       <span>
         <strong>{task.agent.displayName}</strong>
         <small>
@@ -576,20 +701,16 @@ function SourceIdentity({ task }: { task: TaskSummary }) {
   );
 }
 
-function ProviderIcon({
+function TaskProviderIcon({
   provider,
   compact = false,
 }: {
   provider: TaskSummary["source"]["provider"];
   compact?: boolean;
 }) {
-  if (provider !== "feishu")
-    return (
-      <span className="grid size-7 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-        S
-      </span>
-    );
-  return <img alt="" aria-hidden="true" className={compact ? "size-5" : "size-7"} src={feishuIconUrl} />;
+  return (
+    <ProviderIcon className={compact ? "mr-1 inline-block size-5" : "mr-1 inline-block size-6"} provider={provider} />
+  );
 }
 
 function DebugValue({ label, value }: { label: string; value: string }) {

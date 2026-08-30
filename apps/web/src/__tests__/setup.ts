@@ -62,4 +62,8 @@ afterEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   vi.mocked(fetch).mockReset();
   window.history.replaceState({}, "", "/");
+  // A popup that was still open when its tree unmounted leaves behind the scroll lock it applied to
+  // <body>. Nothing else in these tests writes an inline body style, so the next test starts in a
+  // document no earlier test has locked.
+  document.body.removeAttribute("style");
 });

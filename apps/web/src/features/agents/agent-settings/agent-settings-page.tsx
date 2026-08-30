@@ -121,10 +121,17 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
         {(config) => (
           <div className="grid gap-6">
             {agentSettingsGroups.map((group) => (
-              <section className="grid gap-3" key={group.key} aria-labelledby={`agent-settings-${group.key}`}>
-                <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
-                  {group.label}
-                </Text>
+              <section
+                className={group.label ? "mt-4 grid gap-3 border-t border-kumo-line pt-2" : "grid gap-3"}
+                key={group.key}
+                aria-label={group.label ?? "Agent setup"}
+                aria-labelledby={group.label ? `agent-settings-${group.key}` : undefined}
+              >
+                {group.label ? (
+                  <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
+                    {group.label}
+                  </Text>
+                ) : null}
                 <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
                   {agentSettingsSections
                     .filter((item) => item.group === group.key)
@@ -134,6 +141,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                           <span
                             className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint"
                             aria-hidden="true"
+                            data-ui="agent-settings-entry-icon"
                           >
                             <Icon name={item.icon} />
                           </span>
@@ -143,22 +151,18 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                           </span>
                         </>
                       );
-                      const computerReady =
-                        item.key === "computer" && agent.availability.dependencies.computer.state === "ready";
-                      if (computerReady) {
-                        return (
-                          <div
-                            className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
-                            key={item.key}
-                          >
-                            {content}
-                          </div>
-                        );
-                      }
+                      /*
+                       * Every row opens its page. A row that is a link only sometimes cannot be
+                       * predicted from looking at the list, and the Computer page is worth reading
+                       * whether or not the Computer currently needs attention.
+                       */
+                      const computerNeedsReview =
+                        item.key === "computer" && agent.availability.dependencies.computer.state !== "ready";
                       return (
                         <Link
                           className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
                           key={item.key}
+                          data-ui="agent-settings-entry"
                           {...agentSettingsSectionLink(agent.id, item.key)}
                         >
                           {content}
@@ -166,7 +170,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                             className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
                             aria-hidden="true"
                           >
-                            {item.key === "computer" ? <small>Review</small> : null}
+                            {computerNeedsReview ? <small>Review</small> : null}
                             <Icon name="chevron-right" />
                           </span>
                         </Link>

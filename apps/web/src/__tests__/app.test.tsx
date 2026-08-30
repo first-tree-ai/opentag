@@ -82,6 +82,8 @@ function installApi(
     runtimeProvider?: "codex" | "claude-code";
     meDelayMsAfterProfileUpdate?: number;
     meFailuresAfterProfileUpdate?: number;
+    /** Answers the `/me` refresh a profile save starts, so a test can hold it across a sign-out. */
+    meAfterProfileUpdate?: () => Promise<Response> | Response;
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
     setupFailureCode?: string;
@@ -165,6 +167,7 @@ function installApi(
     if (path === "/api/v1/me") {
       if (loggedOut && options.meAfterLogout) return options.meAfterLogout();
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
+      if (profileUpdated && options.meAfterProfileUpdate) return options.meAfterProfileUpdate();
       if (profileUpdated && options.meDelayMsAfterProfileUpdate) {
         await new Promise((resolve) => setTimeout(resolve, options.meDelayMsAfterProfileUpdate));
       }
@@ -1415,7 +1418,10 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => releaseAgentRead());
   });
 
-  it.each([403, 404])("does not let route state mask a terminal Agent detail response (%d)", async (status) => {
+  // Route state cannot mask the response here — this navigation warms the Agent's detail read
+  // first, so the cache is what the terminal response has to outrank. The route-state window,
+  // where the read has never held data, is covered in `agent-queries.test.tsx`.
+  it.each([403, 404])("replaces a cached Agent with a terminal detail response (%d)", async (status) => {
     let agentReads = 0;
     installApi({
       agentRead: () => {
@@ -2672,6 +2678,54 @@ describe("OpenTag Web App Shell", () => {
     });
     expect(await screen.findByLabelText("Loading current server state")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Open Reviewer" })).toBeNull();
+
+    await act(async () => {
+      releaseMe(json({ error: { message: "Sign in required" } }, 401));
+    });
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+  });
+
+  it("discards an Account refresh that outlived the session that started it", async () => {
+    let releaseRefresh: (response: Response) => void = () => undefined;
+    const pendingRefresh = new Promise<Response>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let releaseMe: (response: Response) => void = () => undefined;
+    const pendingMe = new Promise<Response>((resolve) => {
+      releaseMe = resolve;
+    });
+    installApi({ meAfterProfileUpdate: () => pendingRefresh, meAfterLogout: () => pendingMe });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Account" }));
+    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Ada Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save account profile" }));
+
+    // Sign out while the refresh that save started is still in flight. Clearing the cache cannot
+    // retire that read, because the cache never started it.
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+
+    // It left with a cookie that was still valid, so it answers for the Account that just left.
+    await act(async () => {
+      releaseRefresh(
+        json({
+          user: { id: userId, email: "ada@example.com", displayName: "Ada Renamed" },
+          setupCompletedAt: "2026-08-20T00:00:00.000Z",
+        }),
+      );
+    });
+
+    await act(async () => {
+      window.history.pushState({}, "", "/agents");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByLabelText("Loading current server state")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Ada Renamed");
+    expect(screen.queryByRole("button", { name: "Account menu" })).toBeNull();
 
     await act(async () => {
       releaseMe(json({ error: { message: "Sign in required" } }, 401));

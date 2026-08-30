@@ -1,4 +1,3 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
@@ -24,10 +23,9 @@ export function AppShell() {
 }
 
 export function AppShellContent() {
-  const { me } = useAccount();
+  const { endSession, me } = useAccount();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { setOpenMobile } = useSidebar();
   const [openMenu, setOpenMenu] = useState<"account">();
   const [loggingOut, setLoggingOut] = useState(false);
@@ -42,9 +40,10 @@ export function AppShellContent() {
     setAccountError(undefined);
     try {
       await browserApi.logout();
-      // Every query is scoped to the authenticated Account. Clear it before the login navigation so
-      // a later Account cannot observe the previous Account's data while its own reads are pending.
-      queryClient.clear();
+      // Everything read here belongs to the Account that is signing out. End the session before the
+      // login navigation, so a later Account cannot observe the previous one's data while its own
+      // reads are pending, and so a refresh still in flight cannot put it back afterwards.
+      endSession();
       void navigate({ replace: true, to: "/login" });
     } catch (cause) {
       setAccountError(cause instanceof Error ? cause.message : "Unable to sign out");

@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
 import { AsyncState, toResourceState } from "../features/resource/resource-state.js";
@@ -32,6 +32,17 @@ function AuthenticatedAccountGate() {
   const queryClient = useQueryClient();
   const state = toResourceState(useQuery({ queryKey: queryKeys.me(), queryFn: () => browserApi.me() }));
   /**
+   * Which session the Account on screen belongs to. Clearing the cache ends the session for every
+   * read the cache started, but not for `refreshMe`, which the cache never started — so the session
+   * is counted, and a refresh that outlives its own discards its answer instead of writing the
+   * Account that has just signed out back over the cleared entry.
+   */
+  const session = useRef(0);
+  const endSession = useCallback(() => {
+    session.current += 1;
+    queryClient.clear();
+  }, [queryClient]);
+  /**
    * Installs the authoritative response before resolving, so a caller that navigates on the result
    * cannot have a gate re-evaluate the state this refresh was meant to replace.
    *
@@ -41,8 +52,9 @@ function AuthenticatedAccountGate() {
    * gate, replacing the whole signed-in surface with an error over a refresh the Account never saw.
    */
   const refreshMe = useCallback(async () => {
+    const startedIn = session.current;
     const next = await browserApi.me();
-    queryClient.setQueryData(queryKeys.me(), next);
+    if (session.current === startedIn) queryClient.setQueryData(queryKeys.me(), next);
     return next;
   }, [queryClient]);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
@@ -54,6 +66,7 @@ function AuthenticatedAccountGate() {
         <AccountContext
           value={{
             me: loaded,
+            endSession,
             refreshMe,
             // Resetting rather than invalidating, because this one is documented to show the loading
             // state again: invalidating would keep the Account on screen while it re-reads.

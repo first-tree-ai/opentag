@@ -106,6 +106,17 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByText("More runtimes coming soon.")).toBeTruthy();
   });
 
+  it("gives the Kumo agent name input an explicit accessible label", () => {
+    render(<OnboardingV2Page />);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    const input = screen.getByRole("textbox", { name: "Agent name" });
+    const labelId = input.getAttribute("aria-labelledby");
+    expect(labelId).toBeTruthy();
+    expect(document.getElementById(labelId ?? "")?.textContent).toBe("Agent name");
+  });
+
   it("explains an invalid name instead of advancing", () => {
     render(<OnboardingV2Page />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));

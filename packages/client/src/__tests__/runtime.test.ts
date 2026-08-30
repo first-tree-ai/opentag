@@ -230,7 +230,7 @@ describe("RuntimeConnection", () => {
     const apiConnection = new RuntimeConnection({
       ...controlledOptions(new ControlledWebSocket()),
       webSocketFactory: () => {
-        throw new OpenTagApiError("AUTH_INVALID_TOKEN", "auth", "access token was revoked");
+        throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "access token was revoked");
       },
     });
     await expect(apiConnection.run()).rejects.toThrow("access token was revoked; run computer connect again");
@@ -342,7 +342,9 @@ describe("RuntimeConnection", () => {
       connectionId,
     };
     const received: RuntimeBusinessFrame[] = [];
-    connection.subscribeBusinessFrames((frame) => received.push(frame));
+    connection.subscribeBusinessFrames((frame) => {
+      received.push(frame);
+    });
     const encoded = new TextEncoder().encode(JSON.stringify(business));
     socket.receiveData(encoded.buffer);
     socket.receiveData([Buffer.from(JSON.stringify(business))]);

@@ -1421,7 +1421,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View details" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
+    expect(screen.getByRole("link", { name: "View Details" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
     expect(screen.getByRole("link", { name: "Feishu · @reviewer" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/messaging`,
     );
@@ -1443,7 +1443,7 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it.each([
-    ["View details", "Usage"],
+    ["View Details", "Usage"],
     ["Settings", "Agent settings"],
   ])("keeps Agent context visible while opening %s", async (linkName, destinationHeading) => {
     let agentReads = 0;
@@ -1486,7 +1486,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("link", { name: "View details" }));
+    fireEvent.click(screen.getByRole("link", { name: "View Details" }));
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
     await waitFor(() => expect(agentReads).toBe(2));
     expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");

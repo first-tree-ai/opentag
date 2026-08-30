@@ -1,4 +1,4 @@
-import { INTERNAL_ONBOARDING_LAB_PATH } from "@opentag/shared";
+import { type AccountResetMode, INTERNAL_ONBOARDING_LAB_PATH, isAccountResetMode } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
@@ -15,9 +15,13 @@ function accountId(request: FastifyRequest): string {
  * deployment outside staging stays indistinguishable from one that never had the feature.
  *
  * Both halves are open to every authenticated Account, for different reasons. Scenario Preview is
- * client-side fixtures that read nothing and write nothing. The reset is destructive but reflexive:
- * it acts on the authenticated Account and never accepts a client-selected one, so each tester
- * returns their own onboarding to a first-run state and can reach nothing of anyone else's.
+ * client-side fixtures that read nothing and write nothing. The two reset modes write, but both are
+ * reflexive: they act on the authenticated Account and never accept a client-selected one, so each
+ * tester reopens their own onboarding and can reach nothing of anyone else's.
+ *
+ * The mode is required rather than defaulted. `reset-all` destroys the Account's Agents and Computer
+ * access while `reboard` keeps them, and a caller that omitted the mode would otherwise be handed
+ * the destructive one; a rejected request is the better answer.
  */
 export function registerInternalOnboardingLabRoutes(
   app: FastifyInstance,
@@ -37,9 +41,27 @@ export function registerInternalOnboardingLabRoutes(
   });
 
   app.post(INTERNAL_ONBOARDING_LAB_PATH, { preHandler }, async (request, reply) => {
-    await reset.resetOnboarding(requireLab(request));
+    const account = requireLab(request);
+    const mode = requestedMode(request.body);
+    if (mode === "reboard") await reset.reboard(account);
+    else await reset.resetOnboarding(account);
     return reply.code(204).send();
   });
+}
+
+function requestedMode(body: unknown): AccountResetMode {
+  const mode = (body as { mode?: unknown } | null | undefined)?.mode;
+  if (!isAccountResetMode(mode)) throw modeRequired();
+  return mode;
+}
+
+function modeRequired(): AuthServiceError {
+  return new AuthServiceError(
+    "VALIDATION_ERROR",
+    "validation",
+    'The reset mode is required and must be "reset-all" or "reboard"',
+    400,
+  );
 }
 
 function labNotFound(): AuthServiceError {

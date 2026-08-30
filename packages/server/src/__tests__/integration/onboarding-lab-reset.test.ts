@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
@@ -34,6 +34,16 @@ beforeAll(async () => {
 
 afterAll(async () => testDatabase.stop());
 beforeEach(async () => testDatabase.reset());
+
+/*
+ * Every fixture opens its own pool, so they are closed between tests rather than held until the
+ * file ends. Postgres caps its client count globally, and a file that only ever opens pools starves
+ * both itself and whatever runs beside it once enough tests accumulate.
+ */
+const openPools: { end: () => Promise<unknown> }[] = [];
+afterEach(async () => {
+  await Promise.all(openPools.splice(0).map((pool) => pool.end()));
+});
 
 interface SeededAccount {
   accountId: string;
@@ -90,6 +100,7 @@ async function fixture(
     environment: "staging",
     registry: { closeEnrollment },
   });
+  openPools.push(client.sql);
   return { ...client, agentService, closeEnrollment, lab, machineAuth, registry, reset };
 }
 
@@ -628,5 +639,87 @@ describe("staging Onboarding Lab reset", () => {
 
     const [row] = await value.database.select().from(users).where(eq(users.id, empty.id));
     expect(row?.setupCompletedAt).toBeNull();
+  });
+
+  it("re-boards by reopening onboarding and destroying nothing the Account owns", async () => {
+    const value = await fixture();
+    const before = await facts(value.database, value.lab);
+    const legacyBefore = await legacySnapshot(value.database, value.lab);
+    expect(before).toMatchObject({ activeAgents: 1, activeBindings: 1, openSessions: 1, ownedComputers: 1 });
+    expect(before.accountSetupCompletedAt).not.toBeNull();
+
+    await value.reset.reboard(value.lab.accountId);
+
+    const after = await facts(value.database, value.lab);
+    // Onboarding is open again, and that is the only difference: every resource the reset would
+    // have destroyed is still exactly as it was, down to the binding row and legacy projections.
+    expect(after.accountSetupCompletedAt).toBeNull();
+    expect({ ...after, accountSetupCompletedAt: before.accountSetupCompletedAt }).toEqual(before);
+    expect(await legacySnapshot(value.database, value.lab)).toEqual(legacyBefore);
+    expect(value.closeEnrollment).not.toHaveBeenCalled();
+  });
+
+  it("re-boards an Account whose resources would fail the first-run verification", async () => {
+    const value = await fixture();
+    const before = await facts(value.database, value.lab);
+    expect(before.activeAgents).toBe(1);
+    expect(before.usableCodes).toBeGreaterThan(0);
+
+    // A live Agent plus a usable connect code is exactly the state `resetOnboarding` refuses to
+    // commit on. `reboard` never asks that question, so it succeeds and leaves both standing.
+    await expect(value.reset.reboard(value.lab.accountId)).resolves.toBeUndefined();
+
+    const after = await facts(value.database, value.lab);
+    expect(after).toMatchObject({ activeAgents: 1, accountSetupCompletedAt: null });
+    expect(after.usableCodes).toBe(before.usableCodes);
+    expect(after.activeCredentials).toBe(before.activeCredentials);
+  });
+
+  it("succeeds when it runs again on an already re-boarded Account", async () => {
+    const value = await fixture();
+
+    await value.reset.reboard(value.lab.accountId);
+    await expect(value.reset.reboard(value.lab.accountId)).resolves.toBeUndefined();
+
+    expect((await facts(value.database, value.lab)).accountSetupCompletedAt).toBeNull();
+  });
+
+  it("refuses to re-board outside staging, whichever Account asks", async () => {
+    const value = await fixture();
+    const other = await seedOtherAccount(value.database, value.agentService, value.machineAuth);
+    for (const environment of ["dev", "prod"] as const) {
+      const guarded = new OnboardingResetService({
+        agents: value.agentService,
+        database: value.database,
+        environment,
+      });
+
+      await expect(guarded.reboard(value.lab.accountId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(guarded.reboard(other.accountId)).rejects.toMatchObject({ statusCode: 404 });
+    }
+
+    expect((await facts(value.database, value.lab)).accountSetupCompletedAt).not.toBeNull();
+    expect((await facts(value.database, other)).accountSetupCompletedAt).not.toBeNull();
+  });
+
+  it("re-boards only the asking Account, leaving another tester's setup complete", async () => {
+    const value = await fixture();
+    const other = await seedOtherAccount(value.database, value.agentService, value.machineAuth);
+
+    await value.reset.reboard(value.lab.accountId);
+
+    expect((await facts(value.database, value.lab)).accountSetupCompletedAt).toBeNull();
+    const otherFacts = await facts(value.database, other);
+    expect(otherFacts.accountSetupCompletedAt).not.toBeNull();
+    expect(otherFacts.activeAgents).toBe(1);
+  });
+
+  it("refuses to re-board a suspended Account", async () => {
+    const value = await fixture();
+    await value.database.update(users).set({ suspendedAt: new Date() }).where(eq(users.id, value.lab.accountId));
+
+    await expect(value.reset.reboard(value.lab.accountId)).rejects.toBeInstanceOf(AuthServiceError);
+
+    expect((await facts(value.database, value.lab)).accountSetupCompletedAt).not.toBeNull();
   });
 });

@@ -24,7 +24,7 @@ function OnboardingLabRoute() {
   const navigate = useNavigate();
   const { scenario } = Route.useSearch();
   const offered = toResourceState(
-    useQuery({ queryKey: queryKeys.onboardingLabOffered(), queryFn: () => browserApi.onboardingLabOffered() }),
+    useQuery({ queryKey: queryKeys.internalToolsOffered(), queryFn: () => browserApi.internalToolsOffered() }),
   );
   return (
     <AsyncState state={offered}>

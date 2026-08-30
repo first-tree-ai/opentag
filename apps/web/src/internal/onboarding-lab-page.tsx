@@ -68,7 +68,7 @@ export function OnboardingLabPage({ onResetSucceeded, onScenarioChange, scenario
     setConfirming(false);
     setResetState({ kind: "pending" });
     try {
-      await browserApi.resetOnboardingLab();
+      await browserApi.resetAccount("reset-all");
       await onResetSucceeded();
     } catch (cause) {
       setResetState({

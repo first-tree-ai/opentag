@@ -175,7 +175,7 @@ describe("Onboarding Lab page", () => {
   });
 
   it("requires one confirmation before it resets this Account", async () => {
-    const reset = vi.spyOn(browserApi, "resetOnboardingLab").mockResolvedValue();
+    const reset = vi.spyOn(browserApi, "resetAccount").mockResolvedValue();
     renderLab();
     openSwitcher();
 
@@ -191,18 +191,19 @@ describe("Onboarding Lab page", () => {
   });
 
   it("hands over only after the Server reports a verified reset", async () => {
-    const reset = vi.spyOn(browserApi, "resetOnboardingLab").mockResolvedValue();
+    const reset = vi.spyOn(browserApi, "resetAccount").mockResolvedValue();
     const { onResetSucceeded } = renderLab();
 
     await confirmReset();
 
     await waitFor(() => expect(onResetSucceeded).toHaveBeenCalledTimes(1));
-    expect(reset).toHaveBeenCalledTimes(1);
+    // The Lab's reset is the destructive one; the lighter re-board lives on the internal tools index.
+    expect(reset).toHaveBeenCalledExactlyOnceWith("reset-all");
   });
 
   it("stays on the Lab with a retry when the reset fails", async () => {
     const reset = vi
-      .spyOn(browserApi, "resetOnboardingLab")
+      .spyOn(browserApi, "resetAccount")
       .mockRejectedValueOnce(new Error("The Account still has active OpenTag resources"))
       .mockResolvedValueOnce();
     const { onResetSucceeded } = renderLab();

@@ -52,15 +52,20 @@ export interface OnboardingResetServiceOptions {
 }
 
 /**
- * Staging-only orchestration that returns the authenticated Account to a first-run state.
+ * Staging-only orchestration that reopens onboarding for the authenticated Account, in either of
+ * two modes.
  *
- * It is deliberately separate from the production setup-completion module, whose transition
- * stays one-way. Every step is idempotent: a failed reset can simply be run again and continues
- * from current facts. Setup completion is cleared last, so the Account never enters onboarding
- * before active resource cleanup has been verified.
+ * `resetOnboarding` returns the Account to a genuine first-run state: it destroys the Agents,
+ * Computer access and messaging bindings the Account owns, and clears setup completion last, so the
+ * Account never enters onboarding before that cleanup has been verified. `reboard` keeps every one
+ * of those resources and only clears setup completion, so the Account walks the flow again from an
+ * existing Agent. That is why the two cannot share a commit path: the first-run verification
+ * `resetOnboarding` depends on is exactly what `reboard` is defined to leave standing.
  *
- * Reset acts only on Agents this Account created and Computers it owns. It never writes
- * management Workspace persistence.
+ * Both are deliberately separate from the production setup-completion module, whose transition
+ * stays one-way, and both are idempotent: a failed run can simply be run again and continues from
+ * current facts. Neither acts on anything beyond Agents this Account created and Computers it owns,
+ * and neither writes management Workspace persistence.
  */
 export class OnboardingResetService {
   readonly #afterCleanup?: () => Promise<void>;
@@ -146,13 +151,27 @@ export class OnboardingResetService {
     });
   }
 
+  /**
+   * Reopens onboarding without destroying anything: the Account keeps its Agents, Computers and
+   * messaging bindings and resumes into an existing-Agent flow. It deliberately runs no cleanup and
+   * no first-run verification, so testing the create path still needs `resetOnboarding`.
+   */
+  async reboard(accountId: string): Promise<void> {
+    if (!this.enabled) throw resourceNotFound();
+    const now = this.#now();
+    await this.#database.transaction(async (transaction) => {
+      await lockActiveAccount(transaction, accountId);
+      await clearSetupCompletion(transaction, accountId, now);
+    });
+  }
+
   async #commitFirstRunState(accountId: string): Promise<void> {
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
       await lockActiveAccount(transaction, accountId);
       await this.#verifyCleanedUp(transaction, accountId, now);
       await this.#afterVerified?.();
-      await transaction.update(users).set({ setupCompletedAt: null, updatedAt: now }).where(eq(users.id, accountId));
+      await clearSetupCompletion(transaction, accountId, now);
     });
   }
 
@@ -203,6 +222,10 @@ export class OnboardingResetService {
     const [row] = await query;
     return row?.value ?? 0;
   }
+}
+
+async function clearSetupCompletion(transaction: DatabaseTransaction, accountId: string, now: Date): Promise<void> {
+  await transaction.update(users).set({ setupCompletedAt: null, updatedAt: now }).where(eq(users.id, accountId));
 }
 
 async function lockActiveAccount(transaction: DatabaseTransaction, accountId: string): Promise<void> {

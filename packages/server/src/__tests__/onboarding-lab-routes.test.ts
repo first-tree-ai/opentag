@@ -15,12 +15,14 @@ afterEach(async () => {
 function fixture(options: { environment?: "dev" | "staging" | "prod"; registered?: boolean } = {}) {
   const accountId = randomUUID();
   const resetOnboarding = vi.fn().mockResolvedValue(undefined);
+  const reboard = vi.fn().mockResolvedValue(undefined);
   const reset = new OnboardingResetService({
     agents: { suspendById: vi.fn(), deleteById: vi.fn() },
     database: {} as never,
     environment: options.environment ?? "staging",
   });
   vi.spyOn(reset, "resetOnboarding").mockImplementation(resetOnboarding);
+  vi.spyOn(reset, "reboard").mockImplementation(reboard);
   const betterAuth = signedInBrowser(accountId, { publicUrl: PUBLIC_ORIGIN });
   const app = createApp({
     authService: {
@@ -31,7 +33,16 @@ function fixture(options: { environment?: "dev" | "staging" | "prod"; registered
     ...(options.registered === false ? {} : { stagingOnboardingLab: { reset } }),
   });
   apps.push(app);
-  return { accountId, app, resetOnboarding };
+  return { accountId, app, reboard, resetOnboarding };
+}
+
+function resetRequest(mode: unknown, extra: Record<string, unknown> = {}) {
+  return {
+    method: "POST" as const,
+    url: INTERNAL_ONBOARDING_LAB_PATH,
+    headers: { ...browserHeaders(), "content-type": "application/json" },
+    payload: { mode, ...extra },
+  };
 }
 
 function browserHeaders(extra: Record<string, string> = {}) {
@@ -52,11 +63,12 @@ describe("internal Onboarding Lab interface", () => {
 
     const [read, reset] = await Promise.all([
       value.app.inject({ method: "GET", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
-      value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+      value.app.inject(resetRequest("reset-all")),
     ]);
     expect(read.statusCode).toBe(404);
     expect(reset.statusCode).toBe(404);
     expect(value.resetOnboarding).not.toHaveBeenCalled();
+    expect(value.reboard).not.toHaveBeenCalled();
   });
 
   it("answers any authenticated staging Account, since both halves are open to it", async () => {
@@ -75,12 +87,7 @@ describe("internal Onboarding Lab interface", () => {
   it("resets the authenticated Account and never a client-selected Account", async () => {
     const value = fixture();
 
-    const reset = await value.app.inject({
-      method: "POST",
-      url: INTERNAL_ONBOARDING_LAB_PATH,
-      headers: { ...browserHeaders(), "content-type": "application/json" },
-      payload: { accountId: randomUUID() },
-    });
+    const reset = await value.app.inject(resetRequest("reset-all", { accountId: randomUUID() }));
 
     expect(reset.statusCode).toBe(204);
     expect(value.resetOnboarding).toHaveBeenCalledExactlyOnceWith(value.accountId);
@@ -91,13 +98,8 @@ describe("internal Onboarding Lab interface", () => {
     const second = fixture();
 
     await Promise.all([
-      first.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
-      second.app.inject({
-        method: "POST",
-        url: INTERNAL_ONBOARDING_LAB_PATH,
-        headers: { ...browserHeaders(), "content-type": "application/json" },
-        payload: { accountId: first.accountId },
-      }),
+      first.app.inject(resetRequest("reset-all")),
+      second.app.inject(resetRequest("reset-all", { accountId: first.accountId })),
     ]);
 
     expect(first.resetOnboarding).toHaveBeenCalledExactlyOnceWith(first.accountId);
@@ -111,12 +113,13 @@ describe("internal Onboarding Lab interface", () => {
 
       const [read, reset] = await Promise.all([
         value.app.inject({ method: "GET", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
-        value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+        value.app.inject(resetRequest("reset-all")),
       ]);
 
       expect(read.statusCode).toBe(404);
       expect(reset.statusCode).toBe(404);
       expect(value.resetOnboarding).not.toHaveBeenCalled();
+      expect(value.reboard).not.toHaveBeenCalled();
     }
   });
 
@@ -135,11 +138,7 @@ describe("internal Onboarding Lab interface", () => {
       new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "The Account still has active OpenTag resources"),
     );
 
-    const reset = await value.app.inject({
-      method: "POST",
-      url: INTERNAL_ONBOARDING_LAB_PATH,
-      headers: browserHeaders(),
-    });
+    const reset = await value.app.inject(resetRequest("reset-all"));
 
     expect(reset.statusCode).toBe(409);
     expect(reset.json()).toMatchObject({
@@ -151,19 +150,63 @@ describe("internal Onboarding Lab interface", () => {
     });
   });
 
+  it("re-boards without destroying anything when the caller asks for the lighter mode", async () => {
+    const value = fixture();
+
+    const reboard = await value.app.inject(resetRequest("reboard", { accountId: randomUUID() }));
+
+    expect(reboard.statusCode).toBe(204);
+    expect(value.reboard).toHaveBeenCalledExactlyOnceWith(value.accountId);
+    expect(value.resetOnboarding).not.toHaveBeenCalled();
+  });
+
+  it("refuses a request that names no mode rather than choosing the destructive one", async () => {
+    const value = fixture();
+
+    const [absent, empty] = await Promise.all([
+      value.app.inject({
+        method: "POST",
+        url: INTERNAL_ONBOARDING_LAB_PATH,
+        headers: { ...browserHeaders(), "content-type": "application/json" },
+        payload: {},
+      }),
+      value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+    ]);
+
+    expect(absent.statusCode).toBe(400);
+    expect(empty.statusCode).toBe(400);
+    expect(absent.json()).toMatchObject({ error: { category: "validation", code: "VALIDATION_ERROR" } });
+    expect(value.resetOnboarding).not.toHaveBeenCalled();
+    expect(value.reboard).not.toHaveBeenCalled();
+  });
+
+  it("refuses a mode it does not recognise", async () => {
+    const value = fixture();
+
+    for (const mode of ["reset", "RESET-ALL", "", 1, null]) {
+      const refused = await value.app.inject(resetRequest(mode));
+
+      expect(refused.statusCode).toBe(400);
+    }
+    expect(value.resetOnboarding).not.toHaveBeenCalled();
+    expect(value.reboard).not.toHaveBeenCalled();
+  });
+
   it("requires browser CSRF protection for the reset", async () => {
     const value = fixture();
 
     const [missingHeader, foreignOrigin] = await Promise.all([
       value.app.inject({
-        method: "POST",
-        url: INTERNAL_ONBOARDING_LAB_PATH,
-        headers: { cookie: "opentag.session_token=account-session; opentag_csrf=csrf-token", origin: PUBLIC_ORIGIN },
+        ...resetRequest("reset-all"),
+        headers: {
+          "content-type": "application/json",
+          cookie: "opentag.session_token=account-session; opentag_csrf=csrf-token",
+          origin: PUBLIC_ORIGIN,
+        },
       }),
       value.app.inject({
-        method: "POST",
-        url: INTERNAL_ONBOARDING_LAB_PATH,
-        headers: browserHeaders({ origin: "https://attacker.example.com" }),
+        ...resetRequest("reset-all"),
+        headers: { ...browserHeaders({ origin: "https://attacker.example.com" }), "content-type": "application/json" },
       }),
     ]);
 

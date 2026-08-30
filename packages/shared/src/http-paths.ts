@@ -29,6 +29,21 @@ export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMP
 export const INTERNAL_ONBOARDING_LAB_PATH = `${API_V1_PREFIX}/internal/onboarding-lab`;
 
 /**
+ * What a staging Account reset does to the Account it authenticates as.
+ *
+ * `reset-all` returns it to a genuine first-run state, destroying the Agents, Computer access and
+ * messaging bindings it owns. `reboard` only reopens onboarding, keeping every resource: it walks
+ * the flow again from an existing Agent, so it exercises the resume path rather than the create
+ * path. Neither mode is a default — the caller always says which one it means.
+ */
+export const ACCOUNT_RESET_MODES = ["reset-all", "reboard"] as const;
+export type AccountResetMode = (typeof ACCOUNT_RESET_MODES)[number];
+
+export function isAccountResetMode(value: unknown): value is AccountResetMode {
+  return typeof value === "string" && (ACCOUNT_RESET_MODES as readonly string[]).includes(value);
+}
+
+/**
  * Account-native management collections. Ownership comes only from the authenticated Account, so these
  * paths accept neither a management `workspaceId` nor a client-selected `accountId`.
  */

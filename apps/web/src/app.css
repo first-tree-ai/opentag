@@ -1,3 +1,8 @@
+@import "@cloudflare/kumo/styles/tailwind";
+@import "tailwindcss";
+@import "./ui/kumo-theme.css";
+@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--text-color-kumo-default);

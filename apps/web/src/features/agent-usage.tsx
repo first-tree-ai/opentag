@@ -146,7 +146,7 @@ function UsageSummaryState({
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
   return (
     <dl
-      className="grid gap-3 sm:grid-cols-3"
+      className="grid gap-3 @min-[36rem]/workspace:grid-cols-3"
       aria-label={`Agent usage for the last ${usage.windowDays} days`}
       data-ui="usage-metrics"
     >
@@ -183,7 +183,7 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
     <>
       <UsageMetrics usage={usage} />
       <UsageCoverage usage={usage} includesCharts />
-      <div className="grid gap-6 lg:grid-cols-2" data-ui="usage-analysis">
+      <div className="grid gap-6 @min-[48rem]/workspace:grid-cols-2" data-ui="usage-analysis">
         <section aria-labelledby="agent-usage-trend-heading">
           <header>
             <Text as="h3" id="agent-usage-trend-heading" variant="heading">

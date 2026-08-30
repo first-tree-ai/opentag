@@ -19,9 +19,13 @@ import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
-import { buildComputerConnectCommand, type MachineAuthService } from "../services/computers/index.js";
+import {
+  buildComputerConnectCommand,
+  type ComputerService,
+  type MachineAuthService,
+} from "../services/computers/index.js";
 import type { TaskService } from "../services/tasks/index.js";
-import type { WorkspaceAdminService, WorkspaceSetupService } from "../services/workspaces/index.js";
+import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const TaskListQuerySchema = z
@@ -40,22 +44,13 @@ const TaskDetailQuerySchema = z
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 
-/**
- * Resolves the authenticated Account to the compatibility Workspace that still backs hidden dual-write
- * persistence. Canonical Account resource authority uses `created_by_user_id` and `owner_account_id`.
- */
-export interface AccountScopeResolver {
-  resolveCompatibilityWorkspaceId(accountId: string): Promise<string>;
-}
-
 export interface AccountRoutesOptions {
-  accountScope?: AccountScopeResolver;
   agentService?: AgentService;
   computerConnectCode?: { environment: ChannelName; publicUrl: string };
+  computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
   taskService?: TaskService;
-  workspaceService?: WorkspaceAdminService;
   workspaceSetupService?: WorkspaceSetupService;
 }
 
@@ -67,8 +62,7 @@ function accountId(request: FastifyRequest): string {
 
 /**
  * Account-native management collections. Ownership comes only from the authenticated Account: these routes
- * accept neither a management `workspaceId` nor a client-selected `accountId`, and the legacy
- * Workspace-scoped routes stay registered alongside them for the compatibility window.
+ * accept neither a management `workspaceId` nor a client-selected `accountId`.
  */
 export function registerAccountRoutes(
   app: FastifyInstance,
@@ -76,7 +70,6 @@ export function registerAccountRoutes(
   options: AccountRoutesOptions,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
-  const { accountScope } = options;
 
   if (options.agentService) {
     const agentService = options.agentService;
@@ -110,8 +103,8 @@ export function registerAccountRoutes(
     });
   }
 
-  if (options.workspaceService) {
-    const workspaceService = options.workspaceService;
+  if (options.computerService) {
+    const computerService = options.computerService;
 
     app.get(HTTP_PATHS.accountComputers, { preHandler }, async (request, reply) => {
       const account = accountId(request);
@@ -119,7 +112,7 @@ export function registerAccountRoutes(
         .code(200)
         .send(
           ListWorkspaceComputersResponseSchema.parse(
-            await workspaceService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
+            await computerService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
           ),
         );
     });
@@ -131,15 +124,7 @@ export function registerAccountRoutes(
 
     app.post(HTTP_PATHS.accountComputerConnectCodes, { preHandler }, async (request, reply) => {
       const input = parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
-      const account = accountId(request);
-      const issued =
-        input.mode === "repair"
-          ? await machineAuthService.issueForAccount(account, input)
-          : await machineAuthService.issueForAccount(
-              account,
-              input,
-              await accountScope?.resolveCompatibilityWorkspaceId(account),
-            );
+      const issued = await machineAuthService.issueForAccount(accountId(request), input);
       return reply
         .header("Cache-Control", "no-store")
         .code(201)

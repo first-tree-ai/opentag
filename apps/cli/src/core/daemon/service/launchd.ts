@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { ensurePrivateDirectory } from "@opentag/client";
 import { resolveDaemonPaths } from "../paths.js";
@@ -87,8 +87,12 @@ export function renderLaunchdPlist(options: {
 
 export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServiceBackend {
   const identity = deriveServiceIdentity(options.serviceId);
-  const uid = options.uid ?? userInfo().uid;
-  const userHome = options.userHome ?? homedir();
+  const account = options.uid === undefined || options.userHome === undefined ? userInfo() : undefined;
+  const uid = options.uid ?? account?.uid;
+  const userHome = options.userHome ?? account?.homedir;
+  if (uid === undefined || userHome === undefined) {
+    throw new DaemonServiceError("CONFIGURATION", "The operating system account record is incomplete");
+  }
   const domain = `gui/${uid}`;
   const target = `${domain}/${identity.launchdLabel}`;
   const launchctl = options.launchctl ?? "launchctl";

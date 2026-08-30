@@ -176,7 +176,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 </Link>
                               ) : null}
                             </div>
-                            <dl className="grid gap-3 rounded-md bg-kumo-recessed p-3 sm:grid-cols-2">
+                            <dl className="grid gap-3 rounded-md bg-kumo-recessed p-3 @min-[36rem]/workspace:grid-cols-2">
                               <div>
                                 <dt>Contact</dt>
                                 <dd>@{agent.name}</dd>

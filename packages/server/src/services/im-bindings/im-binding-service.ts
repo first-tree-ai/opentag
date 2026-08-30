@@ -29,8 +29,8 @@ import {
   sessionPlacements,
   sessions,
   slackInstallations,
-  workspaceComputers,
 } from "../../db/schema/index.js";
+import { schemaRequiredSlackInstallationProjection } from "../../db/schema-required-legacy.js";
 import type { ApplicationCipher } from "../crypto.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
@@ -66,7 +66,6 @@ export interface SlackInstallationIngress {
   installationId: string;
   generation: number;
   agentId: string;
-  workspaceId: string;
   appId: string;
   teamId: string;
   botUserId: string;
@@ -102,7 +101,6 @@ export interface SlackConnectionMaterial {
   imBindingId: string;
   installationId: string;
   generation: number;
-  workspaceId: string;
   appId: string;
   teamId: string;
   botUserId: string;
@@ -330,16 +328,9 @@ export class ImBindingService {
 
   async getAgentWorkspaceComputerId(agentId: string): Promise<string | undefined> {
     const [agent] = await this.#database
-      .select({ workspaceComputerId: workspaceComputers.id })
+      .select({ workspaceComputerId: agents.computerId })
       .from(agents)
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, agents.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     return agent?.workspaceComputerId;
@@ -365,13 +356,11 @@ export class ImBindingService {
         slackInstallation: slackInstallations,
         boundAgentId: imBindings.agentId,
         agentCreatedByUserId: agents.createdByUserId,
-        agentWorkspaceComputerId: agents.workspaceComputerId,
         agentStatus: agents.status,
         computerOwnerAccountId: accountComputers.ownerAccountId,
-        placementComputerId: sessionPlacements.workspaceComputerId,
+        placementComputerId: sessionPlacements.computerId,
         placementGeneration: sessionPlacements.generation,
-        workspaceComputerId: workspaceComputers.id,
-        workspaceId: agents.workspaceId,
+        workspaceComputerId: agents.computerId,
       })
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
@@ -379,14 +368,6 @@ export class ImBindingService {
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .leftJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
-      .leftJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, agents.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
       .where(eq(sessions.id, request.sessionId))
       .limit(1);
     const rejected = (
@@ -402,9 +383,7 @@ export class ImBindingService {
       row.sessionKind === "internal" ||
       row.boundAgentId !== request.agentId ||
       row.computerOwnerAccountId !== row.agentCreatedByUserId ||
-      row.agentWorkspaceComputerId !== computerAuth.workspaceComputerId ||
       row.workspaceComputerId !== computerAuth.workspaceComputerId ||
-      row.workspaceId !== computerAuth.workspaceId ||
       row.agentStatus !== "active"
     ) {
       return rejected("agent_mismatch");
@@ -638,7 +617,6 @@ export class ImBindingService {
       imBindingId,
       installationId: ingress.installationId,
       generation: ingress.generation,
-      workspaceId: ingress.workspaceId,
       appId: ingress.appId,
       teamId: ingress.teamId,
       botUserId: ingress.botUserId,
@@ -1315,7 +1293,6 @@ export class ImBindingService {
       installationId: installation.id,
       generation: installation.credentialGeneration,
       agentId: installation.agentId,
-      workspaceId: installation.workspaceId,
       appId: installation.externalAppId,
       teamId: installation.externalTeamId,
       botUserId: installation.externalBotId,
@@ -1396,12 +1373,13 @@ export class ImBindingService {
     const encryptedCredential = this.#cipher.encrypt(JSON.stringify(credential));
     const activate = async (transaction: DatabaseTransaction) => {
       const [agent] = await transaction
-        .select({ id: agents.id, workspaceId: agents.workspaceId })
+        .select({ computerId: agents.computerId, id: agents.id })
         .from(agents)
         .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
         .limit(1)
         .for("update");
       if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
+      const schemaInstallation = await schemaRequiredSlackInstallationProjection(transaction, agent.computerId);
       const [currentRoute] = await transaction
         .select()
         .from(imBindings)
@@ -1519,7 +1497,7 @@ export class ImBindingService {
             transaction,
             {
               agentId: input.agentId,
-              workspaceId: agent.workspaceId,
+              ...schemaInstallation,
               appId: input.appId,
               teamId: input.teamId,
               enterpriseId: input.enterpriseId ?? null,
@@ -1585,7 +1563,7 @@ export class ImBindingService {
         transaction,
         {
           agentId: input.agentId,
-          workspaceId: agent.workspaceId,
+          ...schemaInstallation,
           appId: input.appId,
           teamId: input.teamId,
           enterpriseId: input.enterpriseId ?? null,

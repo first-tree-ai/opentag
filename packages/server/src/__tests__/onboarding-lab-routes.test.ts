@@ -19,7 +19,6 @@ function fixture(options: { environment?: "dev" | "staging" | "prod"; registered
     agents: { suspendById: vi.fn(), deleteById: vi.fn() },
     database: {} as never,
     environment: options.environment ?? "staging",
-    workspaceAdmins: {} as never,
   });
   vi.spyOn(reset, "resetOnboarding").mockImplementation(resetOnboarding);
   const betterAuth = signedInBrowser(accountId, { publicUrl: PUBLIC_ORIGIN });

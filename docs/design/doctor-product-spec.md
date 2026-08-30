@@ -270,9 +270,16 @@ Service-status 边界必须从经过评审的绝对位置执行受治理的系�
 [#244](https://github.com/first-tree-ai/opentag/issues/244) 可以在独立的 service-module
 变更中实现，但它的正确性条件是 `daemon.service` 检查能够通过的前置条件。
 
-Issue [#239](https://github.com/first-tree-ai/opentag/issues/239) 涉及 service definition
-lookup 如何解析 account home 与 XDG 路径，继续作为独立 service-module follow-up，
-不阻塞 P0。存在歧义时结果保持失败，不得猜测或转成 pass。
+Issue [#239](https://github.com/first-tree-ai/opentag/issues/239) 的 service-module 约束为：
+service manager 必须从同一次操作系统 account record 快照取得 uid、username 与 account
+home；launchd plist 与 systemd user unit 均从该 account home 下的产品约定位置查找。调用
+CLI 的 shell 所提供的 `HOME` 或 `XDG_CONFIG_HOME` 不得改变 service definition 的位置。
+这与 First Tree 中“连接流程安装 daemon、doctor/status 复用同一 supervisor backend”的
+产品行为一致，但 OpenTag 不复用其受 shell home/XDG 影响的路径解析实现。
+
+OpenTag 当前不支持把 service definition 安装到自定义 XDG 路径。如果操作系统的用户级
+service manager 被配置为只从其他位置加载 unit，安装/状态后置条件必须失败，不得猜测
+另一份 definition 或转成 pass。
 
 #### D. 已登记 Server 的健康状态
 

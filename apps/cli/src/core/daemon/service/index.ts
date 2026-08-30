@@ -1,6 +1,6 @@
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { resolve } from "node:path";
-import { readMachineCredentials, resolveOpenTagHome } from "@opentag/client";
+import { readMachineCredentials, resolveBoundAccountComputer, resolveOpenTagHome } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
 import { CHANNEL } from "../../../build-info.js";
 import { channelConfig } from "../../channel/config.js";
@@ -53,18 +53,18 @@ export async function createDaemonServiceManager(
 ): Promise<DaemonServiceManager> {
   const environment = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
+  const account = userInfo();
   const home = await canonicalizeServiceHome(resolve(options.home ?? resolveOpenTagHome(environment)));
   const runner = options.runner ?? defaultServiceRunner;
-  const userHome = await canonicalizeServiceHome(resolve(options.userHome ?? homedir()));
+  const userHome = await canonicalizeServiceHome(resolve(options.userHome ?? account.homedir));
   const channelDefaultHome = await canonicalizeServiceHome(getChannelConfig(CHANNEL, userHome).defaultHome);
   const invocation =
     options.invocation ??
     (platform === "darwin" || platform === "linux"
       ? await resolveCliInvocation({ binName: channelConfig.binName, env: options.env })
       : { args: [], program: process.execPath });
-  const uid = options.uid ?? userInfo().uid;
+  const uid = options.uid ?? account.uid;
   const backend = createBackend({
-    env: options.env,
     home,
     invocation,
     platform,
@@ -72,7 +72,7 @@ export async function createDaemonServiceManager(
     sourcePath: environment.PATH,
     uid,
     userHome,
-    username: options.username,
+    username: options.username ?? account.username,
   });
 
   const status = async (): Promise<DaemonServiceInfo> => attachOwner(await backend.status(), home);
@@ -118,14 +118,9 @@ export async function createDaemonServiceManager(
           { cause: error },
         );
       }
-      if (!credentials?.enrollments.length) {
+      const bound = resolveBoundAccountComputer(credentials);
+      if (bound.status === "disconnected") {
         throw new DaemonServiceError("CONFIGURATION", "This Computer is not enrolled; run computer connect first");
-      }
-      if (credentials.enrollments.length !== 1) {
-        throw new DaemonServiceError(
-          "CONFIGURATION",
-          "This OpenTag home has multiple enrollments and cannot bind to one Account Computer",
-        );
       }
       return mutate("install", () => backend.installAndStart());
     },
@@ -181,7 +176,6 @@ export function formatDaemonServiceInfo(info: DaemonServiceInfo): string {
 }
 
 function createBackend(options: {
-  env?: NodeJS.ProcessEnv;
   home: string;
   invocation: ResolvedCliInvocation;
   platform: NodeJS.Platform;
@@ -201,7 +195,6 @@ function createBackend(options: {
       uid: options.uid,
       userHome: options.userHome,
       ...(options.username ? { username: options.username } : {}),
-      ...(options.env?.XDG_CONFIG_HOME ? { xdgConfigHome: options.env.XDG_CONFIG_HOME } : {}),
     });
   }
   if (options.platform === "darwin") {

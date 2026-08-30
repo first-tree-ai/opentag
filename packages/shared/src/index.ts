@@ -91,6 +91,11 @@ export {
   ServiceIdSchema,
 } from "./channel.js";
 export {
+  isSupportedClientVersion,
+  MINIMUM_SUPPORTED_CLIENT_VERSION,
+  unsupportedClientVersionMessage,
+} from "./client-version.js";
+export {
   type AccountComputerConnectCodeCreateRequest,
   AccountComputerConnectCodeCreateRequestSchema,
   type AccountComputerConnectCodeIssueRequest,

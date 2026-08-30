@@ -1,7 +1,6 @@
 import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
@@ -18,6 +17,7 @@ import {
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const now = new Date("2026-08-27T00:00:00.000Z");
@@ -51,7 +51,7 @@ async function fixture() {
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.2",
       enrolledByUserId: bootstrap.userId,
     })
     .returning();
@@ -63,16 +63,16 @@ async function fixture() {
     displayName: "workstation",
     platform: "linux",
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
   });
   const agentsService = new AgentService(client.database);
-  const first = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
+  const first = await agentsService.createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
     computerId: workspaceComputer.id,
   });
-  const second = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
+  const second = await agentsService.createForAccount(bootstrap.userId, {
     name: "reviewer",
     displayName: "Reviewer",
     runtimeProvider: "codex",
@@ -253,7 +253,7 @@ describe("Slack workspace installation routing", () => {
           displayName: "other-workstation",
           platform: "linux",
           arch: "x64",
-          clientVersion: "0.0.1",
+          clientVersion: "0.0.2",
           enrolledByUserId: otherUser.id,
         })
         .returning();
@@ -265,9 +265,9 @@ describe("Slack workspace installation routing", () => {
         displayName: "other-workstation",
         platform: "linux",
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
       });
-      const outsider = await new AgentService(value.database).createForWorkspace(otherUser.id, otherWorkspace.id, {
+      const outsider = await new AgentService(value.database).createForAccount(otherUser.id, {
         name: "outsider",
         displayName: "Outsider",
         runtimeProvider: "codex",

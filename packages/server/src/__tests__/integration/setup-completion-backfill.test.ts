@@ -345,6 +345,9 @@ describe("Account setup completion backfill", () => {
       await sql`
         update users set setup_completed_at = ${EARLY} where id = ${ACCOUNT_A}
       `;
+      await sql`
+        update workspaces set setup_completed_at = null where id = ${WORKSPACE_LATE}
+      `;
     } finally {
       await sql.end();
     }
@@ -363,15 +366,28 @@ describe("Account setup completion backfill", () => {
       await expect(auth.getActiveUserById(ACCOUNT_GRANT_ONLY)).resolves.toMatchObject({ setupCompletedAt: null });
       await expect(auth.getActiveUserById(ACCOUNT_EMPTY)).resolves.toMatchObject({ setupCompletedAt: null });
 
-      const setup = new WorkspaceSetupService(client.database, {
-        getHandoffForAgent: async () => ({ bindingState: "active", handoffReady: true }),
-      } as never);
+      const setup = new WorkspaceSetupService(
+        client.database,
+        {
+          getHandoffForAgent: async () => ({ bindingState: "active", handoffReady: true }),
+        } as never,
+        { now: () => LATE },
+      );
       await expect(setup.completeForAccount(ACCOUNT_B, AGENT_LATE)).resolves.toEqual({
         setupCompletedAt: LATE.toISOString(),
       });
       await expect(auth.getActiveUserById(ACCOUNT_B)).resolves.toMatchObject({
         setupCompletedAt: LATE.toISOString(),
       });
+      const verification = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const [legacy] = await verification<{ setup_completed_at: Date | null }[]>`
+          select setup_completed_at from workspaces where id = ${WORKSPACE_LATE}
+        `;
+        expect(legacy?.setup_completed_at).toBeNull();
+      } finally {
+        await verification.end();
+      }
     } finally {
       await client.sql.end();
     }

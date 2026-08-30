@@ -143,31 +143,22 @@ describe("daemon service runtime", () => {
     await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
 
     expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
-    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.1" });
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.2" });
     expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
     expect(run).toHaveBeenCalledOnce();
     expect(stop).not.toHaveBeenCalled();
   });
 
-  it("fails closed when multiple enrollments are present instead of starting one Runtime per enrollment", async () => {
-    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-multi-enrollment-"));
+  it("fails closed when the retired credential format cannot be read", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-retired-credentials-"));
     directories.push(home);
     const signals = new EventEmitter();
-    const credentials = machineCredentials();
-    const firstEnrollment = credentials.enrollments[0];
-    if (!firstEnrollment) throw new Error("expected a machine enrollment fixture");
-    credentials.enrollments.push({
-      ...firstEnrollment,
-      workspaceComputerId: "00000000-0000-4000-8000-000000000004",
-      workspaceId: "00000000-0000-4000-8000-000000000005",
-      machineToken: `otmc_${"b".repeat(64)}`,
-    });
-    clientMocks.readMachineCredentials.mockResolvedValue(credentials);
+    clientMocks.readMachineCredentials.mockRejectedValue(new Error("unsupported format"));
     clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
 
     await expect(
       runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process }),
-    ).rejects.toThrow("multiple enrollments");
+    ).rejects.toThrow("run computer connect again");
     expect(clientMocks.createClientRuntime).not.toHaveBeenCalled();
   });
 
@@ -331,16 +322,13 @@ function computerIdentity() {
 
 function machineCredentials() {
   return {
-    version: 1 as const,
-    enrollments: [
-      {
-        workspaceComputerId: "00000000-0000-4000-8000-000000000002",
-        workspaceId: "00000000-0000-4000-8000-000000000003",
-        computerId: computerIdentity().computerId,
-        machineToken: `otmc_${"a".repeat(64)}`,
-        serverUrl: computerIdentity().serverUrl,
-      },
-    ],
+    version: 2 as const,
+    computer: {
+      workspaceComputerId: "00000000-0000-4000-8000-000000000002",
+      computerId: computerIdentity().computerId,
+      machineToken: `otmc_${"a".repeat(64)}`,
+      serverUrl: computerIdentity().serverUrl,
+    },
   };
 }
 

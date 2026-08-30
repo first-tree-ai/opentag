@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { PasswordSignInForm } from "../features/auth/password-sign-in-form.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -13,7 +12,6 @@ const taskSessionId = "11111111-1111-4111-8111-111111111111";
 
 const agentSummary = {
   id: agentId,
-  workspaceId,
   name: "reviewer",
   displayName: "Reviewer",
   createdBy: { userId, displayName: "Ada" },
@@ -97,7 +95,6 @@ function installApi(
   let revision = lifecycleStatus === "active" ? 1 : 2;
   const adminConfig = () => ({
     id: agentId,
-    workspaceId,
     name: agentSummary.name,
     displayName: agentSummary.displayName,
     runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,

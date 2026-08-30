@@ -7,7 +7,6 @@ const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
 const config: AgentAdminConfig = {
   id: agentId,
-  workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
   createdByUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
   computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
   name: "reviewer",

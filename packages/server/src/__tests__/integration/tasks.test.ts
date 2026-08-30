@@ -2,7 +2,6 @@ import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
@@ -17,6 +16,7 @@ import {
 import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
 import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
 import { TaskQueryError, TaskService } from "../../services/tasks/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -48,7 +48,7 @@ async function fixture() {
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
-      clientVersion: "0.0.1",
+      clientVersion: "0.0.2",
       enrolledByUserId: bootstrap.userId,
     })
     .returning();
@@ -60,7 +60,7 @@ async function fixture() {
     displayName: "workstation",
     platform: "linux",
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
   });
   const [agent] = await client.database
     .insert(agents)

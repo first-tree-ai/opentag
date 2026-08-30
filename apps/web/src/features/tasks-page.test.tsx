@@ -115,6 +115,7 @@ describe("Tasks debug view", () => {
     await renderInRouter(<TasksPage />);
 
     expect(await screen.findByRole("table", { name: "Tasks" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Tasks table" }).tabIndex).toBe(0);
     expect(screen.getAllByRole("row")).toHaveLength(3);
     expect(screen.getByText("Read-only debug view")).toBeTruthy();
     expect(screen.queryByText("Demo data")).toBeNull();

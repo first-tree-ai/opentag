@@ -119,6 +119,48 @@ describe("Agent views read from the cache", () => {
     },
   );
 
+  it.each([401, 403, 404, 410])(
+    "does not let a transient failure after a terminal one bring the Agent back (%d)",
+    async (status) => {
+      stubEvidence();
+      const read = vi
+        .spyOn(browserApi, "agent")
+        .mockRejectedValueOnce(new ApiError(status, `Agent refused (${status})`))
+        .mockRejectedValue(new ApiError(503, "Agent temporarily unavailable"));
+
+      await renderInRouter(<DetailProbe initialAgent={routeAgent} />);
+      await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("error"));
+
+      // Losing contact is not news about the Agent: the Server already said it is gone or
+      // forbidden, and a dropped connection afterwards does not withdraw that.
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+
+      expect(screen.getByTestId("kind").textContent).toBe("error");
+      expect(screen.getByTestId("value").textContent).toBe(`Agent refused (${status})`);
+      expect(document.body.textContent).not.toContain("Reviewer");
+    },
+  );
+
+  it("takes the Server's newer terminal answer over the one it recorded before", async () => {
+    stubEvidence();
+    const read = vi
+      .spyOn(browserApi, "agent")
+      .mockRejectedValueOnce(new ApiError(403, "Agent forbidden"))
+      .mockRejectedValue(new ApiError(404, "Agent not found"));
+
+    await renderInRouter(<DetailProbe initialAgent={routeAgent} />);
+    await waitFor(() => expect(screen.getByTestId("value").textContent).toBe("Agent forbidden"));
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTestId("value").textContent).toBe("Agent not found"));
+  });
+
   it("still degrades to the Agent carried in route state when the failure is not terminal", async () => {
     stubEvidence();
     const read = vi

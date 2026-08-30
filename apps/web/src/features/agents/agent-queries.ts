@@ -46,7 +46,17 @@ function useSettledError(key: string, query: SettlingQuery): Error | null {
   const settled = useRef<{ key: string; error: Error | null }>({ key, error: null });
   if (settled.current.key !== key) settled.current = { key, error: null };
   if (query.isSuccess) settled.current.error = null;
-  else if (query.isError) settled.current.error = query.error ?? new Error("The request failed");
+  else if (query.isError) {
+    const error = query.error ?? new Error("The request failed");
+    const held = settled.current.error;
+    /*
+     * Losing contact is not news about the Agent. A 404 followed by a dropped connection still
+     * means the Agent is gone, so a transient failure may replace another transient failure or
+     * nothing at all, never a terminal answer — only a success says the Agent is readable again.
+     * A second terminal answer does replace the first: it is the Server's current one.
+     */
+    if (!held || !isTerminalResourceError(held) || isTerminalResourceError(error)) settled.current.error = error;
+  }
   return settled.current.error;
 }
 

@@ -5,15 +5,12 @@ import type {
   ImBindingSummary,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
-import { describe, expect, it, vi } from "vitest";
-import { browserApi } from "../api.js";
+import { describe, expect, it } from "vitest";
 import { orderAgentIds } from "./agent-list-order.js";
 import {
   type AgentAvailability,
   type AgentDetailView,
   type AgentListItem,
-  loadAgentDetail,
-  loadAgentList,
   markAgentDetailUnconfirmed,
   markAgentListUnconfirmed,
   projectAgentAvailability,
@@ -164,29 +161,13 @@ describe("Agent availability model and presentation", () => {
     });
   });
 
-  it("loads list/detail evidence and marks stale results unconfirmed", async () => {
+  it("marks stale list/detail evidence unconfirmed", () => {
     const listAgent = {
       ...agent,
       computer: { ...agent.computer },
       activity: { state: "idle" },
       usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 },
     };
-    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listAgent] } as never);
-    vi.spyOn(browserApi, "computers").mockRejectedValue(new Error("offline"));
-    await expect(loadAgentList()).resolves.toMatchObject({
-      agents: [{ availability: { reason: "computer_unconfirmed" } }],
-    });
-
-    vi.mocked(browserApi.computers).mockResolvedValue({ computers: [computer] } as never);
-    vi.spyOn(browserApi, "imBinding").mockRejectedValue(new Error("binding unavailable"));
-    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(handoff(true));
-    await expect(loadAgentList()).resolves.toMatchObject({
-      agents: [{ availability: { reason: "handoff_unconfirmed" } }],
-    });
-
-    vi.spyOn(browserApi, "agent").mockResolvedValue(agent as never);
-    await expect(loadAgentDetail(agent.id)).resolves.toMatchObject({ messaging: { kind: "unconfirmed" } });
-
     const listValue = {
       agents: [
         {

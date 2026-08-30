@@ -25,6 +25,6 @@ describe("LoginPage", () => {
       providers: [{ id: "password", enabled: false, startUrl: null }],
     });
     await renderInRouter(<LoginPage />);
-    expect(screen.getByRole("status").textContent).toContain("No sign-in methods");
+    expect(await screen.findByText("No sign-in methods are currently available.")).toBeTruthy();
   });
 });

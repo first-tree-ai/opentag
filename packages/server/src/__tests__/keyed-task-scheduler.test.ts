@@ -3,6 +3,34 @@ import { describe, expect, it } from "vitest";
 import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 
 describe("KeyedTaskScheduler", () => {
+  it("validates limits and rejects work after shutdown", () => {
+    expect(() => new KeyedTaskScheduler({ maxConcurrent: 0, maxQueuedPerKey: 1, maxQueuedTotal: 1 })).toThrow(
+      "maxConcurrent must be a positive safe integer",
+    );
+    const scheduler = new KeyedTaskScheduler({ maxConcurrent: 1, maxQueuedPerKey: 1, maxQueuedTotal: 1 });
+    expect(scheduler.enqueue("", async () => undefined)).toBe(false);
+    scheduler.close();
+    expect(scheduler.enqueue("closed", async () => undefined)).toBe(false);
+
+    const dropping = new KeyedTaskScheduler({ maxConcurrent: 1, maxQueuedPerKey: 1, maxQueuedTotal: 1 });
+    let release: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    expect(dropping.enqueue("busy", async () => blocked)).toBe(true);
+    expect(
+      dropping.enqueue(
+        "queued",
+        async () => undefined,
+        () => {
+          throw new Error("drop observer");
+        },
+      ),
+    ).toBe(true);
+    dropping.close();
+    release?.();
+  });
+
   it("serializes one key while allowing bounded work for another key", async () => {
     const scheduler = new KeyedTaskScheduler({ maxConcurrent: 2, maxQueuedPerKey: 2, maxQueuedTotal: 4 });
     const events: string[] = [];

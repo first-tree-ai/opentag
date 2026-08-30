@@ -40,6 +40,9 @@
       "correctness": {
         "noUndeclaredDependencies": "error"
       },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "warn"
+      },
       "suspicious": {
         "noExplicitAny": "error"
       },

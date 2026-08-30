@@ -112,6 +112,33 @@ describe("application error boundaries", () => {
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain("set-session-secret");
   });
 
+  it("redacts serialized cookie collections without swallowing enclosing delimiters", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    reportBoundaryError(
+      "app",
+      new Error('{"Set-Cookie":["sid=first-session-secret", "refresh=second-session-secret"],"safe":true}'),
+    );
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[OpenTag] Unhandled UI error",
+      expect.objectContaining({
+        error: expect.objectContaining({ message: '{"Set-Cookie":[REDACTED],"safe":true}' }),
+      }),
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("first-session-secret");
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("second-session-secret");
+  });
+
+  it("redacts comma-separated Set-Cookie values as one field", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    reportBoundaryError("app", new Error("Set-Cookie: sid=first-session-secret, refresh=second-session-secret"));
+
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("first-session-secret");
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("second-session-secret");
+  });
+
   it("keeps the standalone fallback centered and bounded in production CSS", () => {
     const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../app.css"), "utf8");
 

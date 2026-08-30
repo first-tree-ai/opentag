@@ -142,7 +142,13 @@ export const rootErrorHandlers = {
 
 const credentialKey = "(?:password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
 const authorizationField = /(["']?authorization["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\n,;}]*?\S)(?=\s*(?:[,;}\n]|$))/gi;
-const cookieField = /(["']?(?:cookie|set-cookie)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\n,}]*?\S)(?=\s*(?:[,}\n]|$))/gi;
+const cookieQuotedValue = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')`;
+const cookieArrayValue = String.raw`\[(?:${cookieQuotedValue}|[^\[\]"'])*\]`;
+const cookieObjectValue = String.raw`\{(?:${cookieQuotedValue}|[^{}"'])*\}`;
+const cookieField = new RegExp(
+  String.raw`(["']?(?:cookie|set-cookie)["']?\s*[:=]\s*)(?:${cookieArrayValue}(?=\s*(?:[,}\n]|$))|${cookieObjectValue}(?=\s*(?:[,}\n]|$))|${cookieQuotedValue}(?=\s*(?:[,}\n]|$))|[^\r\n]*)`,
+  "gi",
+);
 
 function redactErrorMessage(message: string): string {
   return message

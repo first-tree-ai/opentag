@@ -42,7 +42,7 @@ describe("runtime configuration policy", () => {
     [{ reasoningEffort: "" }, "reasoningEffort"],
     [{ maxDurationMs: 0 }, "maxDurationMs"],
     [{ maxDurationMs: 86_400_001 }, "maxDurationMs"],
-    [{ unexpected: true }, "Unrecognized key"],
+    [{ unexpected: true } as never, "Unrecognized key"],
   ] as const)("rejects invalid %s input", (input, message) => {
     expect(() => resolveAgentRuntimeConfig(input)).toThrow(message);
   });

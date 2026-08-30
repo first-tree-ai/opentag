@@ -82,8 +82,8 @@ describe("deriveTaskTitle", () => {
         blocks: [
           { type: "mention", externalId: "ou_alice", label: "@Alice" },
           { type: "link", url: "https://example.com/docs", label: "the docs" },
-          { type: "image", label: "screenshot" },
-          { type: "file", label: "log.txt" },
+          { type: "image", resourceOrdinal: 1, label: "screenshot" },
+          { type: "file", resourceOrdinal: 2, label: "log.txt" },
         ],
       }),
     ).toBe("@Alicethe docsscreenshotlog.txt");

@@ -546,7 +546,7 @@ describe("AgentService", () => {
     const expired = await createDelivery(binding.id, session.id, { state: "expired" });
     await unitDatabase.database
       .update(imMessageDeliveries)
-      .set({ dispatchRequestId: crypto.randomUUID(), dispatchInputHash: "e".repeat(64), dispatchPayload: {} })
+      .set({ dispatchRequestId: crypto.randomUUID(), dispatchInputHash: "e".repeat(64), dispatchPayload: {} as never })
       .where(eq(imMessageDeliveries.id, expired.id));
     await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
       code: "AGENT_REBIND_BLOCKED",

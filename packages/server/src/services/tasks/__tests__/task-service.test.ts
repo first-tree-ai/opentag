@@ -115,7 +115,7 @@ async function createSession(
 
 async function createMessage(
   bindingId: string,
-  text: unknown,
+  text: string,
   occurredAt = BASE_TIME,
   authorDisplayName: string | null = "Mia",
 ) {
@@ -132,7 +132,7 @@ async function createMessage(
       authorKind: "human",
       authorExternalId: "human",
       authorDisplayName,
-      content: { version: 1, fallbackText: text, blocks: [], truncated: text === null },
+      content: { version: 1, fallbackText: text, blocks: [], truncated: false },
       providerContext: { provider: "feishu", chatType: "group" },
       occurredAt,
     })

@@ -244,7 +244,7 @@ describe("OnboardingV2Page", () => {
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
     // The messaging CLI is not checked here: no provider has been chosen yet.
-    expect(screen.queryByText("Lark CLI is installed")).toBeNull();
+    expect(screen.queryByText("Feishu CLI is installed")).toBeNull();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 
@@ -362,7 +362,7 @@ describe("OnboardingV2Page", () => {
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("creates the Agent only after a runnable route is proven, then asks for Lark", async () => {
+  it("creates the Agent only after a runnable route is proven, then asks for Feishu", async () => {
     render(<OnboardingV2MockPage />);
     await reachConnectStep();
     await reachCheckStep();
@@ -372,7 +372,7 @@ describe("OnboardingV2Page", () => {
     await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await advance(ISSUE_MS);
     await advanceMock("Scan QR code");
     await advanceMock("Confirm reachable");
@@ -391,7 +391,7 @@ describe("OnboardingV2Page", () => {
       await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
-      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("button", { name: "Scan QR code" })).toBeTruthy();
     });
@@ -433,7 +433,7 @@ describe("OnboardingV2Page", () => {
         [...document.querySelectorAll('[data-ui="onboarding-v2-choices"] [data-ui="onboarding-v2-card-title"]')].map(
           (n) => n.textContent,
         ),
-      ).toEqual(["Slack", "Lark"]);
+      ).toEqual(["Slack", "Feishu"]);
       // The step is finished by scanning or installing, not by pressing anything on this page.
       expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
@@ -442,15 +442,15 @@ describe("OnboardingV2Page", () => {
       expect((screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement).disabled).toBe(true);
     });
 
-    it("brings up the Lark code in place, without leaving the step", async () => {
+    it("brings up the Feishu code in place, without leaving the step", async () => {
       render(<OnboardingV2MockPage />);
       await reachMessagingStep();
 
-      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
       expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Lark/ }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("button", { name: /Feishu/ }).getAttribute("aria-pressed")).toBe("true");
     });
 
     it("installs Slack by sending the user there and bringing them back", async () => {
@@ -586,7 +586,7 @@ describe("OnboardingV2Page", () => {
       await advance(CREATE_MS);
 
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
       await advance(ISSUE_MS);
       await advanceMock("Scan QR code");
       await advanceMock("Confirm reachable");

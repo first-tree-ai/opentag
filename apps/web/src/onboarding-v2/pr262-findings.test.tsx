@@ -193,13 +193,13 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     expect(view.result.current.error).toBe("An active Agent with this name already exists");
   });
 
-  it("offers a way back after Lark refuses the attempt", async () => {
+  it("offers a way back after Feishu refuses the attempt", async () => {
     // `failed` no longer retries on sight, which is right — but nothing restarts it either, and
     // the messaging step has no footer, so the panel is inert.
     computersReturning([], [computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
-    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue(new Error("Lark is unavailable"));
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue(new Error("Feishu is unavailable"));
 
     render(<OnboardingV2Page />);
 
@@ -208,7 +208,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
 
     expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
@@ -244,7 +244,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(8_000);
     await tick(8_000);
@@ -313,7 +313,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(FEISHU_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 2);
@@ -346,7 +346,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(FEISHU_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 4);
@@ -384,11 +384,11 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(FEISHU_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 2);
 
-    expect(screen.getByText(/Lark messages are sent through its CLI/)).toBeTruthy();
+    expect(screen.getByText(/Feishu messages are sent through its CLI/)).toBeTruthy();
   });
 });

@@ -471,7 +471,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       );
   }, []);
 
-  /** Lark issues a QR the user scans; Slack has nothing to show until its install is started. */
+  /** Feishu issues a QR the user scans; Slack has nothing to show until its install is started. */
   const startMessaging = useCallback(
     (provider: "feishu" | "slack") => {
       if (provider !== "feishu" || !agent) return;

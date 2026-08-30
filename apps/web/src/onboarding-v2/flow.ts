@@ -70,7 +70,7 @@ export interface ReadinessFacts {
 }
 
 /**
- * Lark and Slack connect differently. Lark shows a code to scan on a phone; Slack sends the user
+ * Feishu and Slack connect differently. Feishu shows a code to scan on a phone; Slack sends the user
  * to Slack to install the App and bring them back, so its waiting state is about a page they are
  * not on rather than a code they are looking at.
  */

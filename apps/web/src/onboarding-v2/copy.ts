@@ -122,7 +122,7 @@ export const COPY = {
 
   done: {
     title: (name: string) => `${name} is ready.`,
-    description: (name: string) => `Tag @${name} in Lark to put it to work.`,
+    description: (name: string) => `Tag @${name} in Feishu to put it to work.`,
   },
 
   /**
@@ -134,7 +134,7 @@ export const COPY = {
     computers: "We lost contact while waiting for your computer.",
     createAgent: "We couldn't create your agent.",
     messaging: "We couldn't start connecting your messaging app.",
-    feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
+    feishuAttempt: "That code is no longer usable. Pick Feishu again to get a new one.",
     resume: "We couldn't check what your account already has.",
     completeSetup: "Your agent is ready, but we couldn't finish setting up your account. Reload to try again.",
   },

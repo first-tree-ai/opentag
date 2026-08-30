@@ -96,7 +96,7 @@ describe("repair and handoff at cabaf79", () => {
 
     // Picking a messaging app has to start one. The step only starts an attempt from `idle`, and a
     // broken binding has parked the flow in `waiting-handoff` instead.
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await settle();
 
     expect(attempt).toHaveBeenCalled();

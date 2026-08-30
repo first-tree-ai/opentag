@@ -125,7 +125,7 @@ describe("the onboarding flow against the Server", () => {
     vi.useRealTimers();
   });
 
-  it("walks from the connect command to a created Agent and a scanned Lark code", async () => {
+  it("walks from the connect command to a created Agent and a scanned Feishu code", async () => {
     computersReturning([], [computer()]);
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
@@ -157,7 +157,7 @@ describe("the onboarding flow against the Server", () => {
     });
 
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
 

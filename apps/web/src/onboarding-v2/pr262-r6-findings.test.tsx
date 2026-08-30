@@ -77,7 +77,7 @@ describe("demotion and the rebind gate at 7967e49", () => {
   });
 
   it("does not pull the reader off the messaging step before they have picked an app", async () => {
-    // The hold-back is `messaging.kind !== "idle"`, but the messaging step *starts* idle: Lark only
+    // The hold-back is `messaging.kind !== "idle"`, but the messaging step *starts* idle: Feishu only
     // leaves idle once it is picked, and Slack stays idle until the reader leaves for Slack. So the
     // whole time someone is reading "Pick the app your team already works in", a lid closing throws
     // them back to a connect step they had already finished.

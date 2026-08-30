@@ -2227,7 +2227,7 @@ describe("OpenTag Web App Shell", () => {
     // A direct message is always delivered, so the row that only ever said so is gone.
     expect(screen.queryByText("Direct messages")).toBeNull();
     expect(screen.getByRole("group", { name: "Group chat trigger mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change Feishu Bot" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Change bot" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Feishu" })).toBeTruthy();
   });
 
@@ -2602,7 +2602,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText(/Permissions update required/)).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Change Feishu Bot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
     const request = vi
       .mocked(fetch)
@@ -2649,7 +2649,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Change Feishu Bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Change bot" }));
     const setupNotice = (await screen.findByText("Feishu setup started")).parentElement;
     expect(setupNotice?.textContent).toContain(
       "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",

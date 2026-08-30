@@ -330,7 +330,7 @@ function MessagingConnection({
   /*
    * The CLI that delivers messages is checked here, not on the computer step: which one is needed
    * depends on the provider, and until this point there was no provider. A missing one used to
-   * block creating the Agent at all, which stopped a Slack user over a Lark dependency.
+   * block creating the Agent at all, which stopped a Slack user over a Feishu dependency.
    */
   const cliState = provider ? messagingCliCheck(readiness?.messagingCli[provider]) : "pending";
   /*
@@ -809,7 +809,7 @@ export function MessagingStep({
   provider: MessagingProvider | undefined;
   readiness: ReadinessFacts | undefined;
 }) {
-  // Lark's code is issued as soon as it is picked; Slack waits for its install to be started.
+  // Feishu's code is issued as soon as it is picked; Slack waits for its install to be started.
   useEffect(() => {
     if (provider && messaging.kind === "idle") onStart(provider);
   }, [messaging.kind, onStart, provider]);

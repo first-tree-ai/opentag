@@ -93,6 +93,15 @@ function parseCursor(cursor: string | undefined): { at: Date; id: string } | und
   }
 }
 
+/**
+ * Keep cursor timestamps explicit when they cross the SQL boundary. The postgres driver rejects
+ * binding the decoded Date directly in a tuple comparison, which only affects requests after the
+ * first page. An ISO value with a timestamptz cast preserves the cursor's instant and its ordering.
+ */
+function cursorTimestamp(cursor: { at: Date; id: string }): string {
+  return cursor.at.toISOString();
+}
+
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -256,7 +265,7 @@ export class TaskService {
       inner join im_messages m on m.id = d.message_id
       left join im_message_deliveries root on root.id = d.steer_target_delivery_id
       where d.session_id = ${sessionId}::uuid
-        ${cursor ? sql`and (m.occurred_at, d.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``}
+        ${cursor ? sql`and (m.occurred_at, d.id) < (${cursorTimestamp(cursor)}::timestamptz, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, d.id desc
       limit ${options.limit + 1}
     `);
@@ -387,7 +396,7 @@ export class TaskService {
         ${options.kind ? sql`and s.kind = ${options.kind}` : sql``}
         ${
           options.cursor
-            ? sql`and (greatest(s.created_at, coalesce(ld.activity_at, s.created_at)), s.id) < (${options.cursor.at}, ${options.cursor.id}::uuid)`
+            ? sql`and (greatest(s.created_at, coalesce(ld.activity_at, s.created_at)), s.id) < (${cursorTimestamp(options.cursor)}::timestamptz, ${options.cursor.id}::uuid)`
             : sql``
         }
       order by "lastActivityAt" desc, s.id desc

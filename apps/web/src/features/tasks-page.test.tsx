@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { browserApi } from "../api.js";
-import { TaskDetailPage, TasksPage } from "./tasks-page.js";
+import { AgentTasksSection, TaskDetailPage, TasksPage } from "./tasks-page.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const agentId = "22222222-2222-4222-8222-222222222222";
@@ -115,6 +115,69 @@ describe("Tasks debug view", () => {
     fireEvent.change(screen.getByLabelText("Search Tasks"), { target: { value: sessionId } });
     expect(screen.getAllByRole("row")).toHaveLength(2);
     expect(screen.getByText("Investigate the failed deployment")).toBeTruthy();
+  });
+
+  it("keeps the loaded rows and retries a failed page append", async () => {
+    const second = {
+      ...task,
+      id: "66666666-6666-4666-8666-666666666666",
+      title: "Review onboarding",
+    } satisfies TaskSummary;
+    const taskRequest = vi
+      .spyOn(browserApi, "tasks")
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "next-page" })
+      .mockRejectedValueOnce(new Error("Temporary pagination failure"))
+      .mockResolvedValueOnce({ tasks: [second], nextCursor: null });
+
+    await renderInRouter(<TasksPage />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(taskRequest).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText("Temporary pagination failure")).toBeTruthy();
+    expect(screen.getByRole("link", { name: task.title })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("link", { name: second.title })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(taskRequest).toHaveBeenLastCalledWith({ cursor: "next-page" });
+  });
+
+  it("does not let a late page for one Agent land on another Agent's Tasks", async () => {
+    const secondAgentId = "44444444-4444-4444-8444-444444444444";
+    const secondTask = {
+      ...task,
+      id: "55555555-5555-4555-8555-555555555555",
+      title: "Draft the release notes",
+    } satisfies TaskSummary;
+    let releaseOldPage: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
+    vi.spyOn(browserApi, "tasks").mockImplementation((input = {}) => {
+      if (input.cursor) {
+        return new Promise((resolve) => {
+          releaseOldPage = resolve;
+        });
+      }
+      return Promise.resolve(
+        input.agentId === secondAgentId
+          ? { tasks: [secondTask], nextCursor: null }
+          : { tasks: [task], nextCursor: "next-page" },
+      );
+    });
+
+    const view = await renderInRouter(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    view.rerender(<AgentTasksSection agentId={secondAgentId} />);
+    expect(await screen.findByRole("link", { name: secondTask.title })).toBeTruthy();
+
+    releaseOldPage({
+      tasks: [{ ...task, id: "66666666-6666-4666-8666-666666666666", title: "Stale Task" }],
+      nextCursor: null,
+    });
+    await waitFor(() => expect(screen.getByRole("link", { name: secondTask.title })).toBeTruthy());
+    expect(screen.queryByText("Stale Task")).toBeNull();
   });
 
   it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {

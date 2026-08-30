@@ -4,6 +4,7 @@ import {
   feishuPublicFailure,
   feishuSetupFailureCode,
   safeFeishuActivationErrorCode,
+  safeFeishuConnectionErrorCode,
   safeFeishuSetupErrorCode,
 } from "../services/im-bindings/feishu/index.js";
 
@@ -13,6 +14,12 @@ function fetchFailed(cause: unknown): Error {
 }
 
 describe("Feishu setup failure classification", () => {
+  it("preserves typed connection errors and classifies unknown ones", () => {
+    expect(safeFeishuConnectionErrorCode(new FeishuOperationError("FEISHU_CONNECTION_LEASE_STALE"))).toBe(
+      "FEISHU_CONNECTION_LEASE_STALE",
+    );
+    expect(safeFeishuConnectionErrorCode(new Error("socket closed"))).toBe("FEISHU_CONNECTION_ERROR");
+  });
   it.each([
     ["a transport failure with no cause", fetchFailed(undefined)],
     ["a name resolution failure", fetchFailed(Object.assign(new Error("getaddrinfo"), { code: "ENOTFOUND" }))],

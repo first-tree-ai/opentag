@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { normalizeSlackEnvelope, SlackAdapter } from "../services/im-bindings/slack/adapter.js";
@@ -159,6 +160,43 @@ describe("Slack installed-binding adapter", () => {
     });
   });
 
+  it("rejects runtime identity drift and forwards adapter capabilities", async () => {
+    const fetchResource = vi.fn().mockResolvedValue({ stream: Readable.from("ok") });
+    const api = {
+      authTest: vi.fn().mockResolvedValue({ appId: "A_OTHER", teamId: "T1", botUserId: "U1", botId: "B1" }),
+      fetchResource,
+    };
+    const adapter = new SlackAdapter({
+      api: api as never,
+      token: "xoxb-secret",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      botId: "B1",
+    });
+    await expect(adapter.validateBinding()).rejects.toThrow("SLACK_BINDING_IDENTITY_MISMATCH");
+    api.authTest.mockResolvedValueOnce({ appId: null, teamId: "T1", botUserId: "U1", botId: "B1" });
+    await expect(adapter.validateBinding()).resolves.toMatchObject({ externalAppId: "A1" });
+    const normalized = adapter.normalizeInbound({
+      eventId: "Ev-forward",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      botId: "B1",
+      event: { type: "message", channel: "C1", ts: "1", text: "hello" },
+    });
+    expect(normalized).toHaveLength(1);
+    await expect(
+      adapter.fetchResource({ messageExternalId: "1", providerResourceKey: "F1", kind: "file" }),
+    ).resolves.toMatchObject({ stream: expect.any(Readable) });
+    expect(fetchResource).toHaveBeenCalledWith({
+      messageExternalId: "1",
+      providerResourceKey: "F1",
+      kind: "file",
+      token: "xoxb-secret",
+    });
+  });
+
   it("verifies the raw body and rejects replayed timestamps", () => {
     const now = new Date("2026-08-19T00:00:00.000Z");
     const timestamp = String(Math.floor(now.getTime() / 1000));
@@ -170,6 +208,24 @@ describe("Slack installed-binding adapter", () => {
       verifySlackSignature({
         rawBody,
         timestamp: String(Number(timestamp) - 301),
+        signature,
+        signingSecret: "secret",
+        now,
+      }),
+    ).toBe(false);
+    expect(preparseSlackRoute(Buffer.from("not-json"))).toBeUndefined();
+    expect(preparseSlackRoute(Buffer.from(JSON.stringify({ api_app_id: "A1" })))).toBeUndefined();
+    expect(
+      preparseSlackRoute(Buffer.from(JSON.stringify({ api_app_id: "A".repeat(256), team_id: "T1" }))),
+    ).toBeUndefined();
+    expect(verifySlackSignature({ rawBody, timestamp: undefined, signature, signingSecret: "secret", now })).toBe(
+      false,
+    );
+    expect(verifySlackSignature({ rawBody, timestamp, signature: "v0=bad", signingSecret: "secret", now })).toBe(false);
+    expect(
+      verifySlackSignature({
+        rawBody: Buffer.alloc(1024 * 1024 + 1),
+        timestamp,
         signature,
         signingSecret: "secret",
         now,
@@ -296,6 +352,38 @@ describe("Slack installed-binding adapter", () => {
         author: { externalId: "B1", kind: "bot", isSelf: true },
       },
     });
+
+    const [dm] = normalizeSlackEnvelope({
+      eventId: "Ev-dm",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      botId: "B1",
+      event: { type: "message", channel: "D1", channel_type: "im", ts: "bad", text: "direct" },
+    });
+    expect(dm).toMatchObject({
+      conversation: { kind: "dm" },
+      message: { occurredAt: new Date("1970-01-01T00:00:00.000Z") },
+    });
+    const [groupDm] = normalizeSlackEnvelope({
+      eventId: "Ev-mpim",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      botId: "B1",
+      event: { type: "message", channel: "G1", channel_type: "mpim", ts: "2", text: "group" },
+    });
+    expect(groupDm?.conversation.kind).toBe("group_dm");
+    const large = "x".repeat(24 * 1024 + 32);
+    const [bounded] = normalizeSlackEnvelope({
+      eventId: "Ev-large",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      botId: "B1",
+      event: { type: "message", channel: "C1", ts: "3", text: large },
+    });
+    expect(bounded?.message.content).toMatchObject({ truncated: true });
   });
 
   it("registers the raw-body route without breaking adjacent JSON parsing", async () => {

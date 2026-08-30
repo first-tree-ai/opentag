@@ -38,6 +38,7 @@ function authService(): UserAuthService {
 describe("SlackOAuthStateService", () => {
   it("signs a one-time nonce bound to account, agent, intent, and expected generation", async () => {
     const service = new SlackOAuthStateService(secret, { now: () => now });
+    expect(service.ttlSeconds).toBe(10 * 60);
     const issued = await service.issue({
       userId,
       agentId,

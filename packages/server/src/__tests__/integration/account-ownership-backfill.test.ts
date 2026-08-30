@@ -1420,7 +1420,7 @@ describe("account-owned resource backfill migrations", () => {
           name: "assistant",
           displayName: "Assistant",
           runtimeProvider: "codex",
-          computerId: enrollment.computerId,
+          computerId: enrollment.workspaceComputerId,
         },
       );
       const [agentRow] = await client.database.select().from(agents).where(eq(agents.id, agent.id));

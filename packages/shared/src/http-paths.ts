@@ -7,6 +7,7 @@ export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
+export const AGENT_COMPUTER_REBIND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/computer/rebind`;
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
 export const AGENT_IM_BINDING_HANDOFF_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/handoff`;
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
@@ -109,6 +110,10 @@ export function agentSuspendPath(agentId: string): string {
 
 export function agentReactivatePath(agentId: string): string {
   return `${agentByIdPath(agentId)}/reactivate`;
+}
+
+export function agentComputerRebindPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/computer/rebind`;
 }
 
 export function agentImBindingPath(agentId: string): string {

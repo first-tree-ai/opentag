@@ -4,24 +4,13 @@ import {
   type AgentUsageDetail,
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
-import { type ComponentProps, lazy, Suspense, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "@tanstack/react-router";
+import { type ComponentProps, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../api.js";
-import { ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
+import { Button, ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
 
 const LazyTimeseriesChart = lazy(async () => {
-  const [
-    { LineChart },
-    { BrushComponent, GridComponent, ToolboxComponent, TooltipComponent },
-    { CanvasRenderer },
-    echarts,
-  ] = await Promise.all([
-    import("echarts/charts"),
-    import("echarts/components"),
-    import("echarts/renderers"),
-    import("echarts/core"),
-  ]);
-  echarts.use([LineChart, BrushComponent, GridComponent, ToolboxComponent, TooltipComponent, CanvasRenderer]);
+  const { echarts } = await import("./agent-usage-echarts.js");
   return {
     default: (props: Omit<ComponentProps<typeof TimeseriesChart>, "echarts">) => (
       <TimeseriesChart {...props} echarts={echarts} />
@@ -31,11 +20,11 @@ const LazyTimeseriesChart = lazy(async () => {
 
 type UsageState =
   | { readonly kind: "loading" }
-  | { readonly kind: "error" }
+  | { readonly kind: "error"; readonly error: Error }
   | { readonly kind: "ready"; readonly value: AgentUsageDetail };
 
 export function AgentUsageOverview({ agentId }: { agentId: string }) {
-  const state = useAgentUsage(agentId, AGENT_USAGE_WINDOW_DAYS);
+  const { retry, state } = useAgentUsage(agentId, AGENT_USAGE_WINDOW_DAYS);
   return (
     <section className="grid gap-4" aria-labelledby="agent-usage-overview-heading" data-ui="usage-overview">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -45,16 +34,18 @@ export function AgentUsageOverview({ agentId }: { agentId: string }) {
           </Text>
           <p>Token use from Tasks handled by this Agent during the last 30 days.</p>
         </div>
-        <Link to={`/agents/${agentId}/usage`}>View usage details</Link>
+        <Link params={{ agentId }} to="/agents/$agentId/usage">
+          View usage details
+        </Link>
       </div>
-      <UsageSummaryState state={state} compact />
+      <UsageSummaryState state={state} compact onRetry={retry} />
     </section>
   );
 }
 
 export function AgentUsageTab({ agentId }: { agentId: string }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
-  const state = useAgentUsage(agentId, windowDays);
+  const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
     <div className="grid gap-6" data-ui="usage-tab">
       <div className="flex items-end justify-end" data-ui="usage-toolbar">
@@ -76,28 +67,60 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
           </KumoSelectControl>
         </div>
       </div>
-      <UsageSummaryState state={state} />
+      <UsageSummaryState state={state} onRetry={retry} />
     </div>
   );
 }
 
-function useAgentUsage(agentId: string, windowDays: AgentUsageWindowDays): UsageState {
+function useAgentUsage(
+  agentId: string,
+  windowDays: AgentUsageWindowDays,
+): { readonly retry: () => void; readonly state: UsageState } {
   const [state, setState] = useState<UsageState>({ kind: "loading" });
-  useEffect(() => {
-    let active = true;
+  const mountedRef = useRef(false);
+  const requestIdRef = useRef(0);
+  const load = useCallback(() => {
+    const requestId = ++requestIdRef.current;
     setState({ kind: "loading" });
     void browserApi.agentUsage(agentId, windowDays).then(
-      (value) => active && setState({ kind: "ready", value }),
-      () => active && setState({ kind: "error" }),
+      (value) => {
+        if (mountedRef.current && requestIdRef.current === requestId) setState({ kind: "ready", value });
+      },
+      (cause: unknown) => {
+        if (mountedRef.current && requestIdRef.current === requestId) {
+          setState({ kind: "error", error: usageError(cause) });
+        }
+      },
     );
-    return () => {
-      active = false;
-    };
   }, [agentId, windowDays]);
-  return state;
+  const retry = useCallback(() => {
+    load();
+  }, [load]);
+  useEffect(() => {
+    mountedRef.current = true;
+    load();
+    return () => {
+      mountedRef.current = false;
+    };
+  }, [load]);
+  return { retry, state };
 }
 
-function UsageSummaryState({ state, compact = false }: { state: UsageState; compact?: boolean }) {
+function usageError(cause: unknown): Error {
+  if (cause instanceof Error && cause.message.trim()) return cause;
+  if (typeof cause === "string" && cause.trim()) return new Error(cause);
+  return new Error("Usage is temporarily unavailable. Try again.");
+}
+
+function UsageSummaryState({
+  state,
+  compact = false,
+  onRetry,
+}: {
+  state: UsageState;
+  compact?: boolean;
+  onRetry: () => void;
+}) {
   if (state.kind === "loading") {
     return (
       <div aria-label="Loading Agent usage" className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
@@ -110,9 +133,12 @@ function UsageSummaryState({ state, compact = false }: { state: UsageState; comp
   }
   if (state.kind === "error") {
     return (
-      <p className="text-sm text-kumo-subtle" data-ui="usage-unavailable" role="status">
-        Usage is temporarily unavailable.
-      </p>
+      <div className="grid justify-items-start gap-2" data-ui="usage-unavailable" role="alert">
+        <p className="text-sm text-kumo-danger">{state.error.message}</p>
+        <Button aria-label="Retry Agent usage" size="compact" variant="outline" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
     );
   }
   return compact ? (

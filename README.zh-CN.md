@@ -115,7 +115,11 @@ Channel/Thread Session 与 provider CLI 直接交接。更广泛的产品与跨 
 - [部署指南](./docs/zh-CN/deploying.md)
 - [安全政策](./SECURITY.zh-CN.md)
 - [行为准则](./CODE_OF_CONDUCT.zh-CN.md)
+- [商标](./TRADEMARKS.zh-CN.md)
 
 ## 许可证
 
 OpenTag 使用 [Apache License 2.0](./LICENSE)。
+
+界面中出现的其它公司标识用于指明其产品。各标识的归属与我们遵守的条件见
+[TRADEMARKS.zh-CN.md](./TRADEMARKS.zh-CN.md)。

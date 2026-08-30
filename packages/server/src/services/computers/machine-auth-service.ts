@@ -1,12 +1,18 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { type ChannelName, getChannelConfig } from "@opentag/shared";
+import {
+  type AccountComputerConnectCodeIssueRequest,
+  type ChannelName,
+  type ComputerConnectCodeMode,
+  getChannelConfig,
+} from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   accountComputers,
   computerConnectCodes,
   computerCredentials,
   computers,
+  users,
   workspaceComputerCredentials,
   workspaceComputers,
 } from "../../db/schema/index.js";
@@ -32,9 +38,15 @@ export interface IssuedComputerConnectCode {
   expiresAt: Date;
   expiresIn: number;
   issuedAt: Date;
+  mode: ComputerConnectCodeMode;
 }
 
 export interface MachineConnectCodeIssuer {
+  issueForAccount(
+    accountId: string,
+    input: AccountComputerConnectCodeIssueRequest,
+    compatibilityWorkspaceId?: string,
+  ): Promise<IssuedComputerConnectCode>;
   issueForWorkspaceAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode>;
 }
 
@@ -61,6 +73,8 @@ export interface MachineAuthServiceOptions {
   workspaceAdmins?: WorkspaceAdminAccess;
 }
 
+type ConnectCodeRow = typeof computerConnectCodes.$inferSelect;
+
 export class MachineAuthService implements ComputerAuthVerifier, MachineConnectCodeIssuer {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
@@ -74,23 +88,45 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
+  async issueForAccount(
+    accountId: string,
+    input: AccountComputerConnectCodeIssueRequest,
+    compatibilityWorkspaceId?: string,
+  ): Promise<IssuedComputerConnectCode> {
+    const now = this.#now();
+    return this.#database.transaction(async (transaction) => {
+      if (input.mode === "repair") {
+        await lockActiveAccount(transaction, accountId);
+        return this.#insertCode(transaction, {
+          accountId,
+          mode: "repair",
+          now,
+          targetComputerId: input.targetComputerId,
+        });
+      }
+      if (!compatibilityWorkspaceId) {
+        throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
+      }
+      try {
+        await this.#workspaceAdmins.lockWorkspace(transaction, compatibilityWorkspaceId);
+      } catch (error) {
+        rethrowMissingWorkspaceAsNotFound(error);
+      }
+      await lockActiveAccount(transaction, accountId);
+      return this.#insertCode(transaction, {
+        accountId,
+        mode: "create",
+        now,
+        workspaceId: compatibilityWorkspaceId,
+      });
+    });
+  }
+
   async issueForWorkspaceAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
       await this.#workspaceAdmins.requireAdminForMutation(transaction, accountId, workspaceId);
-      const code = `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}`;
-      const expiresIn = COMPUTER_CONNECT_CODE_TTL_SECONDS;
-      const expiresAt = new Date(now.getTime() + expiresIn * 1000);
-      await transaction.insert(computerConnectCodes).values({
-        workspaceId,
-        tokenHash: hashSecret(code),
-        issuedByUserId: accountId,
-        issuedByAccountId: accountId,
-        mode: "create",
-        createdAt: now,
-        expiresAt,
-      });
-      return { code, expiresAt, expiresIn, issuedAt: now };
+      return this.#insertCode(transaction, { accountId, mode: "create", now, workspaceId });
     });
   }
 
@@ -124,154 +160,18 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       if (connectCode.expiresAt <= now) {
         throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
       }
-      try {
-        await this.#workspaceAdmins.requireAdmin(connectCode.issuedByUserId, connectCode.workspaceId, transaction);
-      } catch (error) {
-        rethrowMissingWorkspaceAsInvalidCode(error);
-      }
+      await lockActiveAccount(transaction, connectCode.issuedByAccountId);
 
-      await transaction
-        .insert(computers)
-        .values({
-          id: input.computerId,
-          createdAt: now,
-        })
-        .onConflictDoNothing({ target: computers.id });
-
-      const enrollmentColumns = {
-        id: workspaceComputers.id,
-        computerId: workspaceComputers.computerId,
-        displayName: workspaceComputers.displayName,
-        platform: workspaceComputers.platform,
-        arch: workspaceComputers.arch,
-        clientVersion: workspaceComputers.clientVersion,
-        enrolledByUserId: workspaceComputers.enrolledByUserId,
-        enrolledAt: workspaceComputers.enrolledAt,
-        currentInstanceId: workspaceComputers.currentInstanceId,
-        connectedAt: workspaceComputers.connectedAt,
-        lastSeenAt: workspaceComputers.lastSeenAt,
-        updatedAt: workspaceComputers.updatedAt,
-      };
-      let [enrollment] = await transaction
-        .select(enrollmentColumns)
-        .from(workspaceComputers)
-        .where(
-          and(
-            eq(workspaceComputers.workspaceId, connectCode.workspaceId),
-            eq(workspaceComputers.computerId, input.computerId),
-            isNull(workspaceComputers.revokedAt),
-          ),
-        )
-        .limit(1)
-        .for("update");
-      if (!enrollment) {
-        [enrollment] = await transaction
-          .insert(workspaceComputers)
-          .values({
-            workspaceId: connectCode.workspaceId,
-            computerId: input.computerId,
-            displayName: input.displayName,
-            platform: input.platform,
-            arch: input.arch,
-            clientVersion: input.clientVersion,
-            enrolledByUserId: connectCode.issuedByUserId,
-            enrolledAt: now,
-            updatedAt: now,
-          })
-          .returning(enrollmentColumns);
-      } else {
-        [enrollment] = await transaction
-          .update(workspaceComputers)
-          .set({
-            displayName: input.displayName,
-            platform: input.platform,
-            arch: input.arch,
-            clientVersion: input.clientVersion,
-            currentInstanceId: null,
-            connectedAt: null,
-            lastSeenAt: null,
-            updatedAt: now,
-          })
-          .where(eq(workspaceComputers.id, enrollment.id))
-          .returning(enrollmentColumns);
-      }
-      if (!enrollment) throw new Error("Computer enrollment was not created");
-
-      const [accountComputer] = await transaction
-        .select({
-          ownerAccountId: accountComputers.ownerAccountId,
-          currentInstallationId: accountComputers.currentInstallationId,
-        })
-        .from(accountComputers)
-        .where(eq(accountComputers.id, enrollment.id))
-        .limit(1)
-        .for("update");
-      if (!accountComputer) {
-        await transaction.insert(accountComputers).values({
-          id: enrollment.id,
-          ownerAccountId: enrollment.enrolledByUserId,
-          currentInstallationId: enrollment.computerId,
-          displayName: enrollment.displayName,
-          platform: enrollment.platform,
-          arch: enrollment.arch,
-          clientVersion: enrollment.clientVersion,
-          currentInstanceId: enrollment.currentInstanceId,
-          connectedAt: enrollment.connectedAt,
-          lastSeenAt: enrollment.lastSeenAt,
-          createdAt: enrollment.enrolledAt,
-          updatedAt: enrollment.updatedAt,
-        });
-      } else if (
-        accountComputer.ownerAccountId !== enrollment.enrolledByUserId ||
-        accountComputer.currentInstallationId !== enrollment.computerId
-      ) {
-        throw new Error("The account-owned Computer projection does not match the enrollment identity");
-      } else {
-        await transaction
-          .update(accountComputers)
-          .set({
-            displayName: enrollment.displayName,
-            platform: enrollment.platform,
-            arch: enrollment.arch,
-            clientVersion: enrollment.clientVersion,
-            currentInstanceId: enrollment.currentInstanceId,
-            connectedAt: enrollment.connectedAt,
-            lastSeenAt: enrollment.lastSeenAt,
-            updatedAt: enrollment.updatedAt,
-          })
-          .where(eq(accountComputers.id, enrollment.id));
-      }
-
-      await transaction
-        .update(workspaceComputerCredentials)
-        .set({ revokedByUserId: connectCode.issuedByUserId, revokedAt: now })
-        .where(
-          and(
-            eq(workspaceComputerCredentials.workspaceComputerId, enrollment.id),
-            isNull(workspaceComputerCredentials.revokedAt),
-          ),
-        );
-      await transaction
-        .update(computerCredentials)
-        .set({ revokedByUserId: connectCode.issuedByUserId, revokedAt: now })
-        .where(and(eq(computerCredentials.computerId, enrollment.id), isNull(computerCredentials.revokedAt)));
-      const credentialId = randomUUID();
-      const secret = generateSecret(32);
-      const secretHash = hashSecret(secret);
-      await transaction.insert(workspaceComputerCredentials).values({
-        id: credentialId,
-        workspaceComputerId: enrollment.id,
-        secretHash,
-        issuedByUserId: connectCode.issuedByUserId,
-        issuedAt: now,
-      });
-      await transaction.insert(computerCredentials).values({
-        id: credentialId,
-        computerId: enrollment.id,
-        secretHash,
-        issuedByUserId: connectCode.issuedByUserId,
-        issuedAt: now,
-      });
+      const enrollment =
+        connectCode.mode === "repair"
+          ? await this.#repairComputer(transaction, connectCode, input, now)
+          : await this.#createComputer(transaction, connectCode, input, now);
+      const credential = await rotateComputerCredentials(
+        transaction,
+        enrollment.id,
+        connectCode.issuedByAccountId,
+        now,
+      );
       const [consumed] = await transaction
         .update(computerConnectCodes)
         .set({
@@ -285,11 +185,11 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
       }
       return {
-        credentialId,
+        credentialId: credential.id,
         workspaceComputerId: enrollment.id,
         workspaceId: connectCode.workspaceId,
         computerId: input.computerId,
-        machineToken: `${MACHINE_TOKEN_PREFIX}${credentialId}.${secret}`,
+        machineToken: `${MACHINE_TOKEN_PREFIX}${credential.id}.${credential.secret}`,
       };
     });
     await this.#onCredentialRotated?.(result.workspaceComputerId);
@@ -303,18 +203,19 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     }
     const [credential] = await this.#database
       .select({
-        credentialId: workspaceComputerCredentials.id,
-        workspaceComputerId: workspaceComputers.id,
+        credentialId: computerCredentials.id,
+        workspaceComputerId: accountComputers.id,
         workspaceId: workspaceComputers.workspaceId,
-        computerId: workspaceComputers.computerId,
-        secretHash: workspaceComputerCredentials.secretHash,
+        computerId: accountComputers.currentInstallationId,
+        secretHash: computerCredentials.secretHash,
       })
-      .from(workspaceComputerCredentials)
-      .innerJoin(workspaceComputers, eq(workspaceComputers.id, workspaceComputerCredentials.workspaceComputerId))
+      .from(computerCredentials)
+      .innerJoin(accountComputers, eq(accountComputers.id, computerCredentials.computerId))
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
       .where(
         and(
-          eq(workspaceComputerCredentials.id, parsed[1]),
-          isNull(workspaceComputerCredentials.revokedAt),
+          eq(computerCredentials.id, parsed[1]),
+          isNull(computerCredentials.revokedAt),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -325,6 +226,247 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     const { secretHash: _secretHash, ...context } = credential;
     return context;
   }
+
+  async #insertCode(
+    transaction: DatabaseTransaction,
+    input: {
+      accountId: string;
+      mode: ComputerConnectCodeMode;
+      now: Date;
+      targetComputerId?: string;
+      workspaceId?: string;
+    },
+  ): Promise<IssuedComputerConnectCode> {
+    let workspaceId = input.workspaceId;
+    if (input.mode === "repair") {
+      if (!input.targetComputerId) {
+        throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+      }
+      const [target] = await transaction
+        .select({
+          id: accountComputers.id,
+          workspaceId: workspaceComputers.workspaceId,
+        })
+        .from(accountComputers)
+        .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
+        .where(
+          and(
+            eq(accountComputers.id, input.targetComputerId),
+            eq(accountComputers.ownerAccountId, input.accountId),
+            isNull(workspaceComputers.revokedAt),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!target) {
+        throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+      }
+      workspaceId = target.workspaceId;
+    }
+    if (!workspaceId) {
+      throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
+    }
+    const code = `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}`;
+    const expiresIn = COMPUTER_CONNECT_CODE_TTL_SECONDS;
+    const expiresAt = new Date(input.now.getTime() + expiresIn * 1000);
+    await transaction.insert(computerConnectCodes).values({
+      workspaceId,
+      tokenHash: hashSecret(code),
+      issuedByUserId: input.accountId,
+      issuedByAccountId: input.accountId,
+      mode: input.mode,
+      targetComputerId: input.mode === "repair" ? input.targetComputerId : null,
+      createdAt: input.now,
+      expiresAt,
+    });
+    return { code, expiresAt, expiresIn, issuedAt: input.now, mode: input.mode };
+  }
+
+  async #createComputer(
+    transaction: DatabaseTransaction,
+    connectCode: ConnectCodeRow,
+    input: MachineEnrollmentInput,
+    now: Date,
+  ): Promise<{ id: string }> {
+    await transaction
+      .insert(computers)
+      .values({ id: input.computerId, createdAt: now })
+      .onConflictDoNothing({ target: computers.id });
+    try {
+      const [enrollment] = await transaction
+        .insert(workspaceComputers)
+        .values({
+          workspaceId: connectCode.workspaceId,
+          computerId: input.computerId,
+          displayName: input.displayName,
+          platform: input.platform,
+          arch: input.arch,
+          clientVersion: input.clientVersion,
+          enrolledByUserId: connectCode.issuedByAccountId,
+          enrolledAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: workspaceComputers.id });
+      if (!enrollment) throw new Error("Computer enrollment was not created");
+      await transaction.insert(accountComputers).values({
+        id: enrollment.id,
+        ownerAccountId: connectCode.issuedByAccountId,
+        currentInstallationId: input.computerId,
+        displayName: input.displayName,
+        platform: input.platform,
+        arch: input.arch,
+        clientVersion: input.clientVersion,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return enrollment;
+    } catch (error) {
+      if (uniqueConstraintName(error) === "workspace_computers_active_workspace_computer_unique") {
+        throw new AuthServiceError(
+          "COMPUTER_IDENTITY_CONFLICT",
+          "deterministic",
+          "This installation is already bound to a Computer",
+          409,
+        );
+      }
+      throw error;
+    }
+  }
+
+  async #repairComputer(
+    transaction: DatabaseTransaction,
+    connectCode: ConnectCodeRow,
+    input: MachineEnrollmentInput,
+    now: Date,
+  ): Promise<{ id: string }> {
+    if (!connectCode.targetComputerId) {
+      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    }
+    const [target] = await transaction
+      .select({
+        id: accountComputers.id,
+        ownerAccountId: accountComputers.ownerAccountId,
+        workspaceId: workspaceComputers.workspaceId,
+      })
+      .from(accountComputers)
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
+      .where(and(eq(accountComputers.id, connectCode.targetComputerId), isNull(workspaceComputers.revokedAt)))
+      .limit(1)
+      .for("update");
+    if (
+      !target ||
+      target.ownerAccountId !== connectCode.issuedByAccountId ||
+      target.workspaceId !== connectCode.workspaceId
+    ) {
+      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    }
+    await transaction
+      .insert(computers)
+      .values({ id: input.computerId, createdAt: now })
+      .onConflictDoNothing({ target: computers.id });
+    const observation = {
+      computerId: input.computerId,
+      displayName: input.displayName,
+      platform: input.platform,
+      arch: input.arch,
+      clientVersion: input.clientVersion,
+      currentInstanceId: null,
+      connectedAt: null,
+      lastSeenAt: null,
+      updatedAt: now,
+    };
+    const [enrollment] = await transaction
+      .update(workspaceComputers)
+      .set(observation)
+      .where(and(eq(workspaceComputers.id, target.id), isNull(workspaceComputers.revokedAt)))
+      .returning({ id: workspaceComputers.id });
+    if (!enrollment) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    const [accountComputer] = await transaction
+      .update(accountComputers)
+      .set({
+        currentInstallationId: input.computerId,
+        displayName: input.displayName,
+        platform: input.platform,
+        arch: input.arch,
+        clientVersion: input.clientVersion,
+        currentInstanceId: null,
+        connectedAt: null,
+        lastSeenAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(eq(accountComputers.id, target.id), eq(accountComputers.ownerAccountId, connectCode.issuedByAccountId)),
+      )
+      .returning({ id: accountComputers.id });
+    if (!accountComputer) {
+      throw new Error("The account-owned Computer projection does not match the enrollment identity");
+    }
+    return enrollment;
+  }
+}
+
+async function rotateComputerCredentials(
+  transaction: DatabaseTransaction,
+  computerId: string,
+  accountId: string,
+  now: Date,
+): Promise<{ id: string; secret: string }> {
+  await transaction
+    .update(workspaceComputerCredentials)
+    .set({ revokedByUserId: accountId, revokedAt: now })
+    .where(
+      and(
+        eq(workspaceComputerCredentials.workspaceComputerId, computerId),
+        isNull(workspaceComputerCredentials.revokedAt),
+      ),
+    );
+  await transaction
+    .update(computerCredentials)
+    .set({ revokedByUserId: accountId, revokedAt: now })
+    .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)));
+  const credentialId = randomUUID();
+  const secret = generateSecret(32);
+  const secretHash = hashSecret(secret);
+  await transaction.insert(workspaceComputerCredentials).values({
+    id: credentialId,
+    workspaceComputerId: computerId,
+    secretHash,
+    issuedByUserId: accountId,
+    issuedAt: now,
+  });
+  await transaction.insert(computerCredentials).values({
+    id: credentialId,
+    computerId,
+    secretHash,
+    issuedByUserId: accountId,
+    issuedAt: now,
+  });
+  return { id: credentialId, secret };
+}
+
+async function lockActiveAccount(transaction: DatabaseTransaction, accountId: string): Promise<void> {
+  const [user] = await transaction
+    .select({ id: users.id, suspendedAt: users.suspendedAt })
+    .from(users)
+    .where(eq(users.id, accountId))
+    .limit(1)
+    .for("update");
+  if (!user || user.suspendedAt) {
+    throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
+  }
+}
+
+function uniqueConstraintName(error: unknown): string | undefined {
+  let current = error;
+  const visited = new Set<unknown>();
+  while (typeof current === "object" && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if ("code" in current && current.code === "23505" && "constraint_name" in current) {
+      return typeof current.constraint_name === "string" ? current.constraint_name : undefined;
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return undefined;
 }
 
 function matchesSecretHash(expectedHash: string, secret: string): boolean {
@@ -361,6 +503,13 @@ function invalidMachineCredential(
 function rethrowMissingWorkspaceAsInvalidCode(error: unknown): never {
   if (error instanceof AuthServiceError && error.statusCode === 404) {
     throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  throw error;
+}
+
+function rethrowMissingWorkspaceAsNotFound(error: unknown): never {
+  if (error instanceof AuthServiceError && error.statusCode === 404) {
+    throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
   }
   throw error;
 }

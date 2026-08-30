@@ -1,11 +1,12 @@
 import { arch, hostname, platform } from "node:os";
 import {
+  allocateComputerIdentity,
   machineCredentialsPath,
   normalizeServerUrl,
   OpenTagApi,
-  resolveComputerIdentity,
   resolveOpenTagHome,
   storeMachineEnrollmentCredential,
+  writeComputerIdentityAtomically,
 } from "@opentag/client";
 import { CLI_VERSION } from "../../build-info.js";
 import {
@@ -50,7 +51,7 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   const manager = options.noStart ? undefined : (options.manager ?? (await createDaemonServiceManager({ home })));
   await manager?.preflight();
   const serviceBefore = await manager?.status();
-  const identity = await resolveComputerIdentity(home, serverUrl);
+  const identity = await allocateComputerIdentity(home, serverUrl);
   const api = options.api ?? new OpenTagApi(serverUrl);
   const enrollment = await api.exchangeComputerConnectCode({
     code: options.code,
@@ -60,6 +61,7 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
     arch: arch(),
     clientVersion: CLI_VERSION,
   });
+  await writeComputerIdentityAtomically(home, identity);
   await storeMachineEnrollmentCredential({ ...enrollment, serverUrl }, home);
   const result: ComputerConnectResult = {
     credentialsPath: machineCredentialsPath(home),

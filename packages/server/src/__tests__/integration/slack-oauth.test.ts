@@ -79,13 +79,13 @@ async function fixture() {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: computer.id,
+    computerId: workspaceComputer.id,
   });
   const second = await agentsService.createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "reviewer",
     displayName: "Reviewer",
     runtimeProvider: "codex",
-    computerId: computer.id,
+    computerId: workspaceComputer.id,
   });
   await client.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, first.id));
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));

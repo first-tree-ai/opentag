@@ -110,7 +110,7 @@ async function seedAccount(
   });
   const outstanding = await machineAuth.issueForWorkspaceAdmin(input.accountId, input.workspaceId);
   const agent = await agentService.createForWorkspace(input.accountId, input.workspaceId, {
-    computerId,
+    computerId: enrollment.workspaceComputerId,
     displayName: "Lab Agent",
     name: input.agentName,
     runtimeProvider: "codex",

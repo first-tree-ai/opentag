@@ -22,6 +22,8 @@ export default defineConfig({
       "src/__tests__/pi-rpc-wire.test.ts",
       "src/__tests__/client-turn.integration.test.ts",
       "src/__tests__/client-runtime-composition.test.ts",
+      "src/__tests__/probe-failure.test.ts",
+      "src/__tests__/resolved-runtime-factory.test.ts",
       "src/__tests__/runtime-tool-host.test.ts",
       "src/__tests__/session-runtime-manager.test.ts",
     ],

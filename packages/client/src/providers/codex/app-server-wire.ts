@@ -5,12 +5,27 @@ export const CODEX_APP_SERVER_MAX_LINE_BYTES = 1024 * 1024;
 export const CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
 
 export class CodexAppServerError extends Error {
+  readonly errno?: string;
+  readonly exitCode?: number | null;
+  readonly signal?: NodeJS.Signals | null;
+  readonly killed?: boolean;
+
   constructor(
     readonly code: "aborted" | "exited" | "protocol" | "spawn" | "timeout" | "write",
     message: string,
+    evidence: {
+      readonly errno?: string;
+      readonly exitCode?: number | null;
+      readonly signal?: NodeJS.Signals | null;
+      readonly killed?: boolean;
+    } = {},
   ) {
     super(message);
     this.name = "CodexAppServerError";
+    if (evidence.errno !== undefined) this.errno = evidence.errno;
+    if (evidence.exitCode !== undefined) this.exitCode = evidence.exitCode;
+    if (evidence.signal !== undefined) this.signal = evidence.signal;
+    if (evidence.killed !== undefined) this.killed = evidence.killed;
   }
 }
 
@@ -126,12 +141,18 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         { cwd: options.cwd, env: options.env, detached: process.platform !== "win32" },
       );
     } catch (error) {
-      throw new CodexAppServerError("spawn", error instanceof Error ? error.message : "Codex could not be started");
+      throw new CodexAppServerError(
+        "spawn",
+        error instanceof Error ? error.message : "Codex could not be started",
+        spawnEvidence(error),
+      );
     }
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
     this.#child.stderr.on("data", () => undefined);
-    this.#child.on("error", (error) => this.#fail(new CodexAppServerError("spawn", error.message)));
-    this.#child.on("exit", () => {
+    this.#child.on("error", (error) =>
+      this.#fail(new CodexAppServerError("spawn", error.message, spawnEvidence(error))),
+    );
+    this.#child.on("exit", (exitCode, signal) => {
       this.#closed = true;
       this.#resolveExit?.();
       this.#resolveExit = undefined;
@@ -139,7 +160,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         const error =
           this.#buffer.byteLength > 0
             ? new CodexAppServerError("protocol", "Codex exited with a truncated JSONL line")
-            : new CodexAppServerError("exited", "Codex App Server exited");
+            : new CodexAppServerError("exited", "Codex App Server exited", { exitCode, signal });
         this.#fail(error);
       }
     });
@@ -489,6 +510,11 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
   const settled = await Promise.race([promise.then(() => true as const), timeout]);
   if (timer) clearTimeout(timer);
   return settled;
+}
+
+function spawnEvidence(error: unknown): { readonly errno?: string } {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" ? { errno: code } : {};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

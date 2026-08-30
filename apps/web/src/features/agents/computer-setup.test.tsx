@@ -1,7 +1,7 @@
 import type { WorkspaceComputerSummary as Computer } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "./api.js";
+import { browserApi } from "../../api.js";
 import { ComputerSetup } from "./computer-setup.js";
 
 const bootstrapCommand = "opentag computer connect --server https://opentag.example.com -- connect-code";

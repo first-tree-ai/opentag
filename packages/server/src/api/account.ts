@@ -89,21 +89,13 @@ export function registerAccountRoutes(
 
     app.post(HTTP_PATHS.accountAgents, { preHandler }, async (request, reply) => {
       const input = parseRequest(CreateAgentRequestSchema, request.body);
-      const scope = await scopeOf(request);
-      return reply
-        .code(201)
-        .send(
-          AgentAdminConfigSchema.parse(
-            await agentService.createForWorkspace(scope.accountId, scope.workspaceId, input),
-          ),
-        );
+      const account = accountId(request);
+      return reply.code(201).send(AgentAdminConfigSchema.parse(await agentService.createForAccount(account, input)));
     });
 
     app.get(HTTP_PATHS.accountAgents, { preHandler }, async (request, reply) => {
-      const scope = await scopeOf(request);
-      return reply
-        .code(200)
-        .send(ListAgentsResponseSchema.parse(await agentService.listForWorkspace(scope.accountId, scope.workspaceId)));
+      const account = accountId(request);
+      return reply.code(200).send(ListAgentsResponseSchema.parse(await agentService.listForAccount(account)));
     });
   }
 
@@ -112,16 +104,14 @@ export function registerAccountRoutes(
 
     app.get(HTTP_PATHS.accountTasks, { preHandler }, async (request, reply) => {
       const query = parseRequest(TaskListQuerySchema, request.query);
-      const scope = await scopeOf(request);
-      const response = ListTasksResponseSchema.parse(await taskService.list(scope.workspaceId, query));
+      const response = ListTasksResponseSchema.parse(await taskService.list(accountId(request), query));
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
 
     app.get(TASK_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
       const { sessionId } = parseRequest(TaskParamsSchema, request.params);
       const query = parseRequest(TaskDetailQuerySchema, request.query);
-      const scope = await scopeOf(request);
-      const response = TaskDetailSchema.parse(await taskService.get(scope.workspaceId, sessionId, query));
+      const response = TaskDetailSchema.parse(await taskService.get(accountId(request), sessionId, query));
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
   }
@@ -130,16 +120,12 @@ export function registerAccountRoutes(
     const workspaceService = options.workspaceService;
 
     app.get(HTTP_PATHS.accountComputers, { preHandler }, async (request, reply) => {
-      const scope = await scopeOf(request);
+      const account = accountId(request);
       return reply
         .code(200)
         .send(
           ListWorkspaceComputersResponseSchema.parse(
-            await workspaceService.listComputers(
-              scope.accountId,
-              scope.workspaceId,
-              request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
-            ),
+            await workspaceService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
           ),
         );
     });
@@ -150,9 +136,16 @@ export function registerAccountRoutes(
     const { environment, publicUrl } = options.computerConnectCode;
 
     app.post(HTTP_PATHS.accountComputerConnectCodes, { preHandler }, async (request, reply) => {
-      parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
-      const scope = await scopeOf(request);
-      const issued = await machineAuthService.issueForWorkspaceAdmin(scope.accountId, scope.workspaceId);
+      const input = parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
+      const account = accountId(request);
+      const issued =
+        input.mode === "repair"
+          ? await machineAuthService.issueForAccount(account, input)
+          : await machineAuthService.issueForAccount(
+              account,
+              input,
+              await accountScope.resolveCompatibilityWorkspaceId(account),
+            );
       return reply
         .header("Cache-Control", "no-store")
         .code(201)
@@ -161,6 +154,7 @@ export function registerAccountRoutes(
             bootstrapCommand: buildComputerConnectCommand({ code: issued.code, environment, publicUrl }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),
+            mode: issued.mode,
           }),
         );
     });

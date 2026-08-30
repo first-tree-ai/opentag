@@ -2,6 +2,7 @@ import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEv
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  accountComputers,
   agents,
   imBindings,
   imMessageDeliveries,
@@ -119,6 +120,13 @@ export class ImMessageInbox {
             if (!agent) {
               throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
             }
+            const [computer] = await transaction
+              .select({ ownerAccountId: accountComputers.ownerAccountId })
+              .from(accountComputers)
+              .where(eq(accountComputers.id, agent.computerId))
+              .limit(1)
+              .for("update");
+            const agentCanExecute = computer?.ownerAccountId === agent.createdByUserId;
             await transaction
               .update(imBindings)
               .set({ externalTeamId: event.externalTeamId, updatedAt: now })
@@ -324,6 +332,9 @@ export class ImMessageInbox {
             }
             if (agent.status !== "active") {
               return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_inactive");
+            }
+            if (!agentCanExecute) {
+              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_rebind_required");
             }
             const direct =
               conversationKind === "dm" ||

@@ -1,7 +1,7 @@
 import type { ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared";
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, workspaceComputers } from "../../db/schema/index.js";
+import { accountComputers, agents, workspaceComputers } from "../../db/schema/index.js";
 import {
   type ProviderReadinessSource,
   projectComputerImCliReadiness,
@@ -46,64 +46,82 @@ export class WorkspaceAdminService {
     includeProviderReadiness = false,
   ): Promise<ListWorkspaceComputersResponse> {
     await this.#workspaceAdmins.requireAdmin(accountId, workspaceId);
-    return { computers: await this.#projectComputers(workspaceId, includeProviderReadiness) };
+    return { computers: await this.#projectComputers(accountId, workspaceId, includeProviderReadiness) };
   }
 
-  async #projectComputers(workspaceId: string, includeProviderReadiness: boolean): Promise<WorkspaceComputerSummary[]> {
+  async listAccountComputers(
+    accountId: string,
+    includeProviderReadiness = false,
+  ): Promise<ListWorkspaceComputersResponse> {
+    return { computers: await this.#projectComputers(accountId, undefined, includeProviderReadiness) };
+  }
+
+  async #projectComputers(
+    accountId: string,
+    workspaceId: string | undefined,
+    includeProviderReadiness: boolean,
+  ): Promise<WorkspaceComputerSummary[]> {
     const rows = await this.#database
-      .select({ enrollment: workspaceComputers, agentId: agents.id })
-      .from(workspaceComputers)
+      .select({ computer: accountComputers, enrollment: workspaceComputers, agentId: agents.id })
+      .from(accountComputers)
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
       .leftJoin(
         agents,
         and(
-          eq(agents.workspaceId, workspaceComputers.workspaceId),
           eq(agents.workspaceComputerId, workspaceComputers.id),
+          eq(agents.createdByUserId, accountId),
           ne(agents.status, "deleted"),
         ),
       )
-      .where(and(eq(workspaceComputers.workspaceId, workspaceId), isNull(workspaceComputers.revokedAt)))
-      .orderBy(asc(workspaceComputers.displayName), asc(workspaceComputers.computerId), asc(agents.id));
+      .where(
+        and(
+          workspaceId === undefined ? undefined : eq(workspaceComputers.workspaceId, workspaceId),
+          eq(accountComputers.ownerAccountId, accountId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
+      .orderBy(asc(accountComputers.displayName), asc(accountComputers.id), asc(agents.id));
     const observedAt = this.#now();
     const cutoff = observedAt.getTime() - this.#presenceTimeoutMs;
     const byId = new Map<string, WorkspaceComputerSummary>();
     for (const row of rows) {
-      const existing = byId.get(row.enrollment.id);
+      const existing = byId.get(row.computer.id);
       if (existing) {
         if (row.agentId) existing.agentIds.push(row.agentId);
         continue;
       }
       const connectionStatus =
-        row.enrollment.currentInstanceId !== null && (row.enrollment.lastSeenAt?.getTime() ?? 0) >= cutoff
+        row.computer.currentInstanceId !== null && (row.computer.lastSeenAt?.getTime() ?? 0) >= cutoff
           ? "online"
           : "offline";
       const base: WorkspaceComputerSummary = {
-        computerId: row.enrollment.computerId,
-        displayName: row.enrollment.displayName,
-        platform: row.enrollment.platform,
+        computerId: row.computer.id,
+        displayName: row.computer.displayName,
+        platform: row.computer.platform,
         connectionStatus,
         ...(includeProviderReadiness
           ? {
               providerReadiness: projectComputerProviderReadiness(
-                row.enrollment.id,
+                row.computer.id,
                 connectionStatus,
                 observedAt,
                 this.#providerReadiness,
               ),
               imCliReadiness: projectComputerImCliReadiness(
-                row.enrollment.id,
+                row.computer.id,
                 connectionStatus,
                 observedAt,
                 this.#providerReadiness,
               ),
             }
           : {}),
-        connectedAt: row.enrollment.connectedAt?.toISOString() ?? null,
-        lastSeenAt: row.enrollment.lastSeenAt?.toISOString() ?? null,
+        connectedAt: row.computer.connectedAt?.toISOString() ?? null,
+        lastSeenAt: row.computer.lastSeenAt?.toISOString() ?? null,
         observedAt: observedAt.toISOString(),
-        enrolledAt: row.enrollment.enrolledAt.toISOString(),
+        enrolledAt: row.computer.createdAt.toISOString(),
         agentIds: row.agentId ? [row.agentId] : [],
       };
-      byId.set(row.enrollment.id, base);
+      byId.set(row.computer.id, base);
     }
     return [...byId.values()];
   }

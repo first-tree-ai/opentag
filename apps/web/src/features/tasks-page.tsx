@@ -1,6 +1,6 @@
 import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
-import { type ChangeEventHandler, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
@@ -12,6 +12,7 @@ import {
   KumoInputControl,
   KumoSelectControl,
   Loader,
+  type SelectControlChangeEvent,
   StatusIndicator,
   type StatusTone,
   Table,
@@ -517,7 +518,7 @@ function TaskSelect({
 }: {
   children: ReactNode;
   label: string;
-  onChange: ChangeEventHandler<HTMLSelectElement>;
+  onChange: (event: SelectControlChangeEvent) => void;
   value: string;
 }) {
   return (

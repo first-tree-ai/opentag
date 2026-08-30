@@ -10,18 +10,7 @@ import { browserApi } from "../api.js";
 import { Button, ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
 
 const LazyTimeseriesChart = lazy(async () => {
-  const [
-    { LineChart },
-    { BrushComponent, GridComponent, ToolboxComponent, TooltipComponent },
-    { CanvasRenderer },
-    echarts,
-  ] = await Promise.all([
-    import("echarts/charts"),
-    import("echarts/components"),
-    import("echarts/renderers"),
-    import("echarts/core"),
-  ]);
-  echarts.use([LineChart, BrushComponent, GridComponent, ToolboxComponent, TooltipComponent, CanvasRenderer]);
+  const { echarts } = await import("./agent-usage-echarts.js");
   return {
     default: (props: Omit<ComponentProps<typeof TimeseriesChart>, "echarts">) => (
       <TimeseriesChart {...props} echarts={echarts} />

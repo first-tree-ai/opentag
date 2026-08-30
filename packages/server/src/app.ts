@@ -10,7 +10,6 @@ import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
-import { registerInternalOnboardingLabRoutes } from "./api/internal-onboarding-lab.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
@@ -29,7 +28,7 @@ import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
-import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-lab/index.js";
+import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { type WorkspaceSetupService, WorkspaceSetupServiceError } from "./services/workspaces/index.js";
@@ -63,10 +62,10 @@ export interface CreateAppOptions {
   runtimeSessions?: RuntimeSessionRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   /**
-   * Registered by any staging deployment. Scenario Preview needs no Account configuration; the reset
-   * half is closed until the service is given the Account that owns it.
+   * Undoing setup so onboarding can be walked again. Any staging deployment supplies it, and every
+   * deployment outside staging stays indistinguishable from one that never had the capability.
    */
-  stagingOnboardingLab?: { reset: OnboardingResetService };
+  setupResetService?: OnboardingResetService;
   taskService?: TaskService;
   workspaceSetupService?: WorkspaceSetupService;
 }
@@ -230,6 +229,7 @@ export function createApp(options: CreateAppOptions = {}) {
       options.taskService ||
       options.computerService ||
       options.workspaceSetupService ||
+      options.setupResetService ||
       (options.machineAuthService && options.computerConnectCode)
     ) {
       registerAccountRoutes(app, authService, {
@@ -239,13 +239,9 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
         ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
-        // Same service the Lab exposes, on a path that does not depend on the Lab existing.
-        ...(options.stagingOnboardingLab ? { setupResetService: options.stagingOnboardingLab.reset } : {}),
+        ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
         authOptions,
       });
-    }
-    if (options.stagingOnboardingLab) {
-      registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, authOptions);
     }
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);

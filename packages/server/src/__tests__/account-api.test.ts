@@ -4,6 +4,7 @@ import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
+import { OnboardingResetError } from "../services/onboarding-reset/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 
@@ -145,7 +146,7 @@ function appWith(
 ) {
   const service = { ...services(), ...overrides };
   const app = createApp({
-    ...(setupReset ? { stagingOnboardingLab: { reset: setupReset as never } } : {}),
+    ...(setupReset ? { setupResetService: setupReset as never } : {}),
     authService: authService(),
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
@@ -217,6 +218,32 @@ describe("undoing setup on the authenticated Account", () => {
 
     expect(response.statusCode).toBe(401);
     expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused reset as the deterministic conflict the service raised", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+    setupReset.resetOnboarding.mockRejectedValueOnce(
+      new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "The Account still has active OpenTag resources"),
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "all" },
+    });
+
+    // A refusal the caller can act on, not a failure: the reset stopped before clearing setup, so
+    // the same request is worth making again once the Account is quiet.
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "ONBOARDING_RESET_UNVERIFIED",
+        category: "deterministic",
+        message: "The Account still has active OpenTag resources",
+      },
+    });
   });
 
   it("is not registered when the deployment does not offer it", async () => {

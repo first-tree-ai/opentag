@@ -1,0 +1,141 @@
+import { type ErrorComponentProps, Link, useRouter } from "@tanstack/react-router";
+import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "react";
+import { Button, Text } from "../ui/design-system.js";
+
+type BoundaryError = Error & { digest?: string };
+
+export type AppErrorBoundaryProps = {
+  children: ReactNode;
+};
+
+type AppErrorBoundaryState = {
+  error?: BoundaryError;
+};
+
+/**
+ * Keeps an unexpected render failure from leaving the application root blank.
+ *
+ * TanStack Router catches errors thrown while rendering a route. This boundary is still needed
+ * around the router itself because providers, the router boot process, and non-route UI can fail
+ * before a route match has a chance to install its own boundary.
+ */
+export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = {};
+
+  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    return { error: normalizeError(error) };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    reportBoundaryError("app", error, errorInfo);
+  }
+
+  private readonly reload = () => {
+    window.location.reload();
+  };
+
+  render() {
+    if (this.state.error) {
+      return <StandaloneErrorPage actionLabel="Try again" onAction={this.reload} />;
+    }
+    return this.props.children;
+  }
+}
+
+/**
+ * Error component used by route matches and as the router-wide fallback. It intentionally does not
+ * display the thrown message: route errors can contain request URLs or provider details that are
+ * useful in a local log but are not safe to put in a shared browser surface.
+ */
+export function RouteErrorPage({ reset }: ErrorComponentProps) {
+  const router = useRouter();
+
+  const retry = () => {
+    // Reset the local boundary immediately, then invalidate the match so loaders and beforeLoad
+    // handlers run again. reset() alone would only replay the same failed render.
+    reset();
+    void router.invalidate();
+  };
+
+  return (
+    <BoundaryCard data-ui="route-error">
+      <Text as="span" variant="secondary">
+        OpenTag
+      </Text>
+      <Text as="h1" size="lg" variant="heading">
+        Something went wrong
+      </Text>
+      <Text as="p" variant="secondary">
+        OpenTag could not load this page. Try again, or return to Agents and continue from there.
+      </Text>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button onClick={retry}>Try again</Button>
+        <Link className="text-sm font-medium text-kumo-brand underline-offset-4 hover:underline" to="/agents">
+          Back to Agents
+        </Link>
+      </div>
+    </BoundaryCard>
+  );
+}
+
+export function StandaloneErrorPage({ actionLabel, onAction }: { actionLabel: string; onAction: () => void }) {
+  return (
+    <main className="grid min-h-full place-items-center bg-kumo-canvas p-6" data-ui="app-error-boundary">
+      <BoundaryCard>
+        <Text as="span" variant="secondary">
+          OpenTag
+        </Text>
+        <Text as="h1" size="lg" variant="heading">
+          Something went wrong
+        </Text>
+        <Text as="p" variant="secondary">
+          OpenTag could not load the application. Reload the page and try again.
+        </Text>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button onClick={onAction}>{actionLabel}</Button>
+          <a className="text-sm font-medium text-kumo-brand underline-offset-4 hover:underline" href="/agents">
+            Back to Agents
+          </a>
+        </div>
+      </BoundaryCard>
+    </main>
+  );
+}
+
+function BoundaryCard({ children, ...props }: { children: ReactNode } & HTMLAttributes<HTMLElement>) {
+  return (
+    <section
+      {...props}
+      className="grid w-full max-w-xl gap-3 rounded-lg bg-kumo-base p-6 shadow-sm ring ring-kumo-line"
+    >
+      {children}
+    </section>
+  );
+}
+
+function normalizeError(value: unknown): BoundaryError {
+  if (value instanceof Error) return value;
+  return new Error(typeof value === "string" ? value : "Unknown application error");
+}
+
+/** Logs diagnostics without copying credential-shaped values into the browser console. */
+export function reportBoundaryError(boundary: "app" | "route", error: unknown, errorInfo?: ErrorInfo) {
+  const normalized = normalizeError(error);
+  console.error("[OpenTag] Unhandled UI error", {
+    boundary,
+    error: {
+      name: normalized.name,
+      message: redactErrorMessage(normalized.message),
+    },
+    componentStack: errorInfo?.componentStack ? redactErrorMessage(errorInfo.componentStack) : undefined,
+  });
+}
+
+function redactErrorMessage(message: string): string {
+  return message
+    .replace(
+      /\b(authorization|cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token)\b\s*[:=]\s*[^\s,;]+/gi,
+      "$1=[REDACTED]",
+    )
+    .replace(/([?&](?:code|client_secret|token|secret|password|key)=)[^&#\s]+/gi, "$1[REDACTED]");
+}

@@ -51,6 +51,7 @@ function doctorEnvironment(home, options = {}) {
     OPENTAG_SERVER_URL: "http://caller-controlled.invalid:65535",
     PATH: options.path ?? defaultPath,
     ...(options.shell ? { SHELL: options.shell } : {}),
+    ...options.env,
   };
 }
 
@@ -435,6 +436,125 @@ async function runCoreSuite() {
     const result = runDoctor(baselineHome);
     expectIncludes(result.stdout, "Daemon service: inactive", "daemon result", result);
   });
+
+  const uninstall = runCli(baselineHome, ["daemon", "uninstall"]);
+  expect(uninstall.status === 0, "daemon uninstall cleanup failed in the systemd container", uninstall);
+}
+
+async function runIssue239Suite() {
+  const accountCode = (await readStandardInput()).trim();
+  expect(accountCode.length > 0, "issue #239 suite did not receive an Account login code");
+  await installRuntimeFixture("codex");
+  await waitForHttp("http://127.0.0.1:8000/healthz", 60_000);
+
+  const serverUrl = "http://127.0.0.1:8000";
+  const home = await createHome("issue-239-home");
+  const shellXdgConfigHome = await createHome("issue-239-shell-xdg");
+  const shellHome = await createHome("issue-239-shell-home");
+  const login = runCli(home, ["login", "--server", serverUrl, "--", accountCode]);
+  expect(login.status === 0, "Account login failed in the issue #239 suite", login);
+  const credentials = JSON.parse(await readFile(join(home, "config", "credentials.json"), "utf8"));
+
+  await record("formal Computer connect flow passes doctor", async () => {
+    const code = await issueComputerConnectCode(serverUrl, credentials.accessToken);
+    const connect = runCli(home, ["computer", "connect", "--server", serverUrl, "--", code]);
+    expect(connect.status === 0, "computer connect failed in the issue #239 suite", connect);
+    expectIncludes(connect.stdout, "Daemon service opentag-dev is active", "computer connect result", connect);
+    const result = await waitForDoctor(home, (candidate) => candidate.status === 0, 30_000);
+    expectIncludes(result.stdout, "Baseline checks passed for this OpenTag Home.", "doctor result", result);
+    await waitForComputerOnline(serverUrl, credentials.accessToken, 30_000);
+  });
+
+  await record("shell XDG_CONFIG_HOME cannot redirect doctor service lookup", async () => {
+    const result = runDoctor(home, { env: { XDG_CONFIG_HOME: shellXdgConfigHome } });
+    expect(result.status === 0, "doctor failed after only XDG_CONFIG_HOME changed", result);
+    expectIncludes(result.stdout, "Daemon service: active for this OpenTag Home", "daemon result", result);
+    await expectMissing(
+      join(shellXdgConfigHome, "systemd", "user", "opentag-dev.service"),
+      "doctor created or selected a shell-XDG service definition",
+    );
+  });
+
+  await record("shell HOME cannot redirect doctor service lookup", async () => {
+    const result = runDoctor(home, { env: { HOME: shellHome } });
+    expect(result.status === 0, "doctor failed after only HOME changed", result);
+    expectIncludes(result.stdout, "Daemon service: active for this OpenTag Home", "daemon result", result);
+    await expectMissing(
+      join(shellHome, ".config", "systemd", "user", "opentag-dev.service"),
+      "doctor created or selected a shell-HOME service definition",
+    );
+  });
+
+  await record("connect and doctor agree under the same custom XDG environment", async () => {
+    const code = await issueComputerConnectCode(serverUrl, credentials.accessToken);
+    const environment = { XDG_CONFIG_HOME: shellXdgConfigHome };
+    const connect = runCli(home, ["computer", "connect", "--server", serverUrl, "--", code], {
+      env: environment,
+    });
+    expect(connect.status === 0, "computer reconnect failed under custom XDG_CONFIG_HOME", connect);
+    const result = await waitForDoctor(home, (candidate) => candidate.status === 0, 30_000, { env: environment });
+    expectIncludes(result.stdout, "Daemon service: active for this OpenTag Home", "daemon result", result);
+    const fragment = runSystemctl(["show", "opentag-dev.service", "--property", "FragmentPath", "--value"]);
+    expect(fragment.status === 0, "systemd FragmentPath query failed", fragment);
+    expect(
+      fragment.stdout.trim() === "/home/node/.config/systemd/user/opentag-dev.service",
+      `systemd loaded an unexpected definition: ${fragment.stdout.trim() || "<empty>"}`,
+      fragment,
+    );
+    await waitForComputerOnline(serverUrl, credentials.accessToken, 30_000);
+  });
+
+  const uninstall = runCli(home, ["daemon", "uninstall"]);
+  expect(uninstall.status === 0, "issue #239 daemon cleanup failed", uninstall);
+}
+
+async function readStandardInput() {
+  process.stdin.setEncoding("utf8");
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  return input;
+}
+
+async function issueComputerConnectCode(serverUrl, accessToken) {
+  const response = await fetch(`${serverUrl}/api/v1/computer-connect-codes`, {
+    body: "{}",
+    headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    method: "POST",
+  });
+  expect(response.status === 201, `Computer connect-code issuance returned HTTP ${response.status}`);
+  const payload = await response.json();
+  const match = /computer connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(
+    payload.bootstrapCommand ?? "",
+  );
+  expect(match?.[1] === serverUrl && match[2], "Computer connect-code response was invalid");
+  return match[2];
+}
+
+async function waitForComputerOnline(serverUrl, accessToken, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${serverUrl}/api/v1/computers`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    lastStatus = response.status;
+    if (response.ok) {
+      const payload = await response.json();
+      if (payload.computers?.some((computer) => computer.connectionStatus === "online")) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Computer did not become online within ${timeoutMs}ms (last HTTP status ${lastStatus ?? "none"})`);
+}
+
+function runSystemctl(arguments_) {
+  const result = spawnSync("/usr/bin/systemctl", ["--user", ...arguments_], {
+    encoding: "utf8",
+    env: doctorEnvironment("/home/node/doctor-e2e/issue-239-home"),
+    timeout: 15_000,
+  });
+  if (result.error) fail(`systemctl process failed: ${result.error.message}`);
+  return result;
 }
 
 async function expectMissing(path, message) {
@@ -446,11 +566,11 @@ async function expectMissing(path, message) {
   }
 }
 
-async function waitForDoctor(home, predicate, timeoutMs) {
+async function waitForDoctor(home, predicate, timeoutMs, options = {}) {
   const deadline = Date.now() + timeoutMs;
   let last;
   while (Date.now() < deadline) {
-    last = runDoctor(home);
+    last = runDoctor(home, options);
     if (predicate(last)) return last;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -461,6 +581,7 @@ async function main() {
   await resetRoot();
   if (suite === "minimal") await runMinimalSuite();
   else if (suite === "core") await runCoreSuite();
+  else if (suite === "issue-239") await runIssue239Suite();
   else throw new Error(`unknown suite: ${suite}`);
   process.stdout.write(`RESULT ${results.length}/${results.length} Docker doctor scenarios passed\n`);
 }

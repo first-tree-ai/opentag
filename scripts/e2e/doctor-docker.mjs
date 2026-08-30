@@ -16,6 +16,7 @@ const keep = process.argv.includes("--keep");
 function run(arguments_, options = {}) {
   const result = spawnSync("docker", arguments_, {
     encoding: "utf8",
+    input: options.input,
     maxBuffer: 32 * 1024 * 1024,
     stdio: options.inherit ? "inherit" : "pipe",
   });
@@ -250,6 +251,45 @@ async function main() {
     ],
     { inherit: true },
   );
+
+  const bootstrap = run([
+    "exec",
+    "--env",
+    "OPENTAG_BOOTSTRAP_EMAIL=doctor-e2e@example.com",
+    "--env",
+    "OPENTAG_BOOTSTRAP_DISPLAY_NAME=Doctor E2E",
+    "--env",
+    "OPENTAG_BOOTSTRAP_WORKSPACE_NAME=doctor-e2e",
+    "--env",
+    "OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Doctor E2E",
+    realServer,
+    nodePath(),
+    "packages/server/dist/admin/bootstrap-cli.mjs",
+  ]);
+  const accountCode = JSON.parse(bootstrap.stdout.trim()).connectCode;
+  if (typeof accountCode !== "string" || accountCode.length === 0) {
+    throw new Error("Server bootstrap did not return an Account login code");
+  }
+  const issue239 = run(
+    [
+      "exec",
+      "--interactive",
+      "--user",
+      "node",
+      "--env",
+      "HOME=/home/node",
+      "--env",
+      "XDG_RUNTIME_DIR=/run/user/1000",
+      "--env",
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      runner,
+      nodePath(),
+      "/opt/doctor-e2e/scenario-runner.mjs",
+      "issue-239",
+    ],
+    { input: accountCode },
+  );
+  process.stdout.write(issue239.stdout);
 }
 
 function nodePath() {

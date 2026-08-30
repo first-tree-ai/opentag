@@ -37,6 +37,110 @@ describe("Slack installed-binding adapter", () => {
     );
   });
 
+  it("validates auth.test identities and classifies rejected OAuth responses", async () => {
+    const authTest = vi.fn().mockResolvedValue({ app_id: "A1", team_id: "T1", user_id: "U1", bot_id: "B1" });
+    const client = { auth: { test: authTest }, files: { info: vi.fn() } };
+    const api = new DefaultSlackApiClient(() => client as never);
+    await expect(api.authTest("xoxb-token")).resolves.toEqual({
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      botId: "B1",
+    });
+    authTest.mockResolvedValueOnce({ team_id: "T1", user_id: "U1" });
+    await expect(api.authTest("xoxb-token")).rejects.toThrow("SLACK_AUTH_IDENTITY_INCOMPLETE");
+
+    const invalid = new DefaultSlackApiClient(
+      undefined,
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: "invalid_code" }), { status: 200 })),
+    );
+    await expect(
+      invalid.oauthAccess({
+        clientId: "client",
+        clientSecret: "secret",
+        code: "code",
+        redirectUri: "https://example.com",
+      }),
+    ).rejects.toThrow("SLACK_AUTH_INVALID");
+    const rejected = new DefaultSlackApiClient(
+      undefined,
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: "other_error" }), { status: 200 })),
+    );
+    await expect(
+      rejected.oauthAccess({
+        clientId: "client",
+        clientSecret: "secret",
+        code: "code",
+        redirectUri: "https://example.com",
+      }),
+    ).rejects.toThrow("SLACK_AUTH_REJECTED");
+  });
+
+  it("downloads Slack resources and rejects unavailable or oversized responses", async () => {
+    const info = vi.fn().mockResolvedValue({
+      file: { url_private_download: "https://files.example/download", name: "file.txt", mimetype: "text/plain" },
+    });
+    const client = { auth: { test: vi.fn() }, files: { info } };
+    const api = new DefaultSlackApiClient(() => client as never);
+    const fetchGlobal = vi
+      .fn()
+      .mockResolvedValue(new Response("contents", { status: 200, headers: { "content-length": "8" } }));
+    vi.stubGlobal("fetch", fetchGlobal);
+    try {
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "file",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).resolves.toMatchObject({
+        filename: "file.txt",
+        mediaType: "text/plain",
+        sizeBytes: 8,
+        stream: expect.any(Readable),
+      });
+      expect(info).toHaveBeenCalledWith({ file: "file" });
+      expect(fetchGlobal).toHaveBeenCalledWith(
+        "https://files.example/download",
+        expect.objectContaining({ redirect: "error" }),
+      );
+
+      info.mockResolvedValueOnce({ file: {} });
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "missing",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).rejects.toThrow("SLACK_RESOURCE_UNAVAILABLE");
+      info.mockResolvedValueOnce({ file: { url_private: "https://files.example/private" } });
+      fetchGlobal.mockResolvedValueOnce(new Response(null, { status: 403 }));
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "private",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).rejects.toThrow("SLACK_RESOURCE_HTTP_403");
+      fetchGlobal.mockResolvedValueOnce(
+        new Response("too large", { status: 200, headers: { "content-length": "26214401" } }),
+      );
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "large",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).rejects.toThrow("SLACK_RESOURCE_TOO_LARGE");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("accepts Slack's documented bot-token identity when auth.test omits app_id", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(

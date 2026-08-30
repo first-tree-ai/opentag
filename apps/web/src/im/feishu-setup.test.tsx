@@ -64,9 +64,9 @@ describe("FeishuSetup", () => {
     fireEvent.click(button);
     fireEvent.click(button);
 
-    const link = (await screen.findByRole("link", { name: "Open Feishu authorization" })) as HTMLAnchorElement;
+    const link = (await screen.findByRole("link", { name: "Open Lark authorization" })) as HTMLAnchorElement;
     expect(link.href).toBe("https://open.feishu.cn/setup");
-    expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Scan this QR code in Lark" })).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(1);
   });
 
@@ -165,7 +165,7 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     expect(await screen.findByText(/already connected to another Agent/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry Lark setup" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     expect(create.mock.calls.map(([, intent]) => intent)).toEqual(["replace", "replace"]);
@@ -186,12 +186,12 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     expect(await screen.findByText(/already connected to another Agent/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry Lark setup" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe("Retry unavailable");
     expect(screen.getByText(/State: failed/)).toBeTruthy();
     expect(screen.getByText(/already connected to another Agent/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry Feishu setup" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry Lark setup" })).toBeTruthy();
   });
 
   it("does not regress a terminal poll with a late reused start snapshot", async () => {
@@ -281,7 +281,7 @@ describe("FeishuSetup", () => {
 
   it("explains a Server-reported failure the same way whether or not an attempt exists", async () => {
     const unavailable =
-      "The Feishu open platform did not return a usable authorization. Check the Server's network access to Feishu, then retry.";
+      "The Lark open platform did not return a usable authorization. Check the Server's network access to Lark, then retry.";
     const start = vi
       .spyOn(browserApi, "createFeishuSetupAttempt")
       .mockRejectedValueOnce(
@@ -316,7 +316,7 @@ describe("FeishuSetup", () => {
 
     const failedState = await screen.findByText(/State: failed/);
     expect(failedState.closest('[data-ui="feishu-setup-feedback"]')?.textContent).toContain(
-      "Feishu setup failed. Retry or contact the Account owner for help.",
+      "Lark setup failed. Retry or contact the Account owner for help.",
     );
   });
 });

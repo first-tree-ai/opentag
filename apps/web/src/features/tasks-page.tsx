@@ -273,7 +273,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
       ) : null}
       {!unavailable && tasksQuery.data && tasks.length === 0 ? (
         <p className="text-sm text-kumo-subtle" role="status">
-          No Tasks yet. Work this Agent handles in Feishu or Slack appears here.
+          No Tasks yet. Work this Agent handles in Lark or Slack appears here.
         </p>
       ) : null}
       {!unavailable && tasks.length > 0 ? (

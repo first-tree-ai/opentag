@@ -38,7 +38,7 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
   /*
-   * The handle addresses the Agent in Feishu, where each Agent has its own bot. Slack routes one
+   * The handle addresses the Agent in Lark, where each Agent has its own bot. Slack routes one
    * workspace Bot, so showing a per-Agent handle there names something nobody can address.
    */
   const handle =

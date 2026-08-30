@@ -228,11 +228,11 @@ export function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminCo
               Connect messaging
             </Text>
             <Text as="p" variant="secondary">
-              Connect a Feishu Bot so teammates can mention {agent.displayName}.
+              Connect a Lark bot so teammates can mention {agent.displayName}.
             </Text>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button onClick={() => void setup.start()}>Connect Feishu</Button>
+            <Button onClick={() => void setup.start()}>Connect Lark</Button>
             <Button variant="secondary" onClick={onFinish}>
               Set up later
             </Button>

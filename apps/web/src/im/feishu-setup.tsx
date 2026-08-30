@@ -16,19 +16,19 @@ const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "fa
 const POLL_INTERVAL_MS = 1_500;
 const FEISHU_SETUP_MESSAGES: Record<string, string> = {
   FEISHU_APP_ALREADY_BOUND:
-    "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
+    "This Lark bot is already connected to another Agent. Choose a different bot or disable its current binding first.",
   FEISHU_SCOPE_REAUTH_REQUIRED:
-    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
+    "Lark did not grant every required permission. Retry and approve all requested permissions.",
   IM_BINDING_SCOPE_REAUTH_REQUIRED:
-    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-  FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
-  FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
-  FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
-  FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
+    "Lark did not grant every required permission. Retry and approve all requested permissions.",
+  FEISHU_SETUP_DENIED: "Lark authorization was declined. Retry and approve the requested permissions.",
+  FEISHU_SETUP_EXPIRED: "This Lark authorization expired. Retry to scan a new QR code.",
+  FEISHU_SETUP_CANCELED: "Lark setup was canceled. Retry when you are ready.",
+  FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Lark setup. Retry to generate a new QR code.",
   FEISHU_BINDING_IDENTITY_MISMATCH:
-    "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
+    "The authorized Lark bot identity does not match the current binding. Retry with the current bot or use Replace.",
   FEISHU_UPSTREAM_UNAVAILABLE:
-    "The Feishu open platform did not return a usable authorization. Check the Server's network access to Feishu, then retry.",
+    "The Lark open platform did not return a usable authorization. Check the Server's network access to Lark, then retry.",
 };
 
 export interface FeishuSetupControl {
@@ -51,7 +51,7 @@ interface FeishuSetupError {
 }
 
 /**
- * Owns one Feishu setup lifecycle for an Agent behind a small rendering seam.
+ * Owns one Lark setup lifecycle for an Agent behind a small rendering seam.
  * ImTab refreshes its binding on success; onboarding can use the same callback
  * to reload fresh Server facts and derive its next step without learning setup internals.
  */
@@ -178,14 +178,14 @@ function FeishuSetupFeedback({
     <Banner data-ui="feishu-setup-feedback">
       {active ? (
         <span aria-hidden="true">
-          <Loader aria-label="Waiting for Feishu authorization" size="sm" />
+          <Loader aria-label="Waiting for Lark authorization" size="sm" />
         </span>
       ) : null}
-      <strong>Feishu setup started</strong>
+      <strong>Lark setup started</strong>
       <br />
       {attempt.intent === "reauthorize"
-        ? "Confirm the updated permissions for the current Feishu Bot."
-        : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
+        ? "Confirm the updated permissions for the current Lark bot."
+        : "Choose an existing Lark bot or create a new one, then confirm the requested permissions."}
       <br />
       State: {attempt.state}. Expires {formatSetupDate(attempt.expiresAt)}.
       {recovery ? (
@@ -199,14 +199,14 @@ function FeishuSetupFeedback({
           <br />
           <FeishuQrCode value={attempt.qrUrl} />
           <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-            Open Feishu authorization
+            Open Lark authorization
           </a>
         </>
       ) : null}
       {RETRYABLE_STATES.includes(attempt.state) ? (
         <>
           <br />
-          <Button onClick={() => void onRetry(attempt.intent)}>Retry Feishu setup</Button>
+          <Button onClick={() => void onRetry(attempt.intent)}>Retry Lark setup</Button>
         </>
       ) : null}
     </Banner>
@@ -226,7 +226,7 @@ function FeishuQrCode({ value }: { value: string }) {
   }, [value]);
   return source ? (
     <img
-      alt="Scan this QR code in Feishu"
+      alt="Scan this QR code in Lark"
       className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />
@@ -237,7 +237,7 @@ function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
   if (attempt.errorCode && FEISHU_SETUP_MESSAGES[attempt.errorCode]) return FEISHU_SETUP_MESSAGES[attempt.errorCode];
   if (attempt.state === "expired") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_EXPIRED;
   if (attempt.state === "canceled") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_CANCELED;
-  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact the Account owner for help.";
+  if (attempt.state === "failed") return "Lark setup failed. Retry or contact the Account owner for help.";
   return undefined;
 }
 

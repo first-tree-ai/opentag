@@ -1416,7 +1416,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "View details" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
-    expect(screen.getByRole("link", { name: "Feishu · @reviewer" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "Lark · @reviewer" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/messaging`,
     );
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(`/agents/${agentId}/settings`);
@@ -1535,7 +1535,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("link", { name: "Feishu · @reviewer" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Lark · @reviewer" }));
     expect(await screen.findByRole("heading", { name: "Messaging" })).toBeTruthy();
     const backLink = screen.getByRole("link", { name: "Back to Reviewer" });
     expect(backLink.getAttribute("href")).toBe(`/agents/${agentId}`);
@@ -1994,7 +1994,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
-    expect(screen.getByText("Feishu · @reviewer")).toBeTruthy();
+    expect(screen.getByText("Lark · @reviewer")).toBeTruthy();
     expect(screen.getByText("Connected")).toBeTruthy();
     expect(screen.getByText(/Validated/)).toBeTruthy();
     // The channel identity is reported, not edited, so it carries no fields of its own.
@@ -2009,8 +2009,8 @@ describe("OpenTag Web App Shell", () => {
     // A direct message is always delivered, so the row that only ever said so is gone.
     expect(screen.queryByText("Direct messages")).toBeNull();
     expect(screen.getByRole("group", { name: "Group chat trigger mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change Feishu Bot" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Disconnect Feishu" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Change bot" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
   });
 
   it("names a Slack channel by its verified Bot rather than by an invented Agent handle", async () => {
@@ -2259,7 +2259,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Disconnect Feishu" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect Lark" }));
     const dialog = await screen.findByRole("dialog", { name: "Disconnect messaging?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to disconnect messaging");
@@ -2351,18 +2351,18 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Connect a Feishu Bot" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect a Lark bot" })).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
-  it("creates a Feishu setup attempt only after an explicit admin click", async () => {
+  it("creates a Lark setup attempt only after an explicit admin click", async () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect a Feishu Bot" }));
-    expect(await screen.findByText("Feishu setup started")).toBeTruthy();
-    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
-    expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a Lark bot" }));
+    expect(await screen.findByText("Lark setup started")).toBeTruthy();
+    expect(await screen.findByText(/Choose an existing Lark bot or create a new one/)).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Scan this QR code in Lark" })).toBeTruthy();
     await waitFor(() =>
       expect(
         vi
@@ -2374,15 +2374,15 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("offers a legacy Feishu Bot permission update without claiming live connectivity", async () => {
+  it("offers a legacy Lark bot permission update without claiming live connectivity", async () => {
     installApi({ bindingReauth: true, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
     expect(await screen.findByText(/Permissions update required/)).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Change Feishu Bot" }));
-    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reauthorize Lark" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
+    expect(await screen.findByText(/Choose an existing Lark bot or create a new one/)).toBeTruthy();
     const request = vi
       .mocked(fetch)
       .mock.calls.find(
@@ -2396,7 +2396,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByText("Feishu · @reviewer")).toBeTruthy();
+    expect(await screen.findByText("Lark · @reviewer")).toBeTruthy();
     expect(
       screen.getByText(
         "The channel itself is connected, but messages cannot be delivered yet. Retrying automatically.",
@@ -2428,12 +2428,12 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Change Feishu Bot" }));
-    const setupNotice = (await screen.findByText("Feishu setup started")).parentElement;
+    fireEvent.click(await screen.findByRole("button", { name: "Change bot" }));
+    const setupNotice = (await screen.findByText("Lark setup started")).parentElement;
     expect(setupNotice?.textContent).toContain(
-      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
+      "This Lark bot is already connected to another Agent. Choose a different bot or disable its current binding first.",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry Lark setup" }));
     await waitFor(() => {
       const requests = vi
         .mocked(fetch)

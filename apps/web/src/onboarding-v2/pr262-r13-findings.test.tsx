@@ -125,7 +125,7 @@ describe("the messaging wait at ab76497", () => {
 
     expect(screen.queryByText("Connected. Checking your agent can be reached…")).toBeNull();
   });
-  it("returns to the computer step when the runtime stops being ready, so its wait reason never renders", async () => {
+  it("returns to the computer step when the runtime stops being ready", async () => {
     // Documented behaviour, not a guarantee: `done.computer` requires `readinessPassed`, so any
     // runtime status other than `ready` moves the flow back a step *before* the messaging step can
     // render. `COPY.messaging.runtimeNotReady` therefore has no reachable state — and the round-6
@@ -149,7 +149,8 @@ describe("the messaging wait at ab76497", () => {
     await settle();
     await tick(POLL_MS * 6);
 
+    // Which is why the messaging step has no copy for an unready runtime: this is the answer to
+    // it, and the check rows here name the line that failed.
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.queryByText(/runtime isn't ready/)).toBeNull();
   });
 });

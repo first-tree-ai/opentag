@@ -24,20 +24,15 @@ import { and, asc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-or
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
-  accountComputers,
   agentRuntimeConfigs,
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   sessionPlacements,
   sessions,
   users,
 } from "../../db/schema/index.js";
-import {
-  schemaRequiredAgentProjection,
-  schemaRequiredComputerProjection,
-  schemaWorkspaceIdForComputer,
-} from "../../db/schema-required-legacy.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
@@ -104,7 +99,7 @@ function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<str
 export interface AgentSessionStopTarget {
   agentId: string;
   computerId: string;
-  workspaceComputerId: string;
+  installationId: string;
   placementGeneration: number;
   sessionId: string;
 }
@@ -328,7 +323,6 @@ export class AgentService {
         const [created] = await transaction
           .insert(agents)
           .values({
-            ...schemaRequiredAgentProjection(computer),
             createdByUserId: callerUserId,
             creationIntentId: input.creationIntentId,
             creationIntentFingerprint: intentFingerprint,
@@ -358,7 +352,7 @@ export class AgentService {
         );
         if (replay) return replay;
       }
-      if (constraintName === "agents_workspace_name_active_unique") {
+      if (constraintName === "agents_account_name_active_unique") {
         throw new AgentServiceError(
           "AGENT_NAME_CONFLICT",
           "deterministic",
@@ -415,10 +409,10 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
-        computerId: accountComputers.id,
-        computerDisplayName: accountComputers.displayName,
-        computerPlatform: accountComputers.platform,
-        computerOwnerAccountId: accountComputers.ownerAccountId,
+        computerId: computers.id,
+        computerDisplayName: computers.displayName,
+        computerPlatform: computers.platform,
+        computerOwnerAccountId: computers.ownerAccountId,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -429,7 +423,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .innerJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .orderBy(asc(agents.name), asc(agents.id));
     const summaries = rows.flatMap((row) => {
@@ -441,7 +435,7 @@ export class AgentService {
         !row.computerPlatform ||
         !row.computerOwnerAccountId
       ) {
-        throw new Error("Active Agent is missing its creator audit record or enrolled Computer");
+        throw new Error("Active Agent is missing its creator audit record or bound Computer");
       }
       return [toAgentSummary(row as AgentSafeRow)];
     });
@@ -518,10 +512,10 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
-        computerId: accountComputers.id,
-        computerDisplayName: accountComputers.displayName,
-        computerPlatform: accountComputers.platform,
-        computerOwnerAccountId: accountComputers.ownerAccountId,
+        computerId: computers.id,
+        computerDisplayName: computers.displayName,
+        computerPlatform: computers.platform,
+        computerOwnerAccountId: computers.ownerAccountId,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -532,7 +526,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .innerJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
@@ -792,7 +786,7 @@ export class AgentService {
           endedAt: sessions.endedAt,
           generation: sessionPlacements.generation,
           sessionId: sessions.id,
-          workspaceComputerId: sessionPlacements.computerId,
+          computerId: sessionPlacements.computerId,
         })
         .from(sessions)
         .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
@@ -802,7 +796,7 @@ export class AgentService {
         .for("update", { of: sessionPlacements });
       const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const changesAgent = scope.agent.computerId !== target.id;
-      const changesPlacement = active.some(({ workspaceComputerId }) => workspaceComputerId !== target.id);
+      const changesPlacement = active.some(({ computerId }) => computerId !== target.id);
       if (!changesAgent && !changesPlacement) {
         return toAgentAdminConfig(scope.agent, runtimeConfig, target.id);
       }
@@ -839,7 +833,6 @@ export class AgentService {
         const [changed] = await transaction
           .update(agents)
           .set({
-            ...schemaRequiredAgentProjection(target),
             computerId: target.id,
             revision: sql`${agents.revision} + 1`,
             updatedAt: now,
@@ -850,11 +843,10 @@ export class AgentService {
         updated = changed;
       }
       for (const row of active) {
-        if (row.workspaceComputerId === target.id) continue;
+        if (row.computerId === target.id) continue;
         const [moved] = await transaction
           .update(sessionPlacements)
           .set({
-            ...schemaRequiredComputerProjection(target.id),
             computerId: target.id,
             generation: row.generation + 1,
             updatedAt: now,
@@ -934,18 +926,17 @@ export class AgentService {
     transaction: DatabaseTransaction,
     accountId: string,
     computerId: string,
-  ): Promise<{ id: string; workspaceId: string }> {
+  ): Promise<{ id: string }> {
     const [computer] = await transaction
-      .select({ id: accountComputers.id })
-      .from(accountComputers)
-      .where(and(eq(accountComputers.id, computerId), eq(accountComputers.ownerAccountId, accountId)))
+      .select({ id: computers.id })
+      .from(computers)
+      .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId)))
       .limit(1)
       .for("update");
     if (!computer) {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }
-    const schemaWorkspaceId = await schemaWorkspaceIdForComputer(transaction, computer.id);
-    return { id: computer.id, workspaceId: schemaWorkspaceId };
+    return computer;
   }
 
   async #resolveAgentScope(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentScope> {
@@ -988,8 +979,8 @@ export class AgentService {
     return transaction
       .select({
         agentId: imBindings.agentId,
-        computerId: accountComputers.currentInstallationId,
-        workspaceComputerId: sessionPlacements.computerId,
+        installationId: computers.currentInstallationId,
+        computerId: sessionPlacements.computerId,
         placementGeneration: sessionPlacements.generation,
         sessionId: sessions.id,
       })
@@ -997,7 +988,7 @@ export class AgentService {
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(and(eq(imBindings.agentId, agentId), isNull(sessions.endedAt)));
   }
 

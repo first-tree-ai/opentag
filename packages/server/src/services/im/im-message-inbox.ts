@@ -2,8 +2,8 @@ import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEv
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
-  accountComputers,
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
@@ -125,9 +125,9 @@ export class ImMessageInbox {
               throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
             }
             const [computer] = await transaction
-              .select({ ownerAccountId: accountComputers.ownerAccountId })
-              .from(accountComputers)
-              .where(eq(accountComputers.id, agent.computerId))
+              .select({ ownerAccountId: computers.ownerAccountId })
+              .from(computers)
+              .where(eq(computers.id, agent.computerId))
               .limit(1)
               .for("update");
             const agentCanExecute = computer?.ownerAccountId === agent.createdByUserId;
@@ -406,7 +406,7 @@ export class ImMessageInbox {
                       conversationKind,
                       kind: "thread",
                       threadKey,
-                      workspaceComputerId: scope.agent.computerId,
+                      computerId: scope.agent.computerId,
                       now,
                     }));
                   deliveries.push({
@@ -421,7 +421,7 @@ export class ImMessageInbox {
                     channelId: event.conversation.externalId,
                     conversationKind,
                     kind: "channel",
-                    workspaceComputerId: scope.agent.computerId,
+                    computerId: scope.agent.computerId,
                     now,
                   });
                   deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
@@ -432,7 +432,7 @@ export class ImMessageInbox {
                   channelId: event.conversation.externalId,
                   conversationKind,
                   kind: "channel",
-                  workspaceComputerId: scope.agent.computerId,
+                  computerId: scope.agent.computerId,
                   now,
                 });
                 deliveries.push({
@@ -513,7 +513,7 @@ export class ImMessageInbox {
                   conversationKind,
                   kind: "thread",
                   threadKey: pending.threadKey,
-                  workspaceComputerId: scope.agent.computerId,
+                  computerId: scope.agent.computerId,
                   now,
                 });
                 const [upgraded] = await transaction
@@ -641,7 +641,7 @@ export class ImMessageInbox {
       conversationKind: "channel" | "dm" | "group_dm";
       kind: "channel" | "thread";
       threadKey?: string;
-      workspaceComputerId: string;
+      computerId: string;
       now: Date;
     },
   ): Promise<{ id: string; generation: number }> {

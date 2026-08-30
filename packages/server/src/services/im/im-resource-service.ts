@@ -2,8 +2,8 @@ import { Transform } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
-  accountComputers,
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
@@ -75,16 +75,16 @@ export class ImResourceService {
           sessionPlacements,
           and(
             eq(sessionPlacements.sessionId, sessions.id),
-            eq(sessionPlacements.computerId, computerAuth.workspaceComputerId),
+            eq(sessionPlacements.computerId, computerAuth.computerId),
             eq(sessionPlacements.generation, runtime.placementGeneration),
           ),
         )
         .innerJoin(
-          accountComputers,
+          computers,
           and(
-            eq(accountComputers.id, computerAuth.workspaceComputerId),
-            eq(accountComputers.id, sessionPlacements.computerId),
-            eq(accountComputers.currentInstanceId, runtime.instanceId),
+            eq(computers.id, computerAuth.computerId),
+            eq(computers.id, sessionPlacements.computerId),
+            eq(computers.currentInstanceId, runtime.instanceId),
           ),
         )
         .where(and(eq(imMessages.id, imMessageId), eq(imBindings.status, "active"), eq(agents.status, "active")))

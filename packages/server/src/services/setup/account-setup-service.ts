@@ -1,24 +1,24 @@
-import type { WorkspaceSetupCompletion } from "@opentag/shared";
+import type { AccountSetupCompletion } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, users } from "../../db/schema/index.js";
 import type { ImBindingService } from "../im-bindings/index.js";
 
-export class WorkspaceSetupServiceError extends Error {
+export class AccountSetupServiceError extends Error {
   readonly category = "deterministic" as const;
 
   constructor(
-    readonly code: "WORKSPACE_SETUP_AGENT_NOT_FOUND" | "WORKSPACE_SETUP_NOT_READY",
+    readonly code: "ACCOUNT_SETUP_AGENT_NOT_FOUND" | "ACCOUNT_SETUP_NOT_READY",
     readonly statusCode: 404 | 409,
     message: string,
   ) {
     super(message);
-    this.name = "WorkspaceSetupServiceError";
+    this.name = "AccountSetupServiceError";
   }
 }
 
 /** Owns the one-way transition from first-time setup into normal operations. */
-export class WorkspaceSetupService {
+export class AccountSetupService {
   readonly #database: DatabaseClient;
   readonly #imBindings: ImBindingService;
   readonly #now: () => Date;
@@ -29,15 +29,15 @@ export class WorkspaceSetupService {
     this.#now = options.now ?? (() => new Date());
   }
 
-  async completeForAccount(callerUserId: string, agentId: string): Promise<WorkspaceSetupCompletion> {
+  async completeForAccount(callerUserId: string, agentId: string): Promise<AccountSetupCompletion> {
     const current = await this.#existingCompletion(callerUserId);
     if (current) return current;
     await this.#ownedActiveAgent(callerUserId, agentId);
 
     const handoff = await this.#imBindings.getHandoffForAgent(callerUserId, agentId);
     if (!handoff?.handoffReady) {
-      throw new WorkspaceSetupServiceError(
-        "WORKSPACE_SETUP_NOT_READY",
+      throw new AccountSetupServiceError(
+        "ACCOUNT_SETUP_NOT_READY",
         409,
         "The Agent handoff is not ready to complete Account setup",
       );
@@ -51,8 +51,8 @@ export class WorkspaceSetupService {
         .limit(1)
         .for("update");
       if (!lockedUser) {
-        throw new WorkspaceSetupServiceError(
-          "WORKSPACE_SETUP_AGENT_NOT_FOUND",
+        throw new AccountSetupServiceError(
+          "ACCOUNT_SETUP_AGENT_NOT_FOUND",
           404,
           "The active setup Agent was not found",
         );
@@ -66,8 +66,8 @@ export class WorkspaceSetupService {
         .limit(1)
         .for("update");
       if (!lockedAgent) {
-        throw new WorkspaceSetupServiceError(
-          "WORKSPACE_SETUP_AGENT_NOT_FOUND",
+        throw new AccountSetupServiceError(
+          "ACCOUNT_SETUP_AGENT_NOT_FOUND",
           404,
           "The active setup Agent was not found",
         );
@@ -84,7 +84,7 @@ export class WorkspaceSetupService {
     });
   }
 
-  async #existingCompletion(callerUserId: string): Promise<WorkspaceSetupCompletion | undefined> {
+  async #existingCompletion(callerUserId: string): Promise<AccountSetupCompletion | undefined> {
     const [row] = await this.#database
       .select({ setupCompletedAt: users.setupCompletedAt })
       .from(users)
@@ -100,15 +100,11 @@ export class WorkspaceSetupService {
       .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
       .limit(1);
     if (!agent) {
-      throw new WorkspaceSetupServiceError(
-        "WORKSPACE_SETUP_AGENT_NOT_FOUND",
-        404,
-        "The active setup Agent was not found",
-      );
+      throw new AccountSetupServiceError("ACCOUNT_SETUP_AGENT_NOT_FOUND", 404, "The active setup Agent was not found");
     }
   }
 
-  #projection(setupCompletedAt: Date): WorkspaceSetupCompletion {
+  #projection(setupCompletedAt: Date): AccountSetupCompletion {
     return { setupCompletedAt: setupCompletedAt.toISOString() };
   }
 }

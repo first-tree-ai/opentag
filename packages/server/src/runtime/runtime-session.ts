@@ -44,8 +44,7 @@ export type RuntimeServerBusinessFrame = Readonly<Record<string, unknown>> & { r
 
 export interface RuntimeBusinessContext {
   computerId: string;
-  workspaceComputerId: string;
-  workspaceId: string;
+  installationId: string;
   connectionId?: string;
   instanceId: string;
   negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
@@ -89,9 +88,8 @@ export class RuntimeSession {
   #handshakeInFlight = false;
   #heartbeatInFlight = false;
   #authContext?: ComputerAuthContext;
+  #installationId?: string;
   #computerId?: string;
-  #workspaceComputerId?: string;
-  #workspaceId?: string;
   #connectionId?: string;
   #instanceId?: string;
   #protocolVersion?: RuntimeProtocolVersion;
@@ -275,9 +273,8 @@ export class RuntimeSession {
         type: "auth:result",
         requestId: frame.requestId,
         ok: true,
-        workspaceComputerId: authenticated.workspaceComputerId,
-        workspaceId: authenticated.workspaceId,
         computerId: authenticated.computerId,
+        installationId: authenticated.installationId,
       });
       this.#send(
         this.#protocolVersion === RUNTIME_PROTOCOL_V2
@@ -312,10 +309,10 @@ export class RuntimeSession {
   async #register(frame: ComputerRegisterFrame): Promise<void> {
     const authContext = this.#authContext;
     if (!authContext) {
-      this.#fail("PROTOCOL_ERROR", "Missing authenticated Computer enrollment", 4400, frame.requestId);
+      this.#fail("PROTOCOL_ERROR", "Missing authenticated Computer credential", 4400, frame.requestId);
       return;
     }
-    if (frame.computerId !== authContext.computerId) {
+    if (frame.installationId !== authContext.installationId) {
       this.#fail(
         "COMPUTER_IDENTITY_CONFLICT",
         "The Computer identity does not match the machine credential",
@@ -360,9 +357,8 @@ export class RuntimeSession {
           active: false,
           capabilities: frame.capabilities,
           capabilitiesUpdatedAt: this.#options.now().getTime(),
-          computerId: frame.computerId,
-          workspaceComputerId: authContext.workspaceComputerId,
-          workspaceId: authContext.workspaceId,
+          computerId: authContext.computerId,
+          installationId: frame.installationId,
           connectionId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
@@ -380,16 +376,16 @@ export class RuntimeSession {
         () => this.#computers.register(authContext, frame),
         () => {
           if (this.#isClosing()) return;
-          this.#computerId = frame.computerId;
-          this.#workspaceComputerId = authContext.workspaceComputerId;
-          this.#workspaceId = authContext.workspaceId;
+          this.#installationId = frame.installationId;
+          this.#computerId = authContext.computerId;
           this.#connectionId = connectionId;
           this.#instanceId = frame.instanceId;
           this.#negotiatedCapabilities = negotiatedCapabilities ?? {};
           setRuntimeConnectionAttrs(
             this.#socket,
             runtimeAttrs({
-              computerId: frame.computerId,
+              computerId: authContext.computerId,
+              installationId: frame.installationId,
               connectionId,
               instanceId: frame.instanceId,
               protocolVersion: this.#protocolVersion,
@@ -409,14 +405,14 @@ export class RuntimeSession {
                 }
               : { type: "computer:register:result", requestId: frame.requestId, ok: true },
           );
-          if (!this.#registry.activate(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
+          if (!this.#registry.activate(authContext.computerId, frame.instanceId, this.#socket)) {
             this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced during registration", 4409);
           }
         },
       );
       if (this.#isClosing()) {
-        if (this.#registry.remove(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
-          await this.#computers.disconnect(authContext.workspaceComputerId, frame.instanceId).catch(() => undefined);
+        if (this.#registry.remove(authContext.computerId, frame.instanceId, this.#socket)) {
+          await this.#computers.disconnect(authContext.computerId, frame.instanceId).catch(() => undefined);
         }
         return;
       }
@@ -426,10 +422,10 @@ export class RuntimeSession {
   }
 
   async #heartbeat(frame: HeartbeatFrame): Promise<void> {
-    const { requestId, computerId, instanceId, capabilities, providerReadiness, imCliReadiness } = frame;
+    const { requestId, installationId, instanceId, capabilities, providerReadiness, imCliReadiness } = frame;
     try {
       const authContext = this.#authContext;
-      if (!authContext || computerId !== this.#computerId || instanceId !== this.#instanceId) {
+      if (!authContext || installationId !== this.#installationId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
         return;
       }
@@ -437,7 +433,7 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, requestId);
         return;
       }
-      if (!this.#registry.isCurrent(authContext.workspaceComputerId, instanceId, this.#socket)) {
+      if (!this.#registry.isCurrent(authContext.computerId, instanceId, this.#socket)) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }
@@ -447,7 +443,7 @@ export class RuntimeSession {
       }
       if (
         !this.#registry.touch(
-          authContext.workspaceComputerId,
+          authContext.computerId,
           instanceId,
           this.#socket,
           this.#options.now().getTime(),
@@ -488,15 +484,7 @@ export class RuntimeSession {
     const business = this.#options.business;
     const scheduler = this.#businessScheduler;
     const authContext = this.#authContext;
-    if (
-      !business ||
-      !scheduler ||
-      !authContext ||
-      !this.#computerId ||
-      !this.#workspaceComputerId ||
-      !this.#workspaceId ||
-      !this.#instanceId
-    ) {
+    if (!business || !scheduler || !authContext || !this.#installationId || !this.#computerId || !this.#instanceId) {
       this.#fail("PROTOCOL_ERROR", "The runtime business frame type is unknown", 4400, requestId);
       return;
     }
@@ -514,8 +502,7 @@ export class RuntimeSession {
     }
     const context: RuntimeBusinessContext = {
       computerId: this.#computerId,
-      workspaceComputerId: this.#workspaceComputerId,
-      workspaceId: this.#workspaceId,
+      installationId: this.#installationId,
       connectionId: this.#connectionId,
       instanceId: this.#instanceId,
       negotiatedCapabilities: { ...this.#negotiatedCapabilities },
@@ -569,7 +556,7 @@ export class RuntimeSession {
       !context.signal.aborted &&
       this.#state === "registered" &&
       context.connectionId === this.#connectionId &&
-      this.#registry.isCurrent(context.workspaceComputerId, context.instanceId, this.#socket)
+      this.#registry.isCurrent(context.computerId, context.instanceId, this.#socket)
     );
   }
 
@@ -590,11 +577,11 @@ export class RuntimeSession {
     this.#businessScheduler?.close();
     this.#clearHandshakeTimer();
     if (
-      this.#workspaceComputerId &&
+      this.#computerId &&
       this.#instanceId &&
-      this.#registry.remove(this.#workspaceComputerId, this.#instanceId, this.#socket)
+      this.#registry.remove(this.#computerId, this.#instanceId, this.#socket)
     ) {
-      await this.#computers.disconnect(this.#workspaceComputerId, this.#instanceId).catch(() => undefined);
+      await this.#computers.disconnect(this.#computerId, this.#instanceId).catch(() => undefined);
     }
   }
 
@@ -689,7 +676,7 @@ function runtimeBusinessFrameAttrs(
     sessionId: stringField(frame, "sessionId"),
     agentId: stringField(frame, "agentId"),
     computerId: runtime.computerId,
-    workspaceComputerId: runtime.workspaceComputerId,
+    installationId: runtime.installationId,
     instanceId: runtime.instanceId,
     placementGeneration: numberField(frame, "placementGeneration"),
   });

@@ -2,10 +2,10 @@ import type { ChannelName } from "@opentag/shared";
 import { and, count, eq, gt, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
-  accountComputers,
   agents,
   computerConnectCodes,
   computerCredentials,
+  computers,
   imBindings,
   users,
 } from "../../db/schema/index.js";
@@ -34,7 +34,7 @@ export interface OnboardingResetAgentLifecycle {
 
 /** The live Computer connection registry seam used to close revoked Computers. */
 export interface OnboardingResetConnectionRegistry {
-  closeEnrollment(enrollmentId: string): Promise<boolean>;
+  closeComputer(computerId: string): Promise<boolean>;
 }
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
@@ -107,7 +107,7 @@ export class OnboardingResetService {
     await this.#deleteOwnedAgents(accountId);
     const computerIds = await this.#revokeComputerAccess(accountId);
     for (const computerId of computerIds) {
-      await this.#registry?.closeEnrollment(computerId);
+      await this.#registry?.closeComputer(computerId);
     }
     await this.#afterCleanup?.();
     await this.#commitFirstRunState(accountId);
@@ -140,9 +140,9 @@ export class OnboardingResetService {
         );
 
       const owned = await transaction
-        .select({ id: accountComputers.id })
-        .from(accountComputers)
-        .where(eq(accountComputers.ownerAccountId, accountId))
+        .select({ id: computers.id })
+        .from(computers)
+        .where(eq(computers.ownerAccountId, accountId))
         .for("update");
       const computerIds = owned.map((computer) => computer.id);
       if (computerIds.length === 0) return [];
@@ -152,13 +152,13 @@ export class OnboardingResetService {
         .set({ revokedByUserId: accountId, revokedAt: now })
         .where(and(inArray(computerCredentials.computerId, computerIds), isNull(computerCredentials.revokedAt)));
       await transaction
-        .update(accountComputers)
+        .update(computers)
         .set({
           currentInstanceId: null,
           connectedAt: null,
           updatedAt: now,
         })
-        .where(inArray(accountComputers.id, computerIds));
+        .where(inArray(computers.id, computerIds));
       return computerIds;
     });
   }
@@ -191,8 +191,8 @@ export class OnboardingResetService {
       executor
         .select({ value: count() })
         .from(computerCredentials)
-        .innerJoin(accountComputers, eq(accountComputers.id, computerCredentials.computerId))
-        .where(and(eq(accountComputers.ownerAccountId, accountId), isNull(computerCredentials.revokedAt))),
+        .innerJoin(computers, eq(computers.id, computerCredentials.computerId))
+        .where(and(eq(computers.ownerAccountId, accountId), isNull(computerCredentials.revokedAt))),
     );
     const usableCodes = await this.#count(
       executor

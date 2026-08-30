@@ -9,7 +9,7 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { accountComputers, agents } from "./db/schema/index.js";
+import { agents, computers } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -43,8 +43,8 @@ import {
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import { AccountSetupService } from "./services/setup/index.js";
 import { TaskService } from "./services/tasks/index.js";
-import { WorkspaceSetupService } from "./services/workspaces/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -137,24 +137,24 @@ export async function startServer(): Promise<void> {
     const connectCodeService = new ConnectCodeService(database);
     const registry = new ConnectionRegistry();
     const machineAuthService = new MachineAuthService(database, {
-      onCredentialRotated: async (workspaceComputerId) => {
-        await registry.closeEnrollment(workspaceComputerId);
+      onCredentialRotated: async (computerId) => {
+        await registry.closeComputer(computerId);
       },
     });
     const computerService = new ComputerService(database, authService, { providerReadiness: registry });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
-        .select({ workspaceComputerId: accountComputers.id, runtimeProvider: agents.runtimeProvider })
+        .select({ computerId: computers.id, runtimeProvider: agents.runtimeProvider })
         .from(agents)
-        .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+        .innerJoin(computers, eq(computers.id, agents.computerId))
         .where(eq(agents.id, agentId))
         .limit(1);
-      const currentInstanceId = agent ? registry.currentInstanceId(agent.workspaceComputerId) : undefined;
+      const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
       if (!agent || !currentInstanceId) return "unavailable";
       return (
         registry
-          .providerReadiness(agent.workspaceComputerId)
+          .providerReadiness(agent.computerId)
           .find(({ observation }) => observation.provider === agent.runtimeProvider)?.observation.status ?? "checking"
       );
     };
@@ -163,15 +163,15 @@ export async function startServer(): Promise<void> {
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
       imCliReadiness: async (agentId, provider) => {
-        const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
-        if (!workspaceComputerId) return "unavailable";
-        const observations = registry.imCliReadiness(workspaceComputerId);
+        const computerId = await imBindingService.getAgentComputerId(agentId);
+        if (!computerId) return "unavailable";
+        const observations = registry.imCliReadiness(computerId);
         return (
           observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
         );
       },
     });
-    const workspaceSetupService = new WorkspaceSetupService(database, imBindingService);
+    const accountSetupService = new AccountSetupService(database, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
     const sessionService = new SessionService(database);
     const taskService = new TaskService(database);
@@ -179,8 +179,8 @@ export async function startServer(): Promise<void> {
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
-      prepareReconcile: (workspaceComputerId, connectionInstanceId, request) =>
-        sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
+      prepareReconcile: (computerId, connectionInstanceId, request) =>
+        sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -193,9 +193,9 @@ export async function startServer(): Promise<void> {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {
-          currentInstanceId: (workspaceComputerId) => registry.currentInstanceId(workspaceComputerId),
-          requestReconcile: (workspaceComputerId, instanceId, request, onDispatched) =>
-            domainOwner.requestReconcile(workspaceComputerId, instanceId, request, onDispatched),
+          currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
+          requestReconcile: (computerId, instanceId, request, onDispatched) =>
+            domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
         }),
     });
     const feishuConnections = new FeishuConnectionManager({
@@ -307,7 +307,7 @@ export async function startServer(): Promise<void> {
           }),
       },
       ...(setupResetService ? { setupResetService } : {}),
-      workspaceSetupService,
+      accountSetupService,
     });
     feishuSetupService.start();
     feishuConnections.start();

@@ -6,14 +6,14 @@ import { agents } from "../db/schema/index.js";
 import type { AgentSessionStopTarget } from "../services/agents/index.js";
 
 interface AgentSessionStopDependencies {
-  currentInstanceId(workspaceComputerId: string): string | undefined;
+  currentInstanceId(computerId: string): string | undefined;
   requestReconcile(
-    workspaceComputerId: string,
+    computerId: string,
     instanceId: string,
     request: {
       type: "session:reconcile";
       requestId: string;
-      computerId: string;
+      installationId: string;
       sessionId: string;
       agentId: string;
       placementGeneration: number;
@@ -40,19 +40,19 @@ export async function stopAgentSessions(
     if (!agent || agent.status === "active") return [];
 
     const dispatched = targets.flatMap((target) => {
-      const currentInstanceId = dependencies.currentInstanceId(target.workspaceComputerId);
+      const currentInstanceId = dependencies.currentInstanceId(target.computerId);
       if (!currentInstanceId) return [];
       let markDispatched: () => void = () => undefined;
       const dispatch = new Promise<void>((resolve) => {
         markDispatched = resolve;
       });
       const result = dependencies.requestReconcile(
-        target.workspaceComputerId,
+        target.computerId,
         currentInstanceId,
         {
           type: "session:reconcile",
           requestId: randomUUID(),
-          computerId: target.computerId,
+          installationId: target.installationId,
           sessionId: target.sessionId,
           agentId: target.agentId,
           placementGeneration: target.placementGeneration,

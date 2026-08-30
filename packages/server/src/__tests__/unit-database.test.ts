@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   accountComputers,
@@ -67,6 +67,25 @@ describe("unit database harness", () => {
     ).rejects.toThrow("forced rollback");
 
     expect(await unitDatabase.database.select().from(users)).toHaveLength(0);
+  });
+
+  it("resolves execute() to rows, the way postgres-js does", async () => {
+    // PGlite's own driver resolves to a { rows, fields, command, ... } envelope. Services are written
+    // against postgres-js, so the harness unwraps it; without this a service would need a shape check
+    // that never runs in production.
+    const rows = await unitDatabase.database.execute(sql`select 1 as one, 2 as two`);
+
+    expect(Array.isArray(rows)).toBe(true);
+    expect(rows[0]).toEqual({ one: 1, two: 2 });
+  });
+
+  it("resolves execute() to rows inside a transaction too", async () => {
+    await unitDatabase.database.transaction(async (transaction) => {
+      const rows = await transaction.execute(sql`select 3 as three`);
+
+      expect(Array.isArray(rows)).toBe(true);
+      expect(rows[0]).toEqual({ three: 3 });
+    });
   });
 
   it("clears application data between tests without losing the schema", async () => {

@@ -242,7 +242,7 @@ describe("OnboardingV2Page", () => {
     await reachCheckStep();
 
     // Mid-probe: every row already has its detail line.
-    const rowsWhileChecking = document.querySelectorAll(".otv2-check");
+    const rowsWhileChecking = document.querySelectorAll(".ots-check");
     expect(rowsWhileChecking).toHaveLength(2);
     for (const row of rowsWhileChecking) {
       // One title and one detail line, always both, so a resolving row never changes height.
@@ -251,8 +251,8 @@ describe("OnboardingV2Page", () => {
     }
 
     await settleCheck();
-    expect(document.querySelectorAll(".otv2-check")).toHaveLength(2);
-    for (const row of document.querySelectorAll(".otv2-check")) {
+    expect(document.querySelectorAll(".ots-check")).toHaveLength(2);
+    for (const row of document.querySelectorAll(".ots-check")) {
       expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
   });
@@ -279,7 +279,7 @@ describe("OnboardingV2Page", () => {
     // Still probing: the slot already holds its waiting line, in the same shape step 3 uses.
     const slot = () => document.querySelector('[data-ui="onboarding-v2-check-outcome"]');
     expect(slot()?.textContent ?? "").toContain("Waiting for the computer check…");
-    expect(slot()?.querySelector(".otv2-pulse")).toBeTruthy();
+    expect(slot()?.querySelector(".ots-pulse")).toBeTruthy();
 
     await settleCheck();
     expect(slot()).toBeTruthy();

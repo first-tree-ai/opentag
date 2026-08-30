@@ -301,10 +301,10 @@ describe("BrowserApi", () => {
     expect(calls).toEqual(
       expect.arrayContaining([
         { path: "/api/v1/me/setup/complete", method: "POST" },
-        { path: "/api/v1/sessions?cursor=next&agentId=" + userId + "&kind=thread", method: undefined },
-        { path: "/api/v1/sessions/" + userId + "?cursor=older", method: undefined },
-        { path: "/api/v1/agents/" + userId + "/config", method: undefined },
-        { path: "/api/v1/agents/" + userId, method: "DELETE" },
+        { path: `/api/v1/sessions?cursor=next&agentId=${userId}&kind=thread`, method: undefined },
+        { path: `/api/v1/sessions/${userId}?cursor=older`, method: undefined },
+        { path: `/api/v1/agents/${userId}/config`, method: undefined },
+        { path: `/api/v1/agents/${userId}`, method: "DELETE" },
         { path: "/api/v1/internal/onboarding-lab", method: "POST" },
         { path: "/api/v1/auth/email/sign-up", method: "POST" },
         { path: "/api/v1/auth/browser/logout", method: "POST" },

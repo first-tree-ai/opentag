@@ -509,7 +509,9 @@ describe("Tasks debug view", () => {
     expect(within(conversation).getByText("The Turn is running or its report has not arrived.")).toBeTruthy();
     expect(within(conversation).getByText("No text content")).toBeTruthy();
     expect(within(conversation).getByText("Delivery terminal_rejected.")).toBeTruthy();
-    fireEvent.click(within(conversation).getAllByText("Runtime details")[0]!);
+    const runtimeDetails = within(conversation).getAllByText("Runtime details")[0];
+    if (!runtimeDetails) throw new Error("Runtime details toggle is missing");
+    fireEvent.click(runtimeDetails);
     expect(within(conversation).getByText(/2 attempts/)).toBeTruthy();
     expect(within(conversation).getByText("Provider failed")).toBeTruthy();
     fireEvent.click(screen.getByText(/Internal collaboration · 1 Sessions · 1 messages/));

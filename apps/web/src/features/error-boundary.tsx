@@ -140,9 +140,9 @@ export const rootErrorHandlers = {
   onUncaughtError: (error: unknown, errorInfo: BoundaryErrorInfo) => reportBoundaryError("root", error, errorInfo),
 };
 
-const credentialKey =
-  "(?:cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
+const credentialKey = "(?:password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
 const authorizationField = /(["']?authorization["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\n,;}]*?\S)(?=\s*(?:[,;}\n]|$))/gi;
+const cookieField = /(["']?(?:cookie|set-cookie)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\n,}]*?\S)(?=\s*(?:[,}\n]|$))/gi;
 
 function redactErrorMessage(message: string): string {
   return message
@@ -151,6 +151,7 @@ function redactErrorMessage(message: string): string {
       (_match, prefix: string, value: string) =>
         `${prefix}${/^['"]?Bearer\s/i.test(value.trim()) ? "Bearer [REDACTED]" : "[REDACTED]"}`,
     )
+    .replace(cookieField, (_match, prefix: string) => `${prefix}[REDACTED]`)
     .replace(
       new RegExp(
         `(["']?${credentialKey}["']?\\s*[:=]\\s*)(Bearer\\s+(?:"[^"]*"|'[^']*'|[^\\s,;}\\]]+)|"[^"]*"|'[^']*'|[^\\s,;}\\]]+)`,

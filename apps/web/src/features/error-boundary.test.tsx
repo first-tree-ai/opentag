@@ -94,6 +94,24 @@ describe("application error boundaries", () => {
     expect(JSON.stringify(consoleError.mock.calls)).not.toContain("dXNlcjpwYXNz");
   });
 
+  it("redacts complete multi-cookie and Set-Cookie header values", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    reportBoundaryError(
+      "app",
+      new Error("Cookie: theme=dark; sid=session-secret\nSet-Cookie: sid=set-session-secret; Path=/; HttpOnly"),
+    );
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[OpenTag] Unhandled UI error",
+      expect.objectContaining({
+        error: expect.objectContaining({ message: "Cookie: [REDACTED]\nSet-Cookie: [REDACTED]" }),
+      }),
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("session-secret");
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("set-session-secret");
+  });
+
   it("keeps the standalone fallback centered and bounded in production CSS", () => {
     const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../app.css"), "utf8");
 

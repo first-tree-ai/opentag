@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expect, test } from "./fixtures.js";
@@ -7,24 +7,31 @@ test.describe.configure({ mode: "serial" });
 
 let agentId: string;
 let taskId: string;
+const ONBOARDING_HEADING = "Where should your agent run?";
 
-test("onboarding renders server readiness facts", async ({ page }) => {
+test("onboarding renders the v2 destination step", async ({ page, e2eRuntime }) => {
+  await e2eRuntime.setSetupIncomplete();
   await page.goto("/onboarding", { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Set up OpenTag" })).toBeVisible();
-  await expect(page.getByText("Claude Code", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Ready to run", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: ONBOARDING_HEADING, exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Local computer / })).toBeVisible();
+  const cloudComputer = page.getByRole("button", { name: /^Cloud computer Coming soon / });
+  await expect(cloudComputer).toBeVisible();
+  await expect(cloudComputer).toBeDisabled();
   await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/onboarding.png"), fullPage: true });
 });
 
 test("Agent creation form creates an Agent visible in the list and detail page", async ({ page, e2eRuntime }) => {
-  await page.goto("/onboarding", { waitUntil: "networkidle" });
+  await e2eRuntime.setSetupComplete();
+  await page.goto("/agents/new", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "Create Agent", exact: true })).toBeVisible();
   const displayName = page.getByLabel("Display name");
   await expect(displayName).toBeVisible();
   await displayName.fill("E2E Agent");
   const create = page.getByRole("button", { name: "Create Agent" });
   await expect(create).toBeEnabled();
   await create.click();
-  await expect(page.getByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Agent created", exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Connect messaging", exact: true })).toBeVisible();
 
   const listResponse = await page.request.get("/api/v1/agents");
   expect(listResponse.ok()).toBeTruthy();
@@ -119,14 +126,14 @@ test("the screenshot pass captures every addressable page and writes a contact s
   await e2eRuntime.setSetupComplete();
   const screenshots = join(repositoryRoot, "e2e/screenshots");
   await mkdir(screenshots, { recursive: true });
-  const pages: Array<{ file: string; route: string; heading: string | RegExp }> = [
+  const pages: Array<{ file: string; route: string; heading: string }> = [
     { file: "login", route: "/login", heading: "Welcome back" },
     { file: "home", route: "/", heading: "Agents" },
     { file: "agents", route: "/agents", heading: "Agents" },
     { file: "agents-new", route: "/agents/new", heading: "Create Agent" },
-    { file: "agents-computers", route: "/agents/computers", heading: "Agents" },
+    { file: "agents-computers", route: "/agents/computers", heading: "Computers" },
     { file: "agents-agentId", route: `/agents/${agentId}`, heading: "E2E Agent Updated" },
-    { file: "agents-agentId-usage", route: `/agents/${agentId}/usage`, heading: /Usage|usage/i },
+    { file: "agents-agentId-usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
     { file: "agents-agentId-settings", route: `/agents/${agentId}/settings`, heading: "Agent settings" },
     { file: "agents-agentId-settings-section", route: `/agents/${agentId}/settings/identity`, heading: "Name" },
     { file: "tasks", route: "/tasks", heading: "Tasks" },
@@ -136,17 +143,15 @@ test("the screenshot pass captures every addressable page and writes a contact s
     { file: "resources", route: "/resources", heading: "Skills" },
     { file: "integrations", route: "/integrations", heading: "Integrations" },
     { file: "account", route: "/account", heading: "Account" },
-    { file: "internal-onboarding-lab", route: "/internal/onboarding-lab", heading: /not found|does not exist/i },
-    { file: "internal-onboarding-v2", route: "/internal/onboarding-v2", heading: /Where|Agent|OpenTag/i },
+    { file: "internal-onboarding-lab", route: "/internal/onboarding-lab", heading: "Page not found" },
+    { file: "internal-onboarding-v2", route: "/internal/onboarding-v2", heading: ONBOARDING_HEADING },
   ];
-  const entries: Array<{ file: string; route: string; heading: string | RegExp }> = [
-    { file: "onboarding", route: "/onboarding", heading: "Set up OpenTag" },
+  const entries: Array<{ file: string; route: string; heading: string }> = [
+    { file: "onboarding", route: "/onboarding", heading: ONBOARDING_HEADING },
   ];
-  await e2eRuntime.setSetupIncomplete();
-  await page.goto("/onboarding", { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Set up OpenTag" })).toBeVisible();
-  await page.screenshot({ path: join(screenshots, "onboarding.png"), fullPage: true });
-  await e2eRuntime.setSetupComplete();
+  // Onboarding v2 resumes an existing Agent even when setup is marked incomplete. The initial-step
+  // screenshot is therefore captured by the first test, before this serial suite creates an Agent.
+  await access(join(screenshots, "onboarding.png"));
 
   for (const item of pages) {
     if (item.route === "/login") {
@@ -157,14 +162,20 @@ test("the screenshot pass captures every addressable page and writes a contact s
       try {
         const loginPage = await context.newPage();
         await loginPage.goto(item.route, { waitUntil: "networkidle" });
-        await expect(loginPage.getByRole("heading", { name: item.heading }).first()).toBeVisible({ timeout: 30_000 });
+        await expect(loginPage.getByRole("heading", { name: item.heading, exact: true }).first()).toBeVisible({
+          timeout: 30_000,
+        });
+        await expect(loginPage.locator('[aria-label^="Loading"]')).toHaveCount(0, { timeout: 30_000 });
         await loginPage.screenshot({ path: join(screenshots, `${item.file}.png`), fullPage: true });
       } finally {
         await context.close();
       }
     } else {
       await page.goto(item.route, { waitUntil: "networkidle" });
-      await expect(page.getByRole("heading", { name: item.heading }).first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: item.heading, exact: true }).first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(page.locator('[aria-label^="Loading"]')).toHaveCount(0, { timeout: 30_000 });
       await page.screenshot({ path: join(screenshots, `${item.file}.png`), fullPage: true });
     }
     entries.push(item);

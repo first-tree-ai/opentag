@@ -866,16 +866,13 @@ function result(code: number, stdout: string, stderr: string): CommandResult {
 async function writeMachineCredential(home: string): Promise<void> {
   await writeMachineCredentialsAtomically(
     {
-      version: 1,
-      enrollments: [
-        {
-          workspaceComputerId: crypto.randomUUID(),
-          workspaceId: crypto.randomUUID(),
-          computerId: crypto.randomUUID(),
-          machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
-          serverUrl: "https://example.com",
-        },
-      ],
+      version: 2,
+      computer: {
+        workspaceComputerId: crypto.randomUUID(),
+        computerId: crypto.randomUUID(),
+        machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
+        serverUrl: "https://example.com",
+      },
     },
     home,
   );

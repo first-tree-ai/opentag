@@ -31,7 +31,6 @@ import { OPENTAG_PLATFORM_INSTRUCTIONS, RUNTIME_INSTRUCTIONS_MAX_BYTES } from ".
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agent = {
   id: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
-  workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
   createdByUserId: "bfcdab09-b57a-44ac-a170-09f7c3af20df",
   computerId,
   name: "code-reviewer",
@@ -289,6 +288,11 @@ describe("Agent contracts", () => {
     expect(AGENT_COMPUTER_REBIND_TEMPLATE).toBe("/api/v1/agents/:agentId/computer/rebind");
     expect(agentComputerRebindPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/computer/rebind");
     expect(RebindAgentComputerRequestSchema.parse({ computerId })).toEqual({ computerId });
-    expect(() => RebindAgentComputerRequestSchema.parse({ computerId, workspaceId: agent.workspaceId })).toThrow();
+    expect(() =>
+      RebindAgentComputerRequestSchema.parse({
+        computerId,
+        workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+      }),
+    ).toThrow();
   });
 });

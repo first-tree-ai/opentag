@@ -4,12 +4,10 @@ import {
   RUNTIME_PROTOCOL_V2,
   WorkspaceComputerSummarySchema,
   workspaceComputerConnectCodesPath,
-  workspaceComputersPath,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
@@ -20,16 +18,13 @@ import {
   computerCredentials,
   computers,
   users,
-  workspaceAdminGrants,
   workspaceComputerCredentials,
   workspaceComputers,
-  workspaces,
 } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
-import { WorkspaceAdminAccess, workspaceNotFound } from "../../services/workspace-admin-access/index.js";
-import { WorkspaceAdminService } from "../../services/workspaces/index.js";
+import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const betterAuthSecret = "computer-test-secret-at-least-32-characters";
@@ -72,8 +67,7 @@ async function fixture() {
     },
   });
   const service = new ComputerService(client.database, auth);
-  const workspaceService = new WorkspaceAdminService(client.database);
-  return { ...client, auth, bootstrap, machineAuth, registry, service, workspaceService };
+  return { ...client, auth, bootstrap, machineAuth, registry, service };
 }
 
 function registerFrame(computerId: string, instanceId: string) {
@@ -85,7 +79,7 @@ function registerFrame(computerId: string, instanceId: string) {
     displayName: "workstation",
     platform: "linux" as const,
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
     capabilities: { imCredentialGrant: 0 as const },
     protocolVersion: RUNTIME_PROTOCOL_V2,
     supportedCapabilities: { imCredentialGrant: { min: 1, max: 1 } },
@@ -100,17 +94,16 @@ function exchangeInput(code: string, computerId: string) {
     displayName: "workstation" as const,
     platform: "linux" as const,
     arch: "x64",
-    clientVersion: "0.0.1",
+    clientVersion: "0.0.2",
   };
 }
 
 async function enroll(
   value: Awaited<ReturnType<typeof fixture>>,
-  workspaceId = value.bootstrap.workspaceId,
   accountId = value.bootstrap.userId,
   computerId: string = crypto.randomUUID(),
 ) {
-  const issued = await value.machineAuth.issueForWorkspaceAdmin(accountId, workspaceId);
+  const issued = await value.machineAuth.issueForAccount(accountId, {});
   return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
 }
 
@@ -125,6 +118,43 @@ async function repair(
 }
 
 describe("Computer enrollment persistence", () => {
+  it("enforces the 0.0.2 Client floor before consuming a code or mutating Computer observations", async () => {
+    const value = await fixture();
+    try {
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+      const computerId = crypto.randomUUID();
+      await expect(
+        value.machineAuth.exchangeConnectCode({
+          ...exchangeInput(issued.code, computerId),
+          clientVersion: "0.0.1",
+        }),
+      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
+      const [unspent] = await value.database
+        .select({ consumedAt: computerConnectCodes.consumedAt })
+        .from(computerConnectCodes);
+      expect(unspent?.consumedAt).toBeNull();
+
+      const enrollment = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
+      const [before] = await value.database
+        .select()
+        .from(accountComputers)
+        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
+      await expect(
+        value.service.register(enrollment, {
+          ...registerFrame(enrollment.computerId, crypto.randomUUID()),
+          clientVersion: "0.0.1",
+        }),
+      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
+      const [after] = await value.database
+        .select()
+        .from(accountComputers)
+        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
+      expect(after).toEqual(before);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("registers one enrollment and fences an older instance", async () => {
     const value = await fixture();
     try {
@@ -159,16 +189,17 @@ describe("Computer enrollment persistence", () => {
       expect(targetCredential).toMatchObject({
         id: enrollment.credentialId,
         computerId: enrollment.workspaceComputerId,
-        secretHash: legacyCredential?.secretHash,
         issuedByUserId: value.bootstrap.userId,
         revokedAt: null,
       });
+      expect(legacyCredential).toBeUndefined();
+      expect(legacy).toMatchObject({ currentInstanceId: null, connectedAt: null, lastSeenAt: null });
     } finally {
       await value.sql.end();
     }
   });
 
-  it("rolls back Account observation writes when the legacy projection diverges", async () => {
+  it("ignores and does not mirror a divergent legacy observation", async () => {
     const value = await fixture();
     try {
       const enrollment = await enroll(value);
@@ -178,16 +209,28 @@ describe("Computer enrollment persistence", () => {
         .update(workspaceComputers)
         .set({ currentInstanceId: crypto.randomUUID() })
         .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
+      const [legacyBefore] = await value.database
+        .select()
+        .from(workspaceComputers)
+        .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
       const before = await value.database
         .select()
         .from(accountComputers)
         .where(eq(accountComputers.id, enrollment.workspaceComputerId));
 
-      await expect(value.service.heartbeat(enrollment, instanceId)).resolves.toBe(false);
-      await expect(value.service.disconnect(enrollment.workspaceComputerId, instanceId)).resolves.toBe(false);
-      await expect(
-        value.database.select().from(accountComputers).where(eq(accountComputers.id, enrollment.workspaceComputerId)),
-      ).resolves.toEqual(before);
+      await expect(value.service.heartbeat(enrollment, instanceId)).resolves.toBe(true);
+      await expect(value.service.disconnect(enrollment.workspaceComputerId, instanceId)).resolves.toBe(true);
+      const [legacyAfter] = await value.database
+        .select()
+        .from(workspaceComputers)
+        .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
+      expect(legacyAfter).toEqual(legacyBefore);
+      expect(before[0]?.currentInstanceId).toBe(instanceId);
+      const [canonicalAfter] = await value.database
+        .select()
+        .from(accountComputers)
+        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
+      expect(canonicalAfter?.currentInstanceId).toBeNull();
     } finally {
       await value.sql.end();
     }
@@ -201,56 +244,10 @@ describe("Computer enrollment persistence", () => {
       expect(second.workspaceComputerId).not.toBe(first.workspaceComputerId);
       expect(second.computerId).not.toBe(first.computerId);
       expect(await value.database.select().from(accountComputers)).toHaveLength(2);
-      await expect(
-        enroll(value, value.bootstrap.workspaceId, value.bootstrap.userId, first.computerId),
-      ).rejects.toMatchObject({ code: "COMPUTER_IDENTITY_CONFLICT", statusCode: 409 });
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("isolates two Workspace enrollments for the same physical Computer", async () => {
-    const value = await fixture();
-    try {
-      const [secondWorkspace] = await value.database
-        .insert(workspaces)
-        .values({ name: "second", displayName: "Second" })
-        .returning();
-      if (!secondWorkspace) throw new Error("Second Workspace was not created");
-      await value.database.insert(workspaceAdminGrants).values({
-        workspaceId: secondWorkspace.id,
-        userId: value.bootstrap.userId,
-        grantedByUserId: value.bootstrap.userId,
+      await expect(enroll(value, value.bootstrap.userId, first.computerId)).rejects.toMatchObject({
+        code: "COMPUTER_IDENTITY_CONFLICT",
+        statusCode: 409,
       });
-      const computerId = crypto.randomUUID();
-      const first = await enroll(value, value.bootstrap.workspaceId, value.bootstrap.userId, computerId);
-      const second = await enroll(value, secondWorkspace.id, value.bootstrap.userId, computerId);
-      expect(second.workspaceComputerId).not.toBe(first.workspaceComputerId);
-      expect(second.machineToken).not.toBe(first.machineToken);
-
-      const firstInstance = crypto.randomUUID();
-      const secondInstance = crypto.randomUUID();
-      await value.service.register(first, registerFrame(computerId, firstInstance));
-      await value.service.register(second, registerFrame(computerId, secondInstance));
-      expect(await value.service.heartbeat(first, firstInstance)).toBe(true);
-      expect(await value.service.heartbeat(second, secondInstance)).toBe(true);
-
-      const rows = await value.database
-        .select()
-        .from(workspaceComputers)
-        .where(eq(workspaceComputers.computerId, computerId));
-      expect(rows).toHaveLength(2);
-      expect(rows.map(({ currentInstanceId }) => currentInstanceId).sort()).toEqual(
-        [firstInstance, secondInstance].sort(),
-      );
-      expect(
-        (await value.workspaceService.listAccountComputers(value.bootstrap.userId)).computers
-          .map(({ computerId: id }) => id)
-          .sort(),
-      ).toEqual([first.workspaceComputerId, second.workspaceComputerId].sort());
-      expect(
-        (await value.workspaceService.listComputers(value.bootstrap.userId, value.bootstrap.workspaceId)).computers,
-      ).toHaveLength(1);
     } finally {
       await value.sql.end();
     }
@@ -260,7 +257,7 @@ describe("Computer enrollment persistence", () => {
     const value = await fixture();
     try {
       const computerId = crypto.randomUUID();
-      const first = await enroll(value, value.bootstrap.workspaceId, value.bootstrap.userId, computerId);
+      const first = await enroll(value, value.bootstrap.userId, computerId);
       await expect(value.machineAuth.verifyMachineToken(first.machineToken)).resolves.toMatchObject({
         workspaceComputerId: first.workspaceComputerId,
         workspaceId: value.bootstrap.workspaceId,
@@ -299,14 +296,14 @@ describe("Computer enrollment persistence", () => {
         revokedByUserId: value.bootstrap.userId,
       });
       expect(credentials.find((row) => row.id === rotated.credentialId)).toMatchObject({
-        secretHash: (
-          await value.database
-            .select()
-            .from(workspaceComputerCredentials)
-            .where(eq(workspaceComputerCredentials.id, rotated.credentialId))
-        )[0]?.secretHash,
         revokedAt: null,
       });
+      expect(
+        await value.database
+          .select()
+          .from(workspaceComputerCredentials)
+          .where(eq(workspaceComputerCredentials.id, rotated.credentialId)),
+      ).toEqual([]);
       const [accountComputer] = await value.database
         .select()
         .from(accountComputers)
@@ -325,7 +322,7 @@ describe("Computer enrollment persistence", () => {
     const value = await fixture();
     try {
       const computerId = crypto.randomUUID();
-      const first = await enroll(value, value.bootstrap.workspaceId, value.bootstrap.userId, computerId);
+      const first = await enroll(value, value.bootstrap.userId, computerId);
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
         mode: "repair",
         targetComputerId: first.workspaceComputerId,
@@ -377,7 +374,7 @@ describe("Computer enrollment persistence", () => {
   it("rejects an old WebSocket credential rotated after authentication but before registration", async () => {
     const value = await fixture();
     const computerId = crypto.randomUUID();
-    const first = await enroll(value, value.bootstrap.workspaceId, value.bootstrap.userId, computerId);
+    const first = await enroll(value, value.bootstrap.userId, computerId);
     const app = createApp({
       authService: value.auth,
       computerService: value.service,
@@ -440,17 +437,14 @@ describe("Computer enrollment persistence", () => {
   it("consumes a Computer connect code exactly once under concurrent exchange", async () => {
     const value = await fixture();
     try {
-      const issued = await value.machineAuth.issueForWorkspaceAdmin(
-        value.bootstrap.userId,
-        value.bootstrap.workspaceId,
-      );
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
       const input = {
         code: issued.code,
         computerId: crypto.randomUUID(),
         displayName: "workstation",
         platform: "linux" as const,
         arch: "x64",
-        clientVersion: "0.0.1",
+        clientVersion: "0.0.2",
       };
       const results = await Promise.allSettled([
         value.machineAuth.exchangeConnectCode(input),
@@ -465,59 +459,16 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
-  it("preserves infrastructure failures while concealing a missing Workspace", async () => {
-    const value = await fixture();
-    try {
-      const workspaceAdmins = new WorkspaceAdminAccess(value.database);
-      const machineAuth = new MachineAuthService(value.database, { workspaceAdmins });
-      const input = {
-        computerId: crypto.randomUUID(),
-        displayName: "workstation",
-        platform: "linux" as const,
-        arch: "x64",
-        clientVersion: "0.0.1",
-      };
-
-      const lockFailure = new Error("workspace lock connection lost");
-      const first = await machineAuth.issueForWorkspaceAdmin(value.bootstrap.userId, value.bootstrap.workspaceId);
-      vi.spyOn(workspaceAdmins, "lockWorkspace").mockRejectedValueOnce(lockFailure);
-      await expect(machineAuth.exchangeConnectCode({ ...input, code: first.code })).rejects.toBe(lockFailure);
-
-      const second = await machineAuth.issueForWorkspaceAdmin(value.bootstrap.userId, value.bootstrap.workspaceId);
-      vi.spyOn(workspaceAdmins, "lockWorkspace").mockRejectedValueOnce(workspaceNotFound());
-      await expect(machineAuth.exchangeConnectCode({ ...input, code: second.code })).rejects.toMatchObject({
-        code: "AUTH_INVALID_CODE",
-        statusCode: 401,
-      });
-
-      const third = await machineAuth.issueForWorkspaceAdmin(value.bootstrap.userId, value.bootstrap.workspaceId);
-      await value.database
-        .update(workspaceAdminGrants)
-        .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
-        .where(eq(workspaceAdminGrants.userId, value.bootstrap.userId));
-      await expect(machineAuth.exchangeConnectCode({ ...input, code: third.code })).resolves.toMatchObject({
-        computerId: input.computerId,
-      });
-    } finally {
-      vi.restoreAllMocks();
-      await value.sql.end();
-    }
-  });
-
   it("exchanges a Computer connect code through the public machine route", async () => {
     const value = await fixture();
     try {
-      const issued = await value.machineAuth.issueForWorkspaceAdmin(
-        value.bootstrap.userId,
-        value.bootstrap.workspaceId,
-      );
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
       const computerId = crypto.randomUUID();
       const app = createApp({
         authService: value.auth,
         computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
         computerService: value.service,
         machineAuthService: value.machineAuth,
-        workspaceService: value.workspaceService,
       });
       try {
         const response = await app.inject({
@@ -529,15 +480,15 @@ describe("Computer enrollment persistence", () => {
             displayName: "workstation",
             platform: "linux",
             arch: "x64",
-            clientVersion: "0.0.1",
+            clientVersion: "0.0.2",
           },
         });
         expect(response.statusCode).toBe(200);
         expect(response.json()).toMatchObject({
-          workspaceId: value.bootstrap.workspaceId,
           computerId,
           machineToken: expect.stringMatching(/^otmc_/),
         });
+        expect(response.json()).not.toHaveProperty("workspaceId");
       } finally {
         await app.close();
       }
@@ -546,7 +497,7 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
-  it("issues Account and machine connect codes through distinct real routes", async () => {
+  it("issues connect codes only through the Account-native route", async () => {
     const value = await fixture();
     try {
       const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
@@ -557,9 +508,15 @@ describe("Computer enrollment persistence", () => {
         machineAuthService: value.machineAuth,
       });
       try {
-        const issued = await app.inject({
+        const retired = await app.inject({
           method: "POST",
           url: workspaceComputerConnectCodesPath(value.bootstrap.workspaceId),
+          headers: { authorization: `Bearer ${account.accessToken}` },
+        });
+        expect(retired.statusCode).toBe(404);
+        const issued = await app.inject({
+          method: "POST",
+          url: HTTP_PATHS.accountComputerConnectCodes,
           headers: { authorization: `Bearer ${account.accessToken}` },
         });
         expect(issued.statusCode).toBe(201);
@@ -578,7 +535,7 @@ describe("Computer enrollment persistence", () => {
             displayName: "workstation",
             platform: "linux",
             arch: "x64",
-            clientVersion: "0.0.1",
+            clientVersion: "0.0.2",
           },
         });
         expect(exchanged.statusCode).toBe(200);
@@ -591,7 +548,7 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
-  it("rejects machine credentials on a real management route and lists enrollments for Account auth", async () => {
+  it("rejects machine credentials on Account management routes and lists Computers for Account auth", async () => {
     const value = await fixture();
     try {
       const enrollment = await enroll(value);
@@ -602,26 +559,25 @@ describe("Computer enrollment persistence", () => {
         computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
         computerService: value.service,
         machineAuthService: value.machineAuth,
-        workspaceService: value.workspaceService,
       });
       try {
         const denied = await app.inject({
           method: "GET",
-          url: workspaceComputersPath(value.bootstrap.workspaceId),
+          url: HTTP_PATHS.accountComputers,
           headers: { authorization: `Bearer ${enrollment.machineToken}` },
         });
         expect(denied.statusCode).toBe(401);
 
         const codeDenied = await app.inject({
           method: "POST",
-          url: workspaceComputerConnectCodesPath(value.bootstrap.workspaceId),
+          url: HTTP_PATHS.accountComputerConnectCodes,
           headers: { authorization: `Bearer ${enrollment.machineToken}` },
         });
         expect(codeDenied.statusCode).toBe(401);
 
         const response = await app.inject({
           method: "GET",
-          url: workspaceComputersPath(value.bootstrap.workspaceId),
+          url: HTTP_PATHS.accountComputers,
           headers: { authorization: `Bearer ${account.accessToken}` },
         });
         expect(response.statusCode).toBe(200);
@@ -639,7 +595,7 @@ describe("Computer enrollment persistence", () => {
 
         const negotiated = await app.inject({
           method: "GET",
-          url: workspaceComputersPath(value.bootstrap.workspaceId),
+          url: HTTP_PATHS.accountComputers,
           headers: {
             authorization: `Bearer ${account.accessToken}`,
             [PROVIDER_READINESS_V1_HEADER]: "1",

@@ -15,7 +15,12 @@ export function IntegrationsPage() {
         </Text>
       </PageHeader>
 
-      <section aria-label="Integrations table" className="min-w-0 overflow-x-auto">
+      <section
+        aria-label="Integrations table"
+        className="min-w-0 overflow-x-auto rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus the horizontal scroll region.
+        tabIndex={0}
+      >
         <Table className="min-w-[36rem]" aria-label="Demo Integrations" data-ui="integrations-table">
           <thead>
             <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">

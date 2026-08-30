@@ -241,9 +241,9 @@ describe("parseServerConfig", () => {
   });
 });
 
-function mockSql(handler: (query: string) => unknown | Promise<unknown>) {
+function mockSql(handler: (query: string, values: readonly unknown[]) => unknown | Promise<unknown>) {
   const sql = Object.assign(
-    vi.fn(async (strings: TemplateStringsArray) => handler(strings.join(""))),
+    vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => handler(strings.join(""), values)),
     { end: vi.fn(async () => undefined) },
   );
   vi.mocked(postgres).mockReturnValue(sql as never);
@@ -414,7 +414,7 @@ describe("database migration helpers", () => {
     const previousUrl = process.env.OPENTAG_DATABASE_URL;
     process.env.OPENTAG_DATABASE_URL = "postgresql://localhost/opentag";
     try {
-      await import("../db/migrate-cli.js?coverage");
+      await import("../db/migrate-cli.js");
     } finally {
       if (previousUrl === undefined) delete process.env.OPENTAG_DATABASE_URL;
       else process.env.OPENTAG_DATABASE_URL = previousUrl;

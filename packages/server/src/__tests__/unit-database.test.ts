@@ -209,18 +209,24 @@ describe("unit database harness", () => {
       arch: "x64",
       clientVersion: "1.0.0",
     });
-    const enrollment = await insertSchemaWorkspaceComputer(unitDatabase.database, {
-      arch: "x64",
-      clientVersion: "1.0.0",
-      computerId,
-      displayName: "Projection computer",
-      enrolledByUserId: accountId,
-      now,
-      platform: "linux",
-      workspaceId,
-    });
+    const enrollment = await unitDatabase.database.transaction((transaction) =>
+      insertSchemaWorkspaceComputer(transaction, {
+        arch: "x64",
+        clientVersion: "1.0.0",
+        computerId,
+        displayName: "Projection computer",
+        enrolledByUserId: accountId,
+        now,
+        platform: "linux",
+        workspaceId,
+      }),
+    );
     expect(enrollment).toMatchObject({ id: expect.any(String) });
-    expect(await schemaWorkspaceIdForComputer(unitDatabase.database, enrollment.id)).toBe(workspaceId);
+    expect(
+      await unitDatabase.database.transaction((transaction) =>
+        schemaWorkspaceIdForComputer(transaction, enrollment.id),
+      ),
+    ).toBe(workspaceId);
 
     const lockWorkspaceId = randomUUID();
     await unitDatabase.database.insert(workspaces).values({
@@ -238,17 +244,17 @@ describe("unit database harness", () => {
       clientVersion: "1.0.0",
       enrolledByUserId: accountId,
     });
-    expect(await lockSchemaWorkspaceComputer(unitDatabase.database, computerId)).toMatchObject({
+    expect(
+      await unitDatabase.database.transaction((transaction) => lockSchemaWorkspaceComputer(transaction, computerId)),
+    ).toMatchObject({
       id: computerId,
       ownerAccountId: accountId,
       workspaceId: lockWorkspaceId,
     });
     const replacementInstallationId = randomUUID();
     await unitDatabase.database.insert(computers).values({ id: replacementInstallationId });
-    await updateSchemaWorkspaceComputerInstallationForRepair(
-      unitDatabase.database,
-      enrollment.id,
-      replacementInstallationId,
+    await unitDatabase.database.transaction((transaction) =>
+      updateSchemaWorkspaceComputerInstallationForRepair(transaction, enrollment.id, replacementInstallationId),
     );
     expect(schemaRequiredAgentProjection({ id: computerId, workspaceId })).toEqual({
       workspaceId,
@@ -256,14 +262,20 @@ describe("unit database harness", () => {
     });
     expect(schemaRequiredComputerProjection(computerId)).toEqual({ workspaceComputerId: computerId });
     expect(schemaRequiredConnectCodeProjection(workspaceId)).toEqual({ workspaceId });
-    expect(await schemaRequiredSlackInstallationProjection(unitDatabase.database, computerId)).toEqual({
+    expect(
+      await unitDatabase.database.transaction((transaction) =>
+        schemaRequiredSlackInstallationProjection(transaction, computerId),
+      ),
+    ).toEqual({
       workspaceId: lockWorkspaceId,
     });
-    await expect(schemaWorkspaceIdForComputer(unitDatabase.database, randomUUID())).rejects.toThrow(
-      "The schema-required Workspace fill for this Computer is missing",
-    );
     await expect(
-      updateSchemaWorkspaceComputerInstallationForRepair(unitDatabase.database, randomUUID(), randomUUID()),
+      unitDatabase.database.transaction((transaction) => schemaWorkspaceIdForComputer(transaction, randomUUID())),
+    ).rejects.toThrow("The schema-required Workspace fill for this Computer is missing");
+    await expect(
+      unitDatabase.database.transaction((transaction) =>
+        updateSchemaWorkspaceComputerInstallationForRepair(transaction, randomUUID(), randomUUID()),
+      ),
     ).rejects.toThrow("The schema-required Computer fill was not updated for repair");
   });
 

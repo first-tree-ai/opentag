@@ -296,11 +296,11 @@ class FailingResultConnection {
   stop(): void {}
 }
 
-function reconcile(computerId: string, requestId: string) {
+function reconcile(installationId: string, requestId: string) {
   return {
     type: "session:reconcile",
     requestId,
-    computerId,
+    installationId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,
@@ -367,9 +367,8 @@ function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>): 
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     }),
   );
   socket.send(

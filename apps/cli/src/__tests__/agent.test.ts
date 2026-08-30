@@ -51,7 +51,7 @@ const computer = {
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:01.000Z",
   observedAt: "2026-08-19T00:00:01.000Z",
-  enrolledAt: "2026-08-19T00:00:00.000Z",
+  createdAt: "2026-08-19T00:00:00.000Z",
   agentIds: [],
 };
 const agent: AgentAdminConfig = {
@@ -291,7 +291,7 @@ describe("Agent CLI core", () => {
     expect(client.me).not.toHaveBeenCalled();
   });
 
-  it("resolves an enrolled Computer and rejects ambiguous or unknown choices", () => {
+  it("resolves an owned Computer and rejects ambiguous or unknown choices", () => {
     expect(selectComputer({ computers: [computer] })).toEqual(computer);
     expect(() => selectComputer({ computers: [] })).toThrow("start the daemon first");
     expect(() =>
@@ -300,10 +300,10 @@ describe("Agent CLI core", () => {
       }),
     ).toThrow("use --computer");
     expect(() => selectComputer({ computers: [computer] }, crypto.randomUUID())).toThrow(
-      "is not enrolled by this Account",
+      "is not owned by this Account",
     );
     expect(() => selectComputer({ computers: [computer] }, "75fe9af3-d1c6-472b-b78c-8a7ccf512750")).toThrow(
-      "is not enrolled by this Account",
+      "is not owned by this Account",
     );
   });
 
@@ -495,7 +495,7 @@ describe("Agent CLI core", () => {
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
     expect(create?.options.find((option) => option.long === "--computer")?.description).toBe(
-      "Computer enrolled by this Account",
+      "Computer owned by this Account",
     );
     expect(create?.options.find((option) => option.long === "--workspace")).toBeUndefined();
     expect(list?.options.find((option) => option.long === "--workspace")).toBeUndefined();

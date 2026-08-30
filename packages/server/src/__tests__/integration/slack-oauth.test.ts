@@ -3,14 +3,12 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import {
-  accountComputers,
   agents,
   computers,
   imBindings,
   sessions,
   slackInstallations,
   slackOAuthNonces,
-  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
@@ -47,45 +45,31 @@ async function fixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
-  const [computer] = await client.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await client.database
-    .insert(workspaceComputers)
+  const [computer] = await client.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await client.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const agentsService = new AgentService(client.database);
   const first = await agentsService.createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const second = await agentsService.createForAccount(bootstrap.userId, {
     name: "reviewer",
     displayName: "Reviewer",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   await client.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, first.id));
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
@@ -345,7 +329,6 @@ describe("Slack distributed OAuth adapter", () => {
       expect(installations).toEqual([
         expect.objectContaining({
           id: installationBefore.id,
-          workspaceId: value.bootstrap.workspaceId,
           credentialGeneration: 1,
           status: "active",
           agentId: value.first.id,

@@ -13,7 +13,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import {
-  accountComputers,
   agents,
   computers,
   imBindings,
@@ -21,7 +20,6 @@ import {
   sessionPlacements,
   sessions,
   users,
-  workspaceComputers,
 } from "../../db/schema/index.js";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
 import { AgentService } from "../../services/agents/index.js";
@@ -63,9 +61,9 @@ describe("Session collaboration authority", () => {
       const messageId = randomUUID();
       const input = {
         creatorSessionId: creator.session.id,
-        creatorComputerId: fixture.computerId,
+        creatorInstallationId: fixture.installationId,
         creatorConnectionInstanceId: fixture.connectionInstanceId,
-        creatorWorkspaceComputerId: fixture.workspaceComputerId,
+        creatorComputerId: fixture.computerId,
         creatorPlacementGeneration: creator.placement.generation,
         messageId,
         initialMessage: "Investigate the deployment failure",
@@ -83,7 +81,7 @@ describe("Session collaboration authority", () => {
           runtimeReasoningEffort: "high",
           runtimeMaxDurationMs: 60_000,
         },
-        placement: { workspaceComputerId: fixture.workspaceComputerId, generation: 1 },
+        placement: { computerId: fixture.computerId, generation: 1 },
         message: { id: messageId, lastOutcome: "unknown", attemptCount: 1 },
       });
       const recovered = await new SessionService(fixture.database).createInternalSessionWithMessage(input);
@@ -104,11 +102,8 @@ describe("Session collaboration authority", () => {
         1,
       );
       const placements = await fixture.database.select().from(sessionPlacements);
-      expect(placements.every((row) => row.computerId === fixture.workspaceComputerId)).toBe(true);
-      expect(placements.map((row) => row.workspaceComputerId)).toEqual([
-        fixture.workspaceComputerId,
-        fixture.workspaceComputerId,
-      ]);
+      expect(placements.every((row) => row.computerId === fixture.computerId)).toBe(true);
+      expect(placements.map((row) => row.computerId)).toEqual([fixture.computerId, fixture.computerId]);
 
       await expect(
         fixture.sessions.createInternalSessionWithMessage({ ...input, initialMessage: "Conflicting task" }),
@@ -136,9 +131,9 @@ describe("Session collaboration authority", () => {
         children.push(
           await fixture.sessions.createInternalSessionWithMessage({
             creatorSessionId: creator.session.id,
-            creatorComputerId: fixture.computerId,
+            creatorInstallationId: fixture.installationId,
             creatorConnectionInstanceId: fixture.connectionInstanceId,
-            creatorWorkspaceComputerId: fixture.workspaceComputerId,
+            creatorComputerId: fixture.computerId,
             creatorPlacementGeneration: 1,
             messageId: randomUUID(),
             initialMessage: task,
@@ -147,9 +142,9 @@ describe("Session collaboration authority", () => {
       }
       const grandchild = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: children[0]?.session.id as string,
-        creatorComputerId: fixture.computerId,
+        creatorInstallationId: fixture.installationId,
         creatorConnectionInstanceId: fixture.connectionInstanceId,
-        creatorWorkspaceComputerId: fixture.workspaceComputerId,
+        creatorComputerId: fixture.computerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
         initialMessage: "nested",
@@ -213,9 +208,9 @@ describe("Session collaboration authority", () => {
       for (let index = 0; index < 120; index += 1) {
         const created = await fixture.sessions.createInternalSessionWithMessage({
           creatorSessionId: parent.session.id,
-          creatorComputerId: fixture.computerId,
+          creatorInstallationId: fixture.installationId,
           creatorConnectionInstanceId: fixture.connectionInstanceId,
-          creatorWorkspaceComputerId: fixture.workspaceComputerId,
+          creatorComputerId: fixture.computerId,
           creatorPlacementGeneration: 1,
           messageId: randomUUID(),
           initialMessage: `nested-${index}`,
@@ -277,9 +272,9 @@ describe("Session collaboration authority", () => {
       );
       const child = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: creator.session.id,
-        creatorComputerId: fixture.computerId,
+        creatorInstallationId: fixture.installationId,
         creatorConnectionInstanceId: fixture.connectionInstanceId,
-        creatorWorkspaceComputerId: fixture.workspaceComputerId,
+        creatorComputerId: fixture.computerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
         initialMessage: "Start",
@@ -288,9 +283,9 @@ describe("Session collaboration authority", () => {
       const input = {
         messageId,
         sourceSessionId: child.session.id,
-        sourceComputerId: fixture.computerId,
+        sourceInstallationId: fixture.installationId,
         sourceConnectionInstanceId: fixture.connectionInstanceId,
-        sourceWorkspaceComputerId: fixture.workspaceComputerId,
+        sourceComputerId: fixture.computerId,
         sourcePlacementGeneration: 1,
         targetSessionId: creator.session.id,
         content: "Progress",
@@ -340,9 +335,9 @@ describe("Session collaboration authority", () => {
         fixture.sessions.authorizeAndRecordMessage({
           messageId: staleId,
           sourceSessionId: source.session.id,
-          sourceComputerId: fixture.computerId,
+          sourceInstallationId: fixture.installationId,
           sourceConnectionInstanceId: fixture.connectionInstanceId,
-          sourceWorkspaceComputerId: fixture.workspaceComputerId,
+          sourceComputerId: fixture.computerId,
           sourcePlacementGeneration: 2,
           targetSessionId: source.session.id,
           content: "stale",
@@ -353,9 +348,9 @@ describe("Session collaboration authority", () => {
         fixture.sessions.authorizeAndRecordMessage({
           messageId: crossScopeId,
           sourceSessionId: source.session.id,
-          sourceComputerId: fixture.computerId,
+          sourceInstallationId: fixture.installationId,
           sourceConnectionInstanceId: fixture.connectionInstanceId,
-          sourceWorkspaceComputerId: fixture.workspaceComputerId,
+          sourceComputerId: fixture.computerId,
           sourcePlacementGeneration: 1,
           targetSessionId: otherScope.session.id,
           content: "cross scope",
@@ -370,9 +365,9 @@ describe("Session collaboration authority", () => {
         fixture.sessions.authorizeAndRecordMessage({
           messageId: endedId,
           sourceSessionId: source.session.id,
-          sourceComputerId: fixture.computerId,
+          sourceInstallationId: fixture.installationId,
           sourceConnectionInstanceId: fixture.connectionInstanceId,
-          sourceWorkspaceComputerId: fixture.workspaceComputerId,
+          sourceComputerId: fixture.computerId,
           sourcePlacementGeneration: 1,
           targetSessionId: otherScope.session.id,
           content: "ended",
@@ -384,17 +379,17 @@ describe("Session collaboration authority", () => {
         .returning();
       if (!otherOwner) throw new Error("Other Account fixture was not created");
       await fixture.database
-        .update(accountComputers)
+        .update(computers)
         .set({ ownerAccountId: otherOwner.id })
-        .where(eq(accountComputers.id, fixture.workspaceComputerId));
+        .where(eq(computers.id, fixture.computerId));
       const ownerMismatchId = randomUUID();
       await expect(
         fixture.sessions.authorizeAndRecordMessage({
           messageId: ownerMismatchId,
           sourceSessionId: source.session.id,
-          sourceComputerId: fixture.computerId,
+          sourceInstallationId: fixture.installationId,
           sourceConnectionInstanceId: fixture.connectionInstanceId,
-          sourceWorkspaceComputerId: fixture.workspaceComputerId,
+          sourceComputerId: fixture.computerId,
           sourcePlacementGeneration: 1,
           targetSessionId: source.session.id,
           content: "owner mismatch",
@@ -420,18 +415,18 @@ describe("Session collaboration authority", () => {
       );
       const child = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: thread.session.id,
-        creatorComputerId: fixture.computerId,
+        creatorInstallationId: fixture.installationId,
         creatorConnectionInstanceId: fixture.connectionInstanceId,
-        creatorWorkspaceComputerId: fixture.workspaceComputerId,
+        creatorComputerId: fixture.computerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
         initialMessage: "Child",
       });
       const grandchild = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: child.session.id,
-        creatorComputerId: fixture.computerId,
+        creatorInstallationId: fixture.installationId,
         creatorConnectionInstanceId: fixture.connectionInstanceId,
-        creatorWorkspaceComputerId: fixture.workspaceComputerId,
+        creatorComputerId: fixture.computerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
         initialMessage: "Grandchild",
@@ -456,20 +451,16 @@ describe("Session collaboration authority", () => {
         "channel",
       );
       let currentInstanceId = randomUUID();
-      await fixture.database
-        .update(accountComputers)
-        .set({ currentInstanceId })
-        .where(eq(accountComputers.id, fixture.workspaceComputerId));
+      await fixture.database.update(computers).set({ currentInstanceId }).where(eq(computers.id, fixture.computerId));
       const registry = {
-        currentInstanceId: (workspaceComputerId: string) =>
-          workspaceComputerId === fixture.workspaceComputerId ? currentInstanceId : undefined,
-        supportsCapability: (workspaceComputerId: string, instanceId: string) =>
-          workspaceComputerId === fixture.workspaceComputerId && instanceId === currentInstanceId,
+        currentInstanceId: (computerId: string) => (computerId === fixture.computerId ? currentInstanceId : undefined),
+        supportsCapability: (computerId: string, instanceId: string) =>
+          computerId === fixture.computerId && instanceId === currentInstanceId,
       };
       const proofs = new SessionCliProofService(fixture.database, registry, new Uint8Array(32).fill(7));
       const input = {
         sessionId: source.session.id,
-        workspaceComputerId: fixture.workspaceComputerId,
+        computerId: fixture.computerId,
         placementGeneration: 1,
         connectionInstanceId: currentInstanceId,
       };
@@ -483,10 +474,10 @@ describe("Session collaboration authority", () => {
       expect(concurrent).toEqual(first);
       await expect(proofs.authenticate(first.token)).resolves.toMatchObject({ sessionId: source.session.id });
 
-      const busyReconcile = await proofs.prepareReconcile(fixture.workspaceComputerId, currentInstanceId, {
+      const busyReconcile = await proofs.prepareReconcile(fixture.computerId, currentInstanceId, {
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: fixture.computerId,
+        installationId: fixture.installationId,
         sessionId: source.session.id,
         agentId: fixture.agentId,
         placementGeneration: 1,
@@ -499,31 +490,31 @@ describe("Session collaboration authority", () => {
       const replacementInstanceId = randomUUID();
       currentInstanceId = replacementInstanceId;
       await fixture.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: replacementInstanceId })
-        .where(eq(accountComputers.id, fixture.workspaceComputerId));
+        .where(eq(computers.id, fixture.computerId));
       await expect(proofs.authenticate(first.token)).rejects.toMatchObject({ code: "invalid_proof" });
       const replacement = await proofs.mint({ ...input, connectionInstanceId: replacementInstanceId });
       expect(replacement).not.toEqual(first);
       await expect(proofs.authenticate(replacement.token)).resolves.toMatchObject({ sessionId: source.session.id });
 
-      const moved = await fixture.sessions.movePlacement(source.session.id, fixture.workspaceComputerId);
+      const moved = await fixture.sessions.movePlacement(source.session.id, fixture.computerId);
       expect(moved.generation).toBe(2);
       const [movedRow] = await fixture.database
         .select()
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, source.session.id));
-      expect(movedRow).toMatchObject({ computerId: fixture.workspaceComputerId, generation: 2 });
+      expect(movedRow).toMatchObject({ computerId: fixture.computerId, generation: 2 });
       const current = await proofs.mint({
         ...input,
         placementGeneration: 2,
         connectionInstanceId: replacementInstanceId,
       });
       await expect(
-        proofs.prepareReconcile(fixture.workspaceComputerId, replacementInstanceId, {
+        proofs.prepareReconcile(fixture.computerId, replacementInstanceId, {
           type: "session:reconcile",
           requestId: randomUUID(),
-          computerId: fixture.computerId,
+          installationId: fixture.installationId,
           sessionId: source.session.id,
           agentId: fixture.agentId,
           placementGeneration: 1,
@@ -533,10 +524,10 @@ describe("Session collaboration authority", () => {
       ).rejects.toMatchObject({ code: "runtime_unavailable" });
       await expect(proofs.authenticate(current.token)).resolves.toMatchObject({ placementGeneration: 2 });
 
-      await proofs.prepareReconcile(fixture.workspaceComputerId, replacementInstanceId, {
+      await proofs.prepareReconcile(fixture.computerId, replacementInstanceId, {
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: fixture.computerId,
+        installationId: fixture.installationId,
         sessionId: source.session.id,
         agentId: fixture.agentId,
         placementGeneration: 1,
@@ -557,9 +548,9 @@ describe("Session collaboration authority", () => {
       );
       const connectionInstanceId = randomUUID();
       await fixture.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: connectionInstanceId })
-        .where(eq(accountComputers.id, fixture.workspaceComputerId));
+        .where(eq(computers.id, fixture.computerId));
       const registry = {
         currentInstanceId: () => connectionInstanceId,
         supportsCapability: () => true,
@@ -568,7 +559,7 @@ describe("Session collaboration authority", () => {
       const mint = () =>
         proofs.mint({
           sessionId: source.session.id,
-          workspaceComputerId: fixture.workspaceComputerId,
+          computerId: fixture.computerId,
           placementGeneration: 1,
           connectionInstanceId,
         });
@@ -594,36 +585,23 @@ describe("Session collaboration authority", () => {
       await expect(proofs.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
       await fixture.database.update(imBindings).set({ status: "active" }).where(eq(imBindings.id, fixture.imBindingId));
 
-      const otherComputerId = randomUUID();
-      await fixture.database.insert(computers).values({ id: otherComputerId });
-      const [otherWorkspaceComputer] = await fixture.database
-        .insert(workspaceComputers)
+      const [otherComputer] = await fixture.database
+        .insert(computers)
         .values({
-          workspaceId: fixture.workspaceId,
-          computerId: otherComputerId,
+          ownerAccountId: fixture.userId,
+          currentInstallationId: randomUUID(),
           displayName: "other-workstation",
           platform: "linux",
           arch: "x64",
           clientVersion: "0.0.2",
-          enrolledByUserId: fixture.userId,
           currentInstanceId: connectionInstanceId,
         })
-        .returning({ id: workspaceComputers.id });
-      if (!otherWorkspaceComputer) throw new Error("Second Workspace Computer fixture was not created");
-      await fixture.database.insert(accountComputers).values({
-        id: otherWorkspaceComputer.id,
-        ownerAccountId: fixture.userId,
-        currentInstallationId: otherComputerId,
-        displayName: "other-workstation",
-        platform: "linux",
-        arch: "x64",
-        clientVersion: "0.0.2",
-        currentInstanceId: connectionInstanceId,
-      });
+        .returning({ id: computers.id });
+      if (!otherComputer) throw new Error("Second Computer fixture was not created");
       proof = await mint();
       await fixture.database
         .update(sessionPlacements)
-        .set({ workspaceComputerId: otherWorkspaceComputer.id, computerId: otherWorkspaceComputer.id })
+        .set({ computerId: otherComputer.id })
         .where(eq(sessionPlacements.sessionId, source.session.id));
       await expect(proofs.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
     } finally {
@@ -743,7 +721,7 @@ describe("Session collaboration authority", () => {
       );
       await assemblyStarted.promise;
 
-      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.workspaceComputerId);
+      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.computerId);
       continueAssembly.resolve();
 
       await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
@@ -772,9 +750,9 @@ describe("Session collaboration authority", () => {
       await assemblyStarted.promise;
 
       await fixture.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: randomUUID() })
-        .where(eq(accountComputers.id, fixture.workspaceComputerId));
+        .where(eq(computers.id, fixture.computerId));
       continueAssembly.resolve();
 
       await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
@@ -799,7 +777,7 @@ describe("Session collaboration authority", () => {
       );
       await deliveryRequested.promise;
 
-      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.workspaceComputerId);
+      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.computerId);
       continueDeliveryAdmission.resolve();
 
       await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
@@ -829,9 +807,9 @@ describe("Session collaboration authority", () => {
       await deliveryRequested.promise;
 
       await fixture.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: randomUUID() })
-        .where(eq(accountComputers.id, fixture.workspaceComputerId));
+        .where(eq(computers.id, fixture.computerId));
       continueDeliveryAdmission.resolve();
 
       await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
@@ -848,43 +826,27 @@ async function createFixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
-  const computerId = randomUUID();
+  const installationId = randomUUID();
   const connectionInstanceId = randomUUID();
-  await client.database.insert(computers).values({
-    id: computerId,
-  });
-  const [workspaceComputer] = await client.database
-    .insert(workspaceComputers)
+  const [computer] = await client.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: installationId,
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: bootstrap.userId,
       currentInstanceId: connectionInstanceId,
     })
-    .returning({ id: workspaceComputers.id });
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await client.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computerId,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-    currentInstanceId: connectionInstanceId,
-  });
+    .returning({ id: computers.id });
+  if (!computer) throw new Error("Computer fixture was not created");
   const agent = await new AgentService(client.database).createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const [binding] = await client.database
     .insert(imBindings)
@@ -904,11 +866,10 @@ async function createFixture() {
   return {
     ...client,
     agentId: agent.id,
-    computerId,
+    computerId: computer.id,
     connectionInstanceId,
+    installationId,
     userId: bootstrap.userId,
-    workspaceId: bootstrap.workspaceId,
-    workspaceComputerId: workspaceComputer.id,
     imBindingId: binding.id,
     sessions: new SessionService(client.database),
   };
@@ -943,9 +904,9 @@ async function createCollaborationFixture(
   );
   const target = await fixture.sessions.createInternalSessionWithMessage({
     creatorSessionId: source.session.id,
-    creatorComputerId: fixture.computerId,
+    creatorInstallationId: fixture.installationId,
     creatorConnectionInstanceId: fixture.connectionInstanceId,
-    creatorWorkspaceComputerId: fixture.workspaceComputerId,
+    creatorComputerId: fixture.computerId,
     creatorPlacementGeneration: source.placement.generation,
     messageId: randomUUID(),
     initialMessage: "initial task",
@@ -954,7 +915,7 @@ async function createCollaborationFixture(
   const instanceId = fixture.connectionInstanceId;
   const domain = {
     requestReconcile: async (
-      _workspaceComputerId: string,
+      _computerId: string,
       _instanceId: string,
       request: SessionReconcileRequest,
       onDispatched?: () => void,
@@ -975,7 +936,7 @@ async function createCollaborationFixture(
         };
       }),
     requestSessionMessageDelivery: async (
-      _workspaceComputerId: string,
+      _computerId: string,
       _instanceId: string,
       request: SessionMessageDeliveryRequest,
       onDispatched?: () => void,
@@ -1014,10 +975,10 @@ async function createCollaborationFixture(
       agentId: fixture.agentId,
       computerId: fixture.computerId,
       connectionInstanceId: instanceId,
+      installationId: fixture.installationId,
       placementGeneration: source.placement.generation,
       sessionId: source.session.id,
       sessionKind: source.session.kind,
-      workspaceComputerId: fixture.workspaceComputerId,
     },
     targetSessionId: target.session.id,
   };

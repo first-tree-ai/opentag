@@ -557,7 +557,7 @@ async function workspaceFixture() {
   const computerId = randomUUID();
   const bindingStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore });
-  const reconciler = new SessionReconciler({ computerId, preparation: workspace });
+  const reconciler = new SessionReconciler({ installationId: computerId, preparation: workspace });
   return { bindingStore, computerId, home, reconciler, workspace };
 }
 
@@ -657,14 +657,14 @@ function snapshot(agentId: string, workspaceId: string, sessionInstructions: str
 }
 
 function reconcileRequest(
-  computerId: string,
+  installationId: string,
   sessionId: string,
   runtime: EffectiveRuntimeSnapshot,
 ): SessionReconcileRequest {
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId,
     sessionId,
     agentId: runtime.agentId,
     placementGeneration: 1,

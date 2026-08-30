@@ -11,11 +11,10 @@ import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
-  it("keeps two Workspace enrollments for one physical Computer independently online", async () => {
+  it("keeps two Computers independently online", async () => {
     const registry = new ConnectionRegistry();
-    const computerId = randomUUID();
-    const firstWorkspaceComputerId = randomUUID();
-    const secondWorkspaceComputerId = randomUUID();
+    const firstComputerId = randomUUID();
+    const secondComputerId = randomUUID();
     const firstSocket = socket();
     const secondSocket = socket();
     const firstInstanceId = randomUUID();
@@ -23,9 +22,8 @@ describe("ConnectionRegistry", () => {
 
     await registry.register(
       {
-        computerId,
-        workspaceComputerId: firstWorkspaceComputerId,
-        workspaceId: randomUUID(),
+        installationId: randomUUID(),
+        computerId: firstComputerId,
         instanceId: firstInstanceId,
         lastHeartbeatAt: 1,
         socket: firstSocket,
@@ -34,9 +32,8 @@ describe("ConnectionRegistry", () => {
     );
     await registry.register(
       {
-        computerId,
-        workspaceComputerId: secondWorkspaceComputerId,
-        workspaceId: randomUUID(),
+        installationId: randomUUID(),
+        computerId: secondComputerId,
         instanceId: secondInstanceId,
         lastHeartbeatAt: 1,
         socket: secondSocket,
@@ -46,13 +43,13 @@ describe("ConnectionRegistry", () => {
 
     expect(firstSocket.close).not.toHaveBeenCalled();
     expect(secondSocket.close).not.toHaveBeenCalled();
-    expect(registry.currentInstanceId(firstWorkspaceComputerId)).toBe(firstInstanceId);
-    expect(registry.currentInstanceId(secondWorkspaceComputerId)).toBe(secondInstanceId);
+    expect(registry.currentInstanceId(firstComputerId)).toBe(firstInstanceId);
+    expect(registry.currentInstanceId(secondComputerId)).toBe(secondInstanceId);
   });
 
-  it("waits for an in-flight registration before closing a rotated enrollment", async () => {
+  it("waits for an in-flight registration before closing a rotated Computer", async () => {
     const registry = new ConnectionRegistry();
-    const workspaceComputerId = randomUUID();
+    const computerId = randomUUID();
     const runtimeSocket = socket();
     let finishPersist: (() => void) | undefined;
     let persistStarted: (() => void) | undefined;
@@ -64,9 +61,8 @@ describe("ConnectionRegistry", () => {
     });
     const registration = registry.register(
       {
-        computerId: randomUUID(),
-        workspaceComputerId,
-        workspaceId: randomUUID(),
+        installationId: randomUUID(),
+        computerId,
         instanceId: randomUUID(),
         lastHeartbeatAt: 1,
         socket: runtimeSocket,
@@ -79,7 +75,7 @@ describe("ConnectionRegistry", () => {
     await started;
 
     let closed = false;
-    const closing = registry.closeEnrollment(workspaceComputerId).then((result) => {
+    const closing = registry.closeComputer(computerId).then((result) => {
       closed = true;
       return result;
     });
@@ -90,7 +86,7 @@ describe("ConnectionRegistry", () => {
     await registration;
     await expect(closing).resolves.toBe(true);
     expect(runtimeSocket.close).toHaveBeenCalledWith(4002, "Machine credential rotated or revoked");
-    expect(registry.currentInstanceId(workspaceComputerId)).toBeUndefined();
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
   });
 
   it("fences replacement close, heartbeat, and stale-instance cleanup by exact socket", async () => {
@@ -102,23 +98,21 @@ describe("ConnectionRegistry", () => {
     const secondInstance = randomUUID();
     await registry.register(
       {
-        computerId,
+        installationId: randomUUID(),
         instanceId: firstInstance,
         lastHeartbeatAt: 1,
         socket: first,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId: computerId,
       },
       async () => undefined,
     );
     await registry.register(
       {
-        computerId,
+        installationId: randomUUID(),
         instanceId: secondInstance,
         lastHeartbeatAt: 2,
         socket: second,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId: computerId,
       },
       async () => undefined,
     );
@@ -138,23 +132,21 @@ describe("ConnectionRegistry", () => {
     const freshComputerId = randomUUID();
     await registry.register(
       {
-        computerId: staleComputerId,
+        installationId: randomUUID(),
         instanceId: randomUUID(),
         lastHeartbeatAt: 10,
         socket: stale,
-        workspaceComputerId: staleComputerId,
-        workspaceId: randomUUID(),
+        computerId: staleComputerId,
       },
       async () => undefined,
     );
     await registry.register(
       {
-        computerId: freshComputerId,
+        installationId: randomUUID(),
         instanceId: randomUUID(),
         lastHeartbeatAt: 20,
         socket: fresh,
-        workspaceComputerId: freshComputerId,
-        workspaceId: randomUUID(),
+        computerId: freshComputerId,
       },
       async () => undefined,
     );
@@ -174,12 +166,11 @@ describe("ConnectionRegistry", () => {
       {
         capabilities: { imCredentialGrant: 0 },
         capabilitiesUpdatedAt: 1,
-        computerId,
+        installationId: randomUUID(),
         instanceId: firstInstanceId,
         lastHeartbeatAt: 1,
         socket: socket(),
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId: computerId,
       },
       async () => undefined,
     );
@@ -191,7 +182,7 @@ describe("ConnectionRegistry", () => {
       {
         capabilities: { imCredentialGrant: 1 },
         capabilitiesUpdatedAt: 2,
-        computerId,
+        installationId: randomUUID(),
         instanceId: verifiedInstanceId,
         lastHeartbeatAt: 2,
         negotiatedCapabilities: {
@@ -202,8 +193,7 @@ describe("ConnectionRegistry", () => {
         providerReadinessObservedAt: 2,
         providerReadinessProviders: ["codex"],
         socket: verifiedSocket,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId,
       },
       async () => undefined,
     );
@@ -277,7 +267,7 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         active: false,
-        computerId,
+        installationId: randomUUID(),
         connectionId,
         instanceId,
         lastHeartbeatAt: 1,
@@ -286,8 +276,7 @@ describe("ConnectionRegistry", () => {
         providerReadiness: [{ provider: "codex", status: "ready" }],
         providerReadinessObservedAt: 1,
         providerReadinessProviders: ["codex"],
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId: computerId,
       },
       async () => undefined,
     );
@@ -314,15 +303,14 @@ describe("ConnectionRegistry", () => {
     const currentSocket = socket();
     await registry.register(
       {
-        computerId,
+        installationId: randomUUID(),
         instanceId,
         lastHeartbeatAt: 1,
         providerReadiness: [{ provider: "codex", status: "sign-in" }],
         providerReadinessObservedAt: 1,
         providerReadinessProviders: ["codex"],
         socket: currentSocket,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId: computerId,
       },
       async () => undefined,
     );
@@ -383,15 +371,14 @@ describe("ConnectionRegistry", () => {
     const oldSocket = socket();
     await registry.register(
       {
-        computerId,
+        installationId: randomUUID(),
         instanceId: oldInstanceId,
         lastHeartbeatAt: 1,
         providerReadiness: [{ provider: "codex", status: "ready" }],
         providerReadinessObservedAt: 1,
         providerReadinessProviders: ["codex"],
         socket: oldSocket,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId: computerId,
       },
       async () => undefined,
     );
@@ -401,14 +388,13 @@ describe("ConnectionRegistry", () => {
       {
         capabilities: { imCredentialGrant: 0 },
         capabilitiesUpdatedAt: 2,
-        computerId,
+        installationId: randomUUID(),
         instanceId: newInstanceId,
         lastHeartbeatAt: 2,
         providerReadiness: [],
         providerReadinessProviders: ["codex"],
         socket: socket(),
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        computerId: computerId,
       },
       async () => undefined,
     );

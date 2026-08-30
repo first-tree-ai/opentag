@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "../../db/migrate.js";
 import { AuthService } from "../../services/auth/index.js";
-import { WorkspaceSetupService } from "../../services/workspaces/index.js";
+import { AccountSetupService } from "../../services/setup/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -32,7 +32,6 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
-const THROUGH_0030_COUNT = 31;
 
 type Journal = {
   version: string;
@@ -191,15 +190,16 @@ function errorChain(error: unknown): string {
 describe("Account setup completion backfill", () => {
   it("journals 0029 and 0030 after 0028 and migrates an empty database", async () => {
     const journal = await readJournal();
-    expect(journal.entries).toHaveLength(THROUGH_0030_COUNT);
-    expect(journal.entries.at(-3)?.tag).toBe("0028_overjoyed_speedball");
-    expect(journal.entries.at(-2)?.tag).toBe("0029_tiresome_bedlam");
-    expect(journal.entries.at(-1)?.tag).toBe("0030_low_ulik");
+    expect(journal.entries.slice(28, 31).map(({ tag }) => tag)).toEqual([
+      "0028_overjoyed_speedball",
+      "0029_tiresome_bedlam",
+      "0030_low_ulik",
+    ]);
 
     await migrateDatabase(databaseUrl, migrationsFolder);
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {
-      expect(await journalCount(sql)).toBe(THROUGH_0030_COUNT);
+      expect(await journalCount(sql)).toBe(journal.entries.length);
       const [column] = await sql<{ data_type: string; is_nullable: string }[]>`
         select data_type, is_nullable
         from information_schema.columns
@@ -233,7 +233,8 @@ describe("Account setup completion backfill", () => {
       await migrateDatabase(databaseUrl, migrationsFolder);
       const after = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(after)).toBe(THROUGH_0030_COUNT);
+        const journal = await readJournal();
+        expect(await journalCount(after)).toBe(journal.entries.length);
         expect(await accountSetup(after)).toEqual({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),
@@ -263,7 +264,8 @@ describe("Account setup completion backfill", () => {
       await migrateDatabase(databaseUrl, migrationsFolder);
       const after = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(after)).toBe(THROUGH_0030_COUNT);
+        const journal = await readJournal();
+        expect(await journalCount(after)).toBe(journal.entries.length);
         expect(await accountSetup(after)).toEqual({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),
@@ -323,7 +325,8 @@ describe("Account setup completion backfill", () => {
       await migrateDatabase(databaseUrl, migrationsFolder);
       const retried = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(retried)).toBe(THROUGH_0030_COUNT);
+        const journal = await readJournal();
+        expect(await journalCount(retried)).toBe(journal.entries.length);
         expect(await accountSetup(retried)).toMatchObject({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),
@@ -341,12 +344,24 @@ describe("Account setup completion backfill", () => {
     await migrateDatabase(databaseUrl, migrationsFolder);
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {
-      await populateHistoricalEvidence(sql);
       await sql`
-        update users set setup_completed_at = ${EARLY} where id = ${ACCOUNT_A}
+        insert into users (id, email, display_name)
+        values
+          (${ACCOUNT_A}, 'a@example.com', 'A'),
+          (${ACCOUNT_B}, 'b@example.com', 'B'),
+          (${ACCOUNT_GRANT_ONLY}, 'grant@example.com', 'Grant Only'),
+          (${ACCOUNT_EMPTY}, 'empty@example.com', 'Empty')
       `;
       await sql`
-        update workspaces set setup_completed_at = null where id = ${WORKSPACE_LATE}
+        insert into computers (id, owner_account_id, current_installation_id, display_name, platform, arch, client_version)
+        values (${ENROLLMENT_B}, ${ACCOUNT_B}, ${INSTALLATION_B}, 'box', 'linux', 'x64', '0.0.1')
+      `;
+      await sql`
+        insert into agents (id, created_by_user_id, computer_id, name, display_name, runtime_provider, status)
+        values (${AGENT_LATE}, ${ACCOUNT_B}, ${ENROLLMENT_B}, 'b-assistant', 'B', 'codex', 'active')
+      `;
+      await sql`
+        update users set setup_completed_at = ${EARLY} where id = ${ACCOUNT_A}
       `;
     } finally {
       await sql.end();
@@ -366,7 +381,7 @@ describe("Account setup completion backfill", () => {
       await expect(auth.getActiveUserById(ACCOUNT_GRANT_ONLY)).resolves.toMatchObject({ setupCompletedAt: null });
       await expect(auth.getActiveUserById(ACCOUNT_EMPTY)).resolves.toMatchObject({ setupCompletedAt: null });
 
-      const setup = new WorkspaceSetupService(
+      const setup = new AccountSetupService(
         client.database,
         {
           getHandoffForAgent: async () => ({ bindingState: "active", handoffReady: true }),
@@ -379,15 +394,6 @@ describe("Account setup completion backfill", () => {
       await expect(auth.getActiveUserById(ACCOUNT_B)).resolves.toMatchObject({
         setupCompletedAt: LATE.toISOString(),
       });
-      const verification = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
-      try {
-        const [legacy] = await verification<{ setup_completed_at: Date | null }[]>`
-          select setup_completed_at from workspaces where id = ${WORKSPACE_LATE}
-        `;
-        expect(legacy?.setup_completed_at).toBeNull();
-      } finally {
-        await verification.end();
-      }
     } finally {
       await client.sql.end();
     }

@@ -91,7 +91,7 @@ describe("doctor local configuration", () => {
     const home = await createHome({
       rawCredentials: {
         version: 1,
-        enrollments: [enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4")],
+        enrollments: [boundComputer("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4")],
       },
     });
     const healthChecker = vi.fn();
@@ -120,7 +120,7 @@ describe("doctor local configuration", () => {
     expect(check(result.checks, "local.identity")).toMatchObject({ blocking: true, status: "fail" });
     expect(check(result.checks, "server.health")).toMatchObject({
       blocking: true,
-      detail: expect.stringMatching(/no authoritative enrolled Server/i),
+      detail: expect.stringMatching(/no connected Server/i),
       status: "skipped",
     });
     expect(check(result.checks, "daemon.service")).toMatchObject({ status: "pass" });
@@ -134,12 +134,12 @@ describe("doctor local configuration", () => {
   it("does not silently discard a malformed credential or disclose its token", async () => {
     const home = await createHome({
       rawCredentials: {
-        version: 2,
+        version: 3,
         computer: {
           computerId,
+          installationId: "not-a-uuid",
           machineToken: secretToken,
           serverUrl,
-          workspaceComputerId: "not-a-uuid",
         },
       },
     });
@@ -174,7 +174,7 @@ describe("doctor local configuration", () => {
 
   it("rejects a credential for a different Server without contacting either Server", async () => {
     const home = await createHome({
-      credential: enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4", {
+      credential: boundComputer("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4", {
         serverUrl: "https://other.example",
       }),
     });
@@ -190,7 +190,7 @@ describe("doctor local configuration", () => {
 
   it("rejects a credential whose Computer differs from the local identity", async () => {
     const home = await createHome({
-      credential: enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4", { computerId: otherComputerId }),
+      credential: boundComputer("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4", { computerId: otherComputerId }),
     });
 
     const result = await runHealthyDoctor(home);
@@ -275,7 +275,7 @@ describe("doctor daemon service", () => {
 });
 
 describe("doctor Server health", () => {
-  it("reports the enrolled Server public health endpoint without claiming higher-layer readiness", async () => {
+  it("reports the connected Server public health endpoint without claiming higher-layer readiness", async () => {
     const home = await createHome();
     const healthChecker = vi.fn().mockResolvedValue({ service: "opentag-server", status: "ok" } as const);
     const result = await runHealthyDoctor(home, { healthChecker });
@@ -513,17 +513,17 @@ interface EnrollmentOverrides {
   serverUrl?: string;
 }
 
-function enrollment(workspaceComputerId: string, overrides: EnrollmentOverrides = {}) {
+function boundComputer(bindingComputerId: string, overrides: EnrollmentOverrides = {}) {
   return {
-    computerId: overrides.computerId ?? computerId,
+    computerId: bindingComputerId,
+    installationId: overrides.computerId ?? computerId,
     machineToken: secretToken,
     serverUrl: overrides.serverUrl ?? serverUrl,
-    workspaceComputerId,
   };
 }
 
 interface CreateHomeOptions {
-  credential?: ReturnType<typeof enrollment>;
+  credential?: ReturnType<typeof boundComputer>;
   identity?: { computerId: string; serverUrl: string; version: 2 } | undefined;
   rawCredentials?: unknown;
 }
@@ -544,8 +544,8 @@ async function createHome(options: CreateHomeOptions = {}): Promise<string> {
   const credentials =
     options.rawCredentials ??
     ({
-      computer: options.credential ?? enrollment("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
-      version: 2,
+      computer: options.credential ?? boundComputer("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
+      version: 3,
     } as const);
   await writeFile(join(config, "computer-credentials.json"), `${JSON.stringify(credentials)}\n`, { mode: 0o600 });
   return home;

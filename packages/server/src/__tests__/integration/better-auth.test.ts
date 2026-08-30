@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { BETTER_AUTH_BASE_PATH, createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { authIdentities, authSessions, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
+import { authIdentities, authSessions, users } from "../../db/schema/index.js";
 import { createUserAuthPreHandler, resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
 import { AuthService, DevBrowserAuthService, PostAuthenticationService } from "../../services/auth/index.js";
 import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
@@ -189,53 +189,19 @@ describe("Better Auth over the existing Account tables", () => {
     expect(await client.database.select().from(authSessions).where(eq(authSessions.userId, userId))).toHaveLength(0);
   });
 
-  it("creates a first session without provisioning management Workspace grants", async () => {
+  it("creates sessions for a returning Account without side effects", async () => {
     const userId = await seedLegacyAccount("google-subject-grant", "grant@example.com", "Grant Account");
-    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
     const auth = createAuth();
     const context = await auth.$context;
 
     const session = await context.internalAdapter.createSession(userId);
 
     expect(session.token).toBeTruthy();
-    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
+    expect(await client.database.select().from(authSessions)).toHaveLength(1);
 
-    // Idempotent: a returning Account still receives no legacy authority.
     await context.internalAdapter.createSession(userId);
-    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
-  });
-
-  it("leaves a historical revoked Workspace grant untouched", async () => {
-    const userId = await seedLegacyAccount("google-subject-revoked", "revoked@example.com", "Revoked Account");
-    const revokedAt = new Date("2026-08-01T00:00:00.000Z");
-    const [workspace] = await client.database
-      .insert(workspaces)
-      .values({ displayName: "Historical", name: `historical-${userId}` })
-      .returning({ id: workspaces.id });
-    if (!workspace) throw new Error("The historical Workspace fixture was not created");
-    const [granted] = await client.database
-      .insert(workspaceAdminGrants)
-      .values({
-        workspaceId: workspace.id,
-        userId,
-        grantedByUserId: userId,
-        grantedAt: new Date("2026-07-01T00:00:00.000Z"),
-        revokedAt,
-        revokedByUserId: userId,
-      })
-      .returning();
-    if (!granted) throw new Error("The historical grant fixture was not created");
-    const auth = createAuth();
-    const context = await auth.$context;
-    await context.internalAdapter.createSession(userId);
-    await context.internalAdapter.createSession(userId);
-
-    const grants = await client.database
-      .select()
-      .from(workspaceAdminGrants)
-      .where(eq(workspaceAdminGrants.userId, userId));
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toEqual(granted);
+    expect(await client.database.select().from(authSessions)).toHaveLength(2);
   });
 
   it("refuses a session's identity once the Account is suspended", async () => {
@@ -274,8 +240,6 @@ describe("Better Auth over the existing Account tables", () => {
     const bootstrap = await bootstrapInitialAdmin(client.database, {
       displayName: "Admin",
       email: "admin@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
     });
     const auth = createAuth();
     const authService = sessionAuthService(auth);
@@ -316,8 +280,6 @@ describe("Better Auth over the existing Account tables", () => {
     const bootstrap = await bootstrapInitialAdmin(client.database, {
       displayName: "Admin",
       email: "admin@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
     });
     const before = Date.now();
 
@@ -340,8 +302,6 @@ describe("Better Auth over the existing Account tables", () => {
     const bootstrap = await bootstrapInitialAdmin(client.database, {
       displayName: "Admin",
       email: "admin@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
     });
     const authService = sessionAuthService(createAuth());
     const initial = await authService.exchangeConnectCode(bootstrap.connectCode);
@@ -372,8 +332,6 @@ describe("Better Auth over the existing Account tables", () => {
     const bootstrap = await bootstrapInitialAdmin(client.database, {
       displayName: "Admin",
       email: "admin@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
     });
     const authService = sessionAuthService(createAuth());
     const initial = await authService.exchangeConnectCode(bootstrap.connectCode);

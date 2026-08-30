@@ -51,7 +51,7 @@ describe("daemon service runtime", () => {
     process.env.OPENTAG_SERVICE_MODE = "1";
     clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
-    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not enrolled");
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not connected");
 
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledOnce();
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
@@ -253,7 +253,7 @@ describe("daemon service runtime", () => {
       expect.objectContaining({
         fields: expect.objectContaining({
           category: "ownership_release",
-          computerId: "00000000-0000-4000-8000-000000000001",
+          installationId: "00000000-0000-4000-8000-000000000001",
           instanceId: expect.any(String),
         }),
         message: "Daemon ownership release failed",
@@ -273,7 +273,7 @@ describe("daemon service runtime", () => {
     });
     clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
-    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not enrolled");
+    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not connected");
 
     expect(entries).toContainEqual(
       expect.objectContaining({ fields: expect.objectContaining({ category: "configuration" }) }),
@@ -306,7 +306,7 @@ describe("daemon service runtime", () => {
         logger: recordingLogger(entries),
         signals: signals as unknown as NodeJS.Process,
       }),
-    ).rejects.toThrow("not enrolled");
+    ).rejects.toThrow("not connected");
 
     expect(entriesAtRelease).toBeGreaterThan(0);
     expect(entries).toHaveLength(entriesAtRelease);
@@ -364,7 +364,7 @@ describe("daemon service runtime", () => {
       expect.objectContaining({
         fields: expect.objectContaining({
           category: "unexpected",
-          computerId: "00000000-0000-4000-8000-000000000001",
+          installationId: "00000000-0000-4000-8000-000000000001",
           instanceId: expect.any(String),
         }),
         message: "Daemon stopped because of an unexpected internal failure",
@@ -384,10 +384,10 @@ function computerIdentity() {
 
 function machineCredentials() {
   return {
-    version: 2 as const,
+    version: 3 as const,
     computer: {
-      workspaceComputerId: "00000000-0000-4000-8000-000000000002",
-      computerId: computerIdentity().computerId,
+      computerId: "00000000-0000-4000-8000-000000000002",
+      installationId: computerIdentity().computerId,
       machineToken: `otmc_${"a".repeat(64)}`,
       serverUrl: computerIdentity().serverUrl,
     },

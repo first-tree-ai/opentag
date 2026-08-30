@@ -11,7 +11,7 @@ const source = {
   placementGeneration: 2,
   sessionId: randomUUID(),
   sessionKind: "channel" as const,
-  workspaceComputerId: randomUUID(),
+  installationId: randomUUID(),
 };
 
 describe("Runtime Session CLI routes", () => {

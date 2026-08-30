@@ -348,12 +348,12 @@ async function custodyFixture() {
   const computerId = randomUUID();
   const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-  const reconciler = new SessionReconciler({ computerId, preparation: workspace });
+  const reconciler = new SessionReconciler({ installationId: computerId, preparation: workspace });
   const runtime = snapshot();
   const reconcile: SessionReconcileRequest = {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

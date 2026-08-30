@@ -9,7 +9,6 @@ import {
   UpdateUserProfileRequestSchema,
   UserDisplayNameSchema,
   UserProfileSchema,
-  WorkspaceNameSchema,
 } from "../auth.js";
 
 describe("auth contracts", () => {
@@ -48,13 +47,6 @@ describe("auth contracts", () => {
       ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", workspaceId: "authority" }),
     ).toThrow();
     expect(() => RefreshTokenRequestSchema.parse({ refreshToken: "token", role: "admin" })).toThrow();
-  });
-
-  it("enforces canonical workspace names", () => {
-    expect(WorkspaceNameSchema.parse("first-tree-1")).toBe("first-tree-1");
-    for (const invalid of ["", "Example", "example workspace", "example_workspace"]) {
-      expect(() => WorkspaceNameSchema.parse(invalid)).toThrow();
-    }
   });
 
   it("validates the current Account without a management Workspace projection", () => {

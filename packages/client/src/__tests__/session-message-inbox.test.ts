@@ -108,7 +108,7 @@ describe("SessionMessageInbox", () => {
       requiresSessionPreparation: vi.fn(() => capabilityChanged),
       stopSession: vi.fn(async () => undefined),
     };
-    const reconciler = new SessionReconciler({ computerId, preparation });
+    const reconciler = new SessionReconciler({ installationId: computerId, preparation });
     const reconcile = reconcileFor(computerId, request);
     await expect(reconciler.reconcile(reconcile)).resolves.toMatchObject({ status: "ready" });
 
@@ -173,7 +173,7 @@ describe("SessionMessageInbox", () => {
         await stopGate;
       }),
     };
-    const reconciler = new SessionReconciler({ computerId, preparation });
+    const reconciler = new SessionReconciler({ installationId: computerId, preparation });
     const reconcile = reconcileFor(computerId, request);
     await expect(reconciler.reconcile(reconcile)).resolves.toMatchObject({ status: "ready" });
     const runtime = {
@@ -429,7 +429,7 @@ function reconcileFor(computerId: string, request: SessionMessageDeliveryRequest
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: request.targetSessionId,
     agentId: request.agentId,
     placementGeneration: request.placementGeneration,

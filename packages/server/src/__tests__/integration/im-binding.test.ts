@@ -23,7 +23,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import WebSocket from "ws";
 import { createDatabaseClient } from "../../db/client.js";
 import {
-  accountComputers,
   agentRuntimeConfigs,
   agents,
   computers,
@@ -34,9 +33,6 @@ import {
   sessions,
   slackInstallations,
   users,
-  workspaceAdminGrants,
-  workspaceComputers,
-  workspaces,
 } from "../../db/schema/index.js";
 import { stopAgentSessions } from "../../runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
@@ -57,7 +53,7 @@ import { createImProviderAdapterResolver, ImBindingService } from "../../service
 import { SlackConfigurationService } from "../../services/im-bindings/slack/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
-import { WorkspaceSetupService } from "../../services/workspaces/index.js";
+import { AccountSetupService } from "../../services/setup/index.js";
 import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -109,8 +105,6 @@ async function fixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
   const computerProfile = {
     displayName: "workstation",
@@ -118,29 +112,20 @@ async function fixture() {
     arch: "x64",
     clientVersion: "0.0.2",
   };
-  const [computer] = await client.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await client.database
-    .insert(workspaceComputers)
+  const [computer] = await client.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       ...computerProfile,
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await client.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    ...computerProfile,
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const agent = await new AgentService(client.database).createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingService = new ImBindingService(client.database, cipher, {
@@ -175,7 +160,6 @@ async function fixture() {
     agent,
     bootstrap,
     computer: { ...computer, ...computerProfile },
-    workspaceComputer,
     cipher,
     imBindingId,
     imBindingService,
@@ -187,8 +171,6 @@ async function unboundFixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
   const computerProfile = {
     displayName: "workstation",
@@ -196,29 +178,20 @@ async function unboundFixture() {
     arch: "x64",
     clientVersion: "0.0.2",
   };
-  const [computer] = await client.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await client.database
-    .insert(workspaceComputers)
+  const [computer] = await client.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       ...computerProfile,
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await client.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    ...computerProfile,
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const created = await new AgentService(client.database).createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   await client.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, created.id));
   const agent = { ...created, receiveMode: "mention_only" as const };
@@ -229,7 +202,6 @@ async function unboundFixture() {
     agent,
     bootstrap,
     computer: { ...computer, ...computerProfile },
-    workspaceComputer,
     cipher,
     imBindingService,
   };
@@ -246,8 +218,7 @@ function computerAuthFor(value: Awaited<ReturnType<typeof fixture>>) {
   return {
     computerId: value.computer.id,
     credentialId: crypto.randomUUID(),
-    workspaceComputerId: value.workspaceComputer.id,
-    workspaceId: value.bootstrap.workspaceId,
+    installationId: value.computer.currentInstallationId,
   };
 }
 
@@ -332,7 +303,7 @@ async function createClientSessionBindingStore(home: string) {
   return new module.SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
 }
 
-async function createDurableClientReconciler(home: string, computerId: string) {
+async function createDurableClientReconciler(home: string, installationId: string) {
   const bindingStore = await createClientSessionBindingStore(home);
   const workspaceModuleUrl = new URL("../../../../client/src/runtime/agent-workspace.ts", import.meta.url).href;
   const reconcilerModuleUrl = new URL("../../../../client/src/runtime/session-reconciler.ts", import.meta.url).href;
@@ -341,7 +312,7 @@ async function createDurableClientReconciler(home: string, computerId: string) {
   };
   const reconcilerModule = (await import(reconcilerModuleUrl)) as {
     SessionReconciler: new (options: {
-      computerId: string;
+      installationId: string;
       preparation: object;
     }) => {
       clearRecovery: (sessionId: string, turnId: string) => boolean;
@@ -350,7 +321,7 @@ async function createDurableClientReconciler(home: string, computerId: string) {
     };
   };
   const workspace = new workspaceModule.AgentWorkspaceManager({ bindingStore, home });
-  const reconciler = new reconcilerModule.SessionReconciler({ computerId, preparation: workspace });
+  const reconciler = new reconcilerModule.SessionReconciler({ installationId, preparation: workspace });
   return { bindingStore, reconciler };
 }
 
@@ -366,15 +337,13 @@ async function respondingRuntime(input: {
   steerDeferredReason?: "turn_not_running" | "steer_unsupported" | "steer_state_unknown";
   steerResult?: "steered" | "retry" | "deferred" | "rejected";
   steerReason?: "invalid_input" | "input_conflict" | "target_mismatch" | "stale_generation";
-  workspaceComputerId: string;
-  workspaceId: string;
+  installationId: string;
 }) {
   const frames: unknown[] = [];
   const registry = new ConnectionRegistry();
   const context = {
     computerId: input.computerId,
-    workspaceComputerId: input.workspaceComputerId,
-    workspaceId: input.workspaceId,
+    installationId: input.installationId,
     instanceId: input.instanceId,
     signal: new AbortController().signal,
   };
@@ -448,8 +417,7 @@ async function respondingRuntime(input: {
         capabilities: { imCredentialGrant: 1 },
         capabilitiesUpdatedAt: Date.now(),
         computerId: input.computerId,
-        workspaceComputerId: input.workspaceComputerId,
-        workspaceId: input.workspaceId,
+        installationId: input.installationId,
         instanceId: input.instanceId,
         lastHeartbeatAt: Date.now(),
         ...(input.steerResult || negotiatedCapabilities
@@ -584,24 +552,21 @@ function slackThreadEvent(input: {
 }
 
 describe("IM binding persistence", () => {
-  it("completes Workspace setup only from a ready handoff and never reopens it", async () => {
+  it("completes Account setup only from a ready handoff and never reopens it", async () => {
     const value = await fixture();
     try {
       const completedAt = new Date("2026-08-20T12:00:00.000Z");
       const runtimeUnavailable = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
         imCliReadiness: () => "unavailable",
       });
-      const unavailableSetup = new WorkspaceSetupService(value.database, runtimeUnavailable, {
+      const unavailableSetup = new AccountSetupService(value.database, runtimeUnavailable, {
         now: () => completedAt,
       });
 
       await expect(unavailableSetup.completeForAccount(value.bootstrap.userId, value.agent.id)).rejects.toMatchObject({
-        code: "WORKSPACE_SETUP_NOT_READY",
+        code: "ACCOUNT_SETUP_NOT_READY",
         statusCode: 409,
       });
-      await expect(
-        value.database.select({ setupCompletedAt: workspaces.setupCompletedAt }).from(workspaces).limit(1),
-      ).resolves.toEqual([{ setupCompletedAt: null }]);
       await expect(
         value.database
           .select({ setupCompletedAt: users.setupCompletedAt })
@@ -609,7 +574,7 @@ describe("IM binding persistence", () => {
           .where(eq(users.id, value.bootstrap.userId)),
       ).resolves.toEqual([{ setupCompletedAt: null }]);
 
-      const setup = new WorkspaceSetupService(value.database, value.imBindingService, {
+      const setup = new AccountSetupService(value.database, value.imBindingService, {
         now: () => completedAt,
       });
       await expect(setup.completeForAccount(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
@@ -633,7 +598,7 @@ describe("IM binding persistence", () => {
         .returning();
       if (!member) throw new Error("Setup member fixture was not created");
       await expect(setup.completeForAccount(member.id, value.agent.id)).rejects.toMatchObject({
-        code: "WORKSPACE_SETUP_AGENT_NOT_FOUND",
+        code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
         statusCode: 404,
       });
     } finally {
@@ -666,9 +631,9 @@ describe("IM binding persistence", () => {
         .returning();
       if (!otherOwner) throw new Error("Other Account fixture was not created");
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ ownerAccountId: otherOwner.id })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
 
       await expect(
         new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-rebind-required")),
@@ -698,20 +663,19 @@ describe("IM binding persistence", () => {
         .returning();
       if (!otherOwner) throw new Error("Other Account fixture was not created");
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ ownerAccountId: otherOwner.id })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(runtime.domain);
 
@@ -820,14 +784,14 @@ describe("IM binding persistence", () => {
       });
       const sourceConnectionInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: sourceConnectionInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const internal = await sessionService.createInternalSessionWithMessage({
         creatorSessionId: session.id,
-        creatorComputerId: value.computer.id,
+        creatorInstallationId: value.computer.currentInstallationId,
         creatorConnectionInstanceId: sourceConnectionInstanceId,
-        creatorWorkspaceComputerId: value.workspaceComputer.id,
+        creatorComputerId: value.computer.id,
         creatorPlacementGeneration: 1,
         messageId: crypto.randomUUID(),
         initialMessage: "Do not expose provider credentials",
@@ -848,7 +812,7 @@ describe("IM binding persistence", () => {
       await expect(
         value.imBindingService.issueRuntimeCredentialGrant(request, {
           ...computerAuthFor(value),
-          workspaceComputerId: crypto.randomUUID(),
+          computerId: crypto.randomUUID(),
         }),
       ).resolves.toMatchObject({ status: "rejected", code: "agent_mismatch" });
       await expect(
@@ -879,9 +843,9 @@ describe("IM binding persistence", () => {
         .returning();
       if (!otherOwner) throw new Error("Other Account fixture was not created");
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ ownerAccountId: otherOwner.id })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const ownerMismatch = await value.imBindingService.issueRuntimeCredentialGrant(
         { ...request, requestId: crypto.randomUUID() },
         computerAuthFor(value),
@@ -920,15 +884,11 @@ describe("IM binding persistence", () => {
         handoffReady: false,
       });
 
-      const [otherWorkspace] = await value.database
-        .insert(workspaces)
-        .values({ name: "other-workspace", displayName: "Other Workspace" })
-        .returning();
       const [outsider] = await value.database
         .insert(users)
         .values({ email: "outsider@example.com", displayName: "Outsider" })
         .returning();
-      if (!otherWorkspace || !outsider) throw new Error("Cross-Workspace fixture was not created");
+      if (!outsider) throw new Error("Outsider Account fixture was not created");
       await expect(value.imBindingService.getHandoffForAgent(outsider.id, value.agent.id)).rejects.toMatchObject({
         code: "IM_BINDING_NOT_FOUND",
         statusCode: 404,
@@ -1058,9 +1018,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(
         value.imBindingId,
         1,
@@ -1070,8 +1030,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => ({
           type: "session:reconcile:result",
           requestId: frame.requestId,
@@ -1089,10 +1048,10 @@ describe("IM binding persistence", () => {
         stopSessions: async (targets) => {
           await Promise.all(
             targets.map((target) =>
-              runtime.domain.requestReconcile(target.workspaceComputerId, instanceId, {
+              runtime.domain.requestReconcile(target.computerId, instanceId, {
                 type: "session:reconcile",
                 requestId: crypto.randomUUID(),
-                computerId: target.computerId,
+                installationId: target.installationId,
                 sessionId: target.sessionId,
                 agentId: target.agentId,
                 placementGeneration: target.placementGeneration,
@@ -1127,9 +1086,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(
         value.imBindingId,
         1,
@@ -1140,8 +1099,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         deliveryGate: releaseDelivery.promise,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => ({
           type: "session:reconcile:result",
           requestId: frame.requestId,
@@ -1163,10 +1121,10 @@ describe("IM binding persistence", () => {
         stopSessions: async (targets) => {
           await Promise.all(
             targets.map((target) =>
-              runtime.domain.requestReconcile(target.workspaceComputerId, instanceId, {
+              runtime.domain.requestReconcile(target.computerId, instanceId, {
                 type: "session:reconcile",
                 requestId: crypto.randomUUID(),
-                computerId: target.computerId,
+                installationId: target.installationId,
                 sessionId: target.sessionId,
                 agentId: target.agentId,
                 placementGeneration: target.placementGeneration,
@@ -1202,9 +1160,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(
         value.imBindingId,
         1,
@@ -1215,8 +1173,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         deliveryGate: releaseDelivery.promise,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(runtime.domain);
       const lifecycle = new AgentService(value.database, {
@@ -1271,9 +1228,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(
         value.imBindingId,
         1,
@@ -1283,8 +1240,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(runtime.domain);
       const firstWorker = imDeliveryWorker({
@@ -1335,16 +1291,15 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-suspended-recovery"));
       const firstRuntime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(firstRuntime.domain);
       await imDeliveryWorker({
@@ -1364,8 +1319,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => {
           expect(frame).toMatchObject({ desired: "stopped" });
           expect(frame).not.toHaveProperty("runtime");
@@ -1404,19 +1358,9 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("keeps IM mutations authorized by the Agent creator after Workspace grant revocation", async () => {
+  it("keeps IM mutations authorized by the Agent creator", async () => {
     const value = await fixture();
     try {
-      await value.database
-        .update(workspaceAdminGrants)
-        .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
-        .where(
-          and(
-            eq(workspaceAdminGrants.workspaceId, value.bootstrap.workspaceId),
-            eq(workspaceAdminGrants.userId, value.bootstrap.userId),
-            isNull(workspaceAdminGrants.revokedAt),
-          ),
-        );
       await expect(value.imBindingService.disable(value.bootstrap.userId, value.imBindingId)).resolves.toBeUndefined();
       expect(
         (await value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)))[0]?.status,
@@ -1460,7 +1404,7 @@ describe("IM binding persistence", () => {
       expect(await value.database.select().from(imMessageDeliveries)).toHaveLength(1);
       expect(await value.database.select().from(sessions)).toHaveLength(1);
       expect(await value.database.select().from(sessionPlacements)).toMatchObject([
-        { workspaceComputerId: value.workspaceComputer.id, generation: 1 },
+        { computerId: value.computer.id, generation: 1 },
       ]);
 
       const edit = await inbox.ingest(value.imBindingId, 1, inbound("Ev3", "edited"));
@@ -1614,17 +1558,16 @@ describe("IM binding persistence", () => {
       if (!deliveryId || !first.messageId) throw new Error("Delivery fixture was not created");
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const deliveryGate = deferred<void>();
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         deliveryGate: deliveryGate.promise,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const deliveryRun = imDeliveryWorker({
         database: value.database,
@@ -1694,17 +1637,16 @@ describe("IM binding persistence", () => {
       if (!deliveryId || !admitted.messageId) throw new Error("TTL fixture was not created");
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const deliveryGate = deferred<void>();
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         deliveryGate: deliveryGate.promise,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const deliveryRun = imDeliveryWorker({
         database: value.database,
@@ -1775,17 +1717,16 @@ describe("IM binding persistence", () => {
       if (!deliveryId || !first.messageId) throw new Error("Capacity fixture was not created");
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const deliveryGate = deferred<void>();
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         deliveryGate: deliveryGate.promise,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const deliveryRun = imDeliveryWorker({
         database: value.database,
@@ -1984,7 +1925,7 @@ describe("IM binding persistence", () => {
         name: "other-assistant",
         displayName: "Other Assistant",
         runtimeProvider: "codex",
-        computerId: value.workspaceComputer.id,
+        computerId: value.computer.id,
       });
       const otherBindingId = await value.imBindingService.activateFeishu({
         agentId: otherAgent.id,
@@ -2714,15 +2655,14 @@ describe("IM binding persistence", () => {
       await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const inbox = new ImMessageInbox(value.database);
       const rootEvent = revisionEvent({
@@ -2884,15 +2824,14 @@ describe("IM binding persistence", () => {
       await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const inbox = new ImMessageInbox(value.database);
       const rootEvent = revisionEvent({
@@ -3097,9 +3036,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-worker"));
       const registry = { currentInstanceId: () => instanceId };
       const failedDomain = {
@@ -3118,8 +3057,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       await imDeliveryWorker({
         database: value.database,
@@ -3147,9 +3085,9 @@ describe("IM binding persistence", () => {
       await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       await inbox.ingest(value.imBindingId, 1, inbound("Ev-steer-slack-root"));
       const runtime = await respondingRuntime({
@@ -3157,8 +3095,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId,
         steerResult: "steered",
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
       await worker.runOnce();
@@ -3231,9 +3168,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       await inbox.ingest(value.imBindingId, 1, inbound("Ev-steer-rejected-root"));
       const runtime = await respondingRuntime({
@@ -3241,8 +3178,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId,
         steerResult: "rejected",
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
       await worker.runOnce();
@@ -3277,9 +3213,9 @@ describe("IM binding persistence", () => {
       await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       await inbox.ingest(value.imBindingId, 1, inbound("observer-steer-root"));
       const runtime = await respondingRuntime({
@@ -3288,8 +3224,7 @@ describe("IM binding persistence", () => {
         instanceId,
         negotiatedCapabilities: { [RUNTIME_CAPABILITY.imDelivery]: 2, [RUNTIME_CAPABILITY.imSteer]: 1 },
         steerResult: "steered",
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
       await worker.runOnce();
@@ -3364,9 +3299,9 @@ describe("IM binding persistence", () => {
       try {
         const instanceId = crypto.randomUUID();
         await value.database
-          .update(accountComputers)
+          .update(computers)
           .set({ currentInstanceId: instanceId })
-          .where(eq(accountComputers.id, value.workspaceComputer.id));
+          .where(eq(computers.id, value.computer.id));
         const inbox = new ImMessageInbox(value.database);
         await inbox.ingest(value.imBindingId, 1, inbound(`Ev-steer-${steerReason}-root`));
         const runtime = await respondingRuntime({
@@ -3376,8 +3311,7 @@ describe("IM binding persistence", () => {
           steerDeferredReason,
           steerResult,
           steerReason,
-          workspaceComputerId: value.workspaceComputer.id,
-          workspaceId: value.bootstrap.workspaceId,
+          installationId: value.computer.currentInstallationId,
         });
         const worker = imDeliveryWorker({
           database: value.database,
@@ -3448,9 +3382,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       await inbox.ingest(value.imBindingId, 1, inbound("Ev-steer-restart-root"));
       const runtime = await respondingRuntime({
@@ -3458,8 +3392,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId,
         steerResult: "steered",
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
       await worker.runOnce();
@@ -3504,7 +3437,7 @@ describe("IM binding persistence", () => {
       const custody = new PostgresRuntimeCustodyStore(value.database);
       await expect(
         custody.beginSteerDispatch(steerRequest, computeRuntimeImSteerInputHash(steerRequest), {
-          workspaceComputerId: value.workspaceComputer.id,
+          computerId: value.computer.id,
           instanceId,
         }),
       ).resolves.toBe("dispatched");
@@ -3561,9 +3494,9 @@ describe("IM binding persistence", () => {
       });
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const feishuEvent = (eventId: string, messageId: string, occurredAt: string) => {
         const event = revisionEvent({
           providerEventId: eventId,
@@ -3585,8 +3518,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId,
         steerResult: "steered",
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
       await worker.runOnce();
@@ -3631,15 +3563,14 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(runtime.domain);
       const inbox = new ImMessageInbox(value.database);
@@ -3667,7 +3598,7 @@ describe("IM binding persistence", () => {
           {
             type: "session:reconcile",
             requestId: crypto.randomUUID(),
-            computerId: value.computer.id,
+            installationId: value.computer.currentInstallationId,
             sessionId: request.sessionId,
             agentId: request.agentId,
             placementGeneration: request.placementGeneration,
@@ -3740,16 +3671,15 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
-      const firstClient = await createDurableClientReconciler(clientHome, value.computer.id);
+        .where(eq(computers.id, value.computer.id));
+      const firstClient = await createDurableClientReconciler(clientHome, value.computer.currentInstallationId);
       const first = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => firstClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest),
       });
       owners.push(first.domain);
@@ -3817,16 +3747,15 @@ describe("IM binding persistence", () => {
 
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
-      const rebuiltClient = await createDurableClientReconciler(clientHome, value.computer.id);
+        .where(eq(computers.id, value.computer.id));
+      const rebuiltClient = await createDurableClientReconciler(clientHome, value.computer.currentInstallationId);
       const second = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: async (frame) => {
           const result = await rebuiltClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest);
           return result.status === "recovery_required"
@@ -3906,9 +3835,9 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       const firstAdmission = await inbox.ingest(value.imBindingId, 1, inbound("Ev-agent-claim-race-accepted"));
       const firstDeliveryId = firstAdmission.deliveryIds[0];
@@ -3944,12 +3873,12 @@ describe("IM binding persistence", () => {
         runtime: pinnedRuntime,
         deadlineAt: firstDelivery.expiresAt.toISOString(),
       };
-      const firstClient = await createDurableClientReconciler(clientHome, value.computer.id);
+      const firstClient = await createDurableClientReconciler(clientHome, value.computer.currentInstallationId);
       await expect(
         firstClient.reconciler.reconcile({
           type: "session:reconcile",
           requestId: crypto.randomUUID(),
-          computerId: value.computer.id,
+          installationId: value.computer.currentInstallationId,
           sessionId: firstRequest.sessionId,
           agentId: firstRequest.agentId,
           placementGeneration: firstRequest.placementGeneration,
@@ -4009,8 +3938,7 @@ describe("IM binding persistence", () => {
       const custody = new PostgresRuntimeCustodyStore(value.database);
       const firstContext = {
         computerId: value.computer.id,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         instanceId: firstInstanceId,
         signal: new AbortController().signal,
       };
@@ -4046,16 +3974,15 @@ describe("IM binding persistence", () => {
 
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
-      const rebuiltClient = await createDurableClientReconciler(clientHome, value.computer.id);
+        .where(eq(computers.id, value.computer.id));
+      const rebuiltClient = await createDurableClientReconciler(clientHome, value.computer.currentInstallationId);
       const recovered = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: async (frame) => {
           const result = await rebuiltClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest);
           return result.status === "recovery_required"
@@ -4132,9 +4059,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       const firstAdmission = await inbox.ingest(value.imBindingId, 1, inbound("Ev-owned-claim-first"));
       const firstDeliveryId = firstAdmission.deliveryIds[0];
@@ -4233,7 +4160,7 @@ describe("IM binding persistence", () => {
   /**
    * The dispatch guard is `!instanceId || row.computer.currentInstanceId !== instanceId`. The first
    * disjunct — no runtime connected at all — is covered above. This pins the second, in the direction
-   * that actually costs something: the enrollment has advanced to a new generation, while a stale
+   * that actually costs something: the Computer has advanced to a new generation, while a stale
    * registry entry for the previous one is still held. `instanceId` comes from the registry, so
    * dropping this disjunct would dispatch to that superseded generation; the persisted column is the
    * only thing that recognises it as stale.
@@ -4243,10 +4170,7 @@ describe("IM binding persistence", () => {
     try {
       const currentInstanceId = crypto.randomUUID();
       const staleInstanceId = crypto.randomUUID();
-      await value.database
-        .update(accountComputers)
-        .set({ currentInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+      await value.database.update(computers).set({ currentInstanceId }).where(eq(computers.id, value.computer.id));
       const admission = await new ImMessageInbox(value.database).ingest(
         value.imBindingId,
         1,
@@ -4277,9 +4201,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       const endedAdmission = await inbox.ingest(value.imBindingId, 1, inbound("Ev-ended-session-pending"));
       const endedDeliveryId = endedAdmission.deliveryIds[0];
@@ -4343,9 +4267,9 @@ describe("IM binding persistence", () => {
       try {
         const instanceId = crypto.randomUUID();
         await value.database
-          .update(accountComputers)
+          .update(computers)
           .set({ currentInstanceId: instanceId })
-          .where(eq(accountComputers.id, value.workspaceComputer.id));
+          .where(eq(computers.id, value.computer.id));
         await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-payload-hash-${state}`));
         const runtime = await respondingRuntime({
           acceptDeliveries: state === "accepted",
@@ -4353,8 +4277,7 @@ describe("IM binding persistence", () => {
           computerId: value.computer.id,
           instanceId,
           requestTimeoutMs: 100,
-          workspaceComputerId: value.workspaceComputer.id,
-          workspaceId: value.bootstrap.workspaceId,
+          installationId: value.computer.currentInstallationId,
         });
         const worker = imDeliveryWorker({
           database: value.database,
@@ -4396,9 +4319,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-reconcile-expiry"));
       const failedDomain = {
         requestReconcile: dispatchedRuntimeFailure(new Error("reconcile failed before dispatch")),
@@ -4439,16 +4362,15 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-custody-restart"));
       const first = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
       await imDeliveryWorker({
@@ -4483,9 +4405,9 @@ describe("IM binding persistence", () => {
 
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await value.database
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
@@ -4494,8 +4416,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => ({
           type: "session:reconcile:result",
           requestId: frame.requestId,
@@ -4535,15 +4456,14 @@ describe("IM binding persistence", () => {
 
       const thirdInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: thirdInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const third = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: thirdInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(third.domain);
       await expect(
@@ -4585,16 +4505,15 @@ describe("IM binding persistence", () => {
 
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
         negotiatedCapabilities: { [RUNTIME_CAPABILITY.imDelivery]: 1 },
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(runtime.domain);
       const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
@@ -4660,16 +4579,15 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-legacy-recovery"));
       const first = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
       await imDeliveryWorker({
@@ -4687,15 +4605,14 @@ describe("IM binding persistence", () => {
 
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const second = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(second.domain);
       const diagnostic = vi.fn();
@@ -4726,9 +4643,9 @@ describe("IM binding persistence", () => {
       try {
         const firstInstanceId = crypto.randomUUID();
         await value.database
-          .update(accountComputers)
+          .update(computers)
           .set({ currentInstanceId: firstInstanceId })
-          .where(eq(accountComputers.id, value.workspaceComputer.id));
+          .where(eq(computers.id, value.computer.id));
         await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-retained-${durableState}`));
         const first = await respondingRuntime({
           acceptDeliveries: false,
@@ -4736,8 +4653,7 @@ describe("IM binding persistence", () => {
           computerId: value.computer.id,
           instanceId: firstInstanceId,
           requestTimeoutMs: 100,
-          workspaceComputerId: value.workspaceComputer.id,
-          workspaceId: value.bootstrap.workspaceId,
+          installationId: value.computer.currentInstallationId,
         });
         owners.push(first.domain);
         await imDeliveryWorker({
@@ -4783,9 +4699,9 @@ describe("IM binding persistence", () => {
 
         const secondInstanceId = crypto.randomUUID();
         await value.database
-          .update(accountComputers)
+          .update(computers)
           .set({ currentInstanceId: secondInstanceId })
-          .where(eq(accountComputers.id, value.workspaceComputer.id));
+          .where(eq(computers.id, value.computer.id));
         await value.database
           .update(imMessageDeliveries)
           .set({ nextAttemptAt: new Date(0) })
@@ -4794,8 +4710,7 @@ describe("IM binding persistence", () => {
           database: value.database,
           computerId: value.computer.id,
           instanceId: secondInstanceId,
-          workspaceComputerId: value.workspaceComputer.id,
-          workspaceId: value.bootstrap.workspaceId,
+          installationId: value.computer.currentInstallationId,
           reconcileResult: (frame) => ({
             type: "session:reconcile:result",
             requestId: frame.requestId,
@@ -4849,9 +4764,9 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-immutable-dispatch"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
@@ -4859,8 +4774,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId: firstInstanceId,
         requestTimeoutMs: 100,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
       await imDeliveryWorker({
@@ -4889,15 +4803,14 @@ describe("IM binding persistence", () => {
         .where(eq(imMessageDeliveries.id, firstFrame.deliveryId));
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const second = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(second.domain);
       await imDeliveryWorker({
@@ -4952,19 +4865,18 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-before-send"));
       const [session] = await value.database.select().from(sessions);
       if (!session) throw new Error("Session fixture was not created");
-      await new SessionService(value.database).movePlacement(session.id, value.workspaceComputer.id);
+      await new SessionService(value.database).movePlacement(session.id, value.computer.id);
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       await imDeliveryWorker({
         database: value.database,
@@ -4990,9 +4902,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-awaiting"));
       const [session] = await value.database.select().from(sessions);
       if (!session) throw new Error("Session fixture was not created");
@@ -5002,8 +4914,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         deliveryGate: gate.promise,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       const run = imDeliveryWorker({
         database: value.database,
@@ -5012,14 +4923,14 @@ describe("IM binding persistence", () => {
       }).runOnce();
       await expect.poll(() => runtime.frames.length).toBe(2);
       const sessionService = new SessionService(value.database);
-      await expect(sessionService.movePlacement(session.id, value.workspaceComputer.id)).rejects.toMatchObject({
+      await expect(sessionService.movePlacement(session.id, value.computer.id)).rejects.toMatchObject({
         code: "SESSION_PLACEMENT_CUSTODY_UNCERTAIN",
       });
       gate.resolve();
       await run;
       const [accepted] = await value.database.select().from(imMessageDeliveries);
       if (!accepted?.turnId) throw new Error("Accepted custody was not persisted");
-      await expect(sessionService.movePlacement(session.id, value.workspaceComputer.id)).rejects.toMatchObject({
+      await expect(sessionService.movePlacement(session.id, value.computer.id)).rejects.toMatchObject({
         code: "SESSION_PLACEMENT_CUSTODY_PENDING",
       });
       const report = turnReportFor({
@@ -5030,7 +4941,7 @@ describe("IM binding persistence", () => {
         turnId: accepted.turnId,
       });
       await expect(runtime.domain.handle(report, runtime.context)).resolves.toMatchObject({ status: "recorded" });
-      await expect(sessionService.movePlacement(session.id, value.workspaceComputer.id)).resolves.toMatchObject({
+      await expect(sessionService.movePlacement(session.id, value.computer.id)).resolves.toMatchObject({
         generation: 2,
       });
       runtime.domain.close();
@@ -5045,9 +4956,9 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-persisted-pending"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
@@ -5055,8 +4966,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId: firstInstanceId,
         requestTimeoutMs: 100,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
       await imDeliveryWorker({
@@ -5072,22 +4982,21 @@ describe("IM binding persistence", () => {
       first.domain.close();
 
       await expect(
-        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.computer.id),
       ).rejects.toMatchObject({
         code: "SESSION_PLACEMENT_CUSTODY_UNCERTAIN",
       });
 
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const second = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => ({
           type: "session:reconcile:result",
           requestId: frame.requestId,
@@ -5114,7 +5023,7 @@ describe("IM binding persistence", () => {
         state: "pending",
       });
       await expect(
-        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.computer.id),
       ).rejects.toMatchObject({ code: "SESSION_PLACEMENT_CUSTODY_UNCERTAIN" });
       second.domain.close();
 
@@ -5127,15 +5036,14 @@ describe("IM binding persistence", () => {
         turnId: "turn-conflicting-retained-claim",
       });
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: thirdInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const third = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: thirdInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => ({
           type: "session:reconcile:result",
           requestId: frame.requestId,
@@ -5172,21 +5080,20 @@ describe("IM binding persistence", () => {
         state: "pending",
       });
       await expect(
-        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.computer.id),
       ).rejects.toMatchObject({ code: "SESSION_PLACEMENT_CUSTODY_UNCERTAIN" });
       third.domain.close();
 
       const fourthInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: fourthInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const fourth = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: fourthInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(fourth.domain);
       await value.database
@@ -5206,7 +5113,7 @@ describe("IM binding persistence", () => {
         state: "pending",
       });
       await expect(
-        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.computer.id),
       ).resolves.toMatchObject({ generation: 2 });
       await value.database
         .update(imMessageDeliveries)
@@ -5251,9 +5158,9 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-persisted-expired"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
@@ -5261,8 +5168,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId: firstInstanceId,
         requestTimeoutMs: 100,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
       await imDeliveryWorker({
@@ -5290,21 +5196,20 @@ describe("IM binding persistence", () => {
       first.domain.close();
 
       await expect(
-        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.computer.id),
       ).rejects.toMatchObject({
         code: "SESSION_PLACEMENT_CUSTODY_UNCERTAIN",
       });
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const second = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(second.domain);
       await value.database
@@ -5324,7 +5229,7 @@ describe("IM binding persistence", () => {
         state: "expired",
       });
       await expect(
-        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(oldRequest.sessionId, value.computer.id),
       ).resolves.toMatchObject({ generation: 2 });
       await expect(
         new PostgresRuntimeCustodyStore(value.database).acceptDelivery(
@@ -5346,16 +5251,15 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-accepted"));
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(runtime.domain);
       await imDeliveryWorker({
@@ -5367,11 +5271,9 @@ describe("IM binding persistence", () => {
       if (!accepted?.turnId) throw new Error("Accepted custody was not persisted");
       expect(accepted.dispatchPayload).not.toBeNull();
       const sessionsService = new SessionService(value.database);
-      await expect(sessionsService.movePlacement(accepted.sessionId, value.workspaceComputer.id)).rejects.toMatchObject(
-        {
-          code: "SESSION_PLACEMENT_CUSTODY_PENDING",
-        },
-      );
+      await expect(sessionsService.movePlacement(accepted.sessionId, value.computer.id)).rejects.toMatchObject({
+        code: "SESSION_PLACEMENT_CUSTODY_PENDING",
+      });
       const report = turnReportFor({
         agentId: value.agent.id,
         deliveryId: accepted.id,
@@ -5381,9 +5283,7 @@ describe("IM binding persistence", () => {
       });
       await expect(runtime.domain.handle(report, runtime.context)).resolves.toMatchObject({ status: "recorded" });
       expect((await value.database.select().from(imMessageDeliveries))[0]?.dispatchPayload).toBeNull();
-      await expect(
-        sessionsService.movePlacement(accepted.sessionId, value.workspaceComputer.id),
-      ).resolves.toMatchObject({
+      await expect(sessionsService.movePlacement(accepted.sessionId, value.computer.id)).resolves.toMatchObject({
         generation: 2,
       });
     } finally {
@@ -5399,9 +5299,9 @@ describe("IM binding persistence", () => {
     try {
       const firstInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: firstInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-client-custody-lost-frame"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
@@ -5409,8 +5309,7 @@ describe("IM binding persistence", () => {
         computerId: value.computer.id,
         instanceId: firstInstanceId,
         requestTimeoutMs: 100,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
       await imDeliveryWorker({
@@ -5429,7 +5328,7 @@ describe("IM binding persistence", () => {
         {
           type: "session:reconcile",
           requestId: crypto.randomUUID(),
-          computerId: value.computer.id,
+          installationId: value.computer.currentInstallationId,
           sessionId: dispatched.sessionId,
           agentId: dispatched.agentId,
           placementGeneration: dispatched.placementGeneration,
@@ -5458,15 +5357,15 @@ describe("IM binding persistence", () => {
         turnId,
       });
       await expect(
-        new SessionService(value.database).movePlacement(dispatched.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(dispatched.sessionId, value.computer.id),
       ).rejects.toMatchObject({ code: "SESSION_PLACEMENT_CUSTODY_UNCERTAIN" });
       first.domain.close();
 
       const secondInstanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: secondInstanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       await value.database
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
@@ -5477,8 +5376,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: secondInstanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
         reconcileResult: (frame) => ({
           type: "session:reconcile:result",
           requestId: frame.requestId,
@@ -5509,7 +5407,7 @@ describe("IM binding persistence", () => {
       await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
       await clientStore.recordResult(dispatched.agentId, dispatched.sessionId, turnId, report.resultHash);
       await expect(
-        new SessionService(value.database).movePlacement(dispatched.sessionId, value.workspaceComputer.id),
+        new SessionService(value.database).movePlacement(dispatched.sessionId, value.computer.id),
       ).resolves.toMatchObject({ generation: 2 });
       expect((await clientStore.read(dispatched.agentId, dispatched.sessionId))?.unresolvedTurn).toBeUndefined();
     } finally {
@@ -5527,9 +5425,9 @@ describe("IM binding persistence", () => {
       try {
         const instanceId = crypto.randomUUID();
         await value.database
-          .update(accountComputers)
+          .update(computers)
           .set({ currentInstanceId: instanceId })
-          .where(eq(accountComputers.id, value.workspaceComputer.id));
+          .where(eq(computers.id, value.computer.id));
         await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-lock-order-${transition}`));
         const runtime = await respondingRuntime({
           acceptDeliveries: false,
@@ -5537,8 +5435,7 @@ describe("IM binding persistence", () => {
           computerId: value.computer.id,
           instanceId,
           requestTimeoutMs: 100,
-          workspaceComputerId: value.workspaceComputer.id,
-          workspaceId: value.bootstrap.workspaceId,
+          installationId: value.computer.currentInstallationId,
         });
         owners.push(runtime.domain);
         await imDeliveryWorker({
@@ -5559,7 +5456,7 @@ describe("IM binding persistence", () => {
             await releaseMove.promise;
           },
         })
-          .movePlacement(dispatched.sessionId, value.workspaceComputer.id)
+          .movePlacement(dispatched.sessionId, value.computer.id)
           .then(
             () => "moved",
             (error: unknown) => (error as { code?: string }).code ?? "failed",
@@ -5584,7 +5481,7 @@ describe("IM binding persistence", () => {
                   {
                     type: "session:reconcile",
                     requestId: crypto.randomUUID(),
-                    computerId: value.computer.id,
+                    installationId: value.computer.currentInstallationId,
                     sessionId: dispatched.sessionId,
                     agentId: dispatched.agentId,
                     placementGeneration: dispatched.placementGeneration,
@@ -5627,17 +5524,16 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
       await inbox.ingest(value.imBindingId, 1, inbound("Ev-recovery-fair-first"));
       const first = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
         instanceId,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
+        installationId: value.computer.currentInstallationId,
       });
       owners.push(first.domain);
       await imDeliveryWorker({
@@ -5695,9 +5591,9 @@ describe("IM binding persistence", () => {
       const [session] = await value.database.select().from(sessions);
       if (!session) throw new Error("Session fixture was not created");
       const sessionService = new SessionService(value.database);
-      await expect(sessionService.assertPlacement(session.id, value.workspaceComputer.id, 1)).resolves.toBeUndefined();
-      await sessionService.movePlacement(session.id, value.workspaceComputer.id);
-      await expect(sessionService.assertPlacement(session.id, value.workspaceComputer.id, 1)).rejects.toMatchObject({
+      await expect(sessionService.assertPlacement(session.id, value.computer.id, 1)).resolves.toBeUndefined();
+      await sessionService.movePlacement(session.id, value.computer.id);
+      await expect(sessionService.assertPlacement(session.id, value.computer.id, 1)).rejects.toMatchObject({
         code: "SESSION_PLACEMENT_STALE",
       });
 
@@ -5718,9 +5614,9 @@ describe("IM binding persistence", () => {
     try {
       const instanceId = crypto.randomUUID();
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ currentInstanceId: instanceId })
-        .where(eq(accountComputers.id, value.workspaceComputer.id));
+        .where(eq(computers.id, value.computer.id));
       const event = inbound("Ev-resource");
       event.message.resources = [
         {
@@ -5769,12 +5665,7 @@ describe("IM binding persistence", () => {
       for await (const chunk of opened.stream) chunks.push(Buffer.from(chunk));
       expect(Buffer.concat(chunks).toString()).toBe("hello world!");
       await expect(
-        resources.open(
-          { ...computerAuthFor(value), workspaceComputerId: crypto.randomUUID() },
-          runtimeScope,
-          message.id,
-          0,
-        ),
+        resources.open({ ...computerAuthFor(value), computerId: crypto.randomUUID() }, runtimeScope, message.id, 0),
       ).rejects.toMatchObject({
         statusCode: 404,
       });
@@ -6258,7 +6149,7 @@ describe("IM binding persistence", () => {
         name: "second-agent",
         displayName: "Second Agent",
         runtimeProvider: "codex",
-        computerId: value.workspaceComputer.id,
+        computerId: value.computer.id,
       });
       const firstId = await value.imBindingService.activateFeishu({
         agentId: value.agent.id,
@@ -6550,10 +6441,8 @@ describe("IM binding persistence", () => {
         .insert(agents)
         .values(
           Array.from({ length: 101 }, (_, index) => ({
-            workspaceId: value.bootstrap.workspaceId,
             createdByUserId: value.bootstrap.userId,
-            workspaceComputerId: value.workspaceComputer.id,
-            computerId: value.workspaceComputer.id,
+            computerId: value.computer.id,
             name: `feishu-${String(index).padStart(3, "0")}`,
             displayName: `Feishu ${index}`,
             runtimeProvider: "codex" as const,
@@ -7080,15 +6969,6 @@ describe("IM binding persistence", () => {
       database: value.database,
       imBindings: value.imBindingService,
       afterConfigurationTransaction: async () => {
-        await value.database
-          .update(workspaceAdminGrants)
-          .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
-          .where(
-            and(
-              eq(workspaceAdminGrants.workspaceId, value.bootstrap.workspaceId),
-              eq(workspaceAdminGrants.userId, value.bootstrap.userId),
-            ),
-          );
         const [committed] = await value.database
           .select({ id: imBindings.id, generation: imBindings.credentialGeneration })
           .from(imBindings)

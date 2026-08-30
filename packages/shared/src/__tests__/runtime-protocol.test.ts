@@ -67,7 +67,7 @@ describe("runtime protocol", () => {
     const register = {
       type: "computer:register",
       requestId: crypto.randomUUID(),
-      computerId: crypto.randomUUID(),
+      installationId: crypto.randomUUID(),
       instanceId: crypto.randomUUID(),
       displayName: "host",
       platform: "linux",

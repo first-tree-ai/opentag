@@ -556,7 +556,7 @@ describe("RuntimeConnection", () => {
       supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
     });
     const register = frames[1];
-    expect(register).toMatchObject({ computerId, displayName: "workstation", platform: "linux" });
+    expect(register).toMatchObject({ installationId: computerId, displayName: "workstation", platform: "linux" });
     expect(register).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
     expect(register).not.toEqual(
       expect.objectContaining({ providerReadiness: expect.arrayContaining([{ provider: "claude-code" }]) }),
@@ -982,9 +982,8 @@ describe("RuntimeConnection", () => {
             type: "auth:result",
             requestId: frame.requestId,
             ok: true,
-            workspaceComputerId: randomUUID(),
-            workspaceId: randomUUID(),
             computerId: randomUUID(),
+            installationId: randomUUID(),
           }),
         );
         socket.send(JSON.stringify({ ...welcome(), protocolVersion: 3 }));
@@ -1280,9 +1279,8 @@ function completeAuth(
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     }),
   );
   socket.send(
@@ -1379,9 +1377,8 @@ async function registerControlled(
     type: "auth:result",
     requestId: auth?.requestId,
     ok: true,
-    workspaceComputerId: randomUUID(),
-    workspaceId: randomUUID(),
     computerId: randomUUID(),
+    installationId: randomUUID(),
   });
   socket.receive(serverWelcome);
   await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());

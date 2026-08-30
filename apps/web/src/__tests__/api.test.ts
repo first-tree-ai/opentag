@@ -234,7 +234,7 @@ describe("BrowserApi", () => {
       connectedAt: "2030-01-01T00:00:00.000Z",
       lastSeenAt: "2030-01-01T00:00:01.000Z",
       observedAt: "2030-01-01T00:00:01.000Z",
-      enrolledAt: "2030-01-01T00:00:00.000Z",
+      createdAt: "2030-01-01T00:00:00.000Z",
       agentIds: [],
     };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

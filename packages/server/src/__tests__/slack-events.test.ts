@@ -13,7 +13,6 @@ function installation() {
   return {
     installationId: "8f2c1b0a-4d3e-4c5b-9a76-1e2f3a4b5c6d",
     generation: 5,
-    workspaceId: "2c4e6a80-1111-2222-3333-444455556666",
     appId: "A1",
     teamId: "T1",
     botUserId: "U_BOT",

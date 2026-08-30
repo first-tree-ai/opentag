@@ -16,7 +16,7 @@ import {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "../../db/migrate.js";
-import { accountCliLoginCodes, authSessions, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
+import { accountCliLoginCodes, authSessions, users } from "../../db/schema/index.js";
 import {
   AuthService,
   AuthServiceError,
@@ -86,8 +86,6 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
     {
       displayName: "Admin",
       email: "admin@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
     },
     now,
   );
@@ -508,15 +506,14 @@ describe("database migrations", () => {
           },
         ]);
         const installations = await sql<
-          { encrypted_credential: string; external_app_id: string; external_team_id: string; workspace_id: string }[]
+          { encrypted_credential: string; external_app_id: string; external_team_id: string }[]
         >`
-          select workspace_id::text, external_app_id, external_team_id, encrypted_credential
+          select external_app_id, external_team_id, encrypted_credential
           from slack_installations
           where status <> 'disabled'
         `;
         expect(installations).toEqual([
           {
-            workspace_id: workspaceId,
             external_app_id: "A_CUSTOMER",
             external_team_id: "T_CUSTOMER",
             encrypted_credential: "encrypted-customer",
@@ -540,11 +537,10 @@ describe("database migrations", () => {
         select count(*)::int as table_count
         from information_schema.tables
         where table_schema = 'public' and table_name in (
-          'users', 'workspaces', 'workspace_admin_grants', 'account_cli_login_codes', 'computers',
-          'workspace_computers', 'agents', 'auth_identities', 'admin_invitations'
+          'users', 'account_cli_login_codes', 'computers', 'agents', 'auth_identities'
         )
       `;
-      expect(row?.table_count).toBe(9);
+      expect(row?.table_count).toBe(5);
     } finally {
       await sql.end();
     }
@@ -983,7 +979,7 @@ describe("database migrations", () => {
             ) as deleted_at_exists,
             exists(
               select 1 from information_schema.columns
-              where table_schema = 'public' and table_name = 'workspaces' and column_name = 'setup_completed_at'
+              where table_schema = 'public' and table_name = 'users' and column_name = 'setup_completed_at'
             ) as setup_completed_at_exists,
             (
               select column_default from information_schema.columns
@@ -996,12 +992,11 @@ describe("database migrations", () => {
             array(select status::text from agents order by name) as statuses,
             array(select receive_mode::text from agents order by name) as receive_modes,
             (
-              select count(*)::int from workspace_computers
-              where workspace_id = ${teamId}
+              select count(*)::int from computers
             ) as workspace_enrollments,
-            (select count(*)::int from workspace_computer_credentials) as machine_credentials,
+            (select count(*)::int from computer_credentials) as machine_credentials,
             not exists(
-              select 1 from workspace_computers
+              select 1 from computers
               where current_instance_id is not null or connected_at is not null
             ) as enrollment_presence_offline,
             not exists(
@@ -1024,36 +1019,23 @@ describe("database migrations", () => {
           enrollment_presence_offline: true,
           creator_owner_constraint_removed: true,
         });
-        const enrollmentStates = await sql<
+        const computerStates = await sql<
           {
-            computer_id: string;
+            current_installation_id: string;
             current_instance_id: string | null;
-            revoked_at: Date | null;
-            revoked_by_user_id: string | null;
+            owner_account_id: string;
           }[]
         >`
-          select computer_id, current_instance_id, revoked_at, revoked_by_user_id
-          from workspace_computers
-          where workspace_id = ${teamId}
+          select current_installation_id, current_instance_id, owner_account_id::text
+          from computers
         `;
-        const statesByComputer = new Map(enrollmentStates.map((row) => [row.computer_id, row]));
-        for (const computerId of [activeAgentComputerId, activeSessionComputerId]) {
-          expect(statesByComputer.get(computerId)).toMatchObject({
-            current_instance_id: null,
-            revoked_at: null,
-            revoked_by_user_id: null,
-          });
-        }
-        for (const computerId of [deletedAgentComputerId, endedSessionComputerId]) {
-          expect(statesByComputer.get(computerId)).toMatchObject({
-            current_instance_id: null,
-            revoked_at: expect.any(Date),
-            revoked_by_user_id: userId,
-          });
+        expect(computerStates).toHaveLength(4);
+        for (const row of computerStates) {
+          expect(row).toMatchObject({ current_instance_id: null, owner_account_id: userId });
         }
         const preservedComputerIds = await sql<{ id: string }[]>`
           select id from computers
-          where id in (
+          where current_installation_id in (
             ${activeAgentComputerId}, ${deletedAgentComputerId},
             ${activeSessionComputerId}, ${endedSessionComputerId}
           )
@@ -1065,37 +1047,33 @@ describe("database migrations", () => {
         expect(preservedAgentIds).toHaveLength(2);
         const [expansion] = await sql<
           {
-            account_computers: number;
+            computers: number;
             computer_credentials: number;
             agents_filled: number;
             placements_filled: number;
           }[]
         >`
           select
-            (select count(*)::int from account_computers) as account_computers,
+            (select count(*)::int from computers) as computers,
             (select count(*)::int from computer_credentials) as computer_credentials,
             (select count(*)::int from agents where computer_id is not null) as agents_filled,
             (select count(*)::int from session_placements where computer_id is not null) as placements_filled
         `;
         expect(expansion).toEqual({
-          account_computers: 4,
+          computers: 4,
           computer_credentials: 0,
           agents_filled: 2,
           placements_filled: 2,
         });
-        const repairedWorkspaces = await sql<{ completed: boolean; name: string }[]>`
-          select name, setup_completed_at is not null as completed
-          from workspaces
-          order by name
+        const repairedAccounts = await sql<{ completed: boolean; email: string }[]>`
+          select email, setup_completed_at is not null as completed
+          from users
+          order by email
         `;
-        expect(repairedWorkspaces).toEqual([
-          { completed: true, name: "migration" },
-          { completed: false, name: "migration-control" },
+        expect(repairedAccounts).toEqual([
+          { completed: true, email: "migration@example.com" },
+          { completed: false, email: "suspended@example.com" },
         ]);
-        const migratedAdmins = await sql<{ user_id: string }[]>`
-          select user_id::text from workspace_admin_grants where workspace_id = ${teamId} order by user_id
-        `;
-        expect(migratedAdmins).toEqual([{ user_id: userId }]);
         const [agentStatusEnum] = await sql<{ values: string[] }[]>`
           select array_agg(enumlabel order by enumsortorder)::text[] as values
           from pg_enum join pg_type on pg_type.oid = pg_enum.enumtypid
@@ -1103,7 +1081,7 @@ describe("database migrations", () => {
         `;
         expect(agentStatusEnum?.values).toEqual(["active", "suspended", "deleted"]);
         const [agentNameIndex] = await sql<{ indexdef: string }[]>`
-          select indexdef from pg_indexes where indexname = 'agents_workspace_name_active_unique'
+          select indexdef from pg_indexes where indexname = 'agents_account_name_active_unique'
         `;
         expect(agentNameIndex?.indexdef).toContain("status <> 'deleted'::agent_status");
         const [creationIntentIndex] = await sql<{ indexdef: string }[]>`
@@ -1213,8 +1191,6 @@ describe("authentication persistence", () => {
     const input = {
       displayName: "Admin",
       email: "admin@example.com",
-      workspaceDisplayName: "Example",
-      workspaceName: "example",
     };
 
     try {
@@ -1250,7 +1226,6 @@ describe("authentication persistence", () => {
       });
       const [storedUser] = await client.database.select().from(users).where(eq(users.id, result.userId));
       expect(storedUser).toMatchObject({ displayName: "Admin", email: "admin@example.com" });
-      expect(await client.database.select().from(workspaces)).toEqual([]);
     } finally {
       await client.sql.end();
     }
@@ -1477,7 +1452,7 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("resolves Admin grant revocation live without invalidating the Account session", async () => {
+  it("keeps the Account session valid until the Account itself is suspended", async () => {
     const fixture = await createAuthFixture();
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
@@ -1486,14 +1461,7 @@ describe("authentication persistence", () => {
       });
       expect((await fixture.auth.getAuthenticatedUser(tokens.accessToken)).me).not.toHaveProperty("workspaces");
 
-      await fixture.database
-        .update(workspaceAdminGrants)
-        .set({
-          revokedAt: new Date("2026-08-18T00:01:00.000Z"),
-          revokedByUserId: fixture.bootstrap.userId,
-        })
-        .where(eq(workspaceAdminGrants.userId, fixture.bootstrap.userId));
-      // Losing every Admin grant does not change Account identity or invalidate the session.
+      // Account identity alone carries the session; there is no grant layer left to revoke.
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
         me: { user: { id: fixture.bootstrap.userId }, setupCompletedAt: null },
       });

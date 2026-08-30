@@ -11,8 +11,8 @@ import {
 describe("computer contracts", () => {
   it("returns Computer-scoped machine authority without a management Workspace alias", () => {
     const response = {
-      workspaceComputerId: crypto.randomUUID(),
       computerId: crypto.randomUUID(),
+      installationId: crypto.randomUUID(),
       machineToken: "opaque-secret",
     };
     expect(ComputerConnectCodeExchangeResponseSchema.parse(response)).toEqual(response);
@@ -39,7 +39,7 @@ describe("computer contracts", () => {
   it("keeps exchange as an installation report rather than a Computer identity hint", () => {
     const request = {
       code: "otcc_abcdefghijklmnopqrstuvwx",
-      computerId: crypto.randomUUID(),
+      installationId: crypto.randomUUID(),
       displayName: "workstation",
       platform: "linux" as const,
       arch: "x64",

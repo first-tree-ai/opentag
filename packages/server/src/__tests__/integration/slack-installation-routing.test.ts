@@ -2,18 +2,7 @@ import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import {
-  accountComputers,
-  agents,
-  computers,
-  imBindings,
-  sessions,
-  slackInstallations,
-  users,
-  workspaceAdminGrants,
-  workspaceComputers,
-  workspaces,
-} from "../../db/schema/index.js";
+import { agents, computers, imBindings, sessions, slackInstallations, users } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
@@ -38,45 +27,31 @@ async function fixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
-  const [computer] = await client.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await client.database
-    .insert(workspaceComputers)
+  const [computer] = await client.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await client.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const agentsService = new AgentService(client.database);
   const first = await agentsService.createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const second = await agentsService.createForAccount(bootstrap.userId, {
     name: "reviewer",
     displayName: "Reviewer",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingsService = new ImBindingService(client.database, cipher, { now: () => now });
@@ -112,8 +87,8 @@ async function activate(
   );
 }
 
-describe("Slack workspace installation routing", () => {
-  it("allows different Agents in one legacy Workspace to own different current Slack installations", async () => {
+describe("Slack installation routing", () => {
+  it("allows different Agents in one Account to own different current Slack installations", async () => {
     const value = await fixture();
     try {
       const first = await activate(value.imBindingsService, value.first.id, "create");
@@ -132,14 +107,12 @@ describe("Slack workspace installation routing", () => {
             externalAppId: "A_OPENTAG",
             externalTeamId: "T_TEAM",
             status: "active",
-            workspaceId: value.bootstrap.workspaceId,
           }),
           expect.objectContaining({
             agentId: value.second.id,
             externalAppId: "A_SECOND",
             externalTeamId: "T_SECOND",
             status: "active",
-            workspaceId: value.bootstrap.workspaceId,
           }),
         ]),
       );
@@ -179,7 +152,6 @@ describe("Slack workspace installation routing", () => {
         expect.objectContaining({
           id: installationBefore.id,
           agentId: value.first.id,
-          workspaceId: value.bootstrap.workspaceId,
           credentialGeneration: 1,
           status: "active",
         }),
@@ -233,45 +205,24 @@ describe("Slack workspace installation routing", () => {
         .insert(users)
         .values({ email: "other@example.com", displayName: "Other Admin" })
         .returning();
-      const [otherWorkspace] = await value.database
-        .insert(workspaces)
-        .values({ name: "other", displayName: "Other" })
-        .returning();
-      if (!otherUser || !otherWorkspace) throw new Error("Cross-workspace fixture was not created");
-      await value.database.insert(workspaceAdminGrants).values({
-        workspaceId: otherWorkspace.id,
-        userId: otherUser.id,
-        grantedByUserId: otherUser.id,
-      });
-      const [otherComputer] = await value.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-      if (!otherComputer) throw new Error("Other computer fixture was not created");
-      const [otherEnrollment] = await value.database
-        .insert(workspaceComputers)
+      if (!otherUser) throw new Error("Other Account fixture was not created");
+      const [otherComputer] = await value.database
+        .insert(computers)
         .values({
-          workspaceId: otherWorkspace.id,
-          computerId: otherComputer.id,
+          ownerAccountId: otherUser.id,
+          currentInstallationId: crypto.randomUUID(),
           displayName: "other-workstation",
           platform: "linux",
           arch: "x64",
           clientVersion: "0.0.2",
-          enrolledByUserId: otherUser.id,
         })
         .returning();
-      if (!otherEnrollment) throw new Error("Other Workspace Computer fixture was not created");
-      await value.database.insert(accountComputers).values({
-        id: otherEnrollment.id,
-        ownerAccountId: otherUser.id,
-        currentInstallationId: otherComputer.id,
-        displayName: "other-workstation",
-        platform: "linux",
-        arch: "x64",
-        clientVersion: "0.0.2",
-      });
+      if (!otherComputer) throw new Error("Other Computer fixture was not created");
       const outsider = await new AgentService(value.database).createForAccount(otherUser.id, {
         name: "outsider",
         displayName: "Outsider",
         runtimeProvider: "codex",
-        computerId: otherEnrollment.id,
+        computerId: otherComputer.id,
       });
       await expect(
         activate(value.imBindingsService, outsider.id, "create", { token: "xoxb-outsider" }),
@@ -510,7 +461,6 @@ describe("Slack workspace installation routing", () => {
       const [stranded] = await value.database
         .insert(slackInstallations)
         .values({
-          workspaceId: value.bootstrap.workspaceId,
           agentId: value.first.id,
           status: "active",
           externalAppId: "A_STRANDED",

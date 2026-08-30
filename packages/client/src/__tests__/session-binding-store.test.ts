@@ -242,7 +242,7 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => "b".repeat(64),
     });
     const mismatchedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: mismatchedStore });
-    const mismatched = new SessionReconciler({ computerId: fixture.computerId, preparation: mismatchedWorkspace });
+    const mismatched = new SessionReconciler({ installationId: fixture.computerId, preparation: mismatchedWorkspace });
     await expect(mismatched.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
       /identity|binding/i,
     );
@@ -252,7 +252,10 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => undefined,
     });
     const unavailableWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: unavailableStore });
-    const unavailable = new SessionReconciler({ computerId: fixture.computerId, preparation: unavailableWorkspace });
+    const unavailable = new SessionReconciler({
+      installationId: fixture.computerId,
+      preparation: unavailableWorkspace,
+    });
     await expect(unavailable.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
       "artifact identity is unavailable",
     );
@@ -327,7 +330,7 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => fixture.homeIdentity,
     });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: reopenedStore });
-    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    const reopened = new SessionReconciler({ installationId: fixture.computerId, preparation: reopenedWorkspace });
     await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
       status: "recovery_required",
       turn: { deliveryId: "delivery-1", turnId: "turn-1" },
@@ -345,7 +348,7 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => fixture.homeIdentity,
     });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: reopenedStore });
-    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    const reopened = new SessionReconciler({ installationId: fixture.computerId, preparation: reopenedWorkspace });
     await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
       status: "ready",
     });
@@ -438,7 +441,7 @@ describe("SessionBindingStore", () => {
       payload: { threadId: "legacy-thread" },
     });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: fixture.store });
-    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    const reopened = new SessionReconciler({ installationId: fixture.computerId, preparation: reopenedWorkspace });
     await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
       status: "ready",
     });
@@ -606,12 +609,12 @@ async function unpreparedBindingFixture() {
   const homeIdentity = "a".repeat(64);
   const store = new SessionBindingStore({ home, providerArtifactIdentity: () => homeIdentity });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-  const reconciler = new SessionReconciler({ computerId, preparation: workspace });
+  const reconciler = new SessionReconciler({ installationId: computerId, preparation: workspace });
   const runtime = snapshot();
   const reconcile: SessionReconcileRequest = {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

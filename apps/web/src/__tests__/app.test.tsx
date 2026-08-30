@@ -302,7 +302,7 @@ function installApi(
         connectedAt: computer.connectedAt ?? null,
         lastSeenAt: computer.lastSeenAt ?? null,
         observedAt: computer.observedAt ?? computer.lastSeenAt ?? computer.connectedAt ?? "2026-08-20T00:00:00.000Z",
-        enrolledAt: computer.enrolledAt ?? "2026-08-20T00:00:00.000Z",
+        createdAt: computer.enrolledAt ?? "2026-08-20T00:00:00.000Z",
         agentIds: computer.agentIds ?? [agentId],
       });
       return json({

@@ -51,11 +51,6 @@ import {
   runtimeImResourcePath,
   runtimeWebSocketUrl,
   taskByIdPath,
-  WORKSPACE_AGENTS_TEMPLATE,
-  workspaceAgentsPath,
-  workspaceComputerConnectCodesPath,
-  workspaceComputersPath,
-  workspaceSetupCompletePath,
 } from "../http-paths.js";
 import { OPENTAG_PLATFORM_INSTRUCTIONS, RUNTIME_INSTRUCTIONS_MAX_BYTES } from "../runtime-config.js";
 
@@ -354,9 +349,7 @@ describe("Agent contracts", () => {
   });
 
   it("shares route templates and encoded path builders", () => {
-    expect(WORKSPACE_AGENTS_TEMPLATE).toBe("/api/v1/workspaces/:workspaceId/agents");
     expect(AGENT_BY_ID_TEMPLATE).toBe("/api/v1/agents/:agentId");
-    expect(workspaceAgentsPath("workspace/value")).toBe("/api/v1/workspaces/workspace%2Fvalue/agents");
     expect(agentByIdPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue");
     expect(AGENT_SUSPEND_TEMPLATE).toBe("/api/v1/agents/:agentId/suspend");
     expect(agentSuspendPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/suspend");
@@ -376,7 +369,7 @@ describe("Agent contracts", () => {
     expect(BrowserAgentNameSchema.parse("browser-barrel")).toBe("browser-barrel");
   });
 
-  it("builds every account, Agent, IM, runtime, and workspace path", () => {
+  it("builds every Account, Agent, IM, and runtime path", () => {
     expect(HTTP_PATHS.accountAgents).toBe(ACCOUNT_AGENTS_PATH);
     expect(HTTP_PATHS.accountComputers).toBe(ACCOUNT_COMPUTERS_PATH);
     expect(HTTP_PATHS.accountComputerConnectCodes).toBe(ACCOUNT_COMPUTER_CONNECT_CODES_PATH);
@@ -401,11 +394,6 @@ describe("Agent contracts", () => {
     expect(imBindingDisablePath("binding/value")).toBe("/api/v1/im-bindings/binding%2Fvalue/disable");
     expect(imBindingDiagnosticsPath("binding/value")).toBe("/api/v1/im-bindings/binding%2Fvalue/diagnostics");
     expect(taskByIdPath("session/value")).toBe("/api/v1/sessions/session%2Fvalue");
-    expect(workspaceSetupCompletePath("workspace/value")).toBe("/api/v1/workspaces/workspace%2Fvalue/setup/complete");
-    expect(workspaceComputersPath("workspace/value")).toBe("/api/v1/workspaces/workspace%2Fvalue/computers");
-    expect(workspaceComputerConnectCodesPath("workspace/value")).toBe(
-      "/api/v1/workspaces/workspace%2Fvalue/computer-connect-codes",
-    );
     expect(
       runtimeImResourcePath("message/value", 2, {
         sessionId: "session",

@@ -26,7 +26,6 @@ import type { ComputerService } from "../services/computers/index.js";
 const apps: ReturnType<typeof createApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
-const workspaceId = randomUUID();
 const me = {
   user: { id: randomUUID(), email: "admin@example.com", displayName: "Admin" },
   setupCompletedAt: null,
@@ -34,9 +33,8 @@ const me = {
 
 const machineContext = {
   credentialId: randomUUID(),
-  workspaceComputerId: randomUUID(),
-  workspaceId,
   computerId: randomUUID(),
+  installationId: randomUUID(),
 };
 
 function machineAuthService() {
@@ -166,7 +164,7 @@ describe("Computer runtime WebSocket", () => {
     const register = {
       type: "computer:register",
       requestId: randomUUID(),
-      computerId: machineContext.computerId,
+      installationId: machineContext.installationId,
       instanceId: randomUUID(),
       displayName: "workstation",
       platform: "linux",
@@ -180,7 +178,7 @@ describe("Computer runtime WebSocket", () => {
       ...register,
       capabilities: { imCredentialGrant: 0 },
     });
-    expect(registry.providerReadiness(machineContext.workspaceComputerId)).toMatchObject([
+    expect(registry.providerReadiness(machineContext.computerId)).toMatchObject([
       {
         observation: { provider: "codex", status: "install" },
       },
@@ -190,7 +188,7 @@ describe("Computer runtime WebSocket", () => {
     const heartbeat = {
       type: "heartbeat",
       requestId: randomUUID(),
-      computerId: register.computerId,
+      installationId: register.installationId,
       instanceId: register.instanceId,
       providerReadiness: [{ provider: "codex", status: "sign-in" }],
     };
@@ -200,7 +198,7 @@ describe("Computer runtime WebSocket", () => {
       requestId: heartbeat.requestId,
       ok: true,
     });
-    expect(registry.providerReadiness(machineContext.workspaceComputerId)).toMatchObject([
+    expect(registry.providerReadiness(machineContext.computerId)).toMatchObject([
       {
         observation: { provider: "codex", status: "sign-in" },
       },
@@ -208,7 +206,7 @@ describe("Computer runtime WebSocket", () => {
     socket.close();
     await new Promise((resolve) => socket.once("close", resolve));
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.workspaceComputerId, register.instanceId),
+      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, register.instanceId),
     );
   });
 
@@ -259,7 +257,7 @@ describe("Computer runtime WebSocket", () => {
       type: "computer:register",
       requestId: randomUUID(),
       protocolVersion: RUNTIME_PROTOCOL_V2,
-      computerId: machineContext.computerId,
+      installationId: machineContext.installationId,
       instanceId: randomUUID(),
       displayName: "workstation",
       platform: "linux",
@@ -289,7 +287,7 @@ describe("Computer runtime WebSocket", () => {
         requestId: heartbeatRequestId,
         protocolVersion: RUNTIME_PROTOCOL_V2,
         connectionId,
-        computerId: register.computerId,
+        installationId: register.installationId,
         instanceId: register.instanceId,
         capabilities: { imCredentialGrant: 1 },
       }),
@@ -327,7 +325,7 @@ describe("Computer runtime WebSocket", () => {
         requestId: randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V2,
         connectionId: randomUUID(),
-        computerId: register.computerId,
+        installationId: register.installationId,
         instanceId: register.instanceId,
         capabilities: { imCredentialGrant: 1 },
       }),
@@ -352,7 +350,7 @@ describe("Computer runtime WebSocket", () => {
         type: "computer:register",
         requestId: randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V2,
-        computerId: machineContext.computerId,
+        installationId: machineContext.installationId,
         instanceId: randomUUID(),
         displayName: "workstation",
         platform: "linux",
@@ -411,7 +409,7 @@ describe("Computer runtime WebSocket", () => {
     await authenticate(socket, frames);
     socket.send(
       JSON.stringify({
-        ...registerFrame(machineContext.computerId, randomUUID()),
+        ...registerFrame(machineContext.installationId, randomUUID()),
         providerReadiness: [{ provider: "pi", status: "ready" }],
       }),
     );
@@ -438,7 +436,7 @@ describe("Computer runtime WebSocket", () => {
     const frames = frameQueue(socket);
     await authenticate(socket, frames);
     const register = {
-      ...registerFrame(machineContext.computerId, randomUUID()),
+      ...registerFrame(machineContext.installationId, randomUUID()),
       providerReadiness: [{ provider: "codex", status: "install" }],
     };
     socket.send(JSON.stringify(register));
@@ -447,13 +445,13 @@ describe("Computer runtime WebSocket", () => {
     const heartbeat = {
       type: "heartbeat",
       requestId: randomUUID(),
-      computerId: register.computerId,
+      installationId: register.installationId,
       instanceId: register.instanceId,
       providerReadiness: [{ provider: "codex", status: "ready" }],
     };
     socket.send(JSON.stringify(heartbeat));
     await vi.waitFor(() => expect(computers.heartbeat).toHaveBeenCalled());
-    expect(registry.providerReadiness(machineContext.workspaceComputerId)).toMatchObject([
+    expect(registry.providerReadiness(machineContext.computerId)).toMatchObject([
       {
         observation: { provider: "codex", status: "install" },
       },
@@ -461,7 +459,7 @@ describe("Computer runtime WebSocket", () => {
 
     resolveHeartbeat(false);
     expect(await frames.next()).toMatchObject({ type: "error", code: "COMPUTER_NOT_REGISTERED" });
-    expect(registry.providerReadiness(machineContext.workspaceComputerId)[0]?.observation.status).not.toBe("ready");
+    expect(registry.providerReadiness(machineContext.computerId)[0]?.observation.status).not.toBe("ready");
   });
 
   it("rejects registration before authentication", async () => {
@@ -502,7 +500,7 @@ describe("Computer runtime WebSocket", () => {
     await expect(closeCode(socket)).resolves.toBe(4408);
   });
 
-  it("rejects a heartbeat after enrollment authority is revoked", async () => {
+  it("rejects a heartbeat after the machine credential is revoked", async () => {
     const computers = computerService();
     computers.heartbeat.mockRejectedValueOnce(
       new AuthServiceError("AUTH_INVALID_TOKEN", "deterministic", "machine credential revoked", 401),
@@ -515,13 +513,13 @@ describe("Computer runtime WebSocket", () => {
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     await authenticate(socket);
-    const computerId = machineContext.computerId;
+    const installationId = machineContext.installationId;
     const instanceId = randomUUID();
     socket.send(
       JSON.stringify({
         type: "computer:register",
         requestId: randomUUID(),
-        computerId,
+        installationId,
         instanceId,
         displayName: "host",
         platform: "linux",
@@ -530,7 +528,7 @@ describe("Computer runtime WebSocket", () => {
       }),
     );
     await nextFrame(socket);
-    socket.send(JSON.stringify({ type: "heartbeat", requestId: randomUUID(), computerId, instanceId }));
+    socket.send(JSON.stringify({ type: "heartbeat", requestId: randomUUID(), installationId, instanceId }));
     expect(await nextFrame(socket)).toMatchObject({ type: "error", code: "AUTH_INVALID_TOKEN" });
     await expect(closeCode(socket)).resolves.toBe(4401);
   });
@@ -538,7 +536,7 @@ describe("Computer runtime WebSocket", () => {
   it("serializes concurrent registration persistence and publishes one final winner", async () => {
     const registry = new ConnectionRegistry();
     const computers = computerService();
-    const computerId = machineContext.computerId;
+    const installationId = machineContext.installationId;
     const firstInstanceId = randomUUID();
     const secondInstanceId = randomUUID();
     let persistedInstanceId: string | undefined;
@@ -562,8 +560,8 @@ describe("Computer runtime WebSocket", () => {
     const firstFrames = frameQueue(first);
     const secondFrames = frameQueue(second);
     await Promise.all([authenticate(first, firstFrames), authenticate(second, secondFrames)]);
-    const firstRegister = registerFrame(computerId, firstInstanceId);
-    const secondRegister = registerFrame(computerId, secondInstanceId);
+    const firstRegister = registerFrame(installationId, firstInstanceId);
+    const secondRegister = registerFrame(installationId, secondInstanceId);
     first.send(JSON.stringify(firstRegister));
     await vi.waitFor(() => expect(computers.register).toHaveBeenCalledTimes(1));
     second.send(JSON.stringify(secondRegister));
@@ -576,7 +574,7 @@ describe("Computer runtime WebSocket", () => {
     expect(await secondFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
     await expect(firstClosed).resolves.toBe(4001);
     expect(persistedInstanceId).toBe(secondInstanceId);
-    expect(registry.currentInstanceId(machineContext.workspaceComputerId)).toBe(secondInstanceId);
+    expect(registry.currentInstanceId(machineContext.computerId)).toBe(secondInstanceId);
     second.close();
   });
 
@@ -637,7 +635,7 @@ describe("Computer runtime WebSocket", () => {
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const frames = frameQueue(socket);
     await authenticate(socket, frames);
-    const frame = registerFrame(machineContext.computerId, randomUUID());
+    const frame = registerFrame(machineContext.installationId, randomUUID());
     const closed = closeCode(socket);
     socket.send(JSON.stringify(frame));
     socket.send(JSON.stringify({ ...frame, requestId: randomUUID() }));
@@ -646,16 +644,16 @@ describe("Computer runtime WebSocket", () => {
     await expect(closed).resolves.toBe(4400);
     releaseRegister?.();
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.workspaceComputerId, frame.instanceId),
+      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, frame.instanceId),
     );
     expect(computers.register).toHaveBeenCalledTimes(1);
-    expect(registry.currentInstanceId(machineContext.workspaceComputerId)).toBeUndefined();
+    expect(registry.currentInstanceId(machineContext.computerId)).toBeUndefined();
   });
 
   it("finishes a closed pending replacement as offline and fences the old socket", async () => {
     const registry = new ConnectionRegistry();
     const computers = computerService();
-    const computerId = machineContext.computerId;
+    const installationId = machineContext.installationId;
     const oldInstanceId = randomUUID();
     const replacementInstanceId = randomUUID();
     let persistedInstanceId: string | undefined;
@@ -682,13 +680,13 @@ describe("Computer runtime WebSocket", () => {
     const oldSocket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const oldFrames = frameQueue(oldSocket);
     await authenticate(oldSocket, oldFrames);
-    oldSocket.send(JSON.stringify(registerFrame(computerId, oldInstanceId)));
+    oldSocket.send(JSON.stringify(registerFrame(installationId, oldInstanceId)));
     expect(await oldFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
 
     const replacement = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const replacementFrames = frameQueue(replacement);
     await authenticate(replacement, replacementFrames);
-    replacement.send(JSON.stringify(registerFrame(computerId, replacementInstanceId)));
+    replacement.send(JSON.stringify(registerFrame(installationId, replacementInstanceId)));
     await vi.waitFor(() => expect(computers.register).toHaveBeenCalledTimes(2));
     const oldClosed = closeCode(oldSocket);
     const replacementClosed = closeCode(replacement);
@@ -699,10 +697,10 @@ describe("Computer runtime WebSocket", () => {
 
     await expect(oldClosed).resolves.toBe(4001);
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.workspaceComputerId, replacementInstanceId),
+      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, replacementInstanceId),
     );
     expect(persistedInstanceId).toBeUndefined();
-    expect(registry.currentInstanceId(machineContext.workspaceComputerId)).toBeUndefined();
+    expect(registry.currentInstanceId(machineContext.computerId)).toBeUndefined();
   });
 
   it("rejects unsupported auth versions before authenticating", async () => {
@@ -787,7 +785,7 @@ describe("Computer runtime WebSocket", () => {
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const frames = rawFrameQueue(socket);
     await authenticateRaw(socket, frames);
-    const register = registerFrame(machineContext.computerId, randomUUID());
+    const register = registerFrame(machineContext.installationId, randomUUID());
     socket.send(JSON.stringify(register));
     expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
 
@@ -799,7 +797,7 @@ describe("Computer runtime WebSocket", () => {
       JSON.stringify({
         type: "heartbeat",
         requestId: heartbeatRequestId,
-        computerId: register.computerId,
+        installationId: register.installationId,
         instanceId: register.instanceId,
       }),
     );
@@ -1341,11 +1339,11 @@ function rawFrameQueue(socket: WebSocket): { next(): Promise<Record<string, unkn
   };
 }
 
-function registerFrame(computerId: string, instanceId: string) {
+function registerFrame(installationId: string, instanceId: string) {
   return {
     type: "computer:register" as const,
     requestId: randomUUID(),
-    computerId,
+    installationId,
     instanceId,
     displayName: "host",
     platform: "linux" as const,

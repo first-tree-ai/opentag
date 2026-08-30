@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { WORKSPACE_COMPUTERS_TEMPLATE, WORKSPACE_SETUP_COMPLETE_TEMPLATE } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 
 const WORKSPACE_CREATION_PATH = "/api/v1/workspaces";
+const WORKSPACE_COMPUTERS_TEMPLATE = "/api/v1/workspaces/:workspaceId/computers";
+const WORKSPACE_SETUP_COMPLETE_TEMPLATE = "/api/v1/workspaces/:workspaceId/setup/complete";
 const INVITATION_CREATION_TEMPLATE = "/api/v1/workspaces/:workspaceId/admin-invitations";
 const INVITATION_PREVIEW_TEMPLATE = "/api/v1/admin-invitations/:token/preview";
 const INVITATION_ACCEPT_TEMPLATE = "/api/v1/admin-invitations/:token/accept";
@@ -27,7 +28,7 @@ function fixture() {
         tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       }),
     } as never,
-    workspaceSetupService: { completeForAccount: vi.fn() } as never,
+    accountSetupService: { completeForAccount: vi.fn() } as never,
   });
   apps.push(app);
   return { app, workspaceId };

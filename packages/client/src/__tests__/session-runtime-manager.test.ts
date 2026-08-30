@@ -64,7 +64,11 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const request = {
       ...reconcile(computerId, snapshot(1)),
       sessionKind: "internal" as const,
@@ -114,7 +118,11 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const request = {
       ...reconcile(computerId, snapshot(1)),
       sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
@@ -137,7 +145,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const first = reconcile(computerId, snapshot(1));
 
     expect(() => manager.sessionKind(first.sessionId)).toThrow("has not been prepared");
@@ -186,7 +198,7 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const restarted = new SessionReconciler({
-      computerId,
+      installationId: computerId,
       preparation: restartedManager,
       localPolicy: restartedManager,
     });
@@ -258,7 +270,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).resolves.toMatchObject({ status: "ready" });
     await expect(manager.ensureRuntime("session-1")).rejects.toThrow("durable binding");
     expect(factory.runtimes[0]?.closed).toBe(true);
@@ -277,7 +293,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
 
     await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).resolves.toMatchObject({ status: "ready" });
     await expect(manager.ensureRuntime("session-1")).rejects.toThrow("creation and cleanup both failed");
@@ -301,7 +321,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     await manager.ensureRuntime("session-1");
 
@@ -342,7 +366,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const request = reconcile(computerId, snapshot(1));
     await reconciler.reconcile(request);
     const starting = manager.ensureRuntime("session-1");
@@ -394,7 +422,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     const starting = manager.ensureRuntime("session-1");
     await createStart;
@@ -477,7 +509,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     const starting = manager.ensureRuntime("session-1");
     await createStart;
@@ -522,7 +558,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     const starting = manager.ensureRuntime("session-1");
     await persistStart;
@@ -564,7 +604,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     await manager.ensureRuntime("session-1");
 
@@ -590,7 +634,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     await manager.ensureRuntime("session-1");
 
@@ -863,7 +911,7 @@ function reconcile(computerId: string, runtime: EffectiveRuntimeSnapshot): Sessi
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

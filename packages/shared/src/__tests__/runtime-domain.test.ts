@@ -39,7 +39,7 @@ describe("runtime domain contract", () => {
     const reconcile = {
       type: "session:reconcile",
       requestId: randomUUID(),
-      computerId: randomUUID(),
+      installationId: randomUUID(),
       sessionId: "session-1",
       agentId: "agent-1",
       placementGeneration: 1,
@@ -111,7 +111,7 @@ describe("runtime domain contract", () => {
       SessionReconcileRequestSchema.parse({
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: randomUUID(),
+        installationId: randomUUID(),
         sessionId: "session-1",
         agentId: "agent-1",
         placementGeneration: 1,
@@ -122,7 +122,7 @@ describe("runtime domain contract", () => {
       SessionReconcileRequestSchema.parse({
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: randomUUID(),
+        installationId: randomUUID(),
         sessionId: "session-1",
         agentId: "agent-1",
         placementGeneration: 1,

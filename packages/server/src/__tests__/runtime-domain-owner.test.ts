@@ -489,8 +489,7 @@ describe("RuntimeDomainOwner", () => {
     await fixture.registry.register(
       {
         computerId: fixture.computerId,
-        workspaceComputerId: fixture.context.workspaceComputerId,
-        workspaceId: fixture.context.workspaceId,
+        installationId: fixture.context.installationId,
         instanceId: nextInstanceId,
         lastHeartbeatAt: 2,
         socket: nextSocket,
@@ -725,13 +724,11 @@ describe("RuntimeDomainOwner", () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
-    const workspaceId = randomUUID();
     const frames: unknown[] = [];
     await registry.register(
       {
         computerId,
-        workspaceComputerId: computerId,
-        workspaceId,
+        installationId: computerId,
         instanceId,
         lastHeartbeatAt: 1,
         socket: socketFixture(frames),
@@ -741,8 +738,7 @@ describe("RuntimeDomainOwner", () => {
     const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore());
     const context = {
       computerId,
-      workspaceComputerId: computerId,
-      workspaceId,
+      installationId: computerId,
       instanceId,
       signal: new AbortController().signal,
     };
@@ -824,13 +820,11 @@ async function ownerFixture(requestTimeoutMs = 1_000, options: Partial<RuntimeDo
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
   const instanceId = randomUUID();
-  const workspaceId = randomUUID();
   const frames: unknown[] = [];
   await registry.register(
     {
       computerId,
-      workspaceComputerId: computerId,
-      workspaceId,
+      installationId: computerId,
       instanceId,
       lastHeartbeatAt: 1,
       negotiatedCapabilities: { [RUNTIME_CAPABILITY.imCredentialGrant]: 2 },
@@ -841,8 +835,7 @@ async function ownerFixture(requestTimeoutMs = 1_000, options: Partial<RuntimeDo
   const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), { requestTimeoutMs, ...options });
   const context: RuntimeBusinessContext = {
     computerId,
-    workspaceComputerId: computerId,
-    workspaceId,
+    installationId: computerId,
     instanceId,
     signal: new AbortController().signal,
   };
@@ -855,8 +848,7 @@ async function replaceRuntimeInstance(fixture: Awaited<ReturnType<typeof ownerFi
   await fixture.registry.register(
     {
       computerId: fixture.computerId,
-      workspaceComputerId: fixture.context.workspaceComputerId,
-      workspaceId: fixture.context.workspaceId,
+      installationId: fixture.context.installationId,
       instanceId,
       lastHeartbeatAt: 2,
       socket: socketFixture(frames),
@@ -956,7 +948,7 @@ function reconcileRequest(computerId: string): SessionReconcileRequest {
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,
@@ -1116,7 +1108,7 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     }
     this.#deliveries.set(request.deliveryId, {
       agentId: request.agentId,
-      workspaceComputerId: context.workspaceComputerId,
+      computerId: context.computerId,
       deliveryId: request.deliveryId,
       inputHash,
       instanceId: context.instanceId,
@@ -1145,14 +1137,14 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       this.#deliveries.set(claim.deliveryId, {
         ...delivery,
-        workspaceComputerId: context.workspaceComputerId,
+        computerId: context.computerId,
         instanceId: context.instanceId,
       });
       const turn = this.#turns.get(claim.turnId);
       if (turn && turn.resultHash === claim.resultHash) {
         this.#turns.set(claim.turnId, {
           ...turn,
-          workspaceComputerId: context.workspaceComputerId,
+          computerId: context.computerId,
           instanceId: context.instanceId,
         });
       }
@@ -1189,13 +1181,13 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
       return "conflict";
     }
     if (delivery.placementGeneration !== report.placementGeneration) return "stale_generation";
-    if (delivery.workspaceComputerId !== context.workspaceComputerId || delivery.instanceId !== context.instanceId) {
+    if (delivery.computerId !== context.computerId || delivery.instanceId !== context.instanceId) {
       return undefined;
     }
     const expectedHash = this.#expectedResultHashes.get(report.turnId);
     if (expectedHash && expectedHash !== report.resultHash) return "conflict";
     this.#turns.set(report.turnId, {
-      workspaceComputerId: context.workspaceComputerId,
+      computerId: context.computerId,
       instanceId: context.instanceId,
       report,
       resultHash: report.resultHash,

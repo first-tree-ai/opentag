@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({
   appOptions: undefined as unknown,
   onClose: undefined as (() => Promise<void>) | undefined,
   database: undefined as unknown,
-  selectedAgents: [] as Array<{ workspaceComputerId: string; runtimeProvider: "codex" | "claude-code" }>,
+  selectedAgents: [] as Array<{ computerId: string; runtimeProvider: "codex" | "claude-code" }>,
   sql: { end: vi.fn() },
   parseServerConfig: vi.fn(),
   migrateDatabase: vi.fn(),
@@ -160,7 +160,7 @@ vi.mock("../services/im-bindings/index.js", () => ({
     constructor(_database: unknown, _cipher: unknown, options: unknown) {
       state.imBindingOptions = options;
     }
-    getAgentWorkspaceComputerId(agentId: string) {
+    getAgentComputerId(agentId: string) {
       return state.imBindingGetAgentComputerId(agentId);
     }
     issueRuntimeCredentialGrant(request: unknown, computerId: string) {
@@ -180,9 +180,8 @@ vi.mock("../services/im-bindings/slack/index.js", () => ({
   },
 }));
 vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshotAssembler: class {} }));
-vi.mock("../services/workspaces/index.js", () => ({
-  WorkspaceAdminService: class {},
-  WorkspaceSetupService: class {},
+vi.mock("../services/setup/index.js", () => ({
+  AccountSetupService: class {},
 }));
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
@@ -237,7 +236,7 @@ beforeEach(() => {
   state.config = defaultConfig();
   state.appOptions = undefined;
   state.onClose = undefined;
-  state.selectedAgents = [{ workspaceComputerId: "workspace-computer-1", runtimeProvider: "codex" }];
+  state.selectedAgents = [{ computerId: "computer-1", runtimeProvider: "codex" }];
   state.imBindingOptions = undefined;
   state.feishuConnectionOptions = undefined;
   state.feishuSetupOptions = undefined;
@@ -407,9 +406,8 @@ describe("Server startup", () => {
           placementGeneration: 3,
         },
         {
-          computerId: "computer-1",
-          workspaceComputerId: "workspace-computer-1",
-          workspaceId: "workspace-1",
+          computerId: "workspace-computer-1",
+          installationId: "computer-1",
           instanceId: "instance-1",
         },
       ),
@@ -417,9 +415,8 @@ describe("Server startup", () => {
     expect(state.issueRuntimeCredentialGrant).toHaveBeenCalledWith(
       expect.objectContaining({ type: "im:credential", requestId: "request-1" }),
       expect.objectContaining({
-        computerId: "computer-1",
-        workspaceComputerId: "workspace-computer-1",
-        workspaceId: "workspace-1",
+        computerId: "workspace-computer-1",
+        installationId: "computer-1",
       }),
     );
 

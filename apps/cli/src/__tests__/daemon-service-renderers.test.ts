@@ -1313,10 +1313,10 @@ function result(code: number, stdout: string, stderr: string): CommandResult {
 async function writeMachineCredential(home: string): Promise<void> {
   await writeMachineCredentialsAtomically(
     {
-      version: 2,
+      version: 3,
       computer: {
-        workspaceComputerId: crypto.randomUUID(),
         computerId: crypto.randomUUID(),
+        installationId: crypto.randomUUID(),
         machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
         serverUrl: "https://example.com",
       },

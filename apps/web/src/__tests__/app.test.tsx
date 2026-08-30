@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { PasswordSignInForm } from "../router.js";
+import { PasswordSignInForm } from "../features/auth/password-sign-in-form.js";
 
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const secondaryWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";

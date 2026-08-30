@@ -219,6 +219,18 @@ export class TaskQueryError extends Error {
 export class TaskService {
   constructor(readonly database: DatabaseClient) {}
 
+  /**
+   * Postgres.js returns an iterable row array while PGlite exposes the same rows under `rows`.
+   * Normalizing both keeps the service compatible with the in-process PostgreSQL test harness
+   * without changing the SQL or production result shape.
+   */
+  async #executeRows<T>(query: ReturnType<typeof sql>): Promise<readonly T[]> {
+    const result = await this.database.execute<T>(query);
+    if (Array.isArray(result)) return result;
+    const rows = (result as unknown as { rows?: unknown }).rows;
+    return Array.isArray(rows) ? (rows as T[]) : [];
+  }
+
   async list(accountId: string, options: ListTaskOptions): Promise<ListTasksResponse> {
     const cursor = parseCursor(options.cursor);
     const rows = await this.#summaryRows(accountId, {
@@ -238,7 +250,7 @@ export class TaskService {
     const [row] = await this.#summaryRows(accountId, { sessionId, limit: 1 });
     if (!row) throw taskNotFound();
     const cursor = parseCursor(options.cursor);
-    const turns = await this.database.execute<TaskTurnRow>(sql`
+    const turns = await this.#executeRows<TaskTurnRow>(sql`
       select
         d.id as "deliveryId",
         d.attention,
@@ -272,7 +284,7 @@ export class TaskService {
     const page = [...turns].slice(0, options.limit);
     const last = page.at(-1);
 
-    const internalSessions = await this.database.execute<InternalSessionRow>(sql`
+    const internalSessions = await this.#executeRows<InternalSessionRow>(sql`
       with recursive related as (
         select id, created_by_session_id, runtime_model, runtime_reasoning_effort, ended_at, created_at
         from sessions
@@ -344,7 +356,7 @@ export class TaskService {
       sessionId?: string;
     },
   ): Promise<TaskSummaryRow[]> {
-    const rows = await this.database.execute<TaskSummaryRow>(sql`
+    const rows = await this.#executeRows<TaskSummaryRow>(sql`
       with latest_delivery as (
         select distinct on (d.session_id)
           d.session_id,

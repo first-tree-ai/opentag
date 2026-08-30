@@ -3,7 +3,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import type { LoadState } from "../resource/resource-state.js";
-import { toResourceState } from "../resource/resource-state.js";
+import { isTerminalResourceError, toResourceState } from "../resource/resource-state.js";
 import type { AgentDetailView, AgentListItem } from "./agent-model.js";
 import { markAgentDetailUnconfirmed, markAgentListUnconfirmed, projectAgentAvailability } from "./agent-model.js";
 
@@ -136,11 +136,20 @@ export function useAgentDetailView(
    */
   const settling =
     !agentQuery.isFetched || !computersQuery.isFetched || !bindingQuery.isFetched || !handoffQuery.isFetched;
+  const agentError = agentQuery.error ?? new Error("The request failed");
+  if (agentQuery.isError && isTerminalResourceError(agentError)) {
+    // A terminal primary response wins even while the evidence reads are still settling. Route
+    // state must not keep a deleted or forbidden Agent visible during that window.
+    return { kind: "error", error: agentError };
+  }
   if (settling) return initialAgent ? { kind: "ready", value: initialAgent } : { kind: "loading" };
   if (!agentQuery.data) {
-    return initialAgent
-      ? { kind: "ready", value: markAgentDetailUnconfirmed(initialAgent) }
-      : { kind: "error", error: agentQuery.error ?? new Error("The request failed") };
+    // Route state is only a non-terminal fallback. A deleted or forbidden Agent must never remain
+    // visible just because navigation carried the last object that was rendered.
+    if (initialAgent) {
+      return { kind: "ready", value: markAgentDetailUnconfirmed(initialAgent) };
+    }
+    return { kind: "error", error: agentError };
   }
 
   const agent = agentQuery.data;

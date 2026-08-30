@@ -1,8 +1,10 @@
 import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
+import { queryKeys } from "../query/keys.js";
 import { TaskDetailPage, TasksPage } from "./tasks-page.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
@@ -75,6 +77,18 @@ const detail = {
   collaborationMessages: [],
   nextCursor: null,
 } satisfies TaskDetail;
+
+function RefreshTaskButton() {
+  const queryClient = useQueryClient();
+  return (
+    <button
+      type="button"
+      onClick={() => void queryClient.refetchQueries({ queryKey: queryKeys.tasks.detail(sessionId) })}
+    >
+      Refresh Task
+    </button>
+  );
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -176,6 +190,27 @@ describe("Tasks debug view", () => {
       within(conversation).getByText("1 attempt · Outcome completed · Effects completed · 150 tokens · 4 trace events"),
     ).toBeTruthy();
     expect(screen.getByLabelText("Copy Session")).toBeTruthy();
+  });
+
+  it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
+    const taskRequest = vi
+      .spyOn(browserApi, "task")
+      .mockResolvedValueOnce(detail)
+      .mockRejectedValueOnce(new ApiError(404, "Task not found"));
+
+    await renderInRouter(
+      <>
+        <TaskDetailPage taskId={sessionId} />
+        <RefreshTaskButton />
+      </>,
+      { path: `/tasks/${sessionId}` },
+    );
+
+    expect(await screen.findByRole("heading", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Task" }));
+    expect(await screen.findByRole("heading", { name: "Task not found" })).toBeTruthy();
+    expect(screen.queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
+    expect(taskRequest).toHaveBeenCalledTimes(2);
   });
 
   it("renders a steered input as absorbed without a second report or usage", async () => {

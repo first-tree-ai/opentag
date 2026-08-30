@@ -89,6 +89,7 @@ function installApi(
     setupFailureCode?: string;
     setupCompletedAt?: string | null;
     unauthenticated?: boolean;
+    meAfterLogout?: () => Promise<Response> | Response;
     workspaceless?: boolean;
   } = {},
 ) {
@@ -118,6 +119,7 @@ function installApi(
   let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentDisplayName = "Ada";
   let profileUpdated = false;
+  let loggedOut = false;
   let meFailuresRemaining = options.meFailuresAfterProfileUpdate ?? 0;
   let computerConnectCodeIssued = false;
   vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -164,6 +166,7 @@ function installApi(
       return response;
     }
     if (path === "/api/v1/me") {
+      if (loggedOut && options.meAfterLogout) return options.meAfterLogout();
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       if (profileUpdated && options.meDelayMsAfterProfileUpdate) {
         await new Promise((resolve) => setTimeout(resolve, options.meDelayMsAfterProfileUpdate));
@@ -471,7 +474,10 @@ function installApi(
         expiresAt: "2026-08-20T00:10:00.000Z",
       });
     }
-    if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
+    if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") {
+      loggedOut = true;
+      return new Response(null, { status: 204 });
+    }
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
 }
@@ -1410,6 +1416,26 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(agentReads).toBe(2));
     expect(screen.queryByLabelText("Loading current server state")).toBeNull();
     await act(async () => releaseAgentRead());
+  });
+
+  it.each([403, 404])("does not let route state mask a terminal Agent detail response (%d)", async (status) => {
+    let agentReads = 0;
+    installApi({
+      agentRead: () => {
+        agentReads += 1;
+      },
+      agentReadStatus: () => (agentReads > 1 ? status : undefined),
+      bound: true,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
+    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
+    await waitFor(() => expect(agentReads).toBe(2));
+    expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
+    expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
   });
 
   it("shows confirmed active work without exposing conversation content", async () => {
@@ -2603,6 +2629,32 @@ describe("OpenTag Web App Shell", () => {
       "/api/v1/auth/browser/logout",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("does not expose the previous Account while a post-logout route re-entry is loading", async () => {
+    let releaseMe: (response: Response) => void = () => undefined;
+    const pendingMe = new Promise<Response>((resolve) => {
+      releaseMe = resolve;
+    });
+    installApi({ meAfterLogout: () => pendingMe });
+    render(<App />);
+
+    expect(await screen.findByRole("link", { name: "Open Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+
+    await act(async () => {
+      window.history.pushState({}, "", "/agents");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByLabelText("Loading current server state")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open Reviewer" })).toBeNull();
+
+    await act(async () => {
+      releaseMe(json({ error: { message: "Sign in required" } }, 401));
+    });
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
   it("sends a retired Computers bookmark to Agents", async () => {

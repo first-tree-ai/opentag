@@ -19,6 +19,7 @@ import {
   Table,
   Text,
 } from "../ui/design-system.js";
+import { isTerminalResourceError } from "./resource/resource-state.js";
 
 type TaskFilter = "all" | TaskStatus;
 
@@ -199,25 +200,18 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   const first = taskQuery.data?.pages[0];
   const turns = useMemo(() => taskQuery.data?.pages.flatMap((page) => page.turns) ?? [], [taskQuery.data]);
   const loadMoreError = taskQuery.isFetchNextPageError ? asError(taskQuery.error) : null;
+  const taskError = asError(taskQuery.error);
+  const terminalTaskError =
+    taskQuery.isError && !taskQuery.isFetchNextPageError && isTerminalResourceError(taskError) ? taskError : null;
 
+  if (terminalTaskError) return <TaskUnavailable error={terminalTaskError} />;
   if (taskId !== undefined && taskQuery.isPending) {
     return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
   }
   if (!first) {
     // No Task id at all is the same answer as one the Server does not have.
     const error = taskId === undefined ? new ApiError(404, "Task not found") : asError(taskQuery.error);
-    const notFound = error instanceof ApiError && error.status === 404;
-    return (
-      <section className="grid gap-3" data-ui="task-not-found">
-        <Text as="h1" size="lg" variant="heading">
-          {notFound ? "Task not found" : "Task unavailable"}
-        </Text>
-        <Text as="p" variant="secondary">
-          {notFound ? "This Task does not exist or is outside your Account." : error.message}
-        </Text>
-        <Link to="/tasks">Back to Tasks</Link>
-      </section>
-    );
+    return <TaskUnavailable error={error} />;
   }
 
   const { task, internalSessions, collaborationMessages } = first;
@@ -316,6 +310,21 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
         </Collapsible.Root>
       ) : null}
     </article>
+  );
+}
+
+function TaskUnavailable({ error }: { error: Error }) {
+  const notFound = error instanceof ApiError && error.status === 404;
+  return (
+    <section className="grid gap-3" data-ui="task-not-found">
+      <Text as="h1" size="lg" variant="heading">
+        {notFound ? "Task not found" : "Task unavailable"}
+      </Text>
+      <Text as="p" variant="secondary">
+        {notFound ? "This Task does not exist or is outside your Account." : error.message}
+      </Text>
+      <Link to="/tasks">Back to Tasks</Link>
+    </section>
   );
 }
 

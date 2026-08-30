@@ -10,6 +10,7 @@ import { type ComponentProps, lazy, Suspense, useCallback, useState } from "reac
 import { browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
 import { Button, ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
+import { isTerminalResourceError } from "./resource/resource-state.js";
 
 const LazyTimeseriesChart = lazy(async () => {
   const { echarts } = await import("./agent-usage-echarts.js");
@@ -85,11 +86,15 @@ function useAgentUsage(
     queryFn: () => browserApi.agentUsage(agentId, windowDays),
   });
   const retry = useCallback(() => void query.refetch(), [query]);
-  const state: UsageState = query.data
-    ? { kind: "ready", value: query.data }
-    : query.isError
-      ? { kind: "error", error: usageError(query.error) }
-      : { kind: "loading" };
+  const error = query.isError ? usageError(query.error) : undefined;
+  const state: UsageState =
+    error && (!query.data || isTerminalResourceError(error))
+      ? { kind: "error", error }
+      : query.data
+        ? { kind: "ready", value: query.data }
+        : error
+          ? { kind: "error", error }
+          : { kind: "loading" };
   return { retry, state };
 }
 

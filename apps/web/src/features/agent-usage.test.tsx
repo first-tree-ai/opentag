@@ -1,8 +1,10 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
+import { queryKeys } from "../query/keys.js";
 import { AgentUsageOverview, AgentUsageTab } from "./agent-usage.js";
 
 const usage: AgentUsageDetail = {
@@ -18,6 +20,18 @@ const usage: AgentUsageDetail = {
   tokens: 428_000,
   daily: [],
 };
+
+function RefreshUsageButton() {
+  const queryClient = useQueryClient();
+  return (
+    <button
+      type="button"
+      onClick={() => void queryClient.refetchQueries({ queryKey: queryKeys.agents.usage("agent-1", 30) })}
+    >
+      Refresh usage
+    </button>
+  );
+}
 
 describe("AgentUsageOverview", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -75,5 +89,25 @@ describe("AgentUsageOverview", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
     expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
+  });
+
+  it("surfaces a terminal refetch error instead of showing cached usage", async () => {
+    const loadUsage = vi
+      .spyOn(browserApi, "agentUsage")
+      .mockResolvedValueOnce(usage)
+      .mockRejectedValueOnce(new ApiError(404, "Usage not found"));
+
+    await renderInRouter(
+      <>
+        <AgentUsageOverview agentId="agent-1" />
+        <RefreshUsageButton />
+      </>,
+    );
+
+    expect(await screen.findByText("Partial data.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Usage not found");
+    expect(screen.queryByText("Partial data.")).toBeNull();
+    expect(loadUsage).toHaveBeenCalledTimes(2);
   });
 });

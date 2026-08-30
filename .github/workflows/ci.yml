@@ -14,9 +14,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  PRIMARY_NODE_VERSION: "24"
-
 jobs:
   checks:
     name: Checks
@@ -50,7 +47,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Install dependencies
@@ -130,7 +127,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Install dependencies
@@ -214,7 +211,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
 
       - name: Build source CLI and dependencies

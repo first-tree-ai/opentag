@@ -1,6 +1,6 @@
 import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
-import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ChangeEventHandler, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
@@ -39,18 +39,30 @@ export function TasksPage() {
   const [status, setStatus] = useState<TaskFilter>("all");
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
+  const initialLoadGeneration = useRef(0);
+
+  const loadTasks = useCallback(async (): Promise<void> => {
+    const generation = initialLoadGeneration.current + 1;
+    initialLoadGeneration.current = generation;
+    setState({ kind: "loading" });
+    setLoadMoreError(null);
+    try {
+      const value = await browserApi.tasks();
+      if (initialLoadGeneration.current !== generation) return;
+      setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } });
+    } catch (error) {
+      if (initialLoadGeneration.current !== generation) return;
+      setState({ kind: "error", error: asError(error) });
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
-    browserApi.tasks().then(
-      (value) =>
-        active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
-      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
-    );
+    void loadTasks();
     return () => {
-      active = false;
+      // Invalidate an in-flight request when this page unmounts.
+      initialLoadGeneration.current += 1;
     };
-  }, []);
+  }, [loadTasks]);
 
   const agents = useMemo(() => {
     if (state.kind !== "ready") return [];
@@ -155,7 +167,17 @@ export function TasksPage() {
       {state.kind === "loading" ? (
         <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
       ) : null}
-      {state.kind === "error" ? <TaskNotice heading="Tasks unavailable" detail={state.error.message} /> : null}
+      {state.kind === "error" ? (
+        <TaskNotice
+          action={
+            <Button type="button" variant="secondary" onClick={() => void loadTasks()}>
+              Try again
+            </Button>
+          }
+          heading="Tasks unavailable"
+          detail={state.error.message}
+        />
+      ) : null}
       {state.kind === "ready" && tasks.length > 0 ? (
         <>
           <Table className="w-full" aria-label="Tasks" data-ui="task-table">
@@ -560,7 +582,7 @@ function DebugValue({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TaskNotice({ heading, detail }: { heading: string; detail: string }) {
+function TaskNotice({ action, heading, detail }: { action?: ReactNode; heading: string; detail: string }) {
   return (
     <section
       className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line"
@@ -576,6 +598,7 @@ function TaskNotice({ heading, detail }: { heading: string; detail: string }) {
       <Text as="p" variant="secondary">
         {detail}
       </Text>
+      {action ? <div className="flex justify-center">{action}</div> : null}
     </section>
   );
 }

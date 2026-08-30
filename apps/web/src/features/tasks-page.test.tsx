@@ -144,6 +144,21 @@ describe("Tasks debug view", () => {
     expect(taskRequest).toHaveBeenLastCalledWith({ cursor: "next-page" });
   });
 
+  it("retries an initial Tasks load after displaying the request error", async () => {
+    const taskRequest = vi
+      .spyOn(browserApi, "tasks")
+      .mockRejectedValueOnce(new Error("Temporary initial load failure"))
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<TasksPage />);
+
+    expect(await screen.findByText("Temporary initial load failure")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    expect(taskRequest).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
   it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detail);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });

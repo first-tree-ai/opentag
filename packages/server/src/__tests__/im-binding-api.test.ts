@@ -154,6 +154,14 @@ describe("ImBinding HTTP API", () => {
     expect(
       (await app.inject({ method: "GET", url: feishuSetupAttemptPath(attemptId), headers: authorization })).json(),
     ).toEqual(feishuAttempt);
+    const canceled = await app.inject({
+      method: "POST",
+      url: `${feishuSetupAttemptPath(attemptId)}/cancel`,
+      headers: authorization,
+    });
+    expect(canceled.statusCode).toBe(200);
+    expect(canceled.json()).toMatchObject({ state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" });
+    expect(service.feishu.cancel).toHaveBeenCalledWith(userId, attemptId);
     expect(
       (await app.inject({ method: "GET", url: imBindingDiagnosticsPath(imBindingId), headers: authorization })).json(),
     ).toMatchObject({ provider: "feishu", ready: false, slackAppId: null });

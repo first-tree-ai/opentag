@@ -1,8 +1,9 @@
 # OpenTag Kumo UI
 
-OpenTag uses Kumo `2.12.0` in standalone mode. The standalone stylesheet is
-imported exactly once from `src/main.tsx`, followed by the generated OpenTag
-theme and the small application boundary stylesheet.
+OpenTag uses Kumo `2.12.0` with Tailwind CSS v4. `src/app.css` is the only
+application stylesheet entry: it registers Kumo's distribution as a Tailwind
+source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
+generated OpenTag theme and the small application boundary stylesheet.
 
 ## Component boundary
 

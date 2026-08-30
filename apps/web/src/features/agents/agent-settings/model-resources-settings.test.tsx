@@ -240,6 +240,47 @@ describe("AgentModelSettings", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Change model" })).toBeNull());
     expect(screen.getByText("gpt-5.6-luna")).toBeTruthy();
   });
+
+  it("does not regress after save when the shell prop is still stale", async () => {
+    const firstUpdate: AgentAdminConfig = {
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, reasoningEffort: "medium" },
+    };
+    const secondUpdate: AgentAdminConfig = {
+      ...firstUpdate,
+      revision: 6,
+      runtimeConfig: { ...firstUpdate.runtimeConfig, revision: 9, reasoningEffort: "low" },
+    };
+    const save = vi
+      .spyOn(browserApi, "updateAgent")
+      .mockResolvedValueOnce(firstUpdate)
+      .mockResolvedValueOnce(secondUpdate);
+    render(<AgentModelSettings agent={agent} config={config} onAgentChanged={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    let dialog = await screen.findByRole("dialog", { name: "Change model" });
+    await chooseOption(dialog, "Reasoning level", "medium");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Change model" })).toBeNull());
+    expect(screen.getByText("Medium")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    dialog = await screen.findByRole("dialog", { name: "Change model" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Change model" })).toBeNull());
+    expect(screen.getByText("Medium")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    dialog = await screen.findByRole("dialog", { name: "Change model" });
+    await chooseOption(dialog, "Reasoning level", "low");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect(save).toHaveBeenLastCalledWith(agentId, {
+      expectedRevision: 5,
+      runtimeConfig: { model: "gpt-5.6-terra", reasoningEffort: "low" },
+    });
+  });
 });
 
 describe("AgentResourcesSettings", () => {
@@ -355,5 +396,49 @@ describe("AgentResourcesSettings", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit instructions" })).toBeNull());
     expect(screen.getByText(`Custom · ${concurrentInstructions.length} characters`)).toBeTruthy();
+  });
+
+  it("does not regress after instructions save when the shell prop is still stale", async () => {
+    const firstInstructions = "Be concise.";
+    const secondInstructions = "Third edit.";
+    const firstUpdate: AgentAdminConfig = {
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, instructions: firstInstructions },
+    };
+    const secondUpdate: AgentAdminConfig = {
+      ...firstUpdate,
+      revision: 6,
+      runtimeConfig: { ...firstUpdate.runtimeConfig, revision: 9, instructions: secondInstructions },
+    };
+    const save = vi
+      .spyOn(browserApi, "updateAgent")
+      .mockResolvedValueOnce(firstUpdate)
+      .mockResolvedValueOnce(secondUpdate);
+    render(<AgentResourcesSettings agent={agent} config={config} onAgentChanged={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    let dialog = await screen.findByRole("dialog", { name: "Edit instructions" });
+    fireEvent.change(within(dialog).getByLabelText("Instructions"), { target: { value: firstInstructions } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit instructions" })).toBeNull());
+    expect(screen.getByText(`Custom · ${firstInstructions.length} characters`)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    dialog = await screen.findByRole("dialog", { name: "Edit instructions" });
+    expect((within(dialog).getByLabelText("Instructions") as HTMLTextAreaElement).value).toBe(firstInstructions);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit instructions" })).toBeNull());
+    expect(screen.getByText(`Custom · ${firstInstructions.length} characters`)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    dialog = await screen.findByRole("dialog", { name: "Edit instructions" });
+    fireEvent.change(within(dialog).getByLabelText("Instructions"), { target: { value: secondInstructions } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    expect(save).toHaveBeenLastCalledWith(agentId, {
+      expectedRevision: 5,
+      runtimeConfig: { instructions: secondInstructions },
+    });
   });
 });

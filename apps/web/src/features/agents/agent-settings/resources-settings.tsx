@@ -29,15 +29,21 @@ export function AgentResourcesSettings({
   const [message, setMessage] = useState<string>();
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const editingRef = useRef(false);
+  const pendingConfigRef = useRef<AgentAdminConfig | undefined>(undefined);
   const dirty = instructionsDraft !== config.runtimeConfig.instructions;
   const instructionsId = `resources-instructions-${config.id}`;
 
   useEffect(() => {
-    if (!editingRef.current) setConfig(initialConfig);
+    if (editingRef.current) {
+      pendingConfigRef.current = newerConfig(pendingConfigRef.current, initialConfig);
+      return;
+    }
+    setConfig((current) => newerConfig(current, initialConfig));
   }, [initialConfig]);
 
   function openEditor() {
     editingRef.current = true;
+    pendingConfigRef.current = undefined;
     setInstructionsDraft(config.runtimeConfig.instructions);
     setError(undefined);
     setMessage(undefined);
@@ -46,7 +52,9 @@ export function AgentResourcesSettings({
 
   function closeEditor() {
     editingRef.current = false;
-    setConfig(initialConfig);
+    const pendingConfig = pendingConfigRef.current;
+    pendingConfigRef.current = undefined;
+    if (pendingConfig) setConfig((current) => newerConfig(current, pendingConfig));
     setEditing(false);
     setError(undefined);
   }
@@ -65,6 +73,7 @@ export function AgentResourcesSettings({
       setInstructionsDraft(updated.runtimeConfig.instructions);
       setMessage("Instructions saved.");
       editingRef.current = false;
+      pendingConfigRef.current = undefined;
       setEditing(false);
       onAgentChanged();
     } catch (cause) {
@@ -145,4 +154,9 @@ function instructionsSummary(instructions: string): string {
   if (instructions.length === 0) return "Not customized · 0 characters";
   const length = Array.from(instructions).length;
   return `Custom · ${length} ${length === 1 ? "character" : "characters"}`;
+}
+
+function newerConfig(current: AgentAdminConfig | undefined, candidate: AgentAdminConfig): AgentAdminConfig {
+  if (!current || current.id !== candidate.id || candidate.revision >= current.revision) return candidate;
+  return current;
 }

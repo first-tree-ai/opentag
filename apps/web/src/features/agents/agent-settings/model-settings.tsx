@@ -38,6 +38,7 @@ export function AgentModelSettings({
   const [message, setMessage] = useState<string>();
   const changeButtonRef = useRef<HTMLButtonElement>(null);
   const editingRef = useRef(false);
+  const pendingConfigRef = useRef<AgentAdminConfig | undefined>(undefined);
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
   const hasHistoricalReasoningDraft =
     reasoningDraft !== "" && !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningDraft);
@@ -49,11 +50,16 @@ export function AgentModelSettings({
   const fieldId = (name: string) => `model-settings-${name}-${config.id}`;
 
   useEffect(() => {
-    if (!editingRef.current) setConfig(initialConfig);
+    if (editingRef.current) {
+      pendingConfigRef.current = newerConfig(pendingConfigRef.current, initialConfig);
+      return;
+    }
+    setConfig((current) => newerConfig(current, initialConfig));
   }, [initialConfig]);
 
   function openEditor() {
     editingRef.current = true;
+    pendingConfigRef.current = undefined;
     setModelDraft(config.runtimeConfig.model ?? "");
     setModelSelection(modelSelectionFor(config));
     setReasoningDraft(config.runtimeConfig.reasoningEffort ?? "");
@@ -64,7 +70,9 @@ export function AgentModelSettings({
 
   function closeEditor() {
     editingRef.current = false;
-    setConfig(initialConfig);
+    const pendingConfig = pendingConfigRef.current;
+    pendingConfigRef.current = undefined;
+    if (pendingConfig) setConfig((current) => newerConfig(current, pendingConfig));
     setEditing(false);
     setError(undefined);
   }
@@ -89,6 +97,7 @@ export function AgentModelSettings({
       setReasoningDraft(updated.runtimeConfig.reasoningEffort ?? "");
       setMessage("Model settings saved.");
       editingRef.current = false;
+      pendingConfigRef.current = undefined;
       setEditing(false);
       onAgentChanged();
     } catch (cause) {
@@ -214,6 +223,11 @@ function modelSelectionFor(config: AgentAdminConfig): string {
   if (model === null) return "";
   const suggestions = getRuntimeConfigurationOptions(config.runtimeProvider).modelSuggestions;
   return suggestions.includes(model) ? model : CUSTOM_MODEL_OPTION;
+}
+
+function newerConfig(current: AgentAdminConfig | undefined, candidate: AgentAdminConfig): AgentAdminConfig {
+  if (!current || current.id !== candidate.id || candidate.revision >= current.revision) return candidate;
+  return current;
 }
 
 function runtimeProviderName(provider: AgentAdminConfig["runtimeProvider"]): string {

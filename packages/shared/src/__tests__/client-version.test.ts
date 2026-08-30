@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isSupportedClientVersion, MINIMUM_SUPPORTED_CLIENT_VERSION } from "../client-version.js";
+import {
+  isSupportedClientVersion,
+  MINIMUM_SUPPORTED_CLIENT_VERSION,
+  unsupportedClientVersionMessage,
+} from "../client-version.js";
 
 describe("minimum supported Client version", () => {
   it("pins the admitted release line at 0.0.2", () => {
@@ -45,5 +49,9 @@ describe("minimum supported Client version", () => {
     ]) {
       expect(isSupportedClientVersion(version), version).toBe(false);
     }
+  });
+
+  it("explains the minimum supported release", () => {
+    expect(unsupportedClientVersionMessage()).toBe("Client version must be 0.0.2 or newer");
   });
 });

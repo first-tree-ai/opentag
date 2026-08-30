@@ -9,16 +9,13 @@ import {
 } from "../computer.js";
 
 describe("computer contracts", () => {
-  it("returns Computer-scoped machine authority without a management Workspace alias", () => {
+  it("returns strict Computer-scoped machine authority", () => {
     const response = {
       computerId: crypto.randomUUID(),
       installationId: crypto.randomUUID(),
       machineToken: "opaque-secret",
     };
     expect(ComputerConnectCodeExchangeResponseSchema.parse(response)).toEqual(response);
-    expect(() =>
-      ComputerConnectCodeExchangeResponseSchema.parse({ ...response, workspaceId: crypto.randomUUID() }),
-    ).toThrow();
     expect(() => ComputerConnectCodeExchangeResponseSchema.parse({ ...response, accessToken: "human" })).toThrow();
   });
 
@@ -32,7 +29,6 @@ describe("computer contracts", () => {
     });
     expect(() => AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "repair" })).toThrow();
     expect(() => AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "create", targetComputerId })).toThrow();
-    expect(() => AccountComputerConnectCodeIssueRequestSchema.parse({ workspaceId: crypto.randomUUID() })).toThrow();
     expect(() => AccountComputerConnectCodeIssueRequestSchema.parse({ accountId: crypto.randomUUID() })).toThrow();
   });
 

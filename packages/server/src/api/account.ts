@@ -1,7 +1,7 @@
 import {
   AccountComputerConnectCodeIssueRequestSchema,
-  AccountSetupResetRequestSchema,
   AccountSetupCompletionSchema,
+  AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
   type ChannelName,
   CompleteAccountSetupRequestSchema,
@@ -77,8 +77,8 @@ function accountId(request: FastifyRequest): string {
 }
 
 /**
- * Account-native management collections. Ownership comes only from the authenticated Account: these routes
- * accept neither a management `workspaceId` nor a client-selected `accountId`.
+ * Account-native management collections. Ownership comes only from the authenticated Account; clients
+ * cannot select another authority scope.
  */
 export function registerAccountRoutes(
   app: FastifyInstance,

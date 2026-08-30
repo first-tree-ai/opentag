@@ -44,7 +44,7 @@ export interface AgentCreationFacts {
 
 /**
  * When the derived Agent name is put in front of the Account. `always` keeps it visible, which is
- * what a Workspace that already holds Agents needs: the name carries a uniqueness constraint, so
+ * what an Account that already owns Agents needs: the name carries a uniqueness constraint, so
  * seeing the derivation is how a collision gets avoided before it is submitted. `when-required`
  * shows it only once a display name derives to nothing and the Account has to choose one — the
  * onboarding case, where this is the Account's first Agent and no collision is possible.
@@ -942,9 +942,9 @@ function creationIntentKey(accountId: string): string {
 }
 
 /**
- * Drops creation intents written in a superseded format. Records were previously scoped by the internal
- * Workspace, so after the move to Account scoping their keys are never read again; removing them by stored
- * version leaves other Accounts' current records on a shared browser untouched.
+ * Drops creation intents written in a superseded format. Their keys are never read by the current
+ * Account-scoped format; removing them by stored version leaves other Accounts' current records on a
+ * shared browser untouched.
  */
 function pruneSupersededCreationIntents(): void {
   try {

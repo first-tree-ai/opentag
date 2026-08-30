@@ -9,7 +9,6 @@ import {
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  accountComputers,
   agents,
   computers,
   imBindings,
@@ -19,8 +18,6 @@ import {
   sessions,
   slackInstallations,
   users,
-  workspaceComputers,
-  workspaces,
 } from "../db/schema/index.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
@@ -747,9 +744,9 @@ describe("ImDeliveryWorker database workflow", () => {
     await unit.reset();
     const steerUnavailable = await steerFixture(unit);
     await unit.database
-      .update(accountComputers)
+      .update(computers)
       .set({ currentInstanceId: randomUUID() })
-      .where(eq(accountComputers.id, steerUnavailable.computerId));
+      .where(eq(computers.id, steerUnavailable.computerId));
     const steerEvents: string[] = [];
     await new ImDeliveryWorker({
       database: unit.database,
@@ -765,7 +762,6 @@ describe("ImDeliveryWorker database workflow", () => {
 async function workerFixture(unit: UnitDatabase) {
   const now = new Date(Date.now() + 60 * 60_000);
   const userId = randomUUID();
-  const workspaceId = randomUUID();
   const computerId = randomUUID();
   const agentId = randomUUID();
   const bindingId = randomUUID();
@@ -774,34 +770,19 @@ async function workerFixture(unit: UnitDatabase) {
   const deliveryId = randomUUID();
   const instanceId = randomUUID();
   await unit.database.insert(users).values({ id: userId, email: `${userId}@example.com`, displayName: "User" });
-  await unit.database.insert(workspaces).values({ id: workspaceId, name: workspaceId, displayName: "Workspace" });
-  await unit.database.insert(computers).values({ id: computerId });
-  await unit.database.insert(accountComputers).values({
+  await unit.database.insert(computers).values({
     id: computerId,
     ownerAccountId: userId,
-    currentInstallationId: computerId,
+    currentInstallationId: randomUUID(),
     displayName: "Computer",
     platform: "linux",
     arch: "x64",
     clientVersion: "test",
-    currentInstanceId: instanceId,
-  });
-  await unit.database.insert(workspaceComputers).values({
-    id: computerId,
-    workspaceId,
-    computerId,
-    displayName: "Computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "test",
-    enrolledByUserId: userId,
     currentInstanceId: instanceId,
   });
   await unit.database.insert(agents).values({
     id: agentId,
-    workspaceId,
     createdByUserId: userId,
-    workspaceComputerId: computerId,
     computerId,
     name: `agent-${agentId}`,
     displayName: "Agent",
@@ -813,7 +794,6 @@ async function workerFixture(unit: UnitDatabase) {
   const externalBotId = `bot-${bindingId}`;
   await unit.database.insert(slackInstallations).values({
     id: slackInstallationId,
-    workspaceId,
     agentId,
     status: "active",
     externalAppId,
@@ -845,9 +825,7 @@ async function workerFixture(unit: UnitDatabase) {
     conversationKind: "channel",
     kind: "channel",
   });
-  await unit.database
-    .insert(sessionPlacements)
-    .values({ sessionId, workspaceComputerId: computerId, computerId, generation: 1 });
+  await unit.database.insert(sessionPlacements).values({ sessionId, computerId, generation: 1 });
   const content = {
     fallbackText: "hello",
     resources: [{ kind: "file" as const, filename: "note.txt", mediaType: "text/plain", sizeBytes: 5 }],
@@ -880,14 +858,13 @@ async function workerFixture(unit: UnitDatabase) {
     provider: "codex" as const,
     instructions: { platform: "", agent: "", session: "" },
     execution: { approvalPolicy: "never" as const, networkAccess: false },
-    workspace: { workspaceId, mode: "empty_on_create" as const, sharing: "agent" as const },
+    workspace: { workspaceId: agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
   };
   const registry = new ConnectionRegistry();
   await registry.register(
     {
       computerId,
-      workspaceComputerId: computerId,
-      workspaceId,
+      installationId: randomUUID(),
       instanceId,
       lastHeartbeatAt: Date.now(),
       socket: { close: vi.fn(), terminate: vi.fn() } as never,
@@ -928,7 +905,6 @@ async function workerFixture(unit: UnitDatabase) {
     runtime,
     sessionId,
     userId,
-    workspaceId,
   };
 }
 
@@ -981,8 +957,7 @@ async function steerFixture(unit: UnitDatabase) {
   await steerRegistry.register(
     {
       computerId: fixture.computerId,
-      workspaceComputerId: fixture.computerId,
-      workspaceId: fixture.workspaceId,
+      installationId: randomUUID(),
       instanceId: fixture.instanceId,
       lastHeartbeatAt: Date.now(),
       negotiatedCapabilities: { [RUNTIME_CAPABILITY.imSteer]: 2 },
@@ -1040,7 +1015,7 @@ function fakeDomain(
         if (options.deliveryFailure) throw new Error("delivery failed");
         const hash = computeDirectInputHash(request);
         await custody.beginDeliveryDispatch(request, hash, {
-          workspaceComputerId: fixture.computerId,
+          computerId: fixture.computerId,
           instanceId: fixture.instanceId,
         });
         if (options.deliveryStatus === "rejected")
@@ -1055,8 +1030,7 @@ function fakeDomain(
           };
         await custody.acceptDelivery(request, hash, "turn-1", {
           computerId: fixture.computerId,
-          workspaceComputerId: fixture.computerId,
-          workspaceId: fixture.workspaceId,
+          installationId: randomUUID(),
           instanceId: fixture.instanceId,
           signal: new AbortController().signal,
         });

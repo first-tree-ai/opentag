@@ -433,7 +433,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(
-      runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot())),
+      runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot())),
     ).resolves.toMatchObject({
       status: "ready",
     });

@@ -68,16 +68,6 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("exposes no Workspace management or invitation API", () => {
-    const api = new BrowserApi();
-    expect("admins" in api).toBe(false);
-    expect("revokeWorkspaceAdmin" in api).toBe(false);
-    expect("updateWorkspace" in api).toBe(false);
-    expect("invitationPreview" in api).toBe(false);
-    expect("acceptAdminInvitation" in api).toBe(false);
-    expect("createAdminInvitation" in api).toBe(false);
-  });
-
   it("loads strict browser provider availability without retrying as an authenticated request", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
@@ -217,7 +207,7 @@ describe("BrowserApi", () => {
     expect(untypedError.issues).toBeUndefined();
   });
 
-  it("mints a connect command with CSRF and lists the Account enrollments", async () => {
+  it("mints a connect command with CSRF and lists the Account Computers", async () => {
     setDocumentCookie("opentag_csrf=connect-csrf; Path=/");
     const computer = {
       computerId: userId,

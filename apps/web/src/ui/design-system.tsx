@@ -237,7 +237,7 @@ export function SettingsRow({
 }) {
   return (
     <div
-      className="grid gap-3 p-4 @min-[44rem]/workspace:grid-cols-[2fr_1fr] @min-[44rem]/workspace:items-center"
+      className="grid gap-3 p-4 @min-[44rem]/content:grid-cols-[2fr_1fr] @min-[44rem]/content:items-center"
       data-ui="settings-row"
     >
       <div className="grid gap-1">

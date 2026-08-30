@@ -363,7 +363,7 @@ describe("Agent contracts", () => {
     expect(() =>
       RebindAgentComputerRequestSchema.parse({
         computerId,
-        workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+        accountId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
       }),
     ).toThrow();
     expect(BrowserAgentNameSchema.parse("browser-barrel")).toBe("browser-barrel");

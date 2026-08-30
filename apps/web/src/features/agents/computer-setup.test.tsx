@@ -530,10 +530,10 @@ describe("ComputerSetup", () => {
 });
 
 describe("ComputerList", () => {
-  it("explains when no Computers are enrolled", () => {
+  it("explains when no Computers are connected", () => {
     render(<ComputerList computers={[]} />);
 
-    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
-    expect(screen.getByText("No Computers are enrolled yet.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connected Computers" })).toBeTruthy();
+    expect(screen.getByText("No Computers are connected yet.")).toBeTruthy();
   });
 });

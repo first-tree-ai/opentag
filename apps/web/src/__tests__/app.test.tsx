@@ -57,7 +57,6 @@ function installApi(
     agentActivity?: { state: "idle" } | { state: "working"; startedAt: string };
     emptyAgents?: boolean;
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
-    multipleMemberships?: boolean;
     agentCreateError?: "conflict" | "generic" | "name";
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
     passwordSignInFails?: boolean;
@@ -92,7 +91,7 @@ function installApi(
     setupCompletedAt?: string | null;
     unauthenticated?: boolean;
     meAfterLogout?: () => Promise<Response> | Response;
-    workspaceless?: boolean;
+    setupIncomplete?: boolean;
   } = {},
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
@@ -182,7 +181,7 @@ function installApi(
       }
       return json({
         user: { id: userId, email: "ada@example.com", displayName: currentDisplayName },
-        setupCompletedAt: options.workspaceless ? null : setupCompletedAt,
+        setupCompletedAt: options.setupIncomplete ? null : setupCompletedAt,
       });
     }
     if (path === "/api/v1/me/setup/complete" && init?.method === "POST") {
@@ -244,7 +243,7 @@ function installApi(
               error: {
                 code: "AGENT_NAME_CONFLICT",
                 category: "deterministic",
-                message: "An active Agent with this name already exists in the Workspace",
+                message: "An active Agent with this name already exists for this Account",
               },
             },
             409,
@@ -302,7 +301,7 @@ function installApi(
         connectedAt: computer.connectedAt ?? null,
         lastSeenAt: computer.lastSeenAt ?? null,
         observedAt: computer.observedAt ?? computer.lastSeenAt ?? computer.connectedAt ?? "2026-08-20T00:00:00.000Z",
-        createdAt: computer.enrolledAt ?? "2026-08-20T00:00:00.000Z",
+        createdAt: computer.createdAt ?? "2026-08-20T00:00:00.000Z",
         agentIds: computer.agentIds ?? [agentId],
       });
       return json({
@@ -573,13 +572,13 @@ describe("OpenTag Web App Shell", () => {
     ).toBe(cardState);
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
-    const workspaceNavigation = screen.getByRole("navigation", { name: "Product" });
+    const productNavigation = screen.getByRole("navigation", { name: "Product" });
     expect(
-      within(workspaceNavigation)
+      within(productNavigation)
         .getAllByRole("link")
         .map((item) => item.textContent),
     ).toEqual(["Agents", "Tasks", "Skills", "Integrations"]);
-    const navigationIcons = workspaceNavigation.querySelectorAll("svg");
+    const navigationIcons = productNavigation.querySelectorAll("svg");
     expect(navigationIcons).toHaveLength(4);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
   });
@@ -812,7 +811,7 @@ describe("OpenTag Web App Shell", () => {
     expect(alert.textContent).toBe("The email address or password is incorrect");
   });
 
-  it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {
+  it("keeps authenticated invalid Agent tabs on the plain application canvas", async () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/unknown`);
     render(<App />);
@@ -1402,17 +1401,6 @@ describe("OpenTag Web App Shell", () => {
     expect(displayName.value).toBe("Ada");
     expect(screen.getByText("Ada")).toBeTruthy();
   });
-
-  it.each(["/workspace", "/admins", `/invites/${"A".repeat(43)}`])(
-    "does not preserve retired Workspace product route %s",
-    async (path) => {
-      window.history.replaceState({}, "", path);
-      render(<App />);
-      expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
-      expect(window.location.pathname).toBe(path);
-      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
-    },
-  );
 
   it("keeps the Agent home focused on status, usage, and Tasks", async () => {
     installApi({ bound: true });
@@ -2539,8 +2527,8 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   });
 
-  it("sends no management scope even when the Account holds several memberships", async () => {
-    installApi({ multipleMemberships: true });
+  it("reads the Agent collection without a client-selected management scope", async () => {
+    installApi();
     window.history.replaceState({}, "", "/agents");
     const getItem = vi.spyOn(Storage.prototype, "getItem");
     render(<App />);
@@ -2550,22 +2538,17 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path) === "/api/v1/agents")).toBe(true),
     );
-    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).includes("/api/v1/workspaces/"))).toBe(false);
     getItem.mockRestore();
   });
 
-  it("keeps Workspace management and switching out of the account menu", async () => {
-    installApi({ multipleMemberships: true });
+  it("keeps Account and Computer actions in the account menu", async () => {
+    installApi();
     render(<App />);
     const { menu } = await openAccountMenu();
 
     // The absence checks only mean something once the menu itself is on screen.
     expect(within(menu).getByRole("menuitem", { name: "Account" })).toBeTruthy();
-    expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
-    expect(within(menu).queryByRole("menuitem", { name: "Workspace" })).toBeNull();
-    expect(within(menu).queryByText("Secondary")).toBeNull();
     expect(within(menu).getByRole("menuitem", { name: "Computers" })).toBeTruthy();
-    expect(within(menu).queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 
   it("does not create an IM setup attempt while rendering Agent detail", async () => {
@@ -2805,7 +2788,7 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/agents/new");
   });
 
-  it("reveals the Agent name editor when the Server reports a Workspace name conflict", async () => {
+  it("reveals the Agent name editor when the Server reports an Account name conflict", async () => {
     installApi({ agentCreateError: "conflict" });
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
@@ -2816,7 +2799,7 @@ describe("OpenTag Web App Shell", () => {
 
     const alert = await screen.findByRole("alert");
     const name = screen.getByLabelText("Agent name");
-    expect(alert.textContent).toBe("An active Agent with this name already exists in the Workspace");
+    expect(alert.textContent).toBe("An active Agent with this name already exists for this Account");
     expect(name.getAttribute("aria-invalid")).toBe("true");
     await waitFor(() => expect(name).toBe(document.activeElement));
   });
@@ -2990,26 +2973,20 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).queryByRole("button", { name: "Create Agent" })).toBeNull();
   });
 
-  it("routes an Account with incomplete setup into onboarding without a Workspace grant", async () => {
-    installApi({ workspaceless: true });
+  it("routes an Account with incomplete setup into onboarding", async () => {
+    installApi({ setupIncomplete: true });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
-    expect(
-      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
-    ).toBe(false);
   });
 
-  it("keeps standalone onboarding reachable without a management Workspace", async () => {
-    installApi({ workspaceless: true });
+  it("keeps standalone onboarding reachable for an incomplete Account", async () => {
+    installApi({ setupIncomplete: true });
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
-    expect(
-      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
-    ).toBe(false);
   });
 
   it("routes an Account with incomplete setup into onboarding", async () => {
@@ -3042,22 +3019,10 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/agents");
   });
 
-  it("does not preserve the retired self-serve Workspace creation route", async () => {
-    installApi();
-    window.history.replaceState({}, "", "/workspaces/new");
-    render(<App />);
-    expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
-    expect(
-      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
-    ).toBe(false);
-  });
-
   it("keeps account controls personal and signs out from the account menu", async () => {
     installApi();
     render(<App />);
     const { menu } = await openAccountMenu();
-    expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
-    expect(within(menu).queryByRole("menuitem", { name: "Workspace management" })).toBeNull();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Account" }));
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
     expect(window.location.pathname).toBe("/account");
@@ -3156,7 +3121,7 @@ describe("OpenTag Web App Shell", () => {
     expect(computers.getAttribute("href")).toBe("/agents/computers");
     fireEvent.click(computers);
     expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connected Computers" })).toBeTruthy();
     expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/computers");
@@ -3164,7 +3129,7 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
-    installApi({ multipleMemberships: true });
+    installApi();
     render(<App />);
     const { menu, trigger } = await openAccountMenu();
     const account = within(menu).getByRole("menuitem", { name: "Account" });

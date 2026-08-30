@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
@@ -122,9 +121,8 @@ function services() {
       exchangeConnectCode: vi.fn().mockResolvedValue({
         computerId,
         credentialId: "credential-id",
+        installationId: "5e4c5b1b-1c3d-4a2b-8c9d-9f3b7a1c2d4e",
         machineToken: "machine-token",
-        workspaceComputerId: computerId,
-        workspaceId,
       }),
     },
     taskService: {
@@ -350,8 +348,9 @@ describe("Account-native management collections", () => {
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
   });
 
-  it("exchanges a Computer connect code and strips legacy authority fields", async () => {
+  it("exchanges a Computer connect code and withholds the credential id", async () => {
     const { app, service } = appWith();
+    const installationId = "5e4c5b1b-1c3d-4a2b-8c9d-9f3b7a1c2d4e";
     const response = await app.inject({
       method: "POST",
       url: HTTP_PATHS.computerConnectExchange,
@@ -359,32 +358,22 @@ describe("Account-native management collections", () => {
         arch: "arm64",
         clientVersion: "1.0.0",
         code: "sixteen-character-code",
-        computerId,
+        installationId,
         displayName: "Laptop",
         platform: "darwin",
       },
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["cache-control"]).toBe("no-store");
-    expect(response.json()).toEqual({ computerId, machineToken: "machine-token", workspaceComputerId: computerId });
+    expect(response.json()).toEqual({ computerId, installationId, machineToken: "machine-token" });
     expect(service.machineAuthService.exchangeConnectCode).toHaveBeenCalledWith({
       arch: "arm64",
       clientVersion: "1.0.0",
       code: "sixteen-character-code",
-      computerId,
+      installationId,
       displayName: "Laptop",
       platform: "darwin",
     });
-  });
-
-  it("does not register management Workspace routes", async () => {
-    const { app } = appWith();
-    const response = await app.inject({
-      method: "GET",
-      url: `/api/v1/workspaces/${randomUUID()}/computers`,
-      headers: authorization,
-    });
-    expect(response.statusCode).toBe(404);
   });
 
   it("forwards the provider readiness opt-in header", async () => {
@@ -409,7 +398,7 @@ describe("Account-native management collections", () => {
       { url: HTTP_PATHS.accountSetupComplete, base: { agentId } },
     ];
     for (const route of routes) {
-      for (const selector of [{ workspaceId: randomUUID() }, { accountId: userId }]) {
+      for (const selector of [{ accountId: userId }]) {
         const response = await app.inject({
           method: "POST",
           url: route.url,
@@ -445,7 +434,7 @@ describe("Account-native management collections", () => {
     expect(service.machineAuthService.issueForAccount).toHaveBeenCalledTimes(2);
   });
 
-  it("lists Account-owned collections without a compatibility Workspace", async () => {
+  it("lists Account-owned collections from authenticated Account authority", async () => {
     const { app, service } = appWith();
 
     for (const url of [HTTP_PATHS.accountAgents, HTTP_PATHS.accountComputers, HTTP_PATHS.accountTasks]) {

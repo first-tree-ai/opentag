@@ -5,7 +5,7 @@ import { Redirect } from "../../../features/navigation/redirect.js";
 import { useAccount } from "../../../features/session/session-context.js";
 import { OnboardingV2Page } from "../../../onboarding-v2/page.js";
 
-export const Route = createFileRoute("/_authenticated/_workspace/onboarding")({
+export const Route = createFileRoute("/_authenticated/_resources/onboarding")({
   component: OnboardingRoute,
   /**
    * The Agent this run is finishing, when something already knows it. The flow does not read it

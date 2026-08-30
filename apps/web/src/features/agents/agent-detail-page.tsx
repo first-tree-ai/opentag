@@ -32,7 +32,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
              * Usage and Connection share a row: neither fills the width on its own, and a failed
              * dependency belongs beside the work it is stopping rather than in a banner above it.
              */}
-            <div className="grid gap-6 @min-[48rem]/workspace:grid-cols-2">
+            <div className="grid gap-6 @min-[48rem]/content:grid-cols-2">
               <AgentUsageOverview agent={agent} agentId={agent.id} />
               <AgentConnectionCard agent={agent} />
             </div>

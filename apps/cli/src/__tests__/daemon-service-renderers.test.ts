@@ -66,7 +66,7 @@ describe("systemd service backend", () => {
     await expect(manager.start()).rejects.toThrow("does not expose a verifiable OPENTAG_HOME");
   });
 
-  it("rejects invalid and unenrolled machine credentials before service mutation", async () => {
+  it("rejects invalid and unconnected machine credentials before service mutation", async () => {
     const userHome = await temporaryDirectory("opentag-invalid-credentials-user-");
     const home = await temporaryDirectory("opentag-invalid-credentials-home-");
     const runner = fakeRunner((_, args) =>
@@ -81,7 +81,7 @@ describe("systemd service backend", () => {
       userHome,
       username: "test",
     });
-    await expect(manager.installAndStart()).rejects.toThrow("not enrolled");
+    await expect(manager.installAndStart()).rejects.toThrow("not connected");
     await writeFileWithParents(`${resolveDaemonPaths(home).config}/computer-credentials.json`, "malformed");
     await expect(manager.installAndStart()).rejects.toThrow("credentials are invalid");
   });

@@ -65,7 +65,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
   return (
     <section className="grid gap-4" aria-label="Agents" data-ui="agent-list">
       <p className="text-right text-sm text-kumo-subtle">Usage · last 30 days</p>
-      <div className="grid gap-4 @min-[48rem]/workspace:grid-cols-2" data-ui="agent-card-grid">
+      <div className="grid gap-4 @min-[48rem]/content:grid-cols-2" data-ui="agent-card-grid">
         {order.map((id) => {
           const agent = byId.get(id);
           return agent ? <AgentCard agent={agent} key={agent.id} /> : null;

@@ -9,7 +9,7 @@ import {
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { accountComputers, computers, imBindings, workspaceComputers } from "../db/schema/index.js";
+import { computers, imBindings } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import {
@@ -41,40 +41,25 @@ async function connectionFixture() {
   });
   const [computer] = await connectionDatabase.database
     .insert(computers)
-    .values({ id: crypto.randomUUID() })
-    .returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await connectionDatabase.database
-    .insert(workspaceComputers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "connection-computer",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.1",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await connectionDatabase.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "connection-computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.1",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const agent = await new AgentService(connectionDatabase.database).createForAccount(bootstrap.userId, {
     name: "connection-agent",
     displayName: "Connection Agent",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindings = new ImBindingService(connectionDatabase.database, cipher, { now: () => connectionNow });
-  return { bootstrap, agent, cipher, imBindings, computer, workspaceComputer };
+  return { bootstrap, agent, cipher, imBindings, computer };
 }
 
 describe("Feishu adapter", () => {

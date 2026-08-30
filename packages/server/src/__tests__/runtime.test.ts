@@ -121,7 +121,7 @@ describe("Computer runtime WebSocket", () => {
     expect(machineAuth.verifyMachineToken).not.toHaveBeenCalled();
   });
 
-  it("requires auth, registers without Workspace authority, and heartbeats", async () => {
+  it("requires Computer auth, registers, and heartbeats", async () => {
     const auth = authService();
     const computers = computerService();
     const registry = new ConnectionRegistry();
@@ -833,7 +833,7 @@ describe("RuntimeSession direct protocol coverage", () => {
     beforeAuth.session.start();
     beforeAuth.socket.emit(
       "message",
-      JSON.stringify(registerFrame(beforeAuth.context.computerId, randomUUID())),
+      JSON.stringify(registerFrame(beforeAuth.context.installationId, randomUUID())),
       false,
     );
     await vi.waitFor(() =>
@@ -846,7 +846,7 @@ describe("RuntimeSession direct protocol coverage", () => {
     await vi.waitFor(() => expect(v2.frames()).toContainEqual(expect.objectContaining({ type: "server:welcome" })));
     v2.socket.emit(
       "message",
-      JSON.stringify({ ...registerFrame(v2.context.computerId, randomUUID()), protocolVersion: 1 }),
+      JSON.stringify({ ...registerFrame(v2.context.installationId, randomUUID()), protocolVersion: 1 }),
       false,
     );
     await vi.waitFor(() => expect(v2.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })));
@@ -867,7 +867,7 @@ describe("RuntimeSession direct protocol coverage", () => {
     readiness.socket.emit(
       "message",
       JSON.stringify({
-        ...registerFrame(readiness.context.computerId, randomUUID()),
+        ...registerFrame(readiness.context.installationId, randomUUID()),
         providerReadiness: [{ provider: "claude-code", status: "ready" }],
       }),
       false,
@@ -883,7 +883,7 @@ describe("RuntimeSession direct protocol coverage", () => {
     protocolMismatch.socket.emit(
       "message",
       JSON.stringify({
-        ...registerFrame(protocolMismatch.context.computerId, protocolMismatch.instanceId),
+        ...registerFrame(protocolMismatch.context.installationId, protocolMismatch.instanceId),
         protocolVersion: 2,
       }),
       false,
@@ -964,7 +964,11 @@ describe("RuntimeSession direct protocol coverage", () => {
   it("covers registration persistence failure, activation fencing, and v2 response fences", async () => {
     const failed = directRuntimeSession({ computers: { register: vi.fn().mockRejectedValue(new Error("database")) } });
     await authenticateDirect(failed);
-    failed.socket.emit("message", JSON.stringify(registerFrame(failed.context.computerId, failed.instanceId)), false);
+    failed.socket.emit(
+      "message",
+      JSON.stringify(registerFrame(failed.context.installationId, failed.instanceId)),
+      false,
+    );
     await vi.waitFor(() => expect(failed.frames()).toContainEqual(expect.objectContaining({ code: "INTERNAL_ERROR" })));
 
     const activation = directRuntimeSession();
@@ -1002,7 +1006,10 @@ describe("RuntimeSession direct protocol coverage", () => {
     await registerDirect(mismatch);
     mismatch.socket.emit(
       "message",
-      JSON.stringify({ ...heartbeatFrame(mismatch.context.computerId, mismatch.instanceId), computerId: randomUUID() }),
+      JSON.stringify({
+        ...heartbeatFrame(mismatch.context.installationId, mismatch.instanceId),
+        installationId: randomUUID(),
+      }),
       false,
     );
     await vi.waitFor(() =>
@@ -1022,7 +1029,7 @@ describe("RuntimeSession direct protocol coverage", () => {
       },
     });
     await registerDirect(runtime);
-    const heartbeat = heartbeatFrame(runtime.context.computerId, runtime.instanceId);
+    const heartbeat = heartbeatFrame(runtime.context.installationId, runtime.instanceId);
     runtime.socket.emit("message", JSON.stringify(heartbeat), false);
     await vi.waitFor(() => expect(runtime.computers.heartbeat).toHaveBeenCalledTimes(1));
     runtime.socket.emit("message", JSON.stringify({ ...heartbeat, requestId: randomUUID() }), false);
@@ -1035,7 +1042,7 @@ describe("RuntimeSession direct protocol coverage", () => {
     await registerDirect(rejected);
     rejected.socket.emit(
       "message",
-      JSON.stringify(heartbeatFrame(rejected.context.computerId, rejected.instanceId)),
+      JSON.stringify(heartbeatFrame(rejected.context.installationId, rejected.instanceId)),
       false,
     );
     await vi.waitFor(() =>
@@ -1047,7 +1054,7 @@ describe("RuntimeSession direct protocol coverage", () => {
     replaced.registry.isCurrent = vi.fn().mockReturnValue(false) as never;
     replaced.socket.emit(
       "message",
-      JSON.stringify(heartbeatFrame(replaced.context.computerId, replaced.instanceId)),
+      JSON.stringify(heartbeatFrame(replaced.context.installationId, replaced.instanceId)),
       false,
     );
     await vi.waitFor(() =>
@@ -1177,9 +1184,8 @@ function directRuntimeSession(
   const instanceId = randomUUID();
   const context = {
     credentialId: randomUUID(),
-    workspaceComputerId: randomUUID(),
-    workspaceId: randomUUID(),
     computerId: randomUUID(),
+    installationId: randomUUID(),
   };
   const auth = { verifyMachineToken: vi.fn().mockResolvedValue(context) } as never;
   const computers = {
@@ -1200,7 +1206,11 @@ function directRuntimeSession(
 
 async function registerDirect(runtime: ReturnType<typeof directRuntimeSession>): Promise<void> {
   await authenticateDirect(runtime);
-  runtime.socket.emit("message", JSON.stringify(registerFrame(runtime.context.computerId, runtime.instanceId)), false);
+  runtime.socket.emit(
+    "message",
+    JSON.stringify(registerFrame(runtime.context.installationId, runtime.instanceId)),
+    false,
+  );
   await vi.waitFor(() =>
     expect(runtime.frames()).toContainEqual(expect.objectContaining({ type: "computer:register:result" })),
   );
@@ -1222,7 +1232,7 @@ async function registerDirectV2(runtime: ReturnType<typeof directRuntimeSession>
   runtime.socket.emit(
     "message",
     JSON.stringify({
-      ...registerFrame(runtime.context.computerId, runtime.instanceId),
+      ...registerFrame(runtime.context.installationId, runtime.instanceId),
       protocolVersion: RUNTIME_PROTOCOL_V2,
       capabilities: { imCredentialGrant: 1 },
       supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
@@ -1250,8 +1260,8 @@ function authFrame(protocolVersion: 1 | 2) {
   };
 }
 
-function heartbeatFrame(computerId: string, instanceId: string) {
-  return { type: "heartbeat", requestId: randomUUID(), computerId, instanceId };
+function heartbeatFrame(installationId: string, instanceId: string) {
+  return { type: "heartbeat", requestId: randomUUID(), installationId, instanceId };
 }
 
 class RuntimeTestSocket extends EventEmitter {

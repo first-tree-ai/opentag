@@ -7,7 +7,7 @@
  * simply not answered yet. Those are the cases here.
  */
 
-import type { AgentAdminConfig, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentAdminConfig } from "@opentag/shared/browser";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +25,7 @@ const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const POLL_MS = 1_500;
 const EXPIRES_IN_S = 900;
 
-function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
+function computer(overrides: Partial<AccountComputerSummary> = {}): AccountComputerSummary {
   return {
     computerId: COMPUTER_ID,
     displayName: "Ada's Mac",
@@ -34,13 +34,13 @@ function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceC
     connectedAt: "2026-08-29T00:00:10.000Z",
     lastSeenAt: "2026-08-29T00:00:10.000Z",
     observedAt: "2026-08-29T00:00:10.000Z",
-    enrolledAt: "2026-08-29T00:00:10.000Z",
+    createdAt: "2026-08-29T00:00:10.000Z",
     agentIds: [],
     ...overrides,
   };
 }
 
-function ready(provider: Runtime = "codex"): Partial<WorkspaceComputerSummary> {
+function ready(provider: Runtime = "codex"): Partial<AccountComputerSummary> {
   return { providerReadiness: [{ provider, status: "ready", observedAt: NOW }] };
 }
 
@@ -69,7 +69,7 @@ function adminConfig(): AgentAdminConfig {
  * Each entry answers one `computers()` call, in order; the last entry answers every call after it.
  * The first call is always the baseline read, so a fixture reads as "before the code, then after".
  */
-function computersReturning(...pages: readonly (readonly WorkspaceComputerSummary[])[]) {
+function computersReturning(...pages: readonly (readonly AccountComputerSummary[])[]) {
   let call = 0;
   return vi.spyOn(browserApi, "computers").mockImplementation(async () => {
     const page = pages[Math.min(call, pages.length - 1)] ?? [];
@@ -211,7 +211,7 @@ describe("useServerBackend", () => {
   });
 
   describe("deciding which Computer arrived", () => {
-    it("does not accept a Computer that was already enrolled before the code was issued", async () => {
+    it("does not accept a Computer that was already connected before the code was issued", async () => {
       const existing = computer(ready());
       computersReturning([existing], [existing]);
       issuing();
@@ -271,13 +271,13 @@ describe("useServerBackend", () => {
 
     /**
      * Documented limitation, not a guarantee. The baseline rules out machines that were already
-     * enrolled, and nothing more: the Computers list is Workspace-wide and carries no link back to
-     * the issued code, so a colleague enrolling — or reconnecting — during the wait is read as this
+     * connected, and nothing more: the Computers list is Account-wide and carries no link back to
+     * the issued code, so a colleague connecting — or reconnecting — during the wait is read as this
      * reader's arrival. Closing it needs a discriminator from the Server (the issue response
-     * naming the code, and the Computer summary echoing the code it enrolled with). The existing
+     * naming the code, and the Computer summary echoing the code it connected with). The existing
      * onboarding's Computer step has the same gap, so this is inherited rather than introduced.
      */
-    it("cannot tell a colleague's enrollment during the wait from this reader's own", async () => {
+    it("cannot tell a colleague's connection during the wait from this reader's own", async () => {
       const otherAccountsMachine = computer({ computerId: OTHER_COMPUTER_ID, displayName: "Bob's Mac", ...ready() });
       computersReturning([], [otherAccountsMachine]);
       issuing();
@@ -436,7 +436,7 @@ describe("useServerBackend", () => {
 
   describe("superseded attempts", () => {
     it("discards a Computers reply issued before the command was refreshed", async () => {
-      const pending = deferred<{ computers: WorkspaceComputerSummary[] }>();
+      const pending = deferred<{ computers: AccountComputerSummary[] }>();
       let call = 0;
       vi.spyOn(browserApi, "computers").mockImplementation(async () => {
         call += 1;
@@ -463,7 +463,7 @@ describe("useServerBackend", () => {
     });
 
     it("discards a baseline reply from an attempt that was already replaced", async () => {
-      const stale = deferred<{ computers: WorkspaceComputerSummary[] }>();
+      const stale = deferred<{ computers: AccountComputerSummary[] }>();
       let call = 0;
       vi.spyOn(browserApi, "computers").mockImplementation(async () => {
         call += 1;
@@ -477,9 +477,9 @@ describe("useServerBackend", () => {
       act(() => view.result.current.refreshConnectCode());
       await settle();
 
-      const alreadyEnrolled = computer(ready());
+      const alreadyConnected = computer(ready());
       await act(async () => {
-        stale.resolve({ computers: [alreadyEnrolled] });
+        stale.resolve({ computers: [alreadyConnected] });
         await Promise.resolve();
       });
       await tick(POLL_MS);
@@ -517,7 +517,7 @@ describe("useServerBackend", () => {
       expect(view.result.current.creation).toBe("idle");
     });
 
-    it("creates on the Computer this run enrolled, with the drafted name and runtime", async () => {
+    it("creates on the Computer this run connected, with the drafted name and runtime", async () => {
       computersReturning([], [computer(ready("claude-code"))]);
       issuing();
       const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());

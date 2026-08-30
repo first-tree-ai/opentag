@@ -857,7 +857,7 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("returns Admin-safe Slack handoff readiness while preserving Workspace authorization boundaries", async () => {
+  it("returns credential-safe Slack handoff readiness while preserving Account authorization boundaries", async () => {
     const value = await fixture();
     try {
       const [member] = await value.database

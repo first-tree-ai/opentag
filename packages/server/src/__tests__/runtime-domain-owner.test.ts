@@ -222,8 +222,7 @@ describe("RuntimeDomainOwner", () => {
     await unsupportedRegistry.register(
       {
         computerId: fixture.computerId,
-        workspaceComputerId: fixture.computerId,
-        workspaceId: fixture.context.workspaceId,
+        installationId: fixture.context.installationId,
         instanceId: fixture.instanceId,
         lastHeartbeatAt: 1,
         socket: unsupportedSocket,
@@ -249,7 +248,7 @@ describe("RuntimeDomainOwner", () => {
     const custody = new MemoryRuntimeCustodyStore();
     vi.spyOn(custody, "getDeliveryByTurn").mockResolvedValue({
       agentId: "agent-1",
-      workspaceComputerId: fixture.context.workspaceComputerId,
+      computerId: fixture.context.computerId,
       deliveryId: "delivery-1",
       inputHash: "input",
       instanceId: fixture.instanceId,

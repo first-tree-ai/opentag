@@ -91,8 +91,8 @@ export function createUserAuthPreHandler(authService: UserAuthService, options: 
     if (renewed.length > 0) appendSetCookies(reply, renewed);
     renewBrowserCsrfCookie(request, reply, options);
     /*
-     * What the session carries is only an identity: suspension and Workspace grants are resolved live from the
-     * database on every request, so revoking either takes effect immediately.
+     * What the session carries is only an identity: the Account's active state is resolved live from the database on
+     * every request, so suspension takes effect immediately.
      */
     request.authContext = {
       me: await authService.getActiveUserById(resolved.response.user.id),

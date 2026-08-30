@@ -4,14 +4,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
 import {
-  accountComputers,
   computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../../../db/schema/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
 import { AgentService } from "../index.js";
@@ -33,43 +31,29 @@ beforeEach(async () => {
   await unitDatabase.reset();
 });
 
-async function createComputer(ownerUserId: string, workspaceId: string, label = "workstation") {
+async function createComputer(ownerUserId: string, label = "workstation") {
   const installationId = crypto.randomUUID();
-  const [computer] = await unitDatabase.database.insert(computers).values({ id: installationId }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [enrollment] = await unitDatabase.database
-    .insert(workspaceComputers)
+  const [computer] = await unitDatabase.database
+    .insert(computers)
     .values({
-      workspaceId,
-      computerId: installationId,
+      ownerAccountId: ownerUserId,
+      currentInstallationId: installationId,
       displayName: label,
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: ownerUserId,
     })
     .returning();
-  if (!enrollment) throw new Error("Workspace Computer fixture was not created");
-  await unitDatabase.database.insert(accountComputers).values({
-    id: enrollment.id,
-    ownerAccountId: ownerUserId,
-    currentInstallationId: installationId,
-    displayName: label,
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-  });
-  return { id: enrollment.id, installationId };
+  if (!computer) throw new Error("Computer fixture was not created");
+  return { id: computer.id, installationId };
 }
 
 async function fixture() {
   const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
-  const computer = await createComputer(bootstrap.userId, bootstrap.workspaceId);
+  const computer = await createComputer(bootstrap.userId);
   const service = new AgentService(unitDatabase.database, { now: () => NOW });
   return { bootstrap, computer, service };
 }
@@ -132,7 +116,6 @@ async function createSession(
   if (computerId) {
     await unitDatabase.database.insert(sessionPlacements).values({
       sessionId: session.id,
-      workspaceComputerId: computerId,
       computerId,
       generation: 1,
     });
@@ -491,8 +474,8 @@ describe("AgentService", () => {
     expect(stopSessions).toHaveBeenCalledWith([
       {
         agentId: created.id,
-        computerId: expect.any(String),
-        workspaceComputerId: computer.id,
+        computerId: computer.id,
+        installationId: computer.installationId,
         placementGeneration: 1,
         sessionId: session.id,
       },
@@ -523,7 +506,7 @@ describe("AgentService", () => {
 
   it("rebinds active Sessions, rejects unsafe custody, and handles no-op and missing targets", async () => {
     const { bootstrap, computer, service } = await fixture();
-    const target = await createComputer(bootstrap.userId, bootstrap.workspaceId, "target");
+    const target = await createComputer(bootstrap.userId, "target");
     const created = await createAgent(service, bootstrap.userId, computer.id, "rebind-agent");
     const binding = await createBinding(created.id);
     const session = await createSession(binding.id, computer.id);
@@ -558,7 +541,7 @@ describe("AgentService", () => {
       .select()
       .from(sessionPlacements)
       .where(eq(sessionPlacements.sessionId, session.id));
-    expect(placement).toMatchObject({ computerId: target.id, workspaceComputerId: target.id, generation: 2 });
+    expect(placement).toMatchObject({ computerId: target.id, generation: 2 });
     await expect(service.rebindById(bootstrap.userId, created.id, crypto.randomUUID())).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
     });

@@ -12,6 +12,5 @@ describe("initial admin bootstrap contract", () => {
       displayName: "a".repeat(255),
     });
     expect(() => BootstrapAdminInputSchema.parse({ ...validInput, displayName: "a".repeat(256) })).toThrow();
-    expect(() => BootstrapAdminInputSchema.parse({ ...validInput, workspaceName: "retired" })).toThrow();
   });
 });

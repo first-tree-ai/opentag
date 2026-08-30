@@ -66,7 +66,7 @@ describe("daemon service runtime", () => {
     const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
     clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
-    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not enrolled");
+    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not connected");
     expect(entries).toContainEqual(expect.objectContaining({ message: "Malformed daemon environment line ignored" }));
   });
 

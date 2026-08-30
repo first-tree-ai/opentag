@@ -7,7 +7,7 @@
  * never has two clocks disagreeing about the same moment.
  */
 
-import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentRuntimeProvider, ImBindingHandoffStatus } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
@@ -37,15 +37,15 @@ export function errorMessage(cause: unknown, fallback: string): string {
  * Which Computer this run is waiting for.
  *
  * The Computers response carries no link back to the code that was issued, so "a Computer appeared"
- * is not the same claim as "my Computer appeared". Every enrollment visible before the code was
+ * is not the same claim as "my Computer appeared". Every connection visible before the code was
  * issued is recorded, and only a Computer that is absent from that baseline — or one whose
  * `connectedAt` has moved since — counts as this run's arrival. Without that, someone else's
  * machine registering would satisfy this reader's step.
  */
 function findArrival(
-  computers: readonly WorkspaceComputerSummary[],
+  computers: readonly AccountComputerSummary[],
   baseline: ReadonlyMap<string, string | null>,
-): WorkspaceComputerSummary | undefined {
+): AccountComputerSummary | undefined {
   return computers.find(
     (computer) =>
       computer.connectionStatus === "online" &&
@@ -73,13 +73,13 @@ function readMessaging(handoff: ImBindingHandoffStatus | undefined): MessagingSt
  *
  * Nothing is inferred here. The code named this machine, so the only question is whether it has
  * come back — which is a fresh `connectedAt` on that exact Computer, and cannot be satisfied by
- * any other machine enrolling during the wait.
+ * any other machine connecting during the wait.
  */
 function findRepaired(
-  computers: readonly WorkspaceComputerSummary[],
+  computers: readonly AccountComputerSummary[],
   targetComputerId: string,
   baseline: ReadonlyMap<string, string | null>,
-): WorkspaceComputerSummary | undefined {
+): AccountComputerSummary | undefined {
   const target = computers.find((computer) => computer.computerId === targetComputerId);
   if (!target || target.connectionStatus !== "online" || target.connectedAt === null) return undefined;
   return baseline.get(targetComputerId) === target.connectedAt ? undefined : target;
@@ -99,7 +99,7 @@ function findRepaired(
  * Provider rather than by position — the Server sends only what it has observed, in its own
  * canonical order, so position 0 is whichever CLI happened to report, not the one being asked about.
  */
-function readReadiness(computer: WorkspaceComputerSummary, runtime: AgentRuntimeProvider | undefined): ReadinessFacts {
+function readReadiness(computer: AccountComputerSummary, runtime: AgentRuntimeProvider | undefined): ReadinessFacts {
   const provider = runtime ? computer.providerReadiness?.find((entry) => entry.provider === runtime) : undefined;
   const messagingCli: Partial<Record<MessagingProvider, MessagingCliStatus>> = {};
   for (const entry of computer.imCliReadiness ?? []) messagingCli[entry.provider] = entry.status;
@@ -117,7 +117,7 @@ function readReadiness(computer: WorkspaceComputerSummary, runtime: AgentRuntime
  */
 export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [connect, setConnect] = useState<ConnectState>({ kind: "idle" });
-  const [computer, setComputer] = useState<WorkspaceComputerSummary>();
+  const [computer, setComputer] = useState<AccountComputerSummary>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   const [agent, setAgent] = useState<CreatedAgent>();
@@ -141,7 +141,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   /** Discards the reply of a read the reader has already asked to redo. */
   const resumeRun = useRef(0);
 
-  /** The Computer this run enrolled. Messaging and creation both need it after the step is left. */
+  /** The Computer this run connected. Messaging and creation both need it after the step is left. */
   const computerId = useRef<string | undefined>(undefined);
   const baseline = useRef<Map<string, string | null>>(new Map());
   const expiresAt = useRef(0);
@@ -200,7 +200,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
         /*
          * The Agent names its Computer, but that is a foreign key rather than a state: it says which
-         * machine was enrolled, not whether it is there now. Asserting a live connection from it
+         * machine was connected, not whether it is there now. Asserting a live connection from it
          * would put "Your computer is connected." on screen while the Server says otherwise, and
          * hide the command that is the only way to bring the machine back — so the connection is
          * read, not inferred. One extra round trip buys not saying something untrue.
@@ -217,15 +217,15 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
-        const enrolled = online.get(existing.computer.computerId);
+        const connected = online.get(existing.computer.computerId);
         // Offline or gone: the step issues a code that repairs this exact Computer.
-        repairTarget.current = enrolled ? undefined : existing.computer.computerId;
-        if (enrolled) {
-          computerId.current = enrolled.computerId;
-          setComputer(enrolled);
-          // Already enrolled, so this step has nothing to ask for: it reports the machine rather
+        repairTarget.current = connected ? undefined : existing.computer.computerId;
+        if (connected) {
+          computerId.current = connected.computerId;
+          setComputer(connected);
+          // Already connected, so this step has nothing to ask for: it reports the machine rather
           // than issuing a command that would spend its validity unseen.
-          setConnect({ kind: "connected", command: "", computerName: enrolled.displayName });
+          setConnect({ kind: "connected", command: "", computerName: connected.displayName });
         }
         // An offline or missing Computer leaves the connection idle, which is what makes the step
         // issue a fresh code — and whatever machine answers it gets bound to this Agent.

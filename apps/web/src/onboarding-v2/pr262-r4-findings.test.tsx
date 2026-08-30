@@ -6,7 +6,7 @@
  * where it started.
  */
 
-import type { AgentListItem, FeishuSetupAttempt, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentListItem, FeishuSetupAttempt } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -37,7 +37,7 @@ function agentOn(computerId: string, displayName: string, extra: Partial<AgentLi
   };
 }
 
-function machine(id: string, name: string, online: boolean): WorkspaceComputerSummary {
+function machine(id: string, name: string, online: boolean): AccountComputerSummary {
   return {
     computerId: id,
     displayName: name,
@@ -46,7 +46,7 @@ function machine(id: string, name: string, online: boolean): WorkspaceComputerSu
     connectedAt: online ? "2026-08-29T00:00:20.000Z" : null,
     lastSeenAt: NOW,
     observedAt: NOW,
-    enrolledAt: NOW,
+    createdAt: NOW,
     agentIds: [],
     providerReadiness: online ? [{ provider: "codex", status: "ready", observedAt: NOW }] : undefined,
   };

@@ -119,7 +119,7 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
           </header>
           {section !== "execution" ? <p className="text-sm text-kumo-subtle">Provider: {providerName}</p> : null}
           <form className="grid gap-4" onSubmit={saveRuntime}>
-            <div className="grid gap-4 @min-[36rem]/workspace:grid-cols-2">
+            <div className="grid gap-4 @min-[36rem]/content:grid-cols-2">
               <Field htmlFor={fieldId("model")} label="Model">
                 <KumoSelectControl
                   id={fieldId("model")}

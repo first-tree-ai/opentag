@@ -44,9 +44,7 @@ export function useOwnComputersResource(): {
       if (!watching) return;
       // Invalidating resolves whether or not the re-read succeeded, so the outcome is read off the
       // query rather than off this promise.
-      const settled = queryClient.getQueryState<{ computers: AccountComputerSummary[] }, Error>(
-        queryKeys.computers(),
-      );
+      const settled = queryClient.getQueryState<{ computers: AccountComputerSummary[] }, Error>(queryKeys.computers());
       setRefresh({ pending: false, error: settled?.status === "error" ? (settled.error ?? undefined) : undefined });
     });
     return () => {

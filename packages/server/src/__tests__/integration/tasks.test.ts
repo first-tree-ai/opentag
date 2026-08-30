@@ -343,7 +343,7 @@ describe("Task debug queries", () => {
     }
   });
 
-  it("isolates Workspace data and rejects malformed cursors", async () => {
+  it("isolates Account data and rejects malformed cursors", async () => {
     const value = await fixture();
     try {
       await expect(value.service.list(crypto.randomUUID(), { limit: 50 })).resolves.toEqual({

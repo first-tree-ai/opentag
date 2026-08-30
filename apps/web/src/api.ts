@@ -1,8 +1,8 @@
 import {
   type AccountComputerConnectCodeIssueRequest,
-  type AccountSetupResetMode,
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
+  type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -229,7 +229,7 @@ export class BrowserApi {
 
   /**
    * Issues a Computer connect code. Without a target this creates a new Computer; naming one
-   * repairs that exact Computer instead, which is what a reinstalled or re-enrolled machine needs —
+   * repairs that exact Computer instead, which is what a reinstalled or re-connected machine needs —
    * it keeps its identity rather than becoming a second Computer beside the one it replaced.
    */
   issueComputerConnectCode(input?: AccountComputerConnectCodeIssueRequest): Promise<ComputerConnectCodeIssueResponse> {

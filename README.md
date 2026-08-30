@@ -12,7 +12,7 @@ This repository currently provides the engineering foundation and first control-
 - a schema-validating client health check;
 - provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
 - one-time Account login codes with sliding stateless refresh JWTs;
-- independently authenticated Computer enrollment and presence;
+- independently authenticated Computer connection and presence;
 - Agent registry with immutable Computer/provider binding and revision fencing;
 - durable Agent Runtime execution, delivery custody, reporting, and recovery;
 - Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
@@ -38,14 +38,11 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-In another terminal, bootstrap the first Account, then exchange the returned Account login code. The command name and
-`OPENTAG_BOOTSTRAP_WORKSPACE_*` inputs remain compatibility interfaces until Phase 2:
+In another terminal, bootstrap the first Account, then exchange the returned Account login code:
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
-export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
@@ -54,9 +51,9 @@ opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
 
 Account credentials are management-only and never start the daemon. Open the Web, enter the Agents area, generate a
 15-minute Computer connection command, and run its `opentag-dev computer connect --server ... <code>` invocation on the
-execution host. That command stores an enrollment-scoped machine credential and installs or restarts the per-user daemon
+execution host. That command stores a Computer-scoped machine credential and installs or restarts the per-user daemon
 service on Linux and macOS. Keeping `~/.local/bin` first in `PATH` ensures the service uses this checkout's newly built CLI
-instead of an older shim. `opentag-dev computer list` shows the enrolled Computer as online. Use `daemon stop`, `start`,
+instead of an older shim. `opentag-dev computer list` shows the connected Computer as online. Use `daemon stop`, `start`,
 `restart`, `status`, and `uninstall` for lifecycle management. Pass `computer connect --no-start` when only the machine
 credential should be stored. Daemon services are not supported on Windows in v0.1.
 
@@ -79,13 +76,9 @@ prepares the Runtime and never silently replaced by OpenTag. Claude Code Effecti
 supported.
 
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
-`http://127.0.0.1:8000/`. The signed-in Account manages Agents, Tasks, Skills, and Integrations available through its
-internal compatibility scope. Computer enrollment and diagnosis live in the Agents area. The accepted product direction
-and product presentation are **Account → Computer enrollment → Agent → IM binding**; Phase 1 does not yet make that a
-strict per-Account schema invariant. OpenTag exposes no Workspace, Admin, or invitation management surface. The database
-still provisions an internal default Workspace and grant as a compatibility seam until Phase 2. Legacy active grants
-may let multiple Accounts manage the same Agents and Computer enrollments until the one-off data split and Phase 2
-establish strict ownership. These compatibility records are not a shared collaboration container.
+`http://127.0.0.1:8000/`. The signed-in Account manages the Agents, Computers, Tasks, Skills, and Integrations it owns.
+Computer connection and diagnosis live in the Agents area. The product model is
+**Account → Computer → Agent → IM binding**, with ownership enforced directly by the Account-native schema.
 
 Internal Session collaboration is an Agent Runtime feature, not a Workspace, Project, or other management entity. It
 does not define cross-Agent ownership or shared files, memory, tasks, secrets, or billing. Context Tree can preserve
@@ -93,7 +86,7 @@ long-term context independently of that real-time Session messaging boundary.
 
 For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
 `OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the
-`dev` environment and never creates Accounts or compatibility grants.
+`dev` environment and never creates Accounts.
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 

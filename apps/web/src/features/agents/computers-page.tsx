@@ -1,4 +1,4 @@
-import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary } from "@opentag/shared/browser";
 import { StatusIndicator, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
 import { AsyncState, toResourceState } from "../resource/resource-state.js";
@@ -6,8 +6,8 @@ import { useComputersQuery } from "./agent-queries.js";
 import { ComputerSetup } from "./computer-setup.js";
 
 /**
- * Lists the Account's enrolled Computers and keeps the connection flow available as its own
- * management surface. A Computer can be enrolled before an Agent exists, so this page cannot be
+ * Lists the Account's connected Computers and keeps the connection flow available as its own
+ * management surface. A Computer can be connected before an Agent exists, so this page cannot be
  * folded into the Agent list without making that first-run path unnecessarily indirect.
  */
 export function ComputersPage() {
@@ -16,7 +16,7 @@ export function ComputersPage() {
   const state = toResourceState(useComputersQuery(true));
 
   return (
-    <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">
+    <Page title="Computers" description="Connect and recover the Computers used by your Agents.">
       <AsyncState state={state}>
         {(value) => (
           <div className="grid gap-6">
@@ -29,18 +29,18 @@ export function ComputersPage() {
   );
 }
 
-export function ComputerList({ computers }: { computers: readonly WorkspaceComputerSummary[] }) {
+export function ComputerList({ computers }: { computers: readonly AccountComputerSummary[] }) {
   return (
     <section
-      aria-labelledby="enrolled-computers-heading"
+      aria-labelledby="connected-computers-heading"
       className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
     >
-      <Text as="h2" id="enrolled-computers-heading" variant="heading">
-        Enrolled Computers
+      <Text as="h2" id="connected-computers-heading" variant="heading">
+        Connected Computers
       </Text>
       {computers.length === 0 ? (
         <Text as="p" variant="secondary">
-          No Computers are enrolled yet.
+          No Computers are connected yet.
         </Text>
       ) : (
         <ul className="grid divide-y divide-kumo-line">
@@ -53,7 +53,7 @@ export function ComputerList({ computers }: { computers: readonly WorkspaceCompu
   );
 }
 
-function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) {
+function ComputerListItem({ computer }: { computer: AccountComputerSummary }) {
   const online = computer.connectionStatus === "online";
   const platform = computer.platform === "darwin" ? "macOS" : computer.platform === "win32" ? "Windows" : "Linux";
   const agentCount = computer.agentIds.length;

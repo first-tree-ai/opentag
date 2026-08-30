@@ -3,7 +3,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
 import {
-  accountComputers,
   agents,
   computers,
   imBindings,
@@ -11,7 +10,6 @@ import {
   imMessages,
   sessionMessages,
   sessions,
-  workspaceComputers,
 } from "../../../db/schema/index.js";
 import { TaskQueryError, TaskService } from "../index.js";
 
@@ -34,40 +32,25 @@ async function fixture() {
   const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
     displayName: "Task User",
     email: "task@example.com",
-    workspaceDisplayName: "Tasks",
-    workspaceName: "tasks",
   });
   const installationId = crypto.randomUUID();
-  await unitDatabase.database.insert(computers).values({ id: installationId });
-  const [workspaceComputer] = await unitDatabase.database
-    .insert(workspaceComputers)
+  const [computer] = await unitDatabase.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: installationId,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: installationId,
       displayName: "Task Computer",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace computer fixture was not created");
-  await unitDatabase.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: installationId,
-    displayName: "Task Computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const [agent] = await unitDatabase.database
     .insert(agents)
     .values({
-      workspaceId: bootstrap.workspaceId,
       createdByUserId: bootstrap.userId,
-      workspaceComputerId: workspaceComputer.id,
-      computerId: workspaceComputer.id,
+      computerId: computer.id,
       name: "atlas",
       displayName: "Atlas",
       runtimeProvider: "codex",

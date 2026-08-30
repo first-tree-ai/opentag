@@ -151,7 +151,7 @@ active、scopes 完整、且当前凭证材料可读且有效的安装。Agent �
 - `SLACK_SCOPE_REAUTH_REQUIRED`：token 缺少至少一个固定 scope。
 - `SLACK_CONFIGURATION_CONFLICT`：授权开始后 route、installation 或代际发生变化。
 - `SLACK_OAUTH_FAILED`：一等 Slack OAuth state 无效、过期、被重放，或用户取消了授权。
-- `SLACK_APP_TEAM_ALREADY_BOUND`：该 App/Team 安装已被另一个 OpenTag workspace 当前占用。
+- `SLACK_APP_TEAM_ALREADY_BOUND`：该 App/Team 安装已被另一个 OpenTag Agent 当前占用。
 
 ## 迁移与恢复
 
@@ -159,18 +159,18 @@ active、scopes 完整、且当前凭证材料可读且有效的安装。Agent �
 行、把缺 scope 的已配置行标为 `reauthorization_required`、把已具备完整固定 scopes 的 legacy 重授权行恢复 active、删除
 `pending_receive_mode`，并保持 Feishu setup 字段不变。
 
-随后的 workspace-installation cutover：
+随后的 Agent-installation cutover：
 
-- 把 Bot Token 与 Signing Secret 从当前 Slack route 搬到该 OpenTag workspace 的一份 installation，绝不把 secret 复制到多个
+- 把 Bot Token 与 Signing Secret 从当前 Slack route 搬到一份由 Agent 拥有的 installation，绝不把 secret 复制到多个
   Agent 行；
-- 优先选择结构完整且 `status=active` 的候选；只有没有 active 时才选择结构完整的 `reauthorization_required` 行，再按
+- 优先选择该 owning Agent 下结构完整且 `status=active` 的候选；只有没有 active 时才选择结构完整的 `reauthorization_required` 行，再按
   `created_at` 与 `id` 稳定排序；
-- 被选中的行成为 default route；同一 workspace 内其他当前 Slack App/Team 行 fail closed；
+- 被选中的行成为 default route；任何重复的当前 Slack App/Team installation 都 fail closed；
 - 单 Agent Slack 数据保持无损。
 
 重新授权会先验证新凭证，并核对锁定的当前 App/Team/Bot 身份，再接触当前 installation。因此，当 `auth.test` 不返回
 `app_id` 时，App ID 不匹配也不能变成隐式 replacement。同身份成功时原子推进 installation 代际，并同步脱敏快照到 route。Slack
-没有 Change App 或 replace 意图；断开连接会结束该 Agent route 的 Sessions，但不会卸载 workspace installation。并发
+没有 Change App 或 replace 意图；断开连接会结束该 Agent route 的 Sessions，但不会卸载 Slack installation。并发
 配置同时受预期 route ID/generation 与数据库唯一约束保护；运行观测、身份闭合、provider 撤销与 provider 禁用还分别受事件
 解析时精确 installation credential generation 的栅栏保护。
 

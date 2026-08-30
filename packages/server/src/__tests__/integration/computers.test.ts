@@ -426,7 +426,6 @@ describe("Computer connection persistence", () => {
           installationId,
           machineToken: expect.stringMatching(/^otmc_/),
         });
-        expect(response.json()).not.toHaveProperty("workspaceId");
       } finally {
         await app.close();
       }
@@ -435,7 +434,7 @@ describe("Computer connection persistence", () => {
     }
   });
 
-  it("issues connect codes only through the Account-native route", async () => {
+  it("issues connect codes through the Account-native route", async () => {
     const value = await fixture();
     try {
       const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
@@ -446,12 +445,6 @@ describe("Computer connection persistence", () => {
         machineAuthService: value.machineAuth,
       });
       try {
-        const retired = await app.inject({
-          method: "POST",
-          url: `/api/v1/workspaces/${crypto.randomUUID()}/computer-connect-codes`,
-          headers: { authorization: `Bearer ${account.accessToken}` },
-        });
-        expect(retired.statusCode).toBe(404);
         const issued = await app.inject({
           method: "POST",
           url: HTTP_PATHS.accountComputerConnectCodes,

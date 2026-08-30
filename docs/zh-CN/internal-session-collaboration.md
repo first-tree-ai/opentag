@@ -13,7 +13,7 @@ opentag session list
 
 当前 source Session 是隐式身份。Runtime 注入 managed proof 文件，CLI 从
 `OPENTAG_HOME/config/computer.json` 读取 Server 绑定；调用者不能传 Agent 或 source Session ID。proof 绑定当前
-Session、placement generation、Computer enrollment 与 Client connection。同一绑定下的 reconcile（包括 timeout 或
+Session、placement generation、Computer connection 与 Client connection。同一绑定下的 reconcile（包括 timeout 或
 response 丢失后的重试）会复用同一 proof；placement、connection、Agent 或 IM binding 变化都会使旧 proof 失效。
 
 同一个 daemon OS 用户启动的所有 Provider 进程目前属于同一信任域。文件权限可以隔离其他 OS 用户并减少意外暴露，

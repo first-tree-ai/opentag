@@ -60,7 +60,7 @@ export interface OnboardingResetServiceOptions {
  * before active resource cleanup has been verified.
  *
  * Reset acts only on Agents this Account created and Computers it owns. It never writes
- * management Workspace persistence.
+ * retired ownership persistence.
  */
 export class OnboardingResetService {
   readonly #afterCleanup?: () => Promise<void>;

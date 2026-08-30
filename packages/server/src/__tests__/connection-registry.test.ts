@@ -220,35 +220,32 @@ describe("ConnectionRegistry", () => {
 
   it("falls back to a fresh legacy credential-grant capability", async () => {
     const registry = new ConnectionRegistry();
-    const workspaceComputerId = randomUUID();
+    const computerId = randomUUID();
     const instanceId = randomUUID();
     await registry.register(
       {
         capabilities: { imCredentialGrant: 1 },
         capabilitiesUpdatedAt: 100,
-        computerId: workspaceComputerId,
+        computerId,
+        installationId: randomUUID(),
         instanceId,
         lastHeartbeatAt: 100,
         socket: socket(),
-        workspaceComputerId,
-        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
 
-    expect(registry.capabilityVersion(workspaceComputerId, instanceId, RUNTIME_CAPABILITY.imCredentialGrant, 100)).toBe(
-      1,
-    );
+    expect(registry.capabilityVersion(computerId, instanceId, RUNTIME_CAPABILITY.imCredentialGrant, 100)).toBe(1);
     expect(
       registry.capabilityVersion(
-        workspaceComputerId,
+        computerId,
         instanceId,
         RUNTIME_CAPABILITY.imCredentialGrant,
         100 + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1,
       ),
     ).toBeUndefined();
     expect(
-      registry.capabilityVersion(workspaceComputerId, instanceId, RUNTIME_CAPABILITY.sessionCollaboration, 100),
+      registry.capabilityVersion(computerId, instanceId, RUNTIME_CAPABILITY.sessionCollaboration, 100),
     ).toBeUndefined();
   });
 
@@ -413,9 +410,8 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         computerId,
+        installationId: randomUUID(),
         instanceId,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
         lastHeartbeatAt: 1,
         socket: runtimeSocket,
         imCliReadiness: [{ provider: "slack", status: "ready" }],
@@ -456,9 +452,8 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         computerId,
+        installationId: randomUUID(),
         instanceId,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
         lastHeartbeatAt: 1,
         socket: sendErrorSocket,
       },
@@ -472,9 +467,8 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         computerId,
+        installationId: randomUUID(),
         instanceId: randomUUID(),
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
         lastHeartbeatAt: 1,
         socket: closedSocket,
       },
@@ -492,9 +486,8 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         computerId,
+        installationId: randomUUID(),
         instanceId,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
         connectionId: randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V2,
         lastHeartbeatAt: 1,
@@ -512,9 +505,8 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         computerId,
+        installationId: randomUUID(),
         instanceId,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
         connectionId: randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V2,
         lastHeartbeatAt: 1,
@@ -529,9 +521,8 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         computerId,
+        installationId: randomUUID(),
         instanceId: missingFenceInstance,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V2,
         lastHeartbeatAt: 1,
         socket: missingFence,
@@ -547,9 +538,8 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         computerId,
+        installationId: randomUUID(),
         instanceId: fencedInstance,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
         connectionId: staleFence,
         protocolVersion: RUNTIME_PROTOCOL_V2,
         lastHeartbeatAt: 1,
@@ -575,9 +565,8 @@ describe("ConnectionRegistry", () => {
     await raceRegistry.register(
       {
         computerId: raceComputerId,
+        installationId: randomUUID(),
         instanceId: raceInstanceId,
-        workspaceComputerId: raceComputerId,
-        workspaceId: randomUUID(),
         lastHeartbeatAt: 1,
         socket: raceSocket,
       },
@@ -587,9 +576,8 @@ describe("ConnectionRegistry", () => {
     await raceRegistry.register(
       {
         computerId: raceComputerId,
+        installationId: randomUUID(),
         instanceId: randomUUID(),
-        workspaceComputerId: raceComputerId,
-        workspaceId: randomUUID(),
         lastHeartbeatAt: 2,
         socket: socket(),
       },
@@ -608,9 +596,8 @@ describe("ConnectionRegistry", () => {
       registry.register(
         {
           computerId,
+          installationId: randomUUID(),
           instanceId,
-          workspaceComputerId: computerId,
-          workspaceId: randomUUID(),
           lastHeartbeatAt: 1,
           socket: socket(),
         },

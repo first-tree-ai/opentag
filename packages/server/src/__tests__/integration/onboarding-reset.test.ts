@@ -84,7 +84,8 @@ async function fixture(
   const reset = new OnboardingResetService({
     ...(interleave
       ? {
-          afterCleanup: async () => interleave({ database: client.database, agents: agentService, machineAuth, tester }),
+          afterCleanup: async () =>
+            interleave({ database: client.database, agents: agentService, machineAuth, tester }),
         }
       : {}),
     ...(options.afterVerified ? { afterVerified: options.afterVerified } : {}),
@@ -301,7 +302,9 @@ describe("staging Account setup reset", () => {
 
     await value.reset.resetOnboarding(value.tester.accountId);
 
-    await expect(value.machineAuth.verifyMachineToken(value.tester.machineToken)).rejects.toBeInstanceOf(AuthServiceError);
+    await expect(value.machineAuth.verifyMachineToken(value.tester.machineToken)).rejects.toBeInstanceOf(
+      AuthServiceError,
+    );
     await expect(
       value.machineAuth.exchangeConnectCode({
         code: value.tester.outstandingConnectCode,
@@ -484,7 +487,7 @@ describe("staging Account setup reset", () => {
     expect(await facts(value.database, second)).toMatchObject({ activeAgents: 0, ownedComputers: 1 });
   });
 
-  it("resets every Computer owned by the Account instead of selecting one Workspace scope", async () => {
+  it("resets every Computer owned by the Account", async () => {
     const value = await fixture();
     const second = await seedAccount(value.database, value.agentService, value.machineAuth, {
       accountId: value.tester.accountId,
@@ -612,7 +615,7 @@ describe("re-boarding an Account without taking anything down", () => {
     await expect(value.reset.reboard(value.tester.accountId)).resolves.toBeUndefined();
 
     const after = await facts(value.database, value.tester);
-    expect(after).toMatchObject({ activeAgents: 1, accountSetupCompletedAt: null });
+    expect(after).toMatchObject({ activeAgents: 1, setupCompletedAt: null });
     expect(after.usableCodes).toBe(before.usableCodes);
     expect(after.activeCredentials).toBe(before.activeCredentials);
   });
@@ -623,7 +626,7 @@ describe("re-boarding an Account without taking anything down", () => {
     await value.reset.reboard(value.tester.accountId);
     await expect(value.reset.reboard(value.tester.accountId)).resolves.toBeUndefined();
 
-    expect((await facts(value.database, value.tester)).accountSetupCompletedAt).toBeNull();
+    expect((await facts(value.database, value.tester)).setupCompletedAt).toBeNull();
   });
 
   it("re-boards only the asking Account, leaving another tester's setup complete", async () => {
@@ -632,9 +635,9 @@ describe("re-boarding an Account without taking anything down", () => {
 
     await value.reset.reboard(value.tester.accountId);
 
-    expect((await facts(value.database, value.tester)).accountSetupCompletedAt).toBeNull();
+    expect((await facts(value.database, value.tester)).setupCompletedAt).toBeNull();
     const otherFacts = await facts(value.database, other);
-    expect(otherFacts.accountSetupCompletedAt).not.toBeNull();
+    expect(otherFacts.setupCompletedAt).not.toBeNull();
     expect(otherFacts.activeAgents).toBe(1);
   });
 
@@ -646,6 +649,6 @@ describe("re-boarding an Account without taking anything down", () => {
     // entire reason it does not need a guard of its own.
     await expect(value.reset.reboard(value.tester.accountId)).rejects.toBeInstanceOf(AuthServiceError);
 
-    expect((await facts(value.database, value.tester)).accountSetupCompletedAt).not.toBeNull();
+    expect((await facts(value.database, value.tester)).setupCompletedAt).not.toBeNull();
   });
 });

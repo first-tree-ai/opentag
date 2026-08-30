@@ -107,7 +107,7 @@ describe("runtime protocol", () => {
         providerReadiness: { version: 1, providers: ["codex"] },
       }),
     ).toMatchObject({ providerReadiness: { version: 1, providers: ["codex"] } });
-    expect(() => ClientRuntimeFrameSchema.parse({ ...register, workspaceId: crypto.randomUUID() })).toThrow();
+    expect(() => ClientRuntimeFrameSchema.parse({ ...register, accountId: crypto.randomUUID() })).toThrow();
   });
 
   it("validates extensible v2 offers while keeping security fields strict", () => {

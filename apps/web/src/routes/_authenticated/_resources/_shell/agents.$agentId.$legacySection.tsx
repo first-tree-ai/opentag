@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { LegacyAgentSectionRedirect } from "../../../../features/agents/legacy-redirects.js";
 
-export const Route = createFileRoute("/_authenticated/_workspace/_shell/agents/$agentId/$legacySection")({
+export const Route = createFileRoute("/_authenticated/_resources/_shell/agents/$agentId/$legacySection")({
   component: LegacyAgentSectionRoute,
 });
 

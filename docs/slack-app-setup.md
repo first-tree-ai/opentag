@@ -172,7 +172,7 @@ Configuration errors are explicit and leave active data unchanged:
 - `SLACK_SCOPE_REAUTH_REQUIRED`: the token is missing one or more fixed scopes.
 - `SLACK_CONFIGURATION_CONFLICT`: the route, installation, or generation changed since authorization started.
 - `SLACK_OAUTH_FAILED`: the first-party Slack OAuth state is invalid, expired, replayed, or was cancelled.
-- `SLACK_APP_TEAM_ALREADY_BOUND`: the App/Team installation is current for another OpenTag workspace.
+- `SLACK_APP_TEAM_ALREADY_BOUND`: the App/Team installation is current for another OpenTag Agent.
 
 ## Migration and recovery
 
@@ -180,19 +180,19 @@ Earlier Slack-only cleanup remains in place: clear setup-attempt fields, clear h
 disable incomplete provisioning rows, mark scope-incomplete configured rows `reauthorization_required`, restore a
 scope-complete legacy reauthorization row to active, drop `pending_receive_mode`, and keep Feishu setup fields intact.
 
-The workspace-installation cutover then:
+The Agent-installation cutover then:
 
-- moves Bot Token and Signing Secret from a current Slack route onto one workspace installation and never copies those
+- moves Bot Token and Signing Secret from a current Slack route onto one Agent-owned installation and never copies those
   secrets onto additional Agent rows;
-- prefers a structurally complete `active` candidate in that OpenTag workspace; only if none exists does it take a
+- prefers a structurally complete `active` candidate for the owning Agent; only if none exists does it take a
   structurally complete `reauthorization_required` row, then orders by `created_at` and `id`;
-- makes that chosen row the default route and fail-closes any other current Slack App/Team in the same workspace;
+- makes that chosen row the default route and fail-closes any duplicate current Slack App/Team installation;
 - leaves single-Agent Slack data lossless.
 
 Reauthorization validates the proposed credential and locked current App/Team/Bot identity before touching the current
 installation. An App ID mismatch therefore cannot become an implicit replacement when `auth.test` omits `app_id`.
 Same-identity success advances the installation generation atomically and syncs sanitized snapshots onto routes. Slack
-has no Change App or replace intent; disconnect ends the Agent route's Sessions without uninstalling the workspace
+has no Change App or replace intent; disconnect ends the Agent route's Sessions without uninstalling the Slack
 installation. Concurrent configuration is fenced by the expected route ID and generation plus database uniqueness
 constraints. Runtime observations, identity closure, provider revocation, and provider disable are independently fenced
 to the event's exact installation credential generation.

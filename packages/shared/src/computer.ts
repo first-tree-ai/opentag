@@ -51,9 +51,8 @@ export const AccountComputerConnectCodeRepairRequestSchema = z
   .strict();
 
 /**
- * The Account-native connect-code request carries no management scope: the issuing Account comes from
- * the access token alone, so any client-selected `workspaceId` or `accountId` is rejected rather than
- * ignored. Repair names its target Computer; create never infers one.
+ * The Account-native connect-code request carries no client-selected authority: the issuing Account comes
+ * from the access token alone. Repair names its target Computer; create never infers one.
  */
 export const AccountComputerConnectCodeIssueRequestSchema = z.union([
   AccountComputerConnectCodeCreateRequestSchema,

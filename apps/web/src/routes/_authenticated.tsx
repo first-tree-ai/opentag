@@ -12,8 +12,8 @@ export const Route = createFileRoute("/_authenticated")({
 });
 
 /**
- * Resolves the authenticated Account and publishes it. Resource pages use this Account session; they
- * no longer depend on a management Workspace membership.
+ * Resolves the authenticated Account and publishes it. Resource pages use this Account session as
+ * their management authority.
  *
  * The Account is read while rendering rather than in `beforeLoad` because the application has no
  * request cache: a loader would re-request /me on every navigation.

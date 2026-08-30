@@ -16,7 +16,7 @@ export function IntegrationsPage() {
       </PageHeader>
 
       <div className="grid min-w-0 gap-2">
-        <div className="@min-[36rem]/workspace:hidden" id="integrations-scroll-hint">
+        <div className="@min-[36rem]/content:hidden" id="integrations-scroll-hint">
           <Text as="p" size="sm" variant="secondary">
             Scroll horizontally to see category and status.
           </Text>

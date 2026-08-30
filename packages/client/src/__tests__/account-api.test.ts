@@ -8,7 +8,7 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-describe("OpenTagApi Workspace surface", () => {
+describe("OpenTagApi Account surface", () => {
   it("re-exports the complete public client barrel", () => {
     expect(client.OpenTagApi).toBe(OpenTagApi);
     expect(client.RuntimeConnection).toBeDefined();
@@ -17,23 +17,16 @@ describe("OpenTagApi Workspace surface", () => {
     expect(client.CodexAgentRuntimeFactory).toBeDefined();
   });
 
-  it("exposes only the Phase 1 Workspace compatibility seam", () => {
+  it("exposes Account-native Computer and Agent operations", () => {
     const api = new OpenTagApi("https://opentag.example.com", vi.fn<typeof fetch>());
 
-    expect("getWorkspace" in api).toBe(false);
-    expect("updateWorkspace" in api).toBe(false);
-    expect("listWorkspaceAdmins" in api).toBe(false);
-    expect("revokeWorkspaceAdmin" in api).toBe(false);
-    expect("previewAdminInvitation" in api).toBe(false);
-    expect("acceptAdminInvitation" in api).toBe(false);
     expect("issueComputerConnectCode" in api).toBe(true);
     expect("listAccountComputers" in api).toBe(true);
-    expect("listWorkspaceComputers" in api).toBe(false);
     expect("createAgent" in api).toBe(true);
     expect("listAgents" in api).toBe(true);
   });
 
-  it("issues a machine connect code without exposing enrollment revocation", async () => {
+  it("issues a Computer connect code", async () => {
     const code = {
       bootstrapCommand: "opentag computer connect --code secret",
       expiresIn: 900,
@@ -43,6 +36,5 @@ describe("OpenTagApi Workspace surface", () => {
     const api = new OpenTagApi("https://opentag.example.com", fetchImpl);
 
     await expect(api.issueComputerConnectCode("access")).resolves.toEqual(code);
-    expect("revokeWorkspaceComputer" in api).toBe(false);
   });
 });

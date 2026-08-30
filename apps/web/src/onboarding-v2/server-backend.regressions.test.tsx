@@ -3,12 +3,12 @@
  *
  * Each of these was a real failure of the Server-backed flow, written first as an assertion of the
  * behaviour the flow is supposed to have. Two of them could create an Agent on a Computer this
- * reader never enrolled; one could answer for a messaging app nobody had probed. None describes a
+ * reader never connected; one could answer for a messaging app nobody had probed. None describes a
  * Server fault — they are all decisions this hook and its steps make locally, which is why they
  * are guarded here rather than left to a live run to catch.
  */
 
-import type { AgentAdminConfig, FeishuSetupAttempt, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentAdminConfig, FeishuSetupAttempt } from "@opentag/shared/browser";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -26,7 +26,7 @@ const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
 const POLL_MS = 1_500;
 const FEISHU_POLL_MS = 2_000;
 
-function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
+function computer(overrides: Partial<AccountComputerSummary> = {}): AccountComputerSummary {
   return {
     computerId: COMPUTER_ID,
     displayName: "Ada's Mac",
@@ -35,7 +35,7 @@ function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceC
     connectedAt: "2026-08-29T00:00:10.000Z",
     lastSeenAt: "2026-08-29T00:00:10.000Z",
     observedAt: "2026-08-29T00:00:10.000Z",
-    enrolledAt: "2026-08-29T00:00:10.000Z",
+    createdAt: "2026-08-29T00:00:10.000Z",
     agentIds: [],
     ...overrides,
   };
@@ -77,7 +77,7 @@ function attempt(overrides: Partial<FeishuSetupAttempt> = {}): FeishuSetupAttemp
   };
 }
 
-function computersReturning(...pages: readonly (readonly WorkspaceComputerSummary[])[]) {
+function computersReturning(...pages: readonly (readonly AccountComputerSummary[])[]) {
   let call = 0;
   return vi.spyOn(browserApi, "computers").mockImplementation(async () => {
     const page = pages[Math.min(call, pages.length - 1)] ?? [];
@@ -145,7 +145,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     // The expiry check runs at the top of the interval, but a request already in flight when the
     // code expires still lands. Its handler adopts the Computer and publishes readiness before it
     // looks at whether the connection is still the one being waited on.
-    const late = deferred<{ computers: WorkspaceComputerSummary[] }>();
+    const late = deferred<{ computers: AccountComputerSummary[] }>();
     let call = 0;
     vi.spyOn(browserApi, "computers").mockImplementation(async () => {
       call += 1;

@@ -87,11 +87,11 @@ describe("doctor command target", () => {
 });
 
 describe("doctor local configuration", () => {
-  it("rejects the retired enrollment-array credential format", async () => {
+  it("rejects an unsupported credential version", async () => {
     const home = await createHome({
       rawCredentials: {
-        version: 1,
-        enrollments: [boundComputer("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4")],
+        version: 99,
+        computer: boundComputer("19eb4f37-2cc0-49d4-85e2-b9987f9c71a4"),
       },
     });
     const healthChecker = vi.fn();
@@ -305,7 +305,7 @@ describe("doctor Server health", () => {
   });
 
   it.each([
-    [new ServerHealthConfigurationError("bad URL"), /invalid enrolled Server URL/iu],
+    [new ServerHealthConfigurationError("bad URL"), /invalid connected Server URL/iu],
     [new ServerHealthNetworkError("network down"), /could not reach/iu],
     [new ServerHealthHttpError(503), /HTTP 503/iu],
     [new ServerHealthResponseError("bad response"), /invalid health response/iu],

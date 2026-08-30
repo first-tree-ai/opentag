@@ -21,8 +21,7 @@ export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
 /**
- * Account-native management collections. Ownership comes only from the authenticated Account, so these
- * paths accept neither a management `workspaceId` nor a client-selected `accountId`.
+ * Account-native management collections. Ownership comes only from the authenticated Account.
  */
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;

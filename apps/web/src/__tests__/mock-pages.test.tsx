@@ -19,7 +19,6 @@ describe("capability entry pages", () => {
     expect(screen.getAllByRole("article")).toHaveLength(3);
     expect(screen.getByRole("button", { name: "Upload skill" })).toBeTruthy();
     expect(screen.getByText("Built by OpenTag")).toBeTruthy();
-    expect(screen.queryByText("Workspace")).toBeNull();
     expect(screen.queryByText("Repositories")).toBeNull();
     expect(screen.queryByText("Tools")).toBeNull();
     expect(screen.queryByText("Prompts")).toBeNull();

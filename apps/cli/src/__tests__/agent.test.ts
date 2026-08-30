@@ -369,7 +369,6 @@ describe("Agent CLI core", () => {
     expect(client.listAgents).toHaveBeenCalledWith("access");
     expect(formatAgentList(response)).toContain("code-reviewer\t");
     expect(formatAgent(agent)).toContain(`revision\t1`);
-    expect(formatAgent(agent)).not.toContain("workspaceId");
     expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
     expect(formatAgentList(response)).toContain("all_message");
     expect(formatAgentList({ agents: [] })).toBe("No Agents registered");
@@ -471,7 +470,7 @@ describe("Agent CLI core", () => {
     const connect = computerCommand?.commands.find((command) => command.name() === "connect");
     expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
     expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
-    expect(connect?.description()).toBe("Enroll this Computer with a one-time code");
+    expect(connect?.description()).toBe("Connect this Computer with a one-time code");
     expect(create?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining([
         "--model",

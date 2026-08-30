@@ -2,7 +2,7 @@ import type { BootstrapAdminInput, BootstrapAdminResult } from "../admin/bootstr
 import { bootstrapInitialAdmin } from "../admin/bootstrap.js";
 import type { DatabaseClient } from "../db/client.js";
 
-/** Test-only Account bootstrap: production Account creation with no Workspace-era persistence. */
+/** Test-only Account bootstrap using the production Account-creation path. */
 export async function bootstrapTestAccount(
   database: DatabaseClient,
   input: BootstrapAdminInput,

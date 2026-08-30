@@ -429,7 +429,7 @@ export function useMockBackend(
 
   const pending = useMemo<PendingEvent | undefined>(() => {
     // Reconnecting the Account's machine comes first: while it is asleep, nothing else on this step is
-    // waiting on the outside world, and enrolling a second Computer is not the move being offered.
+    // waiting on the outside world, and connecting a second Computer is not the move being offered.
     const asleep = knownComputers.find((computer) => computer.id === selectedComputerId && !computer.online);
     if (asleep) return { label: `Reconnect ${asleep.displayName}`, run: () => bringOnline(asleep.id) };
     if (connect.kind === "issued") return { label: "Connect computer", run: arrive };

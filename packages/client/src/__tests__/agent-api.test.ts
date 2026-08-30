@@ -78,8 +78,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe("OpenTagApi Agent methods", () => {
   it("covers computer, session, optional binding, and resource API surfaces", async () => {
-    const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
-    const workspaceComputerId = "9fd8c3db-9fb6-4e0b-8ca9-f0f830c4a1a5";
+    const installationId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const computerId = "9fd8c3db-9fb6-4e0b-8ca9-f0f830c4a1a5";
     const sessionId = "d8e7b4dc-e6f7-4c84-a63b-4f4a39ccfdb9";
     const attempt = {
       id: "f645f26d-9184-4f2f-98a1-4ee83ae6a603",
@@ -107,7 +107,7 @@ describe("OpenTagApi Agent methods", () => {
           connectedAt: "2026-08-19T00:00:00.000Z",
           lastSeenAt: "2026-08-19T00:00:00.000Z",
           observedAt: "2026-08-19T00:00:00.000Z",
-          enrolledAt: "2026-08-18T00:00:00.000Z",
+          createdAt: "2026-08-18T00:00:00.000Z",
           agentIds: [agentId],
         },
       ],
@@ -115,7 +115,7 @@ describe("OpenTagApi Agent methods", () => {
     const command = { messageId: randomUUID(), status: "accepted", sessionId };
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ workspaceComputerId, computerId, machineToken: "otmc_secret" }))
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, machineToken: "otmc_secret" }))
       .mockResolvedValueOnce(jsonResponse(token))
       .mockResolvedValueOnce(jsonResponse(me))
       .mockResolvedValueOnce(jsonResponse(computers))
@@ -129,13 +129,13 @@ describe("OpenTagApi Agent methods", () => {
     await expect(
       api.exchangeComputerConnectCode({
         code: "1234567890abcdef",
-        computerId,
+        installationId,
         displayName: "Laptop",
         platform: "linux",
         arch: "x64",
         clientVersion: "0.0.1",
       }),
-    ).resolves.toMatchObject({ computerId, workspaceComputerId });
+    ).resolves.toMatchObject({ computerId, installationId });
     await expect(api.refresh("refresh-token")).resolves.toEqual(token);
     await expect(api.me("access-token")).resolves.toEqual(me);
     await expect(api.listAccountComputers("access-token")).resolves.toEqual(computers);

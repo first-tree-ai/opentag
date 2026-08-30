@@ -29,24 +29,20 @@ exit 1
 `;
 
 export interface E2ERuntime {
-  accountComputerId: string;
   databaseURL: string;
   devEmail: string;
   setSetupIncomplete(): Promise<void>;
   setSetupComplete(): Promise<void>;
   seedTask(agentId: string): Promise<string>;
   userId: string;
-  workspaceId: string;
 }
 
 interface RuntimeFile {
-  accountComputerId: string;
   adminDatabaseURL: string;
   baseURL: string;
   databaseURL: string;
   devEmail: string;
   userId: string;
-  workspaceId: string;
 }
 
 function connectionTarget(url: string): { dsn: string; password: string } {
@@ -142,9 +138,8 @@ async function startDaemon(runtime: RuntimeFile): Promise<{ daemon: ReturnType<t
   await waitFor(
     "the E2E Computer to connect",
     async () =>
-      Number(
-        await psql(runtime.databaseURL, "select count(*) from account_computers where current_instance_id is not null"),
-      ) > 0,
+      Number(await psql(runtime.databaseURL, "select count(*) from computers where current_instance_id is not null")) >
+      0,
   );
   return { daemon, temporaryHome };
 }
@@ -220,7 +215,6 @@ export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }
       const daemon = await startDaemon(runtime);
       try {
         await use({
-          accountComputerId: runtime.accountComputerId,
           databaseURL: runtime.databaseURL,
           devEmail: runtime.devEmail,
           setSetupIncomplete: async () => {
@@ -237,7 +231,6 @@ export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }
           },
           seedTask: (agentId) => seedTask(runtime, agentId),
           userId: runtime.userId,
-          workspaceId: runtime.workspaceId,
         });
       } finally {
         await stopDaemon(daemon.daemon, daemon.temporaryHome);

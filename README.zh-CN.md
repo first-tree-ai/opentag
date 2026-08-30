@@ -13,7 +13,7 @@ OpenTag 是一个全新的独立开源产品，用于连接即时通信与 AI �
 - 会校验 schema 的 Client 健康检查；
 - 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
 - 使用滑动续期无状态 refresh JWT 的一次性 Account 登录 code；
-- 独立认证的 Computer enrollment 与在线状态；
+- 独立认证的 Computer 连接与在线状态；
 - 带不可变 Computer/provider 绑定与 revision fencing 的 Agent Registry；
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
 - 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
@@ -39,14 +39,11 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-在另一个终端中 bootstrap 首个 Account，再兑换输出的 Account 登录 code。命令名与
-`OPENTAG_BOOTSTRAP_WORKSPACE_*` 输入会作为兼容接口保留到 Phase 2：
+在另一个终端中 bootstrap 首个 Account，再兑换输出的 Account 登录 code：
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
-export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
@@ -54,10 +51,10 @@ opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
 ```
 
 Account credential 只用于管理面，不会启动 daemon。打开 Web，从 Agents 区域生成 15 分钟有效的 Computer
-连接命令，再在执行主机运行其中的 `opentag-dev computer connect --server ... <code>`。该命令保存 enrollment
+连接命令，再在执行主机运行其中的 `opentag-dev computer connect --server ... <code>`。该命令保存 Computer
 范围的 machine credential，并在 Linux/macOS 上安装或重启当前用户的 daemon service。将 `~/.local/bin` 放在
 `PATH` 最前，可保证 service definition 使用当前 checkout 刚构建的 CLI，而非旧 shim。运行
-`opentag-dev computer list` 可看到已 enrollment 的 Computer 为 online。使用 `daemon stop`、`start`、
+`opentag-dev computer list` 可看到已连接的 Computer 为 online。使用 `daemon stop`、`start`、
 `restart`、`status` 与 `uninstall` 管理生命周期；只保存 machine credential 时使用
 `computer connect --no-start`。v0.1 不支持 Windows daemon 服务。
 
@@ -79,12 +76,9 @@ pnpm --filter open-tag start agent list
 Effective Runtime Snapshot 目前尚未支持。
 
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
-`http://127.0.0.1:8000/`。已登录 Account 管理其内部兼容 scope 中可用的 Agents、Tasks、Skills 与 Integrations；
-Computer enrollment 和诊断从 Agents 区域进入。已确认的产品方向与产品呈现是
-**Account → Computer enrollment → Agent → IM binding**；Phase 1 尚未把它实现为严格的 per-Account schema invariant。
-OpenTag 不提供 Workspace、Admin 或 invitation 管理面。数据库仍会配置内部默认 Workspace 与 grant，作为 Phase 2
-前的兼容 seam。legacy active grant 可能让多个 Account 管理同一批 Agent 与 Computer enrollment，直到一次性数据拆分
-和 Phase 2 建立严格 ownership。这些兼容记录不是共享协作容器。
+`http://127.0.0.1:8000/`。已登录 Account 管理自己拥有的 Agents、Computers、Tasks、Skills 与 Integrations；
+Computer 连接和诊断从 Agents 区域进入。产品模型是
+**Account → Computer → Agent → IM binding**，ownership 直接由 Account-native schema 强制保证。
 
 Internal Session collaboration 是 Agent Runtime 能力，不是 Workspace、Project 或其他管理实体。它不定义跨 Agent
 所有权，也不拥有共享文件、长期记忆、Tasks、Secrets 或 billing。Context Tree 可以独立保存长期上下文，与这条实时
@@ -92,7 +86,7 @@ Session 消息边界正交。
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，
-且不会创建 Account 或兼容 grant。
+且不会创建 Account。
 
 完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
 

@@ -226,7 +226,7 @@ export function TasksPage() {
 
 /**
  * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
- * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
+ * Account-wide page, so paging past the first page cannot hide this Agent's older Tasks.
  */
 export function AgentTasksSection({ agentId }: { agentId: string }) {
   /*
@@ -243,7 +243,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   });
   const tasks = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
   const taskError = asError(tasksQuery.error);
-  // The same rule the workspace list follows: a refusal withdraws the rows it refused, whichever
+  // The same rule the Account list follows: a refusal withdraws the rows it refused, whichever
   // page asked for them. Only a transient append failure keeps them, reported beside its control.
   const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
   const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
@@ -382,7 +382,7 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
       </header>
 
       <section
-        className="grid gap-3 @min-[36rem]/workspace:grid-cols-2"
+        className="grid gap-3 @min-[36rem]/content:grid-cols-2"
         aria-label="Task debug identifiers"
         data-ui="task-debug-facts"
       >

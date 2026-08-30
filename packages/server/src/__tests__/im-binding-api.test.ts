@@ -13,15 +13,7 @@ import {
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import {
-  accountComputers,
-  computers,
-  imBindings,
-  sessionPlacements,
-  sessions,
-  slackInstallations,
-  workspaceComputers,
-} from "../db/schema/index.js";
+import { computers, imBindings, sessionPlacements, sessions, slackInstallations } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -109,39 +101,27 @@ async function persistedFixture() {
     displayName: "Admin",
     email: `admin-${crypto.randomUUID()}@example.com`,
   });
-  const [computer] = await unitDatabase.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await unitDatabase.database
-    .insert(workspaceComputers)
+  const [computer] = await unitDatabase.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.1",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await unitDatabase.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.1",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const agent = await new AgentService(unitDatabase.database).createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const service = new RealImBindingService(unitDatabase.database, cipher, { now: () => fixedNow });
-  return { bootstrap, agent, cipher, service, computer, workspaceComputer };
+  return { bootstrap, agent, cipher, service, computer };
 }
 
 function slackInput(agentId: string, overrides: Partial<Parameters<RealImBindingService["activateSlack"]>[0]> = {}) {
@@ -176,7 +156,7 @@ async function createSiblingAgent(value: Awaited<ReturnType<typeof persistedFixt
     name,
     displayName: name,
     runtimeProvider: "codex",
-    computerId: value.workspaceComputer.id,
+    computerId: value.computer.id,
   });
 }
 
@@ -352,7 +332,7 @@ describe("ImBinding HTTP API", () => {
 describe("ImBindingService persistence", () => {
   it("activates Feishu, projects material, readiness, diagnostics, and activity", async () => {
     const value = await persistedFixture();
-    expect(await value.service.getAgentWorkspaceComputerId(value.agent.id)).toBe(value.workspaceComputer.id);
+    expect(await value.service.getAgentComputerId(value.agent.id)).toBe(value.computer.id);
     const bindingId = await value.service.activateFeishu(feishuInput(value.agent.id));
     const material = await value.service.getFeishuConnectionMaterial(bindingId);
     expect(material).toMatchObject({
@@ -633,8 +613,7 @@ describe("ImBindingService persistence", () => {
     if (!session) throw new Error("Session fixture was not created");
     await unitDatabase.database.insert(sessionPlacements).values({
       sessionId: session.id,
-      workspaceComputerId: value.workspaceComputer.id,
-      computerId: value.workspaceComputer.id,
+      computerId: value.computer.id,
       generation: 1,
     });
     const request = {
@@ -646,8 +625,7 @@ describe("ImBindingService persistence", () => {
     };
     const auth = {
       computerId: value.computer.id,
-      workspaceComputerId: value.workspaceComputer.id,
-      workspaceId: value.bootstrap.workspaceId,
+      installationId: value.computer.currentInstallationId,
     };
     await expect(value.service.issueRuntimeCredentialGrant(request, auth)).resolves.toMatchObject({
       status: "succeeded",
@@ -702,8 +680,7 @@ describe("ImBindingService persistence", () => {
     if (!session) throw new Error("Thread fixture was not created");
     await unitDatabase.database.insert(sessionPlacements).values({
       sessionId: session.id,
-      workspaceComputerId: value.workspaceComputer.id,
-      computerId: value.workspaceComputer.id,
+      computerId: value.computer.id,
       generation: 1,
     });
     const request = {
@@ -715,8 +692,7 @@ describe("ImBindingService persistence", () => {
     };
     const auth = {
       computerId: value.computer.id,
-      workspaceComputerId: value.workspaceComputer.id,
-      workspaceId: value.bootstrap.workspaceId,
+      installationId: value.computer.currentInstallationId,
       imCredentialGrantVersion: 2 as const,
     };
     await expect(value.service.issueRuntimeCredentialGrant(request, auth)).resolves.toMatchObject({
@@ -743,8 +719,7 @@ describe("ImBindingService persistence", () => {
     if (!session) throw new Error("Session fixture was not created");
     await unitDatabase.database.insert(sessionPlacements).values({
       sessionId: session.id,
-      workspaceComputerId: value.workspaceComputer.id,
-      computerId: value.workspaceComputer.id,
+      computerId: value.computer.id,
       generation: 1,
     });
     const request = {
@@ -757,8 +732,6 @@ describe("ImBindingService persistence", () => {
     await expect(
       value.service.issueRuntimeCredentialGrant(request, {
         computerId: value.computer.id,
-        workspaceComputerId: value.workspaceComputer.id,
-        workspaceId: value.bootstrap.workspaceId,
       }),
     ).resolves.toMatchObject({ status: "succeeded", grant: { provider: "feishu" } });
     await unitDatabase.database
@@ -791,8 +764,7 @@ describe("ImBindingService persistence", () => {
     if (!session) throw new Error("Session fixture was not created");
     await unitDatabase.database.insert(sessionPlacements).values({
       sessionId: session.id,
-      workspaceComputerId: value.workspaceComputer.id,
-      computerId: value.workspaceComputer.id,
+      computerId: value.computer.id,
       generation: 1,
     });
     const request = {
@@ -804,8 +776,7 @@ describe("ImBindingService persistence", () => {
     };
     const auth = {
       computerId: value.computer.id,
-      workspaceComputerId: value.workspaceComputer.id,
-      workspaceId: value.bootstrap.workspaceId,
+      installationId: value.computer.currentInstallationId,
     };
     await expect(value.service.issueRuntimeCredentialGrant(request, auth)).resolves.toMatchObject({
       status: "rejected",

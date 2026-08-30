@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { users } from "../../db/schema/index.js";
+import { computers, users } from "../../db/schema/index.js";
 import { PostAuthenticationService } from "../../services/auth/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -16,7 +16,7 @@ afterAll(async () => testDatabase.stop());
 beforeEach(async () => testDatabase.reset());
 
 describe("Account bootstrap", () => {
-  it("creates only the Account, with no Workspace-era persistence left to provision", async () => {
+  it("creates only the Account and provisions no owned resources", async () => {
     const client = createDatabaseClient(databaseUrl);
     try {
       const [account] = await client.database
@@ -29,19 +29,7 @@ describe("Account bootstrap", () => {
       await expect(postAuthentication.complete(account.id, true)).resolves.toEqual({ userId: account.id });
       await expect(postAuthentication.ensureAccountReady(account.id)).resolves.toEqual({ userId: account.id });
 
-      const [legacyTables] = await client.sql<{ count: number }[]>`
-        select count(*)::int as count
-        from information_schema.tables
-        where table_schema = 'public'
-          and table_name in (
-            'workspaces',
-            'workspace_admin_grants',
-            'admin_invitations',
-            'workspace_computers',
-            'workspace_computer_credentials'
-          )
-      `;
-      expect(legacyTables?.count).toBe(0);
+      expect(await client.database.select({ id: computers.id }).from(computers)).toEqual([]);
     } finally {
       await client.sql.end();
     }

@@ -150,15 +150,11 @@ The production server image does not bundle or start PostgreSQL. Set `OPENTAG_DA
 PostgreSQL instance when deploying it; the Compose service above is only a local development convenience.
 
 To bootstrap an empty installation, set the required bootstrap fields and run the one-time bootstrap command. It migrates
-an empty database before creating the initial Account and Account login code. Its current command name and
-`OPENTAG_BOOTSTRAP_WORKSPACE_*` inputs also create the internal default Workspace and grant used as a compatibility seam
-until Phase 2; they do not create product-level Workspace or Admin membership.
+an empty database before creating the initial Account and Account login code.
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
-export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
@@ -174,7 +170,7 @@ so service reconciliation cannot select an older `opentag-dev` shim. The dev cha
 `~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
 
 Account login stores only management credentials. Generate a Computer connection command from the Web's Agents area,
-then run it on the execution host; `computer connect` stores an enrollment-scoped machine credential and installs or
+then run it on the execution host; `computer connect` stores a Computer-scoped machine credential and installs or
 restarts the user service on Linux and macOS. Inspect it from another terminal:
 
 ```bash
@@ -183,9 +179,9 @@ opentag-dev daemon status
 opentag-dev computer list
 ```
 
-The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads independent
-enrollment credentials from `${OPENTAG_HOME}/config/computer-credentials.json`, creates a new process instance on every
-service start, and opens one Runtime connection per enrollment. OpenTag Home is organized by lifecycle:
+The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads the canonical
+Computer credential from `${OPENTAG_HOME}/config/computer-credentials.json`, creates a new process instance on every
+service start, and opens one Runtime connection for that Computer. OpenTag Home is organized by lifecycle:
 
 ```text
 ${OPENTAG_HOME}/
@@ -231,7 +227,7 @@ otherwise remain unused on disk.
 
 ### Local data loss and recovery
 
-Running `computer connect` again rotates the selected enrollment credential and restores connectivity, not the prior
+Running `computer connect` again rotates the Computer credential and restores connectivity, not the prior
 local execution continuity. The Server can reissue credentials and
 rebuild effective snapshots; managed instructions are injected again when the Provider Runtime starts or resumes.
 Reissued credentials are new values. If `config/computer.json` is lost, the current Client creates a new Computer
@@ -271,11 +267,9 @@ their target leases do not contend.
 
 ## Manage Agent configurations
 
-The accepted product direction and product presentation are **Account → Computer enrollment → Agent → IM binding**.
-In the Phase 1 schema, an Agent is available to and manageable by the current Account through an active internal scope,
-and is bound immutably at creation time to one active Computer enrollment in that scope. When the selected internal
-scope has one eligible Computer, it is selected automatically. Legacy active grants can expose the same Agents and
-enrollments to multiple Accounts until the one-off data split and Phase 2 establish strict per-Account ownership:
+The product model is **Account → Computer → Agent → IM binding**. An Agent is visible to the Account that created it and
+is bound at creation time to a Computer owned by that Account. When the Account has one eligible Computer, it is selected
+automatically:
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -297,14 +291,13 @@ pnpm --filter open-tag start agent delete <agent-id>
 ```
 
 Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Computer rebinding is not
-an update operation. Deletion is a server-side soft delete and is idempotent for an Account authorized through the
-selected internal scope. `claude-code` is an accepted configuration value,
+an update operation. Deletion is a server-side soft delete and is idempotent for the Account that created the Agent.
+`claude-code` is an accepted configuration value,
 but its runtime adapter and all Session/Turn delivery remain future work.
 
-The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
+The two `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
 The bootstrap email is Account profile data, not an email/password credential. The Account login-code flow resolves a
-stable user ID and then uses the provider-neutral token issuer. Internal grants are still loaded from PostgreSQL as a
-Phase 2 compatibility seam; they are not exposed as Admin membership.
+stable user ID and then uses the provider-neutral token issuer.
 
 That issuer now hands out a Better Auth session rather than a signed access/refresh pair, so a CLI credential is a row
 the server can withdraw instead of a signature it can only wait out. The exchange response keeps its four fields and
@@ -422,16 +415,13 @@ packages or product security behavior. The server logs the resolved environment,
 startup; it never infers the environment from the hostname.
 
 Open `/` for the management shell. Its top-level navigation is **Agents / Tasks / Skills / Integrations**, with no
-Settings tab. Computer enrollment and recovery live in the Agents area. **Generate connection command** mints a
+Settings tab. Computer connection and recovery live in the Agents area. **Generate connection command** mints a
 15-minute, single-use code and copies the server-authored `computer connect` command; the page polls the Account's
-Computer enrollments until the new daemon handshake arrives. The account menu contains Account actions. OpenTag exposes
-no Workspace, Admin, or invitation management surface. Normal sign-up and bootstrap still provision an internal default
-Workspace and grant solely as a compatibility seam until Phase 2. Operators handle exceptional inspection or correction
-of those internal records through controlled PostgreSQL operations under their normal database change procedure.
+Computers until the new daemon handshake arrives. The account menu contains Account actions.
 
 Session collaboration remains an Agent Runtime concern and does not introduce a product Workspace, Project, or shared
 management container. Context Tree can preserve long-term context independently; it does not establish per-Account
-ownership or change Computer enrollment, Agent placement, or IM binding.
+ownership or change Computer connection, Agent placement, or IM binding.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
 ## Onboarding end-to-end check

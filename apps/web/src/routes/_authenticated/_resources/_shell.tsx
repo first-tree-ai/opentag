@@ -3,7 +3,7 @@ import { Redirect } from "../../../features/navigation/redirect.js";
 import { useAccount } from "../../../features/session/session-context.js";
 import { AppShell } from "../../../features/shell/app-shell.js";
 
-export const Route = createFileRoute("/_authenticated/_workspace/_shell")({
+export const Route = createFileRoute("/_authenticated/_resources/_shell")({
   component: AccountShell,
 });
 

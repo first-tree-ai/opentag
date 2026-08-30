@@ -86,7 +86,7 @@ export class SlackConfigurationService {
     await this.#beforeConfigurationTransaction?.();
 
     const configured = await this.#database.transaction(async (transaction) => {
-      // Token inspection is external. Reacquire live Workspace authority and serialize the Agent's
+      // Token inspection is external. Reacquire live Account authority and serialize the Agent's
       // binding immediately before committing the inspected credential snapshot.
       await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
       await this.#agent(agentId, transaction);

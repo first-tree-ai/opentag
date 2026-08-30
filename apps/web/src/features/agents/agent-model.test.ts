@@ -1,10 +1,10 @@
 import type {
+  AccountComputerSummary,
   AgentSummary,
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
   ProviderReadinessStatus,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import type { AgentDetailView, AgentListItem } from "./agent-model.js";
@@ -30,7 +30,7 @@ function agent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   };
 }
 
-function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
+function computer(overrides: Partial<AccountComputerSummary> = {}): AccountComputerSummary {
   return {
     computerId,
     displayName: "Ada's Mac",
@@ -40,7 +40,7 @@ function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceC
     connectedAt: "2026-08-20T00:00:00.000Z",
     lastSeenAt: "2026-08-20T00:01:00.000Z",
     observedAt: "2026-08-20T00:01:00.000Z",
-    enrolledAt: "2026-08-19T00:00:00.000Z",
+    createdAt: "2026-08-19T00:00:00.000Z",
     agentIds: [agentId],
     ...overrides,
   };

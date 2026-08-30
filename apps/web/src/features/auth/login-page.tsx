@@ -68,7 +68,7 @@ export function LoginPage({ next: requested }: { next?: string }) {
           }}
         </AsyncState>
         <p className="text-sm text-kumo-subtle" data-ui="login-access-note">
-          Sign in to manage your Agents.
+          Sign in to manage your Agents and Computers.
         </p>
       </section>
     </main>

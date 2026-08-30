@@ -4,11 +4,14 @@ import {
   type AgentUsageDetail,
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ComponentProps, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { type ComponentProps, lazy, Suspense, useCallback, useState } from "react";
 import { browserApi } from "../api.js";
+import { queryKeys } from "../query/keys.js";
 import { Button, ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
 import type { AgentDetailView } from "./agents/agent-model.js";
+import { isTerminalResourceError } from "./resource/resource-state.js";
 
 const LazyTimeseriesChart = lazy(async () => {
   const { echarts } = await import("./agent-usage-echarts.js");
@@ -112,33 +115,22 @@ function useAgentUsage(
   agentId: string,
   windowDays: AgentUsageWindowDays,
 ): { readonly retry: () => void; readonly state: UsageState } {
-  const [state, setState] = useState<UsageState>({ kind: "loading" });
-  const mountedRef = useRef(false);
-  const requestIdRef = useRef(0);
-  const load = useCallback(() => {
-    const requestId = ++requestIdRef.current;
-    setState({ kind: "loading" });
-    void browserApi.agentUsage(agentId, windowDays).then(
-      (value) => {
-        if (mountedRef.current && requestIdRef.current === requestId) setState({ kind: "ready", value });
-      },
-      (cause: unknown) => {
-        if (mountedRef.current && requestIdRef.current === requestId) {
-          setState({ kind: "error", error: usageError(cause) });
-        }
-      },
-    );
-  }, [agentId, windowDays]);
-  const retry = useCallback(() => {
-    load();
-  }, [load]);
-  useEffect(() => {
-    mountedRef.current = true;
-    load();
-    return () => {
-      mountedRef.current = false;
-    };
-  }, [load]);
+  // Keyed by Agent and window, so the overview on an Agent's page and the tab on its usage page ask
+  // for the same 30 days once between them rather than each on its own.
+  const query = useQuery({
+    queryKey: queryKeys.agents.usage(agentId, windowDays),
+    queryFn: () => browserApi.agentUsage(agentId, windowDays),
+  });
+  const retry = useCallback(() => void query.refetch(), [query]);
+  const error = query.isError ? usageError(query.error) : undefined;
+  const state: UsageState =
+    error && (!query.data || isTerminalResourceError(error))
+      ? { kind: "error", error }
+      : query.data
+        ? { kind: "ready", value: query.data }
+        : error
+          ? { kind: "error", error }
+          : { kind: "loading" };
   return { retry, state };
 }
 

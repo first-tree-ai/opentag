@@ -1,30 +1,73 @@
 import type { AgentAdminConfig, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../../agent-creation/agent-creation-flow.js";
-import { browserApi } from "../../api.js";
 import { FeishuSetup } from "../../im/feishu-setup.js";
+import { queryKeys } from "../../query/keys.js";
 import { Button, Dialog, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
-import type { LoadState } from "../resource/use-resource.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import type { LoadState } from "../resource/resource-state.js";
+import { AsyncState, toResourceState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
+import { useComputersQuery } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 
-export function useOwnComputersResource(accountId: string, refreshVersion = 0) {
-  return useResource(() => browserApi.computers(), `${accountId}:${refreshVersion}`, {
-    onBackgroundError: markOwnComputersUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+/**
+ * The Account's Computers, plus the refresh the creation flow drives when a Computer it is waiting
+ * for connects.
+ *
+ * The refresh reports loading, while the interval and focus re-reads behind it do not. The flow
+ * depends on that distinction: it restores focus and announces the outcome by watching a refresh
+ * begin and end, and a background re-read is not something the Account asked for and should not be
+ * narrated. The page keeps showing the Computers it already has either way.
+ *
+ * The same distinction decides what a failure means. Degrading to the Computers already in hand is
+ * right for revalidation nobody asked for, but the Account that pressed the button asked a
+ * question, and answering a failed check with `Computer connection updated` reports the opposite of
+ * what happened. So an explicit refresh keeps its own error until a read succeeds.
+ */
+export function useOwnComputersResource(): {
+  state: LoadState<{ computers: WorkspaceComputerSummary[] }>;
+  refresh: () => void;
+} {
+  const queryClient = useQueryClient();
+  const query = useComputersQuery(true);
+  const [refresh, setRefresh] = useState<{ pending: boolean; error?: Error }>({ pending: false });
+  // The re-read starts from an effect rather than from the caller, so the render that reports
+  // loading is committed before it can finish. Starting it inline would let a fast response land in
+  // the same batch, leaving the flow no transition to notice.
+  useEffect(() => {
+    if (!refresh.pending) return;
+    let watching = true;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.computers() }).finally(() => {
+      if (!watching) return;
+      // Invalidating resolves whether or not the re-read succeeded, so the outcome is read off the
+      // query rather than off this promise.
+      const settled = queryClient.getQueryState<{ computers: WorkspaceComputerSummary[] }, Error>(
+        queryKeys.computers(),
+      );
+      setRefresh({ pending: false, error: settled?.status === "error" ? (settled.error ?? undefined) : undefined });
+    });
+    return () => {
+      watching = false;
+    };
+  }, [refresh.pending, queryClient]);
+  const state = toResourceState(query, markOwnComputersUnconfirmed);
+  // A later success is what retires it: the Computers became readable again, so the failed check is
+  // no longer what the Account is looking at.
+  const refreshError = query.isSuccess ? undefined : refresh.error;
+  return {
+    state: refresh.pending ? { kind: "loading" } : refreshError ? { kind: "error", error: refreshError } : state,
+    refresh: () => setRefresh({ pending: true }),
+  };
 }
 
 export function NewAgentPage() {
   const { me } = useAccount();
   const navigate = useNavigate();
-  const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
   const [created, setCreated] = useState<AgentAdminConfig>();
-  const computers = useOwnComputersResource(me.user.id, computerRefreshVersion);
+  const { state: computers, refresh: refreshComputers } = useOwnComputersResource();
   return (
     <Page
       title={created ? "Agent created" : "Create Agent"}
@@ -41,7 +84,7 @@ export function NewAgentPage() {
           computers={computers}
           accountId={me.user.id}
           onCreated={setCreated}
-          onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
+          onRefresh={refreshComputers}
         />
       )}
     </Page>
@@ -59,8 +102,7 @@ export function NewAgentDialog({
 }) {
   const { me } = useAccount();
   const navigate = useNavigate();
-  const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
-  const computers = useOwnComputersResource(me.user.id, computerRefreshVersion);
+  const { state: computers, refresh: refreshComputers } = useOwnComputersResource();
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<AgentAdminConfig>();
   const finish = () => {
@@ -89,7 +131,7 @@ export function NewAgentDialog({
           accountId={me.user.id}
           onCancel={onClose}
           onCreated={setCreated}
-          onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
+          onRefresh={refreshComputers}
           onSubmittingChange={setSubmitting}
         />
       )}

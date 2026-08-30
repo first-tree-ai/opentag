@@ -2,11 +2,10 @@ import { Link } from "@tanstack/react-router";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { AgentUsageOverview } from "../agent-usage.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import { AgentTasksSection } from "../tasks-page.js";
 import type { AgentDetailView } from "./agent-model.js";
-import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
 import {
   agentAvailabilityRecovery,
   agentRecoveryMessage,
@@ -14,14 +13,11 @@ import {
   initials,
   messagingChannelLabel,
 } from "./agent-presentation.js";
+import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "./agent-routes.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
-  const state = useResource(() => loadAgentDetail(agentId), agentId, {
-    onBackgroundError: markAgentDetailUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  const state = useAgentDetailView(agentId, { watched: true });
   return (
     <AsyncState state={state}>
       {(agent) => (

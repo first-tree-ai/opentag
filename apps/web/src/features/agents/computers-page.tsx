@@ -1,9 +1,8 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { browserApi } from "../../api.js";
 import { StatusIndicator, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
-import { useAccount } from "../session/session-context.js";
+import { AsyncState, toResourceState } from "../resource/resource-state.js";
+import { useComputersQuery } from "./agent-queries.js";
 import { ComputerSetup } from "./computer-setup.js";
 
 /**
@@ -12,11 +11,9 @@ import { ComputerSetup } from "./computer-setup.js";
  * folded into the Agent list without making that first-run path unnecessarily indirect.
  */
 export function ComputersPage() {
-  const { me } = useAccount();
-  const state = useResource(() => browserApi.computers(), me.user.id, {
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  // The one Computers entry every surface reads, watched because this page is where an operator
+  // waits for a Computer to come back.
+  const state = toResourceState(useComputersQuery(true));
 
   return (
     <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">

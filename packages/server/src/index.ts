@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
@@ -9,7 +9,7 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { agents, workspaceComputers } from "./db/schema/index.js";
+import { accountComputers, agents } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -44,8 +44,7 @@ import { OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { TaskService } from "./services/tasks/index.js";
-import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
-import { WorkspaceAdminService, WorkspaceSetupService } from "./services/workspaces/index.js";
+import { WorkspaceSetupService } from "./services/workspaces/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -120,8 +119,7 @@ export async function startServer(): Promise<void> {
     readiness.complete("migration");
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
-    const workspaceAdmins = new WorkspaceAdminAccess(database);
-    const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
+    const postAuthentication = new PostAuthenticationService(database);
     const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
     const betterAuth = createBetterAuth(database, {
       onSessionCreating: async (userId) => {
@@ -142,23 +140,14 @@ export async function startServer(): Promise<void> {
       onCredentialRotated: async (workspaceComputerId) => {
         await registry.closeEnrollment(workspaceComputerId);
       },
-      workspaceAdmins,
     });
-    const computerService = new ComputerService(database, authService);
-    const workspaceService = new WorkspaceAdminService(database, { providerReadiness: registry, workspaceAdmins });
+    const computerService = new ComputerService(database, authService, { providerReadiness: registry });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
-        .select({ workspaceComputerId: workspaceComputers.id, runtimeProvider: agents.runtimeProvider })
+        .select({ workspaceComputerId: accountComputers.id, runtimeProvider: agents.runtimeProvider })
         .from(agents)
-        .innerJoin(
-          workspaceComputers,
-          and(
-            eq(workspaceComputers.workspaceId, agents.workspaceId),
-            eq(workspaceComputers.id, agents.workspaceComputerId),
-            isNull(workspaceComputers.revokedAt),
-          ),
-        )
+        .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
         .where(eq(agents.id, agentId))
         .limit(1);
       const currentInstanceId = agent ? registry.currentInstanceId(agent.workspaceComputerId) : undefined;
@@ -257,14 +246,12 @@ export async function startServer(): Promise<void> {
             database,
             environment: config.environment,
             registry,
-            workspaceAdmins,
           }),
         }
       : undefined;
     app = createApp({
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
-      accountScope: workspaceAdmins,
       agentService,
       authService,
       browserAuth: {
@@ -322,7 +309,6 @@ export async function startServer(): Promise<void> {
           }),
       },
       ...(stagingOnboardingLab ? { stagingOnboardingLab } : {}),
-      workspaceService,
       workspaceSetupService,
     });
     feishuSetupService.start();

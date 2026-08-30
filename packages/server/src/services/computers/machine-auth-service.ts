@@ -4,6 +4,8 @@ import {
   type ChannelName,
   type ComputerConnectCodeMode,
   getChannelConfig,
+  isSupportedClientVersion,
+  unsupportedClientVersionMessage,
 } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -13,11 +15,15 @@ import {
   computerCredentials,
   computers,
   users,
-  workspaceComputerCredentials,
-  workspaceComputers,
 } from "../../db/schema/index.js";
+import {
+  ensureSchemaWorkspaceId,
+  insertSchemaWorkspaceComputer,
+  lockSchemaWorkspaceComputer,
+  schemaRequiredConnectCodeProjection,
+  schemaWorkspaceIdForComputer,
+} from "../../db/schema-required-legacy.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
-import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 export const COMPUTER_CONNECT_CODE_TTL_SECONDS = 15 * 60;
 const COMPUTER_CONNECT_CODE_PREFIX = "otcc_";
@@ -42,12 +48,7 @@ export interface IssuedComputerConnectCode {
 }
 
 export interface MachineConnectCodeIssuer {
-  issueForAccount(
-    accountId: string,
-    input: AccountComputerConnectCodeIssueRequest,
-    compatibilityWorkspaceId?: string,
-  ): Promise<IssuedComputerConnectCode>;
-  issueForWorkspaceAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode>;
+  issueForAccount(accountId: string, input: AccountComputerConnectCodeIssueRequest): Promise<IssuedComputerConnectCode>;
 }
 
 export interface MachineEnrollmentInput {
@@ -70,7 +71,6 @@ export interface ComputerAuthVerifier {
 export interface MachineAuthServiceOptions {
   now?: () => Date;
   onCredentialRotated?: (workspaceComputerId: string) => Promise<void> | void;
-  workspaceAdmins?: WorkspaceAdminAccess;
 }
 
 type ConnectCodeRow = typeof computerConnectCodes.$inferSelect;
@@ -79,24 +79,21 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #onCredentialRotated?: MachineAuthServiceOptions["onCredentialRotated"];
-  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(database: DatabaseClient, options: MachineAuthServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onCredentialRotated = options.onCredentialRotated;
-    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async issueForAccount(
     accountId: string,
     input: AccountComputerConnectCodeIssueRequest,
-    compatibilityWorkspaceId?: string,
   ): Promise<IssuedComputerConnectCode> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
+      await lockActiveAccount(transaction, accountId);
       if (input.mode === "repair") {
-        await lockActiveAccount(transaction, accountId);
         return this.#insertCode(transaction, {
           accountId,
           mode: "repair",
@@ -104,47 +101,20 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           targetComputerId: input.targetComputerId,
         });
       }
-      if (!compatibilityWorkspaceId) {
-        throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
-      }
-      try {
-        await this.#workspaceAdmins.lockWorkspace(transaction, compatibilityWorkspaceId);
-      } catch (error) {
-        rethrowMissingWorkspaceAsNotFound(error);
-      }
-      await lockActiveAccount(transaction, accountId);
       return this.#insertCode(transaction, {
         accountId,
         mode: "create",
         now,
-        workspaceId: compatibilityWorkspaceId,
+        workspaceId: await ensureSchemaWorkspaceId(transaction, accountId, now),
       });
     });
   }
 
-  async issueForWorkspaceAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode> {
-    const now = this.#now();
-    return this.#database.transaction(async (transaction) => {
-      await this.#workspaceAdmins.requireAdminForMutation(transaction, accountId, workspaceId);
-      return this.#insertCode(transaction, { accountId, mode: "create", now, workspaceId });
-    });
-  }
-
   async exchangeConnectCode(input: MachineEnrollmentInput): Promise<MachineEnrollmentResult> {
+    rejectUnsupportedClientVersion(input.clientVersion);
     const now = this.#now();
     const tokenHash = hashSecret(input.code);
     const result = await this.#database.transaction(async (transaction) => {
-      const [candidate] = await transaction
-        .select({ workspaceId: computerConnectCodes.workspaceId })
-        .from(computerConnectCodes)
-        .where(eq(computerConnectCodes.tokenHash, tokenHash))
-        .limit(1);
-      if (!candidate) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-      try {
-        await this.#workspaceAdmins.lockWorkspace(transaction, candidate.workspaceId);
-      } catch (error) {
-        rethrowMissingWorkspaceAsInvalidCode(error);
-      }
       const [connectCode] = await transaction
         .select()
         .from(computerConnectCodes)
@@ -205,26 +175,25 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       .select({
         credentialId: computerCredentials.id,
         workspaceComputerId: accountComputers.id,
-        workspaceId: workspaceComputers.workspaceId,
         computerId: accountComputers.currentInstallationId,
         secretHash: computerCredentials.secretHash,
       })
       .from(computerCredentials)
       .innerJoin(accountComputers, eq(accountComputers.id, computerCredentials.computerId))
-      .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
-      .where(
-        and(
-          eq(computerCredentials.id, parsed[1]),
-          isNull(computerCredentials.revokedAt),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .where(and(eq(computerCredentials.id, parsed[1]), isNull(computerCredentials.revokedAt)))
       .limit(1);
     if (!credential || !matchesSecretHash(credential.secretHash, parsed[2])) {
       throw invalidMachineCredential("AUTH_INVALID_TOKEN", "The machine token is invalid");
     }
-    const { secretHash: _secretHash, ...context } = credential;
-    return context;
+    const workspaceId = await this.#database.transaction((transaction) =>
+      schemaWorkspaceIdForComputer(transaction, credential.workspaceComputerId),
+    );
+    return {
+      credentialId: credential.credentialId,
+      workspaceComputerId: credential.workspaceComputerId,
+      workspaceId,
+      computerId: credential.computerId,
+    };
   }
 
   async #insertCode(
@@ -242,23 +211,8 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       if (!input.targetComputerId) {
         throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
       }
-      const [target] = await transaction
-        .select({
-          id: accountComputers.id,
-          workspaceId: workspaceComputers.workspaceId,
-        })
-        .from(accountComputers)
-        .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
-        .where(
-          and(
-            eq(accountComputers.id, input.targetComputerId),
-            eq(accountComputers.ownerAccountId, input.accountId),
-            isNull(workspaceComputers.revokedAt),
-          ),
-        )
-        .limit(1)
-        .for("update");
-      if (!target) {
+      const target = await lockSchemaWorkspaceComputer(transaction, input.targetComputerId);
+      if (!target || target.ownerAccountId !== input.accountId) {
         throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
       }
       workspaceId = target.workspaceId;
@@ -270,7 +224,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     const expiresIn = COMPUTER_CONNECT_CODE_TTL_SECONDS;
     const expiresAt = new Date(input.now.getTime() + expiresIn * 1000);
     await transaction.insert(computerConnectCodes).values({
-      workspaceId,
+      ...schemaRequiredConnectCodeProjection(workspaceId),
       tokenHash: hashSecret(code),
       issuedByUserId: input.accountId,
       issuedByAccountId: input.accountId,
@@ -293,21 +247,16 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       .values({ id: input.computerId, createdAt: now })
       .onConflictDoNothing({ target: computers.id });
     try {
-      const [enrollment] = await transaction
-        .insert(workspaceComputers)
-        .values({
-          workspaceId: connectCode.workspaceId,
-          computerId: input.computerId,
-          displayName: input.displayName,
-          platform: input.platform,
-          arch: input.arch,
-          clientVersion: input.clientVersion,
-          enrolledByUserId: connectCode.issuedByAccountId,
-          enrolledAt: now,
-          updatedAt: now,
-        })
-        .returning({ id: workspaceComputers.id });
-      if (!enrollment) throw new Error("Computer enrollment was not created");
+      const enrollment = await insertSchemaWorkspaceComputer(transaction, {
+        arch: input.arch,
+        clientVersion: input.clientVersion,
+        computerId: input.computerId,
+        displayName: input.displayName,
+        enrolledByUserId: connectCode.issuedByAccountId,
+        now,
+        platform: input.platform,
+        workspaceId: connectCode.workspaceId,
+      });
       await transaction.insert(accountComputers).values({
         id: enrollment.id,
         ownerAccountId: connectCode.issuedByAccountId,
@@ -342,17 +291,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     if (!connectCode.targetComputerId) {
       throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
     }
-    const [target] = await transaction
-      .select({
-        id: accountComputers.id,
-        ownerAccountId: accountComputers.ownerAccountId,
-        workspaceId: workspaceComputers.workspaceId,
-      })
-      .from(accountComputers)
-      .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
-      .where(and(eq(accountComputers.id, connectCode.targetComputerId), isNull(workspaceComputers.revokedAt)))
-      .limit(1)
-      .for("update");
+    const target = await lockSchemaWorkspaceComputer(transaction, connectCode.targetComputerId);
     if (
       !target ||
       target.ownerAccountId !== connectCode.issuedByAccountId ||
@@ -364,23 +303,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       .insert(computers)
       .values({ id: input.computerId, createdAt: now })
       .onConflictDoNothing({ target: computers.id });
-    const observation = {
-      computerId: input.computerId,
-      displayName: input.displayName,
-      platform: input.platform,
-      arch: input.arch,
-      clientVersion: input.clientVersion,
-      currentInstanceId: null,
-      connectedAt: null,
-      lastSeenAt: null,
-      updatedAt: now,
-    };
-    const [enrollment] = await transaction
-      .update(workspaceComputers)
-      .set(observation)
-      .where(and(eq(workspaceComputers.id, target.id), isNull(workspaceComputers.revokedAt)))
-      .returning({ id: workspaceComputers.id });
-    if (!enrollment) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
     const [accountComputer] = await transaction
       .update(accountComputers)
       .set({
@@ -399,9 +321,9 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       )
       .returning({ id: accountComputers.id });
     if (!accountComputer) {
-      throw new Error("The account-owned Computer projection does not match the enrollment identity");
+      throw new Error("The account-owned Computer does not match the schema-required fill");
     }
-    return enrollment;
+    return { id: target.id };
   }
 }
 
@@ -412,28 +334,12 @@ async function rotateComputerCredentials(
   now: Date,
 ): Promise<{ id: string; secret: string }> {
   await transaction
-    .update(workspaceComputerCredentials)
-    .set({ revokedByUserId: accountId, revokedAt: now })
-    .where(
-      and(
-        eq(workspaceComputerCredentials.workspaceComputerId, computerId),
-        isNull(workspaceComputerCredentials.revokedAt),
-      ),
-    );
-  await transaction
     .update(computerCredentials)
     .set({ revokedByUserId: accountId, revokedAt: now })
     .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)));
   const credentialId = randomUUID();
   const secret = generateSecret(32);
   const secretHash = hashSecret(secret);
-  await transaction.insert(workspaceComputerCredentials).values({
-    id: credentialId,
-    workspaceComputerId: computerId,
-    secretHash,
-    issuedByUserId: accountId,
-    issuedAt: now,
-  });
   await transaction.insert(computerCredentials).values({
     id: credentialId,
     computerId,
@@ -500,16 +406,7 @@ function invalidMachineCredential(
   return new AuthServiceError(code, "credential", message, 401);
 }
 
-function rethrowMissingWorkspaceAsInvalidCode(error: unknown): never {
-  if (error instanceof AuthServiceError && error.statusCode === 404) {
-    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-  }
-  throw error;
-}
-
-function rethrowMissingWorkspaceAsNotFound(error: unknown): never {
-  if (error instanceof AuthServiceError && error.statusCode === 404) {
-    throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
-  }
-  throw error;
+export function rejectUnsupportedClientVersion(clientVersion: string): void {
+  if (isSupportedClientVersion(clientVersion)) return;
+  throw new AuthServiceError("CLIENT_VERSION_UNSUPPORTED", "validation", unsupportedClientVersionMessage(), 400);
 }

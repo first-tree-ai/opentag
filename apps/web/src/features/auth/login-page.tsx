@@ -1,14 +1,19 @@
 import { type AuthProvidersResponse, DEFAULT_SIGN_IN_DESTINATION } from "@opentag/shared/browser";
+import { useQuery } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import googleSignInButton from "../../assets/google-sign-in-light@2x.png";
+import { queryKeys } from "../../query/keys.js";
 import { Icon, Text } from "../../ui/design-system.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { toResourceState } from "../resource/query-state.js";
+import { AsyncState } from "../resource/use-resource.js";
 import { PasswordSignInForm } from "./password-sign-in-form.js";
 
 export type AuthProvider = AuthProvidersResponse["providers"][number];
 
 export function LoginPage({ next: requested }: { next?: string }) {
-  const providers = useResource(() => browserApi.authProviders(), "auth-providers");
+  const providers = toResourceState(
+    useQuery({ queryKey: queryKeys.authProviders(), queryFn: () => browserApi.authProviders() }),
+  );
   const next = requested ?? DEFAULT_SIGN_IN_DESTINATION;
   return (
     <main className="grid min-h-screen place-items-center bg-kumo-canvas p-6" data-ui="login-page">

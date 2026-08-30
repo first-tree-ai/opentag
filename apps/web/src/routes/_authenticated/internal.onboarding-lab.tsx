@@ -1,9 +1,12 @@
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { browserApi } from "../../api.js";
 import { StandaloneNotFoundPage } from "../../features/not-found.js";
-import { AsyncState, useResource } from "../../features/resource/use-resource.js";
+import { toResourceState } from "../../features/resource/query-state.js";
+import { AsyncState } from "../../features/resource/use-resource.js";
 import { useAccount } from "../../features/session/session-context.js";
 import { OnboardingLabPage } from "../../internal/onboarding-lab-page.js";
+import { queryKeys } from "../../query/keys.js";
 
 export const Route = createFileRoute("/_authenticated/internal/onboarding-lab")({
   component: OnboardingLabRoute,
@@ -21,7 +24,9 @@ function OnboardingLabRoute() {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
   const { scenario } = Route.useSearch();
-  const offered = useResource(() => browserApi.onboardingLabOffered(), "onboarding-lab");
+  const offered = toResourceState(
+    useQuery({ queryKey: queryKeys.onboardingLabOffered(), queryFn: () => browserApi.onboardingLabOffered() }),
+  );
   return (
     <AsyncState state={offered}>
       {(value) =>

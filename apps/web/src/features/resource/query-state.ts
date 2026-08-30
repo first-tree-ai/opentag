@@ -1,11 +1,19 @@
 import { isTerminalResourceError, type LoadState } from "./use-resource.js";
 
 /** The part of a query result this reads. Taking a plain object keeps it a pure function to test. */
-export interface ResourceQueryResult<T> {
-  data: T | undefined;
+export interface ResourceQueryResult {
+  data: unknown;
   error: Error | null;
   isError: boolean;
 }
+
+/**
+ * The value a query carries once it holds one. `undefined` is reserved for "nothing read yet", so a
+ * resource that can legitimately be absent — an Agent with no messaging binding — must resolve to
+ * `null` rather than `undefined`. The query client requires that anyway: it rejects a query function
+ * that resolves `undefined`.
+ */
+type Loaded<TQuery extends ResourceQueryResult> = Exclude<TQuery["data"], undefined>;
 
 /**
  * Reads a query as the three states a page renders.
@@ -19,17 +27,18 @@ export interface ResourceQueryResult<T> {
  * exempt — a `401`, `403`, `404` or `410` says the resource is gone or forbidden, which is not a
  * transient loss of contact, so it surfaces as an error however much stale data is in hand.
  */
-export function toResourceState<T>(
-  query: ResourceQueryResult<T>,
-  onBackgroundError?: (value: T, error: Error) => T,
-): LoadState<T> {
+export function toResourceState<TQuery extends ResourceQueryResult>(
+  query: TQuery,
+  onBackgroundError?: (value: Loaded<TQuery>, error: Error) => Loaded<TQuery>,
+): LoadState<Loaded<TQuery>> {
+  const loaded = query.data as Loaded<TQuery> | undefined;
   if (query.isError) {
     const error = query.error ?? new Error("The request failed");
-    if (query.data !== undefined && onBackgroundError && !isTerminalResourceError(error)) {
-      return { kind: "ready", value: onBackgroundError(query.data, error) };
+    if (loaded !== undefined && onBackgroundError && !isTerminalResourceError(error)) {
+      return { kind: "ready", value: onBackgroundError(loaded, error) };
     }
     return { kind: "error", error };
   }
-  if (query.data !== undefined) return { kind: "ready", value: query.data };
+  if (loaded !== undefined) return { kind: "ready", value: loaded };
   return { kind: "loading" };
 }

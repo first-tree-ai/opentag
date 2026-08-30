@@ -1,8 +1,11 @@
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { queryKeys } from "../../query/keys.js";
 import { buttonClassName, Text } from "../../ui/design-system.js";
 import { Redirect } from "../navigation/redirect.js";
 import { NotFoundPage } from "../not-found.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { toResourceState } from "../resource/query-state.js";
+import { AsyncState } from "../resource/use-resource.js";
 import { AgentObjectHeader } from "./agent-detail-page.js";
 import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
 import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -26,9 +29,10 @@ export function LegacyAgentCapabilityPage({
   agentId: string;
   capability: "integrations" | "skills";
 }) {
-  const state = useResource(() => loadAgentDetail(agentId), agentId, {
-    onBackgroundError: markAgentDetailUnconfirmed,
-  });
+  const state = toResourceState(
+    useQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => loadAgentDetail(agentId) }),
+    markAgentDetailUnconfirmed,
+  );
   const label = capability === "integrations" ? "integrations" : "skills";
   return (
     <AsyncState state={state}>

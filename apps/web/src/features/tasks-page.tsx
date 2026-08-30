@@ -1,6 +1,6 @@
 import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
-import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEventHandler, type ReactNode, useEffect, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
@@ -193,110 +193,6 @@ export function TasksPage() {
       ) : null}
       {state.kind === "ready" && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
-      ) : null}
-    </section>
-  );
-}
-
-/**
- * The Agent home list reads the Agent's own Tasks from the server. It keeps pagination scoped to
- * that Agent and protects each append from a response belonging to an older load.
- */
-export function AgentTasksSection({ agentId }: { agentId: string }) {
-  const [state, setState] = useState<LoadState<TaskCollection>>({ kind: "loading" });
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
-  const loadGeneration = useRef(0);
-
-  useEffect(() => {
-    let active = true;
-    loadGeneration.current += 1;
-    setState({ kind: "loading" });
-    setLoadMoreError(null);
-    setLoadingMore(false);
-    browserApi.tasks({ agentId }).then(
-      (value) =>
-        active && setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } }),
-      (error: unknown) => active && setState({ kind: "error", error: asError(error) }),
-    );
-    return () => {
-      active = false;
-    };
-  }, [agentId]);
-
-  async function loadMore(): Promise<void> {
-    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    const pagedGeneration = loadGeneration.current;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.tasks({ agentId, cursor: state.value.nextCursor });
-      if (loadGeneration.current !== pagedGeneration) return;
-      setState((current) =>
-        current.kind === "ready"
-          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
-          : current,
-      );
-    } catch (error) {
-      if (loadGeneration.current !== pagedGeneration) return;
-      // Keep the rows already on screen so a transient page failure has a safe retry path.
-      setLoadMoreError(asError(error));
-    } finally {
-      if (loadGeneration.current === pagedGeneration) setLoadingMore(false);
-    }
-  }
-
-  return (
-    <section className="grid gap-4" aria-labelledby="agent-tasks-heading" data-ui="agent-tasks">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <Text as="h2" id="agent-tasks-heading" variant="heading">
-          Tasks
-        </Text>
-        <Link to="/tasks">All Tasks</Link>
-      </div>
-      {state.kind === "loading" ? (
-        <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
-      ) : null}
-      {state.kind === "error" ? <TaskNotice heading="Tasks unavailable" detail={state.error.message} /> : null}
-      {state.kind === "ready" && state.value.tasks.length === 0 ? (
-        <TaskNotice heading="No Tasks found" detail="Work this Agent handles in Feishu or Slack appears here." />
-      ) : null}
-      {state.kind === "ready" && state.value.tasks.length > 0 ? (
-        <>
-          <div className="overflow-x-auto">
-            <Table className="w-full" aria-label="Agent Tasks" data-ui="task-table">
-              <thead>
-                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-                  <th scope="col">Task</th>
-                  <th scope="col">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {state.value.tasks.map((task) => (
-                  <TaskRow key={task.id} showAgent={false} task={task} />
-                ))}
-              </tbody>
-            </Table>
-          </div>
-          {state.value.nextCursor ? (
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                disabled={loadingMore}
-                loading={loadingMore}
-                type="button"
-                variant="secondary"
-                onClick={() => void loadMore()}
-              >
-                {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
-              </Button>
-              {loadMoreError ? (
-                <span className="text-sm text-kumo-danger" role="alert">
-                  {loadMoreError.message}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-        </>
       ) : null}
     </section>
   );
@@ -589,7 +485,7 @@ function TaskSelect({
   );
 }
 
-function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSummary }) {
+function TaskRow({ task }: { task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
@@ -598,17 +494,13 @@ function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSu
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
-          {showAgent ? (
-            <>
-              <span>{task.agent.displayName}</span>
-              <span aria-hidden="true"> · </span>
-            </>
-          ) : null}
+          <span>{task.agent.displayName}</span>
+          <span aria-hidden="true">·</span>
           <ProviderIcon provider={task.source.provider} compact />
-          <span> {task.source.provider}</span>
-          <span aria-hidden="true"> · </span>
+          <span>{task.source.provider}</span>
+          <span aria-hidden="true">·</span>
           <span>{task.sessionKind}</span>
-          <span aria-hidden="true"> · </span>
+          <span aria-hidden="true">·</span>
           <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
         </span>
       </td>

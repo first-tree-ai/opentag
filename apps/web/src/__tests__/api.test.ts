@@ -263,4 +263,80 @@ describe("BrowserApi", () => {
     await expect(api.issueComputerConnectCode()).resolves.toMatchObject({ expiresIn: 900 });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
+
+  it("routes the remaining browser API operations with their documented methods", async () => {
+    const calls: Array<{ path: string; method: string | undefined }> = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      calls.push({ path: String(input), method: init?.method });
+      return new Response(null, { status: 204 });
+    });
+    const api = new BrowserApi(fetchImpl);
+    const operations = [
+      api.completeSetup(userId),
+      api.agents(),
+      api.tasks({ cursor: "next", agentId: userId, kind: "thread" }),
+      api.task(userId, "older"),
+      api.agent(userId),
+      api.agentUsage(userId, 7),
+      api.agentConfig(userId),
+      api.createAgent({} as never),
+      api.updateAgent(userId, {} as never),
+      api.suspendAgent(userId),
+      api.reactivateAgent(userId),
+      api.deleteAgent(userId),
+      api.imBindingConfig(userId),
+      api.createFeishuSetupAttempt(userId, "reauthorize"),
+      api.feishuSetupAttempt(userId),
+      api.startSlackOAuth(userId, { intent: "create" }),
+      api.imBindingDiagnostics(userId),
+      api.computers(),
+      api.issueComputerConnectCode(),
+      api.resetOnboardingLab(),
+      api.signUpWithPassword({ email: "ada@example.com", password: "password-password", name: "Ada" }),
+      api.signInWithPassword({ email: "ada@example.com", password: "password-password" }),
+      api.logout(),
+    ];
+    const results = await Promise.allSettled(operations);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(6);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { path: "/api/v1/me/setup/complete", method: "POST" },
+        { path: "/api/v1/sessions?cursor=next&agentId=" + userId + "&kind=thread", method: undefined },
+        { path: "/api/v1/sessions/" + userId + "?cursor=older", method: undefined },
+        { path: "/api/v1/agents/" + userId + "/config", method: undefined },
+        { path: "/api/v1/agents/" + userId, method: "DELETE" },
+        { path: "/api/v1/internal/onboarding-lab", method: "POST" },
+        { path: "/api/v1/auth/email/sign-up", method: "POST" },
+        { path: "/api/v1/auth/browser/logout", method: "POST" },
+      ]),
+    );
+  });
+
+  it("reports staging Lab reachability, health status, and malformed CSRF cookies", async () => {
+    const responses = [
+      new Response(null, { status: 204 }),
+      new Response(null, { status: 404 }),
+      new Response(
+        JSON.stringify({ error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Lab failed" } }),
+        { status: 503 },
+      ),
+      new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({ status: 42 }), { status: 200, headers: { "content-type": "application/json" } }),
+    ];
+    const fetchImpl = vi.fn<typeof fetch>(async () => responses.shift() ?? new Response(null, { status: 500 }));
+    const api = new BrowserApi(fetchImpl);
+    await expect(api.onboardingLabOffered()).resolves.toBe(true);
+    await expect(api.onboardingLabOffered()).resolves.toBe(false);
+    await expect(api.onboardingLabOffered()).rejects.toMatchObject({ status: 503, message: "Lab failed" });
+    await expect(api.health("/healthz")).resolves.toMatchObject({ status: "ok" });
+    await expect(api.health("/readyz")).rejects.toMatchObject({ status: 200, message: "Health check failed" });
+
+    setDocumentCookie("opentag_csrf=%E0%A4%A; Path=/");
+    const malformedCookieFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBeNull();
+      return new Response(null, { status: 204 });
+    });
+    await expect(new BrowserApi(malformedCookieFetch).logout()).resolves.toBeUndefined();
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
 });

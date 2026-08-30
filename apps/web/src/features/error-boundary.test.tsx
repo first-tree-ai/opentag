@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, within } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderInRouter } from "../__tests__/support/router.js";
 import { createAppRouter } from "../router.js";
 import { Route } from "../routes/__root.js";
-import { AppErrorBoundary, reportBoundaryError, rootErrorHandlers } from "./error-boundary.js";
+import { AppErrorBoundary, RouteErrorPage, reportBoundaryError, rootErrorHandlers } from "./error-boundary.js";
 import { StandaloneNotFoundPage } from "./not-found.js";
 
 function ExplodingChild(): never {
@@ -22,6 +23,12 @@ describe("application error boundaries", () => {
 
   it("keeps root and custom boundary diagnostics free of credential-shaped values", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const originalLocation = window.location;
+    const reload = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, reload },
+    });
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container, rootErrorHandlers);
@@ -38,6 +45,8 @@ describe("application error boundaries", () => {
       const view = within(container);
       expect(view.getByRole("heading", { name: "Something went wrong" })).toBeTruthy();
       expect(view.getByRole("button", { name: "Try again" })).toBeTruthy();
+      fireEvent.click(view.getByRole("button", { name: "Try again" }));
+      expect(reload).toHaveBeenCalledOnce();
       expect(view.getByRole("link", { name: "Back to Agents" }).getAttribute("href")).toBe("/agents");
 
       const logged = consoleError.mock.calls.map((args) => JSON.stringify(args)).join("\n");
@@ -66,6 +75,7 @@ describe("application error boundaries", () => {
     } finally {
       act(() => root.unmount());
       container.remove();
+      Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
     }
   });
 
@@ -78,6 +88,16 @@ describe("application error boundaries", () => {
     expect(router.options.defaultOnCatch).toEqual(expect.any(Function));
 
     router.history.destroy();
+  });
+
+  it("renders the route fallback and retries the failed match", async () => {
+    const reset = vi.fn();
+    await renderInRouter(<RouteErrorPage reset={reset} />);
+
+    expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Agents" }).getAttribute("href")).toBe("/agents");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(reset).toHaveBeenCalledOnce();
   });
 
   it("redacts the complete credential for non-Bearer authorization schemes", () => {

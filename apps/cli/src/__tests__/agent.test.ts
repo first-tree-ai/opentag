@@ -83,12 +83,14 @@ const {
 } = agent;
 const agentSummary = {
   ...agentBase,
+  activity: { state: "idle" as const },
   createdBy: { userId: createdByUserId, displayName: "Admin" },
   computer: {
     computerId: agentComputerId,
     displayName: computer.displayName,
     platform: computer.platform,
   },
+  usage: { windowDays: 30 as const, tasks: 0, failed: 0, tokens: 0 },
 };
 
 function api() {
@@ -176,6 +178,8 @@ describe("Agent CLI core", () => {
       provider: "feishu",
       identity: { provider: "feishu", appId: "cli-app", teamId: null, botOpenId: "bot-open", teamBrand: null },
       receiveMode: "mention_only",
+      bindingState: "active",
+      bot: { displayName: "Feishu", avatarUrl: null },
       credentialGeneration: 2,
       reauthorizationRequired: false,
       lastInboundAt: null,
@@ -183,8 +187,6 @@ describe("Agent CLI core", () => {
       lastRuntimeObservationAt: null,
       grantedCapabilities: ["im:message"],
       lastErrorCode: null,
-      displayName: "Feishu",
-      avatarUrl: null,
     };
     client.getAgentImBindingConfig.mockResolvedValue(binding);
     const attempt: FeishuSetupAttempt = {
@@ -516,16 +518,17 @@ describe("Agent CLI core", () => {
       id: crypto.randomUUID(),
       agentId,
       provider: "feishu" as const,
-      identity: { provider: "feishu" as const, appId: "app", teamId: null, botOpenId: null, teamBrand: null },
+      identity: { provider: "feishu" as const, appId: "app", teamId: null, botOpenId: "bot", teamBrand: null },
       receiveMode: "mention_only" as const,
+      bindingState: "active" as const,
+      bot: { displayName: "Feishu", avatarUrl: null },
       credentialGeneration: 1,
       reauthorizationRequired: false,
       lastInboundAt: null,
       lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
       grantedCapabilities: [],
       lastErrorCode: null,
-      displayName: "Feishu",
-      avatarUrl: null,
     };
     const showImSpy = vi.spyOn(agentIm, "runImBindingShow").mockResolvedValue(binding);
     const connectImSpy = vi.spyOn(agentIm, "runImBindingConnectFeishu").mockResolvedValue({

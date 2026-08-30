@@ -52,7 +52,7 @@ describe("session CLI", () => {
       messageId: "33333333-3333-4333-8333-333333333333",
       code: "VALIDATION_ERROR",
     });
-    const list = vi.spyOn(sessionCore, "runSessionList").mockResolvedValue({ items: [], nextCursor: null });
+    const list = vi.spyOn(sessionCore, "runSessionList").mockResolvedValue({ items: [], nextCursor: undefined });
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const previousExitCode = process.exitCode;
@@ -101,7 +101,7 @@ describe("session CLI", () => {
   it("renders a stable error when a session request is rejected", async () => {
     const error = new SessionCommandRequestError(
       "44444444-4444-4444-8444-444444444444",
-      new client.OpenTagApiError("VALIDATION_ERROR", "permanent", "bad request", 400),
+      new client.OpenTagApiError("VALIDATION_ERROR", "validation", "bad request", 400),
     );
     const create = vi.spyOn(sessionCore, "runSessionCreate").mockRejectedValue(error);
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -147,23 +147,25 @@ describe("session CLI", () => {
         items: [
           {
             sessionId: "s1",
-            parentSessionId: null,
+            parentSessionId: "11111111-1111-4111-8111-111111111111",
             createdAt: "2026-01-01T00:00:00.000Z",
-            lastMessageAt: null,
+            lastMessageAt: "2026-01-01T00:00:00.000Z",
             lastDeliveryOutcome: "accepted",
             taskPreview: "line\tone\nline two",
           },
         ],
         nextCursor: "next",
       }),
-    ).toContain("s1\t\t2026-01-01T00:00:00.000Z\t\taccepted\tline one line two\nNext cursor: next");
-    expect(formatSessionList({ items: [], nextCursor: null })).toBe(
+    ).toContain(
+      "s1\t11111111-1111-4111-8111-111111111111\t2026-01-01T00:00:00.000Z\t2026-01-01T00:00:00.000Z\taccepted\tline one line two\nNext cursor: next",
+    );
+    expect(formatSessionList({ items: [], nextCursor: undefined })).toBe(
       "SESSION ID\tPARENT SESSION\tCREATED\tLAST MESSAGE\tOUTCOME\tTASK",
     );
   });
 
   it("maps API rejections to the stable rejected request contract", async () => {
-    const apiError = new client.OpenTagApiError("VALIDATION_ERROR", "permanent", "bad message", 400);
+    const apiError = new client.OpenTagApiError("VALIDATION_ERROR", "validation", "bad message", 400);
     const error = await requestWithRetryKey("message-rejected", async () => {
       throw apiError;
     }).catch((failure: unknown) => failure);
@@ -200,7 +202,7 @@ describe("session CLI", () => {
     });
     const list = vi.spyOn(OpenTagApi.prototype, "listInternalSessions").mockResolvedValue({
       items: [],
-      nextCursor: null,
+      nextCursor: undefined,
     });
 
     const previousProof = process.env.OPENTAG_SESSION_PROOF_FILE;
@@ -224,7 +226,7 @@ describe("session CLI", () => {
         runSessionList({ recursive: true, limit: 5, cursor: "c", since: "2026-01-01T00:00:00.000Z" }),
       ).resolves.toEqual({
         items: [],
-        nextCursor: null,
+        nextCursor: undefined,
       });
       expect(create).toHaveBeenCalledWith(
         "p".repeat(40),

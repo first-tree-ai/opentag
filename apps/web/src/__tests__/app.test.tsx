@@ -659,7 +659,7 @@ describe("OpenTag Web App Shell", () => {
     expect(signIn.getAttribute("data-ui")).toBe("login-provider-google");
     expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
-    expect(screen.getByText("Sign in to manage your Agents.")).toBeTruthy();
+    expect(screen.getByText("Sign in to manage your Agents and Computers.")).toBeTruthy();
   });
 
   it("offers the password form only where the server enabled it", async () => {
@@ -2282,7 +2282,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(within(menu).queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(within(menu).queryByText("Secondary")).toBeNull();
-    expect(within(menu).queryByRole("menuitem", { name: "Computers" })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: "Computers" })).toBeTruthy();
     expect(within(menu).queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 
@@ -2749,12 +2749,19 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("sends a retired Computers bookmark to Agents", async () => {
+  it("opens the Computers page from the account menu", async () => {
     installApi();
-    window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    const computers = screen.getByRole("menuitem", { name: "Computers" });
+    expect(computers.getAttribute("href")).toBe("/agents/computers");
+    fireEvent.click(computers);
+    expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("Online")).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents/computers");
+    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {

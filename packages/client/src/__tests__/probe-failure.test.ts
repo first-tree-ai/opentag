@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  artifactOrTransientProbeIssue,
+  classifiedProviderProbeIssue,
   isBinaryShapedProviderProbeFailure,
   isTransientProviderProbeFailure,
   readProbeFailureEvidence,
@@ -28,13 +28,20 @@ describe("provider probe failure taxonomy", () => {
     expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("usr"), { signal: "SIGUSR1" }))).toBe(false);
   });
 
-  it("treats clean non-zero exits and ENOENT as binary-shaped", () => {
+  it("treats only known artifact errno, clean non-zero exits, and crash signals as binary-shaped", () => {
     expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("exit"), { code: 1 }))).toBe(true);
     expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("missing"), { code: "ENOENT" }))).toBe(true);
+    expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("denied"), { code: "EACCES" }))).toBe(true);
+    expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("format"), { code: "ENOEXEC" }))).toBe(true);
+    expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("loop"), { code: "ELOOP" }))).toBe(true);
+    expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("io"), { code: "EIO" }))).toBe(false);
+    expect(isBinaryShapedProviderProbeFailure(Object.assign(new Error("ok"), { exitCode: 0 }))).toBe(false);
     expect(isBinaryShapedProviderProbeFailure(new Error("plain"))).toBe(false);
-    expect(artifactOrTransientProbeIssue(Object.assign(new Error("busy"), { code: "EAGAIN" }), "x")).toEqual({
+    expect(classifiedProviderProbeIssue(Object.assign(new Error("busy"), { code: "EAGAIN" }), "x")).toEqual({
       code: "temporarily_unavailable",
       message: "x",
     });
+    expect(classifiedProviderProbeIssue(new Error("plain"), "x")).toBeUndefined();
+    expect(classifiedProviderProbeIssue("bare", "x")).toBeUndefined();
   });
 });

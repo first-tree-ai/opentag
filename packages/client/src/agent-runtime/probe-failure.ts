@@ -8,9 +8,15 @@ import type { AgentRuntimeProbeIssue } from "./types.js";
 const TRANSIENT_SPAWN_CODES: ReadonlySet<string> = new Set(["ETIMEDOUT", "EAGAIN", "ENOMEM"]);
 
 /**
+ * Errnos that mean the selected file is missing or not an executable artifact.
+ * Only these, together with a clean non-zero exit or a deterministic crash
+ * signal, are binary-shaped. Any other errno is unknown and must propagate.
+ */
+const ARTIFACT_ERRNOS: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "ENOEXEC", "ELOOP"]);
+
+/**
  * Kill signals that mean the binary crashed deterministically — a broken or
  * incompatible native install that will fault the same way on every retry.
- * These stay binary-shaped so a later same-Provider candidate may be tried.
  * Deterministic crash signals take precedence over a generic `killed` flag.
  */
 const DETERMINISTIC_CRASH_SIGNALS: ReadonlySet<string> = new Set(["SIGSEGV", "SIGABRT", "SIGILL", "SIGBUS", "SIGFPE"]);
@@ -71,13 +77,19 @@ export function isBinaryShapedProviderProbeFailure(error: unknown): boolean {
   if (isDeterministicCrashSignal(evidence.signal)) return true;
   if (isTransientProviderProbeFailure(error)) return false;
   if (typeof evidence.exitCode === "number" && evidence.exitCode !== 0) return true;
-  if (typeof evidence.errno === "string") return true;
+  if (evidence.errno && ARTIFACT_ERRNOS.has(evidence.errno)) return true;
   return false;
 }
 
-export function artifactOrTransientProbeIssue(error: unknown, artifactMessage: string): AgentRuntimeProbeIssue {
+export function classifiedProviderProbeIssue(
+  error: unknown,
+  artifactMessage: string,
+): AgentRuntimeProbeIssue | undefined {
   if (isTransientProviderProbeFailure(error)) {
     return { code: "temporarily_unavailable", message: artifactMessage };
   }
-  return { code: "artifact_missing", message: artifactMessage };
+  if (isBinaryShapedProviderProbeFailure(error)) {
+    return { code: "artifact_missing", message: artifactMessage };
+  }
+  return undefined;
 }

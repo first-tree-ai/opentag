@@ -407,13 +407,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         throw new Error("missing");
       },
     });
-    await expect(probe.probe({ configuration: { reasoningEffort: "bad" } })).resolves.toEqual({
-      ready: false,
-      issues: [
-        { code: "configuration_invalid", message: "Claude Code reasoning effort is unsupported" },
-        { code: "artifact_missing", message: "Claude Code CLI could not be executed" },
-      ],
-    });
+    await expect(probe.probe({ configuration: { reasoningEffort: "bad" } })).rejects.toThrow("missing");
     await expect(
       new ClaudeCodeAgentRuntimeFactory({
         probeRunner: async () => {
@@ -661,7 +655,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       new ClaudeCodeAgentRuntimeFactory({ process: { command: brokenCommand, env: { PATH: process.env.PATH } } }).probe(
         {},
       ),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    ).rejects.toThrow("Claude Code CLI returned no version");
 
     const authStarted = join(directory, "auth-started");
     const hangingAuthCommand = join(directory, "claude-hanging-auth");

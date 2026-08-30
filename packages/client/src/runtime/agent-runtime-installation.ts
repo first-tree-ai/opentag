@@ -1,7 +1,7 @@
 import { constants, type Stats } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { AgentRuntimeProvider } from "@opentag/shared";
 import { type ActiveVersionManager, versionManagerBinDirs } from "./install-locations.js";
 import { type LoginShellPathDeps, probeLoginShellPath } from "./login-shell-path.js";
@@ -19,6 +19,8 @@ export interface ResolvedAgentRuntimeExecutable {
   provider: AgentRuntimeProvider;
   path: string;
   source: AgentRuntimeExecutableSource;
+  /** Directory of the search hit; used to prepend PATH for automatic candidates. */
+  searchDir?: string;
 }
 
 export type AgentRuntimeCliInstallation =
@@ -203,7 +205,7 @@ export async function* iterateAgentRuntimeExecutables(
         if (seenResolvedPaths.has(outcome.path)) continue;
         seenResolvedPaths.add(outcome.path);
         yielded = true;
-        yield { provider, path: outcome.path, source: candidate.source };
+        yield { provider, path: outcome.path, source: candidate.source, searchDir: dirname(candidate.path) };
         continue;
       }
       if (outcome.status === "unknown") firstUnknown ??= outcome.detail;

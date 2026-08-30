@@ -306,19 +306,13 @@ Resolver 必须由生产 Client Runtime 与 doctor 共用，避免两套解析�
   Provider override；
 - 搜索诊断进程的 `PATH`；
 - 搜索经过评审的 well-known 安装目录；
-- 仅为 Codex 搜索经过验证的 macOS ChatGPT/Codex App bundle 位置；这仍是启动 shell 前的
-  廉价存在检查，并保持 #249 已有的相对优先级；
-- 在以上所有廉价存在检查之后，搜索登录 shell `PATH`，再搜索 nvm/fnm 的 version-manager
-  目录；不得在两个 manager 同时出现、或同一 manager 存在多个已安装版本时猜测版本；
+- 仅为 Codex 搜索经过验证的 macOS ChatGPT/Codex App bundle 位置；
 - 不得把具有执行位的目录、broken link、不可执行文件或不安全的自动候选项当成已安装；
 - 在 `stat`、`access`、`realpath`、目录枚举或其他会跟随路径的读取之前，应用相同的
-  macOS protected-root 策略，包括 version-manager 根目录及其符号链接版本条目；
-- 返回选中的规范路径及来源：`caller-path`、`well-known`、`desktop-app`、
-  `login-shell`、`version-manager`，或未来真实存在的配置来源；
+  macOS protected-root 策略；
+- 返回选中的规范路径及来源：`caller-path`、`well-known`、`desktop-app`，或未来真实
+  存在的配置来源；
 - 每个 Provider 独立失败，单个 detector 错误不能隐藏另一个 Provider 的结果。
-- Doctor 与生产 Client Runtime 共用 install-only resolver，只取第一个可执行候选项，
-  不执行 readiness fallback；它不得启动 Provider，也不得把同一 Provider 的后续候选项
-  当作已安装。登录 shell 探测属于内部能力，不是用户配置、环境变量、flag 或 schema。
 
 P0 不得启动 `codex` 或 `claude`，不得请求 `--version`/`--help`，不得检查认证、初始化
 app server、发起模型请求、安装 binary 或修改 Provider 配置。

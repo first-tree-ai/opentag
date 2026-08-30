@@ -1092,10 +1092,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         throw new Error("missing");
       },
     });
-    await expect(missing.probe({})).resolves.toEqual({
-      ready: false,
-      issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }],
-    });
+    await expect(missing.probe({})).rejects.toThrow("missing");
     await expect(
       new CodexAgentRuntimeFactory({
         clientVersion: "test",
@@ -1103,7 +1100,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
           throw "bare-string";
         },
       }).probe({}),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    ).rejects.toBe("bare-string");
     await expect(
       new CodexAgentRuntimeFactory({
         clientVersion: "test",
@@ -1111,7 +1108,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
           throw null;
         },
       }).probe({}),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    ).rejects.toBeNull();
     const transientCases = [
       { code: "ETIMEDOUT" },
       { code: "EAGAIN" },
@@ -1145,7 +1142,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
           throw new CodexAppServerError("spawn", "missing");
         },
       }).probe({}),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    ).rejects.toMatchObject({ code: "spawn", message: "missing" });
     await expect(
       new CodexAgentRuntimeFactory({
         clientVersion: "test",
@@ -1161,7 +1158,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
           throw new CodexAppServerError("exited", "clean", { exitCode: 0, signal: null });
         },
       }).probe({}),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    ).rejects.toMatchObject({ code: "exited", exitCode: 0 });
     await expect(
       new CodexAgentRuntimeFactory({
         clientVersion: "test",
@@ -1502,10 +1499,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       clientVersion: "test",
       process: { command: emptyVersionCommand, env: { PATH: process.env.PATH, OPENAI_API_KEY: "key" } },
     });
-    await expect(emptyVersion.probe({})).resolves.toMatchObject({
-      ready: false,
-      issues: [{ code: "artifact_missing" }],
-    });
+    await expect(emptyVersion.probe({})).rejects.toThrow("Codex CLI returned no version");
 
     const loginStarted = join(directory, "login-started");
     const hangingLoginCommand = join(directory, "codex-hanging-login");

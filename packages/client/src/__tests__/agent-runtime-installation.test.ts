@@ -30,6 +30,7 @@ describe("Agent Runtime CLI installation discovery", () => {
     ).resolves.toEqual({
       path: await realpath(executable),
       provider: "codex",
+      searchDir: bin,
       source: "caller-path",
     });
   });

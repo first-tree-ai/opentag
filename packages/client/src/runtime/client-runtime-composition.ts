@@ -38,9 +38,12 @@ import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/cod
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AdmissionController } from "./admission-controller.js";
 import {
+  AgentRuntimeExecutableDiscoveryError,
+  AgentRuntimeExecutableNotFoundError,
   canAdvanceRuntimeCandidate,
   iterateAgentRuntimeExecutables,
   type ResolveAgentRuntimeExecutableOptions,
+  type ResolvedAgentRuntimeExecutable,
 } from "./agent-runtime-installation.js";
 import {
   type AgentRuntimeProviderRegistration,
@@ -598,7 +601,7 @@ export interface ResolvedCodexFactoryOptions {
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
   readonly discovery?: ResolveAgentRuntimeExecutableOptions;
-  readonly createCandidateFactory?: (command: string) => CodexAgentRuntimeFactory;
+  readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => CodexAgentRuntimeFactory;
 }
 
 function claudeCodeProcessEnvironment(
@@ -649,40 +652,83 @@ function productionProviderRegistration(
     : { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
 }
 
+function withSearchBinOnPath(
+  environment: NodeJS.ProcessEnv,
+  resolved: ResolvedAgentRuntimeExecutable,
+  pathDelimiter: string = delimiter,
+): NodeJS.ProcessEnv {
+  if (resolved.source === "explicit" || !resolved.searchDir) return environment;
+  const current = environment.PATH;
+  if (!current) return { ...environment, PATH: resolved.searchDir };
+  if (current === resolved.searchDir || current.startsWith(`${resolved.searchDir}${pathDelimiter}`)) {
+    return environment;
+  }
+  return { ...environment, PATH: `${resolved.searchDir}${pathDelimiter}${current}` };
+}
+
+function translateExecutableDiscoveryError(
+  error: unknown,
+  signal: AbortSignal | undefined,
+  artifactMessage: string,
+): AgentRuntimeProbeResult {
+  if (signal?.aborted) throw error;
+  if (error instanceof AgentRuntimeExecutableNotFoundError) {
+    return {
+      ready: false,
+      issues: [{ code: "artifact_missing", message: artifactMessage }],
+    };
+  }
+  if (error instanceof AgentRuntimeExecutableDiscoveryError) {
+    return {
+      ready: false,
+      issues: [{ code: "temporarily_unavailable", message: artifactMessage }],
+    };
+  }
+  throw error;
+}
+
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
   let readyFactory: CodexAgentRuntimeFactory | undefined;
   const createCandidate =
     options.createCandidateFactory ??
-    ((command: string) =>
+    ((command: string, environment: NodeJS.ProcessEnv) =>
       new CodexAgentRuntimeFactory({
         clientVersion: options.clientVersion,
-        process: { command, env: options.environment, expectedCodexHome: options.codexHome },
+        process: { command, env: environment, expectedCodexHome: options.codexHome },
       }));
   return {
     manifest: CODEX_AGENT_RUNTIME_MANIFEST,
     async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
       request.signal?.throwIfAborted();
       let lastBinaryResult: AgentRuntimeProbeResult | undefined;
-      try {
-        for await (const resolved of iterateAgentRuntimeExecutables(
-          "codex",
-          options.command,
-          options.sourceEnvironment,
-          options.discovery,
-        )) {
-          request.signal?.throwIfAborted();
-          const candidate = createCandidate(resolved.path);
-          const result = await candidate.probe(request);
-          if (result.ready) {
-            readyFactory = candidate;
-            return result;
-          }
-          if (!canAdvanceRuntimeCandidate(result)) return result;
-          lastBinaryResult = result;
+      const candidates = iterateAgentRuntimeExecutables(
+        "codex",
+        options.command,
+        options.sourceEnvironment,
+        options.discovery,
+      );
+      while (true) {
+        let step: IteratorResult<ResolvedAgentRuntimeExecutable>;
+        try {
+          step = await candidates.next();
+        } catch (error) {
+          return translateExecutableDiscoveryError(error, request.signal, "Codex CLI could not be executed");
         }
-      } catch (error) {
-        if (request.signal?.aborted) throw error;
-        return { ready: false, issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }] };
+        if (step.done) break;
+        request.signal?.throwIfAborted();
+        const environment = withSearchBinOnPath(
+          options.environment,
+          step.value,
+          options.discovery?.pathDelimiter ?? delimiter,
+        );
+        const candidate = createCandidate(step.value.path, environment);
+        const result = await candidate.probe(request);
+        if (result.ready) {
+          readyFactory = candidate;
+          return result;
+        }
+        if (!canAdvanceRuntimeCandidate(result)) return result;
+        lastBinaryResult = result;
       }
       return (
         lastBinaryResult ?? {
@@ -711,45 +757,50 @@ export interface ResolvedClaudeCodeFactoryOptions {
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
   readonly discovery?: ResolveAgentRuntimeExecutableOptions;
-  readonly createCandidateFactory?: (command: string) => ClaudeCodeAgentRuntimeFactory;
+  readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => ClaudeCodeAgentRuntimeFactory;
 }
 
 export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOptions): AgentRuntimeFactory {
   let readyFactory: ClaudeCodeAgentRuntimeFactory | undefined;
   const createCandidate =
     options.createCandidateFactory ??
-    ((command: string) =>
+    ((command: string, environment: NodeJS.ProcessEnv) =>
       new ClaudeCodeAgentRuntimeFactory({
-        process: { command, env: options.environment },
+        process: { command, env: environment },
       }));
   return {
     manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
     async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
       request.signal?.throwIfAborted();
       let lastBinaryResult: AgentRuntimeProbeResult | undefined;
-      try {
-        for await (const resolved of iterateAgentRuntimeExecutables(
-          "claude-code",
-          options.command,
-          options.sourceEnvironment,
-          options.discovery,
-        )) {
-          request.signal?.throwIfAborted();
-          const candidate = createCandidate(resolved.path);
-          const result = await candidate.probe(request);
-          if (result.ready) {
-            readyFactory = candidate;
-            return result;
-          }
-          if (!canAdvanceRuntimeCandidate(result)) return result;
-          lastBinaryResult = result;
+      const candidates = iterateAgentRuntimeExecutables(
+        "claude-code",
+        options.command,
+        options.sourceEnvironment,
+        options.discovery,
+      );
+      while (true) {
+        let step: IteratorResult<ResolvedAgentRuntimeExecutable>;
+        try {
+          step = await candidates.next();
+        } catch (error) {
+          return translateExecutableDiscoveryError(error, request.signal, "Claude Code CLI could not be executed");
         }
-      } catch (error) {
-        if (request.signal?.aborted) throw error;
-        return {
-          ready: false,
-          issues: [{ code: "artifact_missing", message: "Claude Code CLI could not be executed" }],
-        };
+        if (step.done) break;
+        request.signal?.throwIfAborted();
+        const environment = withSearchBinOnPath(
+          options.environment,
+          step.value,
+          options.discovery?.pathDelimiter ?? delimiter,
+        );
+        const candidate = createCandidate(step.value.path, environment);
+        const result = await candidate.probe(request);
+        if (result.ready) {
+          readyFactory = candidate;
+          return result;
+        }
+        if (!canAdvanceRuntimeCandidate(result)) return result;
+        lastBinaryResult = result;
       }
       return (
         lastBinaryResult ?? {

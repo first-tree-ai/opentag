@@ -7,7 +7,7 @@ import { getRuntimeConfigurationOptions, hashTuple } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
-  artifactOrTransientProbeIssue,
+  classifiedProviderProbeIssue,
   isBinaryShapedProviderProbeFailure,
   isTransientProviderProbeFailure,
 } from "../../agent-runtime/probe-failure.js";
@@ -870,7 +870,9 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       }
     } catch (error) {
       if (request.signal?.aborted) throw error;
-      issues.push(probeIssue(error));
+      const issue = probeIssue(error);
+      if (!issue) throw error;
+      issues.push(issue);
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
   }
@@ -1001,7 +1003,7 @@ export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process
   return environment;
 }
 
-function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] {
+function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] | undefined {
   if (error instanceof AgentProviderError && error.code === "provider_protocol_error") {
     return { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` };
   }
@@ -1020,9 +1022,9 @@ function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] {
         ? { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` }
         : { code: "artifact_missing", message: "Codex CLI could not be executed" };
     }
-    return { code: "artifact_missing", message: "Codex CLI could not be executed" };
+    return undefined;
   }
-  return artifactOrTransientProbeIssue(error, "Codex CLI could not be executed");
+  return classifiedProviderProbeIssue(error, "Codex CLI could not be executed");
 }
 
 async function probeCodex(

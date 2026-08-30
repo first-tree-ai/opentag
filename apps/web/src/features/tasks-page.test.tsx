@@ -90,6 +90,15 @@ function RefreshTaskButton() {
   );
 }
 
+function RefreshTasksButton() {
+  const queryClient = useQueryClient();
+  return (
+    <button type="button" onClick={() => void queryClient.refetchQueries({ queryKey: queryKeys.tasks.list() })}>
+      Refresh Tasks
+    </button>
+  );
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("Tasks debug view", () => {
@@ -171,6 +180,28 @@ describe("Tasks debug view", () => {
     expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
     expect(taskRequest).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
+  it.each([401, 403])("surfaces a terminal Tasks list refetch error instead of cached rows (%d)", async (status) => {
+    const taskRequest = vi
+      .spyOn(browserApi, "tasks")
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: null })
+      .mockRejectedValueOnce(new ApiError(status, `Tasks forbidden (${status})`));
+
+    await renderInRouter(
+      <>
+        <TasksPage />
+        <RefreshTasksButton />
+      </>,
+    );
+
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Tasks" }));
+
+    expect(await screen.findByRole("heading", { name: "Tasks unavailable" })).toBeTruthy();
+    expect(screen.getByText(`Tasks forbidden (${status})`)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: task.title })).toBeNull();
+    expect(taskRequest).toHaveBeenCalledTimes(2);
   });
 
   it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {

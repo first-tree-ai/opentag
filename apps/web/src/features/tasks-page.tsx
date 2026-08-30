@@ -50,6 +50,9 @@ export function TasksPage() {
   });
   const loaded = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
   const loadMoreError = tasksQuery.isFetchNextPageError ? asError(tasksQuery.error) : null;
+  const taskError = asError(tasksQuery.error);
+  const terminalTasksError =
+    tasksQuery.isError && !tasksQuery.isFetchNextPageError && isTerminalResourceError(taskError) ? taskError : null;
 
   const agents = useMemo(
     () =>
@@ -131,8 +134,21 @@ export function TasksPage() {
         </TaskSelect>
       </form>
 
-      {tasksQuery.isPending ? <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." /> : null}
-      {tasksQuery.isError && !tasksQuery.data ? (
+      {!terminalTasksError && tasksQuery.isPending ? (
+        <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
+      ) : null}
+      {terminalTasksError ? (
+        <TaskNotice
+          action={
+            <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
+              Try again
+            </Button>
+          }
+          heading="Tasks unavailable"
+          detail={terminalTasksError.message}
+        />
+      ) : null}
+      {!terminalTasksError && tasksQuery.isError && !tasksQuery.data ? (
         <TaskNotice
           action={
             <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
@@ -143,7 +159,7 @@ export function TasksPage() {
           detail={asError(tasksQuery.error).message}
         />
       ) : null}
-      {tasksQuery.data && tasks.length > 0 ? (
+      {!terminalTasksError && tasksQuery.data && tasks.length > 0 ? (
         <>
           <Table className="w-full" aria-label="Tasks" data-ui="task-table">
             <thead>
@@ -178,7 +194,7 @@ export function TasksPage() {
           ) : null}
         </>
       ) : null}
-      {tasksQuery.data && tasks.length === 0 ? (
+      {!terminalTasksError && tasksQuery.data && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
       ) : null}
     </section>

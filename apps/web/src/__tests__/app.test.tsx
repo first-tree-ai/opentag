@@ -1549,6 +1549,31 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/agents"));
   });
 
+  it("evicts a deleted Agent before a failed list refresh can retain it", async () => {
+    let listReads = 0;
+    installApi({
+      agentListStatus: () => {
+        listReads += 1;
+        return listReads > 1 ? 503 : undefined;
+      },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("link", { name: /Manage Agent/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Reviewer?" });
+    fireEvent.change(within(dialog).getByLabelText(/Type Reviewer to confirm/), { target: { value: "Reviewer" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+
+    expect(await screen.findByRole("heading", { name: "No Agents yet" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open Reviewer" })).toBeNull();
+    expect(listReads).toBe(2);
+  });
+
   it("keeps lifecycle failures visible inside the confirmation dialog and allows retry", async () => {
     installApi({
       agentActivity: { state: "working", startedAt: "2026-08-24T12:00:00.000Z" },

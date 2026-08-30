@@ -2,6 +2,7 @@ import { type LinkComponentProps, LinkProvider, TooltipProvider } from "@cloudfl
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Link as RouterLink, RouterProvider } from "@tanstack/react-router";
 import { forwardRef, useEffect, useState } from "react";
+import { AppErrorBoundary } from "./features/error-boundary.js";
 import { createQueryClient } from "./query/client.js";
 import { type AppRouter, createAppRouter } from "./router.js";
 
@@ -33,12 +34,16 @@ export function App({ router }: { router?: AppRouter } = {}) {
     return () => instance.history.destroy();
   }, [instance, owned]);
   return (
-    <QueryClientProvider client={queryClient}>
-      <LinkProvider component={AppLink}>
-        <TooltipProvider>
-          <RouterProvider router={instance} />
-        </TooltipProvider>
-      </LinkProvider>
-    </QueryClientProvider>
+    // The boundary sits outside the providers because a provider that fails to render is exactly the
+    // failure a route-level boundary cannot catch.
+    <AppErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <LinkProvider component={AppLink}>
+          <TooltipProvider>
+            <RouterProvider router={instance} />
+          </TooltipProvider>
+        </LinkProvider>
+      </QueryClientProvider>
+    </AppErrorBoundary>
   );
 }

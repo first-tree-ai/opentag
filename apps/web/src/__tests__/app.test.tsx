@@ -630,7 +630,14 @@ describe("OpenTag Web App Shell", () => {
     expect(within(status as HTMLElement).getByText("Cannot receive new work")).toBeTruthy();
     const exit = within(status as HTMLElement).getByRole("link", { name: "View Computer" });
     expect(exit.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
-    expect(exit.className).not.toContain("ds-");
+    /*
+     * The exit is inline text, not a button. It sits inside the status sentence, so a control with
+     * its own height and padding breaks the line and leaves the separator dangling. Two rebuilds of
+     * this card have now reached for the button class, so the property is asserted here rather than
+     * left to be noticed on screen.
+     */
+    expect(exit.className).toContain("text-kumo-link");
+    expect(exit.className).not.toMatch(/\bh-\d/);
   });
 
   it("opens the Agent from the row itself rather than from a trailing affordance", async () => {

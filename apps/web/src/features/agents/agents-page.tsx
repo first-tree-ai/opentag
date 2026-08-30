@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
-import { Button, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
+import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState, useResource } from "../resource/use-resource.js";
@@ -94,7 +94,9 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
             {" · "}
           </span>
           <Link
-            className={`relative z-10 whitespace-nowrap ${buttonClassName({ variant: "inline" })}`}
+            // Inline text, not a button: this exit sits inside the status sentence, and a control
+            // with its own height and padding breaks the line and strands the separator before it.
+            className="relative z-10 whitespace-nowrap text-kumo-link"
             {...agentSettingsSectionLink(agent.id, action.section)}
           >
             {action.label}

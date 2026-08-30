@@ -86,7 +86,7 @@ async function tick(ms: number) {
   });
 }
 
-describe("the messaging wait at 0bbac07", () => {
+describe("the messaging wait at ab76497", () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
@@ -124,5 +124,32 @@ describe("the messaging wait at 0bbac07", () => {
     await tick(POLL_MS * 6);
 
     expect(screen.queryByText("Connected. Checking your agent can be reached…")).toBeNull();
+  });
+  it("returns to the computer step when the runtime stops being ready, so its wait reason never renders", async () => {
+    // Documented behaviour, not a guarantee: `done.computer` requires `readinessPassed`, so any
+    // runtime status other than `ready` moves the flow back a step *before* the messaging step can
+    // render. `COPY.messaging.runtimeNotReady` therefore has no reachable state — and the round-6
+    // hold-back covers a lost connection only, not a readiness that regresses.
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [existingAgent()] });
+    let call = 0;
+    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
+      call += 1;
+      // Online throughout, but the runtime probe has not landed yet after the first few reads.
+      const online = machine(true);
+      if (call <= 3) return { computers: [online] };
+      return { computers: [{ ...online, providerReadiness: undefined }] };
+    });
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt("awaiting_user"));
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt("succeeded"));
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue({ bindingState: "active", handoffReady: false });
+
+    render(<OnboardingV2Page />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    await settle();
+    await tick(POLL_MS * 6);
+
+    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+    expect(screen.queryByText(/runtime isn't ready/)).toBeNull();
   });
 });

@@ -370,6 +370,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
             // Held here, the reader is not pulled off a step they are working through — but the
             // Computer is still recorded, because reachability depends on it and a wait that has
             // gone stale cannot say what it is waiting for.
+            //
+            // This holds them against a *lost connection* only. Readiness going backwards is not
+            // covered and is not meant to be: it fails the check the later step was reached
+            // through, so the flow returns to the step whose check rows say which line failed.
             if (mineNow) setComputer(mineNow);
             if (pastConnectStep.current) return;
             computerId.current = undefined;

@@ -331,19 +331,20 @@ function MessagingConnection({
    */
   const cliState = provider ? messagingCliCheck(readiness, provider) : "pending";
   /*
-   * Reachability needs more than the binding: the Computer has to be reachable and both the runtime
-   * and the messaging CLI ready. The Server's handoff status carries no reason, so a wait on any of
-   * them would otherwise be an unexplained spinner — and every one of these can regress *after* the
-   * reader passed the step that checked it. The page knows all three, so the wait says which.
+   * Reachability needs more than the binding, and the Server's handoff status carries no reason —
+   * so a wait on one of its other conditions would otherwise be an unexplained spinner.
+   *
+   * Two of them can be named here. The third, an unready runtime, cannot: losing it fails the
+   * check this step was reached through, so the flow returns to the connect step, where the check
+   * rows say which line failed. That is a better answer than a sentence, and it is why there is no
+   * copy for it.
    */
   const waitingReason =
     computerOnline === false
       ? COPY.messaging.computerOffline
-      : readiness?.runtime !== undefined && readiness.runtime !== "ready"
-        ? COPY.messaging.runtimeNotReady
-        : cliState === "failed" && provider
-          ? COPY.messaging.cliMissing(COPY.messaging[provider].title)
-          : undefined;
+      : cliState === "failed" && provider
+        ? COPY.messaging.cliMissing(COPY.messaging[provider].title)
+        : undefined;
   return (
     <div className="flex flex-col items-center gap-3">
       {/*

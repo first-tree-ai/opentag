@@ -1,7 +1,7 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { PasswordSignInForm } from "../features/auth/password-sign-in-form.js";
 

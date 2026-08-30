@@ -1,6 +1,6 @@
 import {
   type AccountComputerConnectCodeIssueRequest,
-  type AccountResetMode,
+  type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -246,18 +246,18 @@ export class BrowserApi {
    * it is present, so reachability is the whole answer.
    */
   async internalToolsOffered(): Promise<boolean> {
-    const response = await this.fetchWithRefresh(HTTP_PATHS.internalOnboardingLab);
+    const response = await this.fetchWithRefresh(HTTP_PATHS.accountSetupReset);
     if (response.status === 204) return true;
     if (response.status === 404) return false;
     throw this.apiError(response, await response.json().catch(() => undefined));
   }
 
   /**
-   * Reopens onboarding for the authenticated staging Account; it accepts no client-selected Account.
-   * `reset-all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
+   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
+   * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
    */
-  resetAccount(mode: AccountResetMode): Promise<void> {
-    return this.requestNoContent(HTTP_PATHS.internalOnboardingLab, {
+  resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.accountSetupReset, {
       method: "POST",
       body: JSON.stringify({ mode }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },

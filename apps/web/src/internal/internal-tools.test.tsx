@@ -37,7 +37,7 @@ describe("internal tools page", () => {
   });
 
   it("re-boards without asking the Server to destroy anything", async () => {
-    const reset = vi.spyOn(browserApi, "resetAccount").mockResolvedValue();
+    const reset = vi.spyOn(browserApi, "resetAccountSetup").mockResolvedValue();
     const { onResetSucceeded } = await renderTools();
 
     await confirm("Re-board", "Re-board");
@@ -47,17 +47,17 @@ describe("internal tools page", () => {
   });
 
   it("resets everything only when the destructive operation is the one confirmed", async () => {
-    const reset = vi.spyOn(browserApi, "resetAccount").mockResolvedValue();
+    const reset = vi.spyOn(browserApi, "resetAccountSetup").mockResolvedValue();
     const { onResetSucceeded } = await renderTools();
 
     await confirm("Reset and start onboarding", "Reset and start onboarding");
 
     await waitFor(() => expect(onResetSucceeded).toHaveBeenCalledTimes(1));
-    expect(reset).toHaveBeenCalledExactlyOnceWith("reset-all");
+    expect(reset).toHaveBeenCalledExactlyOnceWith("all");
   });
 
   it("says what each operation costs before it is confirmed, and runs nothing on cancel", async () => {
-    const reset = vi.spyOn(browserApi, "resetAccount").mockResolvedValue();
+    const reset = vi.spyOn(browserApi, "resetAccountSetup").mockResolvedValue();
     await renderTools();
 
     fireEvent.click(screen.getByRole("button", { name: "Re-board" }));
@@ -76,7 +76,7 @@ describe("internal tools page", () => {
   });
 
   it("reports a failure and hands over nothing", async () => {
-    vi.spyOn(browserApi, "resetAccount").mockRejectedValueOnce(new Error("The Account could not be reset"));
+    vi.spyOn(browserApi, "resetAccountSetup").mockRejectedValueOnce(new Error("The Account could not be reset"));
     const { onResetSucceeded } = await renderTools();
 
     await confirm("Re-board", "Re-board");
@@ -90,11 +90,6 @@ describe("internal tools page", () => {
     await renderTools();
 
     const pages = screen.getByRole("navigation", { name: "Internal tool pages" });
-    expect(
-      within(pages)
-        .getByRole("link", { name: /Onboarding Lab/ })
-        .getAttribute("href"),
-    ).toBe("/internal/onboarding-lab");
     expect(
       within(pages)
         .getByRole("link", { name: /Onboarding mock/ })

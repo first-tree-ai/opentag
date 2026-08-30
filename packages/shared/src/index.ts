@@ -150,10 +150,8 @@ export {
   ACCOUNT_AGENTS_PATH,
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   ACCOUNT_COMPUTERS_PATH,
-  ACCOUNT_RESET_MODES,
   ACCOUNT_SETUP_COMPLETE_PATH,
   ACCOUNT_TASKS_PATH,
-  type AccountResetMode,
   AGENT_BY_ID_TEMPLATE,
   AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
@@ -184,10 +182,8 @@ export {
   HTTP_PATHS,
   IM_BINDING_BY_ID_TEMPLATE,
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
-  INTERNAL_ONBOARDING_LAB_PATH,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
-  isAccountResetMode,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   runtimeImResourcePath,
   runtimeWebSocketUrl,
@@ -383,6 +379,10 @@ export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
 export * from "./task.js";
 export {
+  type AccountSetupResetMode,
+  AccountSetupResetModeSchema,
+  type AccountSetupResetRequest,
+  AccountSetupResetRequestSchema,
   type CompleteWorkspaceSetupRequest,
   CompleteWorkspaceSetupRequestSchema,
   type ListWorkspaceComputersResponse,

@@ -25,24 +25,6 @@ export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-m
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
 export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
 export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
-/** Staging-only Onboarding Lab interface; the Account comes only from the authenticated session. */
-export const INTERNAL_ONBOARDING_LAB_PATH = `${API_V1_PREFIX}/internal/onboarding-lab`;
-
-/**
- * What a staging Account reset does to the Account it authenticates as.
- *
- * `reset-all` returns it to a genuine first-run state, destroying the Agents, Computer access and
- * messaging bindings it owns. `reboard` only reopens onboarding, keeping every resource: it walks
- * the flow again from an existing Agent, so it exercises the resume path rather than the create
- * path. Neither mode is a default — the caller always says which one it means.
- */
-export const ACCOUNT_RESET_MODES = ["reset-all", "reboard"] as const;
-export type AccountResetMode = (typeof ACCOUNT_RESET_MODES)[number];
-
-export function isAccountResetMode(value: unknown): value is AccountResetMode {
-  return typeof value === "string" && (ACCOUNT_RESET_MODES as readonly string[]).includes(value);
-}
-
 /**
  * Account-native management collections. Ownership comes only from the authenticated Account, so these
  * paths accept neither a management `workspaceId` nor a client-selected `accountId`.
@@ -51,6 +33,7 @@ export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
+export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 
@@ -59,6 +42,7 @@ export const HTTP_PATHS = {
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
+  accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
@@ -80,7 +64,6 @@ export const HTTP_PATHS = {
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
-  internalOnboardingLab: INTERNAL_ONBOARDING_LAB_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,

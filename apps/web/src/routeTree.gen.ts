@@ -16,7 +16,6 @@ import { Route as InternalOnboardingV2RouteImport } from './routes/internal.onbo
 import { Route as AuthenticatedWorkspaceShellRouteImport } from './routes/_authenticated/_workspace/_shell'
 import { Route as AuthenticatedWorkspaceOnboardingRouteImport } from './routes/_authenticated/_workspace/onboarding'
 import { Route as AuthenticatedInternalIndexRouteImport } from './routes/_authenticated/internal.index'
-import { Route as AuthenticatedInternalOnboardingLabRouteImport } from './routes/_authenticated/internal.onboarding-lab'
 import { Route as AuthenticatedWorkspaceShellIndexRouteImport } from './routes/_authenticated/_workspace/_shell/index'
 import { Route as AuthenticatedWorkspaceShellAccountRouteImport } from './routes/_authenticated/_workspace/_shell/account'
 import { Route as AuthenticatedWorkspaceShellIntegrationsRouteImport } from './routes/_authenticated/_workspace/_shell/integrations'
@@ -67,12 +66,6 @@ const AuthenticatedInternalIndexRoute =
   AuthenticatedInternalIndexRouteImport.update({
     id: '/internal/',
     path: '/internal/',
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
-const AuthenticatedInternalOnboardingLabRoute =
-  AuthenticatedInternalOnboardingLabRouteImport.update({
-    id: '/internal/onboarding-lab',
-    path: '/internal/onboarding-lab',
     getParentRoute: () => AuthenticatedRoute,
   } as any)
 const AuthenticatedWorkspaceShellIndexRoute =
@@ -177,7 +170,6 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/internal/onboarding-v2': typeof InternalOnboardingV2Route
   '/onboarding': typeof AuthenticatedWorkspaceOnboardingRoute
-  '/internal/onboarding-lab': typeof AuthenticatedInternalOnboardingLabRoute
   '/internal/': typeof AuthenticatedInternalIndexRoute
   '/account': typeof AuthenticatedWorkspaceShellAccountRoute
   '/integrations': typeof AuthenticatedWorkspaceShellIntegrationsRoute
@@ -200,7 +192,6 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/internal/onboarding-v2': typeof InternalOnboardingV2Route
   '/onboarding': typeof AuthenticatedWorkspaceOnboardingRoute
-  '/internal/onboarding-lab': typeof AuthenticatedInternalOnboardingLabRoute
   '/internal': typeof AuthenticatedInternalIndexRoute
   '/account': typeof AuthenticatedWorkspaceShellAccountRoute
   '/integrations': typeof AuthenticatedWorkspaceShellIntegrationsRoute
@@ -226,7 +217,6 @@ export interface FileRoutesById {
   '/internal/onboarding-v2': typeof InternalOnboardingV2Route
   '/_authenticated/_workspace/_shell': typeof AuthenticatedWorkspaceShellRouteWithChildren
   '/_authenticated/_workspace/onboarding': typeof AuthenticatedWorkspaceOnboardingRoute
-  '/_authenticated/internal/onboarding-lab': typeof AuthenticatedInternalOnboardingLabRoute
   '/_authenticated/internal/': typeof AuthenticatedInternalIndexRoute
   '/_authenticated/_workspace/_shell/account': typeof AuthenticatedWorkspaceShellAccountRoute
   '/_authenticated/_workspace/_shell/integrations': typeof AuthenticatedWorkspaceShellIntegrationsRoute
@@ -252,7 +242,6 @@ export interface FileRouteTypes {
     | '/login'
     | '/internal/onboarding-v2'
     | '/onboarding'
-    | '/internal/onboarding-lab'
     | '/internal/'
     | '/account'
     | '/integrations'
@@ -275,7 +264,6 @@ export interface FileRouteTypes {
     | '/login'
     | '/internal/onboarding-v2'
     | '/onboarding'
-    | '/internal/onboarding-lab'
     | '/internal'
     | '/account'
     | '/integrations'
@@ -300,7 +288,6 @@ export interface FileRouteTypes {
     | '/internal/onboarding-v2'
     | '/_authenticated/_workspace/_shell'
     | '/_authenticated/_workspace/onboarding'
-    | '/_authenticated/internal/onboarding-lab'
     | '/_authenticated/internal/'
     | '/_authenticated/_workspace/_shell/account'
     | '/_authenticated/_workspace/_shell/integrations'
@@ -375,13 +362,6 @@ declare module '@tanstack/react-router' {
       path: '/internal'
       fullPath: '/internal/'
       preLoaderRoute: typeof AuthenticatedInternalIndexRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    '/_authenticated/internal/onboarding-lab': {
-      id: '/_authenticated/internal/onboarding-lab'
-      path: '/internal/onboarding-lab'
-      fullPath: '/internal/onboarding-lab'
-      preLoaderRoute: typeof AuthenticatedInternalOnboardingLabRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
     '/_authenticated/_workspace/_shell/': {
@@ -579,14 +559,11 @@ const AuthenticatedWorkspaceRouteWithChildren =
 
 interface AuthenticatedRouteChildren {
   AuthenticatedWorkspaceRoute: typeof AuthenticatedWorkspaceRouteWithChildren
-  AuthenticatedInternalOnboardingLabRoute: typeof AuthenticatedInternalOnboardingLabRoute
   AuthenticatedInternalIndexRoute: typeof AuthenticatedInternalIndexRoute
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
   AuthenticatedWorkspaceRoute: AuthenticatedWorkspaceRouteWithChildren,
-  AuthenticatedInternalOnboardingLabRoute:
-    AuthenticatedInternalOnboardingLabRoute,
   AuthenticatedInternalIndexRoute: AuthenticatedInternalIndexRoute,
 }
 

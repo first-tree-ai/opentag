@@ -1,4 +1,4 @@
-import type { AccountResetMode, UserProfile } from "@opentag/shared/browser";
+import type { AccountSetupResetMode, UserProfile } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { browserApi } from "../api.js";
@@ -12,7 +12,7 @@ export interface InternalToolsPageProps {
 
 type ResetState =
   | { readonly kind: "idle" }
-  | { readonly kind: "pending"; readonly mode: AccountResetMode }
+  | { readonly kind: "pending"; readonly mode: AccountSetupResetMode }
   | { readonly kind: "error"; readonly error: Error };
 
 interface ResetOperation {
@@ -20,7 +20,7 @@ interface ResetOperation {
   readonly confirmDescription: string;
   readonly confirmTitle: string;
   readonly description: string;
-  readonly mode: AccountResetMode;
+  readonly mode: AccountSetupResetMode;
   readonly title: string;
 }
 
@@ -47,18 +47,13 @@ const RESET_OPERATIONS: readonly ResetOperation[] = [
     confirmTitle: "Reset your staging Account?",
     description:
       "Returns this Account to a genuine first-run state: its Agents are deleted and its Computer access revoked. Use it to test the create path — the next run needs a fresh Computer connect command.",
-    mode: "reset-all",
+    mode: "all",
     title: "Reset all",
   },
 ];
 
 /** Complex tools keep their own page; this index only points at them. */
 const TOOL_PAGES = [
-  {
-    description: "The onboarding flow against fixed scenarios, plus the same resets in place.",
-    title: "Onboarding Lab",
-    to: "/internal/onboarding-lab",
-  },
   {
     description: "The onboarding flow against its in-page mock, reaching no Server.",
     title: "Onboarding mock",
@@ -76,7 +71,7 @@ const TOOL_PAGES = [
 export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageProps) {
   const [confirming, setConfirming] = useState<ResetOperation | null>(null);
   const [resetState, setResetState] = useState<ResetState>({ kind: "idle" });
-  const triggerRefs = useRef(new Map<AccountResetMode, HTMLButtonElement | null>());
+  const triggerRefs = useRef(new Map<AccountSetupResetMode, HTMLButtonElement | null>());
   const resetInFlight = useRef(false);
 
   async function run(operation: ResetOperation) {
@@ -85,7 +80,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
     setConfirming(null);
     setResetState({ kind: "pending", mode: operation.mode });
     try {
-      await browserApi.resetAccount(operation.mode);
+      await browserApi.resetAccountSetup(operation.mode);
       await onResetSucceeded();
     } catch (cause) {
       setResetState({
@@ -131,7 +126,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
                 }}
                 size="compact"
                 type="button"
-                variant={operation.mode === "reset-all" ? "danger" : "secondary"}
+                variant={operation.mode === "all" ? "danger" : "secondary"}
                 onClick={() => setConfirming(operation)}
               >
                 {operation.action}
@@ -172,7 +167,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
           <div className="flex flex-wrap gap-3">
             <Button
               loading={pending}
-              variant={confirming.mode === "reset-all" ? "danger" : "primary"}
+              variant={confirming.mode === "all" ? "danger" : "primary"}
               onClick={() => void run(confirming)}
             >
               {confirming.action}

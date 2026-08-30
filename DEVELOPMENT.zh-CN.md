@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-29
+> Last synced with: 2026-08-31
 
 ## 前置要求
 
@@ -65,6 +65,15 @@ pnpm --filter @opentag/server test:integration
 但排除根目录 `scripts/`、Server PostgreSQL integration tests 和 Provider E2E。该统计是用于定位缺口和安排
 优先级的测量基线，不属于 Pull Request 必过检查，暂不设置全仓或分 workspace 覆盖率阈值。只有在重复运行的
 统计结果稳定后，才应增加回退阈值。
+
+## Web 国际化
+
+Web 消息位于 `apps/web/messages/<area>/{en,zh}.json`，Key 采用 `<area>_<surface>_<slot>`。在产出最终可见字符串的
+area 中，同时添加英文消息和手工编写的简体中文消息。两种语言的 key 集合、占位符和排序必须一致。句子使用
+Paraglide；日期和数字等 locale-aware 格式使用 `src/i18n/format.ts`。添加或修改消息后运行
+`pnpm --filter @opentag/web paraglide`；`typecheck`、`test` 和 Vite 构建也会通过 Turbo 依赖执行代码生成。如果生成
+产物看起来陈旧，删除 `apps/web/src/paraglide/` 后重新运行命令。绝不运行 `inlang machine translate` 或 Sherlock
+extract：数组 path pattern 会把合并后的完整目录重复写入每个 area 文件。
 
 Pull Request 必过 CI 仍会运行全部离线单测。Agent Runtime 继续使用
 `packages/client/vitest.agent-runtime.config.ts` 中独立的 100% 门槛，并由

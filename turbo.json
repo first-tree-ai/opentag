@@ -30,6 +30,20 @@
     },
     "test": {
       "dependsOn": ["^build"]
+    },
+    "paraglide": {
+      "inputs": ["package.json", "messages/**", "project.inlang/settings.json"],
+      "outputs": ["src/paraglide/**"]
+    },
+    "@opentag/web#build": {
+      "dependsOn": ["^build", "paraglide"],
+      "outputs": ["dist/**"]
+    },
+    "@opentag/web#typecheck": {
+      "dependsOn": ["^build", "paraglide"]
+    },
+    "@opentag/web#test": {
+      "dependsOn": ["^build", "paraglide"]
     }
   }
 }

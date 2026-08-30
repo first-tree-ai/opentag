@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { BootstrapAdminInputSchema, bootstrapInitialAdmin } from "../admin/bootstrap.js";
 import { createBetterAuth } from "../auth/better-auth.js";
@@ -563,18 +563,16 @@ describe("Onboarding Lab and setup services", () => {
       .from(workspaceComputers)
       .where(eq(workspaceComputers.id, enrolled.workspaceComputerId));
     if (!workspace) throw new Error("workspace fixture missing");
-    await unit.database
-      .insert(agents)
-      .values({
-        workspaceId: workspace.id,
-        createdByUserId: bootstrap.userId,
-        workspaceComputerId: enrolled.workspaceComputerId,
-        computerId: enrolled.workspaceComputerId,
-        name: "stuck",
-        displayName: "Stuck",
-        runtimeProvider: "codex",
-        status: "active",
-      });
+    await unit.database.insert(agents).values({
+      workspaceId: workspace.id,
+      createdByUserId: bootstrap.userId,
+      workspaceComputerId: enrolled.workspaceComputerId,
+      computerId: enrolled.workspaceComputerId,
+      name: "stuck",
+      displayName: "Stuck",
+      runtimeProvider: "codex",
+      status: "active",
+    });
     const reset = new OnboardingResetService({
       agents: { suspendById: vi.fn(), deleteById: vi.fn() },
       database: unit.database,

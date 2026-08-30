@@ -135,7 +135,7 @@ export const SessionReconcileRequestSchema = z
   .object({
     type: z.literal("session:reconcile"),
     requestId: RuntimeRequestIdSchema,
-    computerId: z.string().uuid(),
+    installationId: z.string().uuid(),
     sessionId: RuntimeOpaqueIdSchema,
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
@@ -825,7 +825,7 @@ export function computeReconcilePayloadHash(input: SessionReconcileRequest): str
   const frame = SessionReconcileRequestSchema.parse(input);
   return hashTuple([
     1,
-    frame.computerId,
+    frame.installationId,
     frame.sessionId,
     frame.agentId,
     frame.placementGeneration,

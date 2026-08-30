@@ -1,4 +1,4 @@
-import type { AgentAdminConfig, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentAdminConfig } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
@@ -28,7 +28,7 @@ import { agentDetailLink } from "./agent-routes.js";
  * what happened. So an explicit refresh keeps its own error until a read succeeds.
  */
 export function useOwnComputersResource(): {
-  state: LoadState<{ computers: WorkspaceComputerSummary[] }>;
+  state: LoadState<{ computers: AccountComputerSummary[] }>;
   refresh: () => void;
 } {
   const queryClient = useQueryClient();
@@ -44,7 +44,7 @@ export function useOwnComputersResource(): {
       if (!watching) return;
       // Invalidating resolves whether or not the re-read succeeded, so the outcome is read off the
       // query rather than off this promise.
-      const settled = queryClient.getQueryState<{ computers: WorkspaceComputerSummary[] }, Error>(
+      const settled = queryClient.getQueryState<{ computers: AccountComputerSummary[] }, Error>(
         queryKeys.computers(),
       );
       setRefresh({ pending: false, error: settled?.status === "error" ? (settled.error ?? undefined) : undefined });
@@ -147,7 +147,7 @@ export function AgentCreationContent({
   onSubmittingChange,
   accountId,
 }: {
-  computers: LoadState<{ computers: WorkspaceComputerSummary[] }>;
+  computers: LoadState<{ computers: AccountComputerSummary[] }>;
   onCancel?: () => void;
   onCreated: (agent: AgentAdminConfig) => void;
   onRefresh: () => void;
@@ -244,7 +244,7 @@ export function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminCo
   );
 }
 
-export function agentCreationFactsFromOwnComputers(computers: readonly WorkspaceComputerSummary[]): AgentCreationFacts {
+export function agentCreationFactsFromOwnComputers(computers: readonly AccountComputerSummary[]): AgentCreationFacts {
   return {
     computers: computers.map((computer) => ({
       id: computer.computerId,
@@ -264,8 +264,8 @@ export function agentCreationFactsFromOwnComputers(computers: readonly Workspace
   };
 }
 
-export function markOwnComputersUnconfirmed(value: { computers: WorkspaceComputerSummary[] }): {
-  computers: WorkspaceComputerSummary[];
+export function markOwnComputersUnconfirmed(value: { computers: AccountComputerSummary[] }): {
+  computers: AccountComputerSummary[];
 } {
   return {
     computers: value.computers.map(({ providerReadiness: _providerReadiness, ...computer }) => computer),

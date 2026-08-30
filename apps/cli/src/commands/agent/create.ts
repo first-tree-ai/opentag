@@ -8,7 +8,7 @@ export function registerAgentCreateCommand(agent: Command): void {
     .requiredOption("--name <name>", "canonical Agent name")
     .requiredOption("--display-name <display-name>", "human-facing Agent name")
     .requiredOption("--provider <provider>", "runtime provider: codex or claude-code")
-    .option("--computer <uuid>", "Computer enrolled by this Account")
+    .option("--computer <uuid>", "Computer owned by this Account")
     .option("--model <model>", "exact Codex model ID; effective Runtime Snapshots currently support Codex only")
     .option("--reasoning-effort <effort>", "Codex reasoning effort; effective Runtime Snapshots support Codex only")
     .addOption(new Option("--instructions <text>", "Agent runtime instructions").conflicts("instructionsFile"))

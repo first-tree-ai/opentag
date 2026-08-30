@@ -1,4 +1,4 @@
-import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { Banner, Button, ClipboardText, Loader, Text } from "../../ui/design-system.js";
@@ -22,14 +22,14 @@ const PREVIEW_BOOTSTRAP_COMMAND =
 const PREVIEW_CONNECT_CODE_REMAINING_MS = 900_000;
 
 export interface ComputerSetupProps {
-  onConnected?: (computer: WorkspaceComputerSummary) => void;
+  onConnected?: (computer: AccountComputerSummary) => void;
   /**
    * Renders the panel for review only: it issues no connect code, starts no Computer polling and
    * never resolves a connection. The panel still answers the primary action, from a fixed command,
    * so review sees the same hierarchy production shows after the code is issued.
    */
   preview?: boolean;
-  /** Scopes the panel to one enrollment so a recovery flow names the Computer it came from. */
+  /** Scopes the panel to one Computer so a recovery flow names the Computer it came from. */
   target?: { computerId: string; displayName: string };
 }
 
@@ -192,8 +192,8 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
       </Text>
       {/*
         Connecting a new Computer needs no machine named: whichever terminal runs the command is the
-        Computer that gets enrolled, so saying "on this computer" would only be wrong for anyone who
-        runs it over SSH. Reconnecting is the opposite — one enrollment is being restored, and it has
+        Computer that gets connected, so saying "on this computer" would only be wrong for anyone who
+        runs it over SSH. Reconnecting is the opposite — one Computer is being restored, and it has
         to happen on that machine.
       */}
       <Text as="p" variant="secondary">

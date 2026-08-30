@@ -128,7 +128,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       signal.throwIfAborted();
       const bound = resolveBoundAccountComputer(credentials);
       if (bound.status === "disconnected") {
-        throw new DaemonRuntimeConfigurationError("This Computer is not enrolled; run computer connect first");
+        throw new DaemonRuntimeConfigurationError("This Computer is not connected; run computer connect first");
       }
       const credential = bound.credential;
       const serverUrl = credential.serverUrl;
@@ -142,15 +142,15 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       if (currentPlatform !== "darwin" && currentPlatform !== "linux") {
         throw new DaemonRuntimeConfigurationError(`Unsupported daemon service platform: ${currentPlatform}`);
       }
-      terminalLogger = logger.child({ computerId: identity.computerId });
-      if (credential.computerId !== identity.computerId) {
+      terminalLogger = logger.child({ installationId: identity.computerId });
+      if (credential.installationId !== identity.computerId) {
         throw new DaemonRuntimeConfigurationError("A machine credential belongs to another Computer");
       }
       const connectionInstanceId = randomUUID();
       const runtimeLogger = gatedRuntimeLogger.logger.child({
-        computerId: identity.computerId,
+        installationId: identity.computerId,
         instanceId: connectionInstanceId,
-        workspaceComputerId: credential.workspaceComputerId,
+        computerId: credential.computerId,
       });
       const api = new OpenTagApi(credential.serverUrl);
       const connection = new RuntimeConnection({

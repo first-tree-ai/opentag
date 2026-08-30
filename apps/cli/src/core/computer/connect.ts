@@ -53,16 +53,16 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   const serviceBefore = await manager?.status();
   const identity = await allocateComputerIdentity(home, serverUrl);
   const api = options.api ?? new OpenTagApi(serverUrl);
-  const enrollment = await api.exchangeComputerConnectCode({
+  const exchange = await api.exchangeComputerConnectCode({
     code: options.code,
-    computerId: identity.computerId,
+    installationId: identity.computerId,
     displayName: hostname(),
     platform: currentPlatform,
     arch: arch(),
     clientVersion: CLI_VERSION,
   });
   await writeComputerIdentityAtomically(home, identity);
-  await storeBoundAccountComputer({ ...enrollment, serverUrl }, home);
+  await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
   const result: ComputerConnectResult = {
     credentialsPath: machineCredentialsPath(home),
     message: "Connected this Computer",

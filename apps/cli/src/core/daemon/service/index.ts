@@ -120,7 +120,7 @@ export async function createDaemonServiceManager(
       }
       const bound = resolveBoundAccountComputer(credentials);
       if (bound.status === "disconnected") {
-        throw new DaemonServiceError("CONFIGURATION", "This Computer is not enrolled; run computer connect first");
+        throw new DaemonServiceError("CONFIGURATION", "This Computer is not connected; run computer connect first");
       }
       return mutate("install", () => backend.installAndStart());
     },

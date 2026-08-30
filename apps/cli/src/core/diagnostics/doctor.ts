@@ -325,7 +325,7 @@ function serverCheck(
       status: "skipped",
       blocking: true,
       label: "Server health endpoint",
-      detail: "not checked because there is no authoritative enrolled Server",
+      detail: "not checked because there is no connected Server",
     };
   }
   if (result.status === "fulfilled") {
@@ -345,7 +345,7 @@ function serverCheck(
     blocking: true,
     label: "Server health endpoint",
     detail: formatHealthFailure(result.reason, serverUrl),
-    remediation: "Check network access and the enrolled Server health endpoint",
+    remediation: "Check network access and the connected Server health endpoint",
   };
 }
 
@@ -433,7 +433,7 @@ function unknownRuntime(provider: "codex" | "claude-code", displayName: string):
 }
 
 function formatHealthFailure(error: unknown, serverUrl: string): string {
-  if (error instanceof ServerHealthConfigurationError) return `invalid enrolled Server URL ${serverUrl}`;
+  if (error instanceof ServerHealthConfigurationError) return `invalid connected Server URL ${serverUrl}`;
   if (error instanceof ServerHealthTimeoutError) return `timed out while reaching ${serverUrl}`;
   if (error instanceof ServerHealthNetworkError) return `could not reach ${serverUrl}`;
   if (error instanceof ServerHealthHttpError) return `${serverUrl} returned HTTP ${error.status}`;

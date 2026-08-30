@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { AgentAdminConfig, ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared";
+import type { AccountComputerSummary, AgentAdminConfig, ListAccountComputersResponse } from "@opentag/shared";
 import {
   CreateAgentRequestSchema,
   CreateAgentRuntimeConfigSchema,
@@ -39,12 +39,12 @@ export interface AgentUpdateOptions extends AgentCommandDependencies {
 }
 
 export function selectComputer(
-  response: ListWorkspaceComputersResponse,
+  response: ListAccountComputersResponse,
   requestedComputerId?: string,
-): WorkspaceComputerSummary {
+): AccountComputerSummary {
   if (requestedComputerId) {
     const selected = response.computers.find((computer) => computer.computerId === requestedComputerId);
-    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled by this Account`);
+    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not owned by this Account`);
     return selected;
   }
   if (response.computers.length === 1) {

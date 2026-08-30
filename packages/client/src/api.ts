@@ -38,10 +38,10 @@ import {
   ImBindingSummarySchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  type ListAccountComputersResponse,
+  ListAccountComputersResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
-  type ListWorkspaceComputersResponse,
-  ListWorkspaceComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
@@ -126,8 +126,8 @@ export class OpenTagApi {
     });
   }
 
-  listAccountComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
-    return this.#request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
+  listAccountComputers(accessToken: string): Promise<ListAccountComputersResponse> {
+    return this.#request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }

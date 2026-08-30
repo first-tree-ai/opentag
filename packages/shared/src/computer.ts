@@ -19,7 +19,7 @@ export const ComputerConnectCodeModeSchema = z.enum(["create", "repair"]);
 export const ComputerConnectCodeExchangeRequestSchema = z
   .object({
     code: z.string().trim().min(16).max(512),
-    computerId: z.string().uuid(),
+    installationId: z.string().uuid(),
     displayName: z.string().trim().min(1).max(255),
     platform: ComputerPlatformSchema,
     arch: z.string().trim().min(1).max(64),
@@ -29,13 +29,11 @@ export const ComputerConnectCodeExchangeRequestSchema = z
 
 export const ComputerConnectCodeExchangeResponseSchema = z
   .object({
-    workspaceComputerId: z.string().uuid(),
     computerId: z.string().uuid(),
+    installationId: z.string().uuid(),
     machineToken: z.string().min(1).max(4096),
   })
   .strict();
-
-export const ComputerConnectCodeIssueRequestSchema = z.object({ workspaceId: z.string().uuid() }).strict();
 
 /** Empty body and `{ mode: "create" }` both issue a create code. */
 export const AccountComputerConnectCodeCreateRequestSchema = z
@@ -139,7 +137,6 @@ export type ComputerPlatform = z.infer<typeof ComputerPlatformSchema>;
 export type ComputerConnectCodeMode = z.infer<typeof ComputerConnectCodeModeSchema>;
 export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectCodeExchangeRequestSchema>;
 export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;
-export type ComputerConnectCodeIssueRequest = z.infer<typeof ComputerConnectCodeIssueRequestSchema>;
 export type ComputerConnectCodeIssueResponse = z.infer<typeof ComputerConnectCodeIssueResponseSchema>;
 export type AccountComputerConnectCodeCreateRequest = z.infer<typeof AccountComputerConnectCodeCreateRequestSchema>;
 export type AccountComputerConnectCodeRepairRequest = z.infer<typeof AccountComputerConnectCodeRepairRequestSchema>;

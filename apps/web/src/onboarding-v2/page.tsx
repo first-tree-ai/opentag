@@ -259,7 +259,7 @@ function OnboardingV2Flow({
   /**
    * Going back undoes the decision that advanced you, rather than moving a separate cursor. That
    * keeps the page a pure function of the facts. Leaving the connect step is the one place this
-   * takes care: a Computer's enrollment is durable and outlives this flow, so coming back forgets
+   * takes care: a Computer's connection is durable and outlives this flow, so coming back forgets
    * only that the step was left, never the machine itself.
    */
   const backToDestination = useCallback(() => setDestinationConfirmed(false), []);

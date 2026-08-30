@@ -191,7 +191,7 @@ export class RuntimeConnection {
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
     this.#logger = (options.logger ?? createLogger("connection")).child({
-      computerId: options.computer.computerId,
+      installationId: options.computer.computerId,
       instanceId: options.instanceId,
     });
     this.#scheduler = options.scheduler ?? defaultScheduler;
@@ -208,7 +208,7 @@ export class RuntimeConnection {
     return this.#state;
   }
 
-  get computerId(): string {
+  get installationId(): string {
     return this.#options.computer.computerId;
   }
 
@@ -510,7 +510,7 @@ export class RuntimeConnection {
             {
               type: "heartbeat",
               requestId,
-              computerId: this.#options.computer.computerId,
+              installationId: this.#options.computer.computerId,
               instanceId,
               capabilities: this.#currentCapabilities(),
               ...(protocolVersion === RUNTIME_PROTOCOL_V2 ? { protocolVersion: RUNTIME_PROTOCOL_V2 } : {}),
@@ -658,7 +658,7 @@ export class RuntimeConnection {
           const registration = {
             type: "computer:register",
             requestId: registerRequestId,
-            computerId: this.#options.computer.computerId,
+            installationId: this.#options.computer.computerId,
             instanceId,
             displayName: this.#options.displayName,
             platform: this.#options.platform,

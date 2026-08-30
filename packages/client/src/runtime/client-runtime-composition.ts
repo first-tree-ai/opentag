@@ -489,7 +489,7 @@ export async function createClientRuntime(
     workspace,
   });
   const reconciler = new SessionReconciler({
-    computerId: connection.computerId,
+    installationId: connection.installationId,
     preparation: runtimeManager,
     localPolicy: runtimeManager,
   });

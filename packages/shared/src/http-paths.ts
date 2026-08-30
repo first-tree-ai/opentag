@@ -1,7 +1,4 @@
 export const API_V1_PREFIX = "/api/v1";
-export const WORKSPACE_AGENTS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/agents`;
-const WORKSPACE_BY_ID_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId`;
-export const WORKSPACE_SETUP_COMPLETE_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/setup/complete`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
@@ -23,8 +20,6 @@ export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-message
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
-export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
-export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
 /**
  * Account-native management collections. Ownership comes only from the authenticated Account, so these
  * paths accept neither a management `workspaceId` nor a client-selected `accountId`.
@@ -66,27 +61,10 @@ export const HTTP_PATHS = {
   runtimeSessions: RUNTIME_SESSIONS_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
-  workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,
 } as const;
 
 export function taskByIdPath(sessionId: string): string {
   return `${ACCOUNT_TASKS_PATH}/${encodeURIComponent(sessionId)}`;
-}
-
-export function workspaceSetupCompletePath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/setup/complete`;
-}
-
-export function workspaceComputersPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/computers`;
-}
-
-export function workspaceComputerConnectCodesPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/computer-connect-codes`;
-}
-
-export function workspaceAgentsPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/agents`;
 }
 
 export function agentByIdPath(agentId: string): string {

@@ -1,4 +1,4 @@
-import type { WorkspaceComputerSummary as Computer } from "@opentag/shared/browser";
+import type { AccountComputerSummary as Computer } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
@@ -16,7 +16,7 @@ const existingComputer: Computer = {
   connectedAt,
   lastSeenAt: "2026-08-20T00:00:01.000Z",
   observedAt: connectedAt,
-  enrolledAt: connectedAt,
+  createdAt: connectedAt,
   agentIds: [],
 };
 const newComputer: Computer = {

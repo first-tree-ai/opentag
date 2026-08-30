@@ -1,3 +1,4 @@
+export * from "./account.js";
 export * from "./agent.js";
 export * from "./auth.js";
 export * from "./computer.js";
@@ -10,4 +11,3 @@ export * from "./runtime-configuration-options.js";
 export * from "./runtime-protocol.js";
 export * from "./sign-in-destination.js";
 export * from "./task.js";
-export * from "./workspace.js";

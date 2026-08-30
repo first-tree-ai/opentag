@@ -1,6 +1,8 @@
 import {
   type AccountComputerConnectCodeIssueRequest,
   type AccountSetupResetMode,
+  type AccountSetupCompletion,
+  AccountSetupCompletionSchema,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -40,12 +42,12 @@ import {
   ImBindingSummarySchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  type ListAccountComputersResponse,
+  ListAccountComputersResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
-  type ListWorkspaceComputersResponse,
-  ListWorkspaceComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
@@ -60,8 +62,6 @@ import {
   type UserProfile,
   UserProfileSchema,
   type ValidationIssue,
-  type WorkspaceSetupCompletion,
-  WorkspaceSetupCompletionSchema,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -100,8 +100,8 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema);
   }
 
-  completeSetup(agentId: string): Promise<WorkspaceSetupCompletion> {
-    return this.request(HTTP_PATHS.accountSetupComplete, WorkspaceSetupCompletionSchema, {
+  completeSetup(agentId: string): Promise<AccountSetupCompletion> {
+    return this.request(HTTP_PATHS.accountSetupComplete, AccountSetupCompletionSchema, {
       method: "POST",
       body: JSON.stringify({ agentId }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
@@ -221,8 +221,8 @@ export class BrowserApi {
     });
   }
 
-  computers(): Promise<ListWorkspaceComputersResponse> {
-    return this.request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
+  computers(): Promise<ListAccountComputersResponse> {
+    return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
       headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }

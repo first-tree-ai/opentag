@@ -57,7 +57,7 @@ export class ClientRuntime {
     this.#connection = connection;
     this.#options = options;
     this.#logger = options.logger ?? createLogger("client-runtime");
-    this.reconciler = options.reconciler ?? new SessionReconciler({ computerId: connection.computerId });
+    this.reconciler = options.reconciler ?? new SessionReconciler({ installationId: connection.installationId });
   }
 
   async run(): Promise<void> {

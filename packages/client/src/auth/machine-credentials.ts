@@ -3,14 +3,14 @@ import { resolveOpenTagHome, resolveOpenTagHomeLayout } from "../storage/home-la
 import { readPrivateJson, writePrivateJson } from "../storage/private-json-file.js";
 
 export interface MachineComputerCredential {
-  workspaceComputerId: string;
   computerId: string;
+  installationId: string;
   machineToken: string;
   serverUrl: string;
 }
 
 export interface StoredMachineCredentials {
-  version: 2;
+  version: 3;
   computer: MachineComputerCredential;
 }
 
@@ -60,7 +60,7 @@ export async function storeBoundAccountComputer(
   credential: MachineComputerCredential,
   home = resolveOpenTagHome(),
 ): Promise<StoredMachineCredentials> {
-  const next: StoredMachineCredentials = { version: 2, computer: { ...credential } };
+  const next: StoredMachineCredentials = { version: 3, computer: { ...credential } };
   await writeMachineCredentialsAtomically(next, home);
   return next;
 }
@@ -68,11 +68,11 @@ export async function storeBoundAccountComputer(
 function validateMachineCredentials(value: unknown): StoredMachineCredentials | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== 2 || record.version !== 2) {
+  if (Object.keys(record).length !== 2 || record.version !== 3) {
     throw new Error("The OpenTag Computer credentials file uses an unsupported format; reconnect this Computer");
   }
   const computer = readComputerEntry(record.computer);
-  return computer ? { version: 2, computer } : undefined;
+  return computer ? { version: 3, computer } : undefined;
 }
 
 function checkMachineCredentialsToWrite(value: StoredMachineCredentials): StoredMachineCredentials {
@@ -87,22 +87,22 @@ function checkMachineCredentialsStrict(
     throw new Error("The OpenTag Computer credentials file is invalid");
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== 2 || record.version !== 2) {
+  if (Object.keys(record).length !== 2 || record.version !== 3) {
     throw new Error("The OpenTag Computer credentials file uses an unsupported format; reconnect this Computer");
   }
   const computer = readComputerEntry(record.computer);
   if (!computer) {
     throw new Error(`${failurePrefix} an unusable OpenTag Computer credential`);
   }
-  return { version: 2, computer };
+  return { version: 3, computer };
 }
 
 function readComputerEntry(value: unknown): MachineComputerCredential | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const entry = value as Record<string, unknown>;
   if (
-    !isUuid(entry.workspaceComputerId) ||
     !isUuid(entry.computerId) ||
+    !isUuid(entry.installationId) ||
     typeof entry.machineToken !== "string" ||
     !entry.machineToken.startsWith("otmc_") ||
     typeof entry.serverUrl !== "string"
@@ -110,8 +110,8 @@ function readComputerEntry(value: unknown): MachineComputerCredential | undefine
     return undefined;
   }
   return {
-    workspaceComputerId: entry.workspaceComputerId,
     computerId: entry.computerId,
+    installationId: entry.installationId,
     machineToken: entry.machineToken,
     serverUrl: entry.serverUrl,
   };

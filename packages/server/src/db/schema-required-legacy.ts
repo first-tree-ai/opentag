@@ -155,3 +155,17 @@ export async function lockSchemaWorkspaceComputer(
     .for("update");
   return row;
 }
+
+/** PR4 runtime validation still requires the repaired installation identity on the paired legacy row. */
+export async function updateSchemaWorkspaceComputerInstallationForRepair(
+  transaction: DatabaseTransaction,
+  computerId: string,
+  installationId: string,
+): Promise<void> {
+  const [updated] = await transaction
+    .update(workspaceComputers)
+    .set({ computerId: installationId })
+    .where(eq(workspaceComputers.id, computerId))
+    .returning({ id: workspaceComputers.id });
+  if (!updated) throw new Error("The schema-required Computer fill was not updated for repair");
+}

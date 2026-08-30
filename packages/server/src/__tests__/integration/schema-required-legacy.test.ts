@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
   computerConnectCodes,
+  computerCredentials,
   workspaceAdminGrants,
   workspaceComputerCredentials,
   workspaceComputers,
@@ -130,7 +131,7 @@ describe("schema-required legacy compatibility seam", () => {
     }
   });
 
-  it("writes fixed required fields once and never mirrors observations or repair installation identity", async () => {
+  it("updates only repair installation identity for mixed-version ABI compatibility", async () => {
     const client = createDatabaseClient(databaseUrl);
     try {
       const bootstrap = await account(client.database);
@@ -163,7 +164,7 @@ describe("schema-required legacy compatibility seam", () => {
         targetComputerId: created.workspaceComputerId,
       });
       const replacementInstallationId = randomUUID();
-      await machineAuth.exchangeConnectCode({
+      const repaired = await machineAuth.exchangeConnectCode({
         ...exchangeInput(repair.code, replacementInstallationId),
         clientVersion: "9.9.9",
         displayName: "repair-name",
@@ -174,7 +175,7 @@ describe("schema-required legacy compatibility seam", () => {
         .select()
         .from(workspaceComputers)
         .where(eq(workspaceComputers.id, created.workspaceComputerId));
-      expect(legacyAfter).toEqual(legacyBefore);
+      expect(legacyAfter).toEqual({ ...legacyBefore, computerId: replacementInstallationId });
       const [canonical] = await client.database
         .select()
         .from(accountComputers)
@@ -185,6 +186,24 @@ describe("schema-required legacy compatibility seam", () => {
         displayName: "repair-name",
         platform: "linux",
       });
+      const [pr4Compatible] = await client.database
+        .select({ credentialId: computerCredentials.id })
+        .from(computerCredentials)
+        .innerJoin(accountComputers, eq(accountComputers.id, computerCredentials.computerId))
+        .innerJoin(workspaceComputers, eq(workspaceComputers.id, accountComputers.id))
+        .where(
+          and(
+            eq(computerCredentials.id, repaired.credentialId),
+            eq(accountComputers.id, repaired.workspaceComputerId),
+            eq(accountComputers.currentInstallationId, repaired.computerId),
+            eq(workspaceComputers.workspaceId, repaired.workspaceId),
+            eq(workspaceComputers.computerId, repaired.computerId),
+            isNull(computerCredentials.revokedAt),
+            isNull(workspaceComputers.revokedAt),
+          ),
+        )
+        .limit(1);
+      expect(pr4Compatible?.credentialId).toBe(repaired.credentialId);
       expect(await client.database.select().from(workspaceComputerCredentials)).toEqual([]);
       expect(await client.database.select().from(workspaceAdminGrants)).toEqual([]);
     } finally {

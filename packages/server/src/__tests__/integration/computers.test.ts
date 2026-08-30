@@ -118,7 +118,7 @@ async function repair(
 }
 
 describe("Computer enrollment persistence", () => {
-  it("enforces the 0.0.2 Client floor before consuming a code or mutating Computer observations", async () => {
+  it("enforces the 0.0.2 Client floor and strict SemVer before any side effects", async () => {
     const value = await fixture();
     try {
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
@@ -127,6 +127,12 @@ describe("Computer enrollment persistence", () => {
         value.machineAuth.exchangeConnectCode({
           ...exchangeInput(issued.code, computerId),
           clientVersion: "0.0.1",
+        }),
+      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
+      await expect(
+        value.machineAuth.exchangeConnectCode({
+          ...exchangeInput(issued.code, computerId),
+          clientVersion: "0.0.3-01",
         }),
       ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
       const [unspent] = await value.database
@@ -139,6 +145,12 @@ describe("Computer enrollment persistence", () => {
         .select()
         .from(accountComputers)
         .where(eq(accountComputers.id, enrollment.workspaceComputerId));
+      await expect(
+        value.service.register(enrollment, {
+          ...registerFrame(enrollment.computerId, crypto.randomUUID()),
+          clientVersion: "1.0.0+build..7",
+        }),
+      ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
       await expect(
         value.service.register(enrollment, {
           ...registerFrame(enrollment.computerId, crypto.randomUUID()),

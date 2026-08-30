@@ -22,6 +22,7 @@ import {
   lockSchemaWorkspaceComputer,
   schemaRequiredConnectCodeProjection,
   schemaWorkspaceIdForComputer,
+  updateSchemaWorkspaceComputerInstallationForRepair,
 } from "../../db/schema-required-legacy.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
 
@@ -303,6 +304,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       .insert(computers)
       .values({ id: input.computerId, createdAt: now })
       .onConflictDoNothing({ target: computers.id });
+    await updateSchemaWorkspaceComputerInstallationForRepair(transaction, target.id, input.computerId);
     const [accountComputer] = await transaction
       .update(accountComputers)
       .set({

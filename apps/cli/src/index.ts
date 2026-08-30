@@ -18,6 +18,16 @@ export {
   runDoctor,
 } from "./core/diagnostics/doctor.js";
 export {
+  type ProviderCliEnsureCommandOptions,
+  type ProviderCliEnsureCommandResult,
+  runProviderCliEnsure,
+} from "./core/provider-cli/ensure.js";
+export {
+  type ProviderCliInspectCommandOptions,
+  type ProviderCliInspectCommandResult,
+  runProviderCliInspect,
+} from "./core/provider-cli/inspect.js";
+export {
   formatSessionCommandResult,
   formatSessionList,
   runSessionCreate,

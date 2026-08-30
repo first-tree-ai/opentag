@@ -223,7 +223,10 @@ export function SettingsRow({
   label: ReactNode;
 }) {
   return (
-    <div className="grid gap-3 p-4 md:grid-cols-[2fr_1fr] md:items-center" data-ui="settings-row">
+    <div
+      className="grid gap-3 p-4 @min-[44rem]/workspace:grid-cols-[2fr_1fr] @min-[44rem]/workspace:items-center"
+      data-ui="settings-row"
+    >
       <div className="grid gap-1">
         <strong className="text-sm font-medium text-kumo-strong">{label}</strong>
         {description ? <p className="text-sm text-kumo-subtle">{description}</p> : null}

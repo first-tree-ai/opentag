@@ -5,6 +5,15 @@ application stylesheet entry: it registers Kumo's distribution as a Tailwind
 source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
 generated OpenTag theme and the small application boundary stylesheet.
 
+The authenticated application shell keeps its navigation and scroll viewport
+fluid. Its route outlet sits inside a centered `max-w-5xl` content frame, so
+Workspace pages share one 1024px maximum width while still filling the available
+space on smaller screens. The frame is also the named `workspace` container;
+page grids respond to its available width instead of the viewport width that
+still includes the Sidebar. Login and onboarding live outside that shell and
+keep their task-specific layouts. Horizontal overflow belongs to the nearest
+table, code, or log surface rather than the Workspace scroll viewport.
+
 ## Component boundary
 
 `design-system.tsx` is the semantic adapter used by product pages. It maps the

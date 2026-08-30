@@ -15,37 +15,39 @@ export function IntegrationsPage() {
         </Text>
       </PageHeader>
 
-      <Table className="w-full" aria-label="Demo Integrations" data-ui="integrations-table">
-        <thead>
-          <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-            <th scope="col">Name</th>
-            <th scope="col">Category</th>
-            <th scope="col">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {integrationPreviews.map((integration) => (
-            <tr className="border-b border-kumo-line" key={integration.id}>
-              <td className="p-3">
-                <span
-                  className="mr-2 inline-grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
-                  aria-hidden="true"
-                >
-                  {integration.abbreviation}
-                </span>
-                <span>
-                  <strong>{integration.name}</strong>
-                  <small>{integration.description}</small>
-                </span>
-              </td>
-              <td data-label="Category">{integration.category}</td>
-              <td data-label="Status">
-                <Badge variant="neutral">Demo</Badge>
-              </td>
+      <section aria-label="Integrations table" className="min-w-0 overflow-x-auto">
+        <Table className="min-w-[36rem]" aria-label="Demo Integrations" data-ui="integrations-table">
+          <thead>
+            <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
+              <th scope="col">Name</th>
+              <th scope="col">Category</th>
+              <th scope="col">Status</th>
             </tr>
-          ))}
-        </tbody>
-      </Table>
+          </thead>
+          <tbody>
+            {integrationPreviews.map((integration) => (
+              <tr className="border-b border-kumo-line" key={integration.id}>
+                <td className="p-3">
+                  <span
+                    className="mr-2 inline-grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
+                    aria-hidden="true"
+                  >
+                    {integration.abbreviation}
+                  </span>
+                  <span>
+                    <strong>{integration.name}</strong>
+                    <small>{integration.description}</small>
+                  </span>
+                </td>
+                <td data-label="Category">{integration.category}</td>
+                <td data-label="Status">
+                  <Badge variant="neutral">Demo</Badge>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      </section>
     </section>
   );
 }

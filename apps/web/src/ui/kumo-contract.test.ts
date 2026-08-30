@@ -57,8 +57,10 @@ describe("Kumo integration contract", () => {
     expect(shell).toContain('className="app-mobile-header');
     expect(shell).toContain('className="h-full min-h-0 overflow-hidden"');
     expect(shell).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
-    expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-auto");
-    expect(shell).not.toContain("max-w-6xl");
+    expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");
+    expect(shell).toContain(
+      'className="@container/workspace mx-auto w-full min-w-0 max-w-5xl" data-ui="workspace-page-frame"',
+    );
     expect(shell).not.toContain('data-ui="sidebar-content"');
   });
 

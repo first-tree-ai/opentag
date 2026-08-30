@@ -65,9 +65,6 @@ export const slackInstallations = pgTable(
     uniqueIndex("slack_installations_app_team_current_unique")
       .on(table.externalAppId, table.externalTeamId)
       .where(sql`${table.status} <> 'disabled'`),
-    uniqueIndex("slack_installations_workspace_current_unique")
-      .on(table.workspaceId)
-      .where(sql`${table.status} <> 'disabled'`),
     index("slack_installations_workspace_id_idx").on(table.workspaceId),
     index("slack_installations_agent_id_idx").on(table.agentId),
     index("slack_installations_app_team_idx").on(table.externalAppId, table.externalTeamId),

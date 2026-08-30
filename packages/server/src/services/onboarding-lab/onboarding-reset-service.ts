@@ -7,6 +7,7 @@ import {
   computerConnectCodes,
   computerCredentials,
   imBindings,
+  users,
   workspaceAdminGrants,
   workspaceComputerCredentials,
   workspaceComputers,
@@ -108,6 +109,7 @@ export class OnboardingResetService {
     // Re-confirm the environment before any mutation rather than trusting route registration.
     if (!this.enabled) throw resourceNotFound();
     const scope = await this.#resolveOwnedScope(accountId);
+    await this.#assertWorkspaceNotShared(accountId, scope.workspaceId);
 
     await this.#deleteOwnedAgents(accountId, scope);
     const enrollmentIds = await this.#revokeComputerAccess(accountId, scope);
@@ -248,13 +250,35 @@ export class OnboardingResetService {
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
       await this.#workspaceAdmins.requireAdminForMutation(transaction, accountId, scope.workspaceId);
+      await this.#assertWorkspaceNotShared(accountId, scope.workspaceId, transaction);
       await this.#verifyCleanedUp(transaction, scope, now);
       await this.#afterVerified?.();
+      await transaction.update(users).set({ setupCompletedAt: null, updatedAt: now }).where(eq(users.id, accountId));
       await transaction
         .update(workspaces)
         .set({ setupCompletedAt: null, updatedAt: now })
         .where(eq(workspaces.id, scope.workspaceId));
     });
+  }
+
+  /**
+   * Clearing a shared Workspace setup marker would destructively rewrite another Account's rollback
+   * evidence. Refuse rather than broaden the reset onto that Account.
+   */
+  async #assertWorkspaceNotShared(
+    accountId: string,
+    workspaceId: string,
+    executor: QueryExecutor = this.#database,
+  ): Promise<void> {
+    const [{ foreignAgents } = { foreignAgents: 0 }] = await executor
+      .select({ foreignAgents: count() })
+      .from(agents)
+      .where(and(eq(agents.workspaceId, workspaceId), ne(agents.createdByUserId, accountId)));
+    if (foreignAgents > 0) {
+      throw ownershipInconsistent(
+        "The Lab Account Workspace is shared with another Account; reset refused to protect that Account",
+      );
+    }
   }
 
   /**

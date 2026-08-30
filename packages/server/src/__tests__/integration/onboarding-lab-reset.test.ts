@@ -151,6 +151,7 @@ async function seedAccount(
     generation: 1,
   });
   await database.update(workspaces).set({ setupCompletedAt: now }).where(eq(workspaces.id, input.workspaceId));
+  await database.update(users).set({ setupCompletedAt: now }).where(eq(users.id, input.accountId));
   return {
     accountId: input.accountId,
     agentId: agent.id,
@@ -246,6 +247,10 @@ async function facts(database: DatabaseClient, scope: SeededAccount) {
       .from(imBindings)
       .where(eq(imBindings.id, scope.imBindingId)),
   ]);
+  const [accountRow] = await database
+    .select({ setupCompletedAt: users.setupCompletedAt })
+    .from(users)
+    .where(eq(users.id, scope.accountId));
   return {
     activeAgents: activeAgents.length,
     activeBindings: activeBindings.length,
@@ -254,6 +259,7 @@ async function facts(database: DatabaseClient, scope: SeededAccount) {
     activeCredentials: activeCredentials.length,
     usableCodes: usableCodes.length,
     setupCompletedAt: workspaceRow[0]?.setupCompletedAt ?? null,
+    accountSetupCompletedAt: accountRow?.setupCompletedAt ?? null,
     binding: bindingRow[0],
   };
 }
@@ -264,6 +270,7 @@ describe("staging Onboarding Lab reset", () => {
     const before = await facts(value.database, value.lab);
     expect(before).toMatchObject({ activeAgents: 1, activeBindings: 1, openSessions: 1, activeEnrollments: 1 });
     expect(before.setupCompletedAt).not.toBeNull();
+    expect(before.accountSetupCompletedAt).not.toBeNull();
 
     await value.reset.resetOnboarding(value.lab.accountId);
 
@@ -276,6 +283,7 @@ describe("staging Onboarding Lab reset", () => {
       activeCredentials: 0,
       usableCodes: 0,
       setupCompletedAt: null,
+      accountSetupCompletedAt: null,
     });
     expect(after.binding).toMatchObject({
       status: "disabled",
@@ -586,5 +594,34 @@ describe("staging Onboarding Lab reset", () => {
 
     expect(socket.close).toHaveBeenCalledWith(4002, "Machine credential rotated or revoked");
     expect(value.registry.currentInstanceId(value.lab.enrollmentId)).toBeUndefined();
+  });
+
+  it("fails closed when clearing setup would rewrite another Account's Workspace evidence", async () => {
+    const value = await fixture();
+    const [foreign] = await value.database
+      .insert(users)
+      .values({ displayName: "Foreign", email: "foreign@example.com" })
+      .returning({ id: users.id });
+    if (!foreign) throw new Error("Foreign Account fixture was not created");
+    await value.database.insert(agents).values({
+      workspaceId: value.lab.workspaceId,
+      createdByUserId: foreign.id,
+      workspaceComputerId: value.lab.enrollmentId,
+      computerId: value.lab.enrollmentId,
+      name: "foreign-agent",
+      displayName: "Foreign Agent",
+      runtimeProvider: "codex",
+      status: "deleted",
+    });
+
+    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({
+      code: "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
+      statusCode: 409,
+    });
+    expect(await facts(value.database, value.lab)).toMatchObject({
+      activeAgents: 1,
+      accountSetupCompletedAt: expect.any(Date),
+      setupCompletedAt: expect.any(Date),
+    });
   });
 });

@@ -26,6 +26,7 @@ export const users = pgTable(
     displayName: text("display_name").notNull(),
     image: text("image"),
     suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    setupCompletedAt: timestamp("setup_completed_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [uniqueIndex("users_email_unique").on(sql`lower(${table.email})`)],

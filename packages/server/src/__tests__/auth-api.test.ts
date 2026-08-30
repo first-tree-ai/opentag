@@ -5,7 +5,6 @@ import type { ConnectCodeIssuer, UserAuthService } from "../services/auth/index.
 import { signedInBrowser } from "./signed-in-browser.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -33,20 +32,12 @@ function createAuthService(): UserAuthService {
           email: "admin@example.com",
           displayName: "Admin",
         },
-        workspaces: [
-          {
-            id: workspaceId,
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2026-08-20T00:00:00.000Z",
-          },
-        ],
+        setupCompletedAt: null,
       },
     }),
     getActiveUserById: vi.fn().mockResolvedValue({
       user: { id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", email: "admin@example.com", displayName: "Admin" },
-      workspaces: [],
+      setupCompletedAt: null,
     }),
     updateSelfProfile: vi.fn().mockResolvedValue({
       id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
@@ -118,7 +109,7 @@ describe("auth HTTP API", () => {
     expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
 
-  it("authenticates /api/v1/me and returns ordered Workspace data", async () => {
+  it("authenticates /api/v1/me without a management Workspace projection", async () => {
     const authService = createAuthService();
     const app = createApp({ authService });
     apps.push(app);
@@ -132,7 +123,15 @@ describe("auth HTTP API", () => {
       headers: { authorization: "Bearer access" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ workspaces: [{ name: "example", displayName: "Example" }] });
+    expect(response.json()).toEqual({
+      user: {
+        id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+        email: "admin@example.com",
+        displayName: "Admin",
+      },
+      setupCompletedAt: null,
+    });
+    expect(response.json()).not.toHaveProperty("workspaces");
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
   });
 

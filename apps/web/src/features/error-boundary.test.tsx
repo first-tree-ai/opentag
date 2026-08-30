@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAppRouter } from "../router.js";
 import { Route } from "../routes/__root.js";
-import { AppErrorBoundary, rootErrorHandlers } from "./error-boundary.js";
+import { AppErrorBoundary, reportBoundaryError, rootErrorHandlers } from "./error-boundary.js";
 import { StandaloneNotFoundPage } from "./not-found.js";
 
 function ExplodingChild(): never {
@@ -78,6 +78,20 @@ describe("application error boundaries", () => {
     expect(router.options.defaultOnCatch).toEqual(expect.any(Function));
 
     router.history.destroy();
+  });
+
+  it("redacts the complete credential for non-Bearer authorization schemes", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    reportBoundaryError("app", new Error("Authorization: Basic dXNlcjpwYXNz"));
+
+    expect(consoleError).toHaveBeenCalledWith(
+      "[OpenTag] Unhandled UI error",
+      expect.objectContaining({
+        error: expect.objectContaining({ message: "Authorization: [REDACTED]" }),
+      }),
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain("dXNlcjpwYXNz");
   });
 
   it("keeps the standalone fallback centered and bounded in production CSS", () => {

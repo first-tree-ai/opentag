@@ -142,7 +142,7 @@ export const rootErrorHandlers = {
 
 const credentialKey =
   "(?:cookie|password|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)";
-const authorizationField = /(["']?authorization["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^,;}\n]+)/gi;
+const authorizationField = /(["']?authorization["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\n,;}]*?\S)(?=\s*(?:[,;}\n]|$))/gi;
 
 function redactErrorMessage(message: string): string {
   return message

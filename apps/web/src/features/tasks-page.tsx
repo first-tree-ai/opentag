@@ -3,7 +3,6 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { queryKeys } from "../query/keys.js";
 import {
@@ -20,6 +19,7 @@ import {
   Table,
   Text,
 } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
 
 type TaskFilter = "all" | TaskStatus;
@@ -217,6 +217,100 @@ export function TasksPage() {
       ) : null}
       {!terminalTasksError && tasksQuery.data && tasks.length === 0 ? (
         <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
+ * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
+ */
+export function AgentTasksSection({ agentId }: { agentId: string }) {
+  /*
+   * Keyed by the Agent, so the route reusing this component for a different `:agentId` reads a
+   * different entry rather than a load that has to be told apart from the one before it. An append
+   * belongs to the entry that started it, and the pages it accumulated are still there on the way
+   * back — which is what the generation counter here had to imitate by hand.
+   */
+  const tasksQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.byAgent(agentId),
+    queryFn: ({ pageParam }) => browserApi.tasks({ agentId, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const tasks = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
+  const taskError = asError(tasksQuery.error);
+  // The same rule the workspace list follows: a refusal withdraws the rows it refused, whichever
+  // page asked for them. Only a transient append failure keeps them, reported beside its control.
+  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
+  const unavailable = terminalTasksError !== null || (tasksQuery.isError && !tasksQuery.data);
+
+  return (
+    <section
+      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-tasks-heading"
+      data-ui="agent-tasks"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <Text as="h2" id="agent-tasks-heading" variant="heading">
+          Tasks
+        </Text>
+        <Link className="text-sm text-kumo-link" to="/tasks">
+          All Tasks
+        </Link>
+      </div>
+      {!unavailable && tasksQuery.isPending ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Loading Tasks…
+        </p>
+      ) : null}
+      {unavailable ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Tasks are temporarily unavailable.
+        </p>
+      ) : null}
+      {!unavailable && tasksQuery.data && tasks.length === 0 ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          No Tasks yet. Work this Agent handles in Feishu or Slack appears here.
+        </p>
+      ) : null}
+      {!unavailable && tasks.length > 0 ? (
+        <>
+          <div className="overflow-x-auto">
+            <Table className="w-full" aria-label="Agent Tasks" data-ui="task-table">
+              <thead>
+                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
+                  <th scope="col">Task</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.map((task) => (
+                  <TaskRow key={task.id} showAgent={false} task={task} />
+                ))}
+              </tbody>
+            </Table>
+          </div>
+          {tasksQuery.hasNextPage ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                disabled={tasksQuery.isFetchingNextPage}
+                type="button"
+                variant="secondary"
+                onClick={() => void tasksQuery.fetchNextPage()}
+              >
+                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+              </Button>
+              {loadMoreError ? (
+                <span className="text-sm text-kumo-subtle" role="status">
+                  Could not load more Tasks.
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </>
       ) : null}
     </section>
   );
@@ -497,7 +591,7 @@ function TaskSelect({
   );
 }
 
-function TaskRow({ task }: { task: TaskSummary }) {
+function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
@@ -506,13 +600,17 @@ function TaskRow({ task }: { task: TaskSummary }) {
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
-          <span>{task.agent.displayName}</span>
-          <span aria-hidden="true">·</span>
-          <ProviderIcon provider={task.source.provider} compact />
+          {showAgent ? (
+            <>
+              <span>{task.agent.displayName}</span>
+              <span aria-hidden="true"> · </span>
+            </>
+          ) : null}
+          <TaskProviderIcon provider={task.source.provider} compact />
           <span>{task.source.provider}</span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true"> · </span>
           <span>{task.sessionKind}</span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true"> · </span>
           <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
         </span>
       </td>
@@ -531,7 +629,7 @@ function TaskRow({ task }: { task: TaskSummary }) {
 function SourceIdentity({ task }: { task: TaskSummary }) {
   return (
     <span className="inline-flex items-center gap-2" data-ui="task-source-identity">
-      <ProviderIcon provider={task.source.provider} />
+      <TaskProviderIcon provider={task.source.provider} />
       <span>
         <strong>{task.agent.displayName}</strong>
         <small>
@@ -542,20 +640,16 @@ function SourceIdentity({ task }: { task: TaskSummary }) {
   );
 }
 
-function ProviderIcon({
+function TaskProviderIcon({
   provider,
   compact = false,
 }: {
   provider: TaskSummary["source"]["provider"];
   compact?: boolean;
 }) {
-  if (provider !== "feishu")
-    return (
-      <span className="grid size-7 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-        S
-      </span>
-    );
-  return <img alt="" aria-hidden="true" className={compact ? "size-5" : "size-7"} src={feishuIconUrl} />;
+  return (
+    <ProviderIcon className={compact ? "mr-1 inline-block size-5" : "mr-1 inline-block size-6"} provider={provider} />
+  );
 }
 
 function DebugValue({ label, value }: { label: string; value: string }) {

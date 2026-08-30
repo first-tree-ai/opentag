@@ -222,7 +222,11 @@ describe("projectAgentAvailability", () => {
     expect(availability).toMatchObject({ state: "action_required", reason: "im_reauthorization_required" });
   });
 
-  it.each<ImBindingState>(["error", "disabled"])("asks for action when the binding is %s", (bindingState) => {
+  // Both ask for action, but only one of them has a connection failure to name.
+  it.each([
+    { bindingState: "error", reason: "im_error" },
+    { bindingState: "disabled", reason: "im_disabled" },
+  ] as const)("asks for action when the binding is $bindingState", ({ bindingState, reason }) => {
     const availability = projectAgentAvailability(
       agent(),
       computer(),
@@ -231,7 +235,7 @@ describe("projectAgentAvailability", () => {
       true,
       true,
     );
-    expect(availability).toMatchObject({ state: "action_required", reason: "im_error" });
+    expect(availability).toMatchObject({ state: "action_required", reason });
   });
 
   it.each([

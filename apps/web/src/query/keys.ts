@@ -28,6 +28,8 @@ export const queryKeys = {
 
   tasks: {
     list: () => ["tasks", "list"] as const,
+    /** One Agent's own Tasks. A sibling of the workspace list, so neither invalidates the other. */
+    byAgent: (agentId: string) => ["tasks", "byAgent", agentId] as const,
     detail: (taskId: string) => ["tasks", taskId, "detail"] as const,
   },
 

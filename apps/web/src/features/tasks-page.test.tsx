@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
-import { TaskDetailPage, TasksPage } from "./tasks-page.js";
+import { AgentTasksSection, TaskDetailPage, TasksPage } from "./tasks-page.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const agentId = "22222222-2222-4222-8222-222222222222";
@@ -354,6 +354,71 @@ describe("Tasks debug view", () => {
     expect(await screen.findByText("This is an older inbound message.")).toBeTruthy();
     expect(taskRequest).toHaveBeenLastCalledWith(sessionId, "older-turns");
     expect(screen.queryByRole("button", { name: "Load more Turns" })).toBeNull();
+  });
+
+  it("does not let a late page for one Agent land on another Agent's Tasks", async () => {
+    const secondAgentId = "44444444-4444-4444-8444-444444444444";
+    const secondTask = { ...task, id: "55555555-5555-4555-8555-555555555555", title: "Draft the release notes" };
+    let releaseFirstPage: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
+    vi.spyOn(browserApi, "tasks").mockImplementation((input = {}) => {
+      if (input.cursor) {
+        // The page requested for the first Agent, still in flight when the Agent changes.
+        return new Promise((next) => {
+          releaseFirstPage = next;
+        });
+      }
+      return Promise.resolve(
+        input.agentId === secondAgentId
+          ? { tasks: [secondTask], nextCursor: null }
+          : { tasks: [task], nextCursor: "next-page" },
+      );
+    });
+
+    const view = await renderInRouter(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    view.rerender(<AgentTasksSection agentId={secondAgentId} />);
+    expect(await screen.findByRole("link", { name: "Draft the release notes" })).toBeTruthy();
+
+    releaseFirstPage({
+      tasks: [{ ...task, id: "66666666-6666-4666-8666-666666666666", title: "Older Atlas Task" }],
+      nextCursor: null,
+    });
+    await waitFor(() => expect(screen.getByRole("link", { name: "Draft the release notes" })).toBeTruthy());
+    expect(screen.queryByText("Older Atlas Task")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Investigate the failed deployment" })).toBeNull();
+  });
+
+  it("does not let a late page land after the same Agent is loaded again", async () => {
+    const otherAgentId = "77777777-7777-4777-8777-777777777777";
+    let releaseFirstPage: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
+    vi.spyOn(browserApi, "tasks").mockImplementation((input = {}) => {
+      if (input.cursor) {
+        return new Promise((next) => {
+          releaseFirstPage = next;
+        });
+      }
+      return Promise.resolve(
+        input.agentId === otherAgentId ? { tasks: [], nextCursor: null } : { tasks: [task], nextCursor: "next-page" },
+      );
+    });
+
+    const view = await renderInRouter(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    // Away and back: the Agent id is the same again, but the list underneath is a different load.
+    view.rerender(<AgentTasksSection agentId={otherAgentId} />);
+    view.rerender(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
+
+    releaseFirstPage({
+      tasks: [{ ...task, id: "88888888-8888-4888-8888-888888888888", title: "STALE ROW" }],
+      nextCursor: null,
+    });
+    await waitFor(() => expect(screen.getByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy());
+    expect(screen.queryByTitle("STALE ROW")).toBeNull();
   });
 
   it.each(["success", "error"] as const)(

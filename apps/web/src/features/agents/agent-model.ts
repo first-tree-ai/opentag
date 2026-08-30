@@ -20,6 +20,7 @@ export type AgentAvailability = {
     | "im_provisioning"
     | "im_reauthorization_required"
     | "im_error"
+    | "im_disabled"
     | "handoff_unavailable"
     | "computer_unconfirmed"
     | "handoff_unconfirmed"
@@ -135,7 +136,8 @@ export function projectAgentAvailability(
   if (binding.bindingState === "error" || binding.bindingState === "disabled") {
     return {
       state: "action_required",
-      reason: "im_error",
+      // A binding that was turned off has no connection failure to report, so it does not borrow one.
+      reason: binding.bindingState === "disabled" ? "im_disabled" : "im_error",
       lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const DEFAULTS = {
   journalPath: "packages/server/drizzle/meta/_journal.json",
   migrationsDir: "packages/server/drizzle",
-  manifestPath: "packages/server/drizzle/meta/migration-hashes.json",
+  manifestPath: "packages/server/drizzle/migration-hashes.json",
 };
 
 export function sha256File(filePath) {

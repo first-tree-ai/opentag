@@ -77,6 +77,8 @@ function installApi(
     computerStatus?: () => "online" | "offline";
     computerReadStatus?: (connected: boolean) => number | undefined;
     handoffReady?: boolean;
+    /** Fails only the handoff read, so the binding stays readable and `handoff_unconfirmed` is reachable. */
+    handoffEvidenceFails?: boolean;
     initialStatus?: "active" | "suspended";
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
@@ -409,7 +411,7 @@ function installApi(
       return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/handoff`) {
-      if (options.bindingEvidenceFails) {
+      if (options.bindingEvidenceFails || options.handoffEvidenceFails) {
         return json(
           {
             error: {
@@ -2005,6 +2007,58 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "Connect messaging" })).toBeNull();
     expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("still names a paused Agent and its resume exit on the Agent home", async () => {
+    /*
+     * A pause is not a dependency failure, so no Connection row speaks for it: a suspended Agent
+     * can have a healthy Computer and a live channel, and `projectAgentAvailability` ranks the
+     * pause first while still filling both dependencies. Without an Agent-level notice the home
+     * reads Online / Connected and never says the Agent is off.
+     */
+    installApi({ bound: true, initialStatus: "suspended" });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const notice = screen.getByRole("region", { name: "Agent status: Suspended" });
+    expect(within(notice).getByText("Suspended")).toBeTruthy();
+    expect(within(notice).getByText("This Agent is paused. Resume it to start receiving messages again.")).toBeTruthy();
+    expect(within(notice).getByRole("link", { name: "Manage Agent" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/manage`,
+    );
+  });
+
+  it("keeps unreadable Computer and Messaging evidence out of the success states", async () => {
+    /*
+     * Both rows used to fall through to Online / Connected when the evidence behind them could not
+     * be read -- a reachable Computer with no Provider readiness, and an active binding whose
+     * delivery could not be confirmed. Missing evidence is not a working Agent.
+     */
+    installApi({ bound: true, computerProviderReadiness: [] });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    const unconfirmedRuntime = render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const computerRow = screen
+      .getByRole("region", { name: "Connection" })
+      .querySelector('[data-ui="connection-computer"]') as HTMLElement;
+    expect(within(computerRow).queryByText("Online")).toBeNull();
+    expect(within(computerRow).getByText("Unknown")).toBeTruthy();
+    expect(within(computerRow).getByText("OpenTag could not confirm Codex on this Computer.")).toBeTruthy();
+    unconfirmedRuntime.unmount();
+
+    installApi({ bound: true, handoffEvidenceFails: true });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const messagingRow = screen
+      .getByRole("region", { name: "Connection" })
+      .querySelector('[data-ui="connection-messaging"]') as HTMLElement;
+    expect(within(messagingRow).queryByText("Connected")).toBeNull();
+    expect(within(messagingRow).getByText("Unknown")).toBeTruthy();
+    expect(within(messagingRow).getByText("OpenTag could not confirm whether messages reach this Agent.")).toBeTruthy();
   });
 
   it("names the channel and keeps a repair exit in every messaging state", async () => {

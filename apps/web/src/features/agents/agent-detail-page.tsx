@@ -7,8 +7,10 @@ import { AgentTasksSection } from "../tasks-page.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
+  agentAvailabilityRecovery,
   agentComputerStatus,
   agentMessagingStatus,
+  agentRecoveryMessage,
   agentStatusPresentation,
   initials,
   messagingChannelLabel,
@@ -25,6 +27,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
         <section className="grid gap-6">
           <AgentObjectHeader agent={agent} />
           <div className="grid gap-6">
+            <AgentLifecycleNotice agent={agent} />
             {/*
              * Usage and Connection share a row: neither fills the width on its own, and a failed
              * dependency belongs beside the work it is stopping rather than in a banner above it.
@@ -164,8 +167,9 @@ function ConnectionRow({
 
 export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
   /*
-   * Only while the Agent is healthy. Every other state is already named, with its recovery exit, by
-   * the banner directly beneath this header, and saying it twice reads as two problems.
+   * Only while the Agent is healthy. A failed dependency is already named, with its own exit, by
+   * the Connection card below, and saying it twice reads as two problems. A paused Agent is not a
+   * dependency failure and no card speaks for it, so it gets the notice beneath this header.
    */
   if (agent.availability.state !== "ready") return null;
   const status = agentStatusPresentation(agent);
@@ -173,5 +177,38 @@ export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
     <div className="inline-flex">
       <StatusIndicator label={status.label} tone={status.tone} />
     </div>
+  );
+}
+
+/**
+ * The Agent's own lifecycle, which no dependency row can carry. Computer and Messaging state their
+ * own failures in the Connection card, but a paused Agent has nothing wrong with either -- it was
+ * turned off -- so without this the home reports a healthy Computer and channel and never mentions
+ * that the Agent is not running.
+ */
+export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
+  if (agent.availability.state !== "suspended") return null;
+  const status = agentStatusPresentation(agent);
+  const recovery = agentAvailabilityRecovery(agent);
+  return (
+    <section
+      className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-tint p-4"
+      aria-label={`Agent status: ${status.label}`}
+      data-ui="agent-lifecycle-notice"
+    >
+      <div className="grid gap-1">
+        <StatusIndicator label={status.label} tone={status.tone} />
+        <p className="text-sm text-kumo-subtle">{agentRecoveryMessage(agent)}</p>
+      </div>
+      {recovery ? (
+        <Link
+          className={buttonClassName({ size: "compact", variant: "secondary" })}
+          state={{ agent }}
+          {...recovery.link}
+        >
+          {recovery.label}
+        </Link>
+      ) : null}
+    </section>
   );
 }

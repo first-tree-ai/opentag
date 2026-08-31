@@ -254,7 +254,7 @@ export function messagingAgentStatusDescription(
 export function agentAvailabilityRecovery(
   agent: AgentDetailView,
 ): { label: string; link: AgentSettingsSectionLink } | undefined {
-  if (!true || agent.availability.state === "ready") return undefined;
+  if (agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
     return { label: "Manage Agent", link: agentSettingsSectionLink(agent.id, "manage") };
   }
@@ -353,7 +353,19 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
   if (computer.state === "unconfirmed") return { action, detail: recovery, label: "Unknown", tone: "neutral" };
   if (computer.state === "action_required") return { action, detail: recovery, label: "Offline", tone: "warning" };
   const providerName = runtimeProviderName(runtime.provider);
-  if (runtime.status && runtime.status !== "ready") {
+  /*
+   * A reachable Computer whose Provider readiness could not be read is `runtime_unconfirmed`, not
+   * ready. Falling through to Online here would paint missing evidence as a working Agent.
+   */
+  if (!runtime.status) {
+    return {
+      action,
+      detail: `OpenTag could not confirm ${providerName} on this Computer.`,
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  if (runtime.status !== "ready") {
     // Named per Provider status, and worded by the same helper the Computer settings page uses.
     const detail = recovery;
     if (runtime.status === "checking") return { detail, label: `Checking ${providerName}`, tone: "info" };
@@ -396,9 +408,33 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
     };
   }
   /*
+   * An active binding whose delivery evidence could not be read is `handoff_unconfirmed`. The
+   * channel may well be fine, but this row states what is known, and "Connected" is not known.
+   */
+  if (binding.bindingState === "active" && handoff.state === "unconfirmed") {
+    return {
+      action,
+      detail: "OpenTag could not confirm whether messages reach this Agent.",
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  const detail: Record<ImBindingSummary["bindingState"], string | undefined> = {
+    active: undefined,
+    provisioning: "The messaging connection is still being set up.",
+    reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
+    error: "The messaging connection failed. Reconnect it to receive messages.",
+    disabled: "Messaging is turned off for this Agent. Reconnect it to receive messages.",
+  };
+  /*
    * The exit stays even when the channel is healthy. This card replaced the header's messaging
    * control, so dropping it on success would leave changing the bound bot reachable only by
    * hunting through Settings.
    */
-  return { action, label: messagingConnectionLabel(binding), tone: messagingConnectionTone(binding) };
+  return {
+    action,
+    detail: detail[binding.bindingState],
+    label: messagingConnectionLabel(binding),
+    tone: messagingConnectionTone(binding),
+  };
 }

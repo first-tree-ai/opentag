@@ -17,11 +17,16 @@ export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable
  * runtime rows are derived from a single status rather than being two independent facts. A runtime
  * that is not installed leaves sign-in genuinely unknown, which the `blocked` state says out loud
  * instead of guessing.
+ *
+ * The messaging CLI is not a row: which binary is needed depends on a provider chosen later, and
+ * both onboarding and Agent settings name a missing one with a sentence
+ * (`SETUP_COPY.messaging.cliMissing`) rather than a third check line. `messagingCliCheck` returns
+ * that sentence's `CheckState`.
  */
 export type CheckState = "pending" | "passed" | "failed" | "blocked";
 
 export interface CheckRow {
-  readonly id: "runtime-cli" | "runtime-auth" | "messaging-cli";
+  readonly id: "runtime-cli" | "runtime-auth";
   readonly state: CheckState;
 }
 
@@ -41,7 +46,7 @@ export function deriveChecks(runtime: RuntimeStatus | undefined): readonly Check
   ];
 }
 
-/** The chosen provider's CLI, asked about once there is a provider to ask about. */
+/** The chosen provider's CLI, as the `CheckState` behind the missing-CLI sentence. */
 export function messagingCliCheck(status: MessagingCliStatus | undefined): CheckState {
   return messagingCliState(status ?? "checking");
 }

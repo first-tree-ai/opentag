@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import { formatDateTime } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import { queryKeys } from "../../../query/keys.js";
@@ -11,7 +12,6 @@ import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
 import {
-  formatDate,
   messagingConnectionLabel,
   messagingConnectionTone,
   runtimeProviderName,
@@ -141,9 +141,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               <StatusIndicator
                                 detail={
                                   binding.lastRuntimeObservationAt
-                                    ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
+                                    ? `Last observed ${formatDateTime(binding.lastRuntimeObservationAt)}`
                                     : binding.lastValidatedAt
-                                      ? `Validated ${formatDate(binding.lastValidatedAt)}`
+                                      ? `Validated ${formatDateTime(binding.lastValidatedAt)}`
                                       : "Not yet observed"
                                 }
                                 label={messagingConnectionLabel(binding)}
@@ -385,7 +385,7 @@ function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; bind
   if (computerState === "action_required") {
     return (
       <p className="text-sm text-kumo-subtle">
-        The channel itself is connected. Messages wait until this Agent's Computer is online.{" "}
+        The channel itself is connected. Messages wait until this agent's computer is online.{" "}
         <Link className="text-kumo-link" {...agentSettingsSectionLink(agent.id, "computer")}>
           View Computer
         </Link>
@@ -396,7 +396,7 @@ function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; bind
     return (
       <p className="text-sm text-kumo-subtle">
         The channel itself is connected. Messages wait until {runtimeProviderName(agent.runtimeProvider)} is ready on
-        this Agent's Computer.{" "}
+        this agent's computer.{" "}
         <Link className="text-kumo-link" {...agentSettingsSectionLink(agent.id, "computer")}>
           View Computer
         </Link>

@@ -3,6 +3,11 @@ import { createRoot } from "react-dom/client";
 import { App } from "./app.js";
 import "./app.css";
 import { rootErrorHandlers } from "./features/error-boundary.js";
+import { applyDocumentLocale } from "./i18n/document-locale.js";
+import { configureLocaleRuntime } from "./i18n/locale.js";
+
+configureLocaleRuntime();
+applyDocumentLocale();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("OpenTag root element is missing");

@@ -15,11 +15,10 @@ export function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[numb
 }
 
 /**
- * Every state a viewer can act on carries the Settings section that explains it. A state without an
- * exit reads as a dead end: the card reports a failure the viewer cannot follow anywhere.
+ * The card states what is true and how urgent it is; it carries no exit of its own. Opening the
+ * Agent is the single follow-up, and the Agent page is where each failed dependency is explained.
  */
 export function agentCardStatus(agent: AgentListItem): {
-  action?: { label: string; section: AgentSettingsSection };
   detail?: string;
   label: string;
   priority: number;
@@ -34,32 +33,18 @@ export function agentCardStatus(agent: AgentListItem): {
     return { detail: "Unable to confirm readiness", label: status.label, priority: 1, tone: status.tone };
   }
   if (agent.availability.state === "action_required") {
-    const action =
-      agent.availability.reason === "computer_offline"
-        ? { label: "View Computer", section: "computer" as const }
-        : agent.availability.reason === "runtime_unavailable"
-          ? // Provider readiness is observed per Computer, so the Computer page is where it is explained.
-            { label: "View Computer", section: "computer" as const }
-          : { label: "View messaging", section: "messaging" as const };
-    return {
-      action,
-      detail: "Cannot receive new work",
-      label: status.label,
-      priority: 0,
-      tone: status.tone,
-    };
+    /*
+     * No recovery exit on the card. What to do about a stuck Agent depends on which dependency
+     * failed, and that explanation lives on the Agent itself; the card states the problem and
+     * lets its own open-the-Agent target carry the viewer to where it can be fixed.
+     */
+    return { detail: "Cannot receive new work", label: status.label, priority: 0, tone: status.tone };
   }
   if (agent.availability.state === "setting_up") {
     return { detail: "Messaging setup in progress", label: status.label, priority: 2, tone: status.tone };
   }
   if (agent.availability.state === "not_connected") {
-    return {
-      action: { label: "Connect messaging", section: "messaging" },
-      detail: "Cannot receive new work",
-      label: status.label,
-      priority: 2,
-      tone: status.tone,
-    };
+    return { detail: "Cannot receive new work", label: status.label, priority: 2, tone: status.tone };
   }
   if (agent.activity.state === "working") {
     return {
@@ -71,28 +56,12 @@ export function agentCardStatus(agent: AgentListItem): {
   return { label: status.label, priority: 3, tone: status.tone };
 }
 
-export function formatElapsedCompact(value: string): string {
-  const elapsedMinutes = Math.max(1, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
-  if (elapsedMinutes < 60) return `${elapsedMinutes}m`;
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 24) return `${elapsedHours}h`;
-  return `${Math.floor(elapsedHours / 24)}d`;
-}
-
-export function formatUsageNumber(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: value >= 1_000 ? 1 : 0,
-    notation: value >= 1_000 ? "compact" : "standard",
-  }).format(value);
-}
-
 /**
  * Names the machine-level action that resolves the failure. Recovery is stated against the Computer
  * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
  * Agent creator audit-only while stating that enrollment implies no control of the physical host.
  */
-export function computerRecoveryMessage(agent: AgentDetailView): string {
-  const computerName = agent.computer.displayName;
+export function computerRecoveryMessage(agent: AgentDetailView, computerName = agent.computer.displayName): string {
   if (agent.availability.reason === "runtime_unavailable") {
     const { provider, status } = agent.availability.dependencies.runtime;
     const providerName = provider === "codex" ? "Codex" : "Claude Code";
@@ -104,7 +73,7 @@ export function computerRecoveryMessage(agent: AgentDetailView): string {
   if (agent.availability.dependencies.computer.state !== "action_required") {
     return "OpenTag could not confirm this Computer's current connection.";
   }
-  return `OpenTag is not running on ${computerName}. Start it there to bring this Computer back online.`;
+  return `OpenTag is not running on ${computerName}. Start it there to bring it back online.`;
 }
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {
@@ -270,7 +239,7 @@ export function messagingAgentStatusDescription(
 export function agentAvailabilityRecovery(
   agent: AgentDetailView,
 ): { label: string; link: AgentSettingsSectionLink } | undefined {
-  if (!true || agent.availability.state === "ready") return undefined;
+  if (agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
     return { label: "Manage Agent", link: agentSettingsSectionLink(agent.id, "manage") };
   }
@@ -297,7 +266,7 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     handoff_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
     computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
-    computer_offline: "This Agent's Computer is offline. Retrying automatically.",
+    computer_offline: "This agent's computer is offline. Retrying automatically.",
     runtime_unavailable: runtimeRecoveryMessage(agent),
     im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
     im_provisioning: "The messaging connection is still being set up.",
@@ -316,32 +285,153 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
 function runtimeRecoveryMessage(agent: AgentDetailView): string {
   const { provider, status } = agent.availability.dependencies.runtime;
   const providerName = runtimeProviderName(provider);
-  if (status === "checking") return `Still checking ${providerName} on this Agent's Computer.`;
-  if (status === "install") return `Install ${providerName} on this Agent's Computer.`;
-  if (status === "sign-in") return `Sign in to ${providerName} on this Agent's Computer.`;
-  return `${providerName} is not available on this Agent's Computer.`;
+  if (status === "checking") return `Still checking ${providerName} on this agent's computer.`;
+  if (status === "install") return `Install ${providerName} on this agent's computer.`;
+  if (status === "sign-in") return `Sign in to ${providerName} on this agent's computer.`;
+  return `${providerName} is not available on this agent's computer.`;
+}
+/**
+ * The two dependencies an Agent needs to do any work, each presented on its own terms. They are
+ * deliberately not collapsed into one verdict: a connected channel can coexist with an offline
+ * Computer, and a viewer repairing one needs to see the other's state unchanged while they do it.
+ */
+export type AgentDependencyStatus = {
+  action?: { label: string; section: AgentSettingsSection };
+  detail?: string;
+  label: string;
+  tone: StatusTone;
+};
+
+export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
+  const { computer, runtime } = agent.availability.dependencies;
+  const providerName = runtimeProviderName(runtime.provider);
+  /*
+   * Every branch carries the exit, including the healthy one. This card is the only Computer
+   * recovery surface on the Agent home now that the banner is gone, so a state without an exit
+   * leaves the Computer reachable only by hunting through Settings.
+   *
+   * The wording is derived from these two dependency fields rather than from
+   * `computerRecoveryMessage`, which answers a different question: it branches on the Agent-wide
+   * `availability.reason`, and a higher-ranked reason such as `agent_suspended` masks the runtime
+   * one -- which made this row label a Provider as "Checking" while its sentence claimed the
+   * connection was unconfirmed, about a Computer that was online.
+   */
+  const action = { label: "View Computer", section: "computer" as const };
+  if (computer.state === "unconfirmed") {
+    return {
+      action,
+      detail: "OpenTag could not confirm this Computer's current connection.",
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  if (computer.state === "action_required") {
+    return {
+      action,
+      detail: "OpenTag is not running on this Computer. Start it there to bring it back online.",
+      label: "Offline",
+      tone: "warning",
+    };
+  }
+  if (!runtime.status) {
+    return {
+      action,
+      detail: `OpenTag could not confirm ${providerName} on this Computer.`,
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  if (runtime.status === "checking") {
+    return {
+      action,
+      detail: `OpenTag is still checking ${providerName} on this Computer.`,
+      label: `Checking ${providerName}`,
+      tone: "info",
+    };
+  }
+  if (runtime.status === "install") {
+    return {
+      action,
+      detail: `${providerName} is not installed on this Computer.`,
+      label: `${providerName} not installed`,
+      tone: "warning",
+    };
+  }
+  if (runtime.status === "sign-in") {
+    return {
+      action,
+      detail: `${providerName} is not signed in on this Computer.`,
+      label: `${providerName} sign-in required`,
+      tone: "warning",
+    };
+  }
+  if (runtime.status !== "ready") {
+    return {
+      action,
+      detail: `${providerName} is unavailable on this Computer.`,
+      label: `${providerName} unavailable`,
+      tone: "warning",
+    };
+  }
+  return { action, label: "Online", tone: "success" };
 }
 
-export function initials(value: string): string {
-  const parts = value.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "OT";
-  return parts
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join("");
-}
-
-export function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-export function formatRelativeTime(value: string): string {
-  const elapsedSeconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1_000));
-  if (elapsedSeconds < 60) return "just now";
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-  if (elapsedMinutes < 60) return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
-  const elapsedDays = Math.floor(elapsedHours / 24);
-  return `${elapsedDays} ${elapsedDays === 1 ? "day" : "days"} ago`;
+export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
+  const action = { label: "View messaging", section: "messaging" as const };
+  if (agent.messaging.kind === "unconfirmed") {
+    return {
+      action,
+      detail: "OpenTag could not read this Agent's messaging connection.",
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  const binding = agent.messaging.value;
+  if (!binding) {
+    return {
+      action: { label: "Connect messaging", section: "messaging" },
+      detail: "Connect a chat app so teammates can send this Agent work.",
+      label: "Not connected",
+      tone: "neutral",
+    };
+  }
+  const handoff = agent.availability.dependencies.handoff;
+  if (binding.bindingState === "active" && handoff.state === "action_required") {
+    return {
+      action,
+      detail: "Messages cannot be delivered to this Agent right now.",
+      label: "Cannot receive messages",
+      tone: "warning",
+    };
+  }
+  /*
+   * An active binding whose delivery evidence could not be read is `handoff_unconfirmed`. The
+   * channel may well be fine, but this row states what is known, and "Connected" is not known.
+   */
+  if (binding.bindingState === "active" && handoff.state === "unconfirmed") {
+    return {
+      action,
+      detail: "OpenTag could not confirm whether messages reach this Agent.",
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  const detail: Record<ImBindingSummary["bindingState"], string | undefined> = {
+    active: undefined,
+    provisioning: "The messaging connection is still being set up.",
+    reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
+    error: "The messaging connection failed. Reconnect it to receive messages.",
+    disabled: "Messaging is turned off for this Agent. Reconnect it to receive messages.",
+  };
+  /*
+   * The exit stays even when the channel is healthy. This card replaced the header's messaging
+   * control, so dropping it on success would leave changing the bound bot reachable only by
+   * hunting through Settings.
+   */
+  return {
+    action,
+    detail: detail[binding.bindingState],
+    label: messagingConnectionLabel(binding),
+    tone: messagingConnectionTone(binding),
+  };
 }

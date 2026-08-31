@@ -25,16 +25,24 @@ import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-serv
 import { ImBindingServiceError } from "../../services/im-bindings/im-binding-service.js";
 import { OPENTAG_ATTR } from "../attributes.js";
 import { traceDeliveryClaim } from "../delivery-tracing.js";
+import { createServerDiagnosticReporter } from "../diagnostics.js";
 import { traceFeishuInbound } from "../feishu-tracing.js";
 import { initTelemetry, isTelemetryEnabled, parseHeaderString, shutdownTelemetry } from "../logfire-init.js";
 import {
+  emitRootSpan,
+  endSpan,
   normalizeTelemetryAttrs,
   setActiveSpanAttributes,
   tracePromise,
   withRootSpan,
   withSpan,
 } from "../otel-helpers.js";
-import { endRuntimeConnectionSpan, startRuntimeConnectionSpan, withRuntimeFrameSpan } from "../ws-tracing.js";
+import {
+  endRuntimeConnectionSpan,
+  setRuntimeConnectionAttrs,
+  startRuntimeConnectionSpan,
+  withRuntimeFrameSpan,
+} from "../ws-tracing.js";
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
@@ -200,6 +208,104 @@ describe("span helpers", () => {
       count: 2,
       ok: true,
     });
+  });
+
+  it("bounds nested values and keeps malformed telemetry from escaping", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const malformed = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("cannot enumerate");
+        },
+      },
+    );
+    const normalized = normalizeTelemetryAttrs({
+      long: "x".repeat(600),
+      strings: ["one", "two"],
+      mixed: ["safe", 1],
+      circular,
+      malformed,
+    });
+
+    expect(normalized.long).toMatch(/^x{512}\.\.\.\[truncated\]$/u);
+    expect(normalized.strings).toEqual(["one", "two"]);
+    expect(normalized.mixed).toContain("safe");
+    expect(normalized.circular).toContain("[circular]");
+    expect(normalized).not.toHaveProperty("malformed");
+  });
+
+  it("contains failures from telemetry implementations and diagnostic callbacks", async () => {
+    const recordException = vi.fn(() => {
+      throw new Error("record failed");
+    });
+    const setStatus = vi.fn(() => {
+      throw new Error("status failed");
+    });
+    const end = vi.fn().mockImplementationOnce(() => {
+      throw new Error("end failed");
+    });
+    const span = {
+      end,
+      instrumentationScope: { name: "@opentag/server" },
+      recordException,
+      setAttributes: vi.fn(),
+      setStatus,
+    };
+    const tracer = trace.getTracer("@opentag/server", "0.1.0");
+    const activeSpanSpy = vi.spyOn(tracer, "startActiveSpan").mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (value: typeof span) => unknown;
+      return callback(span) as never;
+    });
+    const startSpanSpy = vi.spyOn(tracer, "startSpan").mockImplementation(() => {
+      throw new Error("start failed");
+    });
+    const failure = new Error("business failure");
+    try {
+      await expect(withRootSpan("defensive", undefined, () => Promise.reject(failure))).rejects.toBe(failure);
+      await expect(
+        tracePromise(
+          "defensive.promise",
+          undefined,
+          () => Promise.reject(failure),
+          undefined,
+          () => {
+            throw new Error("classification failed");
+          },
+        ),
+      ).rejects.toBe(failure);
+      emitRootSpan("defensive.root");
+      endSpan({
+        end: () => {
+          throw new Error("end failed");
+        },
+      } as never);
+      const socket = {} as WebSocket;
+      startSpanSpy.mockImplementationOnce(() => span as never);
+      span.setAttributes.mockImplementationOnce(() => {
+        throw new Error("connection attributes failed");
+      });
+      startRuntimeConnectionSpan(socket);
+      setRuntimeConnectionAttrs(socket, { safe: "value" });
+      endRuntimeConnectionSpan(socket);
+    } finally {
+      activeSpanSpy.mockRestore();
+      startSpanSpy.mockRestore();
+    }
+
+    const activeContextSpy = vi.spyOn(trace, "getActiveSpan").mockReturnValue({
+      setAttributes: () => {
+        throw new Error("attributes failed");
+      },
+    } as never);
+    setActiveSpanAttributes({ safe: "value" });
+    activeContextSpy.mockRestore();
+
+    const logger = vi.fn(() => {
+      throw new Error("logger failed");
+    });
+    createServerDiagnosticReporter(logger as never)("diagnostic.failed");
   });
 });
 
@@ -398,6 +504,25 @@ describe("background and WebSocket tracing", () => {
     const span = exporter.getFinishedSpans()[0];
     expect(span?.name).toBe("im.delivery.dispatch");
     expect(span?.status.code).toBe(2);
+  });
+
+  it("names steer and recovery delivery claims while preserving their payloads", async () => {
+    const dispatch = vi.fn(async () => undefined);
+    await traceDeliveryClaim(
+      { id: "delivery-steer", kind: "steer", claimToken: "claim", rootDeliveryId: "root", expectedTurnId: "turn" },
+      dispatch,
+    );
+    await traceDeliveryClaim({ id: "delivery-recovery", kind: "recovery" }, dispatch);
+
+    expect(dispatch).toHaveBeenNthCalledWith(1, {
+      id: "delivery-steer",
+      kind: "steer",
+      claimToken: "claim",
+      rootDeliveryId: "root",
+      expectedTurnId: "turn",
+    });
+    expect(dispatch).toHaveBeenNthCalledWith(2, { id: "delivery-recovery", kind: "recovery" });
+    expect(exporter.getFinishedSpans().map((span) => span.name)).toEqual(["im.delivery.steer", "im.delivery.recover"]);
   });
 
   it("does not create heartbeat frame spans and ends connection and business frame spans", async () => {

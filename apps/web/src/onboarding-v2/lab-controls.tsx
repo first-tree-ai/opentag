@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { Button, KumoSelectControl } from "../ui/design-system.js";
-import type { MockBackend, MockScenario, MockSpeed } from "./mock-backend.js";
-import { MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
+import type { MockBackend, MockInventory, MockScenario, MockSpeed } from "./mock-backend.js";
+import { INVENTORIES, INVENTORY_TITLES, MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
 
 /**
  * The only thing on this page production would never show. It drives the mock so an interaction
@@ -15,7 +15,9 @@ import { MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
 export function LabControls({
   backend,
   cloudAvailable,
+  inventory,
   onCloudAvailableChange,
+  onInventoryChange,
   onScenarioChange,
   onSpeedChange,
   scenario,
@@ -23,7 +25,9 @@ export function LabControls({
 }: {
   backend: MockBackend;
   cloudAvailable: boolean;
+  inventory: MockInventory;
   onCloudAvailableChange: (available: boolean) => void;
+  onInventoryChange: (inventory: MockInventory) => void;
   onScenarioChange: (scenario: MockScenario) => void;
   onSpeedChange: (speed: MockSpeed) => void;
   scenario: MockScenario;
@@ -31,6 +35,7 @@ export function LabControls({
 }) {
   const [open, setOpen] = useState(false);
   const scenarioId = useId();
+  const inventoryId = useId();
   const panelId = useId();
 
   const pending = backend.pending;
@@ -96,6 +101,23 @@ export function LabControls({
                 </Button>
               ))}
             </div>
+          </div>
+
+          <div className="grid gap-1">
+            <label className="text-xs font-medium uppercase text-kumo-subtle" htmlFor={inventoryId}>
+              Computers on the account
+            </label>
+            <KumoSelectControl
+              id={inventoryId}
+              onChange={(event) => onInventoryChange(event.target.value as MockInventory)}
+              value={inventory}
+            >
+              {INVENTORIES.map((candidate) => (
+                <option key={candidate} value={candidate}>
+                  {INVENTORY_TITLES[candidate]}
+                </option>
+              ))}
+            </KumoSelectControl>
           </div>
 
           {/* A toggle rather than a checkbox, so it reads and behaves like the speed control above it. */}

@@ -1,11 +1,23 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
-import type { AgentAdminConfig, ImBindingDiagnostics } from "@opentag/shared";
+import { join, resolve } from "node:path";
+import type { AgentAdminConfig, FeishuSetupAttempt, ImBindingAdminDetail, ImBindingDiagnostics } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
+import { resolveAgentCommandContext } from "../core/agent/context.js";
 import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
-import { formatImBindingDiagnostics } from "../core/agent/im.js";
+import * as agentIm from "../core/agent/im.js";
+import {
+  formatFeishuSetup,
+  formatImBinding,
+  formatImBindingDiagnostics,
+  runImBindingConnectFeishu,
+  runImBindingDiagnose,
+  runImBindingDisable,
+  runImBindingShow,
+  runReceiveModeSet,
+} from "../core/agent/im.js";
+import * as agentMutations from "../core/agent/mutations.js";
 import {
   runAgentCreate,
   runAgentDelete,
@@ -14,6 +26,7 @@ import {
   runAgentUpdate,
   selectComputer,
 } from "../core/agent/mutations.js";
+import * as agentQueries from "../core/agent/queries.js";
 import { runAgentList, runAgentShow } from "../core/agent/queries.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -70,12 +83,14 @@ const {
 } = agent;
 const agentSummary = {
   ...agentBase,
+  activity: { state: "idle" as const },
   createdBy: { userId: createdByUserId, displayName: "Admin" },
   computer: {
     computerId: agentComputerId,
     displayName: computer.displayName,
     platform: computer.platform,
   },
+  usage: { windowDays: 30 as const, tasks: 0, failed: 0, tokens: 0 },
 };
 
 function api() {
@@ -101,6 +116,25 @@ function api() {
 }
 
 describe("Agent CLI core", () => {
+  it("requires complete injected Agent command dependencies", async () => {
+    const client = api();
+    await expect(resolveAgentCommandContext({ api: client })).rejects.toThrow(
+      "Agent command test dependencies must provide both api and accessToken",
+    );
+    await expect(resolveAgentCommandContext({ accessToken: "access" })).rejects.toThrow(
+      "Agent command test dependencies must provide both api and accessToken",
+    );
+  });
+
+  it("requires Account login when resolving the default Agent context", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-agent-context-"));
+    try {
+      await expect(resolveAgentCommandContext({ home })).rejects.toThrow("OpenTag is not logged in; run login first");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("shows provider CLI readiness in IM diagnostics", () => {
     const diagnostics: ImBindingDiagnostics = {
       imBindingId: crypto.randomUUID(),
@@ -134,6 +168,105 @@ describe("Agent CLI core", () => {
         slackIdentityClosure: { status: "pending", verifiedAt: null },
       }),
     ).toContain("slackIdentityClosure\tpending");
+  });
+
+  it("runs IM binding commands through the shared Agent context", async () => {
+    const client = api();
+    const binding: ImBindingAdminDetail = {
+      id: crypto.randomUUID(),
+      agentId,
+      provider: "feishu",
+      identity: { provider: "feishu", appId: "cli-app", teamId: null, botOpenId: "bot-open", teamBrand: null },
+      receiveMode: "mention_only",
+      bindingState: "active",
+      bot: { displayName: "Feishu", avatarUrl: null },
+      credentialGeneration: 2,
+      reauthorizationRequired: false,
+      lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
+      grantedCapabilities: ["im:message"],
+      lastErrorCode: null,
+    };
+    client.getAgentImBindingConfig.mockResolvedValue(binding);
+    const attempt: FeishuSetupAttempt = {
+      id: crypto.randomUUID(),
+      agentId,
+      intent: "reauthorize",
+      state: "awaiting_user",
+      qrUrl: "https://opentag.example/qr",
+      expiresAt: "2026-08-19T00:01:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    };
+    client.createFeishuSetupAttempt.mockResolvedValue(attempt);
+    client.getImBindingDiagnostics.mockResolvedValue({
+      imBindingId: binding.id,
+      provider: "feishu",
+      ready: true,
+      agentRuntimeReadiness: "ready",
+      providerCliReadiness: "ready",
+      credentialGeneration: 2,
+      credentialStatus: "valid",
+      requiredCapabilities: ["im:message"],
+      grantedCapabilities: ["im:message"],
+      missingCapabilities: [],
+      reauthorizationRequired: false,
+      slackAppId: null,
+      slackIdentityClosure: null,
+      connection: { state: "connected", observedAt: "2026-08-19T00:00:00.000Z" },
+      lastInboundAt: "2026-08-19T00:00:00.000Z",
+      lastValidatedAt: "2026-08-19T00:00:00.000Z",
+      lastRuntimeObservationAt: "2026-08-19T00:00:00.000Z",
+      lastErrorCode: null,
+    });
+    client.updateAgent.mockResolvedValue({ ...agent, receiveMode: "all_message", revision: 2 });
+
+    await expect(runImBindingShow(agentId, { accessToken: "access", api: client })).resolves.toEqual(binding);
+    await expect(
+      runImBindingConnectFeishu(agentId, "reauthorize", { accessToken: "access", api: client }),
+    ).resolves.toEqual(attempt);
+    await expect(runImBindingDiagnose(agentId, { accessToken: "access", api: client })).resolves.toMatchObject({
+      ready: true,
+    });
+    await expect(
+      runReceiveModeSet(agentId, "all_message", { accessToken: "access", api: client }),
+    ).resolves.toMatchObject({
+      receiveMode: "all_message",
+    });
+    await expect(runImBindingDisable(agentId, { accessToken: "access", api: client })).resolves.toBeUndefined();
+
+    expect(formatImBinding(binding)).toContain("identity\tcli-app · provider Team pending first event");
+    expect(
+      formatImBinding({
+        ...binding,
+        provider: "slack",
+        identity: {
+          provider: "slack",
+          appId: "slack-app",
+          teamId: "team",
+          enterpriseId: null,
+          botUserId: "bot",
+          appIdEvidence: "configured",
+        },
+      }),
+    ).toContain("identity\tslack-app · team · bot");
+    expect(formatImBinding(undefined)).toBe("No IM binding configured");
+    expect(formatFeishuSetup(attempt)).toContain("qrUrl\thttps://opentag.example/qr");
+    expect(formatFeishuSetup({ ...attempt, qrUrl: null, errorCode: "EXPIRED" })).toContain("errorCode\tEXPIRED");
+    expect(client.disableImBinding).toHaveBeenCalledWith("access", binding.id);
+    expect(client.getImBindingDiagnostics).toHaveBeenCalledWith("access", binding.id);
+  });
+
+  it("handles missing IM bindings without making disable calls", async () => {
+    const client = api();
+    client.getAgentImBindingConfig.mockResolvedValue(undefined);
+    await expect(runImBindingDiagnose(agentId, { accessToken: "access", api: client })).rejects.toThrow(
+      "The Agent has no IM binding",
+    );
+    await expect(runImBindingDisable(agentId, { accessToken: "access", api: client })).resolves.toBeUndefined();
+    expect(client.disableImBinding).not.toHaveBeenCalled();
   });
 
   it("sends no management scope and never asks the Account to choose one", async () => {
@@ -371,6 +504,123 @@ describe("Agent CLI core", () => {
     expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
       "OpenTag default",
     );
+  });
+
+  it("executes Agent lifecycle, projection, mutation, and IM command actions", async () => {
+    const createSpy = vi.spyOn(agentMutations, "runAgentCreate").mockResolvedValue({ agent, warning: "offline" });
+    const updateSpy = vi.spyOn(agentMutations, "runAgentUpdate").mockResolvedValue({ ...agent, revision: 2 });
+    const listSpy = vi.spyOn(agentQueries, "runAgentList").mockResolvedValue({ agents: [agentSummary] });
+    const showSpy = vi.spyOn(agentQueries, "runAgentShow").mockResolvedValue(agent);
+    const deleteSpy = vi.spyOn(agentMutations, "runAgentDelete").mockResolvedValue(`Deleted Agent ${agentId}`);
+    const suspendSpy = vi.spyOn(agentMutations, "runAgentSuspend").mockResolvedValue({ ...agent, status: "suspended" });
+    const reactivateSpy = vi.spyOn(agentMutations, "runAgentReactivate").mockResolvedValue(agent);
+    const binding = {
+      id: crypto.randomUUID(),
+      agentId,
+      provider: "feishu" as const,
+      identity: { provider: "feishu" as const, appId: "app", teamId: null, botOpenId: "bot", teamBrand: null },
+      receiveMode: "mention_only" as const,
+      bindingState: "active" as const,
+      bot: { displayName: "Feishu", avatarUrl: null },
+      credentialGeneration: 1,
+      reauthorizationRequired: false,
+      lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
+      grantedCapabilities: [],
+      lastErrorCode: null,
+    };
+    const showImSpy = vi.spyOn(agentIm, "runImBindingShow").mockResolvedValue(binding);
+    const connectImSpy = vi.spyOn(agentIm, "runImBindingConnectFeishu").mockResolvedValue({
+      id: crypto.randomUUID(),
+      agentId,
+      intent: "create",
+      state: "awaiting_user",
+      qrUrl: "https://example.test/qr",
+      expiresAt: "2026-08-19T00:01:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    });
+    const diagnoseSpy = vi.spyOn(agentIm, "runImBindingDiagnose").mockResolvedValue({
+      imBindingId: binding.id,
+      provider: "feishu",
+      ready: true,
+      agentRuntimeReadiness: "ready",
+      providerCliReadiness: "ready",
+      credentialGeneration: 1,
+      credentialStatus: "valid",
+      requiredCapabilities: [],
+      grantedCapabilities: [],
+      missingCapabilities: [],
+      reauthorizationRequired: false,
+      slackAppId: null,
+      slackIdentityClosure: null,
+      connection: null,
+      lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
+      lastErrorCode: null,
+    });
+    const disableSpy = vi.spyOn(agentIm, "runImBindingDisable").mockResolvedValue(undefined);
+    const receiveSpy = vi
+      .spyOn(agentIm, "runReceiveModeSet")
+      .mockResolvedValue({ ...agent, receiveMode: "all_message" });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      const commands = [
+        ["agent", "create", "--name", "reviewer", "--display-name", "Reviewer", "--provider", "codex"],
+        ["agent", "update", agentId, "--display-name", "Reviewer", "--clear-model"],
+        ["agent", "list"],
+        ["agent", "show", agentId],
+        ["agent", "delete", agentId],
+        ["agent", "suspend", agentId],
+        ["agent", "reactivate", agentId],
+        ["agent", "im", "show", agentId],
+        ["agent", "im", "connect-feishu", agentId],
+        ["agent", "im", "reauthorize-feishu", agentId],
+        ["agent", "im", "diagnose", agentId],
+        ["agent", "im", "disable", agentId],
+        ["agent", "receive-mode", "set", agentId, "all-message"],
+      ] as string[][];
+      for (const args of commands) await createProgram().parseAsync(["node", "opentag", ...args]);
+      await expect(
+        createProgram().parseAsync(["node", "opentag", "agent", "receive-mode", "set", agentId, "invalid"]),
+      ).rejects.toThrow("Receive mode must be all-message or mention-only");
+      expect(createSpy).toHaveBeenCalledOnce();
+      expect(updateSpy).toHaveBeenCalledWith(agentId, expect.objectContaining({ clearModel: true }));
+      expect(listSpy).toHaveBeenCalledOnce();
+      expect(showSpy).toHaveBeenCalledWith(agentId);
+      expect(deleteSpy).toHaveBeenCalledWith(agentId);
+      expect(suspendSpy).toHaveBeenCalledWith(agentId);
+      expect(reactivateSpy).toHaveBeenCalledWith(agentId);
+      expect(showImSpy).toHaveBeenCalledWith(agentId);
+      expect(connectImSpy).toHaveBeenCalledWith(agentId, "create");
+      expect(connectImSpy).toHaveBeenCalledWith(agentId, "reauthorize");
+      expect(diagnoseSpy).toHaveBeenCalledWith(agentId);
+      expect(disableSpy).toHaveBeenCalledWith(agentId);
+      expect(receiveSpy).toHaveBeenCalledWith(agentId, "all_message");
+      expect(stderr).toHaveBeenCalledWith("offline\n");
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      process.exitCode = previousExitCode;
+      createSpy.mockRestore();
+      updateSpy.mockRestore();
+      listSpy.mockRestore();
+      showSpy.mockRestore();
+      deleteSpy.mockRestore();
+      suspendSpy.mockRestore();
+      reactivateSpy.mockRestore();
+      showImSpy.mockRestore();
+      connectImSpy.mockRestore();
+      diagnoseSpy.mockRestore();
+      disableSpy.mockRestore();
+      receiveSpy.mockRestore();
+    }
   });
 
   it("deletes the explicit Agent without an interactive prompt", async () => {

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import {
   Button,
   buttonClassName,
@@ -139,5 +140,32 @@ describe("Kumo semantic adapter", () => {
       </Button>,
     );
     expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+  });
+
+  it("renders PageHeader content, tabs, and tab callbacks", () => {
+    const onValueChange = vi.fn();
+    Element.prototype.scrollIntoView = vi.fn();
+    render(
+      <PageHeader
+        breadcrumbs={<a href="/agents">Agents</a>}
+        description="Manage this workspace"
+        eyebrow="Workspace"
+        onValueChange={onValueChange}
+        tabs={[
+          { label: "General", value: "general" },
+          { label: "Runtime", value: "runtime" },
+        ]}
+        title="Settings"
+      >
+        <Button aria-label="Save settings">Save</Button>
+      </PageHeader>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeTruthy();
+    expect(screen.getByText("Manage this workspace")).toBeTruthy();
+    expect(screen.getByText("Agents")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Runtime" }));
+    expect(onValueChange).toHaveBeenCalledWith("runtime");
   });
 });

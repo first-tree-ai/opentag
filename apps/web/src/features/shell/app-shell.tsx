@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
+import { initials } from "../../i18n/format.js";
 import { queryKeys } from "../../query/keys.js";
 import {
   DropdownMenu,
@@ -13,7 +14,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "../../ui/design-system.js";
-import { initials } from "../agents/agent-presentation.js";
 import { useAccount } from "../session/session-context.js";
 
 export function AppShell() {

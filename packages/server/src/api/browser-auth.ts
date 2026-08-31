@@ -42,10 +42,15 @@ export interface BrowserAuthRoutesOptions {
   /** Bounds the double-submit token, so it lasts exactly as long as the session it accompanies. */
   sessionTtlSeconds: number;
   /**
-   * Shared attempt budget. The default is process-global and therefore enforces a documented single-process
-   * deployment boundary; clustered deployments must provide a shared limiter implementation at the gateway.
+   * Shared attempt budget. Clustered deployments must provide a shared limiter implementation at the gateway. When
+   * `OPENTAG_ENV=prod`, the process-local fallback is rejected unless `OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true` is
+   * set as an explicit deployment assertion.
    */
-  rateLimiter?: RouteRateLimiter;
+  rateLimiter?: BrowserAuthRateLimiter;
+}
+
+export interface BrowserAuthRateLimiter {
+  check(key: string): void;
 }
 
 function isLoopbackAddress(value: string): boolean {
@@ -119,6 +124,15 @@ export class RouteRateLimiter {
 }
 
 const processRateLimiter = new RouteRateLimiter();
+
+function assertRateLimiterBoundary(options: BrowserAuthRoutesOptions): void {
+  if (options.rateLimiter) return;
+  if (process.env.OPENTAG_ENV === "prod" && process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS !== "true") {
+    throw new Error(
+      "Browser authentication requires a shared rate limiter in production; set OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true only for a single-process deployment",
+    );
+  }
+}
 
 /**
  * Whether a Better Auth failure was a decision about the request or a failure to answer it at all.
@@ -203,6 +217,7 @@ async function signInFailure(response: Response): Promise<AuthServiceError> {
 }
 
 export function registerBrowserAuthRoutes(app: FastifyInstance, options: BrowserAuthRoutesOptions): void {
+  assertRateLimiterBoundary(options);
   const limiter = options.rateLimiter ?? processRateLimiter;
 
   /** Development sign-in is offered only to a loopback client reaching a loopback host, on a server configured for it. */

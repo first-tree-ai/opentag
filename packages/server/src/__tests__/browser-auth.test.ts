@@ -271,6 +271,21 @@ describe("the attempt budget", () => {
     }
     expect((await second.app.inject(request)).statusCode).toBe(429);
   });
+
+  it("fails closed in production unless the single-process boundary is explicit", () => {
+    const previousEnvironment = process.env.OPENTAG_ENV;
+    const previousAssertion = process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS;
+    process.env.OPENTAG_ENV = "prod";
+    delete process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS;
+    try {
+      expect(() => createBrowserApp()).toThrow(/shared rate limiter in production/);
+    } finally {
+      if (previousEnvironment === undefined) delete process.env.OPENTAG_ENV;
+      else process.env.OPENTAG_ENV = previousEnvironment;
+      if (previousAssertion === undefined) delete process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS;
+      else process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS = previousAssertion;
+    }
+  });
 });
 
 describe("email and password routes", () => {

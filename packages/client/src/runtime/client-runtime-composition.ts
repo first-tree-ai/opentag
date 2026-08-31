@@ -63,6 +63,7 @@ import {
   RuntimeDurabilityMetrics,
   type RuntimeDurabilityStore,
 } from "./runtime-durability.js";
+import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
@@ -213,6 +214,11 @@ function resolveSharedProviderRefreshResult(
 
 export interface CreateClientRuntimeOptions {
   readonly api?: Pick<OpenTagApi, "openImResource">;
+  readonly serverDurability?: {
+    readonly api: Pick<OpenTagApi, "listRuntimeDurableWork" | "writeRuntimeDurableWork">;
+    readonly machineToken: string;
+    readonly now?: () => number;
+  };
   readonly capabilityRefreshIntervalMs?: number;
   readonly providerProbeDeadlineMs?: number;
   readonly clientVersion: string;
@@ -481,7 +487,11 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
-  const durabilityStore = options.durabilityStore ?? new FileRuntimeDurabilityStore(options.home);
+  const durabilityStore =
+    options.durabilityStore ??
+    (options.serverDurability
+      ? new ServerRuntimeDurabilityStore(options.serverDurability)
+      : new FileRuntimeDurabilityStore(options.home));
   const durabilityMetrics = options.durabilityMetrics ?? new RuntimeDurabilityMetrics();
   const reportOwner = new TurnReportOwner({
     connection,

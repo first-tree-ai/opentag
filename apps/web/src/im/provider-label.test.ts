@@ -8,10 +8,11 @@ describe("messagingProviderLabel", () => {
   });
 
   /*
-   * Feishu and Lark are separate channels, so no label may present one as another name for the
-   * other. This is the assertion that fails if an "also called" apposition ever creeps back in.
+   * The Feishu/Lark brand switch is not something a first connect can resolve, so a label that
+   * named both would promise a domain we cannot mint yet. This is the assertion that fails if an
+   * apposition ever creeps back into the helper.
    */
-  it("never presents one channel as another channel's alias", () => {
+  it("never names a brand the connect flow cannot deliver", () => {
     for (const provider of ["feishu", "slack"] as const) {
       expect(messagingProviderLabel(provider)).not.toMatch(/also called|aka|\(/i);
     }

@@ -79,11 +79,10 @@ export const SETUP_COPY = {
     description: "Pick the app your team already works in.",
     providerLabel: "Messaging app",
     /**
-     * Feishu and Lark are two channels, not one product under two names, and what OpenTag carries
-     * today is Feishu. A Lark channel would arrive as its own provider beside this one. So this
-     * card names Feishu alone: an "also called Feishu/Lark" would present a channel we do not
-     * deliver as merely another word for one we do, and the code behind this card is minted
-     * against Feishu regardless.
+     * Feishu and Lark are one channel behind a regional switch, and the brand is only learned from
+     * the authorization result — a first connect has no brand yet, so the code this card leads to
+     * is always minted against Feishu. It therefore names Feishu alone: an "also called Feishu/Lark"
+     * would walk a Lark tenant into a code their account cannot authorize.
      *
      * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
      * picker cannot drift from what the same provider is called everywhere else in the product.

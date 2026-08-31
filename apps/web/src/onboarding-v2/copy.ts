@@ -54,8 +54,7 @@ export const COPY = {
   resumeBlocked: {
     title: (agentName: string) => `${agentName} has no computer yet.`,
     detail:
-      "Choose which computer it runs on from its settings. We can't do it from here, because this step can't tell which machine ran the command.",
-    action: "Open agent settings",
+      "Choose which computer it runs on, and setup carries on from there. We can't pick for you: the connect step can tell a computer arrived, not that it is the one that ran your command.",
   },
   brand: "OpenTag",
 

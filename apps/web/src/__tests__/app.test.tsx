@@ -98,6 +98,9 @@ function installApi(
   } = {},
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
+  // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
+  // the Server answers differently once the reader has chosen.
+  let agentUnbound = options.agentUnbound ?? false;
   let revision = lifecycleStatus === "active" ? 1 : 2;
   const adminConfig = () => ({
     id: agentId,
@@ -283,7 +286,7 @@ function installApi(
                 activity: options.agentActivity ?? agentListItem.activity,
                 status: lifecycleStatus,
                 runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
-                ...(options.agentUnbound ? { computer: null } : {}),
+                ...(agentUnbound ? { computer: null } : {}),
               },
             ],
       });
@@ -398,10 +401,15 @@ function installApi(
         runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
         activity: options.agentActivity ?? { state: "idle" },
-        ...(options.agentUnbound ? { computer: null } : {}),
+        ...(agentUnbound ? { computer: null } : {}),
       });
     }
     if (path === `/api/v1/agents/${agentId}/config`) {
+      return json(adminConfig());
+    }
+    if (path === `/api/v1/agents/${agentId}/computer/rebind` && init?.method === "POST") {
+      agentUnbound = false;
+      revision += 1;
       return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/suspend` && init?.method === "POST") {
@@ -3035,6 +3043,30 @@ describe("OpenTag Web App Shell", () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
+  it("lets an Account with no finished setup bind a Computer without leaving onboarding", async () => {
+    /*
+     * The recovery for an Agent that has no Computer has to work from inside the setup gate. It
+     * once linked to that Agent's Computer settings, which lives under the shell that redirects
+     * every Account with `setupCompletedAt === null` straight back to onboarding -- so the exit
+     * returned the reader to the screen they were trying to leave. A hook test cannot see that:
+     * only the real router mounts the route that redirects. So the choice is rendered here, and
+     * this test drives it to a working bind rather than asserting a link's href.
+     */
+    installApi({ setupCompletedAt: null, agentUnbound: true });
+    render(<App />);
+
+    expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    // Reachable and usable, not merely advertised: the Account's own Computer is offered right here.
+    fireEvent.click(await screen.findByRole("button", { name: "Use Ada's Mac" }));
+
+    // The reader is out: the Agent has a Computer, the resume that refused this run reads again and
+    // continues. Asserting the blocked screen is gone is what a redirect loop could never satisfy.
+    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
+    // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
     expect(window.location.pathname).toBe("/onboarding");
   });
 

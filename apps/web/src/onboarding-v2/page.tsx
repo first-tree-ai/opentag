@@ -1,6 +1,5 @@
-import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { agentSettingsSectionLink } from "../features/agents/agent-routes.js";
+import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
 import { Button, Loader } from "../ui/design-system.js";
 import type { OnboardingBackend } from "./backend.js";
 import { COPY } from "./copy.js";
@@ -76,22 +75,24 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
 
   /*
    * An Agent with no Computer is not a run this flow can finish, and pretending otherwise would
-   * report a connection and then stop at messaging. The reader is told which Agent, and handed the
-   * page where choosing a Computer is an explicit act rather than an inference from an arrival.
+   * report a connection and then stop at messaging. The choice is rendered here rather than linked
+   * to: Settings lives behind the same setup gate that put the reader on this screen, so sending
+   * them there returns them here. Once a Computer is chosen the Agent has one, and the resume that
+   * refused this run can be read again and continue.
    */
   if (backend.resumeBlocked) {
     return (
       <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
+        className="flex min-h-screen flex-col items-center justify-center gap-4 bg-kumo-canvas p-6"
         data-ui="onboarding-v2-resume-blocked"
       >
         <p className="text-sm text-kumo-strong m-0" role="status">
           {COPY.resumeBlocked.title(backend.resumeBlocked.agentName)}
         </p>
         <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">{COPY.resumeBlocked.detail}</p>
-        <Link {...agentSettingsSectionLink(backend.resumeBlocked.agentId, "computer")}>
-          {COPY.resumeBlocked.action}
-        </Link>
+        <div className="w-full max-w-2xl rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
+          <AgentComputerChoice agentId={backend.resumeBlocked.agentId} onBound={backend.retryResume} />
+        </div>
       </div>
     );
   }

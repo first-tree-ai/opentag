@@ -1,39 +1,17 @@
 import { useState } from "react";
-import { browserApi } from "../../../api.js";
-import { Banner, Button, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
+import { Button, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
+import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, formatDate, formatRelativeTime, platformLabel } from "../agent-presentation.js";
-import { useComputersQuery } from "../agent-queries.js";
 import { ComputerSetup } from "../computer-setup.js";
 
 /**
  * The panel an Agent that has no Computer gets. It is a distinct screen rather than the reconnect
  * flow with a blank name: there is no machine to bring back, so the question is which Computer this
- * Agent should run on — one the Account already enrolled, or one it connects now.
+ * Agent should run on. The choice itself is shared with the onboarding recovery, so a reader who
+ * arrives from either direction gets the same controls.
  */
 function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const computersQuery = useComputersQuery();
-  const [binding, setBinding] = useState(false);
-  const [error, setError] = useState<string>();
-  // Only a successful read says what the Account has. This panel is the recovery screen for an
-  // Agent that cannot run, so answering a failed read with "connect a new Computer" would send
-  // someone to enrol a machine they already own -- the same conflation the Agent's availability
-  // refuses to make one layer up.
-  const enrolled = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
-
-  async function bind(computerId: string) {
-    try {
-      setBinding(true);
-      setError(undefined);
-      await browserApi.rebindAgentComputer(agent.id, computerId);
-      onAgentChanged();
-    } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : "Unable to connect this Computer");
-    } finally {
-      setBinding(false);
-    }
-  }
-
   return (
     <div className="grid gap-6">
       <section
@@ -48,50 +26,7 @@ function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailVie
         </header>
         <div className="grid gap-4 rounded-md bg-kumo-recessed p-4">
           <p>{computerRecoveryMessage(agent)}</p>
-          {error ? <Banner variant="error" role="alert" description={error} /> : null}
-          {enrolled === undefined ? (
-            <div className="grid gap-2">
-              <Text variant="heading">Use a Computer you already connected</Text>
-              {computersQuery.isError ? (
-                <>
-                  <p>We couldn't read the Computers on this Account, so we can't offer the ones it already has.</p>
-                  <div>
-                    <Button size="compact" variant="secondary" onClick={() => void computersQuery.refetch()}>
-                      Try again
-                    </Button>
-                  </div>
-                </>
-              ) : (
-                <p>Checking which Computers this Account already has…</p>
-              )}
-            </div>
-          ) : enrolled.length > 0 ? (
-            <div className="grid gap-2">
-              <Text variant="heading">Use a Computer you already connected</Text>
-              <ul className="grid gap-2">
-                {enrolled.map((computer) => (
-                  <li className="flex flex-wrap items-center justify-between gap-3" key={computer.computerId}>
-                    <span>
-                      {computer.displayName} · {platformLabel(computer.platform)} ·{" "}
-                      {computer.connectionStatus === "online" ? "Online" : "Offline"}
-                    </span>
-                    <Button
-                      disabled={binding}
-                      size="compact"
-                      variant="secondary"
-                      onClick={() => void bind(computer.computerId)}
-                    >
-                      Use {computer.displayName}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          <div className="grid gap-2">
-            <Text variant="heading">Connect a new Computer</Text>
-            <ComputerSetup onConnected={(computer) => void bind(computer.computerId)} />
-          </div>
+          <AgentComputerChoice agentId={agent.id} onBound={onAgentChanged} />
         </div>
       </section>
     </div>

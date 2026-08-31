@@ -116,7 +116,7 @@ function AgentShellContent({
           <Sidebar.Close className="sm:hidden" />
         </Sidebar.Header>
         <Sidebar.Content>
-          <nav aria-label="Agent">
+          <nav aria-label={m.shell_agent()}>
             <Sidebar.Group>
               <Sidebar.Menu>
                 <AgentNavItem

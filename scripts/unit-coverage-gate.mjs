@@ -5,7 +5,9 @@
  * treated as uncovered for changed executable lines, which keeps the gate fail closed.
  */
 
-import { extname, isAbsolute, posix, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { extname, isAbsolute, posix, relative, resolve } from "node:path";
+import * as ts from "typescript";
 
 export const SUPPORTED_SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 
@@ -100,6 +102,35 @@ function consumeDiffContent({ changed, currentFile, line, nextLine }) {
   return line.startsWith("-") ? nextLine : nextLine + 1;
 }
 
+function sourceDeclarationLines(file, repositoryRoot) {
+  const lines = new Set();
+  try {
+    const path = resolve(repositoryRoot, file);
+    const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
+    const mark = (node) => {
+      const start = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+      const end = source.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+      for (let line = start; line <= end; line += 1) lines.add(line);
+    };
+    const visit = (node) => {
+      if (
+        ts.isImportDeclaration(node) ||
+        ts.isExportDeclaration(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node) ||
+        ts.isPropertySignature(node)
+      ) {
+        mark(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  } catch {
+    // Missing or non-TypeScript files fall back to the line classifier below.
+  }
+  return lines;
+}
+
 export function extractChangedLines(diffText) {
   const changed = new Map();
   let currentFile;
@@ -145,13 +176,15 @@ export function buildLineHitsByFile(coverage, repositoryRoot) {
   return lineHitsByFile;
 }
 
-function evaluateChangedFile({ file, lines, lineHits }) {
+function evaluateChangedFile({ file, lines, lineHits, repositoryRoot }) {
   if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
   const uncovered = [];
   let covered = 0;
   let total = 0;
   const declaration = { depth: 0, kind: undefined };
+  const declarationLines = sourceDeclarationLines(file, repositoryRoot);
   for (const { content, line } of lines) {
+    if (declarationLines.has(line)) continue;
     if (!isExecutableSourceLine(content, declaration)) continue;
     total += 1;
     if (!lineHits?.has(line)) {
@@ -177,7 +210,7 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   let total = 0;
 
   for (const [file, lines] of changedLines) {
-    const result = evaluateChangedFile({ file, lineHits: lineHitsByFile.get(file), lines });
+    const result = evaluateChangedFile({ file, lineHits: lineHitsByFile.get(file), lines, repositoryRoot });
     covered += result.covered;
     total += result.total;
     uncovered.push(...result.uncovered);

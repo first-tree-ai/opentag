@@ -261,7 +261,7 @@ export class ComposedClientRuntime {
       reconciler: SessionReconciler;
       sessionMessageInbox: SessionMessageInbox;
       reportOwner: TurnReportOwner;
-      readonly durabilityMetrics: RuntimeDurabilityMetrics;
+      durabilityMetrics: RuntimeDurabilityMetrics;
       runner: AgentTurnRunner;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;

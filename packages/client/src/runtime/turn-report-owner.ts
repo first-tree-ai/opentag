@@ -26,13 +26,13 @@ export interface TurnReportOwnerOptions {
   connection: Pick<RuntimeConnection, "send" | "state" | "subscribeState">;
   id?: () => string;
   maxPending?: number;
-  readonly metrics?: RuntimeDurabilityMetrics;
-  readonly now?: () => number;
-  readonly onFailure?: (failure: DurableFailure) => void;
-  readonly persistence?: RuntimeDurabilityStore;
-  readonly retryPolicy?: Partial<RuntimeRetryPolicy>;
+  metrics?: RuntimeDurabilityMetrics;
+  now?: () => number;
+  onFailure?(failure: DurableFailure): void;
+  persistence?: RuntimeDurabilityStore;
+  retryPolicy?: Partial<RuntimeRetryPolicy>;
   retryDelayMs?: number;
-  readonly scheduler?: RuntimeRetryScheduler;
+  scheduler?: RuntimeRetryScheduler;
 }
 
 export type TurnReportTerminalStatus = "conflict" | "stale_generation";
@@ -47,7 +47,7 @@ export type TurnReportRearmClaim = Pick<
 >;
 
 interface PendingReport {
-  readonly confirm?: () => Promise<void> | void;
+  confirm?: () => Promise<void> | void;
   confirming: boolean;
   promise: Promise<void>;
   report: TurnReportRequest;
@@ -57,7 +57,7 @@ interface PendingReport {
   sending: boolean;
   serverStatus?: TurnReportTerminalStatus;
   terminalListeners: Set<NonNullable<TurnReportSubmitOptions["onTerminal"]>>;
-  readonly record: DurableWorkRecord<TurnReportRequest>;
+  record: DurableWorkRecord<TurnReportRequest>;
 }
 
 export class TurnReportOwnerStoppedError extends Error {

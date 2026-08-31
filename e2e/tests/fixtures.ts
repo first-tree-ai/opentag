@@ -223,9 +223,20 @@ async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> 
   return taskId;
 }
 
-export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }>({
+const browserTest = base.extend({
   page: async ({ page }, use, testInfo) => {
     const browserErrors: string[] = [];
+    page.on("console", (message) => {
+      // Chromium reports this CSP fallback as console.error even though it is emitted by the
+      // development server's policy and is not an application failure.
+      if (
+        message.type() === "error" &&
+        !/script-src.*not explicitly set/u.test(message.text()) &&
+        !message.text().startsWith("Failed to load resource:")
+      ) {
+        browserErrors.push(`console.error: ${message.text()}`);
+      }
+    });
     page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));
     page.on("requestfailed", (request) => {
       // Chromium reports an in-flight fetch as ERR_ABORTED when a route navigation intentionally replaces it.
@@ -240,6 +251,9 @@ export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }
       throw new Error(browserErrors.join(" | "));
     }
   },
+});
+
+export const test = browserTest.extend<Record<never, never>, { e2eRuntime: E2ERuntime }>({
   e2eRuntime: [
     async ({ browser: _browser }, use) => {
       const runtime = JSON.parse(await readFile(join(repositoryRoot, "e2e/.runtime.json"), "utf8")) as RuntimeFile;
@@ -286,6 +300,25 @@ export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }
       }
     },
     { scope: "worker", auto: true },
+  ],
+});
+
+/**
+ * Smoke tests deliberately do not opt into the worker-scoped daemon fixture. Playwright creates a
+ * fresh BrowserContext and Page for every test, so parallel smoke workers do not share mutable IDs
+ * or runtime state with one another or with the serial journey project.
+ */
+export const smokeTest = browserTest.extend<{ smokeAccountReady: undefined }>({
+  smokeAccountReady: [
+    async ({ browser: _browser }, use) => {
+      const runtime = JSON.parse(await readFile(join(repositoryRoot, "e2e/.runtime.json"), "utf8")) as RuntimeFile;
+      await psql(
+        runtime.databaseURL,
+        `update users set setup_completed_at = now(), updated_at = now() where id = '${runtime.userId}'`,
+      );
+      await use(undefined);
+    },
+    { auto: true },
   ],
 });
 

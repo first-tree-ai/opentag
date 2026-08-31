@@ -42,7 +42,7 @@ type UsageState =
 const AGENT_HOME_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS] as const;
 
 export function usageWindowLabel(days: AgentUsageWindowDays): string {
-  return days === 1 ? "Last 24 hours" : `Last ${days} days`;
+  return days === 1 ? m.usage_window_last_24_hours() : m.usage_window_last_days({ days });
 }
 
 export function AgentUsageOverview({
@@ -63,7 +63,7 @@ export function AgentUsageOverview({
     >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <Text as="h2" id="agent-usage-overview-heading" variant="heading">
-          Usage
+          {m.usage_title()}
         </Text>
         <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </div>
@@ -74,7 +74,7 @@ export function AgentUsageOverview({
         state={{ agent }}
         to="/agents/$agentId/usage"
       >
-        View details
+        {m.usage_view_details()}
         <Icon className="size-3.5" name="chevron-right" />
       </Link>
     </section>
@@ -93,10 +93,10 @@ function UsageWindowSelect({
   return (
     <div>
       <span className="sr-only" id="usage-period-label">
-        Usage period
+        {m.usage_period()}
       </span>
       <KumoSelectControl
-        aria-label="Usage period"
+        aria-label={m.usage_period()}
         aria-labelledby="usage-period-label"
         className="w-fit"
         size="sm"
@@ -152,7 +152,7 @@ function useAgentUsage(
 function usageError(cause: unknown): Error {
   if (cause instanceof Error && cause.message.trim()) return cause;
   if (typeof cause === "string" && cause.trim()) return new Error(cause);
-  return new Error("Usage is temporarily unavailable. Try again.");
+  return new Error(m.usage_unavailable_fallback());
 }
 
 function UsageSummaryState({
@@ -166,11 +166,15 @@ function UsageSummaryState({
 }) {
   if (state.kind === "loading") {
     return (
-      <div aria-label="Loading Agent usage" className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+      <div
+        aria-label={m.usage_loading_aria()}
+        className="flex items-center gap-2 text-sm text-kumo-subtle"
+        role="status"
+      >
         <span aria-hidden="true">
           <Loader size="sm" />
         </span>
-        <span>Loading Agent usage…</span>
+        <span>{m.usage_loading()}</span>
       </div>
     );
   }
@@ -178,8 +182,8 @@ function UsageSummaryState({
     return (
       <div className="grid justify-items-start gap-2" data-ui="usage-unavailable" role="alert">
         <p className="text-sm text-kumo-danger">{state.error.message}</p>
-        <Button aria-label="Retry Agent usage" size="compact" variant="outline" onClick={onRetry}>
-          Try again
+        <Button aria-label={m.usage_retry_aria()} size="compact" variant="outline" onClick={onRetry}>
+          {m.usage_try_again()}
         </Button>
       </div>
     );
@@ -198,21 +202,21 @@ function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
   return (
     <dl
       className="grid gap-3 @min-[36rem]/workspace:grid-cols-2"
-      aria-label={`Agent usage · ${usageWindowLabel(usage.windowDays)}`}
+      aria-label={m.usage_metrics_aria({ window: usageWindowLabel(usage.windowDays) })}
       data-ui="usage-metrics"
     >
-      <Metric label="Tasks" value={formatCompactNumber(usage.tasks)} />
-      <Metric label="Tokens" value={formatCompactNumber(usage.tokens)} primary />
+      <Metric label={m.usage_tasks()} value={formatCompactNumber(usage.tasks)} />
+      <Metric label={m.usage_tokens()} value={formatCompactNumber(usage.tokens)} primary />
     </dl>
   );
 }
 
 function UsageCoverage({ usage, includesCharts = false }: { usage: AgentUsageDetail; includesCharts?: boolean }) {
   if (usage.tasks === usage.measuredTasks) return null;
-  const affectedContent = includesCharts ? "Token totals and charts" : "Token totals";
+  const affectedContent = includesCharts ? m.usage_token_totals_and_charts() : m.usage_token_totals();
   return (
     <p className="text-sm text-kumo-subtle" data-ui="usage-coverage" role="status">
-      <strong>{usage.measuredTasks === 0 ? "Token data unavailable." : "Partial data."}</strong>{" "}
+      <strong>{usage.measuredTasks === 0 ? m.usage_token_data_unavailable() : m.usage_partial_data()}</strong>{" "}
       {usage.measuredTasks === 0
         ? m.format_tasks_token_data_none({ tasks: formatNumber(usage.tasks), affectedContent })
         : m.format_tasks_token_data_available({
@@ -242,7 +246,7 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
         <section aria-labelledby="agent-usage-trend-heading">
           <header>
             <Text as="h3" id="agent-usage-trend-heading" variant="heading">
-              Token usage over time
+              {m.usage_token_usage_over_time()}
             </Text>
           </header>
           <TokenTrendChart usage={usage} />
@@ -250,7 +254,7 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
         <section aria-labelledby="agent-usage-breakdown-heading">
           <header>
             <Text as="h3" id="agent-usage-breakdown-heading" variant="heading">
-              Token breakdown
+              {m.usage_token_breakdown()}
             </Text>
           </header>
           <TokenBreakdown usage={usage} />
@@ -265,22 +269,25 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   if (!nonEmpty) {
     return (
       <p className="text-sm text-kumo-subtle" data-ui="usage-empty">
-        No Token usage was recorded in this period.
+        {m.usage_no_token_usage()}
       </p>
     );
   }
   const chart = (
     <LazyTimeseriesChart
-      ariaDescription={`${formatCompactNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
+      ariaDescription={m.usage_tokens_used({
+        tokens: formatCompactNumber(usage.tokens),
+        window: usageWindowLabel(usage.windowDays),
+      })}
       data={[
         {
           color: ChartPalette.categorical(0),
           data: usage.daily.map((point) => [Date.parse(`${point.date}T12:00:00.000Z`), point.tokens]),
-          name: "Tokens",
+          name: m.usage_tokens(),
         },
       ]}
       height={240}
-      tooltipValueFormat={(value) => `${formatCompactNumber(value)} Tokens`}
+      tooltipValueFormat={(value) => m.usage_tokens_used_value({ tokens: formatCompactNumber(value) })}
       xAxisTickFormat={(value) => formatDay(new Date(value).toISOString())}
       yAxisTickFormat={(value) => formatCompactNumber(value)}
     />
@@ -289,7 +296,10 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
     <div className="grid gap-2" data-ui="usage-chart">
       {import.meta.env.MODE === "test" ? (
         <div
-          aria-label={`${formatCompactNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
+          aria-label={m.usage_tokens_used({
+            tokens: formatCompactNumber(usage.tokens),
+            window: usageWindowLabel(usage.windowDays),
+          })}
           className="h-60 rounded bg-kumo-recessed"
           role="img"
         />
@@ -297,7 +307,7 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
         <Suspense
           fallback={
             <div
-              aria-label="Loading usage chart"
+              aria-label={m.usage_loading_chart()}
               className="flex h-60 items-center justify-center rounded bg-kumo-tint text-kumo-subtle"
               role="status"
             >
@@ -330,21 +340,21 @@ function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
       <Meter
         customValue={formatCompactNumber(usage.inputTokens)}
         indicatorClassName="bg-kumo-info"
-        label="Input Tokens"
+        label={m.usage_input_tokens()}
         value={inputShare}
       />
       <Meter
         customValue={formatCompactNumber(usage.outputTokens)}
         indicatorClassName="bg-kumo-brand"
-        label="Output Tokens"
+        label={m.usage_output_tokens()}
         value={outputShare}
       />
       <dl>
-        <BreakdownRow label="Input" tone="input" value={usage.inputTokens} />
-        <BreakdownRow label="Output" tone="output" value={usage.outputTokens} />
-        <BreakdownRow label="Cached input" tone="cached" value={usage.cachedInputTokens} />
+        <BreakdownRow label={m.usage_input()} tone="input" value={usage.inputTokens} />
+        <BreakdownRow label={m.usage_output()} tone="output" value={usage.outputTokens} />
+        <BreakdownRow label={m.usage_cached_input()} tone="cached" value={usage.cachedInputTokens} />
       </dl>
-      <p>Cached input is shown separately and is not added again to Total.</p>
+      <p>{m.usage_cached_input_explanation()}</p>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useRouterState } from "@tanstack/react-router";
 import { AgentUsageTab } from "../../features/agent-usage.js";
+import * as m from "../../paraglide/messages.js";
 import { Text } from "../../ui/design-system.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { AgentObjectHeader } from "./agent-detail-page.js";
@@ -17,7 +18,7 @@ export function AgentUsagePage({ agentId }: { agentId: string }) {
           <div className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
             <header className="grid gap-2">
               <Text as="h2" variant="heading">
-                Usage
+                {m.usage_title()}
               </Text>
             </header>
             <AgentUsageTab agentId={agent.id} />

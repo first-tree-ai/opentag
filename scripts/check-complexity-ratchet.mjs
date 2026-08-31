@@ -249,10 +249,12 @@ function readExceptions(exceptionsPath) {
   return value;
 }
 
-function checkExceptions({ rootDirectory, exceptionsPath, today, update, files }) {
+function checkExceptions({ rootDirectory, exceptionsPath, today, update, acceptCurrent, files }) {
   const data = readExceptions(exceptionsPath);
   const failures = [];
+  const acceptedEntries = [];
   let improved = false;
+  let changed = false;
   const allowedFiles = files ? new Set(files.map((file) => relativePath(rootDirectory, file))) : null;
   const exceptions = data.exceptions.map((exception) => {
     const path = relativePath(rootDirectory, exception.path);
@@ -267,15 +269,48 @@ function checkExceptions({ rootDirectory, exceptionsPath, today, update, files }
     if (allowedFiles && !allowedFiles.has(path)) return { ...exception, path };
     const lines = readFileSync(filePath, "utf8").split(/\r?\n/).length - 1;
     if (lines > exception.lines) {
+      if (acceptCurrent) {
+        acceptedEntries.push(`file-size ${path} (baseline ${exception.lines}, current ${lines})`);
+        changed = true;
+        return { ...exception, path, lines };
+      }
       failures.push(`File-size exception grew for ${path}: baseline ${exception.lines}, current ${lines}`);
     } else if (update && lines < exception.lines && exception.expires >= today) {
       improved = true;
+      changed = true;
       return { ...exception, path, lines };
     }
     return { ...exception, path };
   });
-  if (update && improved && failures.length === 0) writeJson(exceptionsPath, { ...data, exceptions });
-  return { failures, improved };
+  if (update && changed && failures.length === 0) writeJson(exceptionsPath, { ...data, exceptions });
+  return { failures, improved, acceptedEntries };
+}
+
+function evaluateWarningChanges(comparison, acceptCurrent) {
+  const failures = [];
+  const acceptedEntries = [];
+  for (const warning of comparison.newWarnings) {
+    const diagnostic = `complexity ${warning.id} (new, current ${warning.complexity})`;
+    if (acceptCurrent) acceptedEntries.push(diagnostic);
+    else failures.push(`New complexity warning ${warning.id} (complexity ${warning.complexity})`);
+  }
+  for (const regression of comparison.countRegressions) {
+    if (!acceptCurrent) {
+      failures.push(
+        `Complexity warning count increased for ${regression.path}: baseline ${regression.previous}, current ${regression.current}`,
+      );
+    }
+  }
+  for (const regression of comparison.complexityRegressions) {
+    const diagnostic = `complexity ${regression.warning.id} (baseline ${regression.previous}, current ${regression.warning.complexity})`;
+    if (acceptCurrent) acceptedEntries.push(diagnostic);
+    else {
+      failures.push(
+        `Complexity warning worsened for ${regression.warning.id}: baseline ${regression.previous}, current ${regression.warning.complexity}`,
+      );
+    }
+  }
+  return { failures, acceptedEntries };
 }
 
 export function checkComplexityRatchet({
@@ -285,6 +320,7 @@ export function checkComplexityRatchet({
   baselinePath = join(rootDirectory, DEFAULTS.baselinePath),
   exceptionsPath = join(rootDirectory, DEFAULTS.exceptionsPath),
   update = false,
+  acceptCurrent = false,
   today = new Date().toISOString().slice(0, 10),
   files,
 } = {}) {
@@ -296,28 +332,20 @@ export function checkComplexityRatchet({
   const comparison = baseline.initial
     ? { newWarnings: [], countRegressions: [], complexityRegressions: [], improvedWarningCount: 0 }
     : compareWarnings(baseline.warnings, current);
-  const failures = [];
-  for (const warning of comparison.newWarnings) {
-    failures.push(`New complexity warning ${warning.id} (complexity ${warning.complexity})`);
-  }
-  for (const regression of comparison.countRegressions) {
-    failures.push(
-      `Complexity warning count increased for ${regression.path}: baseline ${regression.previous}, current ${regression.current}`,
-    );
-  }
-  for (const regression of comparison.complexityRegressions) {
-    failures.push(
-      `Complexity warning worsened for ${regression.warning.id}: baseline ${regression.previous}, current ${regression.warning.complexity}`,
-    );
-  }
+  if (acceptCurrent) update = true;
+  const warningResult = evaluateWarningChanges(comparison, acceptCurrent);
+  const failures = [...warningResult.failures];
+  const acceptedEntries = [...warningResult.acceptedEntries];
   const exceptionResult = checkExceptions({
     rootDirectory: root,
     exceptionsPath: resolvedExceptionsPath,
     today,
     update,
+    acceptCurrent,
     files,
   });
   failures.push(...exceptionResult.failures);
+  acceptedEntries.push(...exceptionResult.acceptedEntries);
   if (failures.length > 0) fail(`\n${failures.map((failure) => `- ${failure}`).join("\n")}`);
 
   if (update) {
@@ -332,6 +360,7 @@ export function checkComplexityRatchet({
     baselineWarningCount: baseline.warnings.length,
     improvedWarningCount: comparison.improvedWarningCount,
     updated: update,
+    acceptedEntries,
   };
 }
 
@@ -350,6 +379,11 @@ function parseArgs(argv) {
       options.update = true;
       continue;
     }
+    if (arg === "--accept-current") {
+      options.acceptCurrent = true;
+      options.update = true;
+      continue;
+    }
     const key = optionKeys[arg];
     if (!key) fail(`unknown argument ${arg}`);
     const value = argv[++index];
@@ -363,6 +397,7 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 if (isMain) {
   try {
     const result = checkComplexityRatchet(parseArgs(process.argv.slice(2)));
+    for (const entry of result.acceptedEntries) console.log(`Accepted current baseline entry: ${entry}`);
     console.log(
       `Complexity ratchet passed: ${result.warningCount} warning(s), ${result.improvedWarningCount} improvement(s).`,
     );

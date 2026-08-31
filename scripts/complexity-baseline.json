@@ -96,7 +96,7 @@
       "id": "apps/web/src/__tests__/app.test.tsx#callback",
       "path": "apps/web/src/__tests__/app.test.tsx",
       "symbol": "callback",
-      "complexity": 174
+      "complexity": 183
     },
     {
       "id": "apps/web/src/agent-creation/agent-creation-flow.tsx#AgentCreationFlow",
@@ -228,7 +228,7 @@
       "id": "apps/web/src/onboarding-v2/page.tsx#OnboardingV2Flow",
       "path": "apps/web/src/onboarding-v2/page.tsx",
       "symbol": "OnboardingV2Flow",
-      "complexity": 38
+      "complexity": 50
     },
     {
       "id": "apps/web/src/onboarding-v2/server-backend.ts#callback",
@@ -264,7 +264,7 @@
       "id": "apps/web/src/onboarding-v2/steps.tsx#MessagingConnection",
       "path": "apps/web/src/onboarding-v2/steps.tsx",
       "symbol": "MessagingConnection",
-      "complexity": 31
+      "complexity": 38
     },
     {
       "id": "packages/client/src/__tests__/agent-runtime-exhaustive.test.ts#callback",

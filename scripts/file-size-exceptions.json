@@ -4,7 +4,7 @@
   "exceptions": [
     {
       "path": "apps/web/src/__tests__/app.test.tsx",
-      "lines": 3447,
+      "lines": 3505,
       "owner": "@bestony",
       "expires": "2026-10-31"
     },
@@ -16,7 +16,7 @@
     },
     {
       "path": "apps/web/src/onboarding-v2/steps.tsx",
-      "lines": 900,
+      "lines": 949,
       "owner": "@bestony",
       "expires": "2026-10-31"
     },

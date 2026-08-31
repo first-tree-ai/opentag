@@ -9,6 +9,7 @@ import { AgentComputerSettings } from "./agent-computer-settings.js";
 
 const agentId = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
 const computerId = "8c2b1d4e-5a6f-4b7c-8d9e-0f1a2b3c4d5e";
+const secondAgentId = "5c4b3a2d-1e0f-4998-8877-66554433221a";
 
 const computer: WorkspaceComputerSummary = {
   computerId,
@@ -141,6 +142,56 @@ describe("An Agent with no Computer", () => {
 
     expect(await screen.findByText(/more than one Computer/)).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
+  });
+
+  it("binds a second unbound Agent when the same surface is reused for one", async () => {
+    // This surface outlives any one Agent: same route, next Agent, no unmount. Keying the attempted
+    // bind by Computer alone let the first Agent's attempt answer for the second, which then sat on
+    // "Connecting this Agent to ..." forever waiting on a bind that never ran.
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+
+    const { rerender } = await renderInRouter(
+      <AgentComputerSettings agent={view(unboundAgent, undefined)} onAgentChanged={() => undefined} />,
+    );
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(agentId, computerId));
+
+    rerender(
+      <AgentComputerSettings
+        agent={view({ ...unboundAgent, id: secondAgentId }, undefined)}
+        onAgentChanged={() => undefined}
+      />,
+    );
+
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(secondAgentId, computerId));
+    // Exactly once each: keying by Agent must not cost the guard that stops a bind repeating on the
+    // renders it causes itself.
+    expect(rebind.mock.calls.filter(([id]) => id === agentId)).toHaveLength(1);
+    expect(rebind.mock.calls.filter(([id]) => id === secondAgentId)).toHaveLength(1);
+  });
+
+  it("does not show one Agent's bind failure against the next one", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+    const rebind = vi
+      .spyOn(browserApi, "rebindAgentComputer")
+      .mockRejectedValueOnce(new Error("The requested Computer was not found"))
+      .mockResolvedValue(boundConfig);
+
+    const { rerender } = await renderInRouter(
+      <AgentComputerSettings agent={view(unboundAgent, undefined)} onAgentChanged={() => undefined} />,
+    );
+    expect(await screen.findByText("The requested Computer was not found")).toBeTruthy();
+
+    rerender(
+      <AgentComputerSettings
+        agent={view({ ...unboundAgent, id: secondAgentId }, undefined)}
+        onAgentChanged={() => undefined}
+      />,
+    );
+
+    // The second Agent has not been tried yet, so the first one's failure cannot stand as its result.
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(secondAgentId, computerId));
+    await waitFor(() => expect(screen.queryByText("The requested Computer was not found")).toBeNull());
   });
 
   it("keeps showing the bound Computer's own panel once one is connected", async () => {

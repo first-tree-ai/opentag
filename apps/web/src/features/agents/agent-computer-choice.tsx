@@ -30,14 +30,18 @@ export function AgentComputerChoice({
   const computersQuery = useComputersQuery();
   const [binding, setBinding] = useState(false);
   const [error, setError] = useState<string>();
-  // A bind is attempted once per Computer. Without this a failure would be retried by every render
-  // the failure itself causes, and the reader would watch an error flicker instead of reading it.
+  // A bind is attempted once per Agent-and-Computer pair. Without this a failure would be retried by
+  // every render the failure itself causes, and the reader would watch an error flicker instead of
+  // reading it. The Agent belongs in the key because this surface outlives any one of them: reused
+  // for a second unbound Agent on the same Account, a Computer-only key would report the first
+  // Agent's bind as this one's and leave the second waiting on a bind that never ran.
   const attempted = useRef<string | undefined>(undefined);
   // Only a successful read speaks for the Account. Answering a failed one with "connect a Computer"
   // would send someone to enrol a machine they already own -- the same conflation the Agent's
   // availability refuses to make one layer up.
   const enrolled = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
   const computer = enrolled?.length === 1 ? enrolled[0] : undefined;
+  const target = computer ? `${agentId}:${computer.computerId}` : undefined;
 
   const bind = useCallback(
     async (computerId: string) => {
@@ -56,13 +60,15 @@ export function AgentComputerChoice({
   );
 
   useEffect(() => {
-    if (!computer || attempted.current === computer.computerId) return;
-    attempted.current = computer.computerId;
+    if (!computer || !target || attempted.current === target) return;
+    attempted.current = target;
+    // A new target answers for itself. Leaving the previous one's failure on screen would attribute
+    // it to an Agent that has not been tried yet.
+    setError(undefined);
     void bind(computer.computerId);
-  }, [computer, bind]);
+  }, [computer, target, bind]);
 
   function retry(computerId: string) {
-    attempted.current = computerId;
     void bind(computerId);
   }
 

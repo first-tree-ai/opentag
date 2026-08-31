@@ -121,7 +121,7 @@ function classifyGenericError(error: unknown, phase: CommandPhase): CommandError
       cause: error,
     });
   }
-  if (candidate.category === "auth" || /^AUTH_/u.test(code) || /not logged in|authentication/iu.test(message)) {
+  if (isAuth(code, message, candidate.category)) {
     return new CommandError(
       {
         code,
@@ -152,6 +152,10 @@ function classifyGenericError(error: unknown, phase: CommandPhase): CommandError
     message,
     { cause: error },
   );
+}
+
+function isAuth(code: string, message: string, category: unknown): boolean {
+  return category === "auth" || /^AUTH_/u.test(code) || /not logged in|authentication/iu.test(message);
 }
 
 function isUnavailable(code: string, message: string, category: unknown): boolean {

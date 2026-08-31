@@ -2,8 +2,10 @@ import { agentSlackOAuthStartPath, SLACK_OAUTH_CALLBACK_PATH, SLACK_REQUIRED_BOT
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
+import { AuthServiceError } from "../services/auth/errors.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { hashSecret } from "../services/auth/security.js";
+import { ImBindingServiceError } from "../services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "../services/im-bindings/slack/index.js";
 import { SlackOAuthStateService } from "../services/im-bindings/slack/oauth-state.js";
 import { signedInBrowser } from "./signed-in-browser.js";
@@ -179,5 +181,38 @@ describe("Slack OAuth HTTP routes", () => {
       `https://opentag.example.com/agents/${agentId}/settings/messaging?slack_oauth_error=SLACK_APP_TEAM_ALREADY_BOUND`,
     );
     expect(JSON.stringify(conflict.headers)).not.toContain("slack-oauth-code");
+
+    slackOAuth.callback.mockRejectedValueOnce(new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "invalid", 401));
+    const authFailure = await app.inject({
+      method: "GET",
+      url: `${SLACK_OAUTH_CALLBACK_PATH}?state=signed-state`,
+      headers: { cookie: "opentag.session_token=session; opentag_slack_oauth_context=session-binding" },
+    });
+    expect(authFailure.statusCode).toBe(302);
+    expect(authFailure.headers.location).toBe(
+      "https://opentag.example.com/agents?slack_oauth_error=AUTH_INVALID_TOKEN",
+    );
+
+    slackOAuth.callback.mockRejectedValueOnce(new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "missing"));
+    const bindingFailure = await app.inject({
+      method: "GET",
+      url: `${SLACK_OAUTH_CALLBACK_PATH}?state=signed-state`,
+      headers: { cookie: "opentag.session_token=session; opentag_slack_oauth_context=session-binding" },
+    });
+    expect(bindingFailure.headers.location).toBe(
+      "https://opentag.example.com/agents?slack_oauth_error=IM_BINDING_NOT_FOUND",
+    );
+
+    slackOAuth.callback.mockRejectedValueOnce(
+      Object.assign(new Error("upstream"), { upstreamSlackError: "invalid_code" }),
+    );
+    const genericFailure = await app.inject({
+      method: "GET",
+      url: `${SLACK_OAUTH_CALLBACK_PATH}?state=signed-state`,
+      headers: { cookie: "opentag.session_token=session; opentag_slack_oauth_context=session-binding" },
+    });
+    expect(genericFailure.headers.location).toBe(
+      "https://opentag.example.com/agents?slack_oauth_error=SLACK_OAUTH_FAILED",
+    );
   });
 });

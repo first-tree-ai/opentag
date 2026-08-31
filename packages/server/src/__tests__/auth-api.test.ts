@@ -109,6 +109,21 @@ describe("auth HTTP API", () => {
     expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
 
+  it("refreshes a bearer session through the strict response contract", async () => {
+    const authService = createAuthService();
+    const app = createApp({ authService });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authRefresh,
+      payload: { refreshToken: "refresh-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ accessToken: "next-access", refreshToken: "next-refresh" });
+    expect(authService.refresh).toHaveBeenCalledWith("refresh-token");
+  });
+
   it("authenticates /api/v1/me without a management Workspace projection", async () => {
     const authService = createAuthService();
     const app = createApp({ authService });

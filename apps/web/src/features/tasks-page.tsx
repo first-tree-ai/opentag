@@ -1,18 +1,20 @@
 import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import {
+  Banner,
   Button,
   ClipboardText,
   Collapsible,
+  Empty,
   Icon,
-  KumoInputControl,
-  KumoSelectControl,
-  Loader,
-  type SelectControlChangeEvent,
+  Input,
+  LayerCard,
+  Select,
+  SkeletonLine,
   StatusIndicator,
   type StatusTone,
   Table,
@@ -32,6 +34,11 @@ const statusPresentation: Record<TaskStatus, { readonly label: string; readonly 
   ended: { label: "Ended", tone: "neutral" },
   idle: { label: "Idle", tone: "neutral" },
 };
+
+const statusItems = Object.fromEntries([
+  ["all", "All statuses"],
+  ...Object.entries(statusPresentation).map(([value, presentation]) => [value, presentation.label]),
+]);
 
 export function TasksPage() {
   const [state, setState] = useState<LoadState<TaskCollection>>({ kind: "loading" });
@@ -94,6 +101,17 @@ export function TasksPage() {
       );
     });
   }, [agentId, query, state, status]);
+  const agentItems = useMemo(
+    () => Object.fromEntries([["all", "All Agents"], ...agents.map((agent) => [agent.id, agent.displayName])]),
+    [agents],
+  );
+  const hasActiveFilters = query.trim().length > 0 || agentId !== "all" || status !== "all";
+
+  function clearFilters(): void {
+    setQuery("");
+    setAgentId("all");
+    setStatus("all");
+  }
 
   async function loadMore(): Promise<void> {
     if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
@@ -128,79 +146,80 @@ export function TasksPage() {
       </PageHeader>
 
       <form
-        className="flex flex-wrap items-end gap-3"
+        className="grid gap-3 @min-[36rem]/workspace:grid-cols-[minmax(14rem,1fr)_12rem_12rem_auto] @min-[36rem]/workspace:items-end"
         aria-label="Filter Tasks"
         data-ui="task-toolbar"
         onSubmit={(event) => event.preventDefault()}
       >
-        <div className="min-w-56 flex-1">
-          <span className="sr-only">Search Tasks</span>
-          <KumoInputControl
-            aria-label="Search Tasks"
-            value={query}
-            type="search"
-            placeholder="Search Tasks"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
-        <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-          <option value="all">All Agents</option>
-          {agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.displayName}
-            </option>
-          ))}
-        </TaskSelect>
-        <TaskSelect
-          label="Filter by status"
+        <Input
+          aria-label="Search Tasks"
+          className="w-full"
+          placeholder="Search loaded Tasks"
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <Select
+          aria-label="Filter by Agent"
+          className="w-full"
+          items={agentItems}
+          size="sm"
+          value={agentId}
+          onValueChange={(value) => setAgentId(value ?? "all")}
+        />
+        <Select
+          aria-label="Filter by status"
+          className="w-full"
+          items={statusItems}
+          size="sm"
           value={status}
-          onChange={(event) => setStatus(event.target.value as TaskFilter)}
-        >
-          <option value="all">All statuses</option>
-          {Object.entries(statusPresentation).map(([value, presentation]) => (
-            <option key={value} value={value}>
-              {presentation.label}
-            </option>
-          ))}
-        </TaskSelect>
+          onValueChange={(value) => setStatus((value ?? "all") as TaskFilter)}
+        />
+        {hasActiveFilters ? (
+          <Button className="w-full @min-[36rem]/workspace:w-auto" type="button" variant="ghost" onClick={clearFilters}>
+            Clear filters
+          </Button>
+        ) : null}
       </form>
 
-      {state.kind === "loading" ? (
-        <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
-      ) : null}
+      {state.kind === "loading" ? <TaskLoading heading="Loading Tasks" /> : null}
       {state.kind === "error" ? (
-        <TaskNotice
+        <Banner
           action={
             <Button type="button" variant="secondary" onClick={() => void loadTasks()}>
               Try again
             </Button>
           }
-          heading="Tasks unavailable"
-          detail={state.error.message}
+          description={state.error.message}
+          role="alert"
+          title="Tasks unavailable"
+          variant="error"
         />
       ) : null}
       {state.kind === "ready" && tasks.length > 0 ? (
         <>
-          <section
-            aria-label="Tasks table"
-            className="min-w-0 overflow-x-auto rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus the horizontal scroll region.
-            tabIndex={0}
-          >
-            <Table className="min-w-[36rem]" aria-label="Tasks" data-ui="task-table">
-              <thead>
-                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-                  <th scope="col">Task</th>
-                  <th scope="col">Status</th>
-                </tr>
-              </thead>
-              <tbody>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-kumo-subtle">
+            <span aria-live="polite">
+              Showing {tasks.length} of {state.value.tasks.length} loaded{" "}
+              {state.value.tasks.length === 1 ? "Task" : "Tasks"}
+            </span>
+            {state.value.nextCursor ? <span>More Tasks are available.</span> : null}
+          </div>
+          <LayerCard className="overflow-hidden p-0 shadow-none ring-0 @min-[36rem]/workspace:shadow-xs @min-[36rem]/workspace:ring @min-[36rem]/workspace:ring-kumo-line">
+            <Table className="block @min-[36rem]/workspace:table" aria-label="Tasks" data-ui="task-table">
+              <Table.Header className="hidden @min-[36rem]/workspace:table-header-group">
+                <Table.Row>
+                  <Table.Head>Task</Table.Head>
+                  <Table.Head>Status</Table.Head>
+                </Table.Row>
+              </Table.Header>
+              <Table.Body className="grid gap-3 @min-[36rem]/workspace:table-row-group">
                 {tasks.map((task) => (
                   <TaskRow key={task.id} task={task} />
                 ))}
-              </tbody>
+              </Table.Body>
             </Table>
-          </section>
+          </LayerCard>
           {state.value.nextCursor ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
@@ -213,16 +232,25 @@ export function TasksPage() {
                 {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
               </Button>
               {loadMoreError ? (
-                <span className="text-sm text-kumo-danger" role="alert">
-                  {loadMoreError.message}
-                </span>
+                <Banner description={loadMoreError.message} role="alert" size="sm" variant="error" />
               ) : null}
             </div>
           ) : null}
         </>
       ) : null}
       {state.kind === "ready" && tasks.length === 0 ? (
-        <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
+        <Empty
+          contents={
+            hasActiveFilters ? (
+              <Button type="button" variant="secondary" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            ) : null
+          }
+          description={hasActiveFilters ? "Try a different search or filter." : "Stored Sessions will appear here."}
+          icon={<Icon name="message" />}
+          title="No Tasks found"
+        />
       ) : null}
     </section>
   );
@@ -285,7 +313,7 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
     }
   }
 
-  if (state.kind === "loading") return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
+  if (state.kind === "loading") return <TaskLoading heading="Loading Task" />;
   if (state.kind === "error") {
     const notFound = state.error instanceof ApiError && state.error.status === 404;
     return (
@@ -306,7 +334,7 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
       <nav className="flex items-center gap-3" aria-label="Breadcrumb">
-        <Link to="/tasks">
+        <Link className="inline-flex items-center gap-1" to="/tasks">
           <Icon name="arrow-left" />
           Tasks
         </Link>
@@ -316,9 +344,11 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
       </nav>
 
       <header className="grid gap-3" data-ui="task-conversation-header">
-        <Text as="h1" size="lg" title={task.title} truncate variant="heading">
-          {task.title}
-        </Text>
+        <div className="break-words">
+          <Text as="h1" size="lg" variant="heading">
+            {task.title}
+          </Text>
+        </div>
         <section
           className="flex flex-wrap items-center gap-3"
           aria-label="Task source"
@@ -334,27 +364,23 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
         </section>
       </header>
 
-      <section
-        className="grid gap-3 @min-[36rem]/workspace:grid-cols-2"
-        aria-label="Task debug identifiers"
-        data-ui="task-debug-facts"
-      >
-        <DebugValue label="Session" value={task.id} />
-        <DebugValue label="Channel" value={task.source.channelId} />
-        {task.source.threadKey ? <DebugValue label="Thread" value={task.source.threadKey} /> : null}
-        <DebugValue label="Agent" value={task.agent.id} />
-      </section>
-
-      <p className="text-sm text-kumo-subtle" data-ui="task-capture-boundary">
-        Provider outbound messages and detailed tool traces are not captured. Agent output below is the stored runtime
-        final output.
-      </p>
+      <Banner
+        data-ui="task-capture-boundary"
+        description="Provider outbound messages and detailed tool traces are not captured. Agent output below is the stored runtime final output."
+        size="sm"
+        variant="secondary"
+      />
 
       <section className="grid gap-4" aria-label="Task conversation" data-ui="task-thread">
         {turns.length > 0 ? (
           turns.map((turn) => <TaskTurnView key={turn.deliveryId} task={task} turn={turn} />)
         ) : (
-          <TaskNotice heading="No Turns recorded" detail="This Session has no stored IM deliveries." />
+          <Empty
+            description="This Session has no stored IM deliveries."
+            icon={<Icon name="message" />}
+            size="sm"
+            title="No Turns recorded"
+          />
         )}
       </section>
       {state.value.nextCursor ? (
@@ -369,10 +395,31 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
         </Button>
       ) : null}
       {loadMoreError ? (
-        <p className="text-sm text-kumo-danger" data-ui="task-runtime-error" role="alert">
-          {loadMoreError.message}
-        </p>
+        <Banner
+          data-ui="task-runtime-error"
+          description={loadMoreError.message}
+          role="alert"
+          size="sm"
+          variant="error"
+        />
       ) : null}
+
+      <Collapsible.Root data-ui="task-debug-facts">
+        <Collapsible.DefaultTrigger>Technical details</Collapsible.DefaultTrigger>
+        <Collapsible.DefaultPanel keepMounted>
+          <LayerCard className="grid gap-4 p-4">
+            <Text as="p" variant="secondary">
+              Stable identifiers for support and runtime diagnostics.
+            </Text>
+            <section className="grid gap-3 @min-[36rem]/workspace:grid-cols-2" aria-label="Task debug identifiers">
+              <DebugValue label="Session" value={task.id} />
+              <DebugValue label="Channel" value={task.source.channelId} />
+              {task.source.threadKey ? <DebugValue label="Thread" value={task.source.threadKey} /> : null}
+              <DebugValue label="Agent" value={task.agent.id} />
+            </section>
+          </LayerCard>
+        </Collapsible.DefaultPanel>
+      </Collapsible.Root>
 
       {internalSessions.length > 0 || collaborationMessages.length > 0 ? (
         <Collapsible.Root data-ui="task-related-sessions">
@@ -425,10 +472,12 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
           >
             {getInitials(turn.message.authorDisplayName ?? turn.message.authorKind)}
           </span>
-          <span>
-            <strong>{turn.message.authorDisplayName ?? turn.message.authorKind}</strong>
-            <small>
-              {turn.attention} · {formatTimestamp(turn.message.occurredAt)}
+          <span className="grid min-w-0 gap-0.5">
+            <strong className="break-words">
+              {turn.message.authorDisplayName ?? humanizeEnum(turn.message.authorKind)}
+            </strong>
+            <small className="text-kumo-subtle">
+              {attentionLabel(turn.attention)} · {formatTimestamp(turn.message.occurredAt)}
             </small>
           </span>
         </header>
@@ -445,14 +494,14 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
           >
             {task.agent.displayName.charAt(0)}
           </span>
-          <span>
+          <span className="grid min-w-0 gap-0.5">
             <strong>{task.agent.displayName}</strong>
-            <small>
+            <small className="text-kumo-subtle">
               {absorbedBy
-                ? "absorbed into running Turn"
+                ? "Steered into active Turn"
                 : report
-                  ? `${report.outcome} · ${formatTimestamp(report.reportedAt)}`
-                  : turn.delivery.state}
+                  ? `${humanizeEnum(report.outcome)} · ${formatTimestamp(report.reportedAt)}`
+                  : deliveryStateLabel(turn.delivery.state)}
             </small>
           </span>
         </header>
@@ -471,7 +520,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
           >
             {turn.delivery.state === "accepted"
               ? "The Turn is running or its report has not arrived."
-              : `Delivery ${turn.delivery.state}.`}
+              : `Delivery ${deliveryStateLabel(turn.delivery.state).toLocaleLowerCase()}.`}
           </p>
         )}
         <Collapsible.Root data-ui="task-agent-process">
@@ -479,17 +528,12 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
             <span>Runtime details</span>
           </Collapsible.DefaultTrigger>
           <Collapsible.DefaultPanel keepMounted>
-            <section className="grid gap-3" data-ui="task-agent-events">
-              <DebugValue label="Delivery" value={turn.deliveryId} />
-              <DebugValue label="Message" value={turn.message.externalMessageId} />
-              {absorbedBy ? <DebugValue label="Absorbed by delivery" value={absorbedBy.deliveryId} /> : null}
-              {absorbedBy ? <DebugValue label="Target Turn" value={absorbedBy.turnId} /> : null}
-              {report ? <DebugValue label="Turn" value={report.turnId} /> : null}
+            <LayerCard className="grid gap-4 p-4" data-ui="task-agent-events">
               <p className="text-sm text-kumo-subtle" data-ui="task-process-metadata">
                 {[
                   `${turn.delivery.attemptCount} ${turn.delivery.attemptCount === 1 ? "attempt" : "attempts"}`,
-                  report ? `Outcome ${report.outcome}` : null,
-                  report ? `Effects ${report.executionEffects}` : null,
+                  report ? `Outcome: ${humanizeEnum(report.outcome)}` : null,
+                  report ? `Effects: ${humanizeEnum(report.executionEffects)}` : null,
                   tokenTotal === null ? null : `${tokenTotal.toLocaleString()} tokens`,
                   report ? `${report.traceSummary.lastSequence} trace events` : null,
                   report?.traceSummary.droppedEvents ? `${report.traceSummary.droppedEvents} dropped` : null,
@@ -497,12 +541,22 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
                   .filter(Boolean)
                   .join(" · ")}
               </p>
+              <section className="grid gap-3 @min-[36rem]/workspace:grid-cols-2" aria-label="Runtime identifiers">
+                <DebugValue label="Delivery" value={turn.deliveryId} />
+                <DebugValue label="Message" value={turn.message.externalMessageId} />
+                {absorbedBy ? <DebugValue label="Absorbed by delivery" value={absorbedBy.deliveryId} /> : null}
+                {absorbedBy ? <DebugValue label="Target Turn" value={absorbedBy.turnId} /> : null}
+                {report ? <DebugValue label="Turn" value={report.turnId} /> : null}
+              </section>
               {report?.errorReason || turn.delivery.lastErrorCode || turn.delivery.reason ? (
-                <p className="text-sm text-kumo-danger" data-ui="task-runtime-error">
-                  {report?.errorReason ?? turn.delivery.lastErrorCode ?? turn.delivery.reason}
-                </p>
+                <Banner
+                  data-ui="task-runtime-error"
+                  description={report?.errorReason ?? turn.delivery.lastErrorCode ?? turn.delivery.reason}
+                  size="sm"
+                  variant="error"
+                />
               ) : null}
-            </section>
+            </LayerCard>
           </Collapsible.DefaultPanel>
         </Collapsible.Root>
       </article>
@@ -510,36 +564,24 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   );
 }
 
-function TaskSelect({
-  children,
-  label,
-  onChange,
-  value,
-}: {
-  children: ReactNode;
-  label: string;
-  onChange: (event: SelectControlChangeEvent) => void;
-  value: string;
-}) {
-  return (
-    <div>
-      <span className="sr-only">{label}</span>
-      <KumoSelectControl aria-label={label} size="sm" value={value} onChange={onChange}>
-        {children}
-      </KumoSelectControl>
-    </div>
-  );
-}
-
 function TaskRow({ task }: { task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
-    <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
-      <td className="p-3" data-label="Task">
-        <Link params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
+    <Table.Row
+      className="grid gap-3 rounded-lg p-4 ring ring-kumo-line @min-[36rem]/workspace:table-row @min-[36rem]/workspace:rounded-none @min-[36rem]/workspace:p-0 @min-[36rem]/workspace:ring-0"
+      data-ui="task-table-row"
+    >
+      <Table.Cell
+        className="block !p-0 @min-[36rem]/workspace:table-cell @min-[36rem]/workspace:!p-3"
+        data-label="Task"
+      >
+        <Link className="font-medium" params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
           {task.title}
         </Link>
-        <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
+        <span
+          className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-kumo-subtle"
+          data-ui="task-list-metadata"
+        >
           <span>{task.agent.displayName}</span>
           <span aria-hidden="true">·</span>
           <ProviderIcon provider={task.source.provider} compact />
@@ -549,26 +591,30 @@ function TaskRow({ task }: { task: TaskSummary }) {
           <span aria-hidden="true">·</span>
           <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
         </span>
-      </td>
-      <td className="p-3" data-label="Status">
+      </Table.Cell>
+      <Table.Cell
+        className="block !p-0 @min-[36rem]/workspace:table-cell @min-[36rem]/workspace:!p-3"
+        data-label="Status"
+      >
         <StatusIndicator
+          className="flex-wrap"
           aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
           detail={formatRelativeTime(task.lastActivityAt)}
           label={status.label}
           tone={status.tone}
         />
-      </td>
-    </tr>
+      </Table.Cell>
+    </Table.Row>
   );
 }
 
 function SourceIdentity({ task }: { task: TaskSummary }) {
   return (
-    <span className="inline-flex items-center gap-2" data-ui="task-source-identity">
+    <span className="inline-flex min-w-0 items-center gap-2" data-ui="task-source-identity">
       <ProviderIcon provider={task.source.provider} />
-      <span>
-        <strong>{task.agent.displayName}</strong>
-        <small>
+      <span className="grid min-w-0 gap-0.5">
+        <strong className="break-words">{task.agent.displayName}</strong>
+        <small className="break-words text-kumo-subtle">
           {task.source.provider} · {task.sessionKind} · {shortId(task.source.threadKey ?? task.source.channelId)}
         </small>
       </span>
@@ -594,8 +640,8 @@ function ProviderIcon({
 
 function DebugValue({ label, value }: { label: string; value: string }) {
   return (
-    <span className="grid gap-1 rounded-md bg-kumo-recessed p-3" data-ui="task-debug-value">
-      <strong>{label}</strong>
+    <span className="grid min-w-0 gap-1" data-ui="task-debug-value">
+      <strong className="text-sm">{label}</strong>
       <ClipboardText
         labels={{ copyAction: `Copy ${label}` }}
         size="sm"
@@ -606,24 +652,18 @@ function DebugValue({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TaskNotice({ action, heading, detail }: { action?: ReactNode; heading: string; detail: string }) {
+function TaskLoading({ heading }: { heading: string }) {
   return (
-    <section
-      className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line"
-      aria-live="polite"
-      data-ui="task-empty-state"
-    >
-      <div className="flex items-center justify-center gap-2">
-        {heading.startsWith("Loading") ? <Loader aria-label={heading} size="sm" /> : null}
+    <LayerCard className="grid gap-4 p-4" aria-live="polite" data-ui="task-loading" role="status">
+      <div className="sr-only">
         <Text as="h2" variant="heading">
           {heading}
         </Text>
       </div>
-      <Text as="p" variant="secondary">
-        {detail}
-      </Text>
-      {action ? <div className="flex justify-center">{action}</div> : null}
-    </section>
+      <SkeletonLine className="h-5 w-2/5" />
+      <SkeletonLine className="h-4 w-full" />
+      <SkeletonLine className="h-4 w-4/5" />
+    </LayerCard>
   );
 }
 
@@ -653,6 +693,21 @@ function getInitials(name: string): string {
     .slice(0, 2)
     .map((part) => part.charAt(0))
     .join("");
+}
+
+function attentionLabel(value: TaskTurn["attention"]): string {
+  if (value === "direct") return "Direct message";
+  if (value === "ambient") return "Ambient message";
+  return humanizeEnum(value);
+}
+
+function deliveryStateLabel(value: TaskTurn["delivery"]["state"]): string {
+  return value === "accepted" ? "In progress" : humanizeEnum(value);
+}
+
+function humanizeEnum(value: string): string {
+  const normalized = value.replaceAll(/[_-]+/gu, " ");
+  return `${normalized.charAt(0).toLocaleUpperCase()}${normalized.slice(1)}`;
 }
 
 function asError(value: unknown): Error {

@@ -91,9 +91,11 @@ describe("Tasks debug view", () => {
 
     await renderInRouter(<TasksPage />);
 
-    expect(await screen.findByRole("table", { name: "Tasks" })).toBeTruthy();
-    expect(screen.getByRole("region", { name: "Tasks table" }).tabIndex).toBe(0);
+    const tasksTable = await screen.findByRole("table", { name: "Tasks" });
+    expect(tasksTable).toBeTruthy();
     expect(screen.getAllByRole("row")).toHaveLength(3);
+    expect(screen.getByText("Showing 2 of 2 loaded Tasks")).toBeTruthy();
+    expect(screen.getByLabelText(/Completed, updated/)).toBeTruthy();
     expect(screen.getByText("Read-only debug view")).toBeTruthy();
     expect(screen.queryByText("Demo data")).toBeNull();
 
@@ -174,8 +176,11 @@ describe("Tasks debug view", () => {
 
     fireEvent.click(within(conversation).getByText("Runtime details"));
     expect(
-      within(conversation).getByText("1 attempt · Outcome completed · Effects completed · 150 tokens · 4 trace events"),
+      within(conversation).getByText(
+        "1 attempt · Outcome: Completed · Effects: Completed · 150 tokens · 4 trace events",
+      ),
     ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Technical details" }));
     expect(screen.getByLabelText("Copy Session")).toBeTruthy();
   });
 
@@ -205,7 +210,7 @@ describe("Tasks debug view", () => {
 
     const conversation = await screen.findByLabelText("Task conversation");
     expect(within(conversation).getByText("This input was steered into the active Turn.")).toBeTruthy();
-    expect(within(conversation).getByText("absorbed into running Turn")).toBeTruthy();
+    expect(within(conversation).getByText("Steered into active Turn")).toBeTruthy();
     expect(within(conversation).getAllByText(/150 tokens/)).toHaveLength(1);
   });
 

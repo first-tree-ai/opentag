@@ -64,7 +64,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
           }).toString(),
           signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
         },
-        { circuitKey: "slack:oauth.access", maxAttempts: 1 },
+        { circuitKey: "slack:oauth.access", maxAttempts: 1, timeoutMs: SLACK_AUTH_TEST_TIMEOUT_MS },
       );
     } catch {
       throw new Error("SLACK_AUTH_UPSTREAM_UNAVAILABLE");
@@ -121,7 +121,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
           body: "",
           signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
         },
-        { circuitKey: "slack:auth.test.http", maxAttempts: 1 },
+        { circuitKey: "slack:auth.test.http", maxAttempts: 1, timeoutMs: SLACK_AUTH_TEST_TIMEOUT_MS },
       );
     } catch {
       // Network failures and timeouts carry no credential detail worth surfacing.

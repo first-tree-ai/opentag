@@ -71,6 +71,28 @@ describe("ExternalCallPolicy", () => {
     await all;
   });
 
+  it("applies deadlines while a call waits for concurrency capacity", async () => {
+    let release!: () => void;
+    let entered = false;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const policy = new ExternalCallPolicy({ maxConcurrency: 1, defaultTimeoutMs: 10, maxAttempts: 1 });
+    const first = policy.run(
+      "busy",
+      async () => {
+        entered = true;
+        return gate;
+      },
+      { timeoutMs: 1_000 },
+    );
+    await vi.waitFor(() => expect(entered).toBe(true));
+    const queued = policy.run("queued", async () => "unexpected");
+    await expect(queued).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
+    release();
+    await first;
+  });
+
   it("backs off and transitions the circuit", async () => {
     let now = 0;
     const sleeps: number[] = [];

@@ -48,6 +48,11 @@ interface CircuitEntry {
   openedAt?: number;
 }
 
+interface ConcurrencyWaiter {
+  grant: () => void;
+  cancel: (error: unknown) => void;
+}
+
 export interface ExternalCallPolicyOptions {
   clock?: () => Date;
   sleep?: (delayMs: number) => Promise<void>;
@@ -111,7 +116,7 @@ export class ExternalCallPolicy {
   readonly #onMetric: (metric: ExternalCallMetric) => void;
   readonly #circuits = new Map<string, CircuitEntry>();
   #active = 0;
-  readonly #waiters: Array<() => void> = [];
+  readonly #waiters: ConcurrencyWaiter[] = [];
 
   constructor(options: ExternalCallPolicyOptions = {}) {
     this.#clock = options.clock ?? (() => new Date());
@@ -148,7 +153,7 @@ export class ExternalCallPolicy {
       this.#onMetric({ type: "circuit", operation, requestId, state: "half_open" });
     }
 
-    await this.#acquire();
+    await this.#acquire(operation, requestId, options);
     const startedAt = this.#clock().getTime();
     try {
       const attempts = Math.max(1, options.maxAttempts ?? this.#maxAttempts);
@@ -206,6 +211,13 @@ export class ExternalCallPolicy {
         phase: "request",
       });
     }
+    const requestSignal = init.signal ?? undefined;
+    const runOptions = requestSignal
+      ? {
+          ...options,
+          signal: options.signal ? AbortSignal.any([options.signal, requestSignal]) : requestSignal,
+        }
+      : options;
     return this.run(
       `http:${url.hostname}`,
       async (signal) => {
@@ -229,7 +241,7 @@ export class ExternalCallPolicy {
         }
         return response;
       },
-      options,
+      runOptions,
     );
   }
 
@@ -318,18 +330,74 @@ export class ExternalCallPolicy {
     return created;
   }
 
-  async #acquire(): Promise<void> {
+  async #acquire(operation: string, requestId: string, options: ExternalCallOptions): Promise<void> {
     if (this.#active < this.#maxConcurrency) {
       this.#active += 1;
       return;
     }
-    await new Promise<void>((resolve) => this.#waiters.push(resolve));
-    this.#active += 1;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const waiter: ConcurrencyWaiter = {
+        grant: () => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          this.#active += 1;
+          resolve();
+        },
+        cancel: (error) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          const index = this.#waiters.indexOf(waiter);
+          if (index >= 0) this.#waiters.splice(index, 1);
+          reject(error);
+        },
+      };
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () =>
+        waiter.cancel(
+          new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
+            category: "availability",
+            retryability: "retryable",
+            phase: "request",
+            requestId,
+            cause: options.signal?.reason,
+          }),
+        );
+      if (options.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      const timeoutMs = Math.max(1, options.timeoutMs ?? this.#defaultTimeoutMs);
+      timer = setTimeout(
+        () =>
+          waiter.cancel(
+            new ExternalCallPolicyError(
+              "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+              `Provider call ${operation} exceeded its deadline while waiting for capacity`,
+              {
+                category: "availability",
+                retryability: "retryable",
+                phase: "request",
+                requestId,
+              },
+            ),
+          ),
+        timeoutMs,
+      );
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      this.#waiters.push(waiter);
+    });
   }
 
   #release(): void {
     this.#active = Math.max(0, this.#active - 1);
-    this.#waiters.shift()?.();
+    this.#waiters.shift()?.grant();
   }
 }
 

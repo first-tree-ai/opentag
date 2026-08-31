@@ -78,6 +78,8 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
   const [loading, setLoading] = useState(false);
   const attemptRef = useRef<FeishuSetupAttempt>(undefined);
   const creatingRef = useRef(false);
+  /** Held for the whole of one switch, which spans two requests the reader can press through. */
+  const switchingRef = useRef(false);
   const lifecycleRef = useRef(0);
   const onSuccessRef = useRef(onSuccess);
   onSuccessRef.current = onSuccess;
@@ -172,25 +174,39 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
 
   const switchBrand = useCallback(
     async (brand: FeishuBrand) => {
-      const current = attemptRef.current;
       /*
-       * Released before the replacement is asked for: the Server hands back an attempt that is
-       * still awaiting a scan, so creating first would return the very code the reader is leaving.
-       * A release that fails therefore stops the switch — minting after it would show the same
-       * code again and call it the other brand.
+       * One switch at a time, claimed before anything is awaited. The code and its button stay on
+       * screen for the whole release round-trip — they have to, because a release that fails leaves
+       * that code the live one — so a second press arrives while the first is still in flight. It
+       * would retire the first switch's own creation mid-air, and the cleanup that clears `loading`
+       * is guarded by the same lifecycle it just retired: the panel would be left with no code, no
+       * error, and every later start refused.
        */
-      if (current && ACTIVE_STATES.includes(current.state)) {
-        try {
-          await browserApi.cancelFeishuSetupAttempt(current.id);
-        } catch (cause) {
-          setError({ message: normalizeError(cause, "Unable to switch"), source: "start" });
-          return false;
+      if (switchingRef.current) return false;
+      switchingRef.current = true;
+      try {
+        const current = attemptRef.current;
+        /*
+         * Released before the replacement is asked for: the Server hands back an attempt that is
+         * still awaiting a scan, so creating first would return the very code the reader is
+         * leaving. A release that fails therefore stops the switch — minting after it would show
+         * the same code again and call it the other brand.
+         */
+        if (current && ACTIVE_STATES.includes(current.state)) {
+          try {
+            await browserApi.cancelFeishuSetupAttempt(current.id);
+          } catch (cause) {
+            setError({ message: normalizeError(cause, "Unable to switch"), source: "start" });
+            return false;
+          }
+          attemptRef.current = undefined;
+          setAttempt(undefined);
+          lifecycleRef.current += 1;
         }
-        attemptRef.current = undefined;
-        setAttempt(undefined);
-        lifecycleRef.current += 1;
+        return await start(current?.intent ?? "create", brand);
+      } finally {
+        switchingRef.current = false;
       }
-      return start(current?.intent ?? "create", brand);
     },
     [start],
   );

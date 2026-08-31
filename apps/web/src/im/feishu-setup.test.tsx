@@ -335,6 +335,47 @@ describe("FeishuSetup", () => {
   });
 
   /*
+   * The code and its switch button stay on screen for the whole release round-trip, so the reader
+   * can press twice before the first switch has finished. A second switch that retired the first
+   * one's creation mid-air used to leave the panel with no code, no error, and a creation guard
+   * that never reset — every later press refused, recoverable only by reloading.
+   *
+   * Asserted on the settled end state rather than by waiting for a QR: React has not yet removed
+   * the code being left, so a wait would happily match the one on its way out.
+   */
+  it("survives the reader pressing the brand switch twice", async () => {
+    const create = vi
+      .spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockImplementation(async (_agentId, intent, brand) =>
+        attempt({
+          id: brand === "feishu" ? secondAttemptId : firstAttemptId,
+          intent: intent ?? "create",
+          brand: brand ?? "lark",
+          state: "awaiting_user",
+          qrUrl: "https://accounts.example/setup",
+        }),
+      );
+    const cancel = vi
+      .spyOn(browserApi, "cancelFeishuSetupAttempt")
+      .mockImplementation(async (id) => attempt({ id, intent: "create", state: "canceled", qrUrl: null }));
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    const firstSwitch = await screen.findByRole("button", { name: "Use Feishu instead" });
+    fireEvent.click(firstSwitch);
+    fireEvent.click(firstSwitch);
+    await act(async () => {
+      for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    });
+
+    // One switch happened, and the panel is still usable rather than silently wedged.
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  /*
    * A release that did not land leaves the code the reader asked to leave still awaiting a scan, so
    * the Server's next create reuses it. Minting after a failed cancel would put the same code back
    * on screen under the other brand's name; saying so is the only honest option.

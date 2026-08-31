@@ -284,10 +284,15 @@ describe("ImBinding HTTP API", () => {
     apps.push(app);
     const url = `${feishuSetupAttemptPath(attemptId)}/cancel`;
 
+    /*
+     * A valid origin, deliberately: a browser always sends one, so omitting it would mean the 403
+     * came from the origin check and the token was never what this asserted. The only difference
+     * between the two requests below is the double-submit header.
+     */
     const rejected = await app.inject({
       method: "POST",
       url,
-      headers: { cookie: "opentag.session_token=session; opentag_csrf=csrf" },
+      headers: { cookie: "opentag.session_token=session; opentag_csrf=csrf", origin: "http://localhost:8000" },
     });
     expect(rejected.statusCode).toBe(403);
     expect(service.feishu.cancel).not.toHaveBeenCalled();

@@ -123,10 +123,23 @@ function StepNav({
 }
 
 /** A card's copy: the title it is chosen by, and the line that explains it. */
-function CardCopy({ badge, description, title }: { badge?: string; description: string; title: string }) {
+function CardCopy({
+  badge,
+  description,
+  disabled = false,
+  title,
+}: {
+  badge?: string;
+  description: string;
+  disabled?: boolean;
+  title: string;
+}) {
   return (
     <span className="flex flex-col gap-1 min-w-0">
-      <span className="flex items-center gap-2 font-medium text-kumo-strong" data-ui="onboarding-v2-card-title">
+      <span
+        className={`flex items-center gap-2 font-medium ${disabled ? "text-kumo-subtle" : "text-kumo-strong"}`}
+        data-ui="onboarding-v2-card-title"
+      >
         {title}
         {badge ? (
           <em className="rounded bg-kumo-recessed px-2 py-1 text-xs uppercase text-kumo-subtle">{badge}</em>
@@ -171,10 +184,14 @@ export function DestinationStep({
                 onClick={() => onChoose(destination.id)}
                 variant="ghost"
               >
-                <Icon className="size-10 shrink-0 text-kumo-brand" name={destination.icon} />
+                <Icon
+                  className={`size-10 shrink-0 ${destination.enabled ? "text-kumo-brand" : "text-kumo-subtle"}`}
+                  name={destination.icon}
+                />
                 <CardCopy
                   badge={destination.enabled ? undefined : COMING_SOON}
                   description={copy.description}
+                  disabled={!destination.enabled}
                   title={copy.title}
                 />
               </Button>
@@ -755,7 +772,13 @@ export function ComputerStep({
       ) : null}
 
       {/* The Account's machine reports through the check below; the arrival line is for a new one. */}
-      {computer ? null : <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />}
+      {computer ? null : (
+        <ConnectStatus
+          connected={connected}
+          dataUi="onboarding-v2-connect-status"
+          expired={connect.kind === "expired"}
+        />
+      )}
 
       {ready ? (
         <>

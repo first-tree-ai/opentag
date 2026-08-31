@@ -3207,7 +3207,7 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete setup into onboarding without a Workspace grant", async () => {
     installApi({ workspaceless: true });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Create your agent" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
     expect(
@@ -3219,7 +3219,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ workspaceless: true });
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Create your agent" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(
       vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
@@ -3229,14 +3229,14 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete setup into onboarding", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Create your agent" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
   });
 
   it("renders onboarding without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    await screen.findByRole("heading", { name: "Create your agent" });
+    await screen.findByRole("heading", { name: "Where should your agent run?" });
 
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell

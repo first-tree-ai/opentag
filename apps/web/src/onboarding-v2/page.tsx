@@ -35,7 +35,7 @@ function localDraft(): AgentDraft {
  * given that after it runs.
  */
 export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string) => Promise<void> | void } = {}) {
-  const [draft, setDraft] = useState<AgentDraft>(localDraft);
+  const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const backend = useServerBackend(draft);
 
   /*
@@ -95,7 +95,6 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
       backend={backend}
       cloudAvailable={false}
       draft={draft}
-      destinationPreselected
       onComplete={onComplete}
       onDraftChange={setDraft}
     />

@@ -44,6 +44,11 @@
   background: var(--color-kumo-fill-hover);
 }
 
+.otv2-choice:disabled {
+  background: var(--color-kumo-recessed);
+  cursor: not-allowed;
+}
+
 .otv2-choice[aria-pressed="true"] {
   border-color: var(--color-kumo-brand);
   background: var(--color-kumo-tint);

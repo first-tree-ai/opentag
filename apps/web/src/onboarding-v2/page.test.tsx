@@ -157,6 +157,24 @@ describe("OnboardingV2Page", () => {
     }
   });
 
+  it("uses contained, app-theme-aware OpenAI Blossom art for Codex", () => {
+    render(<OnboardingV2MockPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    const codexMark = document.querySelector('[data-brand="codex"]') as HTMLElement;
+    expect(codexMark.classList).toContain("size-10");
+    expect(codexMark.classList).toContain("bg-kumo-recessed");
+    expect(codexMark.classList).toContain("overflow-hidden");
+    expect(codexMark.querySelector("picture, source")).toBeNull();
+    const variants = [...codexMark.querySelectorAll("img")];
+    expect(variants).toHaveLength(2);
+    expect(variants.every((variant) => variant.classList.contains("size-8"))).toBe(true);
+    expect(variants[0]?.classList).toContain("otv2-codex-mark--light");
+    expect(variants[1]?.classList).toContain("otv2-codex-mark--dark");
+    expect(codexMark?.textContent).toBe("");
+  });
+
   it("holds the name error's line before there is an error to show", () => {
     render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
@@ -230,6 +248,8 @@ describe("OnboardingV2Page", () => {
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
     expect(screen.getByText("This command has expired.")).toBeTruthy();
+    expect(screen.getByText("Connection command expired.")).toBeTruthy();
+    expect(screen.queryByText("Waiting for your computer…")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
     await advance(ISSUE_MS);
@@ -260,6 +280,7 @@ describe("OnboardingV2Page", () => {
     // A light pointer back to the terminal, not a command block: the repair is already running there.
     expect(screen.getByText("opentag doctor --fix").tagName).toBe("CODE");
     expect(screen.getByText(/Continue in your terminal or agent for instructions/)).toBeTruthy();
+    expect(screen.queryByText(/doctor --fix again/)).toBeNull();
     expect(screen.queryByRole("button", { name: /check again/i })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /Copy/ })).toHaveLength(0);
   });
@@ -470,6 +491,7 @@ describe("OnboardingV2Page", () => {
       await advanceMock("Return from Slack");
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+      expect(screen.getByText("Tag @opentag in Slack to put it to work.")).toBeTruthy();
     });
 
     it("offers the same Slack install on the cloud route", async () => {

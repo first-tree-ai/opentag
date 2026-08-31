@@ -11,8 +11,14 @@ afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 function betterAuthStub(reply: () => Response) {
   const paths: string[] = [];
   const bodies: unknown[] = [];
+  const browserOrigins: Array<{ origin: string | null; referer: string | null; secFetchSite: string | null }> = [];
   const handler = vi.fn(async (request: Request) => {
     paths.push(new URL(request.url).pathname);
+    browserOrigins.push({
+      origin: request.headers.get("origin"),
+      referer: request.headers.get("referer"),
+      secFetchSite: request.headers.get("sec-fetch-site"),
+    });
     bodies.push(
       await request
         .clone()
@@ -26,7 +32,7 @@ function betterAuthStub(reply: () => Response) {
     api: { getSession: vi.fn().mockResolvedValue(null) },
     handler,
   } as unknown as OpenTagBetterAuth;
-  return { bodies, instance: { instance, publicUrl: "http://localhost:8000" }, paths };
+  return { bodies, browserOrigins, instance: { instance, publicUrl: "http://localhost:8000" }, paths };
 }
 
 function devSession() {
@@ -159,12 +165,20 @@ describe("browser authentication routes", () => {
     const response = await app.inject({
       method: "GET",
       url: `${HTTP_PATHS.authDevCallback}?next=%2Fagents`,
-      headers: { host: "localhost:8000" },
+      headers: {
+        host: "localhost:8000",
+        origin: "http://localhost:5173",
+        referer: "http://localhost:5173/onboarding",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+      },
       remoteAddress: "127.0.0.1",
     });
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe("/agents");
     expect(betterAuth.paths).toEqual(["/api/v1/auth/dev/sign-in"]);
+    expect(betterAuth.browserOrigins).toEqual([{ origin: "http://localhost:8000", referer: null, secFetchSite: null }]);
     const cookies = String(response.headers["set-cookie"]);
     expect(cookies).toContain("opentag.session_token=dev-session");
     // Without the double-submit token a signed-in development browser could read but never write, sign-out included.

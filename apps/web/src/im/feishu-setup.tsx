@@ -3,6 +3,7 @@ import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { formatDateTime } from "../i18n/format.js";
+import * as m from "../paraglide/messages.js";
 import { Banner, Button, Loader } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
@@ -15,21 +16,16 @@ const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "fa
  * the flow rather than incidental bookkeeping.
  */
 const POLL_INTERVAL_MS = 1_500;
-const FEISHU_SETUP_MESSAGES: Record<string, string> = {
-  FEISHU_APP_ALREADY_BOUND:
-    "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
-  FEISHU_SCOPE_REAUTH_REQUIRED:
-    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-  IM_BINDING_SCOPE_REAUTH_REQUIRED:
-    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-  FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
-  FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
-  FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
-  FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
-  FEISHU_BINDING_IDENTITY_MISMATCH:
-    "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
-  FEISHU_UPSTREAM_UNAVAILABLE:
-    "The Feishu open platform did not return a usable authorization. Check the Server's network access to Feishu, then retry.",
+const FEISHU_SETUP_MESSAGES: Record<string, () => string> = {
+  FEISHU_APP_ALREADY_BOUND: () => m.im_feishu_app_already_bound(),
+  FEISHU_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_scope_reauth_required(),
+  IM_BINDING_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_scope_reauth_required(),
+  FEISHU_SETUP_DENIED: () => m.im_feishu_setup_denied(),
+  FEISHU_SETUP_EXPIRED: () => m.im_feishu_setup_expired(),
+  FEISHU_SETUP_CANCELED: () => m.im_feishu_setup_canceled(),
+  FEISHU_SETUP_OWNER_RESTARTED: () => m.im_feishu_setup_owner_restarted(),
+  FEISHU_BINDING_IDENTITY_MISMATCH: () => m.im_feishu_binding_identity_mismatch(),
+  FEISHU_UPSTREAM_UNAVAILABLE: () => m.im_feishu_upstream_unavailable(),
 };
 
 export interface FeishuSetupControl {
@@ -105,7 +101,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         return true;
       } catch (cause) {
         if (lifecycleRef.current !== lifecycle) return false;
-        setError({ message: normalizeError(cause, "Unable to start setup"), source: "start" });
+        setError({ message: normalizeError(cause, m.im_feishu_unable_to_start_setup()), source: "start" });
         return false;
       } finally {
         if (lifecycleRef.current === lifecycle) {
@@ -141,7 +137,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         setError((currentError) =>
           currentError?.source === "start"
             ? currentError
-            : { message: normalizeError(cause, "Unable to refresh setup"), source: "poll" },
+            : { message: normalizeError(cause, m.im_feishu_unable_to_refresh_setup()), source: "poll" },
         );
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       }
@@ -179,16 +175,14 @@ function FeishuSetupFeedback({
     <Banner data-ui="feishu-setup-feedback">
       {active ? (
         <span aria-hidden="true">
-          <Loader aria-label="Waiting for Feishu authorization" size="sm" />
+          <Loader aria-label={m.im_feishu_waiting_for_authorization()} size="sm" />
         </span>
       ) : null}
-      <strong>Feishu setup started</strong>
+      <strong>{m.im_feishu_setup_started()}</strong>
       <br />
-      {attempt.intent === "reauthorize"
-        ? "Confirm the updated permissions for the current Feishu Bot."
-        : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
+      {attempt.intent === "reauthorize" ? m.im_feishu_reauthorize_instructions() : m.im_feishu_create_instructions()}
       <br />
-      State: {attempt.state}. Expires {formatDateTime(attempt.expiresAt)}.
+      {m.im_feishu_state_expires({ state: attempt.state, expires: formatDateTime(attempt.expiresAt) })}
       {recovery ? (
         <>
           <br />
@@ -200,14 +194,14 @@ function FeishuSetupFeedback({
           <br />
           <FeishuQrCode value={attempt.qrUrl} />
           <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-            Open Feishu authorization
+            {m.im_feishu_open_authorization()}
           </a>
         </>
       ) : null}
       {RETRYABLE_STATES.includes(attempt.state) ? (
         <>
           <br />
-          <Button onClick={() => void onRetry(attempt.intent)}>Retry Feishu setup</Button>
+          <Button onClick={() => void onRetry(attempt.intent)}>{m.im_feishu_retry_setup()}</Button>
         </>
       ) : null}
     </Banner>
@@ -227,7 +221,7 @@ function FeishuQrCode({ value }: { value: string }) {
   }, [value]);
   return source ? (
     <img
-      alt="Scan this QR code in Feishu"
+      alt={m.im_feishu_scan_qr_code()}
       className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />
@@ -235,10 +229,11 @@ function FeishuQrCode({ value }: { value: string }) {
 }
 
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
-  if (attempt.errorCode && FEISHU_SETUP_MESSAGES[attempt.errorCode]) return FEISHU_SETUP_MESSAGES[attempt.errorCode];
-  if (attempt.state === "expired") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_EXPIRED;
-  if (attempt.state === "canceled") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_CANCELED;
-  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact the Account owner for help.";
+  if (attempt.errorCode && FEISHU_SETUP_MESSAGES[attempt.errorCode])
+    return FEISHU_SETUP_MESSAGES[attempt.errorCode]?.();
+  if (attempt.state === "expired") return m.im_feishu_setup_expired();
+  if (attempt.state === "canceled") return m.im_feishu_setup_canceled();
+  if (attempt.state === "failed") return m.im_feishu_setup_failed();
   return undefined;
 }
 
@@ -248,6 +243,6 @@ function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
  */
 function normalizeError(cause: unknown, fallback: string): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
-  if (code && FEISHU_SETUP_MESSAGES[code]) return FEISHU_SETUP_MESSAGES[code];
+  if (code && FEISHU_SETUP_MESSAGES[code]) return FEISHU_SETUP_MESSAGES[code]?.();
   return cause instanceof Error ? cause.message : fallback;
 }

@@ -11,7 +11,7 @@ import {
   writeCredentialsAtomically,
 } from "../auth/credentials.js";
 import { AccessTokenProvider } from "../auth/token-provider.js";
-import { safeCause, statusFallback, validTimeout } from "../request-policy.js";
+import { type RequestOptions, safeCause, statusFallback, validTimeout } from "../request-policy.js";
 import { computerIdentityPath, resolveComputerIdentity } from "../runtime/computer-identity.js";
 
 const temporaryDirectories: string[] = [];
@@ -205,7 +205,9 @@ describe("OpenTagApi", () => {
     controller.abort(new Error("already stopped"));
     const fetchImpl = vi.fn<typeof fetch>();
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
-    await expect(api.me("access", controller.signal)).rejects.toMatchObject({ code: "REQUEST_CANCELLED" });
+    await expect(api.me("access", controller.signal as unknown as RequestOptions)).rejects.toMatchObject({
+      code: "REQUEST_CANCELLED",
+    });
     expect(() => validTimeout(0)).toThrow("positive safe integer");
     expect(() => validTimeout(25)).not.toThrow();
   });

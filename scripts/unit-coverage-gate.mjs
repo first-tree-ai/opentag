@@ -7,12 +7,21 @@
 
 import { readFileSync } from "node:fs";
 import { extname, isAbsolute, posix, relative, resolve } from "node:path";
-import * as ts from "typescript";
+import ts from "typescript";
 
 export const SUPPORTED_SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 
 const EXCLUDED_DIRECTORY_NAMES = new Set(["coverage", "dist", "node_modules"]);
 const EXCLUDED_ROOT_NAMES = new Set(["e2e", "scripts"]);
+const NON_EXECUTABLE_NODE_KINDS = new Set([
+  ts.SyntaxKind.ImportDeclaration,
+  ts.SyntaxKind.ImportEqualsDeclaration,
+  ts.SyntaxKind.ExportDeclaration,
+  ts.SyntaxKind.InterfaceDeclaration,
+  ts.SyntaxKind.TypeAliasDeclaration,
+  ts.SyntaxKind.TypeLiteral,
+]);
+const nonExecutableLineCache = new Map();
 
 function normalizePath(value) {
   return posix.normalize(String(value).replaceAll("\\", "/").replace(/^\.\//, ""));
@@ -35,45 +44,48 @@ export function isSupportedSourcePath(value) {
   return SUPPORTED_SOURCE_EXTENSIONS.has(extname(name).toLowerCase());
 }
 
-function declarationKind(value) {
+function isExecutableSourceLine(value) {
   const trimmed = value.trim();
-  if (/^(?:import|export\s*\{)/.test(trimmed)) return "module";
-  if (/^(?:export\s+)?(?:interface|type)\b/.test(trimmed)) return "type";
-  return undefined;
-}
-
-function declarationDepth(value) {
-  let depth = 0;
-  for (const character of value) {
-    if (character === "{") depth += 1;
-    if (character === "}") depth -= 1;
-  }
-  return depth;
-}
-
-function isExecutableSourceLine(value, declaration) {
-  const trimmed = value.trim();
-  if (declaration.kind) {
-    declaration.depth += declarationDepth(value);
-    if (declaration.depth <= 0 && (value.includes(";") || (declaration.kind === "type" && value.includes("}")))) {
-      declaration.kind = undefined;
-    }
-    return false;
-  }
   if (!trimmed) return false;
   if (/^(?:\/\/|\/\*|\*|\*\/)/.test(trimmed)) return false;
-  const kind = declarationKind(value);
-  if (kind) {
-    declaration.kind = kind;
-    declaration.depth = declarationDepth(value);
-    if (declaration.depth <= 0 && (value.includes(";") || (kind === "type" && value.includes("}")))) {
-      declaration.kind = undefined;
-    }
+  if (/^(?:import\s+type|export\s+(?:type|interface)\b|type\s+\w|interface\s+\w|declare\s+)/.test(trimmed)) {
     return false;
   }
-  if (/^(?:import\s+type|type\s+\w|interface\s+\w|declare\s+|readonly\b)/.test(trimmed)) return false;
   if (/^[{}[\]();,:]+$/.test(trimmed)) return false;
   return true;
+}
+
+/** TypeScript's AST is needed for multiline type/import declarations; their lines do not produce runtime code. */
+function nonExecutableSourceLines(file, repositoryRoot) {
+  const cacheKey = `${repositoryRoot}\0${file}`;
+  const cached = nonExecutableLineCache.get(cacheKey);
+  if (cached) return cached;
+
+  const lines = new Set();
+  try {
+    const sourcePath = resolve(repositoryRoot, file);
+    const source = readFileSync(sourcePath, "utf8");
+    const sourceFile = ts.createSourceFile(
+      sourcePath,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.getScriptKindFromFileName(file),
+    );
+    const visit = (node) => {
+      if (NON_EXECUTABLE_NODE_KINDS.has(node.kind)) {
+        const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+        const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+        for (let line = start; line <= end; line += 1) lines.add(line);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  } catch {
+    // Synthetic diffs used by the pure gate tests have no source file to parse.
+  }
+  nonExecutableLineCache.set(cacheKey, lines);
+  return lines;
 }
 
 /** Extract added lines from a unified diff, keyed by their post-change repository path. */
@@ -100,35 +112,6 @@ function consumeDiffContent({ changed, currentFile, line, nextLine }) {
     return nextLine + 1;
   }
   return line.startsWith("-") ? nextLine : nextLine + 1;
-}
-
-function sourceDeclarationLines(file, repositoryRoot) {
-  const lines = new Set();
-  try {
-    const path = resolve(repositoryRoot, file);
-    const source = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true);
-    const mark = (node) => {
-      const start = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-      const end = source.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
-      for (let line = start; line <= end; line += 1) lines.add(line);
-    };
-    const visit = (node) => {
-      if (
-        ts.isImportDeclaration(node) ||
-        ts.isExportDeclaration(node) ||
-        ts.isInterfaceDeclaration(node) ||
-        ts.isTypeAliasDeclaration(node) ||
-        ts.isPropertySignature(node)
-      ) {
-        mark(node);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-  } catch {
-    // Missing or non-TypeScript files fall back to the line classifier below.
-  }
-  return lines;
 }
 
 export function extractChangedLines(diffText) {
@@ -181,11 +164,9 @@ function evaluateChangedFile({ file, lines, lineHits, repositoryRoot }) {
   const uncovered = [];
   let covered = 0;
   let total = 0;
-  const declaration = { depth: 0, kind: undefined };
-  const declarationLines = sourceDeclarationLines(file, repositoryRoot);
+  const nonExecutableLines = nonExecutableSourceLines(file, repositoryRoot);
   for (const { content, line } of lines) {
-    if (declarationLines.has(line)) continue;
-    if (!isExecutableSourceLine(content, declaration)) continue;
+    if (nonExecutableLines.has(line) || !isExecutableSourceLine(content)) continue;
     total += 1;
     if (!lineHits?.has(line)) {
       uncovered.push(`${file}:${line} (missing coverage entry)`);

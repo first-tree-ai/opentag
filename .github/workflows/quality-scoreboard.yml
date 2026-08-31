@@ -1,0 +1,125 @@
+name: Quality Scoreboard
+
+on:
+  schedule:
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mirror-advisory:
+    name: Documentation Mirror Advisory
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Check documentation mirrors (advisory)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/check-doc-mirrors.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  scoreboard:
+    name: Generate Quality Scoreboard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Build and time tests
+        id: repository-tests
+        shell: bash
+        run: |
+          set +e
+          pnpm build
+          build_status=$?
+          started_ms=$(node -p 'Date.now()')
+          pnpm test
+          test_status=$?
+          finished_ms=$(node -p 'Date.now()')
+          set -e
+          duration_ms=$((finished_ms - started_ms))
+          printf '{"durationMs":%s}\n' "$duration_ms" > "$RUNNER_TEMP/test-duration.json"
+          printf '{"buildStatus":%s,"testStatus":%s}\n' "$build_status" "$test_status" > "$RUNNER_TEMP/quality-run-status.json"
+
+      - name: Collect open high-risk issues
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue list --state open --label high-risk --json number > "$RUNNER_TEMP/high-risk-items.json" || true
+
+      - name: Write quality scoreboard
+        if: always()
+        run: |
+          node scripts/quality-scoreboard.mjs \
+            --json-path "$RUNNER_TEMP/quality-scoreboard.json" \
+            --markdown-path "$RUNNER_TEMP/quality-scoreboard.md" \
+            --test-duration-path "$RUNNER_TEMP/test-duration.json" \
+            --high-risk-path "$RUNNER_TEMP/high-risk-items.json" \
+            --revision "$GITHUB_SHA"
+
+      - name: Append scoreboard summary
+        if: always()
+        run: cat "$RUNNER_TEMP/quality-scoreboard.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload scoreboard artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: quality-scoreboard-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/quality-scoreboard.json
+            ${{ runner.temp }}/quality-scoreboard.md
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Report build and test status
+        if: always()
+        run: |
+          node --input-type=module - "$RUNNER_TEMP/quality-run-status.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const status = JSON.parse(readFileSync(process.argv[1], "utf8"));
+          if (status.buildStatus !== 0 || status.testStatus !== 0) {
+            console.error(`Build status: ${status.buildStatus}; test status: ${status.testStatus}`);
+            process.exit(1);
+          }
+          NODE

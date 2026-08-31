@@ -1,5 +1,5 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "onboarding_v2_resume_blocked_detail": "Choose which computer it runs on, and setup carries on from there. We can't pick for you: the connect step can tell a computer arrived, not that it is the one that ran your command.",
+  "onboarding_v2_resume_blocked_detail": "Setup carries on once it has a computer to run on.",
   "onboarding_v2_resume_blocked_title": "{agentName} has no computer yet."
 }

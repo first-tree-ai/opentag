@@ -63,7 +63,9 @@ function view(agent: AgentDetail, evidence: WorkspaceComputerSummary | undefined
 afterEach(() => vi.restoreAllMocks());
 
 describe("An Agent with no Computer", () => {
-  it("offers a Computer the Account already connected and binds the Agent to the chosen one", async () => {
+  it("gives the Agent the Computer this Account has, without asking which", async () => {
+    // An Account has one Computer, so there is nothing to disambiguate and nothing to click: the
+    // read that finds it is the whole decision.
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
     const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
     const onAgentChanged = vi.fn();
@@ -73,27 +75,33 @@ describe("An Agent with no Computer", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "No Computer connected" })).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "Use Ada's Mac" }));
-
     await waitFor(() => expect(rebind).toHaveBeenCalledWith(agentId, computerId));
     await waitFor(() => expect(onAgentChanged).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /Use / })).toBeNull();
   });
 
   it("reports a failed binding instead of leaving the Agent looking connected", async () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
-    vi.spyOn(browserApi, "rebindAgentComputer").mockRejectedValue(new Error("The requested Computer was not found"));
+    const rebind = vi
+      .spyOn(browserApi, "rebindAgentComputer")
+      .mockRejectedValue(new Error("The requested Computer was not found"));
     const onAgentChanged = vi.fn();
 
     await renderInRouter(
       <AgentComputerSettings agent={view(unboundAgent, undefined)} onAgentChanged={onAgentChanged} />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "Use Ada's Mac" }));
 
     expect(await screen.findByText("The requested Computer was not found")).toBeTruthy();
     expect(onAgentChanged).not.toHaveBeenCalled();
+    // The failure is reported once and waits for the reader. An automatic bind that re-ran on the
+    // render its own failure caused would spin here instead of being readable.
+    expect(rebind).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(rebind).toHaveBeenCalledTimes(2));
   });
 
-  it("says the Computer read failed instead of reporting an Account with no Computers", async () => {
+  it("says the Computer read failed instead of reporting an Account with no Computer", async () => {
     // The two look identical if the panel reads `data?.computers ?? []`, and the reader whose read
     // is failing is the one told to go and enrol a machine they already have.
     vi.spyOn(browserApi, "computers").mockRejectedValue(new Error("Service unavailable"));
@@ -103,20 +111,36 @@ describe("An Agent with no Computer", () => {
     );
 
     expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
-    expect(screen.getByText(/couldn't read the Computers on this Account/)).toBeTruthy();
-    // The section stays: a failed read never silently removes the choice it was going to offer.
-    expect(screen.getByText("Use a Computer you already connected")).toBeTruthy();
+    expect(screen.getByText(/couldn't read this Account's Computer/)).toBeTruthy();
+    expect(screen.queryByText("Connect a Computer")).toBeNull();
   });
 
-  it("offers only a new Computer when the Account genuinely has none", async () => {
+  it("offers enrolment only when the Account genuinely has none", async () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
 
     await renderInRouter(
       <AgentComputerSettings agent={view(unboundAgent, undefined)} onAgentChanged={() => undefined} />,
     );
 
-    expect(await screen.findByText("Connect a new Computer")).toBeTruthy();
-    expect(screen.queryByText("Use a Computer you already connected")).toBeNull();
+    expect(await screen.findByText("Connect a Computer")).toBeTruthy();
+    expect(rebind).not.toHaveBeenCalled();
+  });
+
+  it("refuses to pick when an Account still holds more than one Computer", async () => {
+    // Enrolments made before the one-Computer rule can still reach this client. Binding the first
+    // of them would hand the Agent a durable home on the strength of list order.
+    vi.spyOn(browserApi, "computers").mockResolvedValue({
+      computers: [computer, { ...computer, computerId: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", displayName: "Spare" }],
+    });
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+
+    await renderInRouter(
+      <AgentComputerSettings agent={view(unboundAgent, undefined)} onAgentChanged={() => undefined} />,
+    );
+
+    expect(await screen.findByText(/more than one Computer/)).toBeTruthy();
+    expect(rebind).not.toHaveBeenCalled();
   });
 
   it("keeps showing the bound Computer's own panel once one is connected", async () => {
@@ -128,7 +152,7 @@ describe("An Agent with no Computer", () => {
 
     await renderInRouter(<AgentComputerSettings agent={view(bound, computer)} onAgentChanged={() => undefined} />);
 
-    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Use Ada's Mac" })).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Ada's Mac \u00b7 macOS" })).toBeTruthy();
+    expect(screen.queryByText(/Connecting this Agent to/)).toBeNull();
   });
 });

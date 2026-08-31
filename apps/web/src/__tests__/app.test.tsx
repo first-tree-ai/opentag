@@ -3052,7 +3052,7 @@ describe("OpenTag Web App Shell", () => {
      * once linked to that Agent's Computer settings, which lives under the shell that redirects
      * every Account with `setupCompletedAt === null` straight back to onboarding -- so the exit
      * returned the reader to the screen they were trying to leave. A hook test cannot see that:
-     * only the real router mounts the route that redirects. So the choice is rendered here, and
+     * only the real router mounts the route that redirects. So the recovery is rendered here, and
      * this test drives it to a working bind rather than asserting a link's href.
      */
     installApi({ setupCompletedAt: null, agentUnbound: true });
@@ -3060,8 +3060,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
-    // Reachable and usable, not merely advertised: the Account's own Computer is offered right here.
-    fireEvent.click(await screen.findByRole("button", { name: "Use Ada's Mac" }));
+    // Reachable and resolved right here, not merely advertised: the Account has one Computer, so
+    // the Agent is put on it without the reader being asked which.
 
     // The reader is out: the Agent has a Computer, the resume that refused this run reads again and
     // continues. Asserting the blocked screen is gone is what a redirect loop could never satisfy.

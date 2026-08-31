@@ -1,111 +1,123 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Text } from "../../ui/design-system.js";
-import { platformLabel } from "./agent-presentation.js";
 import { useComputersQuery } from "./agent-queries.js";
 import { ComputerSetup } from "./computer-setup.js";
 
 /**
- * Choosing which Computer an Agent runs on.
+ * Giving an Agent the Computer its Account has.
  *
- * It is shared because the two places that need it are the two places an Agent can be found without
- * one — its Settings, and an onboarding run that resumed into it — and a reader who follows either
- * route must arrive at the same controls. Duplicating it once let the two drift; the second copy is
- * how the onboarding recovery ended up pointing at a route the setup gate refuses.
+ * There is nothing here for a reader to decide. An Account has one Computer, so an Agent without one
+ * has exactly one place it can run, and this surface's whole job is to put it there. It is shared
+ * because the two places an Agent can be found without a Computer -- its Settings, and an onboarding
+ * run that resumed into it -- must resolve it the same way; the second copy is how the onboarding
+ * recovery once ended up pointing at a route the setup gate refuses.
  *
- * Every bind here is an act the reader took against a named machine. Connecting a new Computer only
- * puts it in the list: the connect step can tell that *a* Computer arrived, not that it is the one
- * that ran the command, and that is not evidence enough to hand an Agent a durable home. The reader
- * closes that gap by picking, which is the one thing the Server cannot infer for them.
+ * An Account with no Computer is the only case where connecting is the answer, and the machine that
+ * arrives is by then the Account's only one. Several Computers is not a richer case to choose from
+ * but a record that contradicts the product model, so this stops rather than guessing which one the
+ * Agent was meant to run on.
  */
 export function AgentComputerChoice({
   agentId,
   onBound,
 }: {
   agentId: string;
-  /** Called once the Agent has the chosen Computer, so the surface around this can move on. */
+  /** Called once the Agent has the Account's Computer, so the surface around this can move on. */
   onBound: () => void;
 }) {
   const computersQuery = useComputersQuery();
   const [binding, setBinding] = useState(false);
   const [error, setError] = useState<string>();
-  // Only a successful read speaks for the Account. Answering a failed one with "connect a new
-  // Computer" would send someone to enrol a machine they already own -- the same conflation the
-  // Agent's availability refuses to make one layer up.
+  // A bind is attempted once per Computer. Without this a failure would be retried by every render
+  // the failure itself causes, and the reader would watch an error flicker instead of reading it.
+  const attempted = useRef<string | undefined>(undefined);
+  // Only a successful read speaks for the Account. Answering a failed one with "connect a Computer"
+  // would send someone to enrol a machine they already own -- the same conflation the Agent's
+  // availability refuses to make one layer up.
   const enrolled = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
+  const computer = enrolled?.length === 1 ? enrolled[0] : undefined;
 
-  async function bind(computerId: string) {
-    try {
-      setBinding(true);
-      setError(undefined);
-      await browserApi.rebindAgentComputer(agentId, computerId);
-      onBound();
-    } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : m.agents_computer_choice_bind_failed());
-    } finally {
-      setBinding(false);
-    }
+  const bind = useCallback(
+    async (computerId: string) => {
+      try {
+        setBinding(true);
+        setError(undefined);
+        await browserApi.rebindAgentComputer(agentId, computerId);
+        onBound();
+      } catch (cause) {
+        setError(cause instanceof Error && cause.message ? cause.message : m.agents_computer_choice_bind_failed());
+      } finally {
+        setBinding(false);
+      }
+    },
+    [agentId, onBound],
+  );
+
+  useEffect(() => {
+    if (!computer || attempted.current === computer.computerId) return;
+    attempted.current = computer.computerId;
+    void bind(computer.computerId);
+  }, [computer, bind]);
+
+  function retry(computerId: string) {
+    attempted.current = computerId;
+    void bind(computerId);
   }
 
-  return (
-    <div className="grid gap-4">
-      {error ? <Banner variant="error" role="alert" description={error} /> : null}
-      {/*
-       * An Account that genuinely has no Computers is offered nothing to pick from: the section is
-       * absent, not empty. A read that failed keeps it, because those are different facts and this
-       * is the surface where confusing them sends someone to enrol a machine they already own.
-       */}
-      {enrolled !== undefined && enrolled.length === 0 ? null : (
-        <div className="grid gap-2">
-          <Text variant="heading">{m.agents_computer_choice_existing_heading()}</Text>
-          {enrolled === undefined ? (
-            computersQuery.isError ? (
-              <>
-                <p>{m.agents_computer_choice_read_failed()}</p>
-                <div>
-                  <Button size="compact" variant="secondary" onClick={() => void computersQuery.refetch()}>
-                    {m.common_try_again()}
-                  </Button>
-                </div>
-              </>
-            ) : (
-              <p>{m.agents_computer_choice_loading()}</p>
-            )
-          ) : (
-            <ul className="grid gap-2">
-              {enrolled.map((computer) => (
-                <li className="flex flex-wrap items-center justify-between gap-3" key={computer.computerId}>
-                  <span>
-                    {computer.displayName} · {platformLabel(computer.platform)} ·{" "}
-                    {computer.connectionStatus === "online"
-                      ? m.agents_computer_choice_online()
-                      : m.agents_computer_choice_offline()}
-                  </span>
-                  <Button
-                    disabled={binding}
-                    size="compact"
-                    variant="secondary"
-                    onClick={() => void bind(computer.computerId)}
-                  >
-                    {m.agents_computer_choice_use({ name: computer.displayName })}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
+  if (error && computer) {
+    return (
+      <div className="grid gap-4">
+        <Banner variant="error" role="alert" description={error} />
+        <div>
+          <Button disabled={binding} size="compact" variant="secondary" onClick={() => retry(computer.computerId)}>
+            {m.common_try_again()}
+          </Button>
         </div>
-      )}
-      <div className="grid gap-2">
-        <Text variant="heading">{m.agents_computer_choice_connect_new()}</Text>
-        {/*
-         * Connecting adds the machine to the list above; it does not bind it. What this step
-         * observes is an arrival -- a Computer that appeared or reconnected since it started -- and
-         * an arrival cannot prove which machine ran the command. Picking it is the reader's, and it
-         * is one click away once it appears.
-         */}
-        <ComputerSetup onConnected={() => void computersQuery.refetch()} />
       </div>
+    );
+  }
+
+  if (enrolled === undefined) {
+    return (
+      <div className="grid gap-2">
+        {computersQuery.isError ? (
+          <>
+            <p>{m.agents_computer_choice_read_failed()}</p>
+            <div>
+              <Button size="compact" variant="secondary" onClick={() => void computersQuery.refetch()}>
+                {m.common_try_again()}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <p>{m.agents_computer_choice_loading()}</p>
+        )}
+      </div>
+    );
+  }
+
+  /*
+   * Enrolments made before the one-Computer rule can still reach this client. Picking one of them
+   * would hand the Agent a durable home on the strength of list order, so the contradiction is
+   * reported and left to be repaired where the records are.
+   */
+  if (enrolled.length > 1) {
+    return <Banner variant="error" role="alert" description={m.agents_computer_choice_multiple()} />;
+  }
+
+  if (computer) return <p>{m.agents_computer_choice_binding({ name: computer.displayName })}</p>;
+
+  return (
+    <div className="grid gap-2">
+      <Text variant="heading">{m.agents_computer_choice_connect_new()}</Text>
+      {/*
+       * Connecting is offered only to an Account that has none, so the machine that arrives is the
+       * Computer this Account has. Refetching is what binds it: the read that finds it runs the
+       * bind above, and the Agent lands on it without asking the reader to confirm the obvious.
+       */}
+      <ComputerSetup onConnected={() => void computersQuery.refetch()} />
     </div>
   );
 }

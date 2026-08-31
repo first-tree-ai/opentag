@@ -9,9 +9,9 @@ import { ComputerSetup } from "../computer-setup.js";
 
 /**
  * The panel an Agent that has no Computer gets. It is a distinct screen rather than the reconnect
- * flow with a blank name: there is no machine to bring back, so the question is which Computer this
- * Agent should run on. The choice itself is shared with the onboarding recovery, so a reader who
- * arrives from either direction gets the same controls.
+ * flow with a blank name: there is no machine to bring back, so what has to happen is that the Agent
+ * is given the Computer this Account has. That step is shared with the onboarding recovery, so a
+ * reader who arrives from either direction gets the same result.
  */
 function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   return (

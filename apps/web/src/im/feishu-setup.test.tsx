@@ -36,6 +36,7 @@ function Harness({ onSuccess = () => undefined }: { onSuccess?: () => void }) {
           <button type="button" onClick={() => void setup.start("replace")}>
             Replace
           </button>
+          {setup.loading ? <span>Loading setup</span> : null}
           {setup.feedback}
         </>
       )}
@@ -68,6 +69,7 @@ describe("FeishuSetup", () => {
     expect(link.href).toBe("https://open.feishu.cn/setup");
     expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Loading setup")).toBeNull();
   });
 
   it("polls a pending attempt to success once and invokes the narrow success callback", async () => {

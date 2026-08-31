@@ -145,6 +145,18 @@ describe("the onboarding flow against the Server", () => {
     vi.useRealTimers();
   });
 
+  it("starts with Local available and Cloud visibly coming soon", async () => {
+    computersReturning([]);
+    render(<OnboardingV2Page />);
+
+    await settle();
+    expect(screen.getByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Local computer/ })).toHaveProperty("disabled", false);
+    const cloud = screen.getByRole("button", { name: /Cloud computer/ });
+    expect(cloud).toHaveProperty("disabled", true);
+    expect(cloud.textContent).toContain("Coming soon");
+  });
+
   it("walks from the connect command to a created Agent and a scanned Lark code", async () => {
     computersReturning([computer()]);
     redeemedVerdict();
@@ -199,6 +211,54 @@ describe("the onboarding flow against the Server", () => {
     press("Continue");
 
     expect(screen.getByLabelText("Agent name")).toBeTruthy();
+  });
+
+  it("checks and preserves the runtime selected on the Create agent step", async () => {
+    computersReturning([
+      computer({
+        providerReadiness: [
+          { provider: "codex", status: "ready", observedAt: NOW },
+          { provider: "claude-code", status: "install", observedAt: NOW },
+        ],
+      }),
+    ]);
+    redeemedVerdict();
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    render(<OnboardingV2Page />);
+
+    await settle();
+    press(/Local computer/);
+    press("Continue");
+    press(/Claude Code/);
+    press("Continue");
+    await settle();
+    await tick(POLL_MS);
+
+    expect(screen.getByText("Claude Code CLI is installed")).toBeTruthy();
+    expect(screen.getByText("We can't find the Claude Code command on this computer.")).toBeTruthy();
+    expect(screen.queryByText("Codex CLI is installed")).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("labels a not-yet-issued Lark QR as generating rather than scannable", async () => {
+    computersReturning([computer()]);
+    redeemedVerdict();
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt({ qrUrl: null }));
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ qrUrl: null }));
+    render(<OnboardingV2Page />);
+
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/Lark/);
+    await settle();
+
+    expect(screen.getByText("Generating QR code…")).toBeTruthy();
+    expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
   });
 
   it("keeps the reader on the check while the runtime is still being probed", async () => {

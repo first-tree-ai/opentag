@@ -36,15 +36,13 @@ function RefreshUsageButton() {
 describe("AgentUsageOverview", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("describes partial totals without referring to charts that are not shown", async () => {
+  it("keeps data coverage detail out of the Agent home summary", async () => {
     vi.spyOn(browserApi, "agentUsage").mockResolvedValue(usage);
 
     await renderInRouter(<AgentUsageOverview agentId="agent-1" />);
 
-    const coverage = await screen.findByText("Partial data.");
-    expect(coverage.closest("[role='status']")?.textContent).toBe(
-      "Partial data. Token data is available for 31 of 32 tasks. Token totals are partial.",
-    );
+    expect(await screen.findByText("428K")).toBeTruthy();
+    expect(screen.queryByText("Partial data.")).toBeNull();
   });
 
   it("uses chart headings without repeating their meaning in helper copy", async () => {
@@ -68,7 +66,8 @@ describe("AgentUsageOverview", () => {
       </>,
     );
 
-    expect((await screen.findAllByText("Partial data.")).length).toBe(2);
+    expect(await screen.findByText("Partial data.")).toBeTruthy();
+    expect(screen.getAllByText("Partial data.")).toHaveLength(1);
     expect(loadUsage).toHaveBeenCalledTimes(1);
   });
 
@@ -85,7 +84,8 @@ describe("AgentUsageOverview", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Retry Agent usage" }));
 
-    expect(await screen.findByText("Partial data.")).toBeTruthy();
+    expect(await screen.findByText("428K")).toBeTruthy();
+    expect(screen.queryByText("Partial data.")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
     expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
@@ -142,10 +142,10 @@ describe("AgentUsageOverview", () => {
       </>,
     );
 
-    expect(await screen.findByText("Partial data.")).toBeTruthy();
+    expect(await screen.findByText("428K")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Refresh usage" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Usage not found");
-    expect(screen.queryByText("Partial data.")).toBeNull();
+    expect(screen.queryByText("428K")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
   });
 });

@@ -84,16 +84,17 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
       : (status.detail ?? (status.label === "Ready" ? "Ready for new work" : "Open to view status details"));
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base p-5 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[48rem]/workspace:grid-cols-[minmax(0,1.25fr)_minmax(12rem,1fr)_5rem_7rem_1rem] @min-[48rem]/workspace:items-center"
+      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[48rem]/workspace:grid-cols-[minmax(0,1.25fr)_minmax(12rem,1fr)_5rem_7rem_1rem] @min-[48rem]/workspace:items-center"
       data-tone={status.tone}
       data-ui="agent-row"
     >
-      <div className="flex min-w-0 items-center gap-3" data-ui="agent-row-identity">
+      <div className="flex min-w-0 items-center gap-3 pr-6 @min-[48rem]/workspace:pr-0" data-ui="agent-row-identity">
         <span
-          className="grid size-12 shrink-0 place-items-center rounded-full bg-kumo-tint text-base font-semibold text-kumo-strong"
+          className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold text-kumo-strong"
+          data-ui="agent-row-avatar"
           aria-hidden="true"
         >
-          {initials(agent.displayName)}
+          {initials(agent.displayName.replaceAll("-", " "))}
         </span>
         <div className="grid min-w-0 gap-1">
           <strong className="truncate text-base">{agent.displayName}</strong>
@@ -109,11 +110,14 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           {statusDetail}
         </p>
       </div>
-      <dl className="contents" data-ui="agent-row-facts">
-        <AgentFact label="Tasks" value={formatCompactNumber(agent.usage.tasks)} />
-        <AgentFact label="Last checked" value={agentActivityLabel(agent)} />
+      <dl className="grid grid-cols-2 gap-4 @min-[48rem]/workspace:contents" data-ui="agent-row-facts">
+        <AgentFact label={`Tasks (${agent.usage.windowDays}d)`} value={formatCompactNumber(agent.usage.tasks)} />
+        <AgentFact label={`Tokens (${agent.usage.windowDays}d)`} value={formatCompactNumber(agent.usage.tokens)} />
       </dl>
-      <Icon className="text-kumo-subtle" name="chevron-right" />
+      <Icon
+        className="absolute right-5 top-5 text-kumo-subtle @min-[48rem]/workspace:static @min-[48rem]/workspace:justify-self-end"
+        name="chevron-right"
+      />
       <Link
         aria-label={`Open ${agent.displayName}`}
         className="absolute inset-0 rounded-lg focus:outline-none"
@@ -131,12 +135,4 @@ function AgentFact({ label, value }: { label: string; value: string }) {
       <dd className="truncate text-sm font-medium text-kumo-strong">{value}</dd>
     </div>
   );
-}
-
-function agentActivityLabel(agent: AgentListItem): string {
-  if (agent.activity.state === "working") return `${formatElapsedCompact(agent.activity.startedAt)} ago`;
-  if (agent.availability.lastConfirmedAt) {
-    return `Checked ${formatElapsedCompact(agent.availability.lastConfirmedAt)} ago`;
-  }
-  return "Not confirmed";
 }

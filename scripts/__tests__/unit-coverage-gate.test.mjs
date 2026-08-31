@@ -189,6 +189,20 @@ test("package test infrastructure is excluded without excluding unrelated __test
   assert.equal(result.passed, true);
 });
 
+test("root and package tooling config modules are excluded without excluding source config modules", () => {
+  for (const path of [
+    "vitest.coverage.config.ts",
+    "packages/client/vitest.agent-runtime.config.ts",
+    "apps/web/vite.config.ts",
+    "packages/server/drizzle.config.ts",
+  ]) {
+    assert.equal(isSupportedSourcePath(path), false, path);
+  }
+  assert.equal(isSupportedSourcePath("apps/web/src/vite.config.ts"), true);
+  assert.equal(isSupportedSourcePath("packages/server/src/config.ts"), true);
+  assert.equal(isSupportedSourcePath("tools/vitest.config.ts"), true);
+});
+
 test("a declaration the provider emits no statement for is not blamed for being uncoverable", () => {
   // A TypeScript interface member and a bare JSX text child both vanish at compile time, so the
   // instrumented file carries no statement for either line. Counting them would fail a pull request

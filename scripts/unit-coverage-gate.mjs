@@ -25,6 +25,16 @@ const PACKAGE_SOURCE_ROOTS = new Set([
   "packages/server/src",
   "packages/shared/src",
 ]);
+const TOOLING_CONFIG_ROOTS = new Set([
+  ".",
+  "apps/cli",
+  "apps/web",
+  "e2e",
+  "packages/client",
+  "packages/server",
+  "packages/shared",
+]);
+const TOOLING_CONFIG_FILE_PATTERN = /^[^/]+\.config\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/;
 
 function normalizePath(value) {
   return posix.normalize(String(value).replaceAll("\\", "/").replace(/^\.\//, ""));
@@ -44,6 +54,14 @@ function isPackageTestInfrastructurePath(path) {
   return false;
 }
 
+function isToolingConfigPath(path) {
+  const name = fileName(path);
+  if (!TOOLING_CONFIG_FILE_PATTERN.test(name)) return false;
+  const separator = path.lastIndexOf("/");
+  const parent = separator === -1 ? "." : path.slice(0, separator);
+  return TOOLING_CONFIG_ROOTS.has(parent);
+}
+
 export function isSupportedSourcePath(value) {
   const path = normalizePath(value);
   const segments = path.split("/");
@@ -51,6 +69,7 @@ export function isSupportedSourcePath(value) {
   if (segments.some((segment) => EXCLUDED_DIRECTORY_NAMES.has(segment))) return false;
   if (segments.includes("paraglide") && segments.includes("src")) return false;
   if (isPackageTestInfrastructurePath(path)) return false;
+  if (isToolingConfigPath(path)) return false;
   const name = fileName(path);
   if (/\.d\.(?:cts|mts|ts)$/.test(name)) return false;
   if (/\.(?:test|spec)\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/.test(name)) return false;

@@ -11,6 +11,8 @@
   "globalEnv": [
     "CI",
     "NODE_ENV",
+    "NODE_OPTIONS",
+    "OPENTAG_*",
     "DATABASE_URL",
     "OPENTAG_DATABASE_URL",
     "OPENTAG_E2E_*",

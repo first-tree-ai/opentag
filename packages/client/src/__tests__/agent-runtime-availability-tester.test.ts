@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentProviderError } from "../agent-runtime/errors.js";
+import { AgentProviderError, AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
   AgentRunResult,
   AgentRuntime,
@@ -144,6 +144,79 @@ describe("AgentRuntimeAvailabilityTester", () => {
 
     resolveCreate(factory.runtime);
     await vi.waitFor(() => expect(factory.closed).toBe(true));
+  });
+
+  it("rejects non-positive timeout and cleanup budgets", () => {
+    const factories = new Map();
+    expect(() => new AgentRuntimeAvailabilityTester({ factories, timeoutMs: 0 })).toThrow(
+      "Agent Runtime availability test timeout must be a positive safe integer",
+    );
+    expect(() => new AgentRuntimeAvailabilityTester({ factories, cleanupMs: 0 })).toThrow(
+      "Agent Runtime availability test cleanup budget must be a positive safe integer",
+    );
+  });
+
+  it("maps prompt throw after tool activity to interaction_or_tool", async () => {
+    const factory = scriptedFactory({
+      prompt: async (_request, sink) => {
+        await sink({
+          type: "tool_started",
+          runId: "run-1",
+          toolCallId: "tool-1",
+          name: "shell",
+        });
+        throw new Error("provider crashed after tool");
+      },
+    });
+    const tester = new AgentRuntimeAvailabilityTester({
+      factories: new Map([["codex", factory]]),
+      timeoutMs: 5_000,
+      cleanupMs: 20,
+    });
+    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toEqual({
+      type: "agent-runtime:test:result",
+      requestId: "11111111-1111-4111-8111-111111111111",
+      status: "failed",
+      code: "interaction_or_tool",
+    });
+  });
+
+  it("maps a post-start prompt throw without tools to provider_failed", async () => {
+    const factory = scriptedFactory({
+      prompt: async () => {
+        throw new Error("model transport failed");
+      },
+    });
+    const tester = new AgentRuntimeAvailabilityTester({
+      factories: new Map([["codex", factory]]),
+      timeoutMs: 5_000,
+      cleanupMs: 20,
+    });
+    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toEqual({
+      type: "agent-runtime:test:result",
+      requestId: "11111111-1111-4111-8111-111111111111",
+      status: "failed",
+      code: "provider_failed",
+    });
+  });
+
+  it("maps AgentRuntimeError create failures to provider_start_failed", async () => {
+    for (const code of ["create_failed", "configuration_invalid"] as const) {
+      const factory = scriptedFactory({
+        create: async () => {
+          throw new AgentRuntimeError(code, `${code} from factory`);
+        },
+      });
+      const tester = new AgentRuntimeAvailabilityTester({
+        factories: new Map([["codex", factory]]),
+      });
+      await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toEqual({
+        type: "agent-runtime:test:result",
+        requestId: "11111111-1111-4111-8111-111111111111",
+        status: "failed",
+        code: "provider_start_failed",
+      });
+    }
   });
 
   it("fails start failures without leaking diagnostics and does not resume a Session binding", async () => {

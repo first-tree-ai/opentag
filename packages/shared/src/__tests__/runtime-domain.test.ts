@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  AgentRuntimeTestResultFrameSchema,
   AgentTraceBatchSchema,
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
@@ -438,6 +439,21 @@ describe("runtime domain contract", () => {
         status: "passed",
       }),
     ).toThrow();
+    expect(() =>
+      AgentRuntimeTestResultFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+        code: "provider_failed",
+      }),
+    ).toThrow(/forbids a failure code/);
+    expect(() =>
+      AgentRuntimeTestResultFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "failed",
+      }),
+    ).toThrow(/requires a failure code/);
   });
 });
 

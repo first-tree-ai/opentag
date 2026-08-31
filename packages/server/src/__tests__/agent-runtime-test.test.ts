@@ -50,6 +50,21 @@ describe("Agent Runtime test owner", () => {
     );
   });
 
+  it("ignores non-result frames and cancels when the caller signal is already aborted", async () => {
+    const fixture = await testOwnerFixture();
+    expect(fixture.owner.businessOptions().parse({ type: "session:reconcile" })).toBeUndefined();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      fixture.owner.start(fixture.computerId, {
+        computerId: fixture.computerId,
+        provider: "codex",
+        signal: controller.signal,
+      }),
+    ).resolves.toEqual({ status: "failed", code: "cancelled" });
+    expect(fixture.owner.pendingCount()).toBe(0);
+  });
+
   it("enforces one in-flight test per Computer, a global pending limit, TTL, and cancel cleanup", async () => {
     const fixture = await testOwnerFixture({ maxPending: 1, ttlMs: 30 });
     const first = fixture.owner.start(fixture.computerId, {

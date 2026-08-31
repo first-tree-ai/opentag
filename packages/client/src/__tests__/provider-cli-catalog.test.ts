@@ -21,8 +21,10 @@ describe("PROVIDER_CLI_CATALOG", () => {
     expect(feishu.probes.surfaceArgs).toEqual(["im", "--help"]);
     const slack = requireProviderCliCatalogEntry("slack");
     expect(slack.command).toBe("slack");
+    expect(slack.compatibility).toBe(">=4.2.0 <5.0.0");
     expect(slack.probes.versionArgs).toEqual(["version"]);
     expect(slack.probes.surfaceArgs).toEqual(["api", "--help"]);
+    expect(slack.managedArguments).toEqual(["--skip-update"]);
   });
 
   it("pins reviewed digests, size bounds, and https URLs for every P0 platform", () => {

@@ -45,4 +45,13 @@ describe("probeProviderCliExecutable", () => {
     expect(result).toEqual({ status: "ok", version: entry.version });
     expect(invocations).toHaveLength(2);
   });
+
+  it("rejects Slack versions below the supported 4.2.0 floor", async () => {
+    const entry = requireProviderCliCatalogEntry("slack");
+    const result = await probeProviderCliExecutable("/fixture/slack", entry, {
+      execFile: async () => ({ stdout: "Using slack v4.1.0\n", stderr: "" }),
+    });
+
+    expect(result).toEqual({ status: "failed", code: "version_incompatible" });
+  });
 });

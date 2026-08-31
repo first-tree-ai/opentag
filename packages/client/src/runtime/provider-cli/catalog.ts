@@ -156,7 +156,7 @@ export const PROVIDER_CLI_CATALOG: readonly ProviderCliCatalogEntry[] = [
     command: "slack",
     displayName: "Slack CLI",
     version: SLACK_VERSION,
-    compatibility: ">=4.0.0 <5.0.0",
+    compatibility: ">=4.2.0 <5.0.0",
     probes: {
       versionArgs: ["version"],
       surfaceArgs: ["api", "--help"],

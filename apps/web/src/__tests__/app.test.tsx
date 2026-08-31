@@ -2496,23 +2496,26 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/tasks");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Tasks" })).toBeTruthy();
-    expect(screen.getByText("Read-only debug view")).toBeTruthy();
+    expect(screen.queryByText("Read-only debug view")).toBeNull();
     const task = await screen.findByRole("link", {
       name: "Investigate the failed deployment",
     });
     fireEvent.click(task);
     expect(await screen.findByText("Stored runtime output")).toBeTruthy();
-    expect(screen.getByLabelText("Task source").textContent).toContain("Reviewer");
+    expect(screen.getByLabelText("Task details").textContent).toContain("Reviewer");
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/tasks/${taskSessionId}`);
   });
 
-  it("labels a directly opened Task detail as a read-only debug view", async () => {
+  it("opens a Task detail as a read-only activity record", async () => {
     installApi();
     window.history.replaceState({}, "", `/tasks/${taskSessionId}`);
     render(<App />);
 
     expect(await screen.findByText("Stored runtime output")).toBeTruthy();
-    expect(screen.getByText("Read-only debug view")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
+    expect(screen.queryByText("Read-only debug view")).toBeNull();
+    expect(screen.queryByText("Runtime details")).toBeNull();
   });
 
   it.each(["/settings", "/settings/members", "/members", "/teams"])(

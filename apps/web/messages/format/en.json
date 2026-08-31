@@ -34,7 +34,5 @@
         "countPlural=other": "{count} minutes ago"
       }
     }
-  ],
-  "format_tasks_token_data_available": "Token data is available for {measuredTasks} of {tasks} tasks. {affectedContent} are partial.",
-  "format_tasks_token_data_none": "None of the {tasks} tasks reported token usage. {affectedContent} may be empty."
+  ]
 }

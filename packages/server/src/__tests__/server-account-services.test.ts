@@ -34,7 +34,7 @@ import {
   projectComputerImCliReadiness,
   projectComputerProviderReadiness,
 } from "../services/computers/provider-readiness.js";
-import { OnboardingResetError, OnboardingResetService } from "../services/onboarding-lab/index.js";
+import { OnboardingResetError, OnboardingResetService } from "../services/onboarding-reset/index.js";
 import { WorkspaceSetupService, WorkspaceSetupServiceError } from "../services/workspaces/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -463,7 +463,40 @@ describe("machine authentication and Computer services", () => {
   });
 });
 
-describe("Onboarding Lab and setup services", () => {
+describe("Onboarding reset and setup services", () => {
+  it("reboards a staging Account without deleting its existing resources", async () => {
+    const bootstrap = await account();
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const issued = await machine.issueForAccount(bootstrap.userId, {});
+    const enrolled = await machine.exchangeConnectCode(enrollmentInput(issued.code));
+    await unit.database.update(users).set({ setupCompletedAt: NOW }).where(eq(users.id, bootstrap.userId));
+
+    const reboard = new OnboardingResetService({
+      agents: { suspendById: vi.fn(), deleteById: vi.fn() },
+      database: unit.database,
+      environment: "staging",
+      now: () => NOW,
+    });
+    await reboard.reboard(bootstrap.userId);
+
+    const [user] = await unit.database.select().from(users).where(eq(users.id, bootstrap.userId));
+    expect(user?.setupCompletedAt).toBeNull();
+    expect((await unit.database.select().from(accountComputers)).map((row) => row.id)).toContain(
+      enrolled.workspaceComputerId,
+    );
+    expect((await unit.database.select().from(computerCredentials)).length).toBe(1);
+    expect((await unit.database.select().from(computerConnectCodes)).length).toBe(1);
+
+    const disabled = new OnboardingResetService({
+      agents: { suspendById: vi.fn(), deleteById: vi.fn() },
+      database: unit.database,
+      environment: "prod",
+    });
+    await expect(disabled.reboard(bootstrap.userId)).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
+    await unit.database.update(users).set({ suspendedAt: NOW }).where(eq(users.id, bootstrap.userId));
+    await expect(reboard.reboard(bootstrap.userId)).rejects.toMatchObject({ code: "AUTH_USER_SUSPENDED" });
+  });
+
   it("resets owned active resources, revokes credentials and codes, and clears setup", async () => {
     const bootstrap = await account();
     const machine = new MachineAuthService(unit.database, { now: () => NOW });

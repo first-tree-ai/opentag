@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CommandBlock } from "./command-block.js";
-import { CHECK_COPY, COPY } from "./copy.js";
+import { CHECK_COPY, CommandBlock } from "../setup/index.js";
+import { COPY } from "./copy.js";
 import { SCENARIOS } from "./mock-backend.js";
 import { OnboardingV2MockPage } from "./page.js";
 

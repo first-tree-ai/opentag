@@ -1011,6 +1011,55 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
   });
 
+  it("does not resume a stored creation intent onto a Computer the reader moved away from", async () => {
+    // The reader's own selection is the divergence: the intent names a machine that cannot run an
+    // Agent, so nothing is sent, the reader picks another — and then the abandoned machine comes
+    // back. "Is that route ready anywhere" is true again at that moment, and it is the wrong
+    // question, because the reader is looking at a different Computer.
+    let abandonedIsReady = false;
+    storeCreationIntent({
+      creationIntentId: "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e77",
+      request: { name: "abandoned-agent", displayName: "Abandoned Agent", runtimeProvider: "codex", computerId },
+    });
+    installApi({
+      computers: () => [
+        {
+          ...(twoReadyComputers[0] as Record<string, unknown>),
+          connectionStatus: abandonedIsReady ? "online" : "offline",
+        },
+        twoReadyComputers[1] as Record<string, unknown>,
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(agentCreationPosts()).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change Computer" }));
+    fireEvent.click(screen.getByRole("button", { name: /Zulu Tower/ }));
+    expect(screen.getByText("Zulu Tower")).toBeTruthy();
+
+    abandonedIsReady = true;
+    fireEvent(window, new Event("focus"));
+    // Wait for the refetch to actually land, so the assertion below is about the gate and not about
+    // a Computer list that never changed. The picker is where the machine's own state is legible.
+    fireEvent.click(screen.getByRole("button", { name: "Change Computer" }));
+    await waitFor(() => {
+      const option = screen.getByRole("button", { name: /Ada's Mac/ });
+      expect(option.textContent).toContain("Online");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(agentCreationPosts()).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Zulu Tower/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("does not resume a stored creation intent onto a Runtime the form is not offering", async () => {
     storeCreationIntent({
       creationIntentId: "0a2f7d19-8b44-4d2e-8c31-5f6a7b8c9d01",

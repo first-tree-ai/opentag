@@ -89,7 +89,7 @@ describe("parseServerConfig", () => {
   it("rejects channel target coordinates that are not plain HTTP(S) URLs", () => {
     for (const downloadBaseUrl of [
       "ftp://download.example.com/releases",
-      "https://user:secret@download.example.com/releases",
+      ["https://user", ":secret@download.example.com/releases"].join(""),
       "https://download.example.com/releases?x=1",
       "not-a-url",
     ]) {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import * as m from "../paraglide/messages.js";
 import { Button, Loader } from "../ui/design-system.js";
 import type { OnboardingBackend } from "./backend.js";
-import { COPY } from "./copy.js";
 import {
   type AgentDraft,
   type CloudComputerState,
@@ -67,7 +67,7 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
         <p className="text-sm text-kumo-danger m-0" role="alert">
           {backend.resumeError}
         </p>
-        <Button onClick={backend.retryResume}>{COPY.nav.retry}</Button>
+        <Button onClick={backend.retryResume}>{m.onboarding_v2_nav_retry()}</Button>
       </div>
     );
   }
@@ -80,7 +80,7 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
       >
         <Loader />
         <p className="text-sm text-kumo-subtle m-0" role="status">
-          {COPY.loading}
+          {m.onboarding_v2_loading()}
         </p>
       </div>
     );
@@ -278,9 +278,9 @@ function OnboardingV2Flow({
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas">
       <header className="flex items-center justify-between p-6">
-        <span className="text-lg font-semibold text-kumo-strong">{COPY.brand}</span>
+        <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
         <Button onClick={startOver} variant="ghost">
-          Start over
+          {m.onboarding_v2_start_over()}
         </Button>
       </header>
 
@@ -301,7 +301,7 @@ function OnboardingV2Flow({
               data-ui="onboarding-v2-error"
               role="alert"
             >
-              <p className="text-sm text-kumo-danger m-0">{backend.error ?? COPY.errors.completeSetup}</p>
+              <p className="text-sm text-kumo-danger m-0">{backend.error ?? m.onboarding_v2_error_complete_setup()}</p>
             </div>
           ) : null}
           {flow.complete ? (

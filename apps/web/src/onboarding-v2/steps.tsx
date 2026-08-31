@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useId, useState } from "react";
+import * as m from "../paraglide/messages.js";
 import {
   CheckLine,
   CommandBlock,
@@ -12,15 +13,6 @@ import {
 import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
 import type { KnownComputer, PlanSignIn } from "./backend.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
-import {
-  CLOUD_RUNTIME_COPY,
-  COMING_SOON,
-  COPY,
-  DESTINATION_COPY,
-  RUNTIME_COPY,
-  STEP_LABELS,
-  TOKEN_COPY,
-} from "./copy.js";
 import {
   type AgentDraft,
   CLOUD_RUNTIMES,
@@ -59,7 +51,7 @@ const PANEL = "flex flex-col items-center gap-3 text-sm text-center";
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   return (
-    <nav aria-label="Setup progress" className="w-full" data-ui="onboarding-v2-rail">
+    <nav aria-label={m.onboarding_v2_setup_progress()} className="w-full" data-ui="onboarding-v2-rail">
       <ol className="flex gap-2 m-0 p-0 list-none">
         {steps.map((step, index) => (
           <li
@@ -73,7 +65,13 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
             >
               {step.status === "complete" ? <Icon name="check" /> : index + 1}
             </span>
-            <span data-ui="onboarding-v2-rail-label">{STEP_LABELS[step.id]}</span>
+            <span data-ui="onboarding-v2-rail-label">
+              {step.id === "agent"
+                ? m.onboarding_v2_step_agent_label()
+                : step.id === "computer"
+                  ? m.onboarding_v2_step_computer_label()
+                  : m.onboarding_v2_step_messaging_label()}
+            </span>
           </li>
         ))}
       </ol>
@@ -91,7 +89,7 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
 function StepNav({
   back,
   disabled = false,
-  label = COPY.nav.next,
+  label = m.onboarding_v2_nav_next(),
   onNext,
   submit = false,
 }: {
@@ -107,7 +105,7 @@ function StepNav({
         {back ? (
           <Button onClick={back} variant="ghost">
             <Icon name="arrow-left" />
-            <span>{COPY.nav.back}</span>
+            <span>{m.onboarding_v2_nav_back()}</span>
           </Button>
         ) : null}
       </div>
@@ -154,12 +152,21 @@ export function DestinationStep({
     <section className={STEP} data-ui="onboarding-v2-step-destination">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {COPY.destination.title}
+          {m.onboarding_v2_destination_title()}
         </Text>
       </header>
       <ul className={CHOICES}>
         {destinations.map((destination) => {
-          const copy = DESTINATION_COPY[destination.id];
+          const copy =
+            destination.id === "local"
+              ? {
+                  title: m.onboarding_v2_destination_local_title(),
+                  description: m.onboarding_v2_destination_local_description(),
+                }
+              : {
+                  title: m.onboarding_v2_destination_cloud_title(),
+                  description: m.onboarding_v2_destination_cloud_description(),
+                };
           return (
             <li key={destination.id}>
               <Button
@@ -171,7 +178,7 @@ export function DestinationStep({
               >
                 <Icon className="size-10 shrink-0 text-kumo-brand" name={destination.icon} />
                 <CardCopy
-                  badge={destination.enabled ? undefined : COMING_SOON}
+                  badge={destination.enabled ? undefined : m.onboarding_v2_coming_soon()}
                   description={copy.description}
                   title={copy.title}
                 />
@@ -208,20 +215,20 @@ function AgentNameField({
   const error = showError ? validateAgentName(draft.name) : undefined;
   const errorText =
     error === "empty"
-      ? COPY.agent.nameEmptyError
+      ? m.onboarding_v2_agent_name_empty_error()
       : error === "too-long"
-        ? COPY.agent.nameTooLongError
+        ? m.onboarding_v2_agent_name_too_long_error()
         : error === "charset"
-          ? COPY.agent.nameCharsetError
+          ? m.onboarding_v2_agent_name_charset_error()
           : undefined;
 
   return (
     <div className={FIELDSET} data-ui="onboarding-v2-field">
       <label className="font-medium text-kumo-strong" data-ui="onboarding-v2-field-label" htmlFor={nameId} id={labelId}>
-        {COPY.agent.nameLabel}
+        {m.onboarding_v2_agent_name_label()}
       </label>
       <p className={HINT} data-ui="onboarding-v2-field-hint" id={hintId}>
-        {COPY.agent.nameHint}
+        {m.onboarding_v2_agent_name_hint()}
       </p>
       <KumoInputControl
         aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
@@ -256,15 +263,20 @@ function AgentNameField({
 }
 
 function RuntimeMark({ runtime }: { runtime: Runtime }) {
-  return <BrandMark brand={runtime} label={RUNTIME_COPY[runtime].title} />;
+  return (
+    <BrandMark
+      brand={runtime}
+      label={runtime === "codex" ? m.onboarding_v2_runtime_codex_title() : m.onboarding_v2_runtime_claude_code_title()}
+    />
+  );
 }
 
 function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
   return (
     <fieldset className={FIELDSET}>
-      <legend className="font-medium text-kumo-strong">{COPY.agent.runtimeLabel}</legend>
+      <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
       <p className={HINT} data-ui="onboarding-v2-field-hint">
-        {COPY.agent.runtimeHint}
+        {m.onboarding_v2_agent_runtime_hint()}
       </p>
       <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
         {RUNTIMES.map((runtime) => (
@@ -276,12 +288,23 @@ function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draf
               variant="ghost"
             >
               <RuntimeMark runtime={runtime} />
-              <CardCopy description={RUNTIME_COPY[runtime].description} title={RUNTIME_COPY[runtime].title} />
+              <CardCopy
+                description={
+                  runtime === "codex"
+                    ? m.onboarding_v2_runtime_codex_description()
+                    : m.onboarding_v2_runtime_claude_code_description()
+                }
+                title={
+                  runtime === "codex"
+                    ? m.onboarding_v2_runtime_codex_title()
+                    : m.onboarding_v2_runtime_claude_code_title()
+                }
+              />
             </Button>
           </li>
         ))}
       </ul>
-      <p className="text-xs text-kumo-subtle m-0">{COPY.agent.runtimeFootnote}</p>
+      <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_footnote()}</p>
     </fieldset>
   );
 }
@@ -303,8 +326,26 @@ function MessagingPicker({
             onClick={() => onChoose(candidate)}
             variant="ghost"
           >
-            <BrandMark brand={candidate} label={COPY.messaging[candidate].title} />
-            <CardCopy description={COPY.messaging[candidate].description} title={COPY.messaging[candidate].title} />
+            <BrandMark
+              brand={candidate}
+              label={
+                candidate === "feishu"
+                  ? m.onboarding_v2_messaging_lark_title()
+                  : m.onboarding_v2_messaging_slack_title()
+              }
+            />
+            <CardCopy
+              description={
+                candidate === "feishu"
+                  ? m.onboarding_v2_messaging_lark_description()
+                  : m.onboarding_v2_messaging_slack_description()
+              }
+              title={
+                candidate === "feishu"
+                  ? m.onboarding_v2_messaging_lark_title()
+                  : m.onboarding_v2_messaging_slack_title()
+              }
+            />
           </Button>
         </li>
       ))}
@@ -344,9 +385,12 @@ function MessagingConnection({
    */
   const waitingReason =
     computerOnline === false
-      ? COPY.messaging.computerOffline
+      ? m.onboarding_v2_messaging_computer_offline()
       : cliState === "failed" && provider
-        ? COPY.messaging.cliMissing(COPY.messaging[provider].title)
+        ? m.onboarding_v2_messaging_cli_missing({
+            provider:
+              provider === "feishu" ? m.onboarding_v2_messaging_lark_title() : m.onboarding_v2_messaging_slack_title(),
+          })
         : undefined;
   return (
     <div className="flex flex-col items-center gap-3">
@@ -357,12 +401,19 @@ function MessagingConnection({
       {provider && cliState === "failed" && messaging.kind !== "waiting-handoff" ? (
         <p className="flex items-start gap-2 text-sm text-kumo-warning m-0">
           <Icon className="shrink-0 mt-1" name="close" />
-          <span>{COPY.messaging.cliMissing(COPY.messaging[provider].title)}</span>
+          <span>
+            {m.onboarding_v2_messaging_cli_missing({
+              provider:
+                provider === "feishu"
+                  ? m.onboarding_v2_messaging_lark_title()
+                  : m.onboarding_v2_messaging_slack_title(),
+            })}
+          </span>
         </p>
       ) : null}
       {provider === "feishu" ? (
         <div className={PANEL}>
-          <p className="text-kumo-subtle m-0">{COPY.messaging.feishuIntro}</p>
+          <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_lark_intro()}</p>
           <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
           </div>
@@ -379,26 +430,26 @@ function MessagingConnection({
             ) : (
               <p className={WAITING_LINE} role="status">
                 <span aria-hidden="true" className="ots-pulse shrink-0" />
-                {COPY.messaging.confirming}
+                {m.onboarding_v2_messaging_confirming()}
               </p>
             )
           ) : messaging.kind === "failed" ? (
             <div className="flex flex-col items-center gap-3">
-              <p className="text-sm text-kumo-danger m-0">{COPY.messaging.failed}</p>
+              <p className="text-sm text-kumo-danger m-0">{m.onboarding_v2_messaging_failed()}</p>
               <Button onClick={() => onRetry(provider)} variant="secondary">
-                {COPY.messaging.retry}
+                {m.onboarding_v2_messaging_retry()}
               </Button>
             </div>
           ) : (
             <p className={WAITING_LINE} role="status">
               <span aria-hidden="true" className="ots-pulse shrink-0" />
-              {COPY.messaging.waiting}
+              {m.onboarding_v2_messaging_waiting()}
             </p>
           )}
         </div>
       ) : provider === "slack" ? (
         <div className={PANEL}>
-          <p className="text-kumo-subtle m-0">{COPY.messaging.slackIntro}</p>
+          <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_slack_intro()}</p>
           {/*
             Installing is a link out: the user finishes in Slack and comes back. So the waiting
             state here is about a page they are not on, not something to watch on this one.
@@ -413,13 +464,13 @@ function MessagingConnection({
               ) : (
                 <p className={WAITING_LINE} role="status">
                   <span aria-hidden="true" className="ots-pulse shrink-0" />
-                  {COPY.messaging.confirming}
+                  {m.onboarding_v2_messaging_confirming()}
                 </p>
               )
             ) : messaging.kind === "away" ? (
               <p className={WAITING_LINE} role="status">
                 <span aria-hidden="true" className="ots-pulse shrink-0" />
-                {COPY.messaging.slackWaiting}
+                {m.onboarding_v2_messaging_slack_waiting()}
               </p>
             ) : (
               /*
@@ -432,7 +483,7 @@ function MessagingConnection({
                 onClick={onSlackInstall}
                 variant="ghost"
               >
-                <img alt={COPY.messaging.slackAction} src={ADD_TO_SLACK_URL} />
+                <img alt={m.onboarding_v2_messaging_slack_action()} src={ADD_TO_SLACK_URL} />
               </Button>
             )}
           </div>
@@ -466,7 +517,7 @@ export function AgentStep({
     <section className={STEP} data-ui="onboarding-v2-step-agent">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {COPY.agent.title}
+          {m.onboarding_v2_agent_title()}
         </Text>
       </header>
       <form className="flex flex-col gap-6" onSubmit={submit}>
@@ -507,7 +558,13 @@ export function CloudStep({
   signIn: PlanSignIn;
 }) {
   const [touched, setTouched] = useState(false);
-  const runtimeLabel = draft.cloudRuntime ? CLOUD_RUNTIME_COPY[draft.cloudRuntime].title : "";
+  const runtimeLabel = draft.cloudRuntime
+    ? draft.cloudRuntime === "opentag"
+      ? m.onboarding_v2_cloud_runtime_opentag_title()
+      : draft.cloudRuntime === "codex"
+        ? m.onboarding_v2_runtime_codex_title()
+        : m.onboarding_v2_runtime_claude_code_title()
+    : "";
   const signedIn = signIn === "signed-in";
   const submittable = draftIsSubmittable(draft, signedIn);
 
@@ -521,16 +578,16 @@ export function CloudStep({
     <section className={STEP} data-ui="onboarding-v2-step-cloud">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {COPY.cloud.title}
+          {m.onboarding_v2_cloud_title()}
         </Text>
       </header>
       <form className="flex flex-col gap-6" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
 
         <fieldset className={FIELDSET}>
-          <legend className="font-medium text-kumo-strong">{COPY.cloud.runtimeLabel}</legend>
+          <legend className="font-medium text-kumo-strong">{m.onboarding_v2_cloud_runtime_label()}</legend>
           <p className={HINT} data-ui="onboarding-v2-field-hint">
-            {COPY.cloud.runtimeHint}
+            {m.onboarding_v2_cloud_runtime_hint()}
           </p>
           {/* OpenTag's own agent leads on its own row; the coding agents follow beside each other. */}
           <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
@@ -554,23 +611,44 @@ export function CloudStep({
                   }
                   variant="ghost"
                 >
-                  <BrandMark brand={runtime} label={CLOUD_RUNTIME_COPY[runtime].title} />
+                  <BrandMark
+                    brand={runtime}
+                    label={
+                      runtime === "opentag"
+                        ? m.onboarding_v2_cloud_runtime_opentag_title()
+                        : runtime === "codex"
+                          ? m.onboarding_v2_runtime_codex_title()
+                          : m.onboarding_v2_runtime_claude_code_title()
+                    }
+                  />
                   <CardCopy
-                    description={CLOUD_RUNTIME_COPY[runtime].description}
-                    title={CLOUD_RUNTIME_COPY[runtime].title}
+                    description={
+                      runtime === "opentag"
+                        ? m.onboarding_v2_cloud_runtime_opentag_description()
+                        : runtime === "codex"
+                          ? m.onboarding_v2_runtime_codex_description()
+                          : m.onboarding_v2_runtime_claude_code_description()
+                    }
+                    title={
+                      runtime === "opentag"
+                        ? m.onboarding_v2_cloud_runtime_opentag_title()
+                        : runtime === "codex"
+                          ? m.onboarding_v2_runtime_codex_title()
+                          : m.onboarding_v2_runtime_claude_code_title()
+                    }
                   />
                 </Button>
               </li>
             ))}
           </ul>
-          <p className="text-xs text-kumo-subtle m-0">{COPY.cloud.runtimeFootnote}</p>
+          <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_cloud_runtime_footnote()}</p>
         </fieldset>
 
         {draft.cloudRuntime === undefined ? null : (
           <fieldset className={FIELDSET}>
-            <legend className="font-medium text-kumo-strong">{COPY.cloud.tokenLabel}</legend>
+            <legend className="font-medium text-kumo-strong">{m.onboarding_v2_cloud_token_label()}</legend>
             <p className={HINT} data-ui="onboarding-v2-field-hint">
-              {COPY.cloud.tokenHint}
+              {m.onboarding_v2_cloud_token_hint()}
             </p>
             <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
               {TOKEN_SOURCES.map((source) => {
@@ -589,7 +667,18 @@ export function CloudStep({
                       onClick={() => onChange({ ...draft, tokenSource: source })}
                       variant="ghost"
                     >
-                      <CardCopy description={TOKEN_COPY[source].description} title={TOKEN_COPY[source].title} />
+                      <CardCopy
+                        description={
+                          source === "opentag"
+                            ? m.onboarding_v2_token_opentag_description()
+                            : m.onboarding_v2_token_own_plan_description()
+                        }
+                        title={
+                          source === "opentag"
+                            ? m.onboarding_v2_token_opentag_title()
+                            : m.onboarding_v2_token_own_plan_title()
+                        }
+                      />
                     </Button>
                   </li>
                 );
@@ -607,10 +696,10 @@ export function CloudStep({
           disabled={!submittable || cloudComputer !== "idle"}
           label={
             cloudComputer === "allocating"
-              ? COPY.cloud.allocating
+              ? m.onboarding_v2_cloud_allocating()
               : creation === "creating"
-                ? COPY.check.creating
-                : COPY.nav.next
+                ? m.onboarding_v2_check_creating()
+                : m.onboarding_v2_nav_next()
           }
           submit
         />
@@ -632,19 +721,19 @@ function PlanSignInPanel({
   return (
     <div className="flex flex-col gap-3 rounded-xl bg-kumo-base p-4 ring ring-kumo-line">
       <Text as="h2" variant="heading">
-        {COPY.cloud.signInTitle(runtimeLabel)}
+        {m.onboarding_v2_cloud_sign_in_title({ runtime: runtimeLabel })}
       </Text>
-      <p className="text-sm text-kumo-subtle m-0">{COPY.cloud.signInHint(runtimeLabel)}</p>
+      <p className="text-sm text-kumo-subtle m-0">{m.onboarding_v2_cloud_sign_in_hint({ runtime: runtimeLabel })}</p>
       <div className="otv2-slot--signin flex items-start">
         {signIn === "signed-in" ? (
-          <StatusIndicator label={COPY.cloud.signInDone(runtimeLabel)} tone="success" />
+          <StatusIndicator label={m.onboarding_v2_cloud_sign_in_done({ runtime: runtimeLabel })} tone="success" />
         ) : signIn === "pending" ? (
           <p className={WAITING_LINE} role="status">
             <span aria-hidden="true" className="ots-pulse shrink-0" />
-            {COPY.cloud.signInPending}
+            {m.onboarding_v2_cloud_sign_in_pending()}
           </p>
         ) : (
-          <Button onClick={onSignIn}>{COPY.cloud.signInAction(runtimeLabel)}</Button>
+          <Button onClick={onSignIn}>{m.onboarding_v2_cloud_sign_in_action({ runtime: runtimeLabel })}</Button>
         )}
       </div>
     </div>
@@ -690,7 +779,11 @@ export function ComputerStep({
    */
   const connectingNew = computer === undefined;
   const checks = deriveChecks(readiness?.runtime);
-  const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
+  const runtimeLabel = draft.runtime
+    ? draft.runtime === "codex"
+      ? m.onboarding_v2_runtime_codex_title()
+      : m.onboarding_v2_runtime_claude_code_title()
+    : "";
   const resolving = readinessIsResolving(readiness);
   // Asked about the runtime this draft chose, so a verdict left over from a different one
   // cannot open the gate while the next poll is still in flight.
@@ -701,12 +794,14 @@ export function ComputerStep({
     <section className={STEP} data-ui="onboarding-v2-step-computer">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {computer ? COPY.connect.yoursTitle : COPY.connect.title}
+          {computer ? m.onboarding_v2_connect_yours_title() : m.onboarding_v2_connect_title()}
         </Text>
-        <p className="text-kumo-subtle m-0">{computer ? COPY.connect.yoursLead : COPY.connect.lead}</p>
+        <p className="text-kumo-subtle m-0">
+          {computer ? m.onboarding_v2_connect_yours_lead() : m.onboarding_v2_connect_lead()}
+        </p>
         <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
           <Icon className="shrink-0 mt-1 text-kumo-brand" name="shield" />
-          {COPY.connect.privacy}
+          {m.onboarding_v2_connect_privacy()}
         </p>
       </header>
 
@@ -722,7 +817,7 @@ export function ComputerStep({
       {computer && !computer.online ? (
         <p className="flex items-start gap-2 text-sm text-kumo-strong m-0" role="status">
           <Icon className="shrink-0 mt-1 text-kumo-warning" name="laptop" />
-          {COPY.connect.offlineLead}
+          {m.onboarding_v2_connect_offline_lead()}
         </p>
       ) : null}
 
@@ -736,7 +831,7 @@ export function ComputerStep({
             className="otv2-command-lead flex items-center justify-between gap-3"
             data-ui="onboarding-v2-command-lead"
           >
-            <p className="text-sm text-kumo-subtle m-0">{COPY.connect.commandIntro}</p>
+            <p className="text-sm text-kumo-subtle m-0">{m.onboarding_v2_connect_command_intro()}</p>
             <span className="text-sm text-kumo-subtle shrink-0" data-ui="onboarding-v2-expiry">
               {connect.kind === "issued" ? <Countdown expiresAt={connect.expiresAt} /> : null}
             </span>
@@ -759,17 +854,22 @@ export function ComputerStep({
             {resolving ? (
               <p className={WAITING_LINE} role="status">
                 <span aria-hidden="true" className="ots-pulse shrink-0" />
-                {COPY.check.waiting}
+                {m.onboarding_v2_check_waiting()}
               </p>
             ) : failures.length > 0 ? (
               <div className="flex flex-col gap-1">
-                <p className="font-medium text-kumo-strong m-0">{COPY.check.failedIntro(failures.length)}</p>
+                <p className="font-medium text-kumo-strong m-0">
+                  {failures.length > 1
+                    ? m.onboarding_v2_check_failed_many({ count: failures.length })
+                    : m.onboarding_v2_check_failed_one()}
+                </p>
                 <p className="text-sm text-kumo-subtle m-0">
-                  {COPY.check.repairHint} <code>{COPY.check.repairCommand}</code> {COPY.check.repairHintSuffix}
+                  {m.onboarding_v2_check_repair_hint()} <code>opentag doctor --fix</code>{" "}
+                  {m.onboarding_v2_check_repair_hint_suffix()}
                 </p>
               </div>
             ) : (
-              <StatusIndicator label={COPY.check.passed} tone="success" />
+              <StatusIndicator label={m.onboarding_v2_check_passed()} tone="success" />
             )}
           </div>
         </>
@@ -778,7 +878,7 @@ export function ComputerStep({
       <StepNav
         back={onBack}
         disabled={!ready || !passed || creation !== "idle"}
-        label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
+        label={creation === "creating" ? m.onboarding_v2_check_creating() : m.onboarding_v2_nav_next()}
         onNext={onCreate}
       />
     </section>
@@ -787,9 +887,9 @@ export function ComputerStep({
 
 /** Whether the Account's machine can be reached, and when it was last seen if it cannot. */
 function computerStatus(computer: KnownComputer): string {
-  if (computer.online) return COPY.connect.online;
-  const seen = computer.lastSeen ? ` · ${COPY.connect.lastSeen(computer.lastSeen)}` : "";
-  return `${COPY.connect.offline}${seen}`;
+  if (computer.online) return m.onboarding_v2_connect_online();
+  if (computer.lastSeen) return m.onboarding_v2_connect_offline_last_seen({ when: computer.lastSeen });
+  return m.onboarding_v2_connect_offline();
 }
 
 function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
@@ -800,10 +900,10 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
       <div aria-hidden="true" className="ots-command-pending">
         <CommandBlock
           command={PLACEHOLDER_CONNECT_COMMAND}
-          comment={COPY.connect.commandComment}
-          copiedLabel={COPY.connect.copied}
-          copyLabel={COPY.connect.copy}
-          fallbackHint={COPY.connect.copyFallback}
+          comment={m.onboarding_v2_connect_command_comment()}
+          copiedLabel={m.onboarding_v2_connect_copied()}
+          copyLabel={m.onboarding_v2_connect_copy()}
+          fallbackHint={m.onboarding_v2_connect_copy_fallback()}
           inert
         />
       </div>
@@ -812,20 +912,20 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
   return (
     <CommandBlock
       command={connect.command}
-      comment={COPY.connect.commandComment}
-      copiedLabel={COPY.connect.copied}
-      copyLabel={COPY.connect.copy}
+      comment={m.onboarding_v2_connect_command_comment()}
+      copiedLabel={m.onboarding_v2_connect_copied()}
+      copyLabel={m.onboarding_v2_connect_copy()}
       expiredNotice={
         connect.kind === "expired" ? (
           <>
-            <span>{COPY.connect.expired}</span>
+            <span>{m.onboarding_v2_connect_expired()}</span>
             <Button onClick={onRefreshCommand} variant="inline">
-              {COPY.connect.refresh}
+              {m.onboarding_v2_connect_refresh()}
             </Button>
           </>
         ) : undefined
       }
-      fallbackHint={COPY.connect.copyFallback}
+      fallbackHint={m.onboarding_v2_connect_copy_fallback()}
       key={connect.command}
     />
   );
@@ -857,9 +957,9 @@ export function MessagingStep({
     <section className={STEP} data-ui="onboarding-v2-step-messaging">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {COPY.messaging.title}
+          {m.onboarding_v2_messaging_title()}
         </Text>
-        <p className="text-kumo-subtle m-0">{COPY.messaging.description}</p>
+        <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_description()}</p>
       </header>
 
       <MessagingPicker onChoose={onChoose} provider={provider} />
@@ -891,9 +991,9 @@ export function DoneStep({ name }: { name: string }) {
       </span>
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {COPY.done.title(name)}
+          {m.onboarding_v2_done_title({ name })}
         </Text>
-        <p className="text-kumo-subtle m-0">{COPY.done.description(name)}</p>
+        <p className="text-kumo-subtle m-0">{m.onboarding_v2_done_description({ name })}</p>
       </header>
     </section>
   );

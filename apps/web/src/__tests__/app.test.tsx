@@ -3070,6 +3070,46 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/onboarding");
   });
 
+  it("lets an Account with several Computers out of onboarding instead of stranding it", async () => {
+    /*
+     * Refusing to bind one of several Computers is right -- list order is not consent -- but this
+     * screen sits inside the setup gate, and the product has no way to remove a Computer. Refusing
+     * with nothing to press would trap an Account that enrolled a second machine while that was
+     * allowed and then used this change's create-before-binding path. The way out is taken
+     * elsewhere, so what this surface owes the reader is a way to be read again.
+     */
+    // Flipped by the test, not counted, because the onboarding backend reads `/computers` itself
+    // and a read counter would hand the component a state the reader never reached.
+    let resolvedElsewhere = false;
+    installApi({
+      setupCompletedAt: null,
+      agentUnbound: true,
+      computers: () => {
+        const first = {
+          id: "8c2b1d4e-5a6f-4b7c-8d9e-0f1a2b3c4d5e",
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        };
+        const spare = { ...first, id: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9", displayName: "Spare" };
+        return resolvedElsewhere ? [first] : [first, spare];
+      },
+    });
+    render(<App />);
+
+    expect(await screen.findByText(/more than one Computer/)).toBeTruthy();
+
+    // The way out is taken where the working routes are -- the CLI the banner names, or leaving the
+    // Account with one Computer. What this surface owes the reader is a way to be read again.
+    resolvedElsewhere = true;
+    fireEvent.click(await screen.findByRole("button", { name: "Check again" }));
+
+    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
+    expect(screen.queryByText(/more than one Computer/)).toBeNull();
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
   it("renders onboarding without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);

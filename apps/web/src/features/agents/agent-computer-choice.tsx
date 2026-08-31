@@ -24,7 +24,10 @@ export function AgentComputerChoice({
   onBound,
 }: {
   agentId: string;
-  /** Called once the Agent has the Account's Computer, so the surface around this can move on. */
+  /**
+   * Called when the Agent's Computer may have changed -- after a bind here, or after the reader
+   * resolved it somewhere this surface cannot see -- so the surface around this reads again.
+   */
   onBound: () => void;
 }) {
   const computersQuery = useComputersQuery();
@@ -106,11 +109,34 @@ export function AgentComputerChoice({
 
   /*
    * Enrolments made before the one-Computer rule can still reach this client. Picking one of them
-   * would hand the Agent a durable home on the strength of list order, so the contradiction is
-   * reported and left to be repaired where the records are.
+   * would hand the Agent a durable home on the strength of list order, so this refuses -- but a
+   * refusal inside the setup gate is a room with no doors, and the reader cannot remove a Computer
+   * from here or anywhere else in the product. So it names the one route that does work today
+   * rather than asking for something that cannot be done.
    */
   if (enrolled.length > 1) {
-    return <Banner variant="error" role="alert" description={m.agents_computer_choice_multiple()} />;
+    return (
+      <div className="grid gap-4">
+        <Banner variant="error" role="alert" description={m.agents_computer_choice_multiple({ agentId })} />
+        <div>
+          {/*
+           * The way out is taken elsewhere, so this reads again rather than acting: the reader who
+           * binds from the CLI, or leaves the Account with one Computer, comes back here and is let
+           * through. Without it the refusal would be terminal inside the setup gate.
+           */}
+          <Button
+            size="compact"
+            variant="secondary"
+            onClick={() => {
+              void computersQuery.refetch();
+              onBound();
+            }}
+          >
+            {m.agents_computer_choice_recheck()}
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   if (computer) return <p>{m.agents_computer_choice_binding({ name: computer.displayName })}</p>;

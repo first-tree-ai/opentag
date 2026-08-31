@@ -142,6 +142,9 @@ describe("An Agent with no Computer", () => {
 
     expect(await screen.findByText(/more than one Computer/)).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
+    // Refusing is right, but this branch sits inside the setup gate and the product has no way to
+    // remove a Computer, so a refusal that named no route out would be a screen with no exit.
+    expect(screen.getByText(new RegExp(`opentag agent bind ${agentId} --computer`))).toBeTruthy();
   });
 
   it("binds a second unbound Agent when the same surface is reused for one", async () => {

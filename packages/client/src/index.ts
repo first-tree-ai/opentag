@@ -331,6 +331,7 @@ export {
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export {
+  DEFAULT_RUNTIME_RETRY_POLICY,
   type DurableFailure,
   type DurableRetryability,
   type DurableWorkKind,

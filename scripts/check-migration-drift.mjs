@@ -114,7 +114,7 @@ export function checkMigrationDrift({ journalPath, migrationsDir, manifestPath, 
       fail(`historical migration order changed at ${expected.tag}`);
     }
     if (actual.sha256 !== expected.sha256) {
-      fail(`historical migration content hash changed for ${actual.tag}`);
+      fail(`historical migration content hash changed for ${actual.tag}.sql`);
     }
   }
 

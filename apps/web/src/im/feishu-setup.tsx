@@ -1,10 +1,10 @@
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { formatDateTime } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
-import { Banner, Button, Loader } from "../ui/design-system.js";
+import { Banner, Button, buttonClassName, Dialog, Loader } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
@@ -16,18 +16,6 @@ const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "fa
  * the flow rather than incidental bookkeeping.
  */
 const POLL_INTERVAL_MS = 1_500;
-const FEISHU_SETUP_MESSAGES: Record<string, () => string> = {
-  FEISHU_APP_ALREADY_BOUND: () => m.im_feishu_app_already_bound(),
-  FEISHU_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_scope_reauth_required(),
-  IM_BINDING_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_scope_reauth_required(),
-  FEISHU_SETUP_DENIED: () => m.im_feishu_setup_denied(),
-  FEISHU_SETUP_EXPIRED: () => m.im_feishu_setup_expired(),
-  FEISHU_SETUP_CANCELED: () => m.im_feishu_setup_canceled(),
-  FEISHU_SETUP_OWNER_RESTARTED: () => m.im_feishu_setup_owner_restarted(),
-  FEISHU_BINDING_IDENTITY_MISMATCH: () => m.im_feishu_binding_identity_mismatch(),
-  FEISHU_UPSTREAM_UNAVAILABLE: () => m.im_feishu_upstream_unavailable(),
-};
-
 export interface FeishuSetupControl {
   /** Starts one setup intent. False means no new attempt was started. */
   start: (intent?: FeishuSetupIntent) => Promise<boolean>;
@@ -40,6 +28,8 @@ interface FeishuSetupProps {
   agentId: string;
   children: (control: FeishuSetupControl) => ReactNode;
   onSuccess: () => void;
+  presentation?: "dialog" | "inline";
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 interface FeishuSetupError {
@@ -52,20 +42,42 @@ interface FeishuSetupError {
  * ImTab refreshes its binding on success; onboarding can use the same callback
  * to reload fresh Server facts and derive its next step without learning setup internals.
  */
-export function FeishuSetup({ agentId, children, onSuccess }: FeishuSetupProps) {
+export function FeishuSetup({
+  agentId,
+  children,
+  onSuccess,
+  presentation = "inline",
+  returnFocusRef,
+}: FeishuSetupProps) {
   return (
-    <FeishuSetupLifecycle agentId={agentId} key={agentId} onSuccess={onSuccess}>
+    <FeishuSetupLifecycle
+      agentId={agentId}
+      key={agentId}
+      onSuccess={onSuccess}
+      presentation={presentation}
+      returnFocusRef={returnFocusRef}
+    >
       {children}
     </FeishuSetupLifecycle>
   );
 }
 
-function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps) {
+function FeishuSetupLifecycle({
+  agentId,
+  children,
+  onSuccess,
+  presentation = "inline",
+  returnFocusRef,
+}: FeishuSetupProps) {
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
   const [error, setError] = useState<FeishuSetupError>();
   const [loading, setLoading] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [activeIntent, setActiveIntent] = useState<FeishuSetupIntent>("create");
   const attemptRef = useRef<FeishuSetupAttempt>(undefined);
   const creatingRef = useRef(false);
+  const cancelAfterStartRef = useRef(false);
   const lifecycleRef = useRef(0);
   const onSuccessRef = useRef(onSuccess);
   onSuccessRef.current = onSuccess;
@@ -83,6 +95,8 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
       if (creatingRef.current || (current?.intent === intent && ACTIVE_STATES.includes(current.state))) return false;
 
       const lifecycle = lifecycleRef.current;
+      setActiveIntent(intent);
+      if (presentation === "dialog") setDialogOpen(true);
       creatingRef.current = true;
       setLoading(true);
       setError(undefined);
@@ -90,18 +104,43 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         const started = await browserApi.createFeishuSetupAttempt(agentId, intent);
         if (lifecycleRef.current !== lifecycle) return false;
         creatingRef.current = false;
+        if (cancelAfterStartRef.current) {
+          cancelAfterStartRef.current = false;
+          if (started.state === "awaiting_user") {
+            try {
+              await browserApi.cancelFeishuSetupAttempt(started.id);
+            } catch {
+              attemptRef.current = started;
+              setAttempt(started);
+              setError({ message: m.im_feishu_cancel_failed(), source: "start" });
+              setDialogOpen(true);
+              return false;
+            }
+          }
+          return true;
+        }
         if (current && attemptRef.current !== current && started.id === current.id) return true;
         setError(undefined);
+        // Advancing the lifecycle retires the old poll, so clear the request state before the
+        // guarded `finally` intentionally stops observing that retired lifecycle.
+        setLoading(false);
         if (attemptRef.current?.id !== started.id || !ACTIVE_STATES.includes(started.state)) {
           lifecycleRef.current = lifecycle + 1;
         }
         attemptRef.current = started;
         setAttempt(started);
-        if (started.state === "succeeded") onSuccessRef.current();
+        if (started.state === "succeeded") {
+          if (presentation === "dialog") {
+            attemptRef.current = undefined;
+            setAttempt(undefined);
+            setDialogOpen(false);
+          }
+          onSuccessRef.current();
+        }
         return true;
       } catch (cause) {
         if (lifecycleRef.current !== lifecycle) return false;
-        setError({ message: normalizeError(cause, m.im_feishu_unable_to_start_setup()), source: "start" });
+        setError({ message: normalizeError(cause, m.im_feishu_authorization_failed()), source: "start" });
         return false;
       } finally {
         if (lifecycleRef.current === lifecycle) {
@@ -110,7 +149,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         }
       }
     },
-    [agentId],
+    [agentId, presentation],
   );
 
   const activeAttemptId = attempt && ACTIVE_STATES.includes(attempt.state) ? attempt.id : undefined;
@@ -128,6 +167,11 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         setAttempt(next);
         setError((currentError) => (currentError?.source === "poll" ? undefined : currentError));
         if (next.state === "succeeded") {
+          if (presentation === "dialog") {
+            attemptRef.current = undefined;
+            setAttempt(undefined);
+            setDialogOpen(false);
+          }
           onSuccessRef.current();
           return;
         }
@@ -137,7 +181,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         setError((currentError) =>
           currentError?.source === "start"
             ? currentError
-            : { message: normalizeError(cause, m.im_feishu_unable_to_refresh_setup()), source: "poll" },
+            : { message: normalizeError(cause, m.im_feishu_authorization_failed()), source: "poll" },
         );
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       }
@@ -148,18 +192,160 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeAttemptId]);
+  }, [activeAttemptId, presentation]);
 
-  return children({
-    loading,
-    start,
-    feedback: (
+  async function cancelActiveAttempt() {
+    const current = attemptRef.current;
+    if (!current && creatingRef.current) {
+      cancelAfterStartRef.current = true;
+      setDialogOpen(false);
+      return;
+    }
+    if (!current || current.state !== "awaiting_user" || canceling) return;
+    setCanceling(true);
+    setError(undefined);
+    lifecycleRef.current += 1;
+    try {
+      await browserApi.cancelFeishuSetupAttempt(current.id);
+      attemptRef.current = undefined;
+      setAttempt(undefined);
+      setDialogOpen(false);
+    } catch {
+      setError({ message: m.im_feishu_cancel_failed(), source: "start" });
+    } finally {
+      setCanceling(false);
+    }
+  }
+
+  function closeDialog() {
+    const current = attemptRef.current;
+    if ((!current && creatingRef.current) || current?.state === "awaiting_user") {
+      void cancelActiveAttempt();
+      return;
+    }
+    if (current?.state === "validating") return;
+    attemptRef.current = undefined;
+    setAttempt(undefined);
+    setError(undefined);
+    setDialogOpen(false);
+  }
+
+  const feedback =
+    presentation === "dialog" ? (
+      <FeishuSetupDialog
+        attempt={attempt}
+        busy={canceling || attempt?.state === "validating"}
+        error={error?.message}
+        intent={attempt?.intent ?? activeIntent}
+        loading={loading}
+        open={dialogOpen}
+        returnFocusRef={returnFocusRef}
+        onClose={closeDialog}
+        onRetry={start}
+      />
+    ) : (
       <>
         {attempt ? <FeishuSetupFeedback attempt={attempt} onRetry={start} /> : null}
         {error ? <Banner variant="error" role="alert" description={error.message} /> : null}
       </>
-    ),
+    );
+
+  return children({
+    loading,
+    start,
+    feedback,
   });
+}
+
+function FeishuSetupDialog({
+  attempt,
+  busy,
+  error,
+  intent,
+  loading,
+  onClose,
+  onRetry,
+  open,
+  returnFocusRef,
+}: {
+  attempt?: FeishuSetupAttempt;
+  busy: boolean;
+  error?: string;
+  intent: FeishuSetupIntent;
+  loading: boolean;
+  onClose: () => void;
+  onRetry: (intent: FeishuSetupIntent) => Promise<boolean>;
+  open: boolean;
+  returnFocusRef?: RefObject<HTMLElement | null>;
+}) {
+  const recovery = attempt ? setupRecovery(attempt) : undefined;
+  const terminal = attempt ? RETRYABLE_STATES.includes(attempt.state) : Boolean(error && !loading);
+  const title = feishuDialogTitle(intent);
+  return (
+    <Dialog
+      busy={busy}
+      description={feishuDialogDescription(intent)}
+      open={open}
+      returnFocusRef={returnFocusRef}
+      title={title}
+      onClose={onClose}
+    >
+      <div className="grid gap-4" data-ui="feishu-setup-dialog">
+        {loading && !attempt ? (
+          <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+            <Loader aria-label={m.im_feishu_preparing()} size="sm" />
+            <span>{m.im_feishu_preparing()}</span>
+          </div>
+        ) : null}
+        {attempt?.state === "awaiting_user" ? (
+          <>
+            {attempt.qrUrl ? <FeishuQrCode value={attempt.qrUrl} /> : null}
+            <p className="text-sm text-kumo-subtle">
+              {m.im_feishu_qr_expires({ date: formatDateTime(attempt.expiresAt) })}
+            </p>
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button variant="ghost" onClick={onClose}>
+                {m.common_cancel()}
+              </Button>
+              {attempt.qrUrl ? (
+                <a className={buttonClassName()} href={attempt.qrUrl} rel="noreferrer" target="_blank">
+                  {m.im_feishu_open()}
+                </a>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+        {attempt?.state === "validating" ? (
+          <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+            <Loader aria-label={m.im_feishu_finishing()} size="sm" />
+            <span>{m.im_feishu_finishing()}</span>
+          </div>
+        ) : null}
+        {recovery ? <Banner variant="error" role="alert" description={recovery} /> : null}
+        {error ? <Banner variant="error" role="alert" description={error} /> : null}
+        {terminal ? (
+          <div className="flex flex-wrap justify-end gap-3">
+            <Button variant="ghost" onClick={onClose}>
+              {m.common_close()}
+            </Button>
+            <Button onClick={() => void onRetry(intent)}>{m.im_feishu_retry()}</Button>
+          </div>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
+function feishuDialogTitle(intent: FeishuSetupIntent): string {
+  if (intent === "replace") return m.im_feishu_dialog_change_title();
+  if (intent === "reauthorize") return m.im_feishu_dialog_permissions_title();
+  return m.im_feishu_dialog_connect_title();
+}
+
+function feishuDialogDescription(intent: FeishuSetupIntent): string {
+  if (intent === "replace") return m.im_feishu_dialog_change_description();
+  if (intent === "reauthorize") return m.im_feishu_dialog_permissions_description();
+  return m.im_feishu_dialog_connect_description();
 }
 
 function FeishuSetupFeedback({
@@ -221,7 +407,7 @@ function FeishuQrCode({ value }: { value: string }) {
   }, [value]);
   return source ? (
     <img
-      alt={m.im_feishu_scan_qr_code()}
+      alt={m.im_feishu_qr_alt()}
       className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />
@@ -229,11 +415,10 @@ function FeishuQrCode({ value }: { value: string }) {
 }
 
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
-  if (attempt.errorCode && FEISHU_SETUP_MESSAGES[attempt.errorCode])
-    return FEISHU_SETUP_MESSAGES[attempt.errorCode]?.();
-  if (attempt.state === "expired") return m.im_feishu_setup_expired();
+  if (attempt.errorCode) return feishuSetupMessage(attempt.errorCode);
+  if (attempt.state === "expired") return m.im_feishu_authorization_expired();
   if (attempt.state === "canceled") return m.im_feishu_setup_canceled();
-  if (attempt.state === "failed") return m.im_feishu_setup_failed();
+  if (attempt.state === "failed") return m.im_feishu_authorization_failed();
   return undefined;
 }
 
@@ -243,6 +428,21 @@ function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
  */
 function normalizeError(cause: unknown, fallback: string): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
-  if (code && FEISHU_SETUP_MESSAGES[code]) return FEISHU_SETUP_MESSAGES[code]?.();
-  return cause instanceof Error ? cause.message : fallback;
+  if (code) return feishuSetupMessage(code);
+  if (cause instanceof Error && cause.message) return m.im_feishu_authorization_failed();
+  return fallback;
+}
+
+function feishuSetupMessage(code: string): string {
+  if (code === "FEISHU_APP_ALREADY_BOUND") return m.im_feishu_app_already_connected();
+  if (code === "FEISHU_SCOPE_REAUTH_REQUIRED" || code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
+    return m.im_feishu_permissions_missing();
+  }
+  if (code === "FEISHU_SETUP_DENIED") return m.im_feishu_authorization_declined();
+  if (code === "FEISHU_SETUP_EXPIRED") return m.im_feishu_authorization_expired();
+  if (code === "FEISHU_SETUP_CANCELED") return m.im_feishu_setup_canceled();
+  if (code === "FEISHU_SETUP_OWNER_RESTARTED") return m.im_feishu_setup_interrupted();
+  if (code === "FEISHU_BINDING_IDENTITY_MISMATCH") return m.im_feishu_authorization_mismatch();
+  if (code === "FEISHU_UPSTREAM_UNAVAILABLE") return m.im_feishu_unavailable();
+  return m.im_feishu_authorization_failed();
 }

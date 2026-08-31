@@ -9,7 +9,7 @@ let agentId: string;
 let taskId: string;
 const ONBOARDING_HEADING = "Where should your agent run?";
 
-test("onboarding renders the v2 destination step", async ({ page, e2eRuntime }) => {
+test("onboarding renders the v2 destination step and contains the Codex mark", async ({ page, e2eRuntime }) => {
   await e2eRuntime.setSetupIncomplete();
   await page.goto("/onboarding", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: ONBOARDING_HEADING, exact: true })).toBeVisible();
@@ -20,6 +20,37 @@ test("onboarding renders the v2 destination step", async ({ page, e2eRuntime }) 
   await rm(join(repositoryRoot, "e2e/screenshots"), { recursive: true, force: true });
   await mkdir(join(repositoryRoot, "e2e/screenshots"), { recursive: true });
   await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/onboarding.png"), fullPage: true });
+
+  await page.getByRole("button", { name: /^Local computer / }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  const mark = page.locator('[data-brand="codex"]');
+  const lightMark = mark.locator(".otv2-codex-mark--light");
+  const darkMark = mark.locator(".otv2-codex-mark--dark");
+  await expect(mark).toBeVisible();
+
+  const expectContainedDimensions = async () => {
+    await expect(mark).toHaveCSS("width", "40px");
+    await expect(mark).toHaveCSS("height", "40px");
+    await expect(mark).toHaveCSS("overflow", "hidden");
+    await expect(lightMark).toHaveCSS("width", "32px");
+    await expect(lightMark).toHaveCSS("height", "32px");
+    const [containerBox, imageBox] = await Promise.all([mark.boundingBox(), lightMark.boundingBox()]);
+    expect(containerBox).not.toBeNull();
+    expect(imageBox).not.toBeNull();
+    if (!containerBox || !imageBox) throw new Error("Codex mark did not produce layout boxes");
+    expect(imageBox.x).toBeGreaterThanOrEqual(containerBox.x);
+    expect(imageBox.y).toBeGreaterThanOrEqual(containerBox.y);
+    expect(imageBox.x + imageBox.width).toBeLessThanOrEqual(containerBox.x + containerBox.width);
+    expect(imageBox.y + imageBox.height).toBeLessThanOrEqual(containerBox.y + containerBox.height);
+  };
+
+  await expectContainedDimensions();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
+  await expect(lightMark).toHaveCSS("display", "block");
+  await expect(darkMark).toHaveCSS("display", "none");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectContainedDimensions();
 });
 
 test("Agent creation form creates an Agent visible in the list and detail page", async ({ page, e2eRuntime }) => {

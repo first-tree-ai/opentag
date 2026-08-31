@@ -146,6 +146,10 @@ export function feishuSetupAttemptPath(attemptId: string): string {
   return `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/${encodeURIComponent(attemptId)}`;
 }
 
+export function feishuSetupAttemptCancelPath(attemptId: string): string {
+  return `${feishuSetupAttemptPath(attemptId)}/cancel`;
+}
+
 export function agentSlackOAuthStartPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding/slack/oauth/start`;
 }

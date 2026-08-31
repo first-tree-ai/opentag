@@ -19,11 +19,21 @@ export const WAITING_LINE = "flex items-center gap-2 text-sm text-kumo-subtle m-
  * connect state: onboarding is watching a connection being made, settings is reporting one that
  * already exists, and the row says the same thing either way.
  */
-export function ConnectStatus({ connected, dataUi }: { connected: boolean; dataUi?: string }) {
+export function ConnectStatus({
+  connected,
+  dataUi,
+  expired = false,
+}: {
+  connected: boolean;
+  dataUi?: string;
+  expired?: boolean;
+}) {
   return (
     <div className="ots-slot--status flex flex-col justify-center" data-ui={dataUi}>
       {connected ? (
         <StatusIndicator label={SETUP_COPY.connect.connected} tone="success" />
+      ) : expired ? (
+        <StatusIndicator label={SETUP_COPY.connect.expiredStatus} tone="warning" />
       ) : (
         <p className={WAITING_LINE} role="status">
           <span aria-hidden="true" className="ots-pulse shrink-0" />

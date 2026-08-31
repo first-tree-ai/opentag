@@ -43,7 +43,7 @@ export function LabControls({
 
   return (
     <div
-      className="fixed right-6 bottom-6 z-30 flex items-end gap-2"
+      className="fixed right-3 bottom-3 z-30 flex max-w-[calc(100vw-1.5rem)] items-end gap-2 sm:right-6 sm:bottom-6"
       data-open={open ? "true" : undefined}
       data-ui="onboarding-v2-lab"
     >

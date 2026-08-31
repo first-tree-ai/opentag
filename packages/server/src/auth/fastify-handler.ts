@@ -86,6 +86,23 @@ export async function callBetterAuth(
   const url = new URL(target, publicUrl);
   const method = call.method ?? request.method;
   const headers = fromNodeHeaders(request.headers);
+  if (call.path !== undefined) {
+    /*
+     * This is a server-side call into a private Better Auth endpoint, not a browser request to Better Auth. OpenTag's
+     * route has already applied the origin, redirect and development-loopback rules appropriate to that endpoint.
+     * Forwarding the page's Origin, Referer or Fetch Metadata makes Better Auth incorrectly treat a Vite development
+     * page as the caller and reject it even though the request actually originates here. Present the configured
+     * public origin instead, which also keeps Better Auth's own CSRF validation active for cookie-bearing calls.
+     *
+     * Directly published Better Auth callbacks leave both headers intact because `call.path` is undefined there.
+     */
+    headers.set("origin", new URL(publicUrl).origin);
+    headers.delete("referer");
+    headers.delete("sec-fetch-dest");
+    headers.delete("sec-fetch-mode");
+    headers.delete("sec-fetch-site");
+    headers.delete("sec-fetch-user");
+  }
   let body: Buffer | string | undefined;
   if (call.body !== undefined) {
     body = JSON.stringify(call.body);

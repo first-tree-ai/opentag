@@ -322,6 +322,7 @@
   "computeRuntimeImSteerInputHash",
   "computeRuntimeSnapshotHashes",
   "computeTurnResultHash",
+  "feishuSetupAttemptCancelPath",
   "feishuSetupAttemptPath",
   "getChannelConfig",
   "getRuntimeConfigurationOptions",

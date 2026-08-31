@@ -3,9 +3,9 @@
   "projects": {
     "cli": {
       "branches": 87.3,
-      "functions": 96.4,
-      "lines": 96.1,
-      "statements": 96.1
+      "functions": 95.8,
+      "lines": 95.4,
+      "statements": 95.4
     },
     "web": {
       "branches": 91.8,

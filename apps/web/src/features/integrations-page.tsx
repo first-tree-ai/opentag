@@ -1,6 +1,42 @@
+import figmaMark from "../assets/integration-figma.svg";
+import githubMark from "../assets/integration-github.svg";
+import googleDriveMark from "../assets/integration-google-drive.svg";
+import linearMark from "../assets/integration-linear.svg";
+import notionMark from "../assets/integration-notion.svg";
+import sentryMark from "../assets/integration-sentry.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { integrationPreviews } from "../mock/capability-data.js";
 import { Badge, LayerCard, Table, Text } from "../ui/design-system.js";
+
+const integrationMarks: Readonly<Record<string, string>> = {
+  figma: figmaMark,
+  github: githubMark,
+  "google-drive": googleDriveMark,
+  linear: linearMark,
+  notion: notionMark,
+  sentry: sentryMark,
+};
+
+function IntegrationMark({ abbreviation, id }: { abbreviation: string; id: string }) {
+  const mark = integrationMarks[id];
+
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-grid size-8 shrink-0 place-items-center"
+      data-integration={id}
+      data-ui="integration-mark"
+    >
+      {mark ? (
+        <img alt="" className="size-5 object-contain" height="20" src={mark} width="20" />
+      ) : (
+        <span className="inline-grid size-8 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
+          {abbreviation}
+        </span>
+      )}
+    </span>
+  );
+}
 
 export function IntegrationsPage() {
   return (
@@ -47,12 +83,7 @@ export function IntegrationsPage() {
                   <Table.Row key={integration.id}>
                     <Table.Cell aria-label={`${integration.name}. ${integration.description}`}>
                       <span className="flex min-w-0 items-start gap-3">
-                        <span
-                          className="inline-grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
-                          aria-hidden="true"
-                        >
-                          {integration.abbreviation}
-                        </span>
+                        <IntegrationMark abbreviation={integration.abbreviation} id={integration.id} />
                         <span className="grid min-w-0 gap-0.5">
                           <Text as="strong" variant="heading">
                             {integration.name}

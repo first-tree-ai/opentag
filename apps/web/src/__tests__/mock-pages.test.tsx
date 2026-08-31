@@ -54,6 +54,22 @@ describe("capability entry pages", () => {
     ).toBeTruthy();
     expect(screen.getByText("GitHub").tagName).toBe("STRONG");
     expect(table.querySelectorAll("tbody tr")).toHaveLength(6);
+    const marks = table.querySelectorAll('[data-ui="integration-mark"]');
+    expect(marks).toHaveLength(6);
+    expect(Array.from(marks).map((mark) => mark.getAttribute("data-integration"))).toEqual([
+      "github",
+      "google-drive",
+      "linear",
+      "notion",
+      "sentry",
+      "figma",
+    ]);
+    for (const mark of marks) {
+      const image = mark.querySelector("img");
+      expect(image?.getAttribute("alt")).toBe("");
+      expect(image?.getAttribute("height")).toBe("20");
+      expect(image?.getAttribute("width")).toBe("20");
+    }
     expect(screen.queryByText("Connected")).toBeNull();
     expect(screen.queryByText("Agents with access")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();

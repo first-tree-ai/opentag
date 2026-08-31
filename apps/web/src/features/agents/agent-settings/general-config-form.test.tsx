@@ -29,8 +29,12 @@ describe("GeneralConfigForm", () => {
   it("saves and discards a changed display name", async () => {
     const updated = { ...config, displayName: "Reviewer Bot", revision: 5 };
     const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
-    const onAgentChanged = vi.fn();
-    render(<GeneralConfigForm config={config} onAgentChanged={onAgentChanged} />);
+    // The caller publishes the record a write produced, which is how the field -- and every block
+    // beside it on the settings screen -- comes to be looking at the revision the Server now holds.
+    const onAgentChanged = vi.fn((saved: AgentAdminConfig) => {
+      view.rerender(<GeneralConfigForm config={saved} onAgentChanged={onAgentChanged} />);
+    });
+    const view = render(<GeneralConfigForm config={config} onAgentChanged={onAgentChanged} />);
 
     fireEvent.submit(screen.getByRole("heading", { name: "Name" }).closest("form") as HTMLFormElement);
     expect(updateAgent).not.toHaveBeenCalled();
@@ -45,6 +49,8 @@ describe("GeneralConfigForm", () => {
     expect(updateAgent).toHaveBeenCalledWith(config.id, { expectedRevision: 4, displayName: "Reviewer Bot" });
     expect((await screen.findByRole("status")).textContent).toBe("Name saved.");
     expect(onAgentChanged).toHaveBeenCalledOnce();
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Reviewer Bot");
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
   });
 
   it("shows a provider error and fallback for failed saves", async () => {

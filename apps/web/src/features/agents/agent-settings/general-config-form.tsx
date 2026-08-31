@@ -8,6 +8,11 @@ export function GeneralConfigForm({
   onAgentChanged,
 }: {
   config: AgentAdminConfig;
+  /**
+   * Publishes the record the write produced. This block renders from the shared reading rather than
+   * from a copy of its own, so the field shows the saved name only once the caller has published
+   * it -- which is the same condition under which the blocks beside it stop being a revision behind.
+   */
   onAgentChanged: (saved: AgentAdminConfig) => void;
 }) {
   /*

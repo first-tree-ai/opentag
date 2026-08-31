@@ -1884,6 +1884,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(identity.getByLabelText("Display name"), { target: { value: "Research Reviewer" } });
     fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
     expect((await identity.findByRole("status")).textContent).toBe("Name saved.");
+    expect((identity.getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Reviewer");
 
     const revisions = vi
       .mocked(fetch)

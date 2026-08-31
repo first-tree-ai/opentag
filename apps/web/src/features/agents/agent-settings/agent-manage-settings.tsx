@@ -23,6 +23,7 @@ export function AgentManageSettings({
 }: {
   agent: AgentDetailView;
   config: AgentAdminConfig;
+  /** Publishes the record a lifecycle change produced; see `GeneralConfigForm` for why. */
   onAgentChanged: (saved: AgentAdminConfig) => void;
 }) {
   const navigate = useNavigate();

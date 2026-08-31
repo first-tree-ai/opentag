@@ -256,11 +256,12 @@ export function AgentCreationFlow({
       setSubmitting(true);
       onSubmittingChange?.(true);
       try {
+        // A record this form is about to send is claimed as it is written, so a form mounting
+        // mid-flight can see the key is still owned rather than reading it as abandoned. A resumed
+        // record already exists, so it is claimed here instead.
+        if (record) await claimCreationIntent(accountId, record.creationIntentId);
         record ??= await getOrCreateCreationIntent(accountId, request);
         ownedIntentIds.current?.add(record.creationIntentId);
-        // Announce the wait before it starts, so a form mounting mid-flight can see this key is
-        // still owned rather than reading it as an abandoned record it may retire.
-        await claimCreationIntent(accountId, record.creationIntentId);
         const created = await createAgentOnce(record);
         await clearCreationIntents(accountId, [...(ownedIntentIds.current ?? [])]);
         onCreated(created);
@@ -878,6 +879,11 @@ async function withCreationLock<T>(accountId: string, task: () => Promise<T> | T
   }
 }
 
+/**
+ * The record for a request about to be sent, claimed in the same lock that writes it. Appending
+ * first and claiming afterwards would publish a live record that briefly reads as unclaimed, and a
+ * form mounting in that window would take ownership of a key someone is waiting on.
+ */
 async function getOrCreateCreationIntent(
   accountId: string,
   request: Omit<CreateAgentRequest, "creationIntentId">,
@@ -885,16 +891,16 @@ async function getOrCreateCreationIntent(
   return withCreationLock(accountId, () => {
     const records = readCreationIntents(accountId);
     const fingerprint = JSON.stringify(request);
+    const claimedAt = new Date().toISOString();
     const existing = records.find((record) => JSON.stringify(record.request) === fingerprint);
-    if (existing) return existing;
-    const next: CreationIntentRecord = {
-      version: CREATE_INTENT_VERSION,
-      accountId,
-      creationIntentId: crypto.randomUUID(),
-      request,
-    };
-    writeCreationIntents(accountId, [...records, next]);
-    return next;
+    const claimed: CreationIntentRecord = existing
+      ? { ...existing, claimedAt }
+      : { version: CREATE_INTENT_VERSION, accountId, creationIntentId: crypto.randomUUID(), request, claimedAt };
+    writeCreationIntents(accountId, [
+      ...records.filter((record) => record.creationIntentId !== claimed.creationIntentId),
+      claimed,
+    ]);
+    return claimed;
   });
 }
 

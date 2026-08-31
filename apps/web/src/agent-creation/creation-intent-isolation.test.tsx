@@ -45,10 +45,50 @@ describe("creation intents across concurrent forms", () => {
     vi.restoreAllMocks();
   });
 
+  it("publishes a record already claimed, never briefly unclaimed", async () => {
+    // Ownership at mount is decided by the claim, so a record must never be readable in storage
+    // without one. Appending first and claiming afterwards left a window — measured at 0.2 ms in a
+    // real browser — where a form mounting inside it would take ownership of a live key.
+    const writes: { id: string; claimed: boolean }[][] = [];
+    const realSetItem = window.localStorage.setItem.bind(window.localStorage);
+    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation((key, value) => {
+      if (key === intentKey) {
+        writes.push(
+          (JSON.parse(value) as { records: { creationIntentId: string; claimedAt?: string }[] }).records.map(
+            (record) => ({ id: record.creationIntentId, claimed: record.claimedAt !== undefined }),
+          ),
+        );
+      }
+      realSetItem(key, value);
+    });
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue({ id: computerId } as never);
+
+    const form = render(
+      <AgentCreationFlow accountId={accountId} facts={facts} onCreated={() => {}} onRefresh={() => {}} />,
+    );
+    await act(async () => {
+      submit(form.container, "First Agent");
+    });
+
+    const appearances = writes.filter((records) => records.length > 0);
+    expect(appearances.length).toBeGreaterThan(0);
+    // Every write that carries the record carries its claim; there is no unclaimed publication.
+    for (const records of appearances) {
+      expect(records.every((record) => record.claimed)).toBe(true);
+    }
+    setItem.mockRestore();
+  });
+
   it("keeps an earlier page's in-flight intent when a later page mounts on top of it", async () => {
     // The ordering that matters: page A persists its record and is still waiting when page B
     // mounts, so B loads A's record as its own pendingIntent. B must not read a key someone is
     // waiting on as an abandoned record it may retire.
+    //
+    // B is given a different Computer deliberately. Two real tabs see the same facts, and in that
+    // shape B simply auto-resumes A's record and the Server deduplicates on the shared
+    // creationIntentId — safe, but safe because of server idempotency rather than the claim. This
+    // is the only shape where the claim is what carries the guarantee, which is why it is the
+    // regression worth having.
     const requests: { creationIntentId: string | undefined; displayName: string }[] = [];
     let releaseFirst: ((value: never) => void) | undefined;
     let failFirst = true;

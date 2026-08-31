@@ -689,7 +689,9 @@ describe("Tasks debug view", () => {
     await screen.findByLabelText("Task conversation");
 
     const identity = container.querySelector('[data-ui="task-source-identity"]');
-    expect(identity?.textContent).toContain("Feishu");
+    // Asserted with the Agent name attached rather than as a bare substring: `toContain("Feishu")`
+    // passes just as happily on `AtlasFeishu`, which is the run-together reading this separates.
+    expect(identity?.textContent).toContain("Atlas · Feishu");
     expect(identity?.textContent).not.toMatch(/feishu/);
   });
 });

@@ -633,6 +633,9 @@ function SourceIdentity({ task }: { task: TaskSummary }) {
       <TaskProviderIcon provider={task.source.provider} />
       <span>
         <strong>{task.agent.displayName}</strong>
+        {/* Both elements are inline, so without a separator the Agent name and the channel run
+            together as one plausible-looking word. TaskRow separates the same pair the same way. */}
+        <span aria-hidden="true"> · </span>
         <small>
           {messagingProviderLabel(task.source.provider)} · {task.sessionKind} ·{" "}
           {shortId(task.source.threadKey ?? task.source.channelId)}

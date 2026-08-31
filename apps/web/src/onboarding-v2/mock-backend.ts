@@ -26,7 +26,7 @@ export const SCENARIOS: readonly MockScenario[] = [
   {
     id: "all-ready",
     title: "Everything ready",
-    description: "The runtime is installed and signed in, and `lark-cli` is present.",
+    description: "The runtime is installed and signed in, and lark-cli is present.",
     runtime: "ready",
     messagingCli: "ready",
   },

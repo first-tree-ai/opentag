@@ -25,6 +25,8 @@ const BINDING_ID = "3c83a21e-f6c7-4474-91ea-4dabf0566a24";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
+const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+const REDEEMED_AT = "2026-08-29T00:00:05.000Z";
 const POLL_MS = 1_500;
 const FEISHU_POLL_MS = 2_000;
 const HANDOFF_POLL_MS = 2_000;
@@ -124,6 +126,7 @@ function computersReturning(...pages: readonly (readonly AccountComputerSummary[
 
 function issuing() {
   return vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+    connectCodeId: CONNECT_CODE_ID,
     bootstrapCommand: "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABC",
     expiresIn: 900,
     issuedAt: NOW,
@@ -167,6 +170,14 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+    // Every walk here connects its Computer: the Server's verdict is that the issued code was
+    // redeemed by exactly it.
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "redeemed",
+      computerId: COMPUTER_ID,
+      redeemedAt: REDEEMED_AT,
+    });
   });
 
   afterEach(() => {
@@ -177,7 +188,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
   it("keeps a failed creation's explanation on screen while the reader reads it", async () => {
     // The readiness poll now clears `error` on every success, and it keeps running through the
     // rest of the flow — so it retires messages it never set, within one poll interval.
-    computersReturning([], [computer()]);
+    computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockRejectedValue(new Error("An active Agent with this name already exists"));
 
@@ -196,7 +207,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
   it("offers a way back after Lark refuses the attempt", async () => {
     // `failed` no longer retries on sight, which is right — but nothing restarts it either, and
     // the messaging step has no footer, so the panel is inert.
-    computersReturning([], [computer()]);
+    computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue(new Error("Lark is unavailable"));
@@ -229,7 +240,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
   });
 
   it("reports completion once the messaging app is connected", async () => {
-    computersReturning([], [computer()]);
+    computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
@@ -257,7 +268,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
   it("reports completion for a Slack install too", async () => {
     // Slack's callback redirects to a gated Agent route, the setup gate sends it back here, and a
     // fresh page has no Agent — so `onComplete` is never reached and setup is never marked done.
-    computersReturning([], [computer()]);
+    computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "startSlackOAuth").mockResolvedValue({
@@ -298,7 +309,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     // `onComplete` is latched by agent id before it is called and its result is never inspected, so
     // a single failure is permanent: the reader sits on the finished screen with setup incomplete,
     // and every route they try bounces them back to a flow that starts from nothing.
-    computersReturning([], [computer()]);
+    computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
@@ -330,7 +341,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
    * doing it.
    */
   it("does not complete setup on an installed app the Server cannot yet reach", async () => {
-    computersReturning([], [computer()]);
+    computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
@@ -367,10 +378,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
    * readiness, so an unexplained spinner is a choice rather than a limitation.
    */
   it("says what a wait for reachability is waiting on, when it knows", async () => {
-    computersReturning(
-      [],
-      [computer({ imCliReadiness: [{ provider: "feishu", status: "install", observedAt: NOW }] })],
-    );
+    computersReturning([computer({ imCliReadiness: [{ provider: "feishu", status: "install", observedAt: NOW }] })]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());

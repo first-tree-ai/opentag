@@ -26,6 +26,7 @@ export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
+export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
 export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
@@ -64,6 +65,10 @@ export const HTTP_PATHS = {
 
 export function taskByIdPath(sessionId: string): string {
   return `${ACCOUNT_TASKS_PATH}/${encodeURIComponent(sessionId)}`;
+}
+
+export function accountComputerConnectCodePath(connectCodeId: string): string {
+  return `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/${encodeURIComponent(connectCodeId)}`;
 }
 
 export function agentByIdPath(agentId: string): string {

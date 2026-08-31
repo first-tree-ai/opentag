@@ -1,5 +1,6 @@
 import {
   AccountComputerSummarySchema,
+  accountComputerConnectCodePath,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   RUNTIME_PROTOCOL_V2,
@@ -13,7 +14,7 @@ import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
-import { AuthService } from "../../services/auth/index.js";
+import { AuthService, ConnectCodeService } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -538,6 +539,228 @@ describe("Computer connection persistence", () => {
             { provider: "claude-code", status: "checking", observedAt: null },
           ],
         });
+      } finally {
+        await app.close();
+      }
+    } finally {
+      await value.sql.end();
+    }
+  });
+});
+
+describe("Connect code redemption status", () => {
+  it("reports pending before redemption and the exact Computer after it", async () => {
+    const value = await fixture();
+    try {
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+      const pending = await value.machineAuth.getConnectCodeStatusForAccount(
+        value.bootstrap.userId,
+        issued.connectCodeId,
+      );
+      expect(pending).toEqual({
+        connectCodeId: issued.connectCodeId,
+        state: "pending",
+        computerId: null,
+        redeemedAt: null,
+      });
+
+      const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, crypto.randomUUID()));
+      const redeemed = await value.machineAuth.getConnectCodeStatusForAccount(
+        value.bootstrap.userId,
+        issued.connectCodeId,
+      );
+      expect(redeemed.state).toBe("redeemed");
+      expect(redeemed.computerId).toBe(exchange.computerId);
+      expect(redeemed.redeemedAt).not.toBeNull();
+
+      // Durable evidence, not a reachability report: the machine that redeemed the code has not
+      // connected yet, and the verdict still names it.
+      const { computers: listed } = await value.service.listAccountComputers(value.bootstrap.userId);
+      const machine = listed.find((one) => one.computerId === exchange.computerId);
+      expect(machine?.connectionStatus).toBe("offline");
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("correlates each code with its own redeemer when machines answer out of order", async () => {
+    const value = await fixture();
+    try {
+      const first = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+      const second = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+      // The second code is spent first: correlation follows the code, never the order of arrival.
+      const secondEnrollment = await value.machineAuth.exchangeConnectCode(
+        exchangeInput(second.code, crypto.randomUUID()),
+      );
+      const firstEnrollment = await value.machineAuth.exchangeConnectCode(
+        exchangeInput(first.code, crypto.randomUUID()),
+      );
+
+      const firstStatus = await value.machineAuth.getConnectCodeStatusForAccount(
+        value.bootstrap.userId,
+        first.connectCodeId,
+      );
+      const secondStatus = await value.machineAuth.getConnectCodeStatusForAccount(
+        value.bootstrap.userId,
+        second.connectCodeId,
+      );
+      expect(firstStatus).toMatchObject({ state: "redeemed", computerId: firstEnrollment.computerId });
+      expect(secondStatus).toMatchObject({ state: "redeemed", computerId: secondEnrollment.computerId });
+      expect(firstStatus.computerId).not.toBe(secondStatus.computerId);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("fails closed for an expired code and for a revoked code, never naming a Computer", async () => {
+    const value = await fixture();
+    try {
+      const expiring = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+      await value.database
+        .update(computerConnectCodes)
+        .set({ expiresAt: new Date() })
+        .where(eq(computerConnectCodes.id, expiring.connectCodeId));
+      await expect(
+        value.machineAuth.getConnectCodeStatusForAccount(value.bootstrap.userId, expiring.connectCodeId),
+      ).resolves.toEqual({
+        connectCodeId: expiring.connectCodeId,
+        state: "expired",
+        computerId: null,
+        redeemedAt: null,
+      });
+
+      const revoking = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+      await value.database
+        .update(computerConnectCodes)
+        .set({ revokedByUserId: value.bootstrap.userId, revokedAt: new Date() })
+        .where(eq(computerConnectCodes.id, revoking.connectCodeId));
+      await expect(
+        value.machineAuth.getConnectCodeStatusForAccount(value.bootstrap.userId, revoking.connectCodeId),
+      ).resolves.toEqual({
+        connectCodeId: revoking.connectCodeId,
+        state: "revoked",
+        computerId: null,
+        redeemedAt: null,
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("answers a foreign Account and an unknown id with the same not-found", async () => {
+    const value = await fixture();
+    try {
+      const otherAccountId = crypto.randomUUID();
+      await value.database.insert(users).values({
+        id: otherAccountId,
+        email: "other@example.com",
+        displayName: "Other",
+      });
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+
+      await expect(
+        value.machineAuth.getConnectCodeStatusForAccount(otherAccountId, issued.connectCodeId),
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
+      await expect(
+        value.machineAuth.getConnectCodeStatusForAccount(value.bootstrap.userId, crypto.randomUUID()),
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("answers repeated and concurrent reads identically across the redemption boundary", async () => {
+    const value = await fixture();
+    try {
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
+      const read = () => value.machineAuth.getConnectCodeStatusForAccount(value.bootstrap.userId, issued.connectCodeId);
+
+      const before = await Promise.all([read(), read(), read()]);
+      for (const verdict of before) expect(verdict).toEqual(before[0]);
+
+      const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, crypto.randomUUID()));
+      const after = await Promise.all([read(), read(), read()]);
+      for (const verdict of after) {
+        expect(verdict).toEqual(after[0]);
+        expect(verdict).toMatchObject({ state: "redeemed", computerId: exchange.computerId });
+      }
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("serves the poll over HTTP to the issuing Account only, and never leaks the code", async () => {
+    const value = await fixture();
+    try {
+      const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
+      const otherAccountId = crypto.randomUUID();
+      await value.database.insert(users).values({
+        id: otherAccountId,
+        email: "other@example.com",
+        displayName: "Other",
+      });
+      const otherLogin = await new ConnectCodeService(value.database).issueForUser(otherAccountId);
+      const otherAccount = await value.auth.exchangeConnectCode(otherLogin.code);
+      const app = createApp({
+        authService: value.auth,
+        computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
+        computerService: value.service,
+        machineAuthService: value.machineAuth,
+      });
+      try {
+        const issued = await app.inject({
+          method: "POST",
+          url: HTTP_PATHS.accountComputerConnectCodes,
+          headers: { authorization: `Bearer ${account.accessToken}` },
+        });
+        expect(issued.statusCode).toBe(201);
+        const { connectCodeId } = issued.json() as { connectCodeId: string };
+
+        const pending = await app.inject({
+          method: "GET",
+          url: accountComputerConnectCodePath(connectCodeId),
+          headers: { authorization: `Bearer ${account.accessToken}` },
+        });
+        expect(pending.statusCode).toBe(200);
+        expect(pending.headers["cache-control"]).toBe("no-store");
+        expect(pending.json()).toEqual({ connectCodeId, state: "pending", computerId: null, redeemedAt: null });
+
+        // The code redeems; the Account reads back the exact Computer, and the answer carries no
+        // code, hash, or machine token.
+        const command = issued.json().bootstrapCommand as string;
+        const code = command.split(" -- ").at(-1);
+        if (!code) throw new Error("Computer connect command did not contain a code");
+        const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(code, crypto.randomUUID()));
+        const redeemed = await app.inject({
+          method: "GET",
+          url: accountComputerConnectCodePath(connectCodeId),
+          headers: { authorization: `Bearer ${account.accessToken}` },
+        });
+        expect(redeemed.statusCode).toBe(200);
+        expect(redeemed.json()).toEqual({
+          connectCodeId,
+          state: "redeemed",
+          computerId: exchange.computerId,
+          redeemedAt: expect.any(String),
+        });
+        expect(redeemed.body).not.toContain(code);
+        expect(redeemed.body).not.toContain(exchange.machineToken);
+
+        // Another Account's token and the machine's own credential both fail closed.
+        const foreign = await app.inject({
+          method: "GET",
+          url: accountComputerConnectCodePath(connectCodeId),
+          headers: { authorization: `Bearer ${otherAccount.accessToken}` },
+        });
+        expect(foreign.statusCode).toBe(404);
+        const machine = await app.inject({
+          method: "GET",
+          url: accountComputerConnectCodePath(connectCodeId),
+          headers: { authorization: `Bearer ${exchange.machineToken}` },
+        });
+        expect(machine.statusCode).toBe(401);
+        const anonymous = await app.inject({ method: "GET", url: accountComputerConnectCodePath(connectCodeId) });
+        expect(anonymous.statusCode).toBe(401);
       } finally {
         await app.close();
       }

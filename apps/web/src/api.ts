@@ -12,6 +12,7 @@ import {
   type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountComputerConnectCodePath,
   agentByIdPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
@@ -24,6 +25,8 @@ import {
   agentUsagePath,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
+  type ComputerConnectCodeStatus,
+  ComputerConnectCodeStatusSchema,
   type CreateAgentRequest,
   type EmailSignInRequest,
   type EmailSignUpRequest,
@@ -262,6 +265,15 @@ export class BrowserApi {
       body: JSON.stringify({ mode }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
+  }
+
+  /**
+   * The Server's own verdict on a code this Account issued: pending until a machine redeems it,
+   * then the exact Computer that did. This — never a Computers-list heuristic — is how a waiting
+   * page learns which Computer its command connected.
+   */
+  computerConnectCodeStatus(connectCodeId: string): Promise<ComputerConnectCodeStatus> {
+    return this.request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema);
   }
 
   async health(path: "/healthz" | "/readyz"): Promise<{ latencyMs: number; observedAt: string; status: string }> {

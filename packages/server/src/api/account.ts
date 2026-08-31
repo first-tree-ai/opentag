@@ -1,4 +1,5 @@
 import {
+  ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
@@ -6,6 +7,7 @@ import {
   type ChannelName,
   CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
+  ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
   HTTP_PATHS,
   ListAccountComputersResponseSchema,
@@ -44,6 +46,7 @@ const TaskDetailQuerySchema = z
   })
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
+const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
@@ -146,12 +149,24 @@ export function registerAccountRoutes(
         .code(201)
         .send(
           ComputerConnectCodeIssueResponseSchema.parse({
+            connectCodeId: issued.connectCodeId,
             bootstrapCommand: buildComputerConnectCommand({ code: issued.code, environment, publicUrl }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),
             mode: issued.mode,
           }),
         );
+    });
+
+    /*
+     * The pollable correlation for a code this Account issued: pending until redemption, the exact
+     * Computer after it. The id in the path is the only thing named, and ownership is checked
+     * against the token's Account — a foreign id is indistinguishable from one that never existed.
+     */
+    app.get(ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { connectCodeId } = parseRequest(ConnectCodeParamsSchema, request.params);
+      const status = await machineAuthService.getConnectCodeStatusForAccount(accountId(request), connectCodeId);
+      return reply.header("Cache-Control", "no-store").code(200).send(ComputerConnectCodeStatusSchema.parse(status));
     });
   }
 

@@ -4,6 +4,7 @@ import {
   ComputerConnectCodeExchangeRequestSchema,
   ComputerConnectCodeExchangeResponseSchema,
   ComputerConnectCodeIssueResponseSchema,
+  ComputerConnectCodeStatusSchema,
   ComputerImCliReadinessCollectionSchema,
   ComputerProviderReadinessCollectionSchema,
 } from "../computer.js";
@@ -50,6 +51,7 @@ describe("computer contracts", () => {
 
   it("accepts optional create and repair mode on the issue response", () => {
     const response = {
+      connectCodeId: crypto.randomUUID(),
       bootstrapCommand: "opentag computer connect --server https://opentag.example -- otcc_code",
       expiresIn: 900,
       issuedAt: "2026-08-29T00:00:00.000Z",
@@ -60,6 +62,48 @@ describe("computer contracts", () => {
       mode: "repair",
     });
     expect(() => ComputerConnectCodeIssueResponseSchema.parse({ ...response, mode: "merge" })).toThrow();
+  });
+
+  it("requires the non-secret connectCodeId on the issue response", () => {
+    const response = {
+      bootstrapCommand: "opentag computer connect --server https://opentag.example -- otcc_code",
+      expiresIn: 900,
+      issuedAt: "2026-08-29T00:00:00.000Z",
+    };
+    expect(() => ComputerConnectCodeIssueResponseSchema.parse(response)).toThrow();
+    expect(() => ComputerConnectCodeIssueResponseSchema.parse({ ...response, connectCodeId: "not-a-uuid" })).toThrow();
+  });
+
+  it("correlates a redeemed code with exactly the Computer that redeemed it, and nothing else", () => {
+    const connectCodeId = crypto.randomUUID();
+    const computerId = crypto.randomUUID();
+    const redeemed = {
+      connectCodeId,
+      state: "redeemed",
+      computerId,
+      redeemedAt: "2026-08-29T00:00:10.000Z",
+    };
+    expect(ComputerConnectCodeStatusSchema.parse(redeemed)).toEqual(redeemed);
+
+    for (const state of ["pending", "expired", "revoked"] as const) {
+      const quiet = { connectCodeId, state, computerId: null, redeemedAt: null };
+      expect(ComputerConnectCodeStatusSchema.parse(quiet)).toEqual(quiet);
+    }
+
+    // The correlation read must never become a channel for the code, its hash, or a machine token.
+    expect(() => ComputerConnectCodeStatusSchema.parse({ ...redeemed, code: "otcc_raw" })).toThrow();
+    expect(() => ComputerConnectCodeStatusSchema.parse({ ...redeemed, tokenHash: "abc123" })).toThrow();
+    expect(() => ComputerConnectCodeStatusSchema.parse({ ...redeemed, machineToken: "otmc_secret" })).toThrow();
+    expect(() => ComputerConnectCodeStatusSchema.parse({ ...redeemed, state: "consumed" })).toThrow();
+    expect(() => ComputerConnectCodeStatusSchema.parse({ ...redeemed, computerId: null })).toThrow();
+    expect(() =>
+      ComputerConnectCodeStatusSchema.parse({
+        connectCodeId,
+        state: "pending",
+        computerId,
+        redeemedAt: "2026-08-29T00:00:10.000Z",
+      }),
+    ).toThrow();
   });
 
   it("keeps provider readiness canonical", () => {

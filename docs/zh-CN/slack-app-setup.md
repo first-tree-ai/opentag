@@ -2,16 +2,17 @@
 
 [English](../slack-app-setup.md)
 
-OpenTag 为每个 OpenTag workspace 支持一组 Slack App/Team/Bot 安装。一个 Slack workspace 只通过一等 OAuth 安装一次公开分发的
-**@OpenTag** Bot。同一 OpenTag workspace 内的多个 Agent 可以对同一安装持有显式 route；V1 入站只投递到唯一已配置的
-**default** Agent route，否则失败关闭。
+OpenTag 对每个 App/Team 组合最多保留一组当前 Slack App/Team/Bot 安装。一个 Slack workspace 通过一等 OAuth 为一个
+OpenTag Agent 安装公开分发的 **@OpenTag** Bot。installation 归该 Agent 所有；V1 入站只使用其已配置的 **default** Agent
+route，否则失败关闭。
 
-已认证的 Agent 管理流程发起 OAuth，callback 创建或更新该 OpenTag workspace 的 Slack installation，并把发起 Agent 设为
-default route。内部 subagent 在 Slack 中保持不可见。不再提供客户自有 Slack App、手动 token 或 Change App 路径。
+已认证的 Agent 管理流程发起 OAuth，callback 创建或更新该 Agent 的 Slack installation，并设置该 Agent 的 default route。
+内部 subagent 在 Slack 中保持不可见。不再提供客户自有 Slack App、手动 token 或 Change App 路径。
 
-Slack App/Team 安装绝不会被静默共享到另一个 OpenTag workspace；第二个 OpenTag workspace 声称同一 App/Team 时返回
-`SLACK_APP_TEAM_ALREADY_BOUND`。同一 OpenTag workspace 内的 Agent 不会变成额外的 Slack Bot。URL verification
-与真实入站消息只属于运行观测；两者都不能创建、完成或激活凭证代际。生产 Events API 仍是带签名的 HTTP，并包含
+当前 Slack App/Team installation 绝不会被静默共享或转移给另一个 Agent。不同 Agent 声称同一 App/Team 时返回
+`SLACK_APP_TEAM_ALREADY_BOUND`，且不得产生副作用；原 owner 可以重新授权同一 installation。transfer 必须显式先
+remove/uninstall，使旧 row 保留历史 Agent owner 并进入 disabled，再由新 Agent 创建新的 current row。URL verification 与
+真实入站消息只属于运行观测；两者都不能创建、完成或激活凭证代际。生产 Events API 仍是带签名的 HTTP，并包含
 `app_uninstalled` 与 `tokens_revoked`。不使用 Socket Mode。
 
 ## 固定的 Slack 能力契约
@@ -49,8 +50,8 @@ manifest、轮换 installation 凭证代际、要求重新安装或授权、重�
 2. 在目标 Slack 工作区批准 OpenTag Slack App。
 3. 公开 callback 用 Slack code 换 token，检查 Bot 身份、Team、存在时的 Enterprise，以及实际 `x-oauth-scopes`，并要求完整
    七项 scopes。若 Slack 返回 App ID，也必须与一等 OpenTag App 相同。
-4. OpenTag 锁定 Agent 当前 route，重新核验 Team 权限与预期 route 代际，再按 workspace installation 原子执行提交意图。
-   **Create** 会安装 workspace installation 并把该 Agent 设为 default route。**Reauthorize** 必须保持当前 App、Team、Bot
+4. OpenTag 锁定 Agent 当前 route，重新核验 Team 权限与预期 route 代际，再按 Slack installation 原子执行提交意图。
+   **Create** 会安装 Slack installation 并把该 Agent 设为 default route。**Reauthorize** 必须保持当前 App、Team、Bot
    User，即使 `auth.test` 不返回 `app_id`。Slack 没有 Change App 或 replace 意图；若 Agent 要离开 Slack，断开当前 route。
    随后原子写入 installation 身份、加密凭证、完整授权和新代际。验证失败、身份漂移或预期代际过期时，当前 installation
    不变。
@@ -72,8 +73,8 @@ authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑�
 
 | 项目 | 处理 | 权威来源与含义 |
 | --- | --- | --- |
-| 绑定 `id`、Agent、Team、provider、status | 作为 Agent route 保留 | 每个 Agent 最多一个未禁用的当前 IM 绑定。Slack 行是指向 workspace installation 的 route（`slackInstallationId`、`slackRouteKind`），绝不存储 Bot Token 或 Signing Secret。 |
-| Slack workspace installation | 保留 | 每个 OpenTag workspace 一组当前 App/Team/Bot 身份、加密凭证、授权、代际以及身份闭合/生命周期。 |
+| 绑定 `id`、Agent、Team、provider、status | 作为 Agent route 保留 | 每个 Agent 最多一个未禁用的当前 IM 绑定。Slack 行是指向该 Agent installation 的 route（`slackInstallationId`、`slackRouteKind`），绝不存储 Bot Token 或 Signing Secret。 |
+| Slack Team installation | 保留 | 每个 App/Team 组合一组当前 App/Team/Bot 身份、owner Agent、加密凭证、授权、代际以及身份闭合/生命周期。 |
 | App、Team、Enterprise、Bot User/Bot 身份 | 保留 | App ID 是显式配置证据；Team 与 bot 身份来自 token 检查；Enterprise 可为空。 |
 | Team 与 Bot 展示元数据 | 作为可选展示数据保留 | Team 名称、Bot 展示名称和头像可显示在管理视图中，但绝不参与配置、入口或 runtime 授权。 |
 | Bot Token 与 Signing Secret | 加密保留在 installation | 一起存入 installation credential envelope；绝不复制到多个 Agent route，管理、诊断、runtime-config API 都不返回。Signing Secret 永不投影给 runtime。 |
@@ -113,7 +114,7 @@ authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑�
 | `active` | 已提交一个凭证代际。Slack 在当前代际收到匹配签名事件、闭合 App/Team/Bot 身份前仍不 ready。若当前材料不可读、结构不一致或缺少固定 scope，公共状态仍会派生为 `reauthorization_required`。 | 成功的已验证配置或同身份重新授权。 |
 | `reauthorization_required` | 当前安装必须重新授权；scope 契约或凭证检查失败时，绝不把既有材料报告为健康。 | scope 迁移、`tokens_revoked` 或显式恢复写入。 |
 | `error` | 为非 Slack setup/runtime 失败保留的通用状态；Slack 配置验证错误直接返回，不修改当前行。 | 非 Slack provider 工作流或既有通用恢复代码。 |
-| `disabled` | 该 installation 身份的终态，或一条 Agent route 的终态。禁用 installation 会清除其 active credential、禁用全部 route 并结束那些 Sessions。禁用一条 route 不会卸载 workspace installation。 | 显式禁用、`app_uninstalled` 或不完整 legacy Slack 清理。 |
+| `disabled` | 该 installation 身份的终态，或一条 Agent route 的终态。禁用 installation 会清除其 active credential、禁用全部 route 并结束那些 Sessions。禁用一条 route 不会卸载 Slack installation。 | 显式禁用、`app_uninstalled` 或不完整 Slack 清理。 |
 
 `bindingState`、`ready`、`handoffReady`、`reauthorizationRequired`、`credentialStatus` 与 missing capabilities
 都是投影，不是额外 binding 状态。URL verification 只更新运行观测；匹配的签名真实事件还可在消息/路由工作前设置当前
@@ -122,7 +123,7 @@ installation 代际身份闭合时间。`receiveMode` 只改变 Agent 策略。�
 
 ## 入口、事件与错误
 
-生成的 Agent 专属 Request URL 与兼容 Slack Events URL 都先按 Agent route 或 App+Team 定位 workspace installation，再只接受已经
+生成的 Agent 专属 Request URL 与兼容 Slack Events URL 都先按 Agent route 或 App+Team 定位 Slack installation，再只接受已经
 active、scopes 完整、且当前凭证材料可读且有效的安装。Agent 专属 URL 在解析 JSON 之前验证原始请求体签名。兼容 URL 只能有界
 预解析 App/Team 以查找 secret。随后两者都要求真实事件的 App ID 与 Team ID 匹配，才记录 installation 观测或处理事件。生命周期
 事件与代际栅栏作用于 installation。普通消息只有在唯一显式 default Agent route 解析成功后才投递；未配置、歧义、跨 workspace
@@ -194,8 +195,8 @@ signing secret、OAuth code 与 token 都不会出现在管理 API 响应或日�
 已认证的 start `POST /api/v1/agents/:agentId/im-binding/slack/oauth/start` 仍是选择 default Agent route 的管理入口。它会签发
 带签名的 state，其中包含一次性 nonce，并绑定浏览器 session cookie、Account、Agent、意图（`create` / `reauthorize`）以及
 预期 binding generation。公开 callback 用 Slack code 换 token，检查 Bot 身份与实际 `x-oauth-scopes`，只有在七项固定 bot
-scopes 与身份检查都通过后，才写入 workspace installation 以及该 Agent 的显式 default route。同一安装重新授权会递增凭证代际。
-Slack replace 不是合法 OAuth 意图。重放、过期、session 不匹配，以及第二个 OpenTag workspace 声称同一 App/Team 安装时，
+scopes 与身份检查都通过后，才写入该 Agent 所有的 installation 以及该 Agent 的显式 default route。同一安装重新授权会递增凭证代际。
+Slack replace 不是合法 OAuth 意图。重放、过期、session 不匹配，以及不同 Agent 声称同一当前 App/Team 安装时，
 都不会改写当前 installation。
 
 可版本控制的 Public Distribution manifest 见
@@ -215,9 +216,8 @@ Slack replace 不是合法 OAuth 意图。重放、过期、session 不匹配，
 active App/Team installation 查找，并用已存储的 signing secret 校验 HMAC。未启用 token rotation；若要在 active installation
 凭证信封之外轮换 token，需要以后由适配器持有的 store。
 
-一个分布式 App 安装仍然只为某一个 OpenTag workspace 产生一组 Team/Bot 身份。该 workspace 内多个 Agent 可以持有显式 route；
-V1 入站只使用唯一 default route，绝不广播。出站 Agent 通过 installation 投影获取 Bot Token，且不能跨 OpenTag workspace。
-Signing Secret 只加密保存在 installation 上，永不投影给 runtime。
+一个分布式 App installation 只产生一组归一个 Agent 所有的 Team/Bot 身份。V1 入站只使用该 Agent 的唯一 default route，
+绝不广播。Bot Token 只投影给 owner Agent。Signing Secret 只加密保存在 installation 上，永不投影给 runtime。
 
 Slack 协议参考：[App manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/)、
 [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/)、

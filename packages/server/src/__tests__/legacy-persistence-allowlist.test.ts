@@ -23,6 +23,8 @@ const LEGACY_PATTERNS = [
   /\b(workspaceComputers|workspaceComputerCredentials|workspaceAdminGrants|WorkspaceAdminAccess|WorkspaceAdminService|MachineEnrollmentCredential|storeMachineEnrollmentCredential|MachineEnrollmentInput|MachineEnrollmentResult|issueForWorkspaceAdmin|establishDefaultWorkspaceForNewAccount|SchemaRequiredLegacyError|schemaRequiredAgentProjection|schemaRequiredComputerProjection|schemaRequiredConnectCodeProjection|schemaRequiredSlackInstallationProjection|ensureSchemaWorkspaceId|schemaWorkspaceIdForComputer|insertSchemaWorkspaceComputer|lockSchemaWorkspaceComputer|updateSchemaWorkspaceComputerInstallationForRepair|WorkspaceSetupService|WorkspaceSetupServiceError|WORKSPACE_SETUP_AGENT_NOT_FOUND|WORKSPACE_SETUP_NOT_READY|ListWorkspaceComputersResponse|WorkspaceComputerSummary|CompleteWorkspaceSetupRequest|WorkspaceSetupCompletion|MeWorkspace|WorkspaceNameInputSchema|WorkspaceDisplayNameSchema|enrolledAt|enrolledByUserId)\b/,
   /\b(workspace_computers|workspace_computer_credentials|workspace_admin_grants|admin_invitations|account_computers|workspace_computer_id|consumed_workspace_computer_id|enrolled_by_user_id)\b/,
   /\b(?:enrollment|enrollments|enroll|enrolled|enrolling)\b/i,
+  /\bOpenTag workspaces?\b/i,
+  /\bworkspace installation\b/i,
   /\b(?:agents|sessionPlacements|sessionCliProofs|slackInstallations|computerConnectCodes)\.(?:workspaceId|workspaceComputerId)\b/,
   /\.(?:from|insert|update|delete)\(workspaces\)/,
   /["'`]\/api\/v1\/workspaces(?:\/|["'`])/,

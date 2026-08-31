@@ -1823,7 +1823,7 @@ export class ImBindingService {
         );
       }
       if (input.provider === "slack") {
-        throw new Error("Slack activation must use the workspace installation write path");
+        throw new Error("Slack activation must use the Slack installation write path");
       }
       if (input.provider === "feishu") {
         const [conflicting] = await transaction

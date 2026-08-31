@@ -21,6 +21,8 @@ const EXPECTED_ROOT_EXPORTS = [
   "runAgentUpdate",
   "runDoctor",
   "runLogin",
+  "runProviderCliEnsure",
+  "runProviderCliInspect",
   "runSessionCreate",
   "runSessionList",
   "runSessionSend",
@@ -29,6 +31,10 @@ const EXPECTED_ROOT_EXPORTS = [
   "type DoctorResult",
   "type LoginOptions",
   "type LoginResult",
+  "type ProviderCliEnsureCommandOptions",
+  "type ProviderCliEnsureCommandResult",
+  "type ProviderCliInspectCommandOptions",
+  "type ProviderCliInspectCommandResult",
 ];
 
 describe("CLI package public surface", () => {

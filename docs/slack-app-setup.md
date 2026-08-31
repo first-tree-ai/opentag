@@ -2,20 +2,21 @@
 
 [简体中文](./zh-CN/slack-app-setup.md)
 
-OpenTag supports one Slack App/Team/Bot installation per OpenTag workspace. One Slack workspace installs the publicly
-distributed **@OpenTag** Bot once through first-party OAuth. Several Agents in that OpenTag workspace may have explicit
-routes to the same installation; V1 inbound delivery uses exactly one configured **default** Agent route and otherwise
-fails closed.
+OpenTag supports at most one current Slack App/Team/Bot installation for an App/Team pair. One Slack workspace installs
+the publicly distributed **@OpenTag** Bot for one OpenTag Agent through first-party OAuth. The installation is owned by
+that Agent, and V1 inbound delivery uses its configured **default** Agent route or fails closed.
 
-An authenticated Agent management flow starts OAuth; the callback creates or updates that OpenTag workspace's Slack
-installation and sets the starting Agent as the default route. Internal subagents stay invisible in Slack. There is no
-customer-owned Slack App, manual token, or Change App path.
+An authenticated Agent management flow starts OAuth; the callback creates or updates that Agent's Slack installation
+and sets the Agent's default route. Internal subagents stay invisible in Slack. There is no customer-owned Slack App,
+manual token, or Change App path.
 
-A Slack App/Team installation is never silently shared across OpenTag workspaces; a second OpenTag workspace claiming
-the same App/Team returns `SLACK_APP_TEAM_ALREADY_BOUND`. Agents in the same OpenTag workspace are not additional Slack
-Bots. URL verification and inbound messages are runtime observations; neither creates, completes, or activates a
-credential generation. Production Events API remains signed HTTP and includes `app_uninstalled` and `tokens_revoked`.
-Socket Mode is not used.
+A current Slack App/Team installation is never silently shared or transferred to another Agent. A different Agent
+claiming the same App/Team returns `SLACK_APP_TEAM_ALREADY_BOUND` without side effects. The owning Agent may
+reauthorize the same installation. Transfer is an explicit remove/uninstall followed by a fresh installation: the old
+row keeps its historical Agent owner and becomes disabled, while the new Agent receives a new current row. URL
+verification and inbound messages are runtime observations; neither creates, completes, or activates a credential
+generation. Production Events API remains signed HTTP and includes `app_uninstalled` and `tokens_revoked`. Socket Mode
+is not used.
 
 ## Fixed Slack capability contract
 
@@ -56,7 +57,7 @@ contract; it may be considered later as an optional extra and must not be added 
    `x-oauth-scopes`, and requires all seven scopes. If Slack returns an App ID, it must match the first-party OpenTag
    App.
 4. OpenTag locks the Agent's current route, rechecks Team authority and the expected route generation, and atomically
-   enforces the submitted intent against the workspace installation. **Create** installs the workspace installation and
+   enforces the submitted intent against the Slack installation. **Create** installs the Slack installation and
    sets this Agent as the default route. **Reauthorize** must preserve the current App, Team, and Bot User even when
    `auth.test` omits `app_id`. There is no Slack Change App or replace intent; disconnect the current route if the Agent
    should leave Slack. OpenTag then atomically writes the installation identity, encrypted credentials, complete grants,
@@ -67,7 +68,7 @@ contract; it may be considered later as an optional extra and must not be added 
 
 Slack does not guarantee `app_id` in `auth.test` for a Bot Token. The App ID stored from OAuth is therefore projected as
 **configured evidence**, not as Slack API-attested identity. Every request still has an independent proof boundary.
-The Agent-specific Request URL looks up the Agent's Slack route only to locate the workspace installation, then verifies
+The Agent-specific Request URL looks up the Agent's Slack route only to locate the Slack installation, then verifies
 the timestamped HMAC over the raw body **before** parsing JSON. The compatibility Events URL may bounded-preparse only
 App and Team identifiers to locate the installation Signing Secret, then verifies the same raw-body HMAC.
 After a valid signature, every real event envelope's `api_app_id` and `team_id` must match the installation App ID and
@@ -85,8 +86,8 @@ can verify only the bound Signing Secret for that challenge; it records no ident
 
 | Item | Disposition | Source of truth and meaning |
 | --- | --- | --- |
-| Binding `id`, Agent, Team, provider, status | Keep as Agent route | One current non-disabled IM binding per Agent. Slack rows are routes to a workspace installation (`slackInstallationId`, `slackRouteKind`) and never store Bot Token or Signing Secret. |
-| Slack workspace installation | Keep | One current App/Team/Bot identity, encrypted credentials, grants, generation, and identity-closure/lifecycle per OpenTag workspace. |
+| Binding `id`, Agent, Team, provider, status | Keep as Agent route | One current non-disabled IM binding per Agent. Slack rows are routes to that Agent's installation (`slackInstallationId`, `slackRouteKind`) and never store Bot Token or Signing Secret. |
+| Slack Team installation | Keep | One current App/Team/Bot identity, owning Agent, encrypted credentials, grants, generation, and identity-closure/lifecycle per App/Team pair. |
 | App, Team, Enterprise, Bot User/Bot identity | Keep | App ID is explicit configured evidence; Team and bot identity come from token inspection; Enterprise is optional. |
 | Team and Bot display metadata | Keep as optional presentation data | Team name, Bot display name, and avatar may be shown in management views, but never authorize configuration, ingress, or runtime access. |
 | Bot Token and Signing Secret | Keep encrypted on the installation | Stored together in the installation credential envelope; never copied onto Agent routes and never returned by management, diagnostics, or runtime-config APIs. The Signing Secret is never projected to runtime. |
@@ -126,7 +127,7 @@ Derived values are not new durable states:
 | `active` | A credential generation was committed. Slack readiness remains false until a matching signed event closes App/Team/Bot identity for that generation. Public state may still derive `reauthorization_required` when the current material is unreadable, structurally inconsistent, or missing a fixed scope. | Successful validated configuration or same-identity reauthorization. |
 | `reauthorization_required` | The current installation must be reauthorized. Existing material is never reported healthy when the scope contract or credential inspection fails. | Scope migration, `tokens_revoked`, or an explicit recovery write. |
 | `error` | Generic retained state for non-Slack setup/runtime failures; Slack configuration validation errors are returned without mutating the current row. | Non-Slack provider workflows or existing generic recovery code. |
-| `disabled` | Terminal for that installation identity, or for one Agent route. Disabling the installation erases its active credentials, disables every route, and ends those Sessions. Disabling one route does not uninstall the workspace installation. | Explicit disable, `app_uninstalled`, or incomplete legacy Slack cleanup. |
+| `disabled` | Terminal for that installation identity, or for one Agent route. Disabling the installation erases its active credentials, disables every route, and ends those Sessions. Disabling one route does not uninstall the Slack installation. | Explicit disable, `app_uninstalled`, or incomplete Slack cleanup. |
 
 `bindingState`, `ready`, `handoffReady`, `reauthorizationRequired`, `credentialStatus`, and missing capabilities are
 projections, not additional binding states. URL verification updates only runtime observation. A matching signed real
@@ -136,7 +137,7 @@ event may additionally set the current installation generation's identity-closur
 
 ## Ingress, events, and errors
 
-The generated Agent-specific Request URL and the compatibility Slack Events URL first locate the workspace installation
+The generated Agent-specific Request URL and the compatibility Slack Events URL first locate the Slack installation
 by Agent route or by App+Team, then accept only an already-active, fully scoped installation whose current credential
 material is readable and valid. The Agent-specific URL verifies the raw-body signature before JSON parsing. The
 compatibility URL may bounded-preparse App/Team solely for secret lookup. Both then require every real event's App ID
@@ -218,10 +219,10 @@ start endpoint and is stripped from server request logs on callback.
 Authenticated start `POST /api/v1/agents/:agentId/im-binding/slack/oauth/start` remains the management entry that selects
 the default Agent route. It issues a signed state that includes a one-time nonce bound to the browser session cookie,
 Account, Agent, intended action (`create` / `reauthorize`), and the expected binding generation. The public callback
-exchanges the Slack code, inspects Bot identity and the actual `x-oauth-scopes`, and writes the workspace installation
+exchanges the Slack code, inspects Bot identity and the actual `x-oauth-scopes`, and writes the Agent-owned installation
 plus that Agent's explicit default route only after all seven fixed bot scopes and identity checks pass.
 Same-installation reauthorization increments credential generation. Slack replace is not a valid OAuth intent. Replay,
-expiry, session mismatch, and a second OpenTag workspace claiming the same App/Team installation fail without mutating
+expiry, session mismatch, and a different Agent claiming the same current App/Team installation fail without mutating
 the current installation.
 
 The version-controlled Public Distribution manifest is
@@ -242,10 +243,9 @@ installation observation. After install, real events look up the active App/Team
 stored signing secret. Token rotation is not enabled; rotating tokens outside the active installation credential envelope
 would require a later adapter-owned store.
 
-One distributed App installation still yields one Team/Bot identity for one OpenTag workspace. Several Agents in that
-workspace may hold explicit routes; V1 inbound delivery uses only the unique default route and never broadcasts. Outbound
-Agents receive the Bot Token through the installation projection and cannot cross OpenTag workspaces. Signing secrets stay
-encrypted on the installation and are never projected to runtime.
+One distributed App installation yields one Team/Bot identity owned by one Agent. V1 inbound delivery uses only that
+Agent's unique default route and never broadcasts. Outbound access projects the Bot Token only to the owning Agent.
+Signing secrets stay encrypted on the installation and are never projected to runtime.
 
 Slack protocol references: [app manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/),
 [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/),

@@ -32,8 +32,12 @@ export function AgentsPage() {
          * one primary action, and the reading edge is where a viewer looks for it first.
          */}
         <div data-ui="agents-page-action">
-          <Button ref={createTriggerRef} onClick={() => setCreateOpen(true)}>
-            New Agent <Icon name="plus" />
+          {/*
+           * The plus leads the label: it marks what the action does, and reading the mark before
+           * the words is the order every other control on this page already uses.
+           */}
+          <Button ref={createTriggerRef} variant="secondary" onClick={() => setCreateOpen(true)}>
+            <Icon name="plus" weight="bold" /> New Agent
           </Button>
         </div>
         <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>

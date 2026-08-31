@@ -12,6 +12,8 @@ import { Command, type CommanderError } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerDoctorCommand } from "../commands/doctor.js";
 import { channelConfig } from "../core/channel/config.js";
+import type { DoctorResult } from "../core/diagnostics/doctor.js";
+import * as doctorCore from "../core/diagnostics/doctor.js";
 import {
   type DoctorCheck,
   type DoctorOptions,
@@ -32,6 +34,43 @@ afterEach(async () => {
 });
 
 describe("doctor command target", () => {
+  it("presents doctor results in text and JSON modes", async () => {
+    const program = new Command().name("opentag");
+    registerDoctorCommand(program);
+    const run = vi
+      .spyOn(doctorCore, "runDoctor")
+      .mockResolvedValue({ exitCode: 0, message: "healthy", checks: [] } as unknown as DoctorResult);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await program.parseAsync(["node", "opentag", "doctor"]);
+      await program.parseAsync(["node", "opentag", "doctor", "--json"]);
+      expect(stdout).toHaveBeenCalledWith("healthy\n");
+      expect(stdout).toHaveBeenCalledWith(expect.stringContaining('"ok":true'));
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
+      stdout.mockRestore();
+      run.mockRestore();
+    }
+  });
+
+  it("passes doctor failures to Commander for the shared error path", async () => {
+    const program = new Command().name("opentag");
+    registerDoctorCommand(program);
+    const run = vi.spyOn(doctorCore, "runDoctor").mockRejectedValue(new Error("doctor unavailable"));
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await expect(program.parseAsync(["node", "opentag", "doctor"])).rejects.toThrow("doctor unavailable");
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = previousExitCode;
+      run.mockRestore();
+    }
+  });
+
   it("does not accept a caller-selected Server URL", async () => {
     const program = new Command().name("opentag").exitOverride();
     program.configureOutput({ writeErr: () => undefined, writeOut: () => undefined });

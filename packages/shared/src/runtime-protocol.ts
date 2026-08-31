@@ -23,6 +23,7 @@ export const RUNTIME_V0_CAPABILITIES = {
 } as const;
 
 export const RUNTIME_CAPABILITY = {
+  agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
   imDelivery: "runtime.imDelivery",
   imSteer: "runtime.imSteer",
@@ -33,6 +34,7 @@ export const RUNTIME_CAPABILITY = {
 } as const;
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
+  [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 2 },
@@ -52,6 +54,11 @@ export const RUNTIME_HEARTBEAT_INTERVAL_MAX_MS = 5 * 60 * 1_000;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS = 100;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS = 15 * 60 * 1_000;
 export const RUNTIME_CLIENT_CAPABILITY_TTL_MS = 60_000;
+export const RUNTIME_AGENT_RUNTIME_TEST_TIMEOUT_MS = 180_000;
+export const RUNTIME_AGENT_RUNTIME_TEST_CLEANUP_MS = 5_000;
+export const RUNTIME_AGENT_RUNTIME_TEST_TTL_MS =
+  RUNTIME_AGENT_RUNTIME_TEST_TIMEOUT_MS + RUNTIME_AGENT_RUNTIME_TEST_CLEANUP_MS;
+export const RUNTIME_AGENT_RUNTIME_TEST_MAX_PENDING = 32;
 export const RuntimeRequestIdSchema = z.string().uuid();
 export const RuntimeConnectionIdSchema = z.string().uuid();
 

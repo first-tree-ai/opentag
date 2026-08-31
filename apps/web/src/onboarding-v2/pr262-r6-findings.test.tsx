@@ -83,6 +83,7 @@ describe("demotion and the rebind gate at 7967e49", () => {
     // them back to a connect step they had already finished.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's Mac")] });
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
       bootstrapCommand: "sh install",
       expiresIn: 900,
       issuedAt: NOW,

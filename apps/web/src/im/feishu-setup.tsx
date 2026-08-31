@@ -1,10 +1,10 @@
 import type { FeishuBrand, FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { formatDateTime } from "../i18n/format.js";
-import { SETUP_COPY } from "../setup/copy.js";
-import { Banner, Button, Loader } from "../ui/design-system.js";
+import * as m from "../paraglide/messages.js";
+import { Banner, Button, buttonClassName, Dialog, Loader } from "../ui/design-system.js";
 import { defaultFeishuBrand, otherFeishuBrand } from "./brand.js";
 import { messagingProviderLabel } from "./provider-label.js";
 
@@ -18,30 +18,10 @@ const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "fa
  * the flow rather than incidental bookkeeping.
  */
 const POLL_INTERVAL_MS = 1_500;
-const FEISHU_SETUP_MESSAGES: Record<string, string> = {
-  FEISHU_APP_ALREADY_BOUND:
-    "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
-  FEISHU_SCOPE_REAUTH_REQUIRED:
-    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-  IM_BINDING_SCOPE_REAUTH_REQUIRED:
-    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-  FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
-  FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
-  FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
-  FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
-  FEISHU_BINDING_IDENTITY_MISMATCH:
-    "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
-  FEISHU_UPSTREAM_UNAVAILABLE:
-    "The Feishu open platform did not return a usable authorization. Check the Server's network access to Feishu, then retry.",
-};
-
 export interface FeishuSetupControl {
   /** Starts one setup intent. False means no new attempt was started. */
-  start: (intent?: FeishuSetupIntent) => Promise<boolean>;
-  /**
-   * Reissues the current attempt's code against the other regional brand. The domain is fixed when
-   * a code is minted, so this releases the attempt on screen before asking for a new one.
-   */
+  start: (intent?: FeishuSetupIntent, brand?: FeishuBrand) => Promise<boolean>;
+  /** Reissues the running code against the other regional brand. False means nothing changed. */
   switchBrand: (brand: FeishuBrand) => Promise<boolean>;
   loading: boolean;
   /** Opaque lifecycle feedback for the caller to place in its existing layout. */
@@ -52,6 +32,8 @@ interface FeishuSetupProps {
   agentId: string;
   children: (control: FeishuSetupControl) => ReactNode;
   onSuccess: () => void;
+  presentation?: "dialog" | "inline";
+  returnFocusRef?: RefObject<HTMLElement | null>;
 }
 
 interface FeishuSetupError {
@@ -64,20 +46,42 @@ interface FeishuSetupError {
  * ImTab refreshes its binding on success; onboarding can use the same callback
  * to reload fresh Server facts and derive its next step without learning setup internals.
  */
-export function FeishuSetup({ agentId, children, onSuccess }: FeishuSetupProps) {
+export function FeishuSetup({
+  agentId,
+  children,
+  onSuccess,
+  presentation = "inline",
+  returnFocusRef,
+}: FeishuSetupProps) {
   return (
-    <FeishuSetupLifecycle agentId={agentId} key={agentId} onSuccess={onSuccess}>
+    <FeishuSetupLifecycle
+      agentId={agentId}
+      key={agentId}
+      onSuccess={onSuccess}
+      presentation={presentation}
+      returnFocusRef={returnFocusRef}
+    >
       {children}
     </FeishuSetupLifecycle>
   );
 }
 
-function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps) {
+function FeishuSetupLifecycle({
+  agentId,
+  children,
+  onSuccess,
+  presentation = "inline",
+  returnFocusRef,
+}: FeishuSetupProps) {
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
   const [error, setError] = useState<FeishuSetupError>();
   const [loading, setLoading] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [activeIntent, setActiveIntent] = useState<FeishuSetupIntent>("create");
   const attemptRef = useRef<FeishuSetupAttempt>(undefined);
   const creatingRef = useRef(false);
+  const cancelAfterStartRef = useRef(false);
   /** Held for the whole of one switch, which spans two requests the reader can press through. */
   const switchingRef = useRef(false);
   const lifecycleRef = useRef(0);
@@ -97,6 +101,8 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
       if (creatingRef.current || (current?.intent === intent && ACTIVE_STATES.includes(current.state))) return false;
 
       const lifecycle = lifecycleRef.current;
+      setActiveIntent(intent);
+      if (presentation === "dialog") setDialogOpen(true);
       creatingRef.current = true;
       setLoading(true);
       setError(undefined);
@@ -112,18 +118,43 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         );
         if (lifecycleRef.current !== lifecycle) return false;
         creatingRef.current = false;
+        if (cancelAfterStartRef.current) {
+          cancelAfterStartRef.current = false;
+          if (started.state === "awaiting_user") {
+            try {
+              await browserApi.cancelFeishuSetupAttempt(started.id);
+            } catch {
+              attemptRef.current = started;
+              setAttempt(started);
+              setError({ message: m.im_feishu_cancel_failed(), source: "start" });
+              setDialogOpen(true);
+              return false;
+            }
+          }
+          return true;
+        }
         if (current && attemptRef.current !== current && started.id === current.id) return true;
         setError(undefined);
+        // Advancing the lifecycle retires the old poll, so clear the request state before the
+        // guarded `finally` intentionally stops observing that retired lifecycle.
+        setLoading(false);
         if (attemptRef.current?.id !== started.id || !ACTIVE_STATES.includes(started.state)) {
           lifecycleRef.current = lifecycle + 1;
         }
         attemptRef.current = started;
         setAttempt(started);
-        if (started.state === "succeeded") onSuccessRef.current();
+        if (started.state === "succeeded") {
+          if (presentation === "dialog") {
+            attemptRef.current = undefined;
+            setAttempt(undefined);
+            setDialogOpen(false);
+          }
+          onSuccessRef.current();
+        }
         return true;
       } catch (cause) {
         if (lifecycleRef.current !== lifecycle) return false;
-        setError({ message: normalizeError(cause, "Unable to start setup"), source: "start" });
+        setError({ message: normalizeError(cause, m.im_feishu_authorization_failed()), source: "start" });
         return false;
       } finally {
         if (lifecycleRef.current === lifecycle) {
@@ -132,7 +163,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         }
       }
     },
-    [agentId],
+    [agentId, presentation],
   );
 
   const activeAttemptId = attempt && ACTIVE_STATES.includes(attempt.state) ? attempt.id : undefined;
@@ -150,6 +181,11 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         setAttempt(next);
         setError((currentError) => (currentError?.source === "poll" ? undefined : currentError));
         if (next.state === "succeeded") {
+          if (presentation === "dialog") {
+            attemptRef.current = undefined;
+            setAttempt(undefined);
+            setDialogOpen(false);
+          }
           onSuccessRef.current();
           return;
         }
@@ -159,7 +195,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         setError((currentError) =>
           currentError?.source === "start"
             ? currentError
-            : { message: normalizeError(cause, "Unable to refresh setup"), source: "poll" },
+            : { message: normalizeError(cause, m.im_feishu_authorization_failed()), source: "poll" },
         );
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       }
@@ -170,7 +206,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeAttemptId]);
+  }, [activeAttemptId, presentation]);
 
   const switchBrand = useCallback(
     async (brand: FeishuBrand) => {
@@ -196,7 +232,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
           try {
             await browserApi.cancelFeishuSetupAttempt(current.id);
           } catch (cause) {
-            setError({ message: normalizeError(cause, "Unable to switch"), source: "start" });
+            setError({ message: m.im_feishu_cancel_failed(), source: "start" });
             return false;
           }
           attemptRef.current = undefined;
@@ -211,17 +247,178 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
     [start],
   );
 
-  return children({
-    loading,
-    start,
-    switchBrand,
-    feedback: (
+  async function cancelActiveAttempt() {
+    const current = attemptRef.current;
+    if (!current && creatingRef.current) {
+      cancelAfterStartRef.current = true;
+      setDialogOpen(false);
+      return;
+    }
+    if (!current || current.state !== "awaiting_user" || canceling) return;
+    setCanceling(true);
+    setError(undefined);
+    lifecycleRef.current += 1;
+    try {
+      await browserApi.cancelFeishuSetupAttempt(current.id);
+      attemptRef.current = undefined;
+      setAttempt(undefined);
+      setDialogOpen(false);
+    } catch {
+      setError({ message: m.im_feishu_cancel_failed(), source: "start" });
+    } finally {
+      setCanceling(false);
+    }
+  }
+
+  function closeDialog() {
+    const current = attemptRef.current;
+    if ((!current && creatingRef.current) || current?.state === "awaiting_user") {
+      void cancelActiveAttempt();
+      return;
+    }
+    if (current?.state === "validating") return;
+    attemptRef.current = undefined;
+    setAttempt(undefined);
+    setError(undefined);
+    setDialogOpen(false);
+  }
+
+  const feedback =
+    presentation === "dialog" ? (
+      <FeishuSetupDialog
+        attempt={attempt}
+        busy={canceling || attempt?.state === "validating"}
+        error={error?.message}
+        intent={attempt?.intent ?? activeIntent}
+        loading={loading}
+        open={dialogOpen}
+        returnFocusRef={returnFocusRef}
+        onClose={closeDialog}
+        onRetry={start}
+        onSwitchBrand={switchBrand}
+      />
+    ) : (
       <>
         {attempt ? <FeishuSetupFeedback attempt={attempt} onRetry={start} onSwitchBrand={switchBrand} /> : null}
         {error ? <Banner variant="error" role="alert" description={error.message} /> : null}
       </>
-    ),
+    );
+
+  return children({
+    loading,
+    start,
+    switchBrand,
+    feedback,
   });
+}
+
+function FeishuSetupDialog({
+  attempt,
+  busy,
+  error,
+  intent,
+  loading,
+  onClose,
+  onRetry,
+  onSwitchBrand,
+  open,
+  returnFocusRef,
+}: {
+  attempt?: FeishuSetupAttempt;
+  busy: boolean;
+  error?: string;
+  intent: FeishuSetupIntent;
+  loading: boolean;
+  onClose: () => void;
+  onRetry: (intent: FeishuSetupIntent) => Promise<boolean>;
+  onSwitchBrand: (brand: FeishuBrand) => Promise<boolean>;
+  open: boolean;
+  returnFocusRef?: RefObject<HTMLElement | null>;
+}) {
+  const recovery = attempt ? setupRecovery(attempt) : undefined;
+  const terminal = attempt ? RETRYABLE_STATES.includes(attempt.state) : Boolean(error && !loading);
+  const title = feishuDialogTitle(intent);
+  return (
+    <Dialog
+      busy={busy}
+      description={feishuDialogDescription(intent)}
+      open={open}
+      returnFocusRef={returnFocusRef}
+      title={title}
+      onClose={onClose}
+    >
+      <div className="grid gap-4" data-ui="feishu-setup-dialog">
+        {loading && !attempt ? (
+          <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+            <Loader aria-label={m.im_feishu_preparing()} size="sm" />
+            <span>{m.im_feishu_preparing()}</span>
+          </div>
+        ) : null}
+        {attempt?.state === "awaiting_user" ? (
+          <>
+            {attempt.qrUrl ? <FeishuQrCode brand={attempt.brand} value={attempt.qrUrl} /> : null}
+            <p className="text-sm text-kumo-subtle">
+              {m.im_feishu_qr_expires({ date: formatDateTime(attempt.expiresAt) })}
+            </p>
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button variant="ghost" onClick={onClose}>
+                {m.common_cancel()}
+              </Button>
+              {attempt.qrUrl ? (
+                <a className={buttonClassName()} href={attempt.qrUrl} rel="noreferrer" target="_blank">
+                  {m.im_feishu_open({ brand: messagingProviderLabel("feishu", attempt.brand) })}
+                </a>
+              ) : null}
+              {/*
+                A code is minted against one brand's domain and cannot be authorized from the other,
+                so the reader whose company is on the one we did not guess needs the way out beside
+                the code that will not work for them.
+
+                Only on a first connect. A re-authorization or a replacement belongs to a binding
+                whose brand is already settled, and the Server returns to that domain whatever is
+                asked for — so the button would cancel a working code and mint the same one again.
+              */}
+              {attempt.intent === "create" ? (
+                <Button variant="secondary" onClick={() => void onSwitchBrand(otherFeishuBrand(attempt.brand))}>
+                  {m.im_feishu_brand_switch({
+                    brand: messagingProviderLabel("feishu", otherFeishuBrand(attempt.brand)),
+                  })}
+                </Button>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+        {attempt?.state === "validating" ? (
+          <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+            <Loader aria-label={m.im_feishu_finishing()} size="sm" />
+            <span>{m.im_feishu_finishing()}</span>
+          </div>
+        ) : null}
+        {recovery ? <Banner variant="error" role="alert" description={recovery} /> : null}
+        {error ? <Banner variant="error" role="alert" description={error} /> : null}
+        {terminal ? (
+          <div className="flex flex-wrap justify-end gap-3">
+            <Button variant="ghost" onClick={onClose}>
+              {m.common_close()}
+            </Button>
+            <Button onClick={() => void onRetry(intent)}>{m.im_feishu_retry()}</Button>
+          </div>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
+function feishuDialogTitle(intent: FeishuSetupIntent): string {
+  if (intent === "replace") return m.im_feishu_dialog_change_title();
+  if (intent === "reauthorize") return m.im_feishu_dialog_permissions_title();
+  return m.im_feishu_dialog_connect_title();
+}
+
+function feishuDialogDescription(intent: FeishuSetupIntent): string {
+  if (intent === "replace") return m.im_feishu_dialog_change_description();
+  if (intent === "reauthorize") return m.im_feishu_dialog_permissions_description();
+  return m.im_feishu_dialog_connect_description();
 }
 
 function FeishuSetupFeedback({
@@ -263,19 +460,12 @@ function FeishuSetupFeedback({
             Open {messagingProviderLabel("feishu", attempt.brand)} authorization
           </a>
           {/*
-            A code is minted against one brand's domain and cannot be authorized from the other, so
-            the reader whose company is on the one we did not guess needs the way out here, beside
-            the code that will not work for them.
-
-            Only on a first connect. A re-authorization or a replacement belongs to a binding whose
-            brand is already settled, and the Server returns to that domain whatever is asked for —
-            so the button would cancel a working code and mint the same one again.
+            Only on a first connect: a re-authorization or a replacement belongs to a binding whose
+            brand is already settled, and the Server returns to that domain whatever is asked for.
           */}
           {attempt.intent === "create" ? (
-            <Button onClick={() => void onSwitchBrand(otherFeishuBrand(attempt.brand))} variant="secondary">
-              {SETUP_COPY.messaging.feishuBrandSwitch(
-                messagingProviderLabel("feishu", otherFeishuBrand(attempt.brand)),
-              )}
+            <Button variant="secondary" onClick={() => void onSwitchBrand(otherFeishuBrand(attempt.brand))}>
+              {m.im_feishu_brand_switch({ brand: messagingProviderLabel("feishu", otherFeishuBrand(attempt.brand)) })}
             </Button>
           ) : null}
         </>
@@ -303,7 +493,7 @@ function FeishuQrCode({ brand, value }: { brand: FeishuBrand; value: string }) {
   }, [value]);
   return source ? (
     <img
-      alt={SETUP_COPY.messaging.qrAlt(messagingProviderLabel("feishu", brand))}
+      alt={m.im_feishu_qr_alt({ brand: messagingProviderLabel("feishu", brand) })}
       className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />
@@ -311,10 +501,10 @@ function FeishuQrCode({ brand, value }: { brand: FeishuBrand; value: string }) {
 }
 
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
-  if (attempt.errorCode && FEISHU_SETUP_MESSAGES[attempt.errorCode]) return FEISHU_SETUP_MESSAGES[attempt.errorCode];
-  if (attempt.state === "expired") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_EXPIRED;
-  if (attempt.state === "canceled") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_CANCELED;
-  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact the Account owner for help.";
+  if (attempt.errorCode) return feishuSetupMessage(attempt.errorCode);
+  if (attempt.state === "expired") return m.im_feishu_authorization_expired();
+  if (attempt.state === "canceled") return m.im_feishu_setup_canceled();
+  if (attempt.state === "failed") return m.im_feishu_authorization_failed();
   return undefined;
 }
 
@@ -324,6 +514,21 @@ function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
  */
 function normalizeError(cause: unknown, fallback: string): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
-  if (code && FEISHU_SETUP_MESSAGES[code]) return FEISHU_SETUP_MESSAGES[code];
-  return cause instanceof Error ? cause.message : fallback;
+  if (code) return feishuSetupMessage(code);
+  if (cause instanceof Error && cause.message) return m.im_feishu_authorization_failed();
+  return fallback;
+}
+
+function feishuSetupMessage(code: string): string {
+  if (code === "FEISHU_APP_ALREADY_BOUND") return m.im_feishu_app_already_connected();
+  if (code === "FEISHU_SCOPE_REAUTH_REQUIRED" || code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
+    return m.im_feishu_permissions_missing();
+  }
+  if (code === "FEISHU_SETUP_DENIED") return m.im_feishu_authorization_declined();
+  if (code === "FEISHU_SETUP_EXPIRED") return m.im_feishu_authorization_expired();
+  if (code === "FEISHU_SETUP_CANCELED") return m.im_feishu_setup_canceled();
+  if (code === "FEISHU_SETUP_OWNER_RESTARTED") return m.im_feishu_setup_interrupted();
+  if (code === "FEISHU_BINDING_IDENTITY_MISMATCH") return m.im_feishu_authorization_mismatch();
+  if (code === "FEISHU_UPSTREAM_UNAVAILABLE") return m.im_feishu_unavailable();
+  return m.im_feishu_authorization_failed();
 }

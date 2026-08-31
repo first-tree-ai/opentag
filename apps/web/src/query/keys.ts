@@ -10,6 +10,7 @@ import type { AgentUsageWindowDays } from "@opentag/shared/browser";
 export const queryKeys = {
   me: () => ["me"] as const,
   authProviders: () => ["authProviders"] as const,
+  internalToolsOffered: () => ["internalToolsOffered"] as const,
   /** The Account's Computers. The request takes no argument — the Server scopes it to the session. */
   computers: () => ["computers"] as const,
 

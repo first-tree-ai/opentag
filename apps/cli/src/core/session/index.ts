@@ -1,12 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import {
-  OpenTagApi,
-  OpenTagApiError,
-  readComputerIdentity,
-  readSessionCliProofFile,
-  resolveOpenTagHome,
-} from "@opentag/client";
+import { type OpenTagApi, OpenTagApiError, readComputerIdentity, readSessionCliProofFile } from "@opentag/client";
 import {
   SESSION_CLI_DEFAULT_LIMIT,
   type SessionCliCommandResponse,
@@ -15,6 +9,8 @@ import {
   type SessionCliListResponse,
   SessionCliSendRequestSchema,
 } from "@opentag/shared";
+import { resolveCommandContext } from "../command/context.js";
+import { redactSecrets } from "../command/policy.js";
 
 export interface SessionMessageOptions {
   message?: string;
@@ -44,7 +40,8 @@ async function context(environment: NodeJS.ProcessEnv = process.env): Promise<{ 
       "Session commands are available only inside an OpenTag-managed Agent Session (runtime context missing)",
     );
   }
-  const home = resolveOpenTagHome(environment);
+  const context = await resolveCommandContext({ environment });
+  const home = context.home;
   const identity = await readComputerIdentity(home);
   if (!identity) {
     throw new Error(
@@ -52,7 +49,9 @@ async function context(environment: NodeJS.ProcessEnv = process.env): Promise<{ 
     );
   }
   const proof = await readSessionCliProofFile(proofPath);
-  return { api: new OpenTagApi(identity.serverUrl), proof: proof.token };
+  const apiContext = await resolveCommandContext({ environment, home, serverUrl: identity.serverUrl });
+  if (!apiContext.api) throw new Error("Command context did not resolve an API");
+  return { api: apiContext.api, proof: proof.token };
 }
 
 export async function runSessionCreate(
@@ -122,7 +121,7 @@ export function formatSessionCommandError(error: SessionCommandRequestError, jso
     status: error.status,
     messageId: error.messageId,
     code: error.code,
-    message: error.message,
+    message: redactSecrets(error.message),
   };
   return json
     ? JSON.stringify(result)

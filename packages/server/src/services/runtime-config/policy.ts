@@ -6,8 +6,7 @@ import {
 
 export { OPENTAG_PLATFORM_INSTRUCTIONS };
 
-export const DEFAULT_AGENT_INSTRUCTIONS =
-  "Act as the configured OpenTag Agent and follow the managed workspace instructions.";
+export const DEFAULT_AGENT_INSTRUCTIONS = "";
 
 export const DEFAULT_AGENT_RUNTIME_CONFIG = Object.freeze({
   model: null,

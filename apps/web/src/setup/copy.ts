@@ -53,9 +53,11 @@ export const SETUP_COPY = {
     copyFallback: "Copying is unavailable here. The command is selected — press Ctrl or Cmd + C.",
     expiresIn: (remaining: string) => `Expires in ${remaining}`,
     expired: "This command has expired.",
+    expiredStatus: "Connection command expired.",
     refresh: "Get a new command",
     waiting: "Waiting for your computer…",
     connected: "Your computer is connected.",
+    preparing: "Preparing connection command…",
 
     /*
      * The same step, once the Account has its computer. An Account has one, so there is nothing to
@@ -67,9 +69,16 @@ export const SETUP_COPY = {
     yoursLead: "Your AI worker runs on your own computer.",
     online: "Online",
     offline: "Offline",
+    unknown: "Unable to confirm",
     lastSeen: (when: string) => `last seen ${when}`,
-    /** Reconnecting repairs this exact machine, rather than replacing it with a second one. */
-    offlineLead: "This computer is offline. Reconnect it and this page will continue on its own.",
+    offlineLead: (computerName: string) =>
+      `${computerName} is offline. Start OpenTag on that Computer; this page will continue when it reconnects.`,
+    unknownLead: (computerName: string) =>
+      `We can't confirm ${computerName} right now. Start OpenTag on that Computer; this page will continue when it reconnects.`,
+    generateRepair: "Need to reinstall? Generate a repair command.",
+    hideRepair: "Hide repair command",
+    repairCommandComment: (computerName: string) => `# Run this command in the terminal on ${computerName}`,
+    waitingRepair: (computerName: string) => `Waiting for ${computerName} to connect…`,
   },
 
   messaging: {
@@ -89,14 +98,20 @@ export const SETUP_COPY = {
     feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu or Lark workspace" },
     slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
     /*
-     * Scanning is offered, not promised. A Lark tenant reports `link expired` for this launcher URL
-     * from inside Lark's own scanner — including on a code minted against Lark's own domain — while
-     * the same URL opened in a browser completes the authorization and creates the app. Telling a
-     * reader to scan, and giving them nothing else, would hand a whole brand an instruction that
-     * does not work for them.
+     * Scanning is offered, not promised. A reader whose client will not open the code from a scan
+     * has been observed against a real tenant, and the same code opened as a link worked — the
+     * cause is not established, so this says only what is known. Telling someone to scan and
+     * giving them nothing else leaves them with no second route when the first one does not work.
      */
     feishuIntro: (brand: string) => `Scan this with ${brand}, or open it in your browser.`,
+    /*
+     * Brand-aware for the same reason as everything else the reader is told here: naming Feishu to
+     * a tenant we have just minted a Lark code for describes a product they do not use.
+     */
+    feishuPreparing: (brand: string) => `OpenTag is preparing a secure ${brand} authorization.`,
     qrAlt: (brand: string) => `Scan this QR code in ${brand}`,
+    /** Says nothing about which brand, so it needs nothing from one. */
+    generating: "Generating QR code…",
     /** The way through for a reader whose client cannot scan, said in terms of what it does. */
     feishuOpenLink: (brand: string) => `Open the ${brand} authorization page`,
     /**

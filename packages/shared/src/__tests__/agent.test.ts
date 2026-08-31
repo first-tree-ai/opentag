@@ -4,6 +4,8 @@ import {
   AgentDetailSchema,
   AgentNameSchema,
   AgentRuntimeConfigSchema,
+  AgentRuntimeTestRequestSchema,
+  AgentRuntimeTestResponseSchema,
   AgentSummarySchema,
   AgentUsageDetailSchema,
   AgentUsageWindowDaysSchema,
@@ -27,6 +29,7 @@ import {
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
+  AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
@@ -39,10 +42,12 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   imBindingDiagnosticsPath,
@@ -153,6 +158,26 @@ describe("Agent contracts", () => {
         runtimeProvider: agent.runtimeProvider,
       }),
     ).toThrow();
+  });
+
+  it("creates an Agent with no Computer and projects the absent binding as null", () => {
+    const created = CreateAgentRequestSchema.parse({
+      displayName: agent.displayName,
+      name: agent.name,
+      runtimeProvider: agent.runtimeProvider,
+    });
+    expect(created.computerId).toBeUndefined();
+    expect(AgentAdminConfigSchema.parse({ ...agent, computerId: null })).toMatchObject({ computerId: null });
+    const { runtimeConfig: _, revision: _revision, createdByUserId, computerId: _computerId, ...base } = agent;
+    const unbound = {
+      ...base,
+      createdBy: { userId: createdByUserId, displayName: "Creator" },
+      computer: null,
+    };
+    expect(AgentSummarySchema.parse(unbound)).toEqual(unbound);
+    // Absent and null stay distinct: `computer` is always stated, so a reader never has to guess
+    // whether an Agent has no Computer or the field was dropped in transit.
+    expect(() => AgentSummarySchema.parse({ ...base, createdBy: unbound.createdBy })).toThrow();
   });
 
   it("rejects unexpected authority and immutable update fields", () => {
@@ -373,6 +398,25 @@ describe("Agent contracts", () => {
         workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
       }),
     ).toThrow();
+    expect(AgentRuntimeTestRequestSchema.parse({ expectedRevision: 1, expectedRuntimeConfigRevision: 2 })).toEqual({
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 2,
+    });
+    expect(() =>
+      AgentRuntimeTestRequestSchema.parse({
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 2,
+        prompt: "nope",
+      }),
+    ).toThrow();
+    expect(AgentRuntimeTestResponseSchema.parse({ status: "passed" })).toEqual({ status: "passed" });
+    expect(AgentRuntimeTestResponseSchema.parse({ status: "failed", code: "busy" })).toEqual({
+      status: "failed",
+      code: "busy",
+    });
+    expect(() =>
+      AgentRuntimeTestResponseSchema.parse({ status: "failed", code: "ENOENT", detail: "secret" }),
+    ).toThrow();
     expect(BrowserAgentNameSchema.parse("browser-barrel")).toBe("browser-barrel");
   });
 
@@ -385,6 +429,8 @@ describe("Agent contracts", () => {
     expect(HTTP_PATHS.agentById).toBe(AGENT_BY_ID_TEMPLATE);
     expect(AGENT_CONFIG_TEMPLATE).toBe("/api/v1/agents/:agentId/config");
     expect(agentConfigPath("a/b")).toBe("/api/v1/agents/a%2Fb/config");
+    expect(AGENT_RUNTIME_TEST_TEMPLATE).toBe("/api/v1/agents/:agentId/runtime-test");
+    expect(agentRuntimeTestPath("a/b")).toBe("/api/v1/agents/a%2Fb/runtime-test");
     expect(agentImBindingPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding");
     expect(AGENT_IM_BINDING_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding");
     expect(agentImBindingHandoffPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/handoff");
@@ -392,6 +438,9 @@ describe("Agent contracts", () => {
     expect(agentImBindingConfigPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/config");
     expect(AGENT_IM_BINDING_CONFIG_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/config");
     expect(agentFeishuSetupAttemptsPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/feishu/setup-attempts");
+    expect(feishuSetupAttemptCancelPath("attempt/value")).toBe(
+      "/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue/cancel",
+    );
     expect(AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/feishu/setup-attempts");
     expect(feishuSetupAttemptPath("attempt/value")).toBe("/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue");
     expect(agentSlackOAuthStartPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/slack/oauth/start");

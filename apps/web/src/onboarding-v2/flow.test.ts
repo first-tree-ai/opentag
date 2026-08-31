@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   type AgentDraft,
-  type ConnectState,
   deriveFlowState,
   type FlowFacts,
   initialFacts,
@@ -19,7 +18,7 @@ const draft: AgentDraft = {
 };
 /** The facts of a user who has confirmed both of the steps they drive themselves. */
 const confirmed = { draft, destinationConfirmed: true, draftConfirmed: true } as const;
-const connected: ConnectState = { kind: "connected", command: "npm i -g open-tag", computerName: "MacBook Pro" };
+const selectedComputerId = "computer-1";
 const ready: ReadinessFacts = { runtime: "ready", messagingCli: { feishu: "ready", slack: "ready" } };
 
 function facts(overrides: Partial<FlowFacts> = {}): FlowFacts {
@@ -75,8 +74,8 @@ describe("deriveFlowState", () => {
   it("keeps connecting and checking on one step", () => {
     // The check settles within about 100ms of the Computer arriving, so it is not its own step.
     expect(deriveFlowState(facts({ ...confirmed })).page).toBe("computer");
-    expect(deriveFlowState(facts({ ...confirmed, connect: connected })).page).toBe("computer");
-    expect(deriveFlowState(facts({ ...confirmed, connect: connected, readiness: ready })).page).toBe("computer");
+    expect(deriveFlowState(facts({ ...confirmed, selectedComputerId })).page).toBe("computer");
+    expect(deriveFlowState(facts({ ...confirmed, selectedComputerId, readiness: ready })).page).toBe("computer");
     expect(deriveFlowState(facts({ ...confirmed })).steps.map((step) => step.id)).toEqual([
       "agent",
       "computer",
@@ -85,13 +84,13 @@ describe("deriveFlowState", () => {
   });
 
   it("holds the computer step until the Agent is actually created", () => {
-    const passing = facts({ ...confirmed, connect: connected, readiness: ready });
+    const passing = facts({ ...confirmed, selectedComputerId, readiness: ready });
     expect(deriveFlowState(passing).page).toBe("computer");
     expect(deriveFlowState({ ...passing, creation: "created" }).page).toBe("messaging");
   });
 
   it("is complete only once messaging is connected", () => {
-    const base = facts({ ...confirmed, connect: connected, readiness: ready, creation: "created" });
+    const base = facts({ ...confirmed, selectedComputerId, readiness: ready, creation: "created" });
     expect(deriveFlowState(base).complete).toBe(false);
     expect(deriveFlowState({ ...base, messaging: { kind: "connected" } }).complete).toBe(true);
   });

@@ -15,6 +15,22 @@ export function agentUsageLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/usage" } as const;
 }
 
+export function agentTasksLink(agentId: string) {
+  return { params: { agentId }, to: "/agents/$agentId/tasks" } as const;
+}
+
+export function agentTaskDetailLink(agentId: string, taskId: string) {
+  return { params: { agentId, taskId }, to: "/agents/$agentId/tasks/$taskId" } as const;
+}
+
+export function agentSkillsLink(agentId: string) {
+  return { params: { agentId }, to: "/agents/$agentId/skills" } as const;
+}
+
+export function agentIntegrationsLink(agentId: string) {
+  return { params: { agentId }, to: "/agents/$agentId/integrations" } as const;
+}
+
 export function agentSettingsLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId/settings" } as const;
 }

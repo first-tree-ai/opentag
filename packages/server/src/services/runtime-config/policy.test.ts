@@ -3,6 +3,7 @@ import { DEFAULT_AGENT_INSTRUCTIONS, DEFAULT_AGENT_RUNTIME_CONFIG, resolveAgentR
 
 describe("runtime configuration policy", () => {
   it("keeps the default configuration immutable", () => {
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toBe("");
     expect(DEFAULT_AGENT_RUNTIME_CONFIG).toEqual({
       model: null,
       reasoningEffort: null,

@@ -18,8 +18,15 @@ migrations and the admin bootstrap, serves the built Web app, runs the tests, wr
 `e2e/screenshots/index.html`, and removes its database, temporary credentials, daemon, server, and PostgreSQL
 container at shutdown.
 
-Run only this package after a build with `pnpm --filter @opentag/e2e e2e`. Set `OPENTAG_E2E_CHROMIUM` only when a
-specific Chromium executable is required. The default uses the Chromium binary managed by Playwright.
+The pull-request smoke path is intentionally separate from that serial journey:
+
+```bash
+pnpm test:e2e:smoke
+```
+
+It runs the four read-only browser smoke flows with four workers. Run only this package after a build with
+`pnpm --filter @opentag/e2e test:e2e:smoke` or `pnpm --filter @opentag/e2e e2e:journey`. Set `OPENTAG_E2E_CHROMIUM` only
+when a specific Chromium executable is required. The default uses the Chromium binary managed by Playwright.
 
 The generated screenshots, Playwright report, test results, authentication state, and runtime metadata are ignored by
 Git. The suite captures 18 addressable pages after the retired Onboarding Lab route was removed. It does not perform

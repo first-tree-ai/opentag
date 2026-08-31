@@ -9,14 +9,11 @@ import { baseURL, repositoryRoot } from "../playwright.config.js";
 
 const execFileAsync = promisify(execFile);
 const ADMIN_AUTH_STATE = join(repositoryRoot, "e2e", ".auth", "admin.json");
+const COMPOSE_FILE = join(repositoryRoot, "docker-compose.yml");
+const CLAUDE_STUB_JS = join(repositoryRoot, "e2e/scripts/claude-stub.mjs");
 const CLAUDE_STUB = `#!/usr/bin/env bash
 set -euo pipefail
-case "\${1:-}" in
-  --version) echo "9.9.9 (opentag-e2e-stub)" ;;
-  --help) echo "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt" ;;
-  auth) echo '{"loggedIn":true}' ;;
-  *) echo "opentag e2e stub does not run turns" >&2; exit 1 ;;
-esac
+exec ${JSON.stringify(process.execPath)} ${JSON.stringify(CLAUDE_STUB_JS)} "$@"
 `;
 const LARK_CLI_STUB = `#!/usr/bin/env bash
 set -euo pipefail
@@ -28,10 +25,15 @@ echo "opentag e2e stub does not run Feishu commands" >&2
 exit 1
 `;
 
+export type ClaudeStubMode = "pass" | "fail" | "hold";
+
 export interface E2ERuntime {
   accountComputerId: string;
+  claudeStubCancellationCount(): Promise<number>;
+  claudeStubStartCount(): Promise<number>;
   databaseURL: string;
   devEmail: string;
+  setClaudeStubMode(mode: ClaudeStubMode): Promise<void>;
   setSetupIncomplete(): Promise<void>;
   setSetupComplete(): Promise<void>;
   seedTask(agentId: string): Promise<string>;
@@ -49,18 +51,40 @@ interface RuntimeFile {
   workspaceId: string;
 }
 
-function connectionTarget(url: string): { dsn: string; password: string } {
+function connectionTarget(url: string): { database: string; password: string; username: string } {
   const target = new URL(url);
-  const password = decodeURIComponent(target.password);
-  target.password = "";
-  return { dsn: target.href, password };
+  return {
+    database: target.pathname.slice(1),
+    password: decodeURIComponent(target.password),
+    username: decodeURIComponent(target.username),
+  };
 }
 
 async function psql(url: string, sql: string): Promise<string> {
-  const { dsn, password } = connectionTarget(url);
-  const { stdout } = await execFileAsync("psql", [dsn, "-v", "ON_ERROR_STOP=1", "-Atc", sql], {
-    env: { ...process.env, PGPASSWORD: password },
-  });
+  const { database, password, username } = connectionTarget(url);
+  const { stdout } = await execFileAsync(
+    "docker",
+    [
+      "compose",
+      "-f",
+      COMPOSE_FILE,
+      "exec",
+      "-T",
+      "-e",
+      `PGPASSWORD=${password}`,
+      "postgres",
+      "psql",
+      "-U",
+      username,
+      "-d",
+      database,
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-Atc",
+      sql,
+    ],
+    { cwd: repositoryRoot },
+  );
   return stdout.trim();
 }
 
@@ -78,7 +102,9 @@ async function waitFor(description: string, predicate: () => Promise<boolean>, t
   throw new Error(`Timed out waiting for ${description}${lastError ? `: ${String(lastError)}` : ""}`);
 }
 
-async function startDaemon(runtime: RuntimeFile): Promise<{ daemon: ReturnType<typeof spawn>; temporaryHome: string }> {
+async function startDaemon(
+  runtime: RuntimeFile,
+): Promise<{ daemon: ReturnType<typeof spawn>; openTagHome: string; temporaryHome: string }> {
   const temporaryHome = await mkdtemp(join(tmpdir(), "opentag-e2e-daemon-"));
   const home = join(temporaryHome, "home");
   const openTagHome = join(temporaryHome, "opentag-home");
@@ -101,7 +127,7 @@ async function startDaemon(runtime: RuntimeFile): Promise<{ daemon: ReturnType<t
   const context = await playwrightRequest.newContext({ baseURL, storageState: ADMIN_AUTH_STATE });
   try {
     const response = await context.post("/api/v1/computer-connect-codes", {
-      data: {},
+      data: { mode: "repair", targetComputerId: runtime.accountComputerId },
       headers: { Origin: baseURL, "x-opentag-csrf": csrf },
     });
     if (!response.ok())
@@ -146,7 +172,7 @@ async function startDaemon(runtime: RuntimeFile): Promise<{ daemon: ReturnType<t
         await psql(runtime.databaseURL, "select count(*) from account_computers where current_instance_id is not null"),
       ) > 0,
   );
-  return { daemon, temporaryHome };
+  return { daemon, openTagHome, temporaryHome };
 }
 
 async function stopDaemon(daemon: ReturnType<typeof spawn>, temporaryHome: string): Promise<void> {
@@ -197,9 +223,20 @@ async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> 
   return taskId;
 }
 
-export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }>({
+const browserTest = base.extend({
   page: async ({ page }, use, testInfo) => {
     const browserErrors: string[] = [];
+    page.on("console", (message) => {
+      // Chromium reports this CSP fallback as console.error even though it is emitted by the
+      // development server's policy and is not an application failure.
+      if (
+        message.type() === "error" &&
+        !/script-src.*not explicitly set/u.test(message.text()) &&
+        !message.text().startsWith("Failed to load resource:")
+      ) {
+        browserErrors.push(`console.error: ${message.text()}`);
+      }
+    });
     page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));
     page.on("requestfailed", (request) => {
       // Chromium reports an in-flight fetch as ERR_ABORTED when a route navigation intentionally replaces it.
@@ -214,15 +251,34 @@ export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }
       throw new Error(browserErrors.join(" | "));
     }
   },
+});
+
+export const test = browserTest.extend<Record<never, never>, { e2eRuntime: E2ERuntime }>({
   e2eRuntime: [
     async ({ browser: _browser }, use) => {
       const runtime = JSON.parse(await readFile(join(repositoryRoot, "e2e/.runtime.json"), "utf8")) as RuntimeFile;
       const daemon = await startDaemon(runtime);
+      const claudeModePath = join(daemon.openTagHome, "e2e-claude-mode");
+      await writeFile(claudeModePath, "pass\n");
+      const claudeStubEventCount = async (name: "cancelled" | "started") => {
+        try {
+          const events = await readFile(join(daemon.openTagHome, `e2e-claude-${name}`), "utf8");
+          return events.split("\n").filter(Boolean).length;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+          throw error;
+        }
+      };
       try {
         await use({
           accountComputerId: runtime.accountComputerId,
+          claudeStubCancellationCount: () => claudeStubEventCount("cancelled"),
+          claudeStubStartCount: () => claudeStubEventCount("started"),
           databaseURL: runtime.databaseURL,
           devEmail: runtime.devEmail,
+          setClaudeStubMode: async (mode) => {
+            await writeFile(claudeModePath, `${mode}\n`);
+          },
           setSetupIncomplete: async () => {
             await psql(
               runtime.databaseURL,
@@ -244,6 +300,25 @@ export const test = base.extend<Record<never, never>, { e2eRuntime: E2ERuntime }
       }
     },
     { scope: "worker", auto: true },
+  ],
+});
+
+/**
+ * Smoke tests deliberately do not opt into the worker-scoped daemon fixture. Playwright creates a
+ * fresh BrowserContext and Page for every test, so parallel smoke workers do not share mutable IDs
+ * or runtime state with one another or with the serial journey project.
+ */
+export const smokeTest = browserTest.extend<{ smokeAccountReady: undefined }>({
+  smokeAccountReady: [
+    async ({ browser: _browser }, use) => {
+      const runtime = JSON.parse(await readFile(join(repositoryRoot, "e2e/.runtime.json"), "utf8")) as RuntimeFile;
+      await psql(
+        runtime.databaseURL,
+        `update users set setup_completed_at = now(), updated_at = now() where id = '${runtime.userId}'`,
+      );
+      await use(undefined);
+    },
+    { auto: true },
   ],
 });
 

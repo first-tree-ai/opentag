@@ -87,13 +87,19 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
       displayName: z.string().min(1),
     })
     .strict(),
+  /**
+   * `null` while the Agent has no Computer. An Agent is created before its Computer exists, so the
+   * binding is a later fact rather than a creation precondition, and a reader that cannot tell
+   * "not bound yet" from "bound to a machine we could not read" reports the wrong recovery.
+   */
   computer: z
     .object({
       computerId: z.string().uuid(),
       displayName: z.string().min(1),
       platform: z.enum(["darwin", "linux", "win32"]),
     })
-    .strict(),
+    .strict()
+    .nullable(),
   /**
    * Present when the Agent creator does not own the bound Computer. The Agent stays visible; execution
    * is rejected until the creator rebinds it to an owned Computer.
@@ -218,7 +224,7 @@ export const AgentListItemSchema = AgentSummarySchema.extend({
 
 export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
   createdByUserId: z.string().uuid(),
-  computerId: z.string().uuid(),
+  computerId: z.string().uuid().nullable(),
   revision: z.number().int().min(1),
   runtimeConfig: AgentRuntimeConfigSchema,
 }).strict();
@@ -229,7 +235,12 @@ export const CreateAgentRequestSchema = z
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
-    computerId: z.string().uuid(),
+    /**
+     * Optional: the Computer binding is changeable after creation, so requiring it here would state
+     * a creation-time precondition the product does not have. An Agent created without one exists
+     * and can be configured; it cannot run until a Computer is bound.
+     */
+    computerId: z.string().uuid().optional(),
     runtimeConfig: CreateAgentRuntimeConfigSchema.optional(),
   })
   .strict();
@@ -253,6 +264,34 @@ export const ListAgentsResponseSchema = z
   })
   .strict();
 
+export const AGENT_RUNTIME_TEST_FAILURE_CODES = [
+  "stale_configuration",
+  "computer_unavailable",
+  "capability_missing",
+  "busy",
+  "timeout",
+  "cancelled",
+  "interaction_or_tool",
+  "provider_start_failed",
+  "provider_failed",
+] as const;
+export const AgentRuntimeTestFailureCodeSchema = z.enum(AGENT_RUNTIME_TEST_FAILURE_CODES);
+export const AgentRuntimeTestRequestSchema = z
+  .object({
+    expectedRevision: z.number().int().min(1),
+    expectedRuntimeConfigRevision: z.number().int().min(1),
+  })
+  .strict();
+export const AgentRuntimeTestResponseSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("passed") }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: AgentRuntimeTestFailureCodeSchema,
+    })
+    .strict(),
+]);
+
 export type AgentName = z.infer<typeof AgentNameSchema>;
 export type AgentDisplayName = z.infer<typeof AgentDisplayNameSchema>;
 export type AgentRuntimeProvider = z.infer<typeof AgentRuntimeProviderSchema>;
@@ -273,3 +312,6 @@ export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
 export type RebindAgentComputerRequest = z.infer<typeof RebindAgentComputerRequestSchema>;
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;
+export type AgentRuntimeTestFailureCode = z.infer<typeof AgentRuntimeTestFailureCodeSchema>;
+export type AgentRuntimeTestRequest = z.infer<typeof AgentRuntimeTestRequestSchema>;
+export type AgentRuntimeTestResponse = z.infer<typeof AgentRuntimeTestResponseSchema>;

@@ -1,13 +1,4 @@
-export interface KeyedTaskSchedulerOptions {
-  maxConcurrent: number;
-  maxQueuedPerKey: number;
-  maxQueuedTotal: number;
-}
-
-interface TaskLane {
-  queue: Array<{ run: () => Promise<void>; onDrop?: () => void }>;
-  running: boolean;
-}
+import type { KeyedTaskSchedulerOptions, TaskLane } from "./keyed-task-scheduler.types.js";
 
 export class KeyedTaskScheduler {
   readonly #options: KeyedTaskSchedulerOptions;
@@ -15,14 +6,16 @@ export class KeyedTaskScheduler {
   #active = 0;
   #closed = false;
   #queued = 0;
+  readonly #now: () => number;
 
   constructor(options: KeyedTaskSchedulerOptions) {
-    for (const [name, value] of Object.entries(options)) {
+    for (const [name, value] of Object.entries(options).filter(([, value]) => typeof value === "number")) {
       if (!Number.isSafeInteger(value) || value < 1) {
         throw new Error(`${name} must be a positive safe integer`);
       }
     }
     this.#options = options;
+    this.#now = options.now ?? Date.now;
   }
 
   enqueue(key: string, task: () => Promise<void>, onDrop?: () => void): boolean {
@@ -32,10 +25,24 @@ export class KeyedTaskScheduler {
       return false;
     }
     if (!this.#lanes.has(key)) this.#lanes.set(key, lane);
-    lane.queue.push({ run: task, onDrop });
+    lane.queue.push({ run: task, onDrop, enqueuedAt: this.#now() });
     this.#queued += 1;
     this.#pump();
     return true;
+  }
+
+  stats(now = this.#now()): { active: number; queued: number; lanes: number; oldestQueueAgeMs: number } {
+    let oldestEnqueuedAt = Number.POSITIVE_INFINITY;
+    for (const lane of this.#lanes.values()) {
+      const task = lane.queue[0];
+      if (task) oldestEnqueuedAt = Math.min(oldestEnqueuedAt, task.enqueuedAt);
+    }
+    return {
+      active: this.#active,
+      queued: this.#queued,
+      lanes: this.#lanes.size,
+      oldestQueueAgeMs: Number.isFinite(oldestEnqueuedAt) ? Math.max(0, now - oldestEnqueuedAt) : 0,
+    };
   }
 
   close(): void {
@@ -68,7 +75,21 @@ export class KeyedTaskScheduler {
       this.#active += 1;
       void Promise.resolve()
         .then(task.run)
-        .catch(() => undefined)
+        .catch((error: unknown) => {
+          this.#options.supervisor?.track(
+            async () => {
+              throw error;
+            },
+            {
+              code: "RUNTIME_SCHEDULER_TASK_FAILED",
+              category: "internal",
+              retryability: "never",
+              phase: "scheduler",
+              requestId: key,
+              operation: "keyed-task-scheduler",
+            },
+          );
+        })
         .finally(() => {
           lane.running = false;
           this.#active -= 1;

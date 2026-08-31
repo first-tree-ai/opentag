@@ -118,6 +118,31 @@ describe("session CLI", () => {
     }
   });
 
+  it("presents list and generic transport failures through the shared policy", async () => {
+    const list = vi.spyOn(sessionCore, "runSessionList").mockResolvedValue({ items: [], nextCursor: undefined });
+    const create = vi.spyOn(sessionCore, "runSessionCreate").mockRejectedValue(new Error("connection refused"));
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "session", "list", "--json"]);
+      expect(stdout).toHaveBeenCalledWith('{"ok":true,"result":{"items":[]}}\n');
+      list.mockRejectedValueOnce(new Error("connection refused"));
+      await createProgram().parseAsync(["node", "opentag", "session", "list", "--json"]);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"category":"unavailable"'));
+      await createProgram().parseAsync(["node", "opentag", "session", "create", "--message", "task", "--json"]);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"category":"unavailable"'));
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = previousExitCode;
+      stdout.mockRestore();
+      stderr.mockRestore();
+      list.mockRestore();
+      create.mockRestore();
+    }
+  });
+
   it("keeps the retry key visible when a sent request loses its response", async () => {
     const messageId = "11111111-1111-4111-8111-111111111111";
     const fetchImpl = vi.fn().mockRejectedValue(new TypeError("connection reset after request write"));

@@ -18,6 +18,7 @@ const OTHER_COMPUTER = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
 
 function agentOn(computerId: string, displayName: string, extra: Partial<AgentListItem> = {}): AgentListItem {
   return {
@@ -84,9 +85,18 @@ describe("resume at a4e2662", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABC",
       expiresIn: 900,
       issuedAt: NOW,
+    });
+    // Nobody redeems the issued repair code in these tests: the wait never concludes without the
+    // Server's verdict, whichever machines the Computers list happens to show.
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "pending",
+      computerId: null,
+      redeemedAt: null,
     });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -98,17 +108,17 @@ describe("resume at a4e2662", () => {
   });
 
   it("does not finish setup on a Computer the Agent is not bound to", async () => {
-    // Resume correctly refuses to claim the offline Computer, so the step issues a fresh code. But
-    // the arrival it then accepts is any machine at all: this one is a different Computer, the
-    // Agent is never rebound to it — `UpdateAgentRequest` cannot carry a `computerId`, so it
-    // cannot be — and the checks that go green belong to a machine the Agent will never run on.
+    // Resume correctly refuses to claim the offline Computer, so the step issues a repair code for
+    // it. A different machine enrolling during the wait is not the machine the code names, and the
+    // Server's verdict is the only thing that can settle the wait — so the checks that would go
+    // green on the wrong machine never run.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
     let call = 0;
     vi.spyOn(browserApi, "computers").mockImplementation(async () => {
       call += 1;
-      // 1 = the resume read, 2 = the baseline for the fresh code, 3+ = a different machine arrives.
+      // 1 = the resume read; the verdict stays pending, so nothing later is even consulted.
       const departed = machine(AGENT_COMPUTER, "Ada's old Mac", false);
-      if (call <= 2) return { computers: [departed] };
+      if (call <= 1) return { computers: [departed] };
       return { computers: [departed, machine(OTHER_COMPUTER, "Ada's new Mac", true)] };
     });
     const create = vi.spyOn(browserApi, "createAgent");

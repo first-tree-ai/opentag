@@ -39,6 +39,20 @@ describe("runLogin", () => {
     );
   });
 
+  it("presents login success as one JSON document", async () => {
+    const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
+    const output: string[] = [];
+    const program = new Command().name("opentag");
+    registerLoginCommand(program, { login, writeOutput: (message) => output.push(message) });
+    await program.parseAsync(["node", "opentag", "login", "code", "--server", "https://opentag.example", "--json"]);
+    expect(login).toHaveBeenCalledWith({
+      code: "code",
+      home: expect.any(String),
+      serverUrl: "https://opentag.example",
+    });
+    expect(output).toEqual([]);
+  });
+
   it("stores credentials without returning or printing secrets", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
     temporaryDirectories.push(home);

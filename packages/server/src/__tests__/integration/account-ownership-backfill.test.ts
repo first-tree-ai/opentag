@@ -821,7 +821,8 @@ describe("account-owned resource backfill migrations", () => {
         migrations: journal.entries.length,
         account_computers: 0,
         computer_credentials: 0,
-        agents_nullable: "NO",
+        // An Agent may exist before its Computer does; the pair check keeps the two columns together.
+        agents_nullable: "YES",
         slack_nullable: "NO",
       });
     } finally {
@@ -1067,7 +1068,13 @@ describe("account-owned resource backfill migrations", () => {
           'missing', 'Missing', 'codex'
         )
       `.catch((error: unknown) => error);
-      expect(postgresError(missingComputer)).toMatchObject({ code: "23502" });
+      // Both Computer columns are nullable now, so the half-set row is refused by the pair check
+      // rather than by NOT NULL. What 0028 established -- an enrollment can never name a Computer
+      // the Agent does not also record -- is unchanged.
+      expect(postgresError(missingComputer)).toMatchObject({
+        code: "23514",
+        constraint_name: "agents_computer_pair",
+      });
 
       const mismatchedAgent = await sql`
         insert into agents (
@@ -1318,7 +1325,7 @@ describe("account-owned resource backfill migrations", () => {
         `;
         expect(retried).toEqual({
           migrations: journal.entries.length,
-          agents_nullable: "NO",
+          agents_nullable: "YES",
           identity_check: true,
           slack_unique: true,
           owner_fk: true,

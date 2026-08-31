@@ -1,201 +1,190 @@
+import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { browserApi } from "../../api.js";
+import opentagLogo from "../../assets/opentag-logo.png";
 import { initials } from "../../i18n/format.js";
-import {
-  DropdownMenu,
-  Icon,
-  type IconName,
-  Loader,
-  Sidebar,
-  SidebarProvider,
-  SidebarTrigger,
-  useSidebar,
-} from "../../ui/design-system.js";
+import * as m from "../../paraglide/messages.js";
+import { queryKeys } from "../../query/keys.js";
+import { Button, DropdownMenu, Icon, type IconName, Loader, Sidebar } from "../../ui/design-system.js";
 import { useAccount } from "../session/session-context.js";
+import { ShellMain } from "./shell-main.js";
 
+const ACCOUNT_ONLY_AGENT_SEGMENTS = new Set(["computers", "new"]);
+const AgentShell = lazy(() => import("./agent-shell.js"));
+
+/**
+ * Account pages and Agent pages intentionally use different shells. The Account has one primary
+ * destination — its Agents — so a global product sidebar would advertise Agent-owned resources at
+ * the wrong scope. Once an Agent is selected, its own sidebar becomes the stable work context.
+ */
 export function AppShell() {
-  return (
-    <SidebarProvider className="h-full min-h-0 overflow-hidden" collapsible="icon" defaultOpen>
-      <AppShellContent />
-    </SidebarProvider>
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const agentId = agentIdFromPathname(pathname);
+  return agentId ? (
+    <Suspense fallback={<ShellLoading />}>
+      <AgentShell
+        agentId={agentId}
+        renderAccountMenu={(onNavigate) => <AccountMenu onNavigate={onNavigate} placement="sidebar" />}
+      />
+    </Suspense>
+  ) : (
+    <AccountShell />
   );
 }
 
-export function AppShellContent() {
+export function AccountShell() {
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas" data-ui="account-shell">
+      <header className="shrink-0 px-4 pt-5 md:px-8 md:pt-7" data-ui="account-shell-header">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4">
+          <Link className="inline-flex items-center gap-2 text-lg font-semibold text-kumo-strong" to="/agents">
+            <img alt="" className="block size-6 shrink-0" height={24} src={opentagLogo} width={24} />
+            <span>OpenTag</span>
+          </Link>
+          <AccountMenu placement="page" />
+        </div>
+      </header>
+      <ShellMain>
+        <Outlet />
+      </ShellMain>
+    </div>
+  );
+}
+
+function ShellLoading() {
+  return (
+    <div className="grid h-full min-h-0 flex-1 place-items-center bg-kumo-canvas">
+      <Loader aria-label={m.shell_loading_agent_workspace()} />
+    </div>
+  );
+}
+
+function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; placement: "page" | "sidebar" }) {
   const { endSession, me } = useAccount();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
-  const { setOpenMobile } = useSidebar();
-  const [openMenu, setOpenMenu] = useState<"account">();
+  const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
-  const accountMenuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (openMenu !== "account") return;
-    accountMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')?.focus();
-  }, [openMenu]);
+  const internalToolsOffered =
+    useQuery({
+      queryKey: queryKeys.internalToolsOffered(),
+      queryFn: () => browserApi.internalToolsOffered(),
+      staleTime: Number.POSITIVE_INFINITY,
+    }).data === true;
+
   async function logout() {
     setLoggingOut(true);
     setAccountError(undefined);
     try {
       await browserApi.logout();
-      // Everything read here belongs to the Account that is signing out. End the session before the
-      // login navigation, so a later Account cannot observe the previous one's data while its own
-      // reads are pending, and so a refresh still in flight cannot put it back afterwards.
+      // End the Account-owned cache before login navigation so a later Account cannot see it.
       endSession();
       void navigate({ replace: true, to: "/login" });
     } catch (cause) {
-      setAccountError(cause instanceof Error ? cause.message : "Unable to sign out");
+      setAccountError(cause instanceof Error ? cause.message : m.shell_unable_to_sign_out());
       setLoggingOut(false);
     }
   }
-  return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas" data-ui="shell">
-      <Sidebar aria-label="Primary navigation" fullScreenOnMobile>
-        <Sidebar.Header>
-          <Link className="text-lg font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
-            OpenTag
-          </Link>
-        </Sidebar.Header>
-        <Sidebar.Content>
-          <nav aria-label="Product">
-            <Sidebar.Group>
-              <Sidebar.Menu>
-                <Sidebar.MenuButton
-                  active={isSidebarNavActive(pathname, "/agents")}
-                  aria-current={isSidebarNavActive(pathname, "/agents") ? "page" : undefined}
-                  href="/agents"
-                  icon={<WorkspaceNavIcon name="agents" />}
-                  onClick={() => setOpenMobile(false)}
-                >
-                  Agents
-                </Sidebar.MenuButton>
-                <Sidebar.MenuButton
-                  active={isSidebarNavActive(pathname, "/tasks")}
-                  aria-current={isSidebarNavActive(pathname, "/tasks") ? "page" : undefined}
-                  href="/tasks"
-                  icon={<WorkspaceNavIcon name="tasks" />}
-                  onClick={() => setOpenMobile(false)}
-                >
-                  Tasks
-                </Sidebar.MenuButton>
-                <Sidebar.MenuButton
-                  active={isSidebarNavActive(pathname, "/skills")}
-                  aria-current={isSidebarNavActive(pathname, "/skills") ? "page" : undefined}
-                  href="/skills"
-                  icon={<WorkspaceNavIcon name="skills" />}
-                  onClick={() => setOpenMobile(false)}
-                >
-                  Skills
-                </Sidebar.MenuButton>
-                <Sidebar.MenuButton
-                  active={isSidebarNavActive(pathname, "/integrations")}
-                  aria-current={isSidebarNavActive(pathname, "/integrations") ? "page" : undefined}
-                  href="/integrations"
-                  icon={<WorkspaceNavIcon name="integrations" />}
-                  onClick={() => setOpenMobile(false)}
-                >
-                  Integrations
-                </Sidebar.MenuButton>
-              </Sidebar.Menu>
-            </Sidebar.Group>
-          </nav>
-        </Sidebar.Content>
-        <Sidebar.Footer>
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <Sidebar.Menu className="min-w-0 flex-1 group-data-[state=collapsed]/sidebar:hidden">
-              <Sidebar.MenuItem>
-                <DropdownMenu
-                  open={openMenu === "account"}
-                  onOpenChange={(open) => setOpenMenu(open ? "account" : undefined)}
-                >
-                  <DropdownMenu.Trigger
-                    render={
-                      <Sidebar.MenuButton
-                        aria-label="Account menu"
-                        className="justify-start"
-                        icon={
-                          <span
-                            className="grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
-                            aria-hidden="true"
-                          >
-                            {initials(me.user.displayName)}
-                          </span>
-                        }
-                      >
-                        <span className="min-w-0 flex-1 truncate text-left">
-                          <strong>{me.user.displayName}</strong>
-                        </span>
-                        <span aria-hidden="true">
-                          <Icon name="more-vertical" />
-                        </span>
-                      </Sidebar.MenuButton>
-                    }
-                  />
-                  <DropdownMenu.Content aria-label="Account" ref={accountMenuRef}>
-                    <DropdownMenu.Item href="/agents/computers" onClickCapture={() => setOpenMobile(false)}>
-                      Computers
-                    </DropdownMenu.Item>
-                    <DropdownMenu.Item
-                      onClick={() => {
-                        setOpenMobile(false);
-                        void navigate({ to: "/account" });
-                      }}
-                    >
-                      Account
-                    </DropdownMenu.Item>
-                    <DropdownMenu.Item disabled={loggingOut} onClick={() => void logout()}>
-                      {loggingOut ? (
-                        <span className="flex items-center gap-2">
-                          <span aria-hidden="true">
-                            <Loader aria-label="Signing out" size="sm" />
-                          </span>
-                          Signing out…
-                        </span>
-                      ) : (
-                        "Sign out"
-                      )}
-                    </DropdownMenu.Item>
-                    {accountError ? (
-                      <span className="text-sm text-kumo-danger" role="alert">
-                        {accountError}
-                      </span>
-                    ) : null}
-                  </DropdownMenu.Content>
-                </DropdownMenu>
-              </Sidebar.MenuItem>
-            </Sidebar.Menu>
-            <Sidebar.Trigger title="Toggle sidebar" />
-          </div>
-        </Sidebar.Footer>
-      </Sidebar>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-ui="app-main">
-        <header className="app-mobile-header shrink-0 items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3">
-          <Link className="font-semibold text-kumo-strong" to="/agents" onClick={() => setOpenMobile(false)}>
-            OpenTag
-          </Link>
-          <SidebarTrigger aria-label="Open navigation" title="Open navigation" />
-        </header>
-        <main
-          className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-5 md:px-8 md:py-8"
-          data-ui="content"
+
+  const trigger =
+    placement === "sidebar" ? (
+      <Sidebar.MenuButton
+        aria-label={m.shell_account_menu()}
+        className="justify-start"
+        icon={
+          <span className="flex w-8 shrink-0 items-center justify-center" aria-hidden="true">
+            <span className="grid size-6 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
+              {initials(me.user.displayName)}
+            </span>
+          </span>
+        }
+        tooltip={me.user.displayName}
+      >
+        <span className="min-w-0 flex-1 truncate text-left">{me.user.displayName}</span>
+        <Icon className="size-3.5 text-kumo-subtle" name="chevron-up" />
+      </Sidebar.MenuButton>
+    ) : (
+      <Button aria-label={m.shell_account_menu()} className="gap-2" size="compact" variant="ghost">
+        <span
+          className="grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
+          aria-hidden="true"
         >
-          <div className="@container/workspace mx-auto w-full min-w-0 max-w-5xl" data-ui="workspace-page-frame">
-            <Outlet />
-          </div>
-        </main>
-      </div>
-    </div>
+          {initials(me.user.displayName)}
+        </span>
+        <span className="hidden max-w-40 truncate sm:inline">{me.user.displayName}</span>
+        <Icon name="chevron-down" />
+      </Button>
+    );
+
+  return (
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <DropdownMenu.Trigger render={trigger} />
+      <DropdownMenu.Content
+        align={placement === "sidebar" ? "start" : "end"}
+        aria-label={m.shell_account()}
+        className={placement === "sidebar" ? "min-w-(--anchor-width)" : undefined}
+        side={placement === "sidebar" ? "top" : "bottom"}
+      >
+        <DropdownMenu.LinkItem
+          closeOnClick
+          icon={<MenuItemIcon name="laptop" />}
+          render={<Link to="/agents/computers" onClick={() => onNavigate?.()} />}
+        >
+          {m.shell_computers()}
+        </DropdownMenu.LinkItem>
+        <DropdownMenu.LinkItem
+          closeOnClick
+          icon={<MenuItemIcon name="user" />}
+          render={<Link to="/account" onClick={() => onNavigate?.()} />}
+        >
+          {m.shell_account()}
+        </DropdownMenu.LinkItem>
+        {internalToolsOffered ? (
+          <DropdownMenu.LinkItem
+            closeOnClick
+            icon={<MenuItemIcon name="settings" />}
+            render={<Link to="/internal" onClick={() => onNavigate?.()} />}
+          >
+            {m.shell_internal_tools()}
+          </DropdownMenu.LinkItem>
+        ) : null}
+        <DropdownMenu.Separator />
+        <DropdownMenu.Item
+          closeOnClick={false}
+          disabled={loggingOut}
+          icon={<MenuItemIcon name="sign-out" />}
+          variant="danger"
+          onClick={() => void logout()}
+        >
+          {loggingOut ? (
+            <span className="flex items-center gap-2">
+              <Loader aria-label={m.shell_signing_out()} size="sm" /> {m.shell_signing_out()}
+            </span>
+          ) : (
+            m.shell_sign_out()
+          )}
+        </DropdownMenu.Item>
+        {accountError ? (
+          <span className="block px-2 py-1.5 text-sm text-kumo-danger" role="alert">
+            {accountError}
+          </span>
+        ) : null}
+      </DropdownMenu.Content>
+    </DropdownMenu>
   );
 }
 
-export function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills" | "tasks" }) {
-  const icon: IconName =
-    name === "agents" ? "user" : name === "tasks" ? "instructions" : name === "skills" ? "shield" : "settings";
-  return <Icon name={icon} />;
+function MenuItemIcon({ name }: { name: IconName }) {
+  return (
+    <span className="mr-2 grid size-6 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
+      <Icon name={name} />
+    </span>
+  );
 }
 
-export function isSidebarNavActive(pathname: string, href: string): boolean {
-  return pathname === href || pathname.startsWith(`${href}/`);
+export function agentIdFromPathname(pathname: string): string | undefined {
+  const [, root, candidate] = pathname.split("/");
+  if (root !== "agents" || !candidate || ACCOUNT_ONLY_AGENT_SEGMENTS.has(candidate)) return undefined;
+  return candidate;
 }

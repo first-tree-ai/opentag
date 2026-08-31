@@ -1,5 +1,6 @@
 import type { MeResponse } from "@opentag/shared/browser";
 import { createContext, useContext } from "react";
+import * as m from "../../paraglide/messages.js";
 
 /**
  * Authentication proves the Account identity and nothing more. Resource pages use the same Account
@@ -25,6 +26,6 @@ export const AccountContext = accountContext.Provider;
 
 export function useAccount(): AccountSession {
   const value = useContext(accountContext);
-  if (!value) throw new Error("Account context is missing");
+  if (!value) throw new Error(m.common_account_context_missing());
   return value;
 }

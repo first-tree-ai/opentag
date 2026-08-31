@@ -32,7 +32,7 @@ import {
   isImBindingUniqueViolation,
 } from "../services/im-bindings/im-binding-service.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
-import { ImBindingService as RealImBindingService } from "../services/im-bindings/index.js";
+import { ImBindingServiceError, ImBindingService as RealImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 import { bootstrapTestAccount } from "./test-account.js";
 
@@ -419,6 +419,37 @@ describe("ImBinding HTTP API", () => {
     expect(response.statusCode).toBe(statusCode);
     expect(response.json().error).toMatchObject({ code, category });
     expect(JSON.stringify(response.json())).not.toContain("stack");
+  });
+
+  it("answers an Agent with no Computer with a conflict the Account can act on", async () => {
+    // The refusal is deterministic and permanent until a Computer is bound, so it must not reach the
+    // Account as an internal failure -- which is what an error code outside the published set
+    // becomes when the envelope refuses to carry it.
+    const service = services();
+    service.feishu.createOrReuse = vi
+      .fn()
+      .mockRejectedValue(
+        new ImBindingServiceError(
+          "AGENT_COMPUTER_NOT_BOUND",
+          409,
+          "The Agent must be bound to a Computer before messaging can be connected",
+        ),
+      );
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+      feishuSetupService: service.feishu as unknown as FeishuSetupService,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+      payload: { intent: "create" },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toMatchObject({ code: "AGENT_COMPUTER_NOT_BOUND", category: "deterministic" });
   });
 
   it("requires authentication to start Slack OAuth", async () => {

@@ -58,20 +58,29 @@ import {
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
+import type { ImDeliveryWorkerInput, RuntimeDeliveryWorkerMetric, WorkerClaim } from "./im-delivery-worker.types.js";
+import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
 const CLAIM_LEASE_MS = 15_000;
 const CLAIM_RENEW_MS = 5_000;
-// This durable marker bridges the transaction-to-runtime gap. The advisory lock
-// serializes competing claims; the marker keeps later transactions fenced after commit.
+// Replica model: persisted recoverable ownership. The durable marker bridges the
+// transaction-to-runtime gap. Advisory locks serialize competing claims; the
+// marker keeps later transactions fenced after commit and allows a new replica to
+// reconcile work after a process restart. In-memory maps are only optimisations.
 const DISPATCH_CLAIM_PREFIX = "IM_DELIVERY_CLAIM_";
 const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
 const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
 const acceptedAgents = alias(agents, "agent_accepted_agents");
 const newerHistoryRevisions = alias(imMessages, "newer_history_revisions");
+
+function positiveWorkerLimit(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
+  return value;
+}
 
 export class ImDeliveryWorker {
   readonly #database: DatabaseClient;
@@ -84,21 +93,15 @@ export class ImDeliveryWorker {
   readonly #afterClaimRowLocked?: () => Promise<void>;
   readonly #beforeDeliveryAdmission?: () => Promise<void>;
   readonly #onDiagnostic: (code: string) => void;
+  readonly #clock: () => Date;
+  readonly #now: () => number;
+  readonly #operationTimeoutMs: number;
+  readonly #maxQueueAgeMs?: number;
+  readonly #scheduler: KeyedTaskScheduler;
+  readonly #onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
   #timer?: ReturnType<typeof setInterval>;
-  #running = false;
 
-  constructor(input: {
-    database: DatabaseClient;
-    domain: RuntimeDomainOwner;
-    assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
-    registry: ConnectionRegistry;
-    intervalMs?: number;
-    claimLeaseMs?: number;
-    claimRenewMs?: number;
-    afterClaimRowLocked?: () => Promise<void>;
-    beforeDeliveryAdmission?: () => Promise<void>;
-    onDiagnostic?: (code: string) => void;
-  }) {
+  constructor(input: ImDeliveryWorkerInput) {
     this.#database = input.database;
     this.#domain = input.domain;
     this.#assembler = input.assembler;
@@ -109,6 +112,18 @@ export class ImDeliveryWorker {
     this.#afterClaimRowLocked = input.afterClaimRowLocked;
     this.#beforeDeliveryAdmission = input.beforeDeliveryAdmission;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+    this.#clock = input.now ?? (() => new Date());
+    this.#now = () => this.#clock().getTime();
+    this.#operationTimeoutMs = positiveWorkerLimit(input.operationTimeoutMs ?? 30_000, "operationTimeoutMs");
+    this.#maxQueueAgeMs =
+      input.maxQueueAgeMs === undefined ? undefined : positiveWorkerLimit(input.maxQueueAgeMs, "maxQueueAgeMs");
+    this.#scheduler = new KeyedTaskScheduler({
+      maxConcurrent: positiveWorkerLimit(input.maxConcurrent ?? 8, "maxConcurrent"),
+      maxQueuedPerKey: positiveWorkerLimit(input.maxQueuedPerAgent ?? 8, "maxQueuedPerAgent"),
+      maxQueuedTotal: positiveWorkerLimit(input.maxQueuedTotal ?? 256, "maxQueuedTotal"),
+      now: this.#now,
+    });
+    this.#onMetric = input.onMetric ?? (() => undefined);
   }
 
   start(): void {
@@ -121,20 +136,93 @@ export class ImDeliveryWorker {
   stop(): void {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    this.#scheduler.close();
   }
 
   async runOnce(): Promise<void> {
-    if (this.#running) return;
-    this.#running = true;
+    const claimed = await this.#claim();
+    if (!claimed) return;
+    const queueAge = Math.max(0, this.#now() - claimed.queuedAt);
+    this.#onMetric({ name: "queue_age_ms", value: queueAge, agentId: claimed.agentId });
+    if (this.#maxQueueAgeMs !== undefined && queueAge > this.#maxQueueAgeMs) {
+      this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
+      await this.#recordFailure(
+        claimed.id,
+        "IM_DELIVERY_QUEUE_AGE_EXCEEDED",
+        "claimToken" in claimed ? claimed.claimToken : undefined,
+      );
+      return;
+    }
+    let resolve: () => void = () => undefined;
+    let reject: (error: unknown) => void = () => undefined;
+    const complete = new Promise<void>((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    const run = async () => {
+      this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
+      let failed = false;
+      try {
+        await this.#withOperationDeadline(claimed, async () => {
+          await traceDeliveryClaim(claimed, async (claim) => {
+            if (claim.kind === "pending") await this.#deliver(claim.id, claim.claimToken);
+            else if (claim.kind === "steer") await this.#deliverSteer(claim);
+            else await this.#recover(claim.id);
+          });
+        });
+      } catch (error) {
+        failed = true;
+        reject(error);
+        throw error;
+      } finally {
+        this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
+        if (!failed) resolve();
+      }
+    };
+    const enqueued = this.#scheduler.enqueue(`agent:${claimed.agentId}`, run, () => {
+      this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
+      void this.#recordFailure(
+        claimed.id,
+        "IM_DELIVERY_WORKER_SATURATED",
+        "claimToken" in claimed ? claimed.claimToken : undefined,
+      )
+        .catch(() => undefined)
+        .finally(resolve);
+    });
+    if (!enqueued) {
+      this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
+      await this.#recordFailure(
+        claimed.id,
+        "IM_DELIVERY_WORKER_SATURATED",
+        "claimToken" in claimed ? claimed.claimToken : undefined,
+      );
+      resolve();
+    }
+    this.#onMetric({ name: "queued_tasks", value: this.#scheduler.stats().queued, agentId: claimed.agentId });
+    await complete;
+  }
+
+  async #withOperationDeadline(claim: WorkerClaim, operation: () => Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("IM_DELIVERY_OPERATION_TIMEOUT")), this.#operationTimeoutMs);
+      timer.unref();
+    });
     try {
-      const claimed = await this.#claim();
-      await traceDeliveryClaim(claimed, async (claim) => {
-        if (claim.kind === "pending") await this.#deliver(claim.id, claim.claimToken);
-        else if (claim.kind === "steer") await this.#deliverSteer(claim);
-        else await this.#recover(claim.id);
-      });
+      await Promise.race([operation(), timeout]);
+    } catch (error) {
+      if (error instanceof Error && error.message === "IM_DELIVERY_OPERATION_TIMEOUT") {
+        this.#onMetric({ name: "timeout", value: 1, agentId: claim.agentId });
+        await this.#recordFailure(
+          claim.id,
+          "IM_DELIVERY_OPERATION_TIMEOUT",
+          "claimToken" in claim ? claim.claimToken : undefined,
+        );
+        return;
+      }
+      throw error;
     } finally {
-      this.#running = false;
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -142,20 +230,9 @@ export class ImDeliveryWorker {
     void this.runOnce().catch(() => this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED"));
   }
 
-  async #claim(): Promise<
-    | { id: string; kind: "pending"; claimToken: string }
-    | {
-        id: string;
-        kind: "steer";
-        claimToken: string;
-        rootDeliveryId: string;
-        expectedTurnId: string;
-      }
-    | { id: string; kind: "recovery" }
-    | undefined
-  > {
-    return this.#database.transaction(async (transaction) => {
-      const now = new Date();
+  async #claim(): Promise<WorkerClaim | undefined> {
+    const claim = await this.#database.transaction(async (transaction) => {
+      const now = this.#clock();
       await transaction
         .update(imMessageDeliveries)
         .set({ state: "expired", reason: "ttl" })
@@ -174,6 +251,7 @@ export class ImDeliveryWorker {
           dispatchRequestId: imMessageDeliveries.dispatchRequestId,
           dispatchInputHash: imMessageDeliveries.dispatchInputHash,
           dispatchPayload: imMessageDeliveries.dispatchPayload,
+          nextAttemptAt: imMessageDeliveries.nextAttemptAt,
           generation: sessionPlacements.generation,
           agentId: imBindings.agentId,
           sessionId: imMessageDeliveries.sessionId,
@@ -260,7 +338,6 @@ export class ImDeliveryWorker {
         .limit(1)
         .for("update", { of: imMessageDeliveries, skipLocked: true });
       if (!row) return undefined;
-      await this.#afterClaimRowLocked?.();
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${row.agentId}`}, 0))`,
       );
@@ -294,7 +371,7 @@ export class ImDeliveryWorker {
             lastErrorCode: null,
           })
           .where(and(eq(imMessageDeliveries.id, row.id), eq(imMessageDeliveries.state, "accepted")));
-        return { id: row.id, kind: "recovery" as const };
+        return { id: row.id, agentId: row.agentId, queuedAt: row.nextAttemptAt.getTime(), kind: "recovery" as const };
       }
       const persistedRequest = row.dispatchPayload
         ? DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload)
@@ -363,13 +440,25 @@ export class ImDeliveryWorker {
       return steerTarget
         ? {
             id: row.id,
+            agentId: row.agentId,
+            queuedAt: row.nextAttemptAt.getTime(),
             kind: "steer" as const,
             claimToken,
             rootDeliveryId: steerTarget.id,
             expectedTurnId: steerTarget.turnId,
           }
-        : { id: row.id, kind: "pending" as const, claimToken };
+        : {
+            id: row.id,
+            agentId: row.agentId,
+            queuedAt: row.nextAttemptAt.getTime(),
+            kind: "pending" as const,
+            claimToken,
+          };
     });
+    // The hook is intentionally outside the claim transaction. It is a test and
+    // diagnostics seam, not part of the database critical section.
+    if (claim) await this.#afterClaimRowLocked?.();
+    return claim;
   }
 
   async #deliver(deliveryId: string, claimToken: string): Promise<void> {
@@ -879,14 +968,13 @@ export class ImDeliveryWorker {
     },
     operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
-    return this.#database.transaction(async (transaction) => {
+    const admitted = await this.#database.transaction(async (transaction) => {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, createdByUserId: agents.createdByUserId, status: agents.status })
         .from(agents)
         .where(eq(agents.id, expected.agentId))
-        .limit(1)
-        .for("update");
-      if (agent?.status !== "active") return { admitted: false } as const;
+        .limit(1);
+      if (agent?.status !== "active") return false;
       const [placement] = await transaction
         .select({
           computerId: sessionPlacements.computerId,
@@ -904,17 +992,19 @@ export class ImDeliveryWorker {
         placement.generation !== expected.placementGeneration ||
         placement.ownerAccountId !== agent.createdByUserId
       ) {
-        return { admitted: false } as const;
+        return false;
       }
-      let markDispatched: () => void = () => undefined;
-      const dispatched = new Promise<void>((resolve) => {
-        markDispatched = resolve;
-      });
-      const result = operation(markDispatched);
-      void result.catch(() => markDispatched());
-      await dispatched;
-      return { admitted: true, result } as const;
+      return true;
     });
+    if (!admitted) return { admitted: false };
+    let markDispatched: () => void = () => undefined;
+    const dispatched = new Promise<void>((resolve) => {
+      markDispatched = resolve;
+    });
+    const result = operation(markDispatched);
+    void result.catch(() => markDispatched());
+    await dispatched;
+    return { admitted: true, result };
   }
 
   async #recordFailure(deliveryId: string, code: string, claimToken?: string): Promise<void> {
@@ -922,7 +1012,7 @@ export class ImDeliveryWorker {
     setActiveSpanAttributes(outcomeAttrs("failed", bounded));
     const [updated] = await this.#database
       .update(imMessageDeliveries)
-      .set({ lastErrorCode: bounded, ...(claimToken ? { nextAttemptAt: new Date(Date.now() + RETRY_DELAY_MS) } : {}) })
+      .set({ lastErrorCode: bounded, nextAttemptAt: new Date(this.#now() + RETRY_DELAY_MS) })
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
@@ -931,7 +1021,10 @@ export class ImDeliveryWorker {
         ),
       )
       .returning({ id: imMessageDeliveries.id });
-    if (updated) this.#onDiagnostic(bounded);
+    if (updated) {
+      this.#onDiagnostic(bounded);
+      this.#onMetric({ name: "retry", value: 1 });
+    }
   }
 
   async #releaseDispatch(deliveryId: string, requestId: string, code: string, claimToken: string): Promise<void> {
@@ -944,7 +1037,7 @@ export class ImDeliveryWorker {
         dispatchInputHash: null,
         dispatchPayload: null,
         lastErrorCode: bounded,
-        nextAttemptAt: new Date(Date.now() + RETRY_DELAY_MS),
+        nextAttemptAt: new Date(this.#now() + RETRY_DELAY_MS),
       })
       .where(
         and(
@@ -955,7 +1048,10 @@ export class ImDeliveryWorker {
         ),
       )
       .returning({ id: imMessageDeliveries.id });
-    if (released) this.#onDiagnostic(bounded);
+    if (released) {
+      this.#onDiagnostic(bounded);
+      this.#onMetric({ name: "retry", value: 1 });
+    }
   }
 
   async #reject(deliveryId: string, reason: string, claimToken?: string): Promise<void> {
@@ -1024,7 +1120,7 @@ export class ImDeliveryWorker {
   async #renewClaim(deliveryId: string, claimToken: string): Promise<boolean> {
     const [renewed] = await this.#database
       .update(imMessageDeliveries)
-      .set({ nextAttemptAt: new Date(Date.now() + this.#claimLeaseMs) })
+      .set({ nextAttemptAt: new Date(this.#now() + this.#claimLeaseMs) })
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),

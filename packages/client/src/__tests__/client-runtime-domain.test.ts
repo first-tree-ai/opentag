@@ -236,6 +236,148 @@ describe("ClientRuntime domain dispatch", () => {
       }),
     ]);
   });
+
+  it("dispatches Agent Runtime test results without Session reconcile", async () => {
+    const requestId = randomUUID();
+    const availabilityTester = {
+      run: vi.fn(async () => ({
+        type: "agent-runtime:test:result" as const,
+        requestId,
+        status: "passed" as const,
+      })),
+    };
+    const connection = new FrameConnection([
+      {
+        type: "agent-runtime:test",
+        requestId,
+        computerId: randomUUID(),
+        provider: "codex",
+      },
+    ]);
+    await new ClientRuntime(connection as unknown as RuntimeConnection, { availabilityTester }).run();
+    expect(availabilityTester.run).toHaveBeenCalledOnce();
+    expect(connection.sent).toEqual([
+      {
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+      },
+    ]);
+  });
+
+  it("returns capability_missing when no availability tester is configured", async () => {
+    const requestId = randomUUID();
+    const connection = new FrameConnection([
+      {
+        type: "agent-runtime:test",
+        requestId,
+        computerId: randomUUID(),
+        provider: "codex",
+      },
+    ]);
+    await new ClientRuntime(connection as unknown as RuntimeConnection).run();
+    expect(connection.sent).toEqual([
+      {
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "failed",
+        code: "capability_missing",
+      },
+    ]);
+  });
+
+  it("returns provider_failed when the availability tester throws", async () => {
+    const requestId = randomUUID();
+    const connection = new FrameConnection([
+      {
+        type: "agent-runtime:test",
+        requestId,
+        computerId: randomUUID(),
+        provider: "claude-code",
+      },
+    ]);
+    await new ClientRuntime(connection as unknown as RuntimeConnection, {
+      availabilityTester: {
+        run: async () => {
+          throw new Error("tester exploded");
+        },
+      },
+    }).run();
+    expect(connection.sent).toEqual([
+      {
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "failed",
+        code: "provider_failed",
+      },
+    ]);
+  });
+
+  it("aborts an in-flight Agent Runtime test on the cancel frame", async () => {
+    const requestId = randomUUID();
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const availabilityTester = {
+      run(_frame: unknown, signal: AbortSignal) {
+        started();
+        return new Promise<{
+          type: "agent-runtime:test:result";
+          requestId: string;
+          status: "failed";
+          code: "cancelled";
+        }>((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () =>
+              resolve({
+                type: "agent-runtime:test:result",
+                requestId,
+                status: "failed",
+                code: "cancelled",
+              }),
+            { once: true },
+          );
+        });
+      },
+    };
+    let listener: ((frame: Record<string, unknown>) => Promise<void> | void) | undefined;
+    const sent: unknown[] = [];
+    const connection = {
+      computerId: randomUUID(),
+      subscribeBusinessFrames(next: (frame: Record<string, unknown>) => Promise<void> | void) {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+      async run() {
+        const pending = listener?.({
+          type: "agent-runtime:test",
+          requestId,
+          computerId: randomUUID(),
+          provider: "codex",
+        });
+        await startedPromise;
+        await listener?.({ type: "agent-runtime:test:cancel", requestId });
+        await pending;
+      },
+      async send(frame: unknown) {
+        sent.push(frame);
+      },
+      stop() {},
+    };
+    await new ClientRuntime(connection as unknown as RuntimeConnection, { availabilityTester }).run();
+    expect(sent).toEqual([
+      {
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "failed",
+        code: "cancelled",
+      },
+    ]);
+  });
 });
 
 class FrameConnection {

@@ -178,6 +178,26 @@
     }
   },
   {
+    "name": "agent-runtime-test-request",
+    "schema": "AgentRuntimeTestRequestFrameSchema",
+    "payload": {
+      "type": "agent-runtime:test",
+      "requestId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "computerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "provider": "codex",
+      "model": "gpt-5"
+    }
+  },
+  {
+    "name": "agent-runtime-test-result-passed",
+    "schema": "AgentRuntimeTestResultFrameSchema",
+    "payload": {
+      "type": "agent-runtime:test:result",
+      "requestId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "status": "passed"
+    }
+  },
+  {
     "name": "runtime-error",
     "schema": "RuntimeErrorFrameSchema",
     "payload": {

@@ -11,12 +11,13 @@ import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { agents, computers } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
+import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
-import { AgentService } from "./services/agents/index.js";
+import { AgentRuntimeTestService, AgentService } from "./services/agents/index.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -26,6 +27,7 @@ import {
 } from "./services/auth/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
+import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import {
   DefaultFeishuRegistrationGateway,
@@ -40,6 +42,7 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "./services/im-bindings/slack/index.js";
+import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
@@ -120,6 +123,11 @@ export async function startServer(): Promise<void> {
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
     const postAuthentication = new PostAuthenticationService(database);
+    const imCallPolicy = new ExternalCallPolicy({
+      allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
+      maxConcurrency: 16,
+      onMetric: (metric) => app?.log.info({ metric }, "IM provider call metric"),
+    });
     const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
     const betterAuth = createBetterAuth(database, {
       onSessionCreating: async (userId) => {
@@ -182,6 +190,7 @@ export async function startServer(): Promise<void> {
       prepareReconcile: (computerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
+    const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
       domain: domainOwner,
@@ -198,6 +207,7 @@ export async function startServer(): Promise<void> {
             domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
         }),
     });
+    const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner);
     const feishuConnections = new FeishuConnectionManager({
       database,
       inbox: imMessageInbox,
@@ -205,17 +215,18 @@ export async function startServer(): Promise<void> {
       imBindings: imBindingService,
       runtimeReady: runtimeReadyForAgent,
       onDiagnostic: reportDiagnostic,
+      policy: imCallPolicy,
     });
     const feishuSetupService = new FeishuSetupService({
       database,
       cipher: applicationCipher,
       instanceId,
       imBindings: imBindingService,
-      registrations: new DefaultFeishuRegistrationGateway(),
+      registrations: new DefaultFeishuRegistrationGateway(undefined, imCallPolicy),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
     });
-    const slackApi = new DefaultSlackApiClient();
+    const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
       database,
@@ -231,7 +242,10 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
-    const imResourceService = new ImResourceService(database, resolveImAdapter);
+    const imResourceService = new ImResourceService(database, resolveImAdapter, imCallPolicy);
+    const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
+    });
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
@@ -251,6 +265,7 @@ export async function startServer(): Promise<void> {
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,
+      agentRuntimeTestService,
       authService,
       browserAuth: {
         devSignIn: Boolean(dev),
@@ -286,7 +301,7 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
-      runtime: { registry, domainOwner },
+      runtime: { registry, domainOwner, agentRuntimeTestOwner },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,
@@ -295,6 +310,7 @@ export async function startServer(): Promise<void> {
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
+        receipts: slackWebhookReceipts,
         ...(config.slackOAuth ? { firstPartySigningSecret: config.slackOAuth.signingSecret } : {}),
         createAdapter: (binding) =>
           new SlackAdapter({

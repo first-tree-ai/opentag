@@ -3,10 +3,19 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { agents, computers, imBindings, sessions, slackInstallations, users } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  sessions,
+  slackInstallations,
+  slackWebhookReceipts,
+  users,
+} from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
+import { SlackWebhookReceiptStore } from "../../services/im-bindings/slack/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const now = new Date("2026-08-27T00:00:00.000Z");
@@ -88,6 +97,42 @@ async function activate(
 }
 
 describe("Slack installation routing", () => {
+  it("persists an idempotent webhook receipt before asynchronous processing", async () => {
+    const value = await fixture();
+    try {
+      await activate(value.imBindingsService, value.first.id, "create");
+      const [installation] = await value.database.select().from(slackInstallations);
+      if (!installation) throw new Error("Installation fixture was not created");
+      const store = new SlackWebhookReceiptStore(value.database, { now: () => now });
+      const first = await store.claim({
+        installationId: installation.id,
+        credentialGeneration: 1,
+        eventId: "Ev-receipt",
+      });
+      expect(first).toMatchObject({ accepted: true, duplicate: false });
+      const duplicate = await store.claim({
+        installationId: installation.id,
+        credentialGeneration: 1,
+        eventId: "Ev-receipt",
+      });
+      expect(duplicate).toMatchObject({ accepted: false, duplicate: true, status: "processing" });
+      if (!first.receiptId) throw new Error("Receipt id missing");
+      await store.markFailed(first.receiptId, "SLACK_EVENT_PROCESSING_FAILED");
+      const rows = await value.database.select().from(slackWebhookReceipts);
+      expect(rows).toEqual([
+        expect.objectContaining({
+          installationId: installation.id,
+          credentialGeneration: 1,
+          eventId: "Ev-receipt",
+          status: "failed",
+          lastErrorCode: "SLACK_EVENT_PROCESSING_FAILED",
+        }),
+      ]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("allows different Agents in one Account to own different current Slack installations", async () => {
     const value = await fixture();
     try {

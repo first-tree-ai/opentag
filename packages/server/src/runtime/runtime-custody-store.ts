@@ -17,6 +17,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
 export interface AcceptedDeliveryRecord {
@@ -39,6 +40,7 @@ export interface RecordedTurnRecord {
 
 export type DeliveryCustodyStatus = "accepted" | "already_accepted" | "conflict" | "stale_generation";
 export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation";
+export type DeliveryReleaseStatus = "released" | "already_released" | "conflict";
 export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "stale_generation";
 export type SteerReleaseStatus = "released" | "already_released" | "conflict";
 
@@ -47,7 +49,12 @@ export interface DeliveryDispatchContext {
   instanceId: string;
 }
 
-export interface RuntimeCustodyStore {
+export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease {
+  /**
+   * Durable custody is the recovery authority. Process-local request maps are only
+   * latency optimisations; a restarted replica must be able to resume from the
+   * dispatch columns on `im_message_deliveries`.
+   */
   beginDeliveryDispatch(
     request: DirectImMessageDeliveryRequest,
     inputHash: string,
@@ -147,6 +154,46 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         )
         .returning({ id: imMessageDeliveries.id });
       return dispatched ? "dispatched" : "conflict";
+    });
+  }
+
+  async releaseDeliveryDispatch(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    disposition: "retry" | "deferred",
+  ): Promise<DeliveryReleaseStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const [released] = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          nextAttemptAt: this.#now(),
+          lastErrorCode: null,
+          ...(disposition === "retry"
+            ? { dispatchRequestId: null, dispatchInputHash: null, dispatchPayload: null }
+            : {}),
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, request.deliveryId),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            eq(imMessageDeliveries.dispatchRequestId, request.requestId),
+            eq(imMessageDeliveries.dispatchInputHash, inputHash),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (released) return "released";
+      const [current] = await transaction
+        .select({
+          dispatchRequestId: imMessageDeliveries.dispatchRequestId,
+          dispatchInputHash: imMessageDeliveries.dispatchInputHash,
+        })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, request.deliveryId))
+        .limit(1);
+      if (!current || (current.dispatchRequestId === null && current.dispatchInputHash === null)) {
+        return "already_released";
+      }
+      return "conflict";
     });
   }
 

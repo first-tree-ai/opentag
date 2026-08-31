@@ -1,6 +1,7 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { browserApi } from "../../../api.js";
 import { RuntimeConfigurationForm, runtimeConfigurationFromForm } from "./runtime-configuration.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -50,6 +51,10 @@ async function chooseOption(label: string, value: string): Promise<void> {
 }
 
 describe("RuntimeConfigurationForm", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("presents model suggestions and the complete Codex reasoning list", async () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
 
@@ -317,5 +322,35 @@ describe("RuntimeConfigurationForm", () => {
     ]);
     expect(screen.queryByText("Unsaved changes")).toBeNull();
     expect(save).not.toHaveBeenCalled();
+  });
+
+  it("exposes Test runtime on the saved execution surface and not on instructions", () => {
+    const execution = render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="execution" />);
+    expect(screen.getByRole("button", { name: "Test runtime" })).toBeTruthy();
+    expect(screen.getByText(/real Provider request/)).toBeTruthy();
+    execution.unmount();
+
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} section="instructions" />);
+    expect(screen.queryByRole("button", { name: "Test runtime" })).toBeNull();
+    expect(screen.queryByText(/real Provider request/)).toBeNull();
+  });
+
+  it("clears a runtime test result after a successful saved configuration change", async () => {
+    vi.spyOn(browserApi, "testAgentRuntime").mockResolvedValue({ status: "passed" });
+    const save = vi.fn(async () => ({
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, model: "gpt-5.6-sol" },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+    expect((await screen.findByRole("status")).textContent).toMatch(/^Passed\./);
+
+    await chooseOption("Model", "gpt-5.6-sol");
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect((await screen.findByRole("status")).textContent).toBe("Execution settings saved.");
+    expect(screen.queryByText(/exact invocation/)).toBeNull();
   });
 });

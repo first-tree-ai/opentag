@@ -27,16 +27,38 @@ if (!/^[a-z][a-z0-9_]{0,61}$/.test(databaseName) || !databaseName.includes("e2e"
 
 function connectionTarget(url) {
   const target = new URL(String(url));
-  const password = decodeURIComponent(target.password);
-  target.password = "";
-  return { dsn: target.href, password };
+  return {
+    database: target.pathname.slice(1),
+    password: decodeURIComponent(target.password),
+    username: decodeURIComponent(target.username),
+  };
 }
 
 async function psql(url, sql) {
-  const { dsn, password } = connectionTarget(url);
-  const { stdout } = await execFileAsync("psql", [dsn, "-v", "ON_ERROR_STOP=1", "-Atc", sql], {
-    env: { ...process.env, PGPASSWORD: password },
-  });
+  const { database, password, username } = connectionTarget(url);
+  const { stdout } = await execFileAsync(
+    "docker",
+    [
+      "compose",
+      "-f",
+      composeFile,
+      "exec",
+      "-T",
+      "-e",
+      `PGPASSWORD=${password}`,
+      "postgres",
+      "psql",
+      "-U",
+      username,
+      "-d",
+      database,
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-Atc",
+      sql,
+    ],
+    { cwd: repositoryRoot },
+  );
   return stdout.trim();
 }
 

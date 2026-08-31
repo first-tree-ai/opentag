@@ -21,7 +21,7 @@ import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
-import { type AgentService, AgentServiceError } from "./services/agents/index.js";
+import { type AgentRuntimeTestService, type AgentService, AgentServiceError } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
@@ -40,6 +40,7 @@ export interface CreateAppOptions {
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
+  agentRuntimeTestService?: AgentRuntimeTestService;
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   connectCode?: {
@@ -219,7 +220,7 @@ export function createApp(options: CreateAppOptions = {}) {
       authOptions,
     });
     if (options.agentService) {
-      registerAgentRoutes(app, authService, options.agentService, authOptions);
+      registerAgentRoutes(app, authService, options.agentService, authOptions, options.agentRuntimeTestService);
     }
     if (
       options.agentService ||

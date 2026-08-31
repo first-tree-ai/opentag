@@ -158,7 +158,12 @@
     },
     {
       "idx": 31,
-      "tag": "0031_drop_workspace_ownership_persistence",
+      "tag": "0031_majestic_shiva",
+      "sha256": "ed5c92f7986df61efaeea738fcc9f1afde0cd448819182598ddb235172db7dd1"
+    },
+    {
+      "idx": 32,
+      "tag": "0032_drop_workspace_ownership_persistence",
       "sha256": "0f38525d292357aae67aa6da7cdbb5257f464552f9cf2055d24b050a55cc303d"
     }
   ]

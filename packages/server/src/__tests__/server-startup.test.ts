@@ -96,6 +96,7 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
     }
   },
 }));
+vi.mock("../runtime/agent-runtime-test-owner.js", () => ({ AgentRuntimeTestOwner: class {} }));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
 vi.mock("../runtime/agent-session-stopper.js", () => ({
   stopAgentSessions: vi.fn(
@@ -146,6 +147,7 @@ vi.mock("../services/sessions/index.js", () => ({
   SessionServiceError: class extends Error {},
 }));
 vi.mock("../services/agents/index.js", () => ({
+  AgentRuntimeTestService: class {},
   AgentService: class {
     constructor(_database: unknown, options: unknown) {
       state.agentOptions = options;

@@ -7,6 +7,9 @@ import {
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentRuntimeTestRequest,
+  type AgentRuntimeTestResponse,
+  AgentRuntimeTestResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -20,6 +23,7 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -154,6 +158,19 @@ export class BrowserApi {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  testAgentRuntime(
+    agentId: string,
+    input: AgentRuntimeTestRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentRuntimeTestResponse> {
+    return this.request(agentRuntimeTestPath(agentId), AgentRuntimeTestResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      ...(signal ? { signal } : {}),
     });
   }
 

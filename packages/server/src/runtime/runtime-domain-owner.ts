@@ -317,16 +317,21 @@ export class RuntimeDomainOwner {
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
     }
-    return this.#request(
-      "steer",
-      workspaceComputerId,
-      instanceId,
-      request,
-      requestHash,
-      inputHash,
-      semanticHash,
-      onDispatched,
-    ) as Promise<RuntimeImSteerResult>;
+    try {
+      return this.#request(
+        "steer",
+        workspaceComputerId,
+        instanceId,
+        request,
+        requestHash,
+        inputHash,
+        semanticHash,
+        onDispatched,
+      ) as Promise<RuntimeImSteerResult>;
+    } catch (error) {
+      await this.#custody.releaseSteerDispatch(request, inputHash, "deferred").catch(() => undefined);
+      throw error;
+    }
   }
 
   requestDelivery(

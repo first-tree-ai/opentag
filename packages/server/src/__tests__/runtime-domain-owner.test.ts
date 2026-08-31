@@ -206,6 +206,20 @@ describe("RuntimeDomainOwner", () => {
     await vi.waitFor(() => expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred"));
     expect(custody.hasDispatch(request.deliveryId)).toBe(true);
   });
+
+  it("releases steer custody when admission capacity rejects after begin", async () => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseSteerDispatch");
+    const owner = new RuntimeDomainOwner(fixture.registry, custody, { maxPendingRequests: 1 });
+    const reconcile = reconcileRequest(fixture.computerId);
+    owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcile);
+    const request = steerRequest(deliveryRequest());
+    await expect(owner.requestSteer(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
+      code: "capacity",
+    });
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred");
+  });
   it("passes the negotiated credential grant version to the authority callback", async () => {
     const onImCredentialGrant = vi.fn(async (request) => ({
       type: "im:credential:result" as const,

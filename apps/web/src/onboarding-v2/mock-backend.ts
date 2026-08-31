@@ -26,7 +26,7 @@ export const SCENARIOS: readonly MockScenario[] = [
   {
     id: "all-ready",
     title: "Everything ready",
-    description: "The runtime is installed and signed in, and lark-cli is present.",
+    description: "The runtime is installed and signed in, and the messaging CLI is present.",
     runtime: "ready",
     messagingCli: "ready",
   },
@@ -46,14 +46,14 @@ export const SCENARIOS: readonly MockScenario[] = [
   },
   {
     id: "messaging-install",
-    title: "lark-cli missing",
+    title: "Messaging CLI missing",
     description: "The easiest failure to miss: the agent is perfect but nothing can be delivered.",
     runtime: "ready",
     messagingCli: "install",
   },
   {
     id: "both-failing",
-    title: "Runtime and lark-cli missing",
+    title: "Runtime and Messaging CLI missing",
     description: "Two failures at once, to check the plural copy and the list rhythm.",
     runtime: "install",
     messagingCli: "install",

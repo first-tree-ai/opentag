@@ -396,6 +396,21 @@ ensure_daemon_service() {
   esac
 }
 
+# Product installers only report Provider CLI state. They never invoke `ensure`
+# or install third-party software; an active daemon reconciles the one provider
+# the user explicitly binds.
+report_provider_cli_state() {
+  bin_name="$1"
+  status=0
+  log "Checking IM Provider CLI state (read-only; no third-party software will be installed):"
+  "$BIN_DIR/$bin_name" provider-cli inspect --provider all || status=$?
+  case "$status" in
+    0) log "IM Provider CLIs already prepared for this account." ;;
+    1) log "Some IM Provider CLIs are not prepared. The daemon will prepare only a provider you bind." ;;
+    *) log "IM Provider CLI state could not be inspected (exit $status). Run '$bin_name doctor' for diagnostics." ;;
+  esac
+}
+
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/opentag-portable.XXXXXX")"
 TEMP_VERSION_DIR=""
 cleanup() {
@@ -440,6 +455,7 @@ if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; the
   log "Run this installer with --force to reinstall the same version."
   maybe_edit_path "$BIN_NAME"
   print_path_guidance
+  report_provider_cli_state "$BIN_NAME"
   exit 0
 fi
 
@@ -543,6 +559,7 @@ PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
 ensure_daemon_service "$BIN_NAME"
+report_provider_cli_state "$BIN_NAME"
 
 log "OpenTag ${VERSION} installed at $FINAL_VERSION_DIR"
 log "Command: $BIN_DIR/$BIN_NAME"

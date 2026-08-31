@@ -4,6 +4,8 @@
  * data. The page derives what to render from `deriveFlowState`; it never keeps a step cursor.
  */
 
+import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
+
 export const RUNTIMES = ["codex", "claude-code"] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 
@@ -32,11 +34,6 @@ export type Destination = "local" | "cloud";
 export const MESSAGING_PROVIDERS = ["slack", "feishu"] as const;
 export type MessagingProvider = (typeof MESSAGING_PROVIDERS)[number];
 
-/** Mirrors the Server's provider readiness vocabulary so the mock stays swappable for the real API. */
-export type RuntimeStatus = "checking" | "ready" | "install" | "sign-in" | "unavailable";
-/** The messaging CLI has no sign-in of its own: it is installed or it is not. */
-export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable";
-
 export const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 export const AGENT_NAME_MAX_LENGTH = 64;
 export const DEFAULT_AGENT_NAME = "opentag";
@@ -58,7 +55,18 @@ export type ConnectState =
 
 export interface ReadinessFacts {
   readonly runtime: RuntimeStatus;
-  readonly messagingCli: MessagingCliStatus;
+  /**
+   * Which runtime the verdict above is about. A reader who goes back and changes their mind must
+   * not be shown the previous runtime's result as though it were the new one's: the Agent's
+   * provider is immutable once created, so a stale `ready` would commit them to a runtime that was
+   * never checked. A verdict whose provider no longer matches the draft is not a verdict.
+   */
+  readonly runtimeProvider?: Runtime;
+  /**
+   * Per messaging provider, because the Server reports only the CLIs it has observed and in its own
+   * canonical order. Reading position 0 would let one provider's result speak for another's.
+   */
+  readonly messagingCli: Partial<Record<MessagingProvider, MessagingCliStatus>>;
 }
 
 /**
@@ -71,6 +79,18 @@ export type MessagingState =
   | { readonly kind: "issuing" }
   | { readonly kind: "waiting"; readonly qrValue: string }
   | { readonly kind: "away" }
+  /**
+   * Installed, but not yet reachable. The Server observes the messaging identity for itself, and
+   * setup cannot complete before it has — so this is the wait between "the app is connected" and
+   * "the Agent can actually be reached through it".
+   */
+  | { readonly kind: "waiting-handoff" }
+  /**
+   * A refused or expired attempt rests here rather than returning to `idle`. Idle is the state the
+   * step starts an attempt from, so a failure that returned to it would be retried on sight, for
+   * as long as the failure lasted, without the reader doing anything.
+   */
+  | { readonly kind: "failed" }
   | { readonly kind: "connected" };
 
 /**
@@ -180,19 +200,6 @@ export function computerIsConnected(connect: ConnectState): boolean {
 }
 
 /**
- * The three rows Step 4 renders. `install` and `sign-in` are mutually exclusive outcomes of one
- * Server-side probe, so the two runtime rows are derived from a single status rather than being
- * two independent facts. A runtime that is not installed leaves sign-in genuinely unknown, which
- * the `blocked` state says out loud instead of guessing.
- */
-export type CheckState = "pending" | "passed" | "failed" | "blocked";
-
-export interface CheckRow {
-  readonly id: "runtime-cli" | "runtime-auth" | "messaging-cli";
-  readonly state: CheckState;
-}
-
-/**
  * A cloud Agent runs on a Computer too — OpenTag allocates one instead of the user connecting
  * theirs. The Server requires a `computerId` either way, so the cloud route allocates before it
  * creates rather than modelling an Agent with no Computer at all.
@@ -200,56 +207,21 @@ export interface CheckRow {
 export type CloudComputerState = "idle" | "allocating" | "allocated";
 
 /**
- * The computer step answers one question: can this Agent run. The messaging CLI is not part of that
- * — which one is even needed depends on a provider the user has not chosen yet, so a missing
- * `lark-cli` used to block someone who was going to pick Slack. That check moved to the messaging
- * step, where the requirement becomes real and the provider is known.
- */
-export function deriveChecks(readiness: ReadinessFacts | undefined): readonly CheckRow[] {
-  if (!readiness) {
-    return [
-      { id: "runtime-cli", state: "pending" },
-      { id: "runtime-auth", state: "pending" },
-    ];
-  }
-  return [
-    { id: "runtime-cli", state: runtimeCliState(readiness.runtime) },
-    { id: "runtime-auth", state: runtimeAuthState(readiness.runtime) },
-  ];
-}
-
-/** The chosen provider's CLI, probed on the messaging step once there is a provider to probe. */
-export function messagingCliCheck(readiness: ReadinessFacts | undefined): CheckState {
-  return messagingCliState(readiness?.messagingCli ?? "checking");
-}
-
-function runtimeCliState(status: RuntimeStatus): CheckState {
-  if (status === "checking") return "pending";
-  // A runtime that reports `sign-in` proved its CLI runs; only the credential is missing.
-  if (status === "ready" || status === "sign-in") return "passed";
-  return "failed";
-}
-
-function runtimeAuthState(status: RuntimeStatus): CheckState {
-  if (status === "checking") return "pending";
-  if (status === "ready") return "passed";
-  if (status === "sign-in") return "failed";
-  // Without a working CLI there is no credential answer to report.
-  return "blocked";
-}
-
-function messagingCliState(status: MessagingCliStatus): CheckState {
-  if (status === "checking") return "pending";
-  if (status === "ready") return "passed";
-  return "failed";
-}
-
-/**
  * Creating an Agent waits on its runtime only. IM handoff readiness is provider-specific and is
  * settled at handoff, not before the Agent exists.
  */
-export function readinessPassed(readiness: ReadinessFacts | undefined): boolean {
-  return readiness?.runtime === "ready";
+/**
+ * Whether the check the reader is looking at is a pass *for the runtime they have chosen*.
+ *
+ * The provider is checked here rather than trusted upstream because this is the gate: the Agent's
+ * runtime cannot be changed once it is created, so letting a verdict from a different runtime open
+ * this door commits someone to a runtime nothing ever checked. When no runtime is asked about, the
+ * verdict answers for itself, which is what the derived flow state needs.
+ */
+export function readinessPassed(readiness: ReadinessFacts | undefined, runtime?: Runtime): boolean {
+  if (readiness?.runtime !== "ready") return false;
+  if (runtime === undefined || readiness.runtimeProvider === undefined) return true;
+  return readiness.runtimeProvider === runtime;
 }
 
 export function readinessIsResolving(readiness: ReadinessFacts | undefined): boolean {
@@ -298,10 +270,4 @@ function stepStatus(isDone: boolean, index: number, currentIndex: number): StepS
   if (isDone) return "complete";
   if (currentIndex === index) return "current";
   return "upcoming";
-}
-
-/** Formats a remaining duration as `m:ss`, never rounding a live second up. */
-export function formatRemaining(remainingMs: number): string {
-  const seconds = Math.max(0, Math.ceil(remainingMs / 1_000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }

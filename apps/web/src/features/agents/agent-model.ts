@@ -7,7 +7,6 @@ import type {
   ProviderReadinessStatus,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
-import { browserApi } from "../../api.js";
 
 export type AgentAvailability = {
   state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
@@ -21,6 +20,7 @@ export type AgentAvailability = {
     | "im_provisioning"
     | "im_reauthorization_required"
     | "im_error"
+    | "im_disabled"
     | "handoff_unavailable"
     | "computer_unconfirmed"
     | "handoff_unconfirmed"
@@ -136,7 +136,8 @@ export function projectAgentAvailability(
   if (binding.bindingState === "error" || binding.bindingState === "disabled") {
     return {
       state: "action_required",
-      reason: "im_error",
+      // A binding that was turned off has no connection failure to report, so it does not borrow one.
+      reason: binding.bindingState === "disabled" ? "im_disabled" : "im_error",
       lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
@@ -154,75 +155,6 @@ export function projectAgentAvailability(
     reason: null,
     lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
     dependencies,
-  };
-}
-
-export async function loadAgentList(): Promise<{ agents: AgentListItem[] }> {
-  const [{ agents }, computersResult] = await Promise.all([
-    browserApi.agents(),
-    browserApi.computers().then(
-      (value) => ({ kind: "ready" as const, value }),
-      () => ({ kind: "unconfirmed" as const }),
-    ),
-  ]);
-  const computers = computersResult.kind === "ready" ? computersResult.value.computers : [];
-  if (computersResult.kind === "unconfirmed") {
-    return {
-      agents: agents.map((agent) => ({
-        ...agent,
-        availability: projectAgentAvailability(agent, undefined, undefined, undefined, false, false),
-        evidenceConfirmed: true,
-      })),
-    };
-  }
-  const availability = await Promise.all(
-    agents.map(async (agent) => {
-      const [bindingResult, handoffResult] = await Promise.allSettled([
-        browserApi.imBinding(agent.id),
-        browserApi.imBindingHandoff(agent.id),
-      ]);
-      return projectAgentAvailability(
-        agent,
-        computers.find((computer) => computer.computerId === agent.computer.computerId),
-        bindingResult.status === "fulfilled" ? bindingResult.value : undefined,
-        handoffResult.status === "fulfilled" ? handoffResult.value : undefined,
-        bindingResult.status === "fulfilled",
-        handoffResult.status === "fulfilled",
-      );
-    }),
-  );
-  return {
-    agents: agents.map((agent, index) => ({
-      ...agent,
-      availability:
-        availability[index] ?? projectAgentAvailability(agent, undefined, undefined, undefined, false, false),
-      evidenceConfirmed: true,
-    })),
-  };
-}
-
-export async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
-  const agent = await browserApi.agent(agentId);
-  const [computersResult, bindingResult, handoffResult] = await Promise.allSettled([
-    browserApi.computers(),
-    browserApi.imBinding(agent.id),
-    browserApi.imBindingHandoff(agent.id),
-  ]);
-  const computers = computersResult.status === "fulfilled" ? computersResult.value.computers : [];
-  const binding = bindingResult.status === "fulfilled" ? bindingResult.value : undefined;
-  const handoff = handoffResult.status === "fulfilled" ? handoffResult.value : undefined;
-  return {
-    ...agent,
-    messaging:
-      bindingResult.status === "fulfilled" ? { kind: "ready", value: bindingResult.value } : { kind: "unconfirmed" },
-    availability: projectAgentAvailability(
-      agent,
-      computers.find((computer) => computer.computerId === agent.computer.computerId),
-      binding,
-      handoff,
-      bindingResult.status === "fulfilled",
-      handoffResult.status === "fulfilled",
-    ),
   };
 }
 

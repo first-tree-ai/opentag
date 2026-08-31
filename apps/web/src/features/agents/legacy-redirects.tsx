@@ -2,9 +2,9 @@ import { Link } from "@tanstack/react-router";
 import { buttonClassName, Text } from "../../ui/design-system.js";
 import { Redirect } from "../navigation/redirect.js";
 import { NotFoundPage } from "../not-found.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { AgentObjectHeader } from "./agent-detail-page.js";
-import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
+import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 
 export function LegacyAgentSectionRedirect({ agentId, legacySection }: { agentId: string; legacySection: string }) {
@@ -26,9 +26,7 @@ export function LegacyAgentCapabilityPage({
   agentId: string;
   capability: "integrations" | "skills";
 }) {
-  const state = useResource(() => loadAgentDetail(agentId), agentId, {
-    onBackgroundError: markAgentDetailUnconfirmed,
-  });
+  const state = useAgentDetailView(agentId);
   const label = capability === "integrations" ? "integrations" : "skills";
   return (
     <AsyncState state={state}>

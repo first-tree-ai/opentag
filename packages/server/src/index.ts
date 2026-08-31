@@ -40,7 +40,7 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "./services/im-bindings/slack/index.js";
-import { OnboardingResetService } from "./services/onboarding-lab/index.js";
+import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { TaskService } from "./services/tasks/index.js";
@@ -82,7 +82,7 @@ export {
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
-export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-lab/index.js";
+export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-reset/index.js";
 export {
   SessionCliProofService,
   SessionCollaborationService,
@@ -239,15 +239,13 @@ export async function startServer(): Promise<void> {
       registry,
       onDiagnostic: reportDiagnostic,
     });
-    const stagingOnboardingLab = config.stagingOnboardingLab
-      ? {
-          reset: new OnboardingResetService({
-            agents: agentService,
-            database,
-            environment: config.environment,
-            registry,
-          }),
-        }
+    const setupResetService = config.stagingSetupReset
+      ? new OnboardingResetService({
+          agents: agentService,
+          database,
+          environment: config.environment,
+          registry,
+        })
       : undefined;
     app = createApp({
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
@@ -308,7 +306,7 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      ...(stagingOnboardingLab ? { stagingOnboardingLab } : {}),
+      ...(setupResetService ? { setupResetService } : {}),
       workspaceSetupService,
     });
     feishuSetupService.start();

@@ -1,3 +1,13 @@
 packages:
   - apps/*
   - packages/*
+  - e2e
+
+# Build scripts are opt-in. Keep optional native addons on their JavaScript fallbacks.
+onlyBuiltDependencies:
+  # esbuild's postinstall installs the platform binary used by Vite and related tooling.
+  - esbuild
+  # lefthook's postinstall links its platform binary and installs the repository hooks.
+  - lefthook
+  # protobufjs 7's postinstall checks the dependency version scheme for API compatibility.
+  - protobufjs

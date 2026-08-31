@@ -23,8 +23,12 @@ export const ADD_TO_SLACK_URL = "https://platform.slack-edge.com/img/add_to_slac
 export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
   if (brand === "opentag") {
     return (
-      <span aria-hidden="true" className="otv2-mark otv2-mark--art" data-brand={brand}>
-        <svg className="otv2-mark__svg" focusable="false" viewBox="0 0 48 48">
+      <span
+        aria-hidden="true"
+        className="inline-flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-sm font-medium text-kumo-subtle overflow-hidden"
+        data-brand={brand}
+      >
+        <svg className="size-8" focusable="false" viewBox="0 0 48 48">
           <title>{label}</title>
           <path
             d="M23.8 4.4c7.1-.8 14.3 2.6 17.6 8.2 3.5 5.9 3.1 15.3-.8 22-4.2 7.1-12.5 9.6-21.2 9.1-8.3-.5-14.1-4.2-15.2-11.3C2.9 24.6 4.9 15.2 11 9.9c3.3-2.9 7.8-4.9 12.8-5.5Z"
@@ -49,8 +53,12 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
   const art = ART[brand];
   if (art) {
     return (
-      <span aria-hidden="true" className="otv2-mark otv2-mark--art" data-brand={brand}>
-        <img alt="" className="otv2-mark__svg" src={art} />
+      <span
+        aria-hidden="true"
+        className="inline-flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-sm font-medium text-kumo-subtle overflow-hidden"
+        data-brand={brand}
+      >
+        <img alt="" className="size-8" src={art} />
       </span>
     );
   }
@@ -61,7 +69,11 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
    * to direct asset requests. So it keeps a neutral mark rather than a file we have no grant for.
    */
   return (
-    <span aria-hidden="true" className="otv2-mark" data-brand={brand}>
+    <span
+      aria-hidden="true"
+      className="inline-flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-sm font-medium text-kumo-subtle overflow-hidden"
+      data-brand={brand}
+    >
       {label.slice(0, 1)}
     </span>
   );

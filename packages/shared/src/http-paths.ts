@@ -25,9 +25,6 @@ export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-m
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
 export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
 export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
-/** Staging-only Onboarding Lab interface; the Account comes only from the authenticated session. */
-export const INTERNAL_ONBOARDING_LAB_PATH = `${API_V1_PREFIX}/internal/onboarding-lab`;
-
 /**
  * Account-native management collections. Ownership comes only from the authenticated Account, so these
  * paths accept neither a management `workspaceId` nor a client-selected `accountId`.
@@ -36,6 +33,7 @@ export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
+export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 
@@ -44,6 +42,7 @@ export const HTTP_PATHS = {
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
+  accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
@@ -65,7 +64,6 @@ export const HTTP_PATHS = {
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
-  internalOnboardingLab: INTERNAL_ONBOARDING_LAB_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,

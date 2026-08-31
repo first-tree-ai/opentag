@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CHECK_COPY, CommandBlock } from "../setup/index.js";
+import { COPY } from "./copy.js";
 import { SCENARIOS } from "./mock-backend.js";
-import { OnboardingV2Page } from "./page.js";
+import { OnboardingV2MockPage } from "./page.js";
 
 // The mock defaults to manual: the Computer arriving, the check returning and the QR being
 // scanned all wait to be advanced by hand. Only these two are still on a clock.
@@ -70,8 +72,13 @@ describe("OnboardingV2Page", () => {
     Reflect.deleteProperty(navigator, "clipboard");
   });
 
+  it("uses plural repair copy when multiple checks fail", () => {
+    expect(CHECK_COPY["runtime-cli"].detail.failed("Codex")).toBe("We can't find the Codex command on this computer.");
+    expect(COPY.check.failedIntro(2)).toBe("2 things need fixing before your agent can run.");
+  });
+
   it("marks the cloud computer as coming soon, because the Server cannot allocate one yet", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     expect((screen.getByRole("button", { name: /Local computer/ }) as HTMLButtonElement).disabled).toBe(false);
 
     const cloud = screen.getByRole("button", { name: /Cloud computer/ }) as HTMLButtonElement;
@@ -80,7 +87,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("shows no progress rail until the branch is known", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     // How many steps follow depends on this step's answer, so there is no honest length to show.
     expect(screen.queryByRole("navigation", { name: "Setup progress" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
@@ -89,7 +96,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("requires a confirmed choice rather than advancing on selection", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     expect(screen.getByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
@@ -98,7 +105,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("offers exactly the two supported runtimes", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(screen.getByRole("button", { name: /Codex/ })).toBeTruthy();
@@ -107,7 +114,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("gives the Kumo agent name input an explicit accessible label", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -118,28 +125,32 @@ describe("OnboardingV2Page", () => {
   });
 
   it("explains an invalid name instead of advancing", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Open Tag" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    const error = document.querySelector(".otv2-field-error") as HTMLElement;
+    const error = document.querySelector('[data-ui="onboarding-v2-field-error"]') as HTMLElement;
     expect(error.textContent).toContain("lowercase letters");
     expect(error.dataset.empty).toBeUndefined();
     expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
   });
 
   it("reads heading, explanation, then control in both sections of the agent step", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    for (const section of document.querySelectorAll(".otv2-fieldset")) {
-      const parts = [...section.children].map((child) => child.className || child.tagName.toLowerCase());
-      const heading = parts.findIndex((part) => part === "otv2-fieldset__label" || part === "legend");
-      const hint = parts.indexOf("otv2-fieldset__hint");
-      const control = parts.findIndex((part) => part.includes("otv2-name") || part.includes("otv2-choices"));
+    for (const section of document.querySelectorAll('[data-ui="onboarding-v2-field"], fieldset')) {
+      const parts = [...section.children].map(
+        (child) => (child as HTMLElement).dataset.ui ?? child.tagName.toLowerCase(),
+      );
+      const heading = parts.findIndex((part) => part === "onboarding-v2-field-label" || part === "legend");
+      const hint = parts.indexOf("onboarding-v2-field-hint");
+      const control = parts.findIndex(
+        (part) => part === "onboarding-v2-field-control" || part === "onboarding-v2-choices",
+      );
       expect(heading).toBeGreaterThanOrEqual(0);
       expect(hint).toBeGreaterThan(heading);
       expect(control).toBeGreaterThan(hint);
@@ -147,16 +158,16 @@ describe("OnboardingV2Page", () => {
   });
 
   it("holds the name error's line before there is an error to show", () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    const error = document.querySelector(".otv2-field-error") as HTMLElement;
+    const error = document.querySelector('[data-ui="onboarding-v2-field-error"]') as HTMLElement;
     expect(error).toBeTruthy();
     expect(error.dataset.empty).toBe("true");
   });
 
   it("keeps the command's preamble with the command rather than in the page header", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     expect(screen.getByText(/Your AI worker runs on your own computer/)).toBeTruthy();
     expect(screen.getByText("Your code and data never leave your machine.")).toBeTruthy();
@@ -165,7 +176,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("installs through the portable installer, which needs nothing already on the machine", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     const command = screen.getByText(/opentag computer connect/).textContent ?? "";
     // No `npm`: that would require a working Node before OpenTag could be installed at all.
@@ -180,7 +191,7 @@ describe("OnboardingV2Page", () => {
   it("copies the comment together with the command", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
 
     fireEvent.click(screen.getAllByRole("button", { name: /Copy/ })[0] as HTMLElement);
@@ -188,10 +199,31 @@ describe("OnboardingV2Page", () => {
     const payload = writeText.mock.calls[0]?.[0] as string;
     expect(payload.startsWith("# Install the OpenTag CLI")).toBe(true);
     expect(payload).toContain("install.sh | sh");
+    await advance(1_600);
+    expect(screen.getAllByRole("button", { name: /Copy/ })[0]).toBeTruthy();
+  });
+
+  it("falls back to selecting the command when clipboard access fails", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard unavailable"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(
+      <CommandBlock
+        command="opentag computer connect --code abc"
+        comment="# Connect this computer"
+        copyLabel="Copy command"
+        copiedLabel="Copied"
+        fallbackHint="Select the command and copy it manually."
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    await act(async () => undefined);
+    expect(screen.getByRole("status").textContent).toBe("Select the command and copy it manually.");
+    expect(writeText).toHaveBeenCalledWith("# Connect this computer\nopentag computer connect --code abc");
   });
 
   it("counts the command's validity down and offers a fresh one once it expires", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
 
@@ -205,19 +237,20 @@ describe("OnboardingV2Page", () => {
   });
 
   it("reports a clean environment and offers to create the Agent", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     await reachCheckStep();
     await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
-    // The messaging CLI is not checked here: no provider has been chosen yet.
-    expect(screen.queryByText("Lark CLI is installed")).toBeNull();
+    // The messaging CLI is not a computer-step row: no provider has been chosen yet, and a
+    // missing one is named later as a sentence on the messaging step, not a third check line.
+    expect(screen.queryByText(/lark-cli/i)).toBeNull();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 
   it("hands a failing check to the terminal rather than offering a retry button", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     chooseScenario("runtime-install");
     await reachConnectStep();
     await reachCheckStep();
@@ -232,48 +265,50 @@ describe("OnboardingV2Page", () => {
   });
 
   it("keeps one heading and a detail line on every check, in every state", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     chooseScenario("runtime-install");
     await reachConnectStep();
     await reachCheckStep();
 
     // Mid-probe: every row already has its detail line.
-    const rowsWhileChecking = document.querySelectorAll(".otv2-check");
+    const rowsWhileChecking = document.querySelectorAll(".ots-check");
     expect(rowsWhileChecking).toHaveLength(2);
     for (const row of rowsWhileChecking) {
-      expect(row.querySelectorAll("span > span")).toHaveLength(1);
+      // One title and one detail line, always both, so a resolving row never changes height.
+      const copy = row.querySelector("span:last-child");
+      expect(copy?.children).toHaveLength(2);
     }
 
     await settleCheck();
-    expect(document.querySelectorAll(".otv2-check")).toHaveLength(2);
-    for (const row of document.querySelectorAll(".otv2-check")) {
+    expect(document.querySelectorAll(".ots-check")).toHaveLength(2);
+    for (const row of document.querySelectorAll(".ots-check")) {
       expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
   });
 
   it("keeps the countdown's row while the command is still on screen", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
-    expect(document.querySelector(".otv2-command-lead")).toBeTruthy();
-    expect(document.querySelector(".otv2-command__expiry")).toBeTruthy();
-    expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-command-lead"]')).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-expiry"]')).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-connect-status"]')).toBeTruthy();
 
     // Expiring empties the countdown but must not collapse the row it sits on.
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
     expect(screen.queryByText(/Expires in/)).toBeNull();
-    expect(document.querySelector(".otv2-command__expiry")).toBeTruthy();
+    expect(document.querySelector('[data-ui="onboarding-v2-expiry"]')).toBeTruthy();
   });
 
   it("keeps the check step's outcome slot before and after the result lands", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     await reachCheckStep();
 
     // Still probing: the slot already holds its waiting line, in the same shape step 3 uses.
-    const slot = () => document.querySelector(".otv2-slot--outcome");
+    const slot = () => document.querySelector('[data-ui="onboarding-v2-check-outcome"]');
     expect(slot()?.textContent ?? "").toContain("Waiting for the computer check…");
-    expect(slot()?.querySelector(".otv2-pulse")).toBeTruthy();
+    expect(slot()?.querySelector(".ots-pulse")).toBeTruthy();
 
     await settleCheck();
     expect(slot()).toBeTruthy();
@@ -281,7 +316,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("keeps Continue on every step, disabled until the step can be left", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     const next = () => screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
 
     expect(next().disabled).toBe(true);
@@ -304,7 +339,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("counts the runtime failures in its summary", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     chooseScenario("both-failing");
     await reachConnectStep();
     await reachCheckStep();
@@ -314,7 +349,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("turns green on its own after the terminal repair, with no page action", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     chooseScenario("runtime-install");
     await reachConnectStep();
     await reachCheckStep();
@@ -329,7 +364,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("creates the Agent only after a runnable route is proven, then asks for Lark", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     await reachCheckStep();
     await settleCheck();
@@ -341,12 +376,13 @@ describe("OnboardingV2Page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
     await advance(ISSUE_MS);
     await advanceMock("Scan QR code");
+    await advanceMock("Confirm reachable");
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
   });
 
   describe("the mock's advance control", () => {
     it("names the one thing the outside world would do next", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachConnectStep();
       expect(screen.getByRole("button", { name: "Connect computer" })).toBeTruthy();
 
@@ -362,13 +398,13 @@ describe("OnboardingV2Page", () => {
     });
 
     it("has nothing to offer when nothing is waiting", () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       const control = screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement;
       expect(control.disabled).toBe(true);
     });
 
     it("cannot bring a Computer in on an expired code", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachConnectStep();
       openLab();
       fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
@@ -390,12 +426,14 @@ describe("OnboardingV2Page", () => {
     }
 
     it("asks which app before showing any connection, and offers no footer", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachMessagingStep();
 
       // Slack leads.
       expect(
-        [...document.querySelectorAll(".otv2-choices--grid .otv2-choice__copy strong")].map((n) => n.textContent),
+        [...document.querySelectorAll('[data-ui="onboarding-v2-choices"] [data-ui="onboarding-v2-card-title"]')].map(
+          (n) => n.textContent,
+        ),
       ).toEqual(["Slack", "Lark"]);
       // The step is finished by scanning or installing, not by pressing anything on this page.
       expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
@@ -406,7 +444,7 @@ describe("OnboardingV2Page", () => {
     });
 
     it("brings up the Lark code in place, without leaving the step", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachMessagingStep();
 
       fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
@@ -417,7 +455,7 @@ describe("OnboardingV2Page", () => {
     });
 
     it("installs Slack by sending the user there and bringing them back", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachMessagingStep();
 
       fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
@@ -430,11 +468,12 @@ describe("OnboardingV2Page", () => {
       expect(screen.getByText("Waiting for you to finish in Slack…")).toBeTruthy();
 
       await advanceMock("Return from Slack");
+      await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
 
     it("offers the same Slack install on the cloud route", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       openLab();
       fireEvent.click(screen.getByRole("button", { name: "Offer the cloud computer" }));
       fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
@@ -448,6 +487,7 @@ describe("OnboardingV2Page", () => {
       fireEvent.click(screen.getByRole("button", { name: /Slack/ }));
       fireEvent.click(screen.getByRole("button", { name: "Add to Slack" }));
       await advanceMock("Return from Slack");
+      await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
   });
@@ -463,27 +503,26 @@ describe("OnboardingV2Page", () => {
     }
 
     it("has its own two steps and never asks for a Computer", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
       expect(screen.getByRole("heading", { name: "Create your cloud agent" })).toBeTruthy();
-      expect([...document.querySelectorAll(".otv2-rail__label")].map((node) => node.textContent)).toEqual([
-        "Create agent",
-        "Messaging app",
-      ]);
+      expect(
+        [...document.querySelectorAll('[data-ui="onboarding-v2-rail-label"]')].map((node) => node.textContent),
+      ).toEqual(["Create agent", "Messaging app"]);
       expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
     });
 
     it("leads with OpenTag's own agent, on a row of its own", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
-      const runtimes = [...document.querySelectorAll(".otv2-choice--runtime strong")].map((n) => n.textContent);
+      const runtimes = [...document.querySelectorAll('[data-ui="onboarding-v2-card-title"]')].map((n) => n.textContent);
       expect(runtimes.slice(0, 3)).toEqual(["OpenTag agent", "Claude Code", "Codex"]);
-      expect(document.querySelector(".otv2-choices--lead")).toBeTruthy();
+      expect(document.querySelector("[data-lead]")).toBeTruthy();
       expect(screen.getByText("More runtimes coming soon.")).toBeTruthy();
     });
 
     it("lists both token options for its own agent, with one already chosen and one barred", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
 
@@ -496,7 +535,7 @@ describe("OnboardingV2Page", () => {
     });
 
     it("asks who pays once a coding agent is chosen", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
 
@@ -510,7 +549,7 @@ describe("OnboardingV2Page", () => {
     });
 
     it("holds Continue until an own plan has actually been signed into", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
       fireEvent.click(screen.getByRole("button", { name: /Your own coding plan/ }));
@@ -529,7 +568,7 @@ describe("OnboardingV2Page", () => {
     });
 
     it("forgets a token choice when the runtime changes under it", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
       fireEvent.click(screen.getByRole("button", { name: /OpenTag Tokens/ }));
@@ -540,7 +579,7 @@ describe("OnboardingV2Page", () => {
     });
 
     it("connects a messaging app on its own step, like a local agent", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -551,11 +590,12 @@ describe("OnboardingV2Page", () => {
       fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(ISSUE_MS);
       await advanceMock("Scan QR code");
+      await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
     });
 
     it("never names the runtime OpenTag uses for its own agent", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await chooseCloud();
       fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
       // The Context Tree bars the internal runtime from product exposure, so it is never named.
@@ -565,7 +605,7 @@ describe("OnboardingV2Page", () => {
 
   describe("going back", () => {
     it("returns from the agent step to the destination, keeping the draft", () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "helper" } });
@@ -578,14 +618,14 @@ describe("OnboardingV2Page", () => {
     });
 
     it("returns from the connect step to the agent step", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachConnectStep();
       fireEvent.click(screen.getByRole("button", { name: "Go back" }));
       expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
     });
 
     it("keeps the Computer when returning to the computer step", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachConnectStep();
       await reachCheckStep();
       await settleCheck();
@@ -600,7 +640,7 @@ describe("OnboardingV2Page", () => {
     });
 
     it("has no way back once the Agent has been created", async () => {
-      render(<OnboardingV2Page />);
+      render(<OnboardingV2MockPage />);
       await reachConnectStep();
       await reachCheckStep();
       await settleCheck();
@@ -611,7 +651,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("cancels a creation still in flight when the flow is restarted", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     await reachCheckStep();
     await settleCheck();
@@ -629,7 +669,7 @@ describe("OnboardingV2Page", () => {
   });
 
   it("returns to the first step when the flow is restarted", async () => {
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2MockPage />);
     await reachConnectStep();
     fireEvent.click(screen.getByRole("button", { name: "Start over" }));
     expect(screen.getByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();

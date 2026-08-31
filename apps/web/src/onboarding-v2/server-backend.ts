@@ -93,6 +93,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [planSignIn] = useState<PlanSignIn>("idle");
   const [resuming, setResuming] = useState(true);
   const [resumeError, setResumeError] = useState<string>();
+  const [resumeBlocked, setResumeBlocked] = useState<{ agentId: string; agentName: string }>();
   const [pastComputerStep, setPastComputerStep] = useState(false);
   const [lastPassedReadiness, setLastPassedReadiness] = useState<ReadinessFacts>();
   const [computerPollEpoch, setComputerPollEpoch] = useState(0);
@@ -132,6 +133,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     resumeRun.current = mine;
     const live = () => mounted.current && resumeRun.current === mine;
     setResumeError(undefined);
+    setResumeBlocked(undefined);
     setResuming(true);
     try {
       {
@@ -167,20 +169,35 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
          * read, not inferred. One extra round trip buys not saying something untrue.
          */
         const byId = new Map(computers.map((one) => [one.computerId, one]));
-        // Where the Account has more than one, the Agent whose Computer is actually there is the one
-        // this run can finish. Otherwise the first, which is the Server's own order.
+        /*
+         * Only an Agent that has a Computer can be resumed here. Adopting an unbound one would
+         * report a connection and then stop at messaging, which refuses an Agent with nowhere to
+         * run. Where the Account has more than one, the Agent whose Computer is actually there is
+         * the one this run can finish; otherwise the first, which is the Server's own order.
+         */
+        const bound = active.flatMap((candidate) =>
+          candidate.computer ? [{ agent: candidate, computer: candidate.computer }] : [],
+        );
         const existing =
-          active.find((candidate) => byId.get(candidate.computer.computerId)?.connectionStatus === "online") ??
-          active[0];
-        if (!existing) return;
-        setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
+          bound.find(({ computer }) => byId.get(computer.computerId)?.connectionStatus === "online") ?? bound[0];
+        if (!existing) {
+          const unfinishable = active[0];
+          // Named, because "you have no Agent" would be false and would send the reader into a
+          // creation form that ends at the name it already has.
+          if (unfinishable) {
+            setResumeBlocked({ agentId: unfinishable.id, agentName: unfinishable.displayName });
+          }
+          return;
+        }
+        const { agent: resumed, computer: resumedComputer } = existing;
+        setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
-        const enrolled = byId.get(existing.computer.computerId);
-        computerId.current = existing.computer.computerId;
+        const enrolled = byId.get(resumedComputer.computerId);
+        computerId.current = resumedComputer.computerId;
         setSelectedComputer({
-          id: existing.computer.computerId,
-          displayName: enrolled?.displayName ?? existing.computer.displayName,
+          id: resumedComputer.computerId,
+          displayName: enrolled?.displayName ?? resumedComputer.displayName,
           availability: enrolled?.connectionStatus ?? "unknown",
           lastSeen: enrolled?.lastSeenAt ? formatRelativeTime(enrolled.lastSeenAt) : undefined,
         });
@@ -195,7 +212,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
          * active before that observation lands, so treating "installed" as "finished" is how a
          * real callback ends up asking to complete something the Server will refuse.
          */
-        const handoff = await browserApi.imBindingHandoff(existing.id);
+        const handoff = await browserApi.imBindingHandoff(resumed.id);
         if (!live()) return;
         setMessaging(readMessaging(handoff));
 
@@ -213,7 +230,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
            * outage on this call strands a returning Account on an error instead.
            */
           try {
-            const binding = await browserApi.imBinding(existing.id);
+            const binding = await browserApi.imBinding(resumed.id);
             if (!live()) return;
             if (binding?.provider === "feishu" || binding?.provider === "slack") {
               setMessagingProvider(binding.provider);
@@ -426,6 +443,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setCreation("idle");
     setResuming(false);
     setResumeError(undefined);
+    setResumeBlocked(undefined);
     setActionError(undefined);
     setPastComputerStep(false);
     setLastPassedReadiness(undefined);
@@ -472,6 +490,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       readiness,
       reset,
       resumeError,
+      resumeBlocked,
       resuming,
       retryResume,
       startMessaging,
@@ -494,6 +513,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       readiness,
       reset,
       resumeError,
+      resumeBlocked,
       resuming,
       retryResume,
       startMessaging,

@@ -1,3 +1,14 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "integrations_cell_label": "{name}。{description}",
+  "integrations_column_category": "类别",
+  "integrations_column_name": "名称",
+  "integrations_column_status": "状态",
+  "integrations_demo": "演示",
+  "integrations_demo_data": "演示数据",
+  "integrations_page_description": "OpenTag 可以配合使用、用于查找上下文并完成工作的服务。",
+  "integrations_page_title": "集成",
+  "integrations_scroll_hint": "横向滚动以查看类别和状态。",
+  "integrations_table_name": "演示集成",
+  "integrations_table_region": "集成表格"
 }

@@ -63,7 +63,11 @@ export function agentCardStatus(agent: AgentListItem): {
  * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
  * Agent creator audit-only while stating that enrollment implies no control of the physical host.
  */
-export function computerRecoveryMessage(agent: AgentDetailView, computerName = agent.computer.displayName): string {
+export function computerRecoveryMessage(agent: AgentDetailView): string {
+  if (!agent.computer) {
+    return m.agents_computer_not_bound_recovery();
+  }
+  const computerName = agent.computer.displayName;
   if (agent.availability.reason === "runtime_unavailable") {
     const { provider, status } = agent.availability.dependencies.runtime;
     const providerName = provider === "codex" ? "Codex" : "Claude Code";
@@ -114,7 +118,7 @@ export function titleCase(value: string) {
     .join(" ");
 }
 
-export function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
+export function platformLabel(platform: NonNullable<AgentSummary["computer"]>["platform"]): string {
   if (platform === "darwin") return "macOS";
   if (platform === "win32") return "Windows";
   return "Linux";
@@ -149,6 +153,9 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
     return { label: "Status unknown", tone: "neutral" };
   }
 
+  if (availability.reason === "computer_not_bound") {
+    return { label: m.agents_computer_not_bound_label(), tone: "warning" };
+  }
   if (availability.reason === "computer_offline") return { label: "Computer offline", tone: "warning" };
   if (availability.reason === "runtime_unavailable") {
     // The Provider-specific wording tells a viewer what to do; a single "runtime not available" does not.
@@ -263,6 +270,10 @@ export function agentAvailabilityRecovery(
     return { label: "View messaging", link: agentSettingsSectionLink(agent.id, "messaging") };
   }
   if (agent.availability.state === "unconfirmed") return undefined;
+  // Naming the action for the state it exits: there is no Computer here to view.
+  if (agent.availability.reason === "computer_not_bound") {
+    return { label: m.agents_computer_not_bound_action(), link: agentSettingsSectionLink(agent.id, "computer") };
+  }
   return { label: "View Computer", link: agentSettingsSectionLink(agent.id, "computer") };
 }
 
@@ -273,6 +284,7 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     handoff_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
     computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
+    computer_not_bound: m.agents_computer_not_bound_detail(),
     computer_offline: "This agent's computer is offline. Retrying automatically.",
     runtime_unavailable: runtimeRecoveryMessage(agent),
     im_not_connected: `Connect ${messagingProviderChoices()} so teammates can send this Agent work.`,
@@ -317,6 +329,20 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
    * this row contradict the Computer evidence. Healthy and self-resolving states stay quiet;
    * actionable states name the exact next step instead of adding an explanatory sentence.
    */
+  /*
+   * An Agent with no Computer is answered first, and with its own exit. Every branch below reads a
+   * fact about a machine -- its connection, its Provider -- and there is no machine here to read
+   * one from: falling through would label the Agent "Unknown" and explain that the Provider could
+   * not be confirmed on a Computer that does not exist. That is the conflation this row exists to
+   * avoid, and it is invisible to the type checker, because an unmatched state still returns.
+   */
+  if (computer.state === "not_bound") {
+    return {
+      action: { label: m.agents_computer_not_bound_action(), section: "computer" as const },
+      label: m.agents_computer_not_bound_label(),
+      tone: "warning",
+    };
+  }
   if (computer.state === "unconfirmed") {
     return {
       action: { label: m.agents_status_action_view_computer(), section: "computer" },

@@ -84,6 +84,42 @@ jobs:
           );
           NODE
 
+      - name: Summarize test duration and retry diagnostics
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, existsSync, readFileSync } from "node:fs";
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          if (!summaryPath) process.exit(0);
+          const reportPath = "coverage/unit/coverage-run.json";
+          if (!existsSync(reportPath)) {
+            appendFileSync(summaryPath, "\n### Unit test duration and retry diagnostics\n\nCoverage run metadata was not produced.\n");
+            process.exit(0);
+          }
+          const report = JSON.parse(readFileSync(reportPath, "utf8"));
+          const packages = Array.isArray(report.packages) ? report.packages : [];
+          const rows = packages
+            .sort((left, right) => String(left.name).localeCompare(String(right.name)))
+            .map(
+              (entry) =>
+                `| ${entry.name} | ${Number(entry.durationMs ?? 0).toFixed(0)} ms | ${entry.testCount ?? 0} | ` +
+                `${entry.retryCount ?? 0} | ${entry.flakyCount ?? 0} | ${entry.failedAfterRetryCount ?? 0} |`,
+            )
+            .join("\n");
+          const retries = packages.reduce((total, entry) => total + (Number(entry.retryCount) || 0), 0);
+          const flaky = packages.reduce((total, entry) => total + (Number(entry.flakyCount) || 0), 0);
+          appendFileSync(
+            summaryPath,
+            `\n### Unit test duration and retry diagnostics\n\n` +
+              `Retries are diagnostic: a retried-then-passed test is reported as flaky and is never silently green. ` +
+              `Observed retries: **${retries}**; retried-then-passed tests: **${flaky}**.\n\n` +
+              `| Package | Duration | Tests | Retries | Flaky | Failed after retry |\n| --- | ---: | ---: | ---: | ---: | ---: |\n` +
+              (rows || "| (none) | 0 ms | 0 | 0 | 0 | 0 |") +
+              "\n",
+          );
+          NODE
+
       - name: Enforce changed-line coverage
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

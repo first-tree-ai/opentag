@@ -1,3 +1,5 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_v2_resume_blocked_detail": "等它有计算机可以运行，设置流程就会继续。",
+  "onboarding_v2_resume_blocked_title": "{agentName} 还没有计算机。"
 }

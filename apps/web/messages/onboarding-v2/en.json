@@ -1,3 +1,5 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_v2_resume_blocked_detail": "Setup carries on once it has a computer to run on.",
+  "onboarding_v2_resume_blocked_title": "{agentName} has no computer yet."
 }

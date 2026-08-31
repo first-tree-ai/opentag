@@ -222,6 +222,7 @@ describe("OpenTagApi Agent methods", () => {
       .mockResolvedValueOnce(jsonResponse({ ...agent, displayName: "Reviewer", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, status: "suspended", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, revision: 3 }))
+      .mockResolvedValueOnce(jsonResponse({ ...agent, computerId, revision: 4 }))
       .mockResolvedValueOnce(jsonResponse({ status: "passed" }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
@@ -245,6 +246,7 @@ describe("OpenTagApi Agent methods", () => {
     });
     await api.suspendAgent("access", agentId);
     await api.reactivateAgent("access", agentId);
+    await api.rebindAgentComputer("access", agentId, computerId);
     await api.testAgentRuntime("access", agentId, {
       expectedRevision: 1,
       expectedRuntimeConfigRevision: 1,
@@ -260,6 +262,7 @@ describe("OpenTagApi Agent methods", () => {
       [`https://opentag.example/api/v1/agents/${agentId}`, "PATCH"],
       [`https://opentag.example/api/v1/agents/${agentId}/suspend`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}/reactivate`, "POST"],
+      [`https://opentag.example/api/v1/agents/${agentId}/computer/rebind`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}/runtime-test`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "DELETE"],
     ]);
@@ -279,6 +282,7 @@ describe("OpenTagApi Agent methods", () => {
       expectedRevision: 1,
       runtimeConfig: { model: null, reasoningEffort: "high" },
     });
+    expect(JSON.parse(String(fetchImpl.mock.calls[8]?.[1]?.body))).toEqual({ computerId });
   });
 
   it("preserves typed Agent errors", async () => {

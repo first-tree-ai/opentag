@@ -10,6 +10,7 @@
 
 import type {
   AgentAdminConfig,
+  AgentListItem,
   ComputerConnectCodeStatus,
   FeishuSetupAttempt,
   WorkspaceComputerSummary,
@@ -65,6 +66,24 @@ function adminConfig(): AgentAdminConfig {
     computerId: COMPUTER_ID,
     revision: 1,
     runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
+  };
+}
+
+function listItem(overrides: Partial<AgentListItem> = {}): AgentListItem {
+  return {
+    id: AGENT_ID,
+    name: "opentag",
+    displayName: "opentag",
+    createdBy: { userId: USER_ID, displayName: "Ada" },
+    computer: { computerId: COMPUTER_ID, displayName: "Ada's Mac", platform: "darwin" },
+    runtimeProvider: "codex",
+    receiveMode: "mention_only",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    activity: { state: "idle" },
+    usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 },
+    ...overrides,
   };
 }
 
@@ -253,5 +272,28 @@ describe("Server-backed onboarding: the defects it had", () => {
     await settle();
 
     expect(calls).toBe(1);
+  });
+
+  it("refuses to resume an Agent that has no Computer rather than reporting someone else's machine", async () => {
+    /*
+     * An unbound Agent is not resumed at all. Reporting a Computer for it would have to come from
+     * an arrival -- a machine on the Account that enrolled or reconnected -- which identifies a
+     * machine but not one this Agent was ever given, and the run would then advance into messaging,
+     * which refuses an Agent with nowhere to run. So the reader is handed the page where the Agent
+     * gets a Computer instead, and nothing durable is written on a guess.
+     */
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem({ computer: null })] });
+    computersReturning([
+      computer({ computerId: "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f", displayName: "Someone else's laptop" }),
+    ]);
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer");
+
+    const view = mount();
+    await settle();
+
+    expect(view.result.current.resumeBlocked).toEqual({ agentId: AGENT_ID, agentName: "opentag" });
+    expect(rebind).not.toHaveBeenCalled();
+    // Not silently created either, so nothing advances toward messaging.
+    expect(view.result.current.creation).not.toBe("created");
   });
 });

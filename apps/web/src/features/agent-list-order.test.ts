@@ -61,6 +61,7 @@ describe("Agent list order", () => {
 });
 
 describe("Agent availability model and presentation", () => {
+  const boundComputerId = "22222222-2222-4222-8222-222222222222";
   const agent = {
     id: "11111111-1111-4111-8111-111111111111",
     name: "reviewer",
@@ -69,10 +70,10 @@ describe("Agent availability model and presentation", () => {
     status: "active",
     updatedAt: "2026-08-20T00:00:00.000Z",
     activity: { state: "idle" },
-    computer: { computerId: "22222222-2222-4222-8222-222222222222", displayName: "Desk Mac", platform: "darwin" },
+    computer: { computerId: boundComputerId, displayName: "Desk Mac", platform: "darwin" },
   } as unknown as AgentSummary;
   const computer = {
-    computerId: agent.computer.computerId,
+    computerId: boundComputerId,
     connectionStatus: "online",
     lastSeenAt: "2026-08-20T00:00:00.000Z",
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
@@ -468,7 +469,7 @@ describe("Agent availability model and presentation", () => {
     const config = {
       id: agent.id,
       createdByUserId: "user",
-      computerId: agent.computer.computerId,
+      computerId: boundComputerId,
       name: agent.name,
       displayName: agent.displayName,
       runtimeProvider: agent.runtimeProvider,

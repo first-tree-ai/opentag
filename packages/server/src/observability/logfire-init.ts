@@ -104,7 +104,7 @@ export async function initTelemetry(
   enabled = true;
 }
 
-class AllowlistedSpanProcessor implements SpanProcessor {
+export class AllowlistedSpanProcessor implements SpanProcessor {
   constructor(readonly delegate: SpanProcessor) {}
 
   forceFlush(): Promise<void> {

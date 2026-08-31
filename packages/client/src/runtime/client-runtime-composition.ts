@@ -76,6 +76,32 @@ interface SharedProviderRefresh {
   waiters: number;
 }
 
+export interface LoginShellDiscovery {
+  readonly options: ResolveAgentRuntimeExecutableOptions;
+  enable(): void;
+}
+
+export function createLoginShellDiscovery(): LoginShellDiscovery {
+  let enabled = false;
+  function includeLoginShell(): boolean {
+    return enabled;
+  }
+  return {
+    options: { includeLoginShell },
+    enable() {
+      enabled = true;
+    },
+  };
+}
+
+interface SharedProviderRefreshContext {
+  readonly connection: RuntimeConnection;
+  readonly providers: AgentRuntimeProviderRegistry;
+  readonly readinessSignal: AbortSignal;
+  readonly providerProbeDeadlineMs: number;
+  readonly sharedProviderRefreshes: Map<string, SharedProviderRefresh>;
+}
+
 async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
   if (!signal) return refresh;
   signal.throwIfAborted();
@@ -92,6 +118,91 @@ async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSig
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
+}
+
+function providerProbeDeadline(value: number | undefined): number {
+  const deadline = value ?? DEFAULT_PROVIDER_PROBE_DEADLINE_MS;
+  if (!Number.isSafeInteger(deadline) || deadline < 1) {
+    throw new Error("Agent Runtime provider probe deadline must be a positive safe integer");
+  }
+  return deadline;
+}
+
+function startSharedProviderRefresh(context: SharedProviderRefreshContext, providerId: string): SharedProviderRefresh {
+  const controller = new AbortController();
+  let resolveOwner!: (available: boolean) => void;
+  let rejectOwner!: (reason: unknown) => void;
+  const promise = new Promise<boolean>((resolvePromise, rejectPromise) => {
+    resolveOwner = resolvePromise;
+    rejectOwner = rejectPromise;
+  });
+  const owner: SharedProviderRefresh = { controller, promise, settled: false, waiters: 0 };
+  context.sharedProviderRefreshes.set(providerId, owner);
+  const deadlineError = new Error(`Agent Runtime provider probe exceeded its deadline: ${providerId}`);
+  const deadlineTimer = setTimeout(() => controller.abort(deadlineError), context.providerProbeDeadlineMs);
+  deadlineTimer.unref();
+  const operation = runSharedProviderRefresh(context, providerId, owner, deadlineError, deadlineTimer);
+  void operation.then(resolveOwner, rejectOwner);
+  void owner.promise.catch(() => undefined);
+  return owner;
+}
+
+async function runSharedProviderRefresh(
+  context: SharedProviderRefreshContext,
+  providerId: string,
+  owner: SharedProviderRefresh,
+  deadlineError: Error,
+  deadlineTimer: ReturnType<typeof setTimeout>,
+): Promise<boolean> {
+  let releaseReadiness: (() => void) | undefined;
+  try {
+    const provider = providerId as AgentRuntimeProvider;
+    if (context.providers.isReady(providerId)) {
+      releaseReadiness = context.connection.leaseProviderReadiness({ provider, status: "ready" });
+    }
+    if (!releaseReadiness) context.connection.setProviderReadiness({ provider, status: "checking" });
+    const ownerSignal = AbortSignal.any([context.readinessSignal, owner.controller.signal]);
+    let settled: { available: boolean } | { error: unknown };
+    try {
+      settled = { available: await context.providers.refresh(providerId, ownerSignal) };
+    } catch (error) {
+      settled = { error };
+    }
+    return resolveSharedProviderRefreshResult(context, providerId, owner, deadlineError, settled);
+  } finally {
+    owner.settled = true;
+    clearTimeout(deadlineTimer);
+    releaseReadiness?.();
+    if (context.sharedProviderRefreshes.get(providerId) === owner) context.sharedProviderRefreshes.delete(providerId);
+  }
+}
+
+function resolveSharedProviderRefreshResult(
+  context: SharedProviderRefreshContext,
+  providerId: string,
+  owner: SharedProviderRefresh,
+  deadlineError: Error,
+  settled: { available: boolean } | { error: unknown },
+): boolean {
+  if (context.sharedProviderRefreshes.get(providerId) !== owner) {
+    if ("error" in settled) throw settled.error;
+    owner.controller.signal.throwIfAborted();
+    return settled.available;
+  }
+  if ("error" in settled) {
+    if (context.readinessSignal.aborted || owner.controller.signal.reason !== deadlineError) throw settled.error;
+    const result: AgentRuntimeProbeResult = {
+      ready: false,
+      issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
+    };
+    context.providers.invalidate(providerId, result);
+    context.connection.setProviderReadiness(providerReadiness(providerId as AgentRuntimeProvider, false, result));
+    return false;
+  }
+  context.connection.setProviderReadiness(
+    providerReadiness(providerId as AgentRuntimeProvider, settled.available, context.providers.probeResult(providerId)),
+  );
+  return settled.available;
 }
 
 export interface CreateClientRuntimeOptions {
@@ -254,10 +365,8 @@ export async function createClientRuntime(
     codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
     "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
   };
-  let includeLoginShell = false;
-  const discovery: ResolveAgentRuntimeExecutableOptions = {
-    includeLoginShell: () => includeLoginShell,
-  };
+  const loginShellDiscovery = createLoginShellDiscovery();
+  const discovery = loginShellDiscovery.options;
   const factories =
     options.factories ??
     (options.factory
@@ -286,79 +395,8 @@ export async function createClientRuntime(
   const readinessSignal = options.signal
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
-  const providerProbeDeadlineMs = options.providerProbeDeadlineMs ?? DEFAULT_PROVIDER_PROBE_DEADLINE_MS;
-  if (!Number.isSafeInteger(providerProbeDeadlineMs) || providerProbeDeadlineMs < 1) {
-    throw new Error("Agent Runtime provider probe deadline must be a positive safe integer");
-  }
+  const providerProbeDeadlineMs = providerProbeDeadline(options.providerProbeDeadlineMs);
   const sharedProviderRefreshes = new Map<string, SharedProviderRefresh>();
-  const startSharedProviderRefresh = (providerId: string): SharedProviderRefresh => {
-    const controller = new AbortController();
-    let resolveOwner!: (available: boolean) => void;
-    let rejectOwner!: (reason: unknown) => void;
-    const promise = new Promise<boolean>((resolvePromise, rejectPromise) => {
-      resolveOwner = resolvePromise;
-      rejectOwner = rejectPromise;
-    });
-    const owner: SharedProviderRefresh = {
-      controller,
-      promise,
-      settled: false,
-      waiters: 0,
-    };
-    sharedProviderRefreshes.set(providerId, owner);
-    const deadlineError = new Error(`Agent Runtime provider probe exceeded its deadline: ${providerId}`);
-    const deadlineTimer = setTimeout(() => {
-      controller.abort(deadlineError);
-    }, providerProbeDeadlineMs);
-    deadlineTimer.unref();
-    const provider = providerId as AgentRuntimeProvider;
-    const operation = (async () => {
-      let releaseReadiness: (() => void) | undefined;
-      try {
-        releaseReadiness = providers.isReady(providerId)
-          ? connection.leaseProviderReadiness({ provider, status: "ready" })
-          : undefined;
-        if (!releaseReadiness) connection.setProviderReadiness({ provider, status: "checking" });
-        const ownerSignal = AbortSignal.any([readinessSignal, controller.signal]);
-        let settled: { available: boolean } | { error: unknown };
-        try {
-          settled = { available: await providers.refresh(providerId, ownerSignal) };
-        } catch (error) {
-          settled = { error };
-        }
-        const isCurrentOwner = sharedProviderRefreshes.get(providerId) === owner;
-        if (!isCurrentOwner) {
-          if ("error" in settled) throw settled.error;
-          controller.signal.throwIfAborted();
-          return settled.available;
-        }
-        if ("error" in settled) {
-          if (readinessSignal.aborted || controller.signal.reason !== deadlineError) {
-            throw settled.error;
-          }
-          const result: AgentRuntimeProbeResult = {
-            ready: false,
-            issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
-          };
-          providers.invalidate(providerId, result);
-          connection.setProviderReadiness(providerReadiness(provider, false, result));
-          return false;
-        }
-        connection.setProviderReadiness(
-          providerReadiness(provider, settled.available, providers.probeResult(providerId)),
-        );
-        return settled.available;
-      } finally {
-        owner.settled = true;
-        clearTimeout(deadlineTimer);
-        releaseReadiness?.();
-        if (sharedProviderRefreshes.get(providerId) === owner) sharedProviderRefreshes.delete(providerId);
-      }
-    })();
-    void operation.then(resolveOwner, rejectOwner);
-    void owner.promise.catch(() => undefined);
-    return owner;
-  };
   const liveSharedProviderRefresh = (providerId: string): SharedProviderRefresh | undefined => {
     const owner = sharedProviderRefreshes.get(providerId);
     if (!owner || owner.settled || owner.controller.signal.aborted) return undefined;
@@ -367,7 +405,12 @@ export async function createClientRuntime(
   const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
     signal?.throwIfAborted();
     readinessSignal.throwIfAborted();
-    const owner = liveSharedProviderRefresh(providerId) ?? startSharedProviderRefresh(providerId);
+    const owner =
+      liveSharedProviderRefresh(providerId) ??
+      startSharedProviderRefresh(
+        { connection, providers, readinessSignal, providerProbeDeadlineMs, sharedProviderRefreshes },
+        providerId,
+      );
     owner.waiters += 1;
     try {
       return await waitForSharedRefresh(owner.promise, signal);
@@ -420,7 +463,7 @@ export async function createClientRuntime(
     capabilityAbort.abort(error);
     throw error;
   }
-  includeLoginShell = true;
+  loginShellDiscovery.enable();
 
   const bindingStore = new SessionBindingStore({
     home: options.home,
@@ -687,6 +730,65 @@ function translateExecutableDiscoveryError(
   throw error;
 }
 
+interface ResolvedFactoryProbeOptions<TFactory extends AgentRuntimeFactory> {
+  readonly provider: AgentRuntimeProvider;
+  readonly command: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly createCandidate: (command: string, environment: NodeJS.ProcessEnv) => TFactory;
+  readonly artifactMessage: string;
+  readonly onReady: (factory: TFactory) => void;
+}
+
+async function probeResolvedFactory<TFactory extends AgentRuntimeFactory>(
+  request: AgentRuntimeProbeRequest,
+  options: ResolvedFactoryProbeOptions<TFactory>,
+): Promise<AgentRuntimeProbeResult> {
+  request.signal?.throwIfAborted();
+  let lastBinaryResult: AgentRuntimeProbeResult | undefined;
+  const candidates = iterateAgentRuntimeExecutables(
+    options.provider,
+    options.command,
+    options.sourceEnvironment,
+    options.discovery,
+  );
+  while (true) {
+    const candidateStep = await nextExecutableCandidate(candidates, request.signal, options.artifactMessage);
+    if ("result" in candidateStep) return candidateStep.result;
+    if (candidateStep.step.done) break;
+    request.signal?.throwIfAborted();
+    const environment = withSearchBinOnPath(
+      options.environment,
+      candidateStep.step.value,
+      options.discovery?.pathDelimiter ?? delimiter,
+    );
+    const candidate = options.createCandidate(candidateStep.step.value.path, environment);
+    const result = await candidate.probe(request);
+    if (result.ready) {
+      options.onReady(candidate);
+      return result;
+    }
+    if (!canAdvanceRuntimeCandidate(result)) return result;
+    lastBinaryResult = result;
+  }
+  return lastBinaryResult ?? { ready: false, issues: [{ code: "artifact_missing", message: options.artifactMessage }] };
+}
+
+async function nextExecutableCandidate(
+  candidates: AsyncGenerator<ResolvedAgentRuntimeExecutable>,
+  signal: AbortSignal | undefined,
+  artifactMessage: string,
+): Promise<
+  { readonly step: IteratorResult<ResolvedAgentRuntimeExecutable> } | { readonly result: AgentRuntimeProbeResult }
+> {
+  try {
+    return { step: await candidates.next() };
+  } catch (error) {
+    return { result: translateExecutableDiscoveryError(error, signal, artifactMessage) };
+  }
+}
+
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
   let readyFactory: CodexAgentRuntimeFactory | undefined;
   const createCandidate =
@@ -698,45 +800,19 @@ export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): Agen
       }));
   return {
     manifest: CODEX_AGENT_RUNTIME_MANIFEST,
-    async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
-      request.signal?.throwIfAborted();
-      let lastBinaryResult: AgentRuntimeProbeResult | undefined;
-      const candidates = iterateAgentRuntimeExecutables(
-        "codex",
-        options.command,
-        options.sourceEnvironment,
-        options.discovery,
-      );
-      while (true) {
-        let step: IteratorResult<ResolvedAgentRuntimeExecutable>;
-        try {
-          step = await candidates.next();
-        } catch (error) {
-          return translateExecutableDiscoveryError(error, request.signal, "Codex CLI could not be executed");
-        }
-        if (step.done) break;
-        request.signal?.throwIfAborted();
-        const environment = withSearchBinOnPath(
-          options.environment,
-          step.value,
-          options.discovery?.pathDelimiter ?? delimiter,
-        );
-        const candidate = createCandidate(step.value.path, environment);
-        const result = await candidate.probe(request);
-        if (result.ready) {
-          readyFactory = candidate;
-          return result;
-        }
-        if (!canAdvanceRuntimeCandidate(result)) return result;
-        lastBinaryResult = result;
-      }
-      return (
-        lastBinaryResult ?? {
-          ready: false,
-          issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }],
-        }
-      );
-    },
+    probe: (request) =>
+      probeResolvedFactory(request, {
+        provider: "codex",
+        command: options.command,
+        environment: options.environment,
+        sourceEnvironment: options.sourceEnvironment,
+        discovery: options.discovery,
+        createCandidate,
+        artifactMessage: "Codex CLI could not be executed",
+        onReady: (factory) => {
+          readyFactory = factory;
+        },
+      }),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyCodexFactory(readyFactory).create(request);
     },
@@ -770,45 +846,19 @@ export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOpti
       }));
   return {
     manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
-    async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
-      request.signal?.throwIfAborted();
-      let lastBinaryResult: AgentRuntimeProbeResult | undefined;
-      const candidates = iterateAgentRuntimeExecutables(
-        "claude-code",
-        options.command,
-        options.sourceEnvironment,
-        options.discovery,
-      );
-      while (true) {
-        let step: IteratorResult<ResolvedAgentRuntimeExecutable>;
-        try {
-          step = await candidates.next();
-        } catch (error) {
-          return translateExecutableDiscoveryError(error, request.signal, "Claude Code CLI could not be executed");
-        }
-        if (step.done) break;
-        request.signal?.throwIfAborted();
-        const environment = withSearchBinOnPath(
-          options.environment,
-          step.value,
-          options.discovery?.pathDelimiter ?? delimiter,
-        );
-        const candidate = createCandidate(step.value.path, environment);
-        const result = await candidate.probe(request);
-        if (result.ready) {
-          readyFactory = candidate;
-          return result;
-        }
-        if (!canAdvanceRuntimeCandidate(result)) return result;
-        lastBinaryResult = result;
-      }
-      return (
-        lastBinaryResult ?? {
-          ready: false,
-          issues: [{ code: "artifact_missing", message: "Claude Code CLI could not be executed" }],
-        }
-      );
-    },
+    probe: (request) =>
+      probeResolvedFactory(request, {
+        provider: "claude-code",
+        command: options.command,
+        environment: options.environment,
+        sourceEnvironment: options.sourceEnvironment,
+        discovery: options.discovery,
+        createCandidate,
+        artifactMessage: "Claude Code CLI could not be executed",
+        onReady: (factory) => {
+          readyFactory = factory;
+        },
+      }),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyClaudeCodeFactory(readyFactory).create(request);
     },

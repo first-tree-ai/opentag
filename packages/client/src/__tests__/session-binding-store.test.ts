@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   computeDirectInputHash,
+  computeRuntimeImMessageSemanticHash,
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  type RuntimeImSteerRequest,
   type SessionReconcileRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -21,6 +23,205 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("SessionBindingStore", () => {
+  it("covers custody duplicate, steer receipt, runtime binding, and result guard paths", async () => {
+    expect(
+      () =>
+        new SessionBindingStore({
+          home: "/tmp/opentag",
+          providerArtifactIdentity: () => "a".repeat(64),
+          recordedInputLimit: 0,
+        }),
+    ).toThrow("recordedInputLimit must be a positive safe integer");
+    const fixture = await bindingFixture();
+    const request = delivery(fixture.runtime, 1);
+    const inputHash = computeDirectInputHash(request);
+    await fixture.store.recordAccepted(request, inputHash, "turn-1");
+    await expect(fixture.store.recordAccepted(request, inputHash, "turn-1")).resolves.toMatchObject({
+      status: "existing",
+      unresolvedTurn: { turnId: "turn-1" },
+    });
+    await expect(
+      fixture.store.recordAccepted({ ...request, requestId: randomUUID() }, sha256("wrong"), "turn-2"),
+    ).rejects.toThrow("Another unresolved turn owns the Session");
+    await expect(fixture.store.recordAccepted(request, "not-a-hash", "turn-1")).rejects.toThrow();
+    await expect(fixture.store.getAbsorbedReceipt(request)).resolves.toBeUndefined();
+    await expect(
+      fixture.store.getSteerReceipt(steerRequest("delivery-unknown", "turn-1"), sha256("missing")),
+    ).resolves.toBeUndefined();
+
+    const steer = steerRequest("delivery-2", "turn-1");
+    const steerHash = computeRuntimeImMessageSemanticHash(steer);
+    await expect(fixture.store.recordSteer(steer, steerHash)).resolves.toMatchObject({
+      kind: "steer",
+      deliveryId: "delivery-2",
+    });
+    await expect(fixture.store.recordSteer(steer, steerHash)).resolves.toMatchObject({ deliveryId: "delivery-2" });
+    await expect(fixture.store.recordSteer({ ...steer, requestId: randomUUID() }, sha256("different"))).rejects.toThrow(
+      "recorded with different input",
+    );
+    await expect(fixture.store.getSteerReceipt(steer, steerHash)).resolves.toMatchObject({
+      rootDeliveryId: "delivery-1",
+    });
+    await expect(fixture.store.getSteerReceipt(steer, sha256("different"))).rejects.toThrow(
+      "recorded with different input",
+    );
+    await expect(fixture.store.recordSteer(steerRequest("delivery-3", "other-turn"), steerHash)).rejects.toThrow(
+      "steer target does not match",
+    );
+    await expect(
+      fixture.store.saveRuntimeBinding("agent-1", "session-1", sha256("snapshot"), {
+        providerId: "codex",
+        schemaVersion: 1,
+        payload: { threadId: "thread-1" },
+      }),
+    ).rejects.toThrow("does not match the Session");
+    const hashes = computeRuntimeSnapshotHashes(fixture.runtime);
+    await expect(
+      fixture.store.saveRuntimeBinding("agent-1", "session-1", hashes.effectiveSnapshotHash, {
+        providerId: "codex",
+        schemaVersion: 1,
+        payload: { threadId: "thread-1" },
+      }),
+    ).resolves.toMatchObject({ runtimeBinding: { providerId: "codex" } });
+    await expect(fixture.store.updateUnresolved("agent-1", "session-1", "missing-turn", "running")).rejects.toThrow(
+      "does not match",
+    );
+    const report = turnReport(request, "turn-1");
+    const wrongReport = turnReport({ ...request, deliveryId: "delivery-other" }, "turn-1");
+    await expect(
+      fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", { report: wrongReport }),
+    ).rejects.toThrow("does not match the unresolved custody");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+      report,
+      resultHash: report.resultHash,
+    });
+    await expect(
+      fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+        report: { ...report, requestId: randomUUID() },
+        resultHash: report.resultHash,
+      }),
+    ).rejects.toThrow("cannot be replaced");
+    await expect(
+      fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+        report,
+        resultHash: sha256("other"),
+      }),
+    ).rejects.toThrow("does not match the update");
+    await expect(fixture.store.recordResult("agent-1", "session-1", "turn-1", sha256("other"))).rejects.toThrow(
+      "does not match",
+    );
+    await fixture.store.recordResult("agent-1", "session-1", "turn-1", report.resultHash);
+    const completed = await fixture.store.recordResult("agent-1", "session-1", "turn-1", report.resultHash);
+    expect(completed).not.toHaveProperty("unresolvedTurn");
+    await expect(fixture.store.recordAccepted(request, inputHash, "turn-1")).resolves.toMatchObject({
+      status: "recorded",
+    });
+    await expect(fixture.store.recordAccepted(request, sha256("different"), "turn-1")).rejects.toThrow(
+      "recorded with different input",
+    );
+    await expect(fixture.store.recordResult("agent-1", "session-1", "turn-1", sha256("different"))).rejects.toThrow(
+      "recorded result hash cannot be replaced",
+    );
+    await expect(fixture.store.recordResult("agent-1", "session-1", "unknown-turn", report.resultHash)).rejects.toThrow(
+      "does not match the Session binding",
+    );
+  });
+
+  it("rejects stale preparation and binding changes while preserving the durable snapshot", async () => {
+    const fixture = await bindingFixture();
+    const hashes = computeRuntimeSnapshotHashes(fixture.runtime);
+    await expect(
+      fixture.store.prepare({ ...fixture.reconcile, requestId: randomUUID(), placementGeneration: 0 }, hashes),
+    ).rejects.toThrow("placement generation is stale");
+    await expect(
+      fixture.store.prepare(
+        {
+          ...fixture.reconcile,
+          requestId: randomUUID(),
+          runtime: {
+            ...fixture.runtime,
+            revision: { ...fixture.runtime.revision, session: { sequence: 0, id: "old" } },
+          },
+        },
+        hashes,
+      ),
+    ).rejects.toThrow("runtime revision is stale");
+    await expect(
+      fixture.store.prepare(
+        {
+          ...fixture.reconcile,
+          requestId: randomUUID(),
+          runtime: {
+            ...fixture.runtime,
+            revision: { ...fixture.runtime.revision, session: { sequence: 1, id: "other" } },
+          },
+        },
+        hashes,
+      ),
+    ).rejects.toThrow("revision conflicts");
+
+    const unresolvedRequest = delivery(fixture.runtime, 70);
+    await fixture.store.recordAccepted(unresolvedRequest, computeDirectInputHash(unresolvedRequest), "turn-70");
+    await expect(
+      fixture.store.prepare({ ...fixture.reconcile, requestId: randomUUID(), placementGeneration: 2 }, hashes),
+    ).rejects.toThrow("unresolved turn fences binding changes");
+    const unresolvedResultHash = sha256("turn-70-result");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-70", "reporting", {
+      resultHash: unresolvedResultHash,
+    });
+    await fixture.store.recordResult("agent-1", "session-1", "turn-70", unresolvedResultHash);
+
+    const storedPath = snapshotPath(fixture.home, "agent-1", hashes.effectiveSnapshotHash);
+    await writeFile(
+      storedPath,
+      JSON.stringify({ ...fixture.runtime, instructions: { ...fixture.runtime.instructions, agent: "changed" } }),
+      "utf8",
+    );
+    const cleanStore = new SessionBindingStore({
+      home: fixture.home,
+      providerArtifactIdentity: () => fixture.homeIdentity,
+    });
+    await expect(cleanStore.prepare(fixture.reconcile, hashes)).rejects.toThrow(
+      "stored runtime snapshot hash conflicts",
+    );
+  });
+
+  it("absorbs matching redelivery through a recorded steer and validates delivery identities", async () => {
+    const fixture = await bindingFixture();
+    const root = delivery(fixture.runtime, 1);
+    await fixture.store.recordAccepted(root, computeDirectInputHash(root), "turn-1");
+    const steer = steerRequest("delivery-steer", "turn-1");
+    const steerHash = computeRuntimeImMessageSemanticHash(steer);
+    await fixture.store.recordSteer(steer, steerHash);
+    const redelivery: DirectImMessageDeliveryRequest = {
+      ...root,
+      deliveryId: steer.deliveryId,
+      imMessageId: steer.imMessageId,
+      content: steer.content,
+    };
+    await expect(fixture.store.recordAccepted(redelivery, steerHash, "turn-1")).resolves.toMatchObject({
+      status: "absorbed",
+      recorded: { deliveryId: "delivery-steer" },
+    });
+    await expect(
+      fixture.store.recordAccepted(
+        { ...redelivery, content: { ...redelivery.content, text: "changed" } },
+        steerHash,
+        "turn-1",
+      ),
+    ).rejects.toThrow("recorded with different input");
+    await expect(fixture.store.getAbsorbedReceipt(redelivery)).resolves.toMatchObject({ deliveryId: "delivery-steer" });
+    await expect(
+      fixture.store.getAbsorbedReceipt({ ...redelivery, content: { ...redelivery.content, text: "changed" } }),
+    ).rejects.toThrow("recorded with different input");
+    await expect(
+      fixture.store.recordAccepted({ ...root, placementGeneration: 2 }, computeDirectInputHash(root), "turn-other"),
+    ).rejects.toThrow("delivery does not match");
+    await expect(fixture.store.getSteerReceipt({ ...steer, placementGeneration: 2 }, steerHash)).rejects.toThrow(
+      "steer delivery does not match",
+    );
+  });
+
   it("C-16/C-17 persists immutable identities without storing a Home path or credential", async () => {
     const fixture = await bindingFixture();
     const binding = await fixture.store.read("agent-1", "session-1");
@@ -457,6 +658,33 @@ function delivery(runtime: EffectiveRuntimeSnapshot, index: number): DirectImMes
       },
     },
     runtime,
+  };
+}
+
+function steerRequest(deliveryId: string, expectedTurnId: string): RuntimeImSteerRequest {
+  return {
+    type: "im:steer",
+    requestId: randomUUID(),
+    deliveryId,
+    imMessageId: `message-${deliveryId}`,
+    sessionId: "session-1",
+    agentId: "agent-1",
+    placementGeneration: 1,
+    rootDeliveryId: "delivery-1",
+    expectedTurnId,
+    attention: "direct",
+    content: {
+      kind: "text",
+      text: "steer text",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "workspace-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
   };
 }
 

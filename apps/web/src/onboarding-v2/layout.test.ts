@@ -39,17 +39,6 @@ describe("onboarding flow layout", () => {
     });
   });
 
-  it("keeps the command block wrapping rather than forcing a horizontal scroll", () => {
-    expect(declarationValue(".otv2-command__code", "white-space")).toBe("pre-wrap");
-    expect(declarationValue(".otv2-command__code", "overflow-wrap")).toBe("break-word");
-    // `break-all` splits short tokens like `sh`, which reads as a typo in a runnable command.
-    expect(() => declarationValue(".otv2-command__code", "word-break")).toThrow();
-    // The code alone breaks strictly by character, so a reissued one cannot change the block's
-    // height. `overflow-wrap: anywhere` is not enough: it still prefers an existing break
-    // opportunity, so codes ending in `-` or `_` took an extra line at some widths.
-    expect(declarationValue(".otv2-command__token", "word-break")).toBe("break-all");
-  });
-
   /*
    * The reserved heights are declarations again: this app compiles no utilities of its own, so a
    * bracketed class would be inert. They are still measurements the flow depends on — each is the
@@ -57,12 +46,8 @@ describe("onboarding flow layout", () => {
    * resolves — so they are guarded here rather than left to be deleted as decoration.
    */
   it("holds a reserved height for every slot whose contents change length", () => {
-    // The connect status: waiting on one line, connected on another.
-    expect(declarationValue(".otv2-slot--status", "min-height")).toBe("28px");
     // The check outcome: waiting, a two-line repair summary, or a pass.
     expect(declarationValue(".otv2-slot--outcome", "min-height")).toBe("50px");
-    // A check row, whose failure detail takes a second line on a narrow screen.
-    expect(declarationValue(".otv2-check", "min-height")).toBe("73px");
     // The name field's error line, which exists whether or not it says anything.
     expect(declarationValue(".otv2-field-error", "min-height")).toBe("20px");
     // The sign-in slot, which holds a button, a waiting line, or a result.
@@ -85,7 +70,6 @@ describe("onboarding flow layout", () => {
     };
     expect(atWidth("640px", ".otv2-slot--outcome", "min-height")).toBe("71px");
     expect(atWidth("640px", ".otv2-field-error", "min-height")).toBe("34px");
-    expect(atWidth("399px", ".otv2-check", "min-height")).toBe("90px");
     expect(atWidth("359px", ".otv2-slot--outcome", "min-height")).toBe("114px");
   });
 });

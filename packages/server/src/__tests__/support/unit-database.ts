@@ -26,11 +26,12 @@ const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.u
 
 export interface UnitDatabase {
   /**
-   * A Drizzle client over the embedded engine, typed as the `postgres-js` client the services accept.
+   * A Drizzle client over the embedded engine, presented as the `postgres-js` client services accept.
    *
-   * The two drivers expose the same query-builder surface; they differ only in the connection they
-   * carry, which no service touches. The cast keeps every service callable from a test without
-   * widening its production signature to accommodate a test driver.
+   * The query builders match, but the two drivers disagree on one thing: `postgres-js` resolves
+   * `execute()` to the rows themselves, while PGlite resolves it to a `{ rows, fields, command, ... }`
+   * envelope. A service that reads the result directly would therefore need a shape check that is dead
+   * code in production, so the difference is absorbed here instead - see `asPostgresJsClient`.
    */
   readonly database: DatabaseClient;
   /** The raw engine, for the rare assertion that needs SQL the query builder cannot express. */
@@ -53,10 +54,53 @@ export async function createUnitDatabase(): Promise<UnitDatabase> {
 
   return {
     close: () => engine.close(),
-    database: database as unknown as DatabaseClient,
+    database: asPostgresJsClient(database),
     engine,
     reset: () => truncateApplicationTables(engine),
   };
+}
+
+/**
+ * Presents a PGlite Drizzle client with `postgres-js` result semantics.
+ *
+ * `postgres-js` resolves `execute()` to an array of rows; PGlite resolves it to an envelope holding
+ * those rows under `rows`. Production code is written against the former, and the driver difference is
+ * an artifact of the test harness, so it is unwrapped here. The alternative - a shape check inside each
+ * service - adds a production branch that only ever runs under test, and silently returning `[]` from
+ * such a check would turn an unexpected driver result into an empty page instead of a failure.
+ *
+ * Transactions get the same treatment: the object handed to a `transaction()` callback is a session in
+ * its own right and carries its own `execute()`.
+ */
+function asPostgresJsClient<T extends object>(client: T): DatabaseClient {
+  return new Proxy(client, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+
+      if (property === "execute" && typeof value === "function") {
+        return async (...args: unknown[]) => unwrapRows(await value.apply(target, args));
+      }
+
+      if (property === "transaction" && typeof value === "function") {
+        return (callback: (transaction: unknown) => unknown, ...rest: unknown[]) =>
+          value.call(target, (transaction: object) => callback(asPostgresJsClient(transaction)), ...rest);
+      }
+
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as unknown as DatabaseClient;
+}
+
+function unwrapRows(result: unknown): unknown {
+  if (
+    result &&
+    !Array.isArray(result) &&
+    typeof result === "object" &&
+    Array.isArray((result as { rows?: unknown }).rows)
+  ) {
+    return (result as { rows: unknown[] }).rows;
+  }
+  return result;
 }
 
 /**

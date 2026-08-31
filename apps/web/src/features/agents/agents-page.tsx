@@ -16,7 +16,7 @@ import {
   titleCase,
 } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
-import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
+import { agentDetailLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
 
 export function AgentsPage() {
@@ -26,14 +26,20 @@ export function AgentsPage() {
   const state = useAgentListView(me.user.id);
   return (
     <>
-      <Page
-        title="Agents"
-        action={
-          <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
-            New Agent <Icon name="plus" />
+      <Page title="Agents">
+        {/*
+         * Below the title rather than in the header's right-hand action slot: this is the page's
+         * one primary action, and the reading edge is where a viewer looks for it first.
+         */}
+        <div data-ui="agents-page-action">
+          {/*
+           * The plus leads the label: it marks what the action does, and reading the mark before
+           * the words is the order every other control on this page already uses.
+           */}
+          <Button ref={createTriggerRef} variant="secondary" onClick={() => setCreateOpen(true)}>
+            <Icon name="plus" weight="bold" /> New Agent
           </Button>
-        }
-      >
+        </div>
         <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
       </Page>
       <NewAgentDialog open={createOpen} returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} />
@@ -77,31 +83,13 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentCard({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
-  const action = status.action;
   const channel = agent.availability.dependencies.channel.provider;
   const statusDetail: ReactNode =
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
-    ) : status.detail ? (
-      action ? (
-        <>
-          <span className="text-kumo-subtle">{status.detail}</span>
-          <span className="text-kumo-subtle" aria-hidden="true">
-            {" · "}
-          </span>
-          <Link
-            // Inline text, not a button: this exit sits inside the status sentence, and a control
-            // with its own height and padding breaks the line and strands the separator before it.
-            className="relative z-10 whitespace-nowrap text-kumo-link"
-            {...agentSettingsSectionLink(agent.id, action.section)}
-          >
-            {action.label}
-          </Link>
-        </>
-      ) : (
-        status.detail
-      )
-    ) : undefined;
+    ) : (
+      status.detail
+    );
   return (
     <article
       className="relative grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line hover:bg-kumo-tint"
@@ -126,6 +114,9 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
               </span>
             ) : null}
           </strong>
+          <div className="min-w-0" data-ui="agent-card-state">
+            <StatusIndicator className="flex-wrap" detail={statusDetail} label={status.label} tone={status.tone} />
+          </div>
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-4 border-t border-kumo-line pt-3" data-ui="agent-card-usage">
@@ -138,13 +129,10 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
-      <div data-ui="agent-card-state">
-        <StatusIndicator detail={statusDetail} label={status.label} tone={status.tone} />
-      </div>
       {/*
-       * Last, and covering the row: the whole card opens the Agent, while the recovery exit above it
-       * keeps its own target. Kumo ships no `after:inset-0`, so this is an overlay rather than a
-       * stretched pseudo-element.
+       * Last, and covering the row: the whole card is the single target, so a card reporting a
+       * broken dependency opens the Agent where that dependency is explained and repaired. Kumo
+       * ships no `after:inset-0`, so this is an overlay rather than a stretched pseudo-element.
        */}
       <Link
         aria-label={`Open ${agent.displayName}`}

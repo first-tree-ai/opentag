@@ -31,3 +31,9 @@ pre-push:
     - name: format
       run: pnpm exec biome format .
       fail_text: "Formatting drifted. Run `pnpm format` and commit the result."
+    - name: check
+      run: pnpm check
+      fail_text: "Repository checks failed. Run `pnpm check` for details."
+    - name: typecheck
+      run: pnpm typecheck
+      fail_text: "Type-checking failed. Run `pnpm typecheck` for details."

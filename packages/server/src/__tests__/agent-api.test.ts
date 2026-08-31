@@ -1,5 +1,6 @@
 import {
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentReactivatePath,
   agentSuspendPath,
@@ -112,6 +113,7 @@ function agentService() {
     updateById: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     suspendById: vi.fn().mockResolvedValue({ ...agent, status: "suspended", revision: 2 }),
     reactivateById: vi.fn().mockResolvedValue({ ...agent, revision: 3 }),
+    rebindById: vi.fn().mockResolvedValue({ ...agent, computerId }),
     deleteById: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -189,6 +191,14 @@ describe("Agent HTTP API", () => {
     expect(reactivated.statusCode).toBe(200);
     expect(reactivated.json()).toMatchObject({ status: "active", revision: 3 });
     expect(service.reactivateById).toHaveBeenCalledWith(userId, agentId);
+    const rebound = await app.inject({
+      method: "POST",
+      url: agentComputerRebindPath(agentId),
+      headers: authorization,
+      payload: { computerId },
+    });
+    expect(rebound.statusCode).toBe(200);
+    expect(service.rebindById).toHaveBeenCalledWith(userId, agentId, computerId);
     const deleted = await app.inject({ method: "DELETE", url: agentByIdPath(agentId), headers: authorization });
     expect(deleted.statusCode).toBe(204);
     expect(deleted.body).toBe("");

@@ -4,6 +4,8 @@
  * data. The page derives what to render from `deriveFlowState`; it never keeps a step cursor.
  */
 
+import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
+
 export const RUNTIMES = ["codex", "claude-code"] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 
@@ -31,11 +33,6 @@ export type Destination = "local" | "cloud";
 /** Display order only. The Server's own order is unrelated and stays as it is. */
 export const MESSAGING_PROVIDERS = ["slack", "feishu"] as const;
 export type MessagingProvider = (typeof MESSAGING_PROVIDERS)[number];
-
-/** Mirrors the Server's provider readiness vocabulary so the mock stays swappable for the real API. */
-export type RuntimeStatus = "checking" | "ready" | "install" | "sign-in" | "unavailable";
-/** The messaging CLI has no sign-in of its own: it is installed or it is not. */
-export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable";
 
 export const AGENT_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 export const AGENT_NAME_MAX_LENGTH = 64;
@@ -203,69 +200,11 @@ export function computerIsConnected(connect: ConnectState): boolean {
 }
 
 /**
- * The three rows Step 4 renders. `install` and `sign-in` are mutually exclusive outcomes of one
- * Server-side probe, so the two runtime rows are derived from a single status rather than being
- * two independent facts. A runtime that is not installed leaves sign-in genuinely unknown, which
- * the `blocked` state says out loud instead of guessing.
- */
-export type CheckState = "pending" | "passed" | "failed" | "blocked";
-
-export interface CheckRow {
-  readonly id: "runtime-cli" | "runtime-auth" | "messaging-cli";
-  readonly state: CheckState;
-}
-
-/**
  * A cloud Agent runs on a Computer too — OpenTag allocates one instead of the user connecting
  * theirs. The Server requires a `computerId` either way, so the cloud route allocates before it
  * creates rather than modelling an Agent with no Computer at all.
  */
 export type CloudComputerState = "idle" | "allocating" | "allocated";
-
-/**
- * The computer step answers one question: can this Agent run. The messaging CLI is not part of that
- * — which one is even needed depends on a provider the user has not chosen yet, so a missing
- * `lark-cli` used to block someone who was going to pick Slack. That check moved to the messaging
- * step, where the requirement becomes real and the provider is known.
- */
-export function deriveChecks(readiness: ReadinessFacts | undefined): readonly CheckRow[] {
-  if (!readiness) {
-    return [
-      { id: "runtime-cli", state: "pending" },
-      { id: "runtime-auth", state: "pending" },
-    ];
-  }
-  return [
-    { id: "runtime-cli", state: runtimeCliState(readiness.runtime) },
-    { id: "runtime-auth", state: runtimeAuthState(readiness.runtime) },
-  ];
-}
-
-/** The chosen provider's CLI, probed on the messaging step once there is a provider to probe. */
-export function messagingCliCheck(readiness: ReadinessFacts | undefined, provider: MessagingProvider): CheckState {
-  return messagingCliState(readiness?.messagingCli[provider] ?? "checking");
-}
-
-function runtimeCliState(status: RuntimeStatus): CheckState {
-  if (status === "checking") return "pending";
-  // A runtime that reports `sign-in` proved its CLI runs; only the credential is missing.
-  if (status === "ready" || status === "sign-in") return "passed";
-  return "failed";
-}
-
-function runtimeAuthState(status: RuntimeStatus): CheckState {
-  if (status === "checking") return "pending";
-  if (status === "ready") return "passed";
-  if (status === "sign-in") return "failed";
-  // Without a working CLI there is no credential answer to report.
-  return "blocked";
-}
-
-function messagingCliState(status: MessagingCliStatus): CheckState {
-  if (status === "checking") return "pending";
-  if (status === "ready") return "passed";
-  return "failed";
-}
 
 /**
  * Creating an Agent waits on its runtime only. IM handoff readiness is provider-specific and is
@@ -331,10 +270,4 @@ function stepStatus(isDone: boolean, index: number, currentIndex: number): StepS
   if (isDone) return "complete";
   if (currentIndex === index) return "current";
   return "upcoming";
-}
-
-/** Formats a remaining duration as `m:ss`, never rounding a live second up. */
-export function formatRemaining(remainingMs: number): string {
-  const seconds = Math.max(0, Math.ceil(remainingMs / 1_000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }

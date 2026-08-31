@@ -7,9 +7,17 @@
       "!**/dist",
       "!**/coverage",
       "!**/.turbo",
+      "!e2e/playwright-report",
+      "!e2e/screenshots",
+      "!e2e/test-results",
       "!packages/server/drizzle",
       "!apps/web/src/routeTree.gen.ts"
     ]
+  },
+  "vcs": {
+    "clientKind": "git",
+    "enabled": true,
+    "useIgnoreFile": true
   },
   "formatter": {
     "enabled": true,
@@ -32,11 +40,17 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "correctness": {
+        "noUndeclaredDependencies": "error"
+      },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "warn"
+      },
       "suspicious": {
         "noExplicitAny": "error"
       },
       "style": {
-        "noNonNullAssertion": "warn",
+        "noNonNullAssertion": "error",
         "useImportType": "error"
       }
     }

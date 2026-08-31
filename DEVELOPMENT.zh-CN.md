@@ -1,11 +1,12 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-29
+> Last synced with: 2026-08-31
 
 ## 前置要求
 
-- Node.js 22.x（最低 22.13）、Node.js 24.x 或 Node.js 26.x（使用最新补丁版本；主力版本为 Node.js 24）
+- Node.js 24.19.0（仓库固定的开发版本；支持范围仍为 Node.js 22.x（最低 22.13）、Node.js 24.x 或 Node.js 26.x，
+  主力版本为 Node.js 24）
 - Corepack 和 pnpm 10.12.1
 - Docker 及 Compose 支持（仅运行本地 PostgreSQL 服务时需要）
 
@@ -16,14 +17,17 @@ corepack enable
 pnpm install
 ```
 
-仓库已在 `package.json` 中固定 pnpm 版本。请勿使用 npm 或 Yarn 更新依赖。
+仓库已在 `package.json` 中固定 pnpm 版本，并在 `.node-version` 中固定开发用 Node.js 补丁版本。
+`.npmrc` 设置了 `engine-strict=true`，因此不支持的 Node.js 版本会使依赖安装失败，而不是只显示 engine 警告。
+请勿使用 npm 或 Yarn 更新依赖。
 
 ## Git hooks 与 worktree
 
 `pnpm install` 会执行根目录的 `prepare` 脚本，将三个 hook 安装到该 clone 的 hooks 目录：
 
 - `pre-commit` 对暂存文件运行 Biome，应用可安全自动修复的改动并重新暂存结果。
-- `pre-push` 对整个仓库运行 `biome lint .` 和 `biome format .`。
+- `pre-push` 对整个仓库运行 `pnpm exec biome lint .`、`pnpm exec biome format .`、`pnpm check` 和
+  `pnpm typecheck`。这些只读 job 会并行运行。
 - `post-checkout` 负责准备 `git worktree add` 刚创建的 worktree：在新 worktree 中执行 `pnpm install` 并重新安装
   hooks，使该 worktree 可以直接 commit 和 push。
 
@@ -65,6 +69,11 @@ pnpm --filter @opentag/server test:integration
 但排除根目录 `scripts/`、Server PostgreSQL integration tests 和 Provider E2E。该统计是用于定位缺口和安排
 优先级的测量基线，不属于 Pull Request 必过检查，暂不设置全仓或分 workspace 覆盖率阈值。只有在重复运行的
 统计结果稳定后，才应增加回退阈值。
+
+`pnpm test:coverage` 会逐个测量 Vitest project，再把各 workspace 的 summary 拼到
+`coverage/unit/coverage-summary.json`，把 detailed Istanbul map 拼到 `coverage/unit/coverage-final.json`。一次合并
+的 Vitest 运行会低估覆盖率，因此这两份聚合不能交给 coverage provider 去做 merge。Pull Request 会另跑
+`Patch Coverage`：它读取这份 detailed map，并在本次新增或改动的可执行 TypeScript 行命中率低于 80% 时失败。
 
 Pull Request 必过 CI 仍会运行全部离线单测。Agent Runtime 继续使用
 `packages/client/vitest.agent-runtime.config.ts` 中独立的 100% 门槛，并由

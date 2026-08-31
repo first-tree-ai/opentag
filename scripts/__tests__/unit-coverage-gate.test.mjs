@@ -131,6 +131,7 @@ test("supported script extensions are included while coverage artifacts remain e
     assert.equal(isSupportedSourcePath(`src/example${extension}`), true, extension);
   }
   assert.equal(isSupportedSourcePath("dist/generated.js"), false);
+  assert.equal(isSupportedSourcePath("scripts/toolchain-check.mjs"), false);
   assert.equal(isSupportedSourcePath("src/example.test.ts"), false);
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
 });

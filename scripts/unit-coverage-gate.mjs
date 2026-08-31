@@ -10,6 +10,7 @@ import { extname, isAbsolute, posix, relative } from "node:path";
 export const SUPPORTED_SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 
 const EXCLUDED_DIRECTORY_NAMES = new Set(["coverage", "dist", "node_modules"]);
+const EXCLUDED_ROOT_NAMES = new Set(["e2e", "scripts"]);
 
 function normalizePath(value) {
   return posix.normalize(String(value).replaceAll("\\", "/").replace(/^\.\//, ""));
@@ -22,6 +23,7 @@ function fileName(path) {
 export function isSupportedSourcePath(value) {
   const path = normalizePath(value);
   const segments = path.split("/");
+  if (EXCLUDED_ROOT_NAMES.has(segments[0])) return false;
   if (segments.some((segment) => EXCLUDED_DIRECTORY_NAMES.has(segment))) return false;
   if (segments.includes("paraglide") && segments.includes("src")) return false;
   const name = fileName(path);

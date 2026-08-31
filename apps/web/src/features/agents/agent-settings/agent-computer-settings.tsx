@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
+import * as m from "../../../paraglide/messages.js";
 import { Button, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
@@ -19,12 +20,12 @@ export function AgentComputerSettings({
   const ready = computerState.state === "ready" && !runtimeUnavailable;
   const blocked = computerState.state === "action_required" || runtimeUnavailable;
   const computerStatus = ready
-    ? "Online"
+    ? m.agent_settings_online_status()
     : blocked
       ? runtimeUnavailable
-        ? "Not ready"
-        : "Offline"
-      : "Unable to confirm";
+        ? m.agent_settings_not_ready_status()
+        : m.agent_settings_offline_status()
+      : m.agent_settings_unable_to_confirm_status();
   const computerTone: StatusTone = ready ? "success" : blocked ? "warning" : "neutral";
   return (
     <div className="grid gap-6">
@@ -45,8 +46,10 @@ export function AgentComputerSettings({
             <div className="grid gap-3">
               {computerState.lastConfirmedAt ? (
                 <p>
-                  Last seen {formatRelativeTime(computerState.lastConfirmedAt)} ·{" "}
-                  {formatDateTime(computerState.lastConfirmedAt)}
+                  {m.agent_settings_last_seen({
+                    relative: formatRelativeTime(computerState.lastConfirmedAt),
+                    date: formatDateTime(computerState.lastConfirmedAt),
+                  })}
                 </p>
               ) : null}
               <p>{computerRecoveryMessage(agent)}</p>
@@ -61,7 +64,9 @@ export function AgentComputerSettings({
                     variant={reconnecting ? "inline" : "secondary"}
                     onClick={() => setReconnecting((value) => !value)}
                   >
-                    {reconnecting ? "Cancel Computer connection" : "Reconnect this Computer"}
+                    {reconnecting
+                      ? m.agent_settings_cancel_computer_connection()
+                      : m.agent_settings_reconnect_computer()}
                   </Button>
                   {reconnecting ? (
                     <div className="grid gap-3" id="agent-computer-reconnect">
@@ -72,9 +77,7 @@ export function AgentComputerSettings({
                         }}
                         onConnected={() => onAgentChanged()}
                       />
-                      <p className="text-sm text-kumo-subtle">
-                        Reconnecting restores this Computer for every Agent that runs on it.
-                      </p>
+                      <p className="text-sm text-kumo-subtle">{m.agent_settings_reconnecting_description()}</p>
                     </div>
                   ) : null}
                 </>

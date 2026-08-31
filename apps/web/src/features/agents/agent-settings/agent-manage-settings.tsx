@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import {
   Banner,
@@ -49,12 +50,12 @@ export function AgentManageSettings({
       setConfig(
         action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
       );
-      setMessage(action === "suspend" ? "Agent paused." : "Agent reactivated.");
+      setMessage(action === "suspend" ? m.agent_settings_agent_paused() : m.agent_settings_agent_reactivated());
       setRestorePauseFocus(confirmation === "pause");
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      const error = cause instanceof Error ? cause.message : "Unable to change Agent status";
+      const error = cause instanceof Error ? cause.message : m.agent_settings_change_status_failed();
       if (confirmation === "pause") setConfirmationError(error);
       else setMessage(error);
     } finally {
@@ -82,7 +83,7 @@ export function AgentManageSettings({
       queryClient.removeQueries({ queryKey: queryKeys.agents.all(config.id) });
       void navigate({ to: "/agents" });
     } catch (cause) {
-      setConfirmationError(cause instanceof Error ? cause.message : "Unable to delete Agent");
+      setConfirmationError(cause instanceof Error ? cause.message : m.agent_settings_delete_agent_failed());
       setBusy(false);
     }
   }
@@ -94,15 +95,21 @@ export function AgentManageSettings({
     <section className="grid gap-4">
       <header className="grid gap-2">
         <Text as="h1" size="lg" variant="heading">
-          Manage Agent
+          {m.agent_settings_manage_title()}
         </Text>
       </header>
       <SettingsList>
         <SettingsRow
           description={
-            config.status === "active" ? "Stop accepting new requests until reactivated." : "Allow new requests again."
+            config.status === "active"
+              ? m.agent_settings_pause_description()
+              : m.agent_settings_reactivate_description()
           }
-          label={config.status === "active" ? "Pause Agent" : "Reactivate Agent"}
+          label={
+            config.status === "active"
+              ? m.agent_settings_pause_agent_label()
+              : m.agent_settings_reactivate_agent_label()
+          }
         >
           <Button
             ref={pauseButtonRef}
@@ -116,16 +123,16 @@ export function AgentManageSettings({
               void changeLifecycle(config.status === "active" ? "suspend" : "reactivate");
             }}
           >
-            {config.status === "active" ? "Pause" : "Reactivate"}
+            {config.status === "active" ? m.agent_settings_pause_action() : m.agent_settings_reactivate_action()}
           </Button>
         </SettingsRow>
         <SettingsRow
           description={
             config.status === "active"
               ? "Pause this Agent before deleting it permanently."
-              : "Permanently remove this Agent. This cannot be undone."
+              : m.agent_settings_delete_description_inactive()
           }
-          label="Delete Agent"
+          label={m.agent_settings_delete_agent_label()}
         >
           <Button
             disabled={config.status === "active"}
@@ -137,7 +144,7 @@ export function AgentManageSettings({
               setConfirmation("delete");
             }}
           >
-            Delete permanently
+            {m.agent_settings_delete_permanently_action()}
           </Button>
         </SettingsRow>
       </SettingsList>
@@ -145,18 +152,18 @@ export function AgentManageSettings({
       {confirmation === "pause" ? (
         <Dialog
           busy={busy}
-          description="This Agent is handling a request. Pausing it stops new requests, but the current request may continue until it reaches a safe stopping point."
+          description={m.agent_settings_pause_confirmation_description()}
           returnFocusRef={pauseButtonRef}
-          title={`Pause ${config.displayName}?`}
+          title={m.agent_settings_pause_confirmation_title({ displayName: config.displayName })}
           onClose={closeConfirmation}
         >
           {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
           <div className="flex flex-wrap justify-end gap-3">
             <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
-              Keep active
+              {m.agent_settings_keep_active_action()}
             </Button>
             <Button disabled={busy} variant="primary" onClick={() => void changeLifecycle("suspend")}>
-              {busy ? "Pausing…" : "Pause Agent"}
+              {busy ? m.agent_settings_pausing_action() : m.agent_settings_pause_agent_label()}
             </Button>
           </div>
         </Dialog>
@@ -164,19 +171,15 @@ export function AgentManageSettings({
       {confirmation === "delete" ? (
         <Dialog
           busy={busy}
-          description="This permanently removes the Agent and its messaging connection. The Agent cannot be restored."
+          description={m.agent_settings_delete_confirmation_description()}
           returnFocusRef={deleteButtonRef}
-          title={`Delete ${config.displayName}?`}
+          title={m.agent_settings_delete_confirmation_title({ displayName: config.displayName })}
           onClose={closeConfirmation}
         >
           <div className="grid gap-4">
             <Field
               htmlFor="agent-delete-confirmation"
-              label={
-                <>
-                  Type <strong>{config.displayName}</strong> to confirm
-                </>
-              }
+              label={<>{m.agent_settings_type_name_to_confirm({ displayName: config.displayName })}</>}
             >
               <KumoInputControl
                 autoComplete="off"
@@ -188,14 +191,14 @@ export function AgentManageSettings({
             {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
             <div className="flex flex-wrap justify-end gap-3">
               <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
-                Cancel
+                {m.agent_settings_cancel_action()}
               </Button>
               <Button
                 disabled={busy || confirmationText !== config.displayName}
                 variant="danger"
                 onClick={() => void deleteAgent()}
               >
-                {busy ? "Deleting…" : "Delete permanently"}
+                {busy ? m.agent_settings_deleting_action() : m.agent_settings_delete_permanently_action()}
               </Button>
             </div>
           </div>

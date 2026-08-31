@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { browserApi } from "../../../api.js";
+import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { Icon, Loader, Text } from "../../../ui/design-system.js";
 import { NotFoundPage } from "../../not-found.js";
@@ -34,13 +35,13 @@ export function AgentSettingsPage({ agentId, section }: { agentId: string; secti
             ? agentDetailLink(returnAgentId)
             : agentSettingsLink(agent.id)
           : agentDetailLink(agent.id);
-        const backLabel = selected ? (routeState.returnLabel ?? "Agent settings") : agent.displayName;
+        const backLabel = selected ? (routeState.returnLabel ?? m.agent_settings_title()) : agent.displayName;
         return (
           <section className="grid gap-6">
             <div className="grid gap-4">
               <Link className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link" {...back}>
                 <Icon name="arrow-left" />
-                Back to {backLabel}
+                {m.agent_settings_back_to({ label: backLabel })}
               </Link>
               <div className="min-w-0">
                 <AgentSettingsContent
@@ -116,7 +117,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
     <div className="grid gap-6">
       <header className="grid gap-2">
         <Text as="h1" size="lg" variant="heading">
-          Agent settings
+          {m.agent_settings_title()}
         </Text>
       </header>
       <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>
@@ -126,7 +127,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
               <section
                 className={group.label ? "mt-4 grid gap-3 border-t border-kumo-line pt-2" : "grid gap-3"}
                 key={group.key}
-                aria-label={group.label ?? "Agent setup"}
+                aria-label={group.label ?? m.agent_settings_setup_label()}
                 aria-labelledby={group.label ? `agent-settings-${group.key}` : undefined}
               >
                 {group.label ? (
@@ -172,7 +173,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                             className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
                             aria-hidden="true"
                           >
-                            {computerNeedsReview ? <small>Review</small> : null}
+                            {computerNeedsReview ? <small>{m.agent_settings_review_action()}</small> : null}
                             <Icon name="chevron-right" />
                           </span>
                         </Link>
@@ -190,11 +191,15 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
 
 export function AgentSettingsDirectoryLoading() {
   return (
-    <div aria-label="Loading Agent settings" className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+    <div
+      aria-label={m.agent_settings_loading_title()}
+      className="flex items-center gap-2 text-sm text-kumo-subtle"
+      role="status"
+    >
       <span aria-hidden="true">
         <Loader />
       </span>
-      <span>Loading Agent settings…</span>
+      <span>{m.agent_settings_loading_title()}…</span>
     </div>
   );
 }

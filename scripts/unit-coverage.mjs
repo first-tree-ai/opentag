@@ -12,7 +12,7 @@
  *
  * So each project runs alone here, with `include` narrowed to the workspace that project actually
  * tests. Every file is then measured exactly once, by the only suite that can execute it, and the
- * per-workspace summaries are concatenated rather than merged.
+ * per-workspace reports are concatenated rather than merged.
  *
  * Usage:
  *   node scripts/unit-coverage.mjs                 # every workspace, then the aggregate table
@@ -68,6 +68,7 @@ function runProject(project, scope) {
       "--project",
       project.name,
       `--coverage.include=${include}`,
+      "--coverage.reporter=json",
       "--coverage.reporter=json-summary",
       "--coverage.reporter=text-summary",
       `--coverage.reportsDirectory=${reportsDirectory}`,
@@ -76,16 +77,27 @@ function runProject(project, scope) {
   );
 
   const summaryPath = resolve(reportsDirectory, "coverage-summary.json");
-  if (!existsSync(summaryPath)) {
+  const coveragePath = resolve(reportsDirectory, "coverage-final.json");
+  if (!existsSync(summaryPath) || !existsSync(coveragePath)) {
     process.stderr.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
-    throw new Error(`Coverage run for project "${project.name}" produced no summary`);
+    throw new Error(`Coverage run for project "${project.name}" produced incomplete reports`);
   }
 
   return {
+    coverage: JSON.parse(readFileSync(coveragePath, "utf8")),
     failed: result.status !== 0,
     summary: JSON.parse(readFileSync(summaryPath, "utf8")),
   };
+}
+
+function mergeCoverage(aggregateCoverage, projectCoverage) {
+  for (const [file, metrics] of Object.entries(projectCoverage)) {
+    if (Object.hasOwn(aggregateCoverage, file)) {
+      throw new Error(`Coverage file was measured by more than one project: ${file}`);
+    }
+    aggregateCoverage[file] = metrics;
+  }
 }
 
 function main() {
@@ -97,13 +109,15 @@ function main() {
   }
 
   const aggregate = {};
+  const aggregateCoverage = {};
   const perProject = [];
   let anyFailed = false;
 
   for (const project of selected) {
     process.stdout.write(`\n── ${project.name} ──\n`);
-    const { failed, summary } = runProject(project, options.scope);
+    const { coverage, failed, summary } = runProject(project, options.scope);
     anyFailed ||= failed;
+    mergeCoverage(aggregateCoverage, coverage);
 
     for (const [file, metrics] of Object.entries(summary)) {
       if (file !== "total") {
@@ -160,6 +174,7 @@ function main() {
 
   if (!options.project && !options.scope) {
     mkdirSync(COVERAGE_ROOT, { recursive: true });
+    writeFileSync(resolve(COVERAGE_ROOT, "coverage-final.json"), `${JSON.stringify(aggregateCoverage, null, 2)}\n`);
     writeFileSync(resolve(COVERAGE_ROOT, "coverage-summary.json"), `${JSON.stringify(aggregate, null, 2)}\n`);
   }
 

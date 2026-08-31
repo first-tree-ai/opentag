@@ -88,4 +88,25 @@ describe("KeyedTaskScheduler", () => {
     await waitImmediate();
     scheduler.close();
   });
+
+  it("reports queue age from an injected clock while preserving independent lanes", async () => {
+    let now = 1_000;
+    const scheduler = new KeyedTaskScheduler({
+      maxConcurrent: 1,
+      maxQueuedPerKey: 2,
+      maxQueuedTotal: 3,
+      now: () => now,
+    });
+    let release: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    expect(scheduler.enqueue("a", async () => blocked)).toBe(true);
+    expect(scheduler.enqueue("b", async () => undefined)).toBe(true);
+    now = 1_250;
+    expect(scheduler.stats()).toMatchObject({ active: 1, queued: 1, lanes: 2, oldestQueueAgeMs: 250 });
+    release?.();
+    await waitImmediate();
+    scheduler.close();
+  });
 });

@@ -175,6 +175,10 @@ export class RuntimeDomainOwner {
       clearTimeout(pending.timer);
       if (pending.kind === "steer") {
         void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+      } else if (pending.kind === "delivery") {
+        void this.#custody
+          .releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred")
+          .catch(() => undefined);
       }
       pending.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     }
@@ -497,16 +501,21 @@ export class RuntimeDomainOwner {
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
     }
-    return this.#request(
-      "delivery",
-      workspaceComputerId,
-      instanceId,
-      request,
-      requestHash,
-      inputHash,
-      undefined,
-      onDispatched,
-    ) as Promise<ImMessageDeliveryResult>;
+    try {
+      return this.#request(
+        "delivery",
+        workspaceComputerId,
+        instanceId,
+        request,
+        requestHash,
+        inputHash,
+        undefined,
+        onDispatched,
+      ) as Promise<ImMessageDeliveryResult>;
+    } catch (error) {
+      await this.#custody.releaseDeliveryDispatch(request, inputHash, "retry").catch(() => undefined);
+      throw error;
+    }
   }
 
   async resend(requestId: string): Promise<void> {
@@ -687,6 +696,10 @@ export class RuntimeDomainOwner {
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       if (pending.kind === "steer") {
         void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+      } else if (pending.kind === "delivery") {
+        void this.#custody
+          .releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred")
+          .catch(() => undefined);
       }
       rejectPromise(new RuntimeDomainRequestError("timeout", "The runtime domain request timed out"));
     }, this.#options.requestTimeoutMs);
@@ -730,6 +743,8 @@ export class RuntimeDomainOwner {
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       if (pending.kind === "steer") {
         void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+      } else if (pending.kind === "delivery") {
+        void this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "retry").catch(() => undefined);
       }
       pending.reject(
         error instanceof Error

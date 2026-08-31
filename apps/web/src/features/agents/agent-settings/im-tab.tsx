@@ -12,11 +12,7 @@ import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/desig
 import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
-import {
-  messagingConnectionLabel,
-  messagingConnectionTone,
-  runtimeProviderName,
-} from "../agent-presentation.js";
+import { messagingConnectionLabel, messagingConnectionTone, runtimeProviderName } from "../agent-presentation.js";
 import { agentSettingsSectionLink } from "../agent-routes.js";
 
 export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {

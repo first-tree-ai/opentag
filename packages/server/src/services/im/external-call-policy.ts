@@ -207,7 +207,7 @@ export class ExternalCallPolicy {
     return this.run(
       `http:${url.hostname}`,
       async (signal) => {
-        const response = await this.#transport(url, { ...init, redirect: "error", signal });
+        const response = await this.#transport(url.toString(), { ...init, redirect: "error", signal });
         if (response.status >= 300 && response.status < 400) {
           throw new ExternalCallPolicyError("IM_PROVIDER_REDIRECT_REJECTED", "Provider redirects are not allowed", {
             category: "security",
@@ -269,10 +269,26 @@ export class ExternalCallPolicy {
         reject(error);
       }, timeoutMs);
     });
+    const cancelled = options.signal
+      ? new Promise<never>((_, reject) => {
+          const rejectCancelled = () =>
+            reject(
+              new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
+                category: "availability",
+                retryability: "retryable",
+                phase: "request",
+                requestId,
+                cause: options.signal?.reason,
+              }),
+            );
+          if (options.signal?.aborted) rejectCancelled();
+          else options.signal?.addEventListener("abort", rejectCancelled, { once: true });
+        })
+      : undefined;
     const actionPromise = action(controller.signal, requestId);
     actionPromise.catch(() => undefined);
     try {
-      return await Promise.race([actionPromise, timeout]);
+      return await Promise.race(cancelled ? [actionPromise, timeout, cancelled] : [actionPromise, timeout]);
     } catch (error) {
       if (controller.signal.aborted && !(error instanceof ExternalCallPolicyError)) {
         throw new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
@@ -313,21 +329,21 @@ export class ExternalCallPolicy {
   }
 }
 
-export function limitReadableStream(source: Readable, maxBytes: number): Readable {
+export function limitReadableStream(
+  source: Readable,
+  maxBytes: number,
+  code = "IM_PROVIDER_RESPONSE_TOO_LARGE",
+): Readable {
   let observed = 0;
   const limiter = new Transform({
     transform(chunk: Buffer | Uint8Array | string, _encoding, callback) {
       const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (observed + value.byteLength > maxBytes) {
-        const error = new ExternalCallPolicyError(
-          "IM_PROVIDER_RESPONSE_TOO_LARGE",
-          "Provider response exceeds the byte limit",
-          {
-            category: "validation",
-            retryability: "not_retryable",
-            phase: "stream",
-          },
-        );
+        const error = new ExternalCallPolicyError(code, code, {
+          category: "validation",
+          retryability: "not_retryable",
+          phase: "stream",
+        });
         source.destroy();
         callback(error);
         return;

@@ -1,4 +1,12 @@
 export {
+  type ExternalCallMetric,
+  type ExternalCallOptions,
+  ExternalCallPolicy,
+  ExternalCallPolicyError,
+  type ExternalCallPolicyOptions,
+  limitReadableStream,
+} from "./external-call-policy.js";
+export {
   classifyImInboundPersistenceError,
   ImInboundPersistenceError,
   type ImInboundPersistenceErrorCode,

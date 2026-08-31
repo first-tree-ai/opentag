@@ -10,6 +10,7 @@ import {
   WSClient,
 } from "@larksuiteoapi/node-sdk";
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
+import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
@@ -392,6 +393,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #http: FeishuHttpCapability;
   readonly #scopeList: () => Promise<FeishuScopeListResponse>;
   readonly #teamId: string | null;
+  readonly #policy: ExternalCallPolicy;
 
   constructor(input: {
     appId: string;
@@ -401,9 +403,11 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     channel?: FeishuChannel | null;
     http?: FeishuHttpCapability;
     scopeList?: () => Promise<FeishuScopeListResponse>;
+    policy?: ExternalCallPolicy;
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;
+    this.#policy = input.policy ?? new ExternalCallPolicy();
     const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
     this.#client = new Client({
       appId: input.appId,
@@ -453,7 +457,10 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   }
 
   async fetchResource(input: ProviderResourceInput): Promise<ReadableResource> {
-    return this.#http.fetchResource(input);
+    return this.#policy.run("feishu.resource.fetch", () => this.#http.fetchResource(input), {
+      circuitKey: `feishu:resource:${this.#appId}`,
+      maxAttempts: 1,
+    });
   }
 }
 

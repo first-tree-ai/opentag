@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { WebClient, type WebClientOptions } from "@slack/web-api";
 import { z } from "zod";
+import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import type { ProviderResourceInput, ReadableResource } from "../provider-adapter.js";
 import type { SlackApiClient, SlackInstallationInspection, SlackOAuthAccessResult } from "./adapter.js";
 
@@ -14,13 +15,16 @@ export const SLACK_WEB_CLIENT_OPTIONS = {
 export class DefaultSlackApiClient implements SlackApiClient {
   readonly #createClient: (token: string) => WebClient;
   readonly #fetch: typeof fetch;
+  readonly #policy: ExternalCallPolicy;
 
-  constructor(
-    createClient?: (token: string) => WebClient,
-    fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
-  ) {
+  constructor(createClient?: (token: string) => WebClient, fetchImpl?: typeof fetch, policy?: ExternalCallPolicy) {
     this.#createClient = createClient ?? ((token) => new WebClient(token, SLACK_WEB_CLIENT_OPTIONS));
-    this.#fetch = fetchImpl;
+    this.#fetch = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+    this.#policy =
+      policy ??
+      new ExternalCallPolicy({
+        transport: (input, init) => this.#fetch(input, init),
+      });
   }
 
   async authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }> {
@@ -150,10 +154,18 @@ export class DefaultSlackApiClient implements SlackApiClient {
   }
 
   async fetchResource(input: ProviderResourceInput & { token: string }): Promise<ReadableResource> {
-    const info = await this.#createClient(input.token).files.info({ file: input.providerResourceKey });
+    const info = await this.#policy.run(
+      "slack.files.info",
+      () => this.#createClient(input.token).files.info({ file: input.providerResourceKey }),
+      { circuitKey: "slack:files.info", maxAttempts: 1 },
+    );
     const url = info.file?.url_private_download ?? info.file?.url_private;
     if (!url) throw new Error("SLACK_RESOURCE_UNAVAILABLE");
-    const response = await fetch(url, { headers: { authorization: `Bearer ${input.token}` }, redirect: "error" });
+    const response = await this.#policy.fetch(
+      url,
+      { headers: { authorization: `Bearer ${input.token}` } },
+      { circuitKey: "slack:resource.download", maxAttempts: 1 },
+    );
     if (!response.ok || !response.body) throw new Error(`SLACK_RESOURCE_HTTP_${response.status}`);
     const contentLength = response.headers.get("content-length");
     const sizeBytes = contentLength ? Number(contentLength) : undefined;

@@ -11,7 +11,7 @@ describe("ExternalCallPolicy", () => {
     const controller = new AbortController();
     const policy = new ExternalCallPolicy({ defaultTimeoutMs: 10, maxAttempts: 1 });
     const pending = policy.run("deadline", async (signal) => {
-      await new Promise<void>((resolve, reject) => {
+      await new Promise<void>((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
     });

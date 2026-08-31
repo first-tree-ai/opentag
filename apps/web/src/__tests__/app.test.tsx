@@ -977,8 +977,8 @@ describe("OpenTag Web App Shell", () => {
 
     fireEvent.click(trigger);
 
-    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
-    expect(within(dialog).getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(within(dialog).getByRole("heading", { name: "Connect another Computer" })).toBeTruthy();
+    expect(await within(dialog).findByRole("button", { name: "Copy command" })).toBeTruthy();
     expect(
       within(dialog).getByRole("button", { name: "Cancel Computer connection" }).getAttribute("aria-expanded"),
     ).toBe("true");
@@ -1035,7 +1035,14 @@ describe("OpenTag Web App Shell", () => {
     for (const name of ["Ada's Mac", "Zulu Tower", "Ada's Retired Mac"]) {
       expect(within(listed).getByText(name)).toBeTruthy();
     }
-    expect(screen.getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect a Computer" })).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST"),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Connect a Computer" }));
+    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
   });
 
   it("does not resume a stored creation intent onto a Computer the reader moved away from", async () => {
@@ -1167,27 +1174,19 @@ describe("OpenTag Web App Shell", () => {
       target: { value: "research-assistant" },
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
-
     vi.useFakeTimers();
     vi.setSystemTime("2026-08-20T00:00:00.000Z");
     try {
-      const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
-      generateButton.focus();
+      const connectAnother = within(dialog).getByRole("button", { name: "Connect another Computer" });
+      connectAnother.focus();
+      fireEvent.click(connectAnother);
       await act(async () => {
-        fireEvent.click(generateButton);
-      });
-      await act(async () => {
-        vi.advanceTimersByTime(1_500);
-        await Promise.resolve();
-        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
       });
 
       expect(dialog.contains(document.activeElement)).toBe(true);
       await act(async () => {
         finishRefresh?.();
-        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
-        // starts settles across several microtask turns; drain them rather than counting them.
         await vi.advanceTimersByTimeAsync(0);
       });
 
@@ -1195,7 +1194,7 @@ describe("OpenTag Web App Shell", () => {
       expect(within(dialog).getByText("Codex")).toBeTruthy();
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
-      expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+      expect(within(dialog).queryByRole("heading", { name: "Connect another Computer" })).toBeNull();
       expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
@@ -1219,25 +1218,15 @@ describe("OpenTag Web App Shell", () => {
       computerReadStatus: (connected) => (connected ? 404 : undefined),
     });
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
-    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    const trigger = await screen.findByRole("button", { name: "New Agent" });
     vi.useFakeTimers();
     vi.setSystemTime("2026-08-20T00:00:00.000Z");
     try {
-      const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
-      generateButton.focus();
+      fireEvent.click(trigger);
       await act(async () => {
-        fireEvent.click(generateButton);
+        await vi.advanceTimersByTimeAsync(0);
       });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(3_000);
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      const dialog = screen.getByRole("dialog", { name: "New Agent" });
 
       expect(within(dialog).getByRole("alert").textContent).toContain("Request failed");
       const refreshStatus = within(dialog).getByRole("status");
@@ -1277,25 +1266,21 @@ describe("OpenTag Web App Shell", () => {
       target: { value: "research-assistant" },
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
-
     vi.useFakeTimers();
     vi.setSystemTime(disconnectedAt);
     try {
-      const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
-      generateButton.focus();
+      const connectAnother = within(dialog).getByRole("button", { name: "Connect another Computer" });
+      connectAnother.focus();
+      fireEvent.click(connectAnother);
       await act(async () => {
-        fireEvent.click(generateButton);
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_500);
+        await vi.advanceTimersByTimeAsync(0);
       });
 
       expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
       expect(within(dialog).getByText("Codex")).toBeTruthy();
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
-      expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+      expect(within(dialog).queryByRole("heading", { name: "Connect another Computer" })).toBeNull();
       expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
@@ -1325,34 +1310,21 @@ describe("OpenTag Web App Shell", () => {
       },
     });
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
-
-    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
-    const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
-    expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    const trigger = await screen.findByRole("button", { name: "New Agent" });
     vi.useFakeTimers();
     vi.setSystemTime("2026-08-20T00:00:00.000Z");
     try {
-      generateButton.focus();
+      fireEvent.click(trigger);
       await act(async () => {
-        fireEvent.click(generateButton);
-      });
-      await act(async () => {
-        vi.advanceTimersByTime(1_500);
-        await Promise.resolve();
-        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(0);
       });
 
+      const dialog = screen.getByRole("dialog", { name: "New Agent" });
+      expect(within(dialog).getByRole("heading", { name: "Connect a Computer" })).toBeTruthy();
+      expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
       expect(dialog.contains(document.activeElement)).toBe(true);
       await act(async () => {
         finishRefresh?.();
-        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
-        // starts settles across several microtask turns; drain them rather than counting them.
         await vi.advanceTimersByTimeAsync(0);
       });
 
@@ -1962,13 +1934,16 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(await screen.findByRole("img", { name: /428K Tokens used · Last 30 days/ })).toBeTruthy();
-    expect(screen.getByText("Tokens")).toBeTruthy();
+    expect(screen.getByText("Total tokens")).toBeTruthy();
     expect(screen.queryByText("Failed Tasks")).toBeNull();
     expect(screen.queryByText("Average per measured Task")).toBeNull();
-    expect(screen.getByText("Partial data.")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toBe(
-      "Partial data. Token data is available for 31 of 32 tasks. Token totals and charts are partial.",
-    );
+    const coverage = screen.getByRole("status");
+    expect(within(coverage).getByText("Partial data")).toBeTruthy();
+    expect(
+      within(coverage).getByText(
+        "Token data is available for 31 of 32 tasks. Totals and charts reflect only reported data.",
+      ),
+    ).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.getAllByText(/0 Tokens$/).length).toBeGreaterThan(0);
@@ -2007,9 +1982,12 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/usage`);
     render(<App />);
 
-    expect((await screen.findByText("Token data unavailable.")).closest("[role='status']")?.textContent).toBe(
-      "Token data unavailable. None of the 4 tasks reported token usage. Token totals and charts may be empty.",
-    );
+    const coverage = (await screen.findByText("Token data unavailable")).closest<HTMLElement>("[role='status']");
+    expect(coverage).toBeTruthy();
+    if (!coverage) throw new Error("Expected the unavailable Token data banner");
+    expect(
+      within(coverage).getByText("None of the 4 tasks reported token usage. Totals and charts may be empty."),
+    ).toBeTruthy();
   });
 
   it("keeps the Usage loading skeleton aligned with the two summary metrics", async () => {
@@ -2030,7 +2008,7 @@ describe("OpenTag Web App Shell", () => {
     const loading = await screen.findByLabelText("Loading Agent usage");
     expect(loading.children).toHaveLength(2);
     releaseUsage();
-    expect(await screen.findByText("Partial data.")).toBeTruthy();
+    expect(await screen.findByText("Partial data")).toBeTruthy();
   });
 
   it("redirects legacy Agent URLs without keeping the old UI", async () => {
@@ -2129,7 +2107,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Reconnect this Computer" }));
 
     expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/settings/computer`);
   });
 
@@ -2952,26 +2930,26 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
   });
 
-  it("creates a Computer connection command only after an explicit admin click", async () => {
+  it("creates a Computer connection command when New Agent has no Computer", async () => {
     installApi({ computers: [] });
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect a Computer" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/new");
-    const button = await screen.findByRole("button", { name: "Generate connection command" });
-    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
-    fireEvent.click(button);
+    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
     expect(
-      await screen.findByText(/opentag computer connect --server https:\/\/opentag\.example\.com -- example/),
-    ).toBeTruthy();
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST"),
+    ).toHaveLength(1);
   });
 
   it("guides Agent creation to Computer setup when none is connected", async () => {
     installApi({ computers: [] });
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect a Computer" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Agent runtime" })).toBeNull();
   });
 

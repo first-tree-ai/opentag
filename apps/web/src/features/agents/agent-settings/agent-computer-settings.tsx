@@ -2,9 +2,9 @@ import { useState } from "react";
 import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
 import * as m from "../../../paraglide/messages.js";
 import { Button, Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
+import { ComputerConnect } from "../../computer-connect/computer-connect.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
-import { ComputerSetup } from "../computer-setup.js";
 
 export function AgentComputerSettings({
   agent,
@@ -75,10 +75,16 @@ export function AgentComputerSettings({
                   </Button>
                   {reconnecting ? (
                     <div className="grid gap-3" id="agent-computer-reconnect">
-                      <ComputerSetup
-                        target={{
-                          computerId: agent.computer.computerId,
-                          displayName: agent.computer.displayName,
+                      <Text as="h2" variant="heading">
+                        {m.computer_connect_repair_title({ computerName: agent.computer.displayName })}
+                      </Text>
+                      <ComputerConnect
+                        intent={{
+                          mode: "repair",
+                          target: {
+                            computerId: agent.computer.computerId,
+                            displayName: agent.computer.displayName,
+                          },
                         }}
                         onConnected={() => onAgentChanged()}
                       />

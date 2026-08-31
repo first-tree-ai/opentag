@@ -1,7 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { initials } from "../../i18n/format.js";
+import { queryKeys } from "../../query/keys.js";
 import {
   DropdownMenu,
   Icon,
@@ -31,6 +33,18 @@ export function AppShellContent() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  /*
+   * The internal tools are staging-only, and the Server is the one that knows: outside staging the
+   * interface is absent rather than closed, so a deployment that does not offer it simply never
+   * renders the entry. The probe reads nothing about the Account, so a failure means "not offered"
+   * and the menu stays as production sees it.
+   */
+  const internalToolsOffered =
+    useQuery({
+      queryKey: queryKeys.internalToolsOffered(),
+      queryFn: () => browserApi.internalToolsOffered(),
+      staleTime: Number.POSITIVE_INFINITY,
+    }).data === true;
   useEffect(() => {
     if (openMenu !== "account") return;
     accountMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')?.focus();
@@ -145,6 +159,16 @@ export function AppShellContent() {
                     >
                       Account
                     </DropdownMenu.Item>
+                    {internalToolsOffered ? (
+                      <DropdownMenu.Item
+                        onClick={() => {
+                          setOpenMobile(false);
+                          void navigate({ to: "/internal" });
+                        }}
+                      >
+                        Internal tools
+                      </DropdownMenu.Item>
+                    ) : null}
                     <DropdownMenu.Item disabled={loggingOut} onClick={() => void logout()}>
                       {loggingOut ? (
                         <span className="flex items-center gap-2">

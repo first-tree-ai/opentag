@@ -149,7 +149,7 @@ function services() {
 
 function appWith(
   overrides: Partial<ReturnType<typeof services>> = {},
-  setupReset?: { reboard: ReturnType<typeof vi.fn>; resetOnboarding: ReturnType<typeof vi.fn> },
+  setupReset?: { enabled?: boolean; reboard: ReturnType<typeof vi.fn>; resetOnboarding: ReturnType<typeof vi.fn> },
 ) {
   const service = { ...services(), ...overrides };
   const app = createApp({
@@ -167,9 +167,45 @@ function appWith(
 }
 
 describe("undoing setup on the authenticated Account", () => {
-  function resetService() {
-    return { reboard: vi.fn().mockResolvedValue(undefined), resetOnboarding: vi.fn().mockResolvedValue(undefined) };
+  function resetService(enabled = true) {
+    return {
+      enabled,
+      reboard: vi.fn().mockResolvedValue(undefined),
+      resetOnboarding: vi.fn().mockResolvedValue(undefined),
+    };
   }
+
+  it("answers reachability, so a client can ask before it offers the operations", async () => {
+    const { app } = appWith({}, resetService());
+
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountSetupReset, headers: authorization });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
+  });
+
+  it("answers a deployment that has the routes but not the feature exactly like one that never had them", async () => {
+    const setupReset = resetService(false);
+    const { app } = appWith({}, setupReset);
+
+    const [read, run, malformed] = await Promise.all([
+      app.inject({ method: "GET", url: HTTP_PATHS.accountSetupReset, headers: authorization }),
+      app.inject({
+        method: "POST",
+        url: HTTP_PATHS.accountSetupReset,
+        headers: authorization,
+        payload: { mode: "all" },
+      }),
+      // The body is never parsed here: a malformed request must not be able to tell the two apart.
+      app.inject({ method: "POST", url: HTTP_PATHS.accountSetupReset, headers: authorization, payload: {} }),
+    ]);
+
+    expect(read.statusCode).toBe(404);
+    expect(run.statusCode).toBe(404);
+    expect(malformed.statusCode).toBe(404);
+    expect(setupReset.resetOnboarding).not.toHaveBeenCalled();
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
 
   it("routes each mode to the operation it names", async () => {
     const setupReset = resetService();

@@ -3,17 +3,29 @@
 [简体中文](./zh-CN/staging-onboarding-reset.md)
 
 Onboarding is written for an Account that has never run it, so a staging Account can only walk it once for free. The
-staging onboarding reset gives that Account a repeatable way back: it returns **the authenticated Account** to a
-first-run state, so the whole staging path can be walked again from the beginning.
+staging onboarding reset gives that Account a repeatable way back, in two sizes: `mode: "reboard"` reopens onboarding
+and keeps everything, while `mode: "all"` returns **the authenticated Account** to a genuine first-run state.
 
-It exists because clearing the setup-completion timestamp alone is not enough. Existing Computer enrollments, Agents,
-runtime readiness and IM bindings immediately advance the fact-derived onboarding flow, so a completed Account cannot
-return to a first-run state on its own.
+Which one you want follows from what you are testing. Only `mode: "all"` can produce a first run, because clearing the
+setup-completion timestamp alone is not enough for that: existing Computer enrollments, Agents, runtime readiness and
+IM bindings immediately advance the fact-derived onboarding flow. `mode: "reboard"` clears exactly that timestamp and
+nothing else, so the surviving facts carry the Account into the resume path instead — which is the point of it.
 
-The reset is not available in production, and it never touches an Account other than the authenticated one.
+Neither mode is available in production, and neither touches an Account other than the authenticated one.
 
 For screen-level design review — copy, hierarchy, state communication — use `/internal/onboarding-v2`, which runs the
 real onboarding page against a mock backend and needs neither an Account nor a reset.
+
+## Where to click it
+
+`/internal` is the staging-only internal tools index, and both resets are on it as buttons with a confirmation step.
+Reach it from **Internal tools** in the account menu, which is rendered only where the Server answers that the
+deployment offers the tools at all — production shows the menu it has always shown.
+
+The rest of this document describes the request the page makes, for when you want to drive it by hand instead. One
+thing to know either way: both resets return the Account to an incomplete setup, which is the state the app checks
+before it will show you anything else — so after running one you land in onboarding, and the account menu you came
+through is no longer rendered. `/internal` still opens if you type it.
 
 ## Each tester uses their own Account
 
@@ -53,6 +65,10 @@ POST /api/v1/me/setup/reset
 { "mode": "all" | "reboard" }
 ```
 
+The same path answers `GET` with `204` where the reset is offered and `404` where it is not, and nothing else.
+That is how the page decides whether to show itself and whether to offer the menu entry, and it is the only way to
+ask without performing a reset.
+
 From the staging tab's console, where the session cookie and the CSRF cookie are both already present:
 
 ```js
@@ -67,7 +83,7 @@ await fetch("/api/v1/me/setup/reset", {
 });
 ```
 
-A `204` means the Account is back outside the setup gate; reload and `/onboarding` opens on its own.
+A `204` means setup completion is cleared; reload and `/onboarding` opens on its own.
 
 ### `mode: "reboard"`
 

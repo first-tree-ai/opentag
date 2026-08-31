@@ -1,5 +1,6 @@
 import {
   type AccountComputerConnectCodeIssueRequest,
+  type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -246,6 +247,30 @@ export class BrowserApi {
       method: "POST",
       ...(input ? { body: JSON.stringify(input) } : {}),
       headers: { ...(input ? { "content-type": "application/json" } : {}), ...this.csrfHeaders() },
+    });
+  }
+
+  /**
+   * Whether this deployment offers the staging internal tools. Outside staging the interface is
+   * absent rather than closed, and everything behind it is open to any authenticated Account where
+   * it is present, so reachability is the whole answer.
+   */
+  async internalToolsOffered(): Promise<boolean> {
+    const response = await this.fetchWithRefresh(HTTP_PATHS.accountSetupReset);
+    if (response.status === 204) return true;
+    if (response.status === 404) return false;
+    throw this.apiError(response, await response.json().catch(() => undefined));
+  }
+
+  /**
+   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
+   * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
+   */
+  resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.accountSetupReset, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 

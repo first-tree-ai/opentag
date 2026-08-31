@@ -105,7 +105,9 @@ test("a changed executable line missing from coverage-final.json fails closed", 
   assert.deepEqual(result.uncovered, ["src/missing.ts:7 (missing coverage entry)"]);
 });
 
-test("missing coverage entries count against the configured threshold without imposing 100 percent", () => {
+test("an uncovered changed line counts against the threshold without imposing 100 percent", () => {
+  // The threshold is a threshold: a line the provider measured and found unrun is reported and
+  // counted, and the patch still passes while enough of it is covered.
   const diff = [
     "--- a/src/threshold.ts",
     "+++ b/src/threshold.ts",
@@ -114,15 +116,15 @@ test("missing coverage entries count against the configured threshold without im
     "+export const two = 2;",
     "+export const three = 3;",
     "+export const four = 4;",
-    "+export const missing = 5;",
+    "+export const unrun = 5;",
     "",
   ].join("\n");
   const coverage = {
     "src/threshold.ts": {
       path: "src/threshold.ts",
-      s: { 0: 1, 1: 1, 2: 1, 3: 1 },
+      s: { 0: 1, 1: 1, 2: 1, 3: 1, 4: 0 },
       statementMap: Object.fromEntries(
-        [1, 2, 3, 4].map((line, index) => [index, { start: { line, column: 0 }, end: { line, column: 21 } }]),
+        [1, 2, 3, 4, 5].map((line, index) => [index, { start: { line, column: 0 }, end: { line, column: 21 } }]),
       ),
     },
   };
@@ -131,7 +133,7 @@ test("missing coverage entries count against the configured threshold without im
   assert.equal(result.total, 5);
   assert.equal(result.percent, 80);
   assert.equal(result.passed, true);
-  assert.deepEqual(result.uncovered, ["src/threshold.ts:5 (missing coverage entry)"]);
+  assert.deepEqual(result.uncovered, ["src/threshold.ts:5"]);
 });
 
 test("a diff with no executable changes passes explicitly", () => {

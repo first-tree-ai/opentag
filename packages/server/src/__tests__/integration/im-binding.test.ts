@@ -5866,6 +5866,44 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("refuses to start a Feishu setup for an Agent that has no Computer", async () => {
+    const value = await unboundFixture();
+    try {
+      const unbound = await new AgentService(value.database).createForAccount(value.bootstrap.userId, {
+        name: "unbound",
+        displayName: "Unbound",
+        runtimeProvider: "codex",
+      });
+      const setup = new FeishuSetupService({
+        database: value.database,
+        cipher: value.cipher,
+        instanceId: crypto.randomUUID(),
+        imBindings: value.imBindingService,
+        // Refused before any of this runs: a registration would create a real Feishu App for an
+        // Agent that could never have been activated with it.
+        registrations: { start: vi.fn() },
+        activation: { activateAtomicAttempt: vi.fn() },
+      });
+      await expect(setup.createOrReuse(value.bootstrap.userId, unbound.id, "create")).rejects.toMatchObject({
+        code: "AGENT_COMPUTER_NOT_BOUND",
+        statusCode: 409,
+      });
+      expect(await value.database.select().from(imBindings).where(eq(imBindings.agentId, unbound.id))).toHaveLength(0);
+      await expect(
+        value.imBindingService.activateFeishu({
+          agentId: unbound.id,
+          appId: "cli_unbound",
+          appSecret: "secret",
+          teamId: "T_UNBOUND",
+          botOpenId: "ou_bot",
+          grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_COMPUTER_NOT_BOUND", statusCode: 409 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("derives expired and stale Feishu setup projections without mutating rows on GET", async () => {
     const value = await unboundFixture();
     const completion = deferred<{

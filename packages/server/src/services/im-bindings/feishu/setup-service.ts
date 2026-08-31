@@ -4,7 +4,7 @@ import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
-import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
+import { type ImBindingService, ImBindingServiceError, type VerifiedFeishuBinding } from "../im-binding-service.js";
 import {
   FeishuOperationError,
   feishuSetupFailureCode,
@@ -122,8 +122,16 @@ export class FeishuSetupService {
       .limit(1);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
     // Activation refuses an Agent with no Computer, so the setup is refused here rather than after
-    // the Account has registered a Feishu App it cannot use.
-    if (agent.computerId === null) throw new Error("AGENT_COMPUTER_NOT_BOUND");
+    // the Account has registered a Feishu App it cannot use. It carries the same deterministic 409
+    // activation returns: an untyped throw would reach the Account as an internal failure and invite
+    // a retry that cannot succeed.
+    if (agent.computerId === null) {
+      throw new ImBindingServiceError(
+        "AGENT_COMPUTER_NOT_BOUND",
+        409,
+        "The Agent must be bound to a Computer before messaging can be connected",
+      );
+    }
     const existing = await this.#currentForAgent(agentId);
     if (intent === "create" && existing && existing.status !== "provisioning") {
       throw new Error("FEISHU_IM_BINDING_ALREADY_EXISTS");

@@ -202,6 +202,7 @@ export const COPY = {
     connectCode: "We couldn't get a connection command. Check your network and try again.",
     computers: "We lost contact while waiting for your computer.",
     createAgent: "We couldn't create your agent.",
+    bindComputer: "Your computer connected, but we couldn't give it to your agent. Try connecting it again.",
     messaging: "We couldn't start connecting your messaging app.",
     feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
     resume: "We couldn't check what your account already has.",

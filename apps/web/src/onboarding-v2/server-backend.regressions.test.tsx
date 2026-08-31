@@ -8,7 +8,12 @@
  * are guarded here rather than left to a live run to catch.
  */
 
-import type { AgentAdminConfig, FeishuSetupAttempt, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type {
+  AgentAdminConfig,
+  AgentListItem,
+  FeishuSetupAttempt,
+  WorkspaceComputerSummary,
+} from "@opentag/shared/browser";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -58,6 +63,24 @@ function adminConfig(): AgentAdminConfig {
     computerId: COMPUTER_ID,
     revision: 1,
     runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
+  };
+}
+
+function listItem(overrides: Partial<AgentListItem> = {}): AgentListItem {
+  return {
+    id: AGENT_ID,
+    name: "opentag",
+    displayName: "opentag",
+    createdBy: { userId: USER_ID, displayName: "Ada" },
+    computer: { computerId: COMPUTER_ID, displayName: "Ada's Mac", platform: "darwin" },
+    runtimeProvider: "codex",
+    receiveMode: "mention_only",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    activity: { state: "idle" },
+    usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 },
+    ...overrides,
   };
 }
 
@@ -302,6 +325,50 @@ describe("Server-backed onboarding: the defects it had", () => {
     await settle();
 
     expect(calls).toBe(1);
+  });
+
+  it("gives the arriving Computer to a resumed Agent that has none", async () => {
+    // An Agent can now be created before a Computer exists, so a resume can pick one up that has
+    // none. Nothing repairs a machine that was never there, so whatever answers this run's code has
+    // to become the Agent's Computer -- otherwise the machine connects, the Agent still has nowhere
+    // to run, and setup can never finish.
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem({ computer: null })] });
+    // Three pages, because the resume reads the Computers too: nothing yet on the resume, nothing
+    // yet when the code is issued and the baseline is taken, then the machine that answered it.
+    computersReturning(
+      [],
+      [],
+      [computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })],
+    );
+    issuing();
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(adminConfig());
+
+    const view = mount();
+    await settle();
+    await connected(view);
+
+    expect(rebind).toHaveBeenCalledWith(AGENT_ID, COMPUTER_ID);
+    expect(view.result.current.connect.kind).toBe("connected");
+  });
+
+  it("keeps waiting when the arriving Computer cannot be given to the Agent", async () => {
+    // Reporting a connection here would let the reader move on to a setup the Server refuses to
+    // complete, and the machine is not the thing that failed -- the move is.
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem({ computer: null })] });
+    computersReturning(
+      [],
+      [],
+      [computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })],
+    );
+    issuing();
+    vi.spyOn(browserApi, "rebindAgentComputer").mockRejectedValue(new Error("The requested Computer was not found"));
+
+    const view = mount();
+    await settle();
+    await connected(view);
+
+    expect(view.result.current.connect.kind).toBe("issued");
+    expect(view.result.current.error).toBe("The requested Computer was not found");
   });
 
   it("clears a transient polling error once the Computer it was waiting for arrives", async () => {

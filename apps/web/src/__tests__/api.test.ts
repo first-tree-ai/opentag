@@ -251,6 +251,7 @@ describe("BrowserApi", () => {
       expect(init?.body).toBeUndefined();
       return new Response(
         JSON.stringify({
+          connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
           bootstrapCommand: `opentag computer connect --server http://127.0.0.1:8000 -- code`,
           expiresIn: 900,
           issuedAt: "2030-01-01T00:00:00.000Z",
@@ -327,5 +328,44 @@ describe("BrowserApi", () => {
     });
     await expect(new BrowserApi(malformedCookieFetch).logout()).resolves.toBeUndefined();
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
+  it("reads the connect code's redemption verdict from its Account-native path", async () => {
+    const status = {
+      connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
+      state: "redeemed",
+      computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      redeemedAt: "2030-01-01T00:00:05.000Z",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/computer-connect-codes/${status.connectCodeId}`);
+      expect(init?.method).toBeUndefined();
+      return new Response(JSON.stringify(status), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const api = new BrowserApi(fetchImpl);
+
+    await expect(api.computerConnectCodeStatus(status.connectCodeId)).resolves.toEqual(status);
+  });
+
+  it("fails the connect code status read closed when the Server will not name it", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "RESOURCE_NOT_FOUND",
+              category: "deterministic",
+              message: "The requested resource was not found",
+              requestId: "req_1",
+            },
+          }),
+          { status: 404, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const api = new BrowserApi(fetchImpl);
+
+    const failure = await api.computerConnectCodeStatus("7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f").catch((cause) => cause);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure.status).toBe(404);
   });
 });

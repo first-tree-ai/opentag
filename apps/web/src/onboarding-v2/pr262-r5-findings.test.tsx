@@ -17,6 +17,8 @@ const AGENT_COMPUTER = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const POLL_MS = 1_500;
+const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+const REDEEMED_AT = "2026-08-29T00:00:05.000Z";
 
 function agentOn(computerId: string, displayName: string): AgentListItem {
   return {
@@ -67,9 +69,17 @@ describe("rebind at ff218a7", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABC",
       expiresIn: 900,
       issuedAt: NOW,
+    });
+    // A code the test says nothing about stays pending: the wait never concludes without a verdict.
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "pending",
+      computerId: null,
+      redeemedAt: null,
     });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -106,13 +116,18 @@ describe("rebind at ff218a7", () => {
     // Same effect, reached the ordinary way: nothing demotes `connected`, so this is not specific
     // to resume — a daemon that stops while the check is still running does it as well.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
+    // The issued code is redeemed by this exact Computer: that is what settles the wait.
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "redeemed",
+      computerId: AGENT_COMPUTER,
+      redeemedAt: REDEEMED_AT,
+    });
     let call = 0;
     vi.spyOn(browserApi, "computers").mockImplementation(async () => {
       call += 1;
-      // An empty Account returns before reading Computers, so 1 = baseline, 2 = the arrival,
-      // 3+ = the daemon stops.
-      if (call === 1) return { computers: [] };
-      if (call === 2) return { computers: [machine(AGENT_COMPUTER, "Ada's Mac", true, false)] };
+      // 1 = the read the redemption verdict unlocks, 2+ = the daemon stops.
+      if (call === 1) return { computers: [machine(AGENT_COMPUTER, "Ada's Mac", true, false)] };
       return { computers: [machine(AGENT_COMPUTER, "Ada's Mac", false, false)] };
     });
 

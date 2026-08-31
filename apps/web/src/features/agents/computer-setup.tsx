@@ -1,17 +1,22 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
+import { readConnectCodeVerdict } from "../../setup/connect-code-verdict.js";
 import { Banner, Button, ClipboardText, Loader, Text } from "../../ui/design-system.js";
 
 /*
  * This stays outside the query cache on purpose. It is not a resource the page subscribes to but a
- * wait on a mutation's side effect: a connect code is issued, and the Computer list is compared
- * against a baseline captured at that moment, bounded by the code's own expiry. The baseline has to
- * be genuinely fresh at click time, which a shared cache entry cannot promise, and the countdown
- * beside it is a clock rather than Server state.
+ * wait on a mutation's side effect: a connect code is issued, and the panel waits for the Computer
+ * that redeems it, bounded by the code's own expiry. Which Computer that is comes from the Server's
+ * own verdict on the issued code — never from comparing the Computers list against a baseline — so
+ * an unrelated machine enrolling or reconnecting during the wait cannot be read as this command's
+ * arrival. A targeted recovery repairs that exact Computer: the code is issued against it, and the
+ * verdict is refused if it names any other.
  */
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. Generate a new one to continue.";
+const CONNECT_CODE_STATUS_FAILURE_MESSAGE = "Unable to refresh the connection command status";
+const COMPUTER_REFRESH_FAILURE_MESSAGE = "Unable to refresh Computers";
 /**
  * The command and validity Preview shows in place of an issued one. Review needs the shape of this
  * step — a long install-and-connect line, its copy affordance and a running validity — and none of
@@ -43,6 +48,15 @@ function formatRemaining(remainingMs: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+/** The redeemed Computer counts once it is online on a connection the redemption bought. */
+function isFreshlyConnected(computer: WorkspaceComputerSummary, redeemedAt: string): boolean {
+  return (
+    computer.connectionStatus === "online" &&
+    computer.connectedAt !== null &&
+    Date.parse(computer.connectedAt) >= Date.parse(redeemedAt)
+  );
+}
+
 export function ComputerSetup({ onConnected, preview, target }: ComputerSetupProps) {
   return (
     <ComputerSetupLifecycle
@@ -64,7 +78,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
   const [generating, setGenerating] = useState(false);
   const [pollCycle, setPollCycle] = useState(0);
   const [remainingMs, setRemainingMs] = useState<number>();
-  const baselineConnections = useRef<Map<string, string | null>>(new Map());
+  const connectCodeId = useRef<string | undefined>(undefined);
   const connectCodeExpiresAt = useRef(0);
   const connectAttempt = useRef(0);
   const activePollCycle = useRef(0);
@@ -99,15 +113,19 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
     setGenerating(true);
     setError(undefined);
     try {
-      const baseline = new Map(
-        (await browserApi.computers()).computers.map((computer) => [computer.computerId, computer.connectedAt]),
+      /*
+       * A targeted recovery repairs its own Computer rather than enrolling a second one beside it:
+       * the code is issued against that exact Computer, and the Server's verdict on the code names
+       * the machine that answered. No Computers-list comparison ever speaks for the recovery, so a
+       * duplicate Computer or a foreign machine is never inferred from an arrival.
+       */
+      const issued = await browserApi.issueComputerConnectCode(
+        targetComputerId ? { mode: "repair", targetComputerId } : undefined,
       );
-      if (!mounted.current || connectAttempt.current !== attempt) return;
-      const issued = await browserApi.issueComputerConnectCode();
       if (!mounted.current || connectAttempt.current !== attempt) return;
       const cycle = activePollCycle.current + 1;
       activePollCycle.current = cycle;
-      baselineConnections.current = baseline;
+      connectCodeId.current = issued.connectCodeId;
       connectCodeExpiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
       setError(undefined);
       setBootstrapCommand(issued.bootstrapCommand);
@@ -125,59 +143,84 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
 
   useEffect(() => {
     if (!waitingForComputer || pollCycle === 0) return;
-    const baseline = baselineConnections.current;
+    const codeId = connectCodeId.current;
     const expiresAt = connectCodeExpiresAt.current;
     let active = true;
     let completed = false;
     let pollTimer = 0;
-    const expiryTimer = window.setTimeout(
-      () => {
-        if (!active || completed || activePollCycle.current !== pollCycle) return;
-        completed = true;
-        window.clearInterval(pollTimer);
-        setWaitingForComputer(false);
-        setComputerConnected(false);
-        setRemainingMs(undefined);
-        setError(CONNECT_CODE_EXPIRED_MESSAGE);
-      },
-      Math.max(0, expiresAt - Date.now()),
-    );
-    pollTimer = window.setInterval(() => {
+    let expiryTimer = 0;
+    const expire = () => {
+      if (!active || completed || activePollCycle.current !== pollCycle) return;
+      completed = true;
+      window.clearInterval(pollTimer);
+      setWaitingForComputer(false);
+      setComputerConnected(false);
+      setRemainingMs(undefined);
+      setError(CONNECT_CODE_EXPIRED_MESSAGE);
+    };
+    const complete = (connected: WorkspaceComputerSummary) => {
+      if (!active || completed || activePollCycle.current !== pollCycle) return;
+      completed = true;
+      window.clearInterval(pollTimer);
+      window.clearTimeout(expiryTimer);
+      setWaitingForComputer(false);
+      setComputerConnected(true);
+      setRemainingMs(undefined);
+      onConnectedRef.current?.(connected);
+    };
+    const reportPollFailure = (cause: unknown, fallback: string) => {
+      if (active && !completed && activePollCycle.current === pollCycle) {
+        setError(errorMessage(cause, fallback));
+      }
+    };
+    /*
+     * The Server's verdict on this exact code decides the arrival. Pending keeps waiting; expired
+     * or revoked fails closed through the same terminal as the local expiry; redeemed names the one
+     * Computer that can satisfy the wait — adopted once the Computers list shows it online on a
+     * connection that postdates the redemption, so a machine that redeemed but has not connected
+     * yet is still waited on rather than reported. A targeted recovery refuses a verdict naming
+     * any other Computer: the repair code was issued against the target, so a different id can
+     * never be this command's answer.
+     */
+    const adoptVerdict = async (redeemedComputerId: string, redeemedAt: string) => {
+      if (targetComputerId && redeemedComputerId !== targetComputerId) return;
+      let computers: WorkspaceComputerSummary[];
+      try {
+        ({ computers } = await browserApi.computers());
+      } catch (cause) {
+        reportPollFailure(cause, COMPUTER_REFRESH_FAILURE_MESSAGE);
+        return;
+      }
+      const connected = computers.find(
+        (computer) => computer.computerId === redeemedComputerId && isFreshlyConnected(computer, redeemedAt),
+      );
+      if (connected) complete(connected);
+    };
+    const pollVerdict = async () => {
+      if (!codeId) return;
+      let status: Awaited<ReturnType<typeof browserApi.computerConnectCodeStatus>>;
+      try {
+        status = await browserApi.computerConnectCodeStatus(codeId);
+      } catch (cause) {
+        reportPollFailure(cause, CONNECT_CODE_STATUS_FAILURE_MESSAGE);
+        return;
+      }
+      if (!active || completed || activePollCycle.current !== pollCycle) return;
+      const verdict = readConnectCodeVerdict(status);
+      if (verdict.kind === "wait") return;
+      if (verdict.kind === "expire") {
+        expire();
+        return;
+      }
+      await adoptVerdict(verdict.computerId, verdict.redeemedAt);
+    };
+    expiryTimer = window.setTimeout(expire, Math.max(0, expiresAt - Date.now()));
+    const tick = () => {
       // The existing poll cycle also drives the countdown, so the command needs no timer of its own.
       setRemainingMs(Math.max(0, expiresAt - Date.now()));
-      void browserApi.computers().then(
-        (value) => {
-          if (!active || completed || activePollCycle.current !== pollCycle) return;
-          const reconnected = value.computers.filter(
-            (computer) =>
-              computer.connectionStatus === "online" &&
-              ((!baseline.has(computer.computerId) && computer.connectedAt !== null) ||
-                (baseline.has(computer.computerId) &&
-                  computer.connectedAt !== null &&
-                  baseline.get(computer.computerId) !== computer.connectedAt)),
-          );
-          // The Computers response carries no link back to the issued code, so another Computer
-          // registering says nothing about this command. A targeted recovery waits for its own
-          // Computer and lets the code expire rather than reading a foreign reconnection as proof.
-          const connected = targetComputerId
-            ? reconnected.find((computer) => computer.computerId === targetComputerId)
-            : reconnected[0];
-          if (!connected) return;
-          completed = true;
-          window.clearInterval(pollTimer);
-          window.clearTimeout(expiryTimer);
-          setWaitingForComputer(false);
-          setComputerConnected(true);
-          setRemainingMs(undefined);
-          onConnectedRef.current?.(connected);
-        },
-        (cause: unknown) => {
-          if (active && !completed && activePollCycle.current === pollCycle) {
-            setError(errorMessage(cause, "Unable to refresh Computers"));
-          }
-        },
-      );
-    }, COMPUTER_POLL_INTERVAL_MS);
+      void pollVerdict();
+    };
+    pollTimer = window.setInterval(tick, COMPUTER_POLL_INTERVAL_MS);
     return () => {
       active = false;
       window.clearInterval(pollTimer);

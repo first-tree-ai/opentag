@@ -1,8 +1,14 @@
-import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER, workspaceComputersPath } from "@opentag/shared";
+import {
+  accountComputerConnectCodePath,
+  HTTP_PATHS,
+  PROVIDER_READINESS_V1_HEADER,
+  workspaceComputersPath,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
+import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
 import { OnboardingResetError } from "../services/onboarding-reset/index.js";
 import type { TaskService } from "../services/tasks/index.js";
@@ -114,6 +120,7 @@ function services() {
     },
     machineAuthService: {
       issueForAccount: vi.fn().mockResolvedValue({
+        connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
         code: "connect-code-value",
         expiresIn: 900,
         issuedAt: new Date("2026-08-19T00:00:00.000Z"),
@@ -125,6 +132,12 @@ function services() {
         machineToken: "machine-token",
         workspaceComputerId: computerId,
         workspaceId,
+      }),
+      getConnectCodeStatusForAccount: vi.fn().mockResolvedValue({
+        connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
+        state: "pending",
+        computerId: null,
+        redeemedAt: null,
       }),
     },
     taskService: {
@@ -491,5 +504,89 @@ describe("Account-native management collections", () => {
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
     expect(response.statusCode).toBe(200);
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
+  });
+
+  it("names the issued code's non-secret id in the issue response", async () => {
+    const { app } = appWith();
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountComputerConnectCodes,
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().connectCodeId).toBe("7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f");
+  });
+});
+
+describe("the connect-code redemption status read", () => {
+  const connectCodeId = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+
+  it("answers pending before redemption under the issuing Account's authority", async () => {
+    const { app, service } = appWith();
+
+    const response = await app.inject({
+      method: "GET",
+      url: accountComputerConnectCodePath(connectCodeId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({ connectCodeId, state: "pending", computerId: null, redeemedAt: null });
+    expect(service.machineAuthService.getConnectCodeStatusForAccount).toHaveBeenCalledWith(userId, connectCodeId);
+  });
+
+  it("answers the exact Computer after redemption, and nothing secret", async () => {
+    const { app, service } = appWith();
+    service.machineAuthService.getConnectCodeStatusForAccount.mockResolvedValueOnce({
+      connectCodeId,
+      state: "redeemed",
+      computerId,
+      redeemedAt: "2026-08-19T00:01:00.000Z",
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: accountComputerConnectCodePath(connectCodeId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toEqual({ connectCodeId, state: "redeemed", computerId, redeemedAt: "2026-08-19T00:01:00.000Z" });
+    expect(Object.keys(body).sort()).toEqual(["computerId", "connectCodeId", "redeemedAt", "state"]);
+  });
+
+  it("fails closed when the code is not the caller's own", async () => {
+    const { app, service } = appWith();
+    service.machineAuthService.getConnectCodeStatusForAccount.mockRejectedValueOnce(
+      new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404),
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: accountComputerConnectCodePath(connectCodeId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("RESOURCE_NOT_FOUND");
+  });
+
+  it("rejects a malformed code id and an unauthenticated caller", async () => {
+    const { app, service } = appWith();
+
+    const malformed = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.accountComputerConnectCodes}/not-a-uuid`,
+      headers: authorization,
+    });
+    expect(malformed.statusCode).toBe(400);
+
+    const anonymous = await app.inject({ method: "GET", url: accountComputerConnectCodePath(connectCodeId) });
+    expect(anonymous.statusCode).toBe(401);
+    expect(service.machineAuthService.getConnectCodeStatusForAccount).not.toHaveBeenCalled();
   });
 });

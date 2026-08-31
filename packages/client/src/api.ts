@@ -6,6 +6,7 @@ import {
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
+  accountComputerConnectCodePath,
   agentByIdPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
@@ -20,6 +21,8 @@ import {
   ComputerConnectCodeExchangeResponseSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
+  type ComputerConnectCodeStatus,
+  ComputerConnectCodeStatusSchema,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -122,6 +125,12 @@ export class OpenTagApi {
   issueComputerConnectCode(accessToken: string): Promise<ComputerConnectCodeIssueResponse> {
     return this.#request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
       method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  getComputerConnectCodeStatus(accessToken: string, connectCodeId: string): Promise<ComputerConnectCodeStatus> {
+    return this.#request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }

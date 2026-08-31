@@ -24,6 +24,7 @@ import {
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
+  createLoginShellDiscovery,
   refreshImCliReadiness,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
@@ -43,6 +44,16 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("allows the login-shell readiness callback to be invoked directly", () => {
+    const loginShellDiscovery = createLoginShellDiscovery();
+    const includeLoginShell = loginShellDiscovery.options.includeLoginShell;
+
+    if (typeof includeLoginShell !== "function") throw new Error("login-shell discovery callback is missing");
+    expect(includeLoginShell()).toBe(false);
+    loginShellDiscovery.enable();
+    expect(includeLoginShell()).toBe(true);
+  });
+
   it("probes Feishu and Slack CLI readiness independently from Agent Runtime providers", async () => {
     const home = await temporaryDirectory("opentag-im-cli-readiness-");
     const lark = resolve(home, "lark-cli");

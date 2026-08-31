@@ -81,9 +81,8 @@ function installApi(
     initialStatus?: "active" | "suspended";
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
-    meDelayMsAfterProfileUpdate?: number;
     meFailuresAfterProfileUpdate?: number;
-    /** Answers the `/me` refresh a profile save starts, so a test can hold it across a sign-out. */
+    /** Answers the `/me` refresh a profile save starts, so tests can control its completion. */
     meAfterProfileUpdate?: () => Promise<Response> | Response;
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
@@ -170,9 +169,6 @@ function installApi(
       if (loggedOut && options.meAfterLogout) return options.meAfterLogout();
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       if (profileUpdated && options.meAfterProfileUpdate) return options.meAfterProfileUpdate();
-      if (profileUpdated && options.meDelayMsAfterProfileUpdate) {
-        await new Promise((resolve) => setTimeout(resolve, options.meDelayMsAfterProfileUpdate));
-      }
       if (profileUpdated && meFailuresRemaining > 0) {
         meFailuresRemaining -= 1;
         return json(
@@ -1365,13 +1361,28 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("lets no new save race an in-flight refresh retry", async () => {
-    installApi({ meFailuresAfterProfileUpdate: 1, meDelayMsAfterProfileUpdate: 40 });
+    let meReadsAfterProfileUpdate = 0;
+    let resolveRetry: (response: Response) => void = () => undefined;
+    const pendingRetry = new Promise<Response>((resolve) => {
+      resolveRetry = resolve;
+    });
+    installApi({
+      meAfterProfileUpdate: () => {
+        meReadsAfterProfileUpdate += 1;
+        if (meReadsAfterProfileUpdate === 1) {
+          return json(
+            { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Account state unavailable" } },
+            503,
+          );
+        }
+        if (meReadsAfterProfileUpdate === 2) return pendingRetry;
+        throw new Error("Unexpected Account refresh after profile update");
+      },
+    });
     window.history.replaceState({}, "", "/account");
     render(<App />);
 
     const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
-    const form = displayName.closest("form");
-    if (!form) throw new Error("Account form was not rendered");
     fireEvent.change(displayName, { target: { value: "Ada Lovelace" } });
     fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
     await screen.findByText("Account not refreshed");
@@ -1384,11 +1395,13 @@ describe("OpenTag Web App Shell", () => {
     // While the retry is in flight the field cannot be edited into a dirty state, a second retry
     // cannot start, and a submit cannot slip a competing write past it.
     expect(await screen.findByRole("button", { name: "Refreshing…" })).toBeTruthy();
-    expect(displayName.disabled).toBe(true);
+    const currentDisplayName = screen.getByLabelText("Display name") as HTMLInputElement;
+    const currentForm = currentDisplayName.closest("form");
+    if (!currentForm) throw new Error("Account form was not rendered");
+    expect(currentDisplayName.disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Refreshing…" }));
-    fireEvent.submit(form);
+    fireEvent.submit(currentForm);
 
-    expect(await screen.findByText("Account profile saved.")).toBeTruthy();
     expect(
       vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method === "PATCH"),
     ).toHaveLength(1);
@@ -1396,6 +1409,18 @@ describe("OpenTag Web App Shell", () => {
     expect(
       vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method !== "PATCH"),
     ).toHaveLength(refreshesBeforeRetry + 1);
+
+    resolveRetry(
+      json({
+        user: { id: userId, email: "ada@example.com", displayName: "Ada Lovelace" },
+        setupCompletedAt: "2026-08-20T00:00:00.000Z",
+      }),
+    );
+
+    expect(await screen.findByText("Account profile saved.")).toBeTruthy();
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method === "PATCH"),
+    ).toHaveLength(1);
     expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
   });
 

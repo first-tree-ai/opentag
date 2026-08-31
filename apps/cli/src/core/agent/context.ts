@@ -1,4 +1,5 @@
-import { AccessTokenProvider, OpenTagApi, readCredentials, resolveOpenTagHome } from "@opentag/client";
+import type { OpenTagApi } from "@opentag/client";
+import { resolveCommandContext } from "../command/context.js";
 
 export interface AgentApiClient
   extends Pick<
@@ -31,14 +32,15 @@ export interface AgentCommandDependencies {
 export async function resolveAgentCommandContext(
   options: AgentCommandDependencies,
 ): Promise<{ accessToken: string; api: AgentApiClient }> {
-  if (options.api && options.accessToken) return { api: options.api, accessToken: options.accessToken };
-  if (options.api || options.accessToken) {
+  if ((options.api && !options.accessToken) || (options.accessToken && !options.api)) {
     throw new Error("Agent command test dependencies must provide both api and accessToken");
   }
-
-  const home = options.home ?? resolveOpenTagHome();
-  const credentials = await readCredentials(home);
-  if (!credentials) throw new Error("OpenTag is not logged in; run login first");
-  const accessToken = await new AccessTokenProvider({ home }).getAccessToken();
-  return { api: new OpenTagApi(credentials.serverUrl), accessToken };
+  const context = await resolveCommandContext({
+    accessToken: options.accessToken,
+    api: options.api as OpenTagApi | undefined,
+    home: options.home,
+    requireAuth: true,
+  });
+  if (!context.api || !context.accessToken) throw new Error("Command context did not resolve an authenticated API");
+  return { api: context.api, accessToken: context.accessToken };
 }

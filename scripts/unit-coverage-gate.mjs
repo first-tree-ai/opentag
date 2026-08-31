@@ -1,8 +1,15 @@
 /**
  * Pure helpers for enforcing coverage on executable lines changed by a pull request.
  *
- * The coverage provider may omit files or statements that it could not instrument. Omissions are
- * treated as uncovered for changed executable lines, which keeps the gate fail closed.
+ * A file the coverage provider never instrumented is treated as wholly uncovered, which keeps the
+ * gate fail closed: a package that silently stopped being measured must not read as clean.
+ *
+ * Within a file it did instrument, the provider is the authority on which lines can be executed at
+ * all. It emits no statement for a TypeScript interface member or a bare JSX text child, because
+ * neither survives compilation as code, and no test can ever cover one. Counting those as uncovered
+ * would fail a pull request for adding a type or changing a string, with nothing the author could
+ * write to satisfy it — so a changed line an instrumented file has no statement for is skipped
+ * rather than blamed.
  */
 
 import { extname, isAbsolute, posix, relative } from "node:path";
@@ -97,17 +104,31 @@ export function normalizeCoveragePath(rawPath, repositoryRoot) {
   return normalizePath(isAbsolute(value) ? relative(repositoryRoot, value) : value);
 }
 
-/** Map each normalized repository path to its maximum Istanbul statement hit per source line. */
+/**
+ * Map each normalized repository path to its maximum statement hit per source line.
+ *
+ * A statement claims every line it spans, not just the one it starts on. The current provider emits
+ * single-line statements, so today that is the same map either way; recording the span means the
+ * gate asks "does any statement cover this line", which is the question it means to ask, rather
+ * than depending on a provider property nothing enforces.
+ */
+function recordStatementHits(lineHits, statement, rawHits) {
+  const start = statement?.start?.line;
+  if (!Number.isInteger(start)) return;
+  const end = Number.isInteger(statement?.end?.line) ? Math.max(statement.end.line, start) : start;
+  const hits = Number.isFinite(rawHits) ? rawHits : 0;
+  for (let line = start; line <= end; line += 1) {
+    lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hits));
+  }
+}
+
 export function buildLineHitsByFile(coverage, repositoryRoot) {
   const lineHitsByFile = new Map();
   for (const [rawFile, fileCoverage] of Object.entries(coverage ?? {})) {
     const file = normalizeCoveragePath(rawFile, repositoryRoot);
     const lineHits = lineHitsByFile.get(file) ?? new Map();
     for (const [statementId, statement] of Object.entries(fileCoverage?.statementMap ?? {})) {
-      const line = statement?.start?.line;
-      if (!Number.isInteger(line)) continue;
-      const hits = Number(fileCoverage?.s?.[statementId] ?? 0);
-      lineHits.set(line, Math.max(lineHits.get(line) ?? 0, Number.isFinite(hits) ? hits : 0));
+      recordStatementHits(lineHits, statement, Number(fileCoverage?.s?.[statementId] ?? 0));
     }
     lineHitsByFile.set(file, lineHits);
   }
@@ -116,13 +137,17 @@ export function buildLineHitsByFile(coverage, repositoryRoot) {
 
 function evaluateChangedFile({ file, lines, lineHits }) {
   if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
+  const instrumented = lineHits !== undefined;
   const uncovered = [];
   let covered = 0;
   let total = 0;
   for (const { content, line } of lines) {
     if (!isExecutableSourceLine(content)) continue;
+    // The provider instrumented this file and no statement covers this line: it is a declaration or
+    // a literal, not a statement a test could reach.
+    if (instrumented && !lineHits.has(line)) continue;
     total += 1;
-    if (!lineHits?.has(line)) {
+    if (!instrumented) {
       uncovered.push(`${file}:${line} (missing coverage entry)`);
     } else if (lineHits.get(line) > 0) {
       covered += 1;

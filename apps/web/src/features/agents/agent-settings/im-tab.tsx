@@ -6,6 +6,7 @@ import { browserApi } from "../../../api.js";
 import { formatDateTime } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
+import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
 import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
 import { ProviderIcon } from "../../../ui/provider-icon.js";
@@ -60,7 +61,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setRestoreFocusTarget("trigger_rules");
       onAgentChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to change receive mode");
+      setError(cause instanceof Error ? cause.message : m.agent_settings_change_receive_mode_failed());
     } finally {
       setReceiveModePending(false);
       setConfirmationBusy(false);
@@ -77,7 +78,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      setConfirmationError(cause instanceof Error ? cause.message : "Unable to disconnect messaging");
+      setConfirmationError(cause instanceof Error ? cause.message : m.agent_settings_disconnect_messaging_failed());
     } finally {
       setConfirmationBusy(false);
     }
@@ -90,7 +91,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
     <div className="grid gap-6">
       <header className="grid gap-2">
         <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
-          Messaging
+          {m.agent_settings_messaging_title()}
         </Text>
       </header>
       <FeishuSetup
@@ -129,7 +130,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           >
                             <div className="grid gap-2">
                               <Text as="h3" id="contact-channel-heading" variant="heading">
-                                Connected channel
+                                {m.agent_settings_connected_channel_title()}
                               </Text>
                             </div>
                             <div className="flex flex-wrap items-center gap-3">
@@ -141,10 +142,12 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               <StatusIndicator
                                 detail={
                                   binding.lastRuntimeObservationAt
-                                    ? `Last observed ${formatDateTime(binding.lastRuntimeObservationAt)}`
+                                    ? m.agent_settings_last_observed({
+                                        date: formatDateTime(binding.lastRuntimeObservationAt),
+                                      })
                                     : binding.lastValidatedAt
-                                      ? `Validated ${formatDateTime(binding.lastValidatedAt)}`
-                                      : "Not yet observed"
+                                      ? m.agent_settings_validated({ date: formatDateTime(binding.lastValidatedAt) })
+                                      : m.agent_settings_not_yet_observed()
                                 }
                                 label={messagingConnectionLabel(binding)}
                                 tone={messagingConnectionTone(binding)}
@@ -174,7 +177,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   variant="outline"
                                   onClick={() => void connectFeishu("replace")}
                                 >
-                                  Change Feishu Bot
+                                  {m.agent_settings_change_feishu_bot()}
                                 </Button>
                               ) : null}
                               <Button
@@ -186,7 +189,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   setConfirmation({ bindingId: binding.id, kind: "disable_binding" });
                                 }}
                               >
-                                Disconnect {titleCase(binding.provider)}
+                                {m.agent_settings_disconnect_provider({ provider: titleCase(binding.provider) })}
                               </Button>
                             </div>
                           </section>
@@ -213,7 +216,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               >
                                 <TriggerModeOption
                                   busy={receiveModePending}
-                                  label="On mention"
+                                  label={m.agent_settings_on_mention()}
                                   selected={binding.receiveMode === "mention_only"}
                                   onSelect={() => {
                                     setConfirmingEveryMessage(false);
@@ -222,7 +225,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 />
                                 <TriggerModeOption
                                   busy={receiveModePending}
-                                  label={confirmingEveryMessage ? "Confirm every message" : "Every message"}
+                                  label={
+                                    confirmingEveryMessage
+                                      ? m.agent_settings_confirm_every_message()
+                                      : m.agent_settings_every_message()
+                                  }
                                   ref={allMessagesButtonRef}
                                   selected={binding.receiveMode === "all_message"}
                                   onSelect={() => {
@@ -237,8 +244,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               </fieldset>
                               {confirmingEveryMessage ? (
                                 <p className="text-sm text-kumo-subtle" role="status">
-                                  This wakes the Agent on every message in the conversation, which raises Token spend.
-                                  Choose <strong>Confirm every message</strong> to apply it.
+                                  {m.agent_settings_confirm_every_message_warning()}
                                 </p>
                               ) : null}
                               <p className="text-sm text-kumo-subtle">
@@ -254,19 +260,17 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                         >
                           <div className="grid gap-2">
                             <Text as="h3" id="contact-channel-heading" variant="heading">
-                              No channel connected
+                              {m.agent_settings_no_channel_connected()}
                             </Text>
                           </div>
-                          <p className="text-sm text-kumo-subtle">
-                            Teammates cannot contact this Agent until a supported bot is connected.
-                          </p>
+                          <p className="text-sm text-kumo-subtle">{m.agent_settings_no_channel_description()}</p>
                           <div className="flex flex-wrap gap-3">
                             <Button
                               loading={feishuSetup.loading}
                               disabled={feishuSetup.loading}
                               onClick={() => void connectFeishu()}
                             >
-                              Connect a Feishu Bot
+                              {m.agent_settings_connect_feishu_bot()}
                             </Button>
                             <Button
                               loading={slackConfiguration.loading}
@@ -274,7 +278,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               variant="secondary"
                               onClick={() => void connectSlack()}
                             >
-                              Add OpenTag to Slack
+                              {m.agent_settings_add_opentag_to_slack()}
                             </Button>
                           </div>
                         </section>
@@ -293,15 +297,15 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
-          description="Teammates will no longer be able to assign new work to this agent until another messaging connection is added."
+          description={m.agent_settings_disconnect_confirmation_description()}
           returnFocusRef={disableBindingButtonRef}
-          title="Disconnect messaging?"
+          title={m.agent_settings_disconnect_confirmation_title()}
           onClose={closeMessagingConfirmation}
         >
           {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
           <div className="flex flex-wrap justify-end gap-3">
             <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
-              Keep connected
+              {m.agent_settings_keep_connected_action()}
             </Button>
             <Button
               loading={confirmationBusy}
@@ -309,7 +313,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
               variant="danger"
               onClick={() => void disableBinding(confirmation.bindingId)}
             >
-              Disconnect
+              {m.agent_settings_disconnect_action()}
             </Button>
           </div>
         </Dialog>
@@ -353,15 +357,17 @@ function TriggerModeOption({
 /** The row already shows the Bot name above, so the line beneath it does not repeat it. */
 function messagingChannelDetail(agent: AgentDetailView, binding: ImBindingSummary): string {
   return binding.provider === "feishu"
-    ? `${titleCase(binding.provider)} · @${agent.name}`
-    : titleCase(binding.provider);
+    ? m.agent_settings_channel_detail_with_name({ provider: titleCase(binding.provider), name: agent.name })
+    : m.agent_settings_channel_detail({ provider: titleCase(binding.provider) });
 }
 
 /** The one repair a channel state offers, or nothing when the state cannot be repaired from here. */
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {
   const provider = titleCase(binding.provider);
-  if (binding.bindingState === "reauthorization_required") return `Reauthorize ${provider}`;
-  if (binding.bindingState === "error" || binding.bindingState === "disabled") return `Reconnect ${provider}`;
+  if (binding.bindingState === "reauthorization_required") return m.agent_settings_reauthorize_provider({ provider });
+  if (binding.bindingState === "error" || binding.bindingState === "disabled") {
+    return m.agent_settings_reconnect_provider({ provider });
+  }
   return undefined;
 }
 
@@ -373,21 +379,21 @@ function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {
 function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; binding: ImBindingSummary }) {
   if (messagingRecoveryLabel(binding)) return null;
   if (binding.bindingState === "provisioning") {
-    return <p className="text-sm text-kumo-subtle">Setting up. This usually finishes within a minute.</p>;
+    return <p className="text-sm text-kumo-subtle">{m.agent_settings_channel_setting_up()}</p>;
   }
   const handoffState = agent.availability.dependencies.handoff.state;
   if (handoffState === "ready") return null;
   if (handoffState === "unconfirmed") {
-    return <p className="text-sm text-kumo-subtle">Could not confirm delivery. Retrying automatically.</p>;
+    return <p className="text-sm text-kumo-subtle">{m.agent_settings_delivery_unconfirmed()}</p>;
   }
   const computerState = agent.availability.dependencies.computer.state;
   const runtimeStatus = agent.availability.dependencies.runtime.status;
   if (computerState === "action_required") {
     return (
       <p className="text-sm text-kumo-subtle">
-        The channel itself is connected. Messages wait until this agent's computer is online.{" "}
+        {m.agent_settings_messages_wait_for_computer()}{" "}
         <Link className="text-kumo-link" {...agentSettingsSectionLink(agent.id, "computer")}>
-          View Computer
+          {m.agent_settings_view_computer()}
         </Link>
       </p>
     );
@@ -395,19 +401,14 @@ function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; bind
   if (computerState === "ready" && runtimeStatus && runtimeStatus !== "ready") {
     return (
       <p className="text-sm text-kumo-subtle">
-        The channel itself is connected. Messages wait until {runtimeProviderName(agent.runtimeProvider)} is ready on
-        this agent's computer.{" "}
+        {m.agent_settings_messages_wait_for_runtime({ provider: runtimeProviderName(agent.runtimeProvider) })}{" "}
         <Link className="text-kumo-link" {...agentSettingsSectionLink(agent.id, "computer")}>
-          View Computer
+          {m.agent_settings_view_computer()}
         </Link>
       </p>
     );
   }
-  return (
-    <p className="text-sm text-kumo-subtle">
-      The channel itself is connected, but messages cannot be delivered yet. Retrying automatically.
-    </p>
-  );
+  return <p className="text-sm text-kumo-subtle">{m.agent_settings_messages_delivery_pending()}</p>;
 }
 
 /**
@@ -417,21 +418,21 @@ function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; bind
  * so it can wake the runtime far more often -- which is what changes execution and Token spend.
  */
 function triggerModeHeading(provider: ImBindingSummary["provider"]): string {
-  return provider === "feishu" ? "Group chat trigger mode" : "Channel trigger mode";
+  return provider === "feishu" ? m.agent_settings_group_chat_trigger_mode() : m.agent_settings_channel_trigger_mode();
 }
 
 function triggerModeExplanation(provider: ImBindingSummary["provider"]): string {
-  const destination = provider === "feishu" ? "group chats" : "channels";
-  return `Every message in connected ${destination} is kept as conversation history either way. This setting decides which of them wake this Agent up to act.`;
+  const destination = provider === "feishu" ? m.agent_settings_group_chats() : m.agent_settings_channels();
+  return m.agent_settings_trigger_mode_explanation({ destination });
 }
 
 function triggerModeDescription(
   receiveMode: AgentSummary["receiveMode"],
   provider: ImBindingSummary["provider"],
 ): string {
-  const destination = provider === "feishu" ? "group chat" : "channel";
+  const destination = provider === "feishu" ? m.agent_settings_group_chat() : m.agent_settings_channel();
   if (receiveMode === "all_message") {
-    return `Every ${destination} message is delivered and can wake this Agent, which then decides for itself whether to reply. Fastest to react, and the most Tokens.`;
+    return m.agent_settings_trigger_mode_all_messages({ destination });
   }
-  return `Only an @mention wakes this Agent. It is then given what was said in the ${destination} since its last reply, so a mention never arrives without its context.`;
+  return m.agent_settings_trigger_mode_mentions({ destination });
 }

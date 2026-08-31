@@ -5,6 +5,7 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
+import * as m from "../../../paraglide/messages.js";
 import { Button, Field, KumoInputAreaControl, KumoInputControl, KumoSelectControl } from "../../../ui/design-system.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 
@@ -36,7 +37,7 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
   }>();
   const [saving, setSaving] = useState<"runtime" | "instructions">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
-  const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+  const providerName = config.runtimeProvider === "codex" ? m.agent_settings_codex() : m.agent_settings_claude_code();
   const ExecutionHeading = section === "execution" ? "h1" : "h3";
   const InstructionsHeading = section === "instructions" ? "h1" : "h3";
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
@@ -68,12 +69,12 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
         ),
       );
       setReasoningDraft(updated.runtimeConfig.reasoningEffort ?? "");
-      setMessage({ kind: "success", section: "runtime", text: "Execution settings saved." });
+      setMessage({ kind: "success", section: "runtime", text: m.agent_settings_execution_settings_saved() });
     } catch (cause) {
       setMessage({
         kind: "error",
         section: "runtime",
-        text: cause instanceof Error ? cause.message : "Unable to save Execution settings",
+        text: cause instanceof Error ? cause.message : m.agent_settings_save_execution_settings_failed(),
       });
     } finally {
       setSaving(undefined);
@@ -92,12 +93,12 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
       });
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
-      setMessage({ kind: "success", section: "instructions", text: "Agent instructions saved." });
+      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_agent_instructions_saved() });
     } catch (cause) {
       setMessage({
         kind: "error",
         section: "instructions",
-        text: cause instanceof Error ? cause.message : "Unable to save Agent instructions",
+        text: cause instanceof Error ? cause.message : m.agent_settings_save_agent_instructions_failed(),
       });
     } finally {
       setSaving(undefined);
@@ -114,17 +115,21 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
           <header className="flex items-start justify-between gap-3">
             <div>
               <ExecutionHeading id="execution-heading">
-                {section === "execution" ? "Model & reasoning" : "Execution"}
+                {section === "execution"
+                  ? m.agent_settings_model_reasoning_title()
+                  : m.agent_settings_execution_title()}
               </ExecutionHeading>
             </div>
           </header>
-          {section !== "execution" ? <p className="text-sm text-kumo-subtle">Provider: {providerName}</p> : null}
+          {section !== "execution" ? (
+            <p className="text-sm text-kumo-subtle">{m.agent_settings_provider_name({ provider: providerName })}</p>
+          ) : null}
           <form className="grid gap-4" onSubmit={saveRuntime}>
             <div className="grid gap-4 @min-[36rem]/workspace:grid-cols-2">
-              <Field htmlFor={fieldId("model")} label="Model">
+              <Field htmlFor={fieldId("model")} label={m.agent_settings_model_label()}>
                 <KumoSelectControl
                   id={fieldId("model")}
-                  aria-label="Model"
+                  aria-label={m.agent_settings_model_label()}
                   value={modelSelection}
                   onChange={(event) => {
                     const selection = event.currentTarget.value;
@@ -137,18 +142,18 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                     setMessage(undefined);
                   }}
                 >
-                  <option value="">Provider default</option>
+                  <option value="">{m.agent_settings_provider_default()}</option>
                   {runtimeOptions.modelSuggestions.map((model) => (
                     <option value={model} key={model}>
                       {model}
                     </option>
                   ))}
-                  <option value={CUSTOM_MODEL_OPTION}>Custom model ID…</option>
+                  <option value={CUSTOM_MODEL_OPTION}>{m.agent_settings_custom_model_id_option()}</option>
                 </KumoSelectControl>
                 {modelSelection === CUSTOM_MODEL_OPTION ? (
                   <div className="mt-2">
                     <KumoInputControl
-                      aria-label="Custom model ID"
+                      aria-label={m.agent_settings_custom_model_id_label()}
                       autoComplete="off"
                       id={fieldId("custom-model")}
                       required
@@ -161,10 +166,10 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                   </div>
                 ) : null}
               </Field>
-              <Field htmlFor={fieldId("reasoning-effort")} label="Reasoning level">
+              <Field htmlFor={fieldId("reasoning-effort")} label={m.agent_settings_reasoning_level_label()}>
                 <KumoSelectControl
                   id={fieldId("reasoning-effort")}
-                  aria-label="Reasoning level"
+                  aria-label={m.agent_settings_reasoning_level_label()}
                   name="reasoningEffort"
                   value={reasoningDraft}
                   onChange={(event) => {
@@ -172,9 +177,9 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                     setMessage(undefined);
                   }}
                 >
-                  <option value="">Provider default</option>
+                  <option value="">{m.agent_settings_provider_default()}</option>
                   {hasHistoricalReasoningDraft ? (
-                    <option value={reasoningDraft}>{reasoningDraft} (saved value)</option>
+                    <option value={reasoningDraft}>{m.agent_settings_saved_value({ value: reasoningDraft })}</option>
                   ) : null}
                   {runtimeOptions.reasoningEffortAllowedValues.map((effort) => (
                     <option value={effort} key={effort}>
@@ -186,7 +191,7 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
             </div>
             {runtimeDirty ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-                <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+                <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button
                     disabled={Boolean(saving)}
@@ -198,10 +203,10 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                       setMessage(undefined);
                     }}
                   >
-                    Discard
+                    {m.agent_settings_discard_action()}
                   </Button>
                   <Button disabled={Boolean(saving) || customModelInvalid} type="submit">
-                    {saving === "runtime" ? "Saving…" : "Save changes"}
+                    {saving === "runtime" ? m.agent_settings_saving_action() : m.agent_settings_save_changes_action()}
                   </Button>
                 </div>
               </div>
@@ -224,12 +229,14 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
           <header className="flex items-start justify-between gap-3">
             <div>
               <InstructionsHeading id="agent-instructions-heading">
-                {section === "instructions" ? "Instructions" : "Agent instructions"}
+                {section === "instructions"
+                  ? m.agent_settings_instructions_title()
+                  : m.agent_settings_agent_instructions_title()}
               </InstructionsHeading>
             </div>
           </header>
           <form className="grid gap-4" onSubmit={saveInstructions}>
-            <Field htmlFor={fieldId("instructions")} label="Instructions">
+            <Field htmlFor={fieldId("instructions")} label={m.agent_settings_instructions_label()}>
               <KumoInputAreaControl
                 id={fieldId("instructions")}
                 name="instructions"
@@ -243,7 +250,7 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
             </Field>
             {instructionsDirty ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-                <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+                <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
                 <div className="flex flex-wrap justify-end gap-2">
                   <Button
                     disabled={Boolean(saving)}
@@ -253,10 +260,12 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                       setMessage(undefined);
                     }}
                   >
-                    Discard
+                    {m.agent_settings_discard_action()}
                   </Button>
                   <Button disabled={Boolean(saving)} type="submit">
-                    {saving === "instructions" ? "Saving…" : "Save changes"}
+                    {saving === "instructions"
+                      ? m.agent_settings_saving_action()
+                      : m.agent_settings_save_changes_action()}
                   </Button>
                 </div>
               </div>

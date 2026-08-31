@@ -37,12 +37,19 @@ export const CHECK_COPY: Record<
       blocked: () => "We'll know once the CLI is installed.",
     },
   },
+  /*
+   * The title names the job rather than the tool. The binary really is called `lark-cli` and there
+   * is no "Feishu CLI" to go and install, so the two honest options were to print a product that
+   * does not exist or to put "lark" on a screen that is about Feishu. Neither belongs in a heading
+   * whose only job is to say which check this is: the real command stays in the detail line, where
+   * it is a command rather than a channel name, and where it can be copied.
+   */
   "messaging-cli": {
-    title: () => "Lark CLI is installed",
+    title: () => "Messaging CLI is installed",
     detail: {
       pending: () => "Looking for lark-cli.",
       passed: () => "Found on this computer.",
-      failed: () => "We need lark-cli to send Lark messages.",
+      failed: () => "We need lark-cli to send Feishu messages.",
       blocked: () => "",
     },
   },
@@ -72,10 +79,11 @@ export const SETUP_COPY = {
     description: "Pick the app your team already works in.",
     providerLabel: "Messaging app",
     /**
-     * Feishu and Lark are one channel behind a regional switch, and the brand is only learned from
-     * the authorization result — a first connect has no brand yet, so the code this card leads to
-     * is always minted against Feishu. It therefore names Feishu alone: an "also called Feishu/Lark"
-     * would walk a Lark tenant into a code their account cannot authorize.
+     * Feishu and Lark are two channels, not one product under two names, and what OpenTag carries
+     * today is Feishu. A Lark channel would arrive as its own provider beside this one. So this
+     * card names Feishu alone: an "also called Feishu/Lark" would present a channel we do not
+     * deliver as merely another word for one we do, and the code behind this card is minted
+     * against Feishu regardless.
      *
      * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
      * picker cannot drift from what the same provider is called everywhere else in the product.

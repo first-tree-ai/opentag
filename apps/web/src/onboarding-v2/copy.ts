@@ -6,6 +6,7 @@
  * setup copy, so the same work says the same thing on both surfaces.
  */
 
+import * as m from "../paraglide/messages.js";
 import { SETUP_COPY } from "../setup/copy.js";
 import type { CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
@@ -121,8 +122,8 @@ export const COPY = {
   messaging: SETUP_COPY.messaging,
 
   done: {
-    title: (name: string) => `${name} is ready.`,
-    description: (name: string) => `Tag @${name} in Lark to put it to work.`,
+    title: (name: string) => m.onboarding_done_title({ name }),
+    description: (name: string, provider = "Lark") => m.onboarding_done_description({ name, provider }),
   },
 
   /**
@@ -134,7 +135,7 @@ export const COPY = {
     computers: "We lost contact while waiting for your computer.",
     createAgent: "We couldn't create your agent.",
     messaging: "We couldn't start connecting your messaging app.",
-    feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
+    feishuAttempt: m.onboarding_error_feishu_attempt(),
     resume: "We couldn't check what your account already has.",
     completeSetup: "Your agent is ready, but we couldn't finish setting up your account. Reload to try again.",
   },

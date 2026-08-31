@@ -880,7 +880,7 @@ export function MessagingStep({
   );
 }
 
-export function DoneStep({ name }: { name: string }) {
+export function DoneStep({ name, provider }: { name: string; provider?: string }) {
   return (
     <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
       <span
@@ -893,7 +893,7 @@ export function DoneStep({ name }: { name: string }) {
         <Text as="h1" size="lg" variant="heading">
           {COPY.done.title(name)}
         </Text>
-        <p className="text-kumo-subtle m-0">{COPY.done.description(name)}</p>
+        <p className="text-kumo-subtle m-0">{COPY.done.description(name, provider)}</p>
       </header>
     </section>
   );

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import { Button, Loader } from "../ui/design-system.js";
 import type { OnboardingBackend } from "./backend.js";
 import { COPY } from "./copy.js";
@@ -305,7 +306,10 @@ function OnboardingV2Flow({
             </div>
           ) : null}
           {flow.complete ? (
-            <DoneStep name={backend.agent?.name ?? draft.name} />
+            <DoneStep
+              name={backend.agent?.name ?? draft.name}
+              provider={backend.messagingProvider ? messagingProviderLabel(backend.messagingProvider) : undefined}
+            />
           ) : flow.page === "destination" ? (
             <DestinationStep
               cloudAvailable={cloudAvailable}

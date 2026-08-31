@@ -5,18 +5,14 @@ import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { formatDateTime } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
+import { messagingProviderLabel } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import { queryKeys } from "../../../query/keys.js";
 import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
 import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
-import {
-  messagingConnectionLabel,
-  messagingConnectionTone,
-  runtimeProviderName,
-  titleCase,
-} from "../agent-presentation.js";
+import { messagingConnectionLabel, messagingConnectionTone, runtimeProviderName } from "../agent-presentation.js";
 import { agentSettingsSectionLink } from "../agent-routes.js";
 
 export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
@@ -135,7 +131,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                             <div className="flex flex-wrap items-center gap-3">
                               <ProviderIcon className="size-6" provider={binding.provider} />
                               <span className="grid min-w-0 gap-1">
-                                <strong>{binding.bot.displayName ?? titleCase(binding.provider)}</strong>
+                                <strong>{binding.bot.displayName ?? messagingProviderLabel(binding.provider)}</strong>
                                 <small className="text-kumo-subtle">{messagingChannelDetail(agent, binding)}</small>
                               </span>
                               <StatusIndicator
@@ -174,7 +170,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   variant="outline"
                                   onClick={() => void connectFeishu("replace")}
                                 >
-                                  Change Feishu Bot
+                                  Change bot
                                 </Button>
                               ) : null}
                               <Button
@@ -186,7 +182,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   setConfirmation({ bindingId: binding.id, kind: "disable_binding" });
                                 }}
                               >
-                                Disconnect {titleCase(binding.provider)}
+                                Disconnect {messagingProviderLabel(binding.provider)}
                               </Button>
                             </div>
                           </section>
@@ -353,13 +349,13 @@ function TriggerModeOption({
 /** The row already shows the Bot name above, so the line beneath it does not repeat it. */
 function messagingChannelDetail(agent: AgentDetailView, binding: ImBindingSummary): string {
   return binding.provider === "feishu"
-    ? `${titleCase(binding.provider)} · @${agent.name}`
-    : titleCase(binding.provider);
+    ? `${messagingProviderLabel(binding.provider)} · @${agent.name}`
+    : messagingProviderLabel(binding.provider);
 }
 
 /** The one repair a channel state offers, or nothing when the state cannot be repaired from here. */
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {
-  const provider = titleCase(binding.provider);
+  const provider = messagingProviderLabel(binding.provider);
   if (binding.bindingState === "reauthorization_required") return `Reauthorize ${provider}`;
   if (binding.bindingState === "error" || binding.bindingState === "disabled") return `Reconnect ${provider}`;
   return undefined;

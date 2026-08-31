@@ -3,6 +3,7 @@ import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-route
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { initials } from "../../i18n/format.js";
+import { LanguageSwitcher } from "../../i18n/language-switcher.js";
 import { queryKeys } from "../../query/keys.js";
 import {
   DropdownMenu,
@@ -118,6 +119,9 @@ export function AppShellContent() {
         </Sidebar.Content>
         <Sidebar.Footer>
           <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="px-2 group-data-[state=collapsed]/sidebar:hidden">
+              <LanguageSwitcher />
+            </div>
             <Sidebar.Menu className="min-w-0 flex-1 group-data-[state=collapsed]/sidebar:hidden">
               <Sidebar.MenuItem>
                 <DropdownMenu

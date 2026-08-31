@@ -1,4 +1,5 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import { messagingProviderChoices, messagingProviderLabel } from "../../im/provider-label.js";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -183,8 +184,9 @@ export function sharedConversationLabel(provider: ImBindingSummary["provider"]):
 }
 
 export function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
-  if (provider === "feishu") return plural ? "connected Feishu group chats" : "a Feishu group chat";
-  return plural ? "connected Slack channels" : "a Slack channel";
+  const brand = messagingProviderLabel(provider);
+  const noun = provider === "feishu" ? "group chat" : "channel";
+  return plural ? `connected ${brand} ${noun}s` : `a ${brand} ${noun}`;
 }
 
 /**
@@ -192,7 +194,7 @@ export function sharedConversationDestination(provider: ImBindingSummary["provid
  * so the verified Bot name is used and no per-Agent handle is synthesized.
  */
 export function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {
-  const provider = titleCase(binding.provider);
+  const provider = messagingProviderLabel(binding.provider);
   if (binding.provider === "feishu") return `${provider} · @${agent.name}`;
   return binding.bot.displayName ? `${provider} · ${binding.bot.displayName}` : provider;
 }
@@ -207,7 +209,7 @@ export function agentUseInstruction(agent: AgentDetailView, provider: ImBindingS
 export function agentAvailabilitySummary(agent: AgentDetailView): string {
   if (agent.availability.state === "ready") {
     const provider = agent.availability.dependencies.channel.provider;
-    return provider ? `Available in ${titleCase(provider)}` : "Ready for new work";
+    return provider ? `Available in ${messagingProviderLabel(provider)}` : "Ready for new work";
   }
   return {
     action_required: "Cannot receive new work",
@@ -225,13 +227,13 @@ export function messagingAgentStatusDescription(
   if (agent.availability.state === "ready") {
     return agent.activity.state === "working"
       ? "This Agent is handling a request and remains connected for new messages."
-      : `Ready to receive new messages from ${titleCase(provider)}.`;
+      : `Ready to receive new messages from ${messagingProviderLabel(provider)}.`;
   }
   if (agent.availability.reason === "computer_offline" || agent.availability.reason === "runtime_unavailable") {
     return computerRecoveryMessage(agent);
   }
   if (agent.availability.reason === "handoff_unavailable") {
-    return `${titleCase(provider)} is connected, but messages cannot currently be handed off to this Agent.`;
+    return `${messagingProviderLabel(provider)} is connected, but messages cannot currently be handed off to this Agent.`;
   }
   return agentRecoveryMessage(agent);
 }
@@ -268,11 +270,11 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     computer_offline: "This agent's computer is offline. Retrying automatically.",
     runtime_unavailable: runtimeRecoveryMessage(agent),
-    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
+    im_not_connected: `Connect ${messagingProviderChoices()} so teammates can send this Agent work.`,
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
-    im_error: "The messaging connection failed. Reconnect Feishu or Slack to receive messages.",
-    im_disabled: "Messaging is turned off for this Agent. Reconnect Feishu or Slack to receive messages.",
+    im_error: `The messaging connection failed. Reconnect ${messagingProviderChoices()} to receive messages.`,
+    im_disabled: `Messaging is turned off for this Agent. Reconnect ${messagingProviderChoices()} to receive messages.`,
     handoff_unavailable: "Messages cannot be sent to this Agent.",
   };
   return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);

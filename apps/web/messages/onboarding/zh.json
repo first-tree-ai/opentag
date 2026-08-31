@@ -1,3 +1,24 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_done_description": "在{provider}中标记 @{name}，让它开始工作。",
+  "onboarding_done_title": "{name}已准备就绪。",
+  "onboarding_error_feishu_attempt": "该二维码已失效。请重新选择飞书获取新的二维码。",
+  "onboarding_messaging_cli_missing": "{provider}消息需要通过其 CLI 发送，但你的计算机尚未安装。运行 opentag doctor 进行安装。",
+  "onboarding_messaging_computer_offline": "你的计算机处于离线状态。重新连接后，这里会自动完成。",
+  "onboarding_messaging_confirming": "已连接，正在检查智能体是否可达…",
+  "onboarding_messaging_description": "选择团队已经在使用的应用。",
+  "onboarding_messaging_failed": "操作未成功。请重试以获取新的二维码。",
+  "onboarding_messaging_feishu_description": "你的飞书工作区",
+  "onboarding_messaging_feishu_intro": "使用飞书扫描此二维码。最后一步将在飞书中完成。",
+  "onboarding_messaging_feishu_title": "飞书",
+  "onboarding_messaging_provider_label": "消息应用",
+  "onboarding_messaging_qr_alt": "使用飞书扫描此二维码",
+  "onboarding_messaging_retry": "重试",
+  "onboarding_messaging_slack_action": "添加到 Slack",
+  "onboarding_messaging_slack_description": "你的 Slack 工作区",
+  "onboarding_messaging_slack_intro": "在你的 Slack 工作区中安装 OpenTag。我们会带你前往 Slack，再带你回来。",
+  "onboarding_messaging_slack_title": "Slack",
+  "onboarding_messaging_slack_waiting": "等待你在 Slack 中完成操作…",
+  "onboarding_messaging_title": "连接消息应用",
+  "onboarding_messaging_waiting": "等待你扫描…"
 }

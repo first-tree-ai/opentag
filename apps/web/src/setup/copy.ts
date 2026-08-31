@@ -7,6 +7,7 @@
  * Agent's settings. Copy that only one of those surfaces says stays with that surface.
  */
 
+import * as m from "../paraglide/messages.js";
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
@@ -72,27 +73,26 @@ export const SETUP_COPY = {
   },
 
   messaging: {
-    title: "Connect your messaging app",
-    description: "Pick the app your team already works in.",
-    providerLabel: "Messaging app",
+    title: m.onboarding_messaging_title(),
+    description: m.onboarding_messaging_description(),
+    providerLabel: m.onboarding_messaging_provider_label(),
     /**
      * Lark is the name this product goes by in English; Feishu is the same app under its
      * mainland China name. The provider's id stays `feishu`, because that is the Server's own
      * vocabulary — only what the reader sees changes here.
      */
-    feishu: { title: "Lark", description: "Also called Feishu" },
-    slack: { title: "Slack", description: "Your Slack workspace" },
-    feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
-    qrAlt: "Scan this QR code in Lark",
-    waiting: "Waiting for you to scan…",
-    cliMissing: (provider: string) =>
-      `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,
-    slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
-    slackAction: "Add to Slack",
-    slackWaiting: "Waiting for you to finish in Slack…",
-    confirming: "Connected. Checking your agent can be reached…",
-    computerOffline: "Your computer is offline. Reconnect it and this will finish on its own.",
-    retry: "Try again",
-    failed: "That didn't work. Try again to get a new code.",
+    feishu: { title: m.onboarding_messaging_feishu_title(), description: m.onboarding_messaging_feishu_description() },
+    slack: { title: m.onboarding_messaging_slack_title(), description: m.onboarding_messaging_slack_description() },
+    feishuIntro: m.onboarding_messaging_feishu_intro(),
+    qrAlt: m.onboarding_messaging_qr_alt(),
+    waiting: m.onboarding_messaging_waiting(),
+    cliMissing: (provider: string) => m.onboarding_messaging_cli_missing({ provider }),
+    slackIntro: m.onboarding_messaging_slack_intro(),
+    slackAction: m.onboarding_messaging_slack_action(),
+    slackWaiting: m.onboarding_messaging_slack_waiting(),
+    confirming: m.onboarding_messaging_confirming(),
+    computerOffline: m.onboarding_messaging_computer_offline(),
+    retry: m.onboarding_messaging_retry(),
+    failed: m.onboarding_messaging_failed(),
   },
 } as const;

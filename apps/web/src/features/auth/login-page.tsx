@@ -2,6 +2,7 @@ import { type AuthProvidersResponse, DEFAULT_SIGN_IN_DESTINATION } from "@openta
 import { useQuery } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import googleSignInButton from "../../assets/google-sign-in-light@2x.png";
+import { LanguageSwitcher } from "../../i18n/language-switcher.js";
 import { queryKeys } from "../../query/keys.js";
 import { Icon, Text } from "../../ui/design-system.js";
 import { AsyncState, toResourceState } from "../resource/resource-state.js";
@@ -15,7 +16,10 @@ export function LoginPage({ next: requested }: { next?: string }) {
   );
   const next = requested ?? DEFAULT_SIGN_IN_DESTINATION;
   return (
-    <main className="grid min-h-screen place-items-center bg-kumo-canvas p-6" data-ui="login-page">
+    <main className="relative grid min-h-screen place-items-center bg-kumo-canvas p-6" data-ui="login-page">
+      <div className="absolute right-6 top-6">
+        <LanguageSwitcher />
+      </div>
       <section
         aria-labelledby="login-title"
         className="grid w-full max-w-md gap-6 rounded-lg bg-kumo-base p-6 ring ring-kumo-line"

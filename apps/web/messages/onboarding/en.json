@@ -1,3 +1,24 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_done_description": "Tag @{name} in {provider} to put it to work.",
+  "onboarding_done_title": "{name} is ready.",
+  "onboarding_error_feishu_attempt": "That code is no longer usable. Pick Feishu again to get a new one.",
+  "onboarding_messaging_cli_missing": "{provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.",
+  "onboarding_messaging_computer_offline": "Your computer is offline. Reconnect it and this will finish on its own.",
+  "onboarding_messaging_confirming": "Connected. Checking your agent can be reached…",
+  "onboarding_messaging_description": "Pick the app your team already works in.",
+  "onboarding_messaging_failed": "That didn't work. Try again to get a new code.",
+  "onboarding_messaging_feishu_description": "Your Feishu workspace",
+  "onboarding_messaging_feishu_intro": "Scan this with Lark. You'll finish the last step inside Lark itself.",
+  "onboarding_messaging_feishu_title": "Lark",
+  "onboarding_messaging_provider_label": "Messaging app",
+  "onboarding_messaging_qr_alt": "Scan this QR code in Lark",
+  "onboarding_messaging_retry": "Try again",
+  "onboarding_messaging_slack_action": "Add to Slack",
+  "onboarding_messaging_slack_description": "Your Slack workspace",
+  "onboarding_messaging_slack_intro": "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
+  "onboarding_messaging_slack_title": "Slack",
+  "onboarding_messaging_slack_waiting": "Waiting for you to finish in Slack…",
+  "onboarding_messaging_title": "Connect your messaging app",
+  "onboarding_messaging_waiting": "Waiting for you to scan…"
 }

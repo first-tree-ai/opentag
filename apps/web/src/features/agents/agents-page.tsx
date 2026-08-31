@@ -2,13 +2,14 @@ import { Link } from "@tanstack/react-router";
 import { type ReactNode, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
+import { messagingProviderLabel } from "../../im/provider-label.js";
 import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
-import { agentAvatarTone, agentCardStatus, titleCase } from "./agent-presentation.js";
+import { agentAvatarTone, agentCardStatus } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
@@ -104,7 +105,7 @@ export function AgentCard({ agent }: { agent: AgentListItem }) {
             {channel ? (
               <span className="inline-flex shrink-0 items-center" data-ui="agent-card-channel">
                 <ProviderIcon className="size-4" provider={channel} />
-                <span className="sr-only">{titleCase(channel)}</span>
+                <span className="sr-only">{messagingProviderLabel(channel)}</span>
               </span>
             ) : null}
           </strong>

@@ -1,7 +1,9 @@
-import { getLocale, getTextDirection } from "./locale.js";
+import { baseLocale, getLocale, getTextDirection } from "./locale.js";
 
 export function applyDocumentLocale(): void {
-  const locale = getLocale();
-  document.documentElement.lang = locale;
-  document.documentElement.dir = getTextDirection(locale);
+  // Resolve the negotiated app locale for generated messages, but keep the document English until
+  // the visible document copy has completed the next migration wave.
+  getLocale();
+  document.documentElement.lang = baseLocale;
+  document.documentElement.dir = getTextDirection(baseLocale);
 }

@@ -543,7 +543,7 @@ describe("Tasks debug view", () => {
     expect(screen.getByText("Loading Tasks…")).toBeTruthy();
     release({ tasks: [], nextCursor: null });
     expect(
-      await screen.findByText("No Tasks yet. Work this Agent handles in Feishu or Slack appears here."),
+      await screen.findByText("No Tasks yet. Message this Agent in your chat app to put it to work."),
     ).toBeTruthy();
 
     vi.mocked(browserApi.tasks)

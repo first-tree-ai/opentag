@@ -58,6 +58,7 @@ import {
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
+import type { ImDeliveryWorkerInput, RuntimeDeliveryWorkerMetric, WorkerClaim } from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 
@@ -75,25 +76,6 @@ const acceptedSessions = alias(sessions, "agent_accepted_sessions");
 const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
 const acceptedAgents = alias(agents, "agent_accepted_agents");
 const newerHistoryRevisions = alias(imMessages, "newer_history_revisions");
-
-export interface RuntimeDeliveryWorkerMetric {
-  name: "queue_age_ms" | "active_lanes" | "queued_tasks" | "retry" | "saturation" | "timeout";
-  value: number;
-  agentId?: string;
-}
-
-type WorkerClaim =
-  | { id: string; agentId: string; queuedAt: number; kind: "pending"; claimToken: string }
-  | {
-      id: string;
-      agentId: string;
-      queuedAt: number;
-      kind: "steer";
-      claimToken: string;
-      rootDeliveryId: string;
-      expectedTurnId: string;
-    }
-  | { id: string; agentId: string; queuedAt: number; kind: "recovery" };
 
 function positiveWorkerLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
@@ -119,25 +101,7 @@ export class ImDeliveryWorker {
   readonly #onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
   #timer?: ReturnType<typeof setInterval>;
 
-  constructor(input: {
-    database: DatabaseClient;
-    domain: RuntimeDomainOwner;
-    assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
-    registry: ConnectionRegistry;
-    intervalMs?: number;
-    claimLeaseMs?: number;
-    claimRenewMs?: number;
-    afterClaimRowLocked?: () => Promise<void>;
-    beforeDeliveryAdmission?: () => Promise<void>;
-    onDiagnostic?: (code: string) => void;
-    now?: () => Date;
-    operationTimeoutMs?: number;
-    maxQueueAgeMs?: number;
-    maxConcurrent?: number;
-    maxQueuedPerAgent?: number;
-    maxQueuedTotal?: number;
-    onMetric?: (metric: RuntimeDeliveryWorkerMetric) => void;
-  }) {
+  constructor(input: ImDeliveryWorkerInput) {
     this.#database = input.database;
     this.#domain = input.domain;
     this.#assembler = input.assembler;

@@ -1,14 +1,4 @@
-export interface KeyedTaskSchedulerOptions {
-  maxConcurrent: number;
-  maxQueuedPerKey: number;
-  maxQueuedTotal: number;
-  now?: () => number;
-}
-
-interface TaskLane {
-  queue: Array<{ run: () => Promise<void>; onDrop?: () => void; enqueuedAt: number }>;
-  running: boolean;
-}
+import type { KeyedTaskSchedulerOptions, TaskLane } from "./keyed-task-scheduler.types.js";
 
 export class KeyedTaskScheduler {
   readonly #options: KeyedTaskSchedulerOptions;

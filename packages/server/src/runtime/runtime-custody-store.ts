@@ -17,6 +17,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
 export interface AcceptedDeliveryRecord {
@@ -48,7 +49,7 @@ export interface DeliveryDispatchContext {
   instanceId: string;
 }
 
-export interface RuntimeCustodyStore {
+export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease {
   /**
    * Durable custody is the recovery authority. Process-local request maps are only
    * latency optimisations; a restarted replica must be able to resume from the
@@ -59,11 +60,6 @@ export interface RuntimeCustodyStore {
     inputHash: string,
     context: DeliveryDispatchContext,
   ): Promise<DeliveryDispatchStatus>;
-  releaseDeliveryDispatch(
-    request: DirectImMessageDeliveryRequest,
-    inputHash: string,
-    disposition: "retry" | "deferred",
-  ): Promise<DeliveryReleaseStatus>;
   acceptDelivery(
     request: DirectImMessageDeliveryRequest,
     inputHash: string,

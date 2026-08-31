@@ -195,6 +195,27 @@ describe("RuntimeDomainOwner", () => {
     expect(custody.hasDispatch(request.deliveryId)).toBe(false);
   });
 
+  it("compensates a dispatch marker when registry send throws synchronously", async () => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseDeliveryDispatch");
+    const owner = new RuntimeDomainOwner(
+      {
+        send: vi.fn(() => {
+          throw new Error("sync send failed");
+        }),
+      } as never,
+      custody,
+    );
+    const request = deliveryRequest();
+
+    await expect(owner.requestDelivery(fixture.computerId, fixture.instanceId, request)).rejects.toThrow(
+      "sync send failed",
+    );
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), "retry");
+    expect(custody.hasDispatch(request.deliveryId)).toBe(false);
+  });
+
   it("releases delivery custody when a dispatch times out", async () => {
     const fixture = await ownerFixture(5);
     const custody = new MemoryRuntimeCustodyStore();

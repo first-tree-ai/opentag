@@ -913,12 +913,12 @@ export function MessagingStep({
 }
 
 export function DoneStep({
+  completion,
   name,
-  onFinishReview,
   provider,
 }: {
+  completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
   name: string;
-  onFinishReview?: () => void;
   provider?: MessagingProvider;
 }) {
   return (
@@ -935,7 +935,15 @@ export function DoneStep({
         </Text>
         <p className="text-kumo-subtle m-0">{COPY.done.description(name, provider)}</p>
       </header>
-      {onFinishReview ? <Button onClick={onFinishReview}>{COPY.done.finishReboard}</Button> : null}
+      {completion ? (
+        <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
+          {completion.state === "ready"
+            ? COPY.done.finishReboard
+            : completion.state === "pending"
+              ? COPY.done.finishing
+              : COPY.done.retryFinish}
+        </Button>
+      ) : null}
     </section>
   );
 }

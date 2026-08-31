@@ -223,14 +223,19 @@ function OnboardingV2Flow({
   }, [backend.markPastConnectStep, flow.complete, flow.page]);
 
   /*
-   * Setup is completed from the finished flow, and exactly once. Reporting it from the render that
-   * first sees `complete` — rather than from the button that connected the messaging app — is what
-   * keeps it true for both routes and for a reader who arrives already finished.
+   * Setup is completed from the finished flow. Reporting it from the render that first sees
+   * `complete` — rather than from the button that connected the messaging app — keeps it true for
+   * both routes and for a reader who arrives already finished. Only one attempt runs at a time;
+   * failures get a small bounded retry budget before the reader is offered an explicit retry.
    */
   const reported = useRef<string | undefined>(undefined);
   const [completionAttempt, setCompletionAttempt] = useState(0);
   const [completionFailed, setCompletionFailed] = useState(false);
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const retryCompletion = useCallback(() => {
+    setCompletionAttempt(0);
+    setCompletionFailed(false);
+  }, []);
   useEffect(() => {
     const agentId = backend.agent?.id;
     if (
@@ -333,8 +338,14 @@ function OnboardingV2Flow({
           ) : null}
           {flow.complete ? (
             <DoneStep
+              completion={
+                completionFailed
+                  ? { onFinish: retryCompletion, state: "failed" }
+                  : reviewMode
+                    ? { onFinish: () => setReviewConfirmed(true), state: reviewConfirmed ? "pending" : "ready" }
+                    : undefined
+              }
               name={backend.agent?.name ?? draft.name}
-              onFinishReview={reviewMode && !reviewConfirmed ? () => setReviewConfirmed(true) : undefined}
               provider={messagingProvider ?? backend.messagingProvider}
             />
           ) : flow.page === "destination" ? (

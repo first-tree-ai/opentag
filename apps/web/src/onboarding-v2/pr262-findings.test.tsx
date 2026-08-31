@@ -322,15 +322,39 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     expect(onComplete).not.toHaveBeenCalled();
 
     press("Finish re-board");
+    expect(screen.getByRole("button", { name: "Finishing…" })).toHaveProperty("disabled", true);
     await settle();
 
     expect(onComplete).toHaveBeenCalledExactlyOnceWith(AGENT_ID);
   });
 
+  it("keeps re-board completion recoverable after its bounded attempts fail", async () => {
+    vi.mocked(browserApi.agents).mockResolvedValue({ agents: [existingAgent()] });
+    computersReturning([computer()]);
+    vi.mocked(browserApi.imBinding).mockResolvedValue(activeSlackBinding());
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
+    const onComplete = vi.fn().mockRejectedValue(new Error("Service unavailable"));
+
+    render(<OnboardingV2Page onComplete={onComplete} reviewMode />);
+    await settle();
+    press("Finish re-board");
+    await settle();
+
+    expect(onComplete).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("alert").textContent).not.toContain("Reload");
+    expect(screen.getByRole("button", { name: "Try again" })).toHaveProperty("disabled", false);
+
+    press("Try again");
+    expect(screen.getByRole("button", { name: "Finishing…" })).toHaveProperty("disabled", true);
+    await settle();
+
+    expect(onComplete).toHaveBeenCalledTimes(6);
+    expect(screen.getByRole("button", { name: "Try again" })).toHaveProperty("disabled", false);
+  });
+
   it("retries marking setup complete when the Server refuses it once", async () => {
-    // `onComplete` is latched by agent id before it is called and its result is never inspected, so
-    // a single failure is permanent: the reader sits on the finished screen with setup incomplete,
-    // and every route they try bounces them back to a flow that starts from nothing.
+    // The claim is released after a refusal so a transient failure does not strand the reader on
+    // the finished screen with an account the Server still considers incomplete.
     computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());

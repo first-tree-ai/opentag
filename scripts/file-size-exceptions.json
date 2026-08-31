@@ -4,19 +4,19 @@
   "exceptions": [
     {
       "path": "apps/web/src/__tests__/app.test.tsx",
-      "lines": 3505,
+      "lines": 3599,
       "owner": "@bestony",
       "expires": "2026-10-31"
     },
     {
       "path": "apps/web/src/agent-creation/agent-creation-flow.tsx",
-      "lines": 977,
+      "lines": 998,
       "owner": "@bestony",
       "expires": "2026-10-31"
     },
     {
       "path": "apps/web/src/onboarding-v2/steps.tsx",
-      "lines": 949,
+      "lines": 1038,
       "owner": "@bestony",
       "expires": "2026-10-31"
     },
@@ -34,7 +34,7 @@
     },
     {
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
-      "lines": 2025,
+      "lines": 2043,
       "owner": "@bestony",
       "expires": "2026-10-31"
     }

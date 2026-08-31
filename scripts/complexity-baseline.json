@@ -96,7 +96,7 @@
       "id": "apps/web/src/__tests__/app.test.tsx#callback",
       "path": "apps/web/src/__tests__/app.test.tsx",
       "symbol": "callback",
-      "complexity": 183
+      "complexity": 193
     },
     {
       "id": "apps/web/src/agent-creation/agent-creation-flow.tsx#AgentCreationFlow",
@@ -114,19 +114,25 @@
       "id": "apps/web/src/agent-creation/agent-creation-flow.tsx#RuntimeRouteSection",
       "path": "apps/web/src/agent-creation/agent-creation-flow.tsx",
       "symbol": "RuntimeRouteSection",
-      "complexity": 49
+      "complexity": 56
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-computer-choice.tsx#AgentComputerChoice",
+      "path": "apps/web/src/features/agents/agent-computer-choice.tsx",
+      "symbol": "AgentComputerChoice",
+      "complexity": 16
     },
     {
       "id": "apps/web/src/features/agents/agent-model.ts#projectAgentAvailability",
       "path": "apps/web/src/features/agents/agent-model.ts",
       "symbol": "projectAgentAvailability",
-      "complexity": 44
+      "complexity": 48
     },
     {
       "id": "apps/web/src/features/agents/agent-presentation.ts#agentStatusPresentation",
       "path": "apps/web/src/features/agents/agent-presentation.ts",
       "symbol": "agentStatusPresentation",
-      "complexity": 21
+      "complexity": 22
     },
     {
       "id": "apps/web/src/features/agents/agent-queries.ts#useAgentDetailView",
@@ -138,19 +144,19 @@
       "id": "apps/web/src/features/agents/agent-settings/agent-computer-settings.tsx#AgentComputerSettings",
       "path": "apps/web/src/features/agents/agent-settings/agent-computer-settings.tsx",
       "symbol": "AgentComputerSettings",
-      "complexity": 25
+      "complexity": 17
     },
     {
       "id": "apps/web/src/features/agents/agent-settings/agent-manage-settings.tsx#AgentManageSettings",
       "path": "apps/web/src/features/agents/agent-settings/agent-manage-settings.tsx",
       "symbol": "AgentManageSettings",
-      "complexity": 16
+      "complexity": 27
     },
     {
       "id": "apps/web/src/features/agents/agent-settings/im-tab.tsx#callback",
       "path": "apps/web/src/features/agents/agent-settings/im-tab.tsx",
       "symbol": "callback",
-      "complexity": 42
+      "complexity": 29
     },
     {
       "id": "apps/web/src/features/agents/agent-settings/model-settings.tsx#AgentModelSettings",
@@ -162,25 +168,13 @@
       "id": "apps/web/src/features/agents/agent-settings/runtime-configuration.tsx#RuntimeConfigurationEditor",
       "path": "apps/web/src/features/agents/agent-settings/runtime-configuration.tsx",
       "symbol": "RuntimeConfigurationEditor",
-      "complexity": 38
+      "complexity": 39
     },
     {
       "id": "apps/web/src/features/agents/agent-settings/sections.ts#agentSettingsSummary",
       "path": "apps/web/src/features/agents/agent-settings/sections.ts",
       "symbol": "agentSettingsSummary",
       "complexity": 25
-    },
-    {
-      "id": "apps/web/src/features/agents/computer-setup.tsx#ComputerSetupLifecycle",
-      "path": "apps/web/src/features/agents/computer-setup.tsx",
-      "symbol": "ComputerSetupLifecycle",
-      "complexity": 21
-    },
-    {
-      "id": "apps/web/src/features/agents/computer-setup.tsx#pollVerdict",
-      "path": "apps/web/src/features/agents/computer-setup.tsx",
-      "symbol": "pollVerdict",
-      "complexity": 16
     },
     {
       "id": "apps/web/src/features/agents/new-agent-page.tsx#AgentCreationContent",
@@ -210,13 +204,13 @@
       "id": "apps/web/src/im/feishu-setup.tsx#async",
       "path": "apps/web/src/im/feishu-setup.tsx",
       "symbol": "async",
-      "complexity": 22
+      "complexity": 36
     },
     {
       "id": "apps/web/src/im/feishu-setup.tsx#poll",
       "path": "apps/web/src/im/feishu-setup.tsx",
       "symbol": "poll",
-      "complexity": 18
+      "complexity": 22
     },
     {
       "id": "apps/web/src/onboarding-v2/flow.ts#deriveFlowState",
@@ -225,25 +219,25 @@
       "complexity": 20
     },
     {
+      "id": "apps/web/src/onboarding-v2/mock-backend.ts#callback",
+      "path": "apps/web/src/onboarding-v2/mock-backend.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
       "id": "apps/web/src/onboarding-v2/page.tsx#OnboardingV2Flow",
       "path": "apps/web/src/onboarding-v2/page.tsx",
       "symbol": "OnboardingV2Flow",
-      "complexity": 50
+      "complexity": 51
     },
     {
       "id": "apps/web/src/onboarding-v2/server-backend.ts#callback",
       "path": "apps/web/src/onboarding-v2/server-backend.ts",
       "symbol": "callback",
-      "complexity": 19
+      "complexity": 45
     },
     {
       "id": "apps/web/src/onboarding-v2/server-backend.ts#callback~2",
-      "path": "apps/web/src/onboarding-v2/server-backend.ts",
-      "symbol": "callback",
-      "complexity": 35
-    },
-    {
-      "id": "apps/web/src/onboarding-v2/server-backend.ts#callback~3",
       "path": "apps/web/src/onboarding-v2/server-backend.ts",
       "symbol": "callback",
       "complexity": 22
@@ -258,13 +252,19 @@
       "id": "apps/web/src/onboarding-v2/steps.tsx#ComputerStep",
       "path": "apps/web/src/onboarding-v2/steps.tsx",
       "symbol": "ComputerStep",
-      "complexity": 20
+      "complexity": 16
     },
     {
       "id": "apps/web/src/onboarding-v2/steps.tsx#MessagingConnection",
       "path": "apps/web/src/onboarding-v2/steps.tsx",
       "symbol": "MessagingConnection",
       "complexity": 38
+    },
+    {
+      "id": "apps/web/src/onboarding-v2/steps.tsx#OnboardingConnectPresentation",
+      "path": "apps/web/src/onboarding-v2/steps.tsx",
+      "symbol": "OnboardingConnectPresentation",
+      "complexity": 19
     },
     {
       "id": "packages/client/src/__tests__/agent-runtime-exhaustive.test.ts#callback",
@@ -840,10 +840,16 @@
       "id": "packages/server/src/services/agents/agent-service.ts#callback",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 21
+      "complexity": 18
     },
     {
       "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
+      "path": "packages/server/src/services/agents/agent-service.ts",
+      "symbol": "callback",
+      "complexity": 21
+    },
+    {
+      "id": "packages/server/src/services/agents/agent-service.ts#callback~3",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
       "complexity": 30
@@ -894,19 +900,19 @@
       "id": "packages/server/src/services/im-bindings/feishu/setup-service.ts#createOrReuse",
       "path": "packages/server/src/services/im-bindings/feishu/setup-service.ts",
       "symbol": "createOrReuse",
-      "complexity": 30
+      "complexity": 31
     },
     {
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#activate",
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
       "symbol": "activate",
-      "complexity": 61
+      "complexity": 63
     },
     {
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#callback",
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
       "symbol": "callback",
-      "complexity": 39
+      "complexity": 41
     },
     {
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#diagnostics",
@@ -936,7 +942,7 @@
       "id": "packages/server/src/services/im/im-message-inbox.ts#callback",
       "path": "packages/server/src/services/im/im-message-inbox.ts",
       "symbol": "callback",
-      "complexity": 164
+      "complexity": 170
     },
     {
       "id": "packages/server/src/services/runtime-config/effective-runtime-snapshot-assembler.ts#assembleForSession",

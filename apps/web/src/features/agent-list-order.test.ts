@@ -311,11 +311,13 @@ describe("Agent availability model and presentation", () => {
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");
     /*
-     * Exact, and both branches in both numbers. `toContain("Feishu")` passed for any string that
-     * merely mentioned the brand, which is what let the hardcoded literals sit here unnoticed: the
-     * assertion could not tell a sentence sourced from `messagingProviderLabel` from one that spelled
-     * the brand out beside it. These pin the whole sentence, so a brand that stops following the
-     * helper changes one of them.
+     * Exact, and both branches in both numbers, so the complete visible sentence is pinned: anything
+     * added, dropped or reworded around the brand fails here, which `toContain("Feishu")` did not.
+     *
+     * What they deliberately do not prove is where the brand came from. Replacing the helper call
+     * with the same correctly-spelled literals leaves all four green, because the rendered text is
+     * identical either way -- no assertion about output can see sourcing. That guarantee needs a
+     * structural check (#335), not a stronger expectation here.
      */
     expect(sharedConversationDestination("feishu")).toBe("a Feishu group chat");
     expect(sharedConversationDestination("feishu", true)).toBe("connected Feishu group chats");

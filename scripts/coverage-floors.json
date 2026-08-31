@@ -2,34 +2,34 @@
   "version": 1,
   "projects": {
     "cli": {
-      "branches": 87.32,
-      "functions": 96.45,
-      "lines": 96.12,
-      "statements": 96.12
+      "branches": 87.3,
+      "functions": 96.4,
+      "lines": 96.1,
+      "statements": 96.1
     },
     "web": {
-      "branches": 91.85,
-      "functions": 90.19,
-      "lines": 94.46,
-      "statements": 94.46
+      "branches": 91.8,
+      "functions": 90.1,
+      "lines": 94.4,
+      "statements": 94.4
     },
     "shared": {
-      "branches": 85.35,
-      "functions": 92.64,
-      "lines": 95.62,
-      "statements": 95.62
+      "branches": 85.3,
+      "functions": 92.6,
+      "lines": 95.6,
+      "statements": 95.6
     },
     "client": {
-      "branches": 92.75,
+      "branches": 92.7,
       "functions": 97.9,
-      "lines": 95.98,
-      "statements": 95.98
+      "lines": 95.9,
+      "statements": 95.9
     },
     "server": {
-      "branches": 87.55,
-      "functions": 88.88,
-      "lines": 97.04,
-      "statements": 97.04
+      "branches": 87.5,
+      "functions": 88.8,
+      "lines": 97,
+      "statements": 97
     }
   }
 }

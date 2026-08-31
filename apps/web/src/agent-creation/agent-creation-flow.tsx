@@ -241,7 +241,7 @@ export function AgentCreationFlow({
       try {
         record ??= await getOrCreateCreationIntent(accountId, request);
         const created = await createAgentOnce(record);
-        await clearCreationIntent(accountId, record.creationIntentId);
+        await clearCreationIntents(accountId);
         onCreated(created);
       } catch (cause) {
         if (cause instanceof ApiError) {
@@ -795,6 +795,25 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
   } catch {
     memoryIntentFallbackAccounts.add(accountId);
   }
+}
+
+/**
+ * Retires every creation intent this Account holds, which is what a successful creation makes of
+ * them: they exist to survive one act of creating one Agent, and the reader may have abandoned
+ * several along the way by changing the name or the route. A record left behind is not inert — the
+ * resume effect will send it the moment its old route is displayed again, creating a second Agent
+ * nobody asked for. Refusing to resume a hidden route only defers that; retiring the record ends it.
+ */
+async function clearCreationIntents(accountId: string): Promise<void> {
+  await withCreationLock(accountId, () => {
+    memoryIntentRecords.delete(accountId);
+    memoryIntentFallbackAccounts.delete(accountId);
+    try {
+      window.localStorage.removeItem(creationIntentKey(accountId));
+    } catch {
+      // No durable record is available to clear.
+    }
+  });
 }
 
 async function clearCreationIntent(accountId: string, creationIntentId: string): Promise<void> {

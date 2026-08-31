@@ -1115,6 +1115,79 @@ describe("OpenTag Web App Shell", () => {
     expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Claude Agent");
   });
 
+  it("retires a hidden-route intent once an explicit creation supersedes it", async () => {
+    const hiddenComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const intentKey = `opentag.agent-creation.intent:${userId}`;
+    const hidden = {
+      version: 3,
+      accountId: userId,
+      creationIntentId: "8f1e2d3c-4b5a-4c6d-9e8f-1a2b3c4d5e66",
+      request: {
+        name: "zulu-agent",
+        displayName: "Zulu Agent",
+        runtimeProvider: "codex",
+        computerId: hiddenComputerId,
+      },
+    };
+    window.localStorage.setItem(intentKey, JSON.stringify({ version: 3, accountId: userId, records: [hidden] }));
+    const visibleComputers = [
+      {
+        id: computerId,
+        displayName: "Ada's Mac",
+        platform: "darwin",
+        connectionStatus: "online",
+        providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        connectedAt: "2026-08-20T00:00:00.000Z",
+        lastSeenAt: "2026-08-20T00:00:00.000Z",
+      },
+      {
+        id: hiddenComputerId,
+        displayName: "Zulu Tower",
+        platform: "linux",
+        connectionStatus: "online",
+        providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:01.000Z" }],
+        connectedAt: "2026-08-20T00:00:01.000Z",
+        lastSeenAt: "2026-08-20T00:00:01.000Z",
+      },
+    ];
+    installApi({ computers: visibleComputers });
+    window.history.replaceState({}, "", "/agents/new");
+    const first = render(<App />);
+
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Visible Agent" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
+      ).toHaveLength(1),
+    );
+    // The act these records exist to survive is over. One left behind is not inert: the resume
+    // effect would send it as soon as its machine became the resolved one again.
+    await waitFor(() => expect(window.localStorage.getItem(intentKey)).toBeNull());
+
+    // And prove it, rather than inferring it from an empty store: come back with the abandoned
+    // intent's Computer as the only machine, so its old route is exactly what the form displays.
+    // `installApi` swaps the implementation and keeps the call history, so the second visit is
+    // measured as growth rather than as an absolute count.
+    const postsBeforeReturning = vi
+      .mocked(fetch)
+      .mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST").length;
+    first.unmount();
+    installApi({ computers: [visibleComputers[1] as Record<string, unknown>] });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    expect(await screen.findByText("Zulu Tower")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
+    ).toHaveLength(postsBeforeReturning);
+  });
+
   it("resumes a stored creation intent that names the route on screen", async () => {
     // The control for the two cases above: the gate has to refuse a hidden route without disabling
     // resume, which is the whole reason a creation intent is persisted.

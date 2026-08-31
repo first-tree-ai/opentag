@@ -160,6 +160,26 @@ describe("Agent contracts", () => {
     ).toThrow();
   });
 
+  it("creates an Agent with no Computer and projects the absent binding as null", () => {
+    const created = CreateAgentRequestSchema.parse({
+      displayName: agent.displayName,
+      name: agent.name,
+      runtimeProvider: agent.runtimeProvider,
+    });
+    expect(created.computerId).toBeUndefined();
+    expect(AgentAdminConfigSchema.parse({ ...agent, computerId: null })).toMatchObject({ computerId: null });
+    const { runtimeConfig: _, revision: _revision, createdByUserId, computerId: _computerId, ...base } = agent;
+    const unbound = {
+      ...base,
+      createdBy: { userId: createdByUserId, displayName: "Creator" },
+      computer: null,
+    };
+    expect(AgentSummarySchema.parse(unbound)).toEqual(unbound);
+    // Absent and null stay distinct: `computer` is always stated, so a reader never has to guess
+    // whether an Agent has no Computer or the field was dropped in transit.
+    expect(() => AgentSummarySchema.parse({ ...base, createdBy: unbound.createdBy })).toThrow();
+  });
+
   it("rejects unexpected authority and immutable update fields", () => {
     expect(() => CreateAgentRequestSchema.parse({ ...agent, createdByUserId: agent.createdByUserId })).toThrow();
     expect(() =>

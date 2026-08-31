@@ -3,8 +3,40 @@ import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
 import * as m from "../../../paraglide/messages.js";
 import { Button, Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import { ComputerConnect } from "../../computer-connect/computer-connect.js";
+import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
+
+/**
+ * The panel an Agent that has no Computer gets. It is a distinct screen rather than the repair flow
+ * with a blank name: there is no machine to bring back, so what has to happen is that the Agent is
+ * given the Computer this Account has. That step is shared with the onboarding recovery, so a reader
+ * who arrives from either direction gets the same result.
+ */
+function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+  return (
+    <div className="grid gap-6">
+      <Text as="h1" id="computer-heading" size="lg" variant="heading">
+        {m.agents_status_computer()}
+      </Text>
+      <section
+        aria-labelledby="computer-heading"
+        className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      >
+        <header className="flex flex-wrap items-start justify-between gap-3">
+          <Text as="h2" variant="heading">
+            {m.agent_settings_computer_none_heading()}
+          </Text>
+          <StatusIndicator label={m.agent_settings_computer_none_status()} tone="warning" />
+        </header>
+        <div className="grid gap-4 rounded-md bg-kumo-recessed p-4">
+          <p>{computerRecoveryMessage(agent)}</p>
+          <AgentComputerChoice agentId={agent.id} onBound={onAgentChanged} />
+        </div>
+      </section>
+    </div>
+  );
+}
 
 export function AgentComputerSettings({
   agent,
@@ -26,6 +58,7 @@ export function AgentComputerSettings({
         : m.agent_settings_computer_offline()
       : m.agent_settings_computer_unconfirmed();
   const computerTone: StatusTone = ready ? "success" : blocked ? "warning" : "neutral";
+  if (!agent.computer) return <AgentComputerBinding agent={agent} onAgentChanged={onAgentChanged} />;
   return (
     <div className="grid gap-6">
       <Text as="h1" id="computer-heading" size="lg" variant="heading">
@@ -81,7 +114,7 @@ function AgentComputerRepair({
   computer,
   onAgentChanged,
 }: {
-  computer: AgentDetailView["computer"];
+  computer: NonNullable<AgentDetailView["computer"]>;
   onAgentChanged: () => void;
 }) {
   const [reconnecting, setReconnecting] = useState(false);

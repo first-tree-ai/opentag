@@ -146,6 +146,23 @@ describe("createClientRuntime production composition", () => {
     expect(inFlightUpdates).toHaveBeenCalledTimes(1);
   });
 
+  it("does not publish ambient PATH IM CLI readiness from production composition", async () => {
+    const home = await temporaryDirectory("opentag-im-cli-no-path-");
+    const { lark, slack } = await writeReadyImClis(home);
+    const connection = runtimeConnection();
+    const imUpdates = vi.spyOn(connection, "setImCliReadiness");
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: `${home}:${process.env.PATH ?? ""}` },
+      factories: [readyFactory("codex", async () => ({ ready: true, issues: [] }))],
+      home,
+      larkCliCommand: lark,
+      slackCliCommand: slack,
+    });
+    runtime.stop();
+    expect(imUpdates).not.toHaveBeenCalled();
+  });
+
   it("projects Codex probe outcomes without exposing provider diagnostics", () => {
     expect(
       codexProviderReadiness(false, { ready: false, issues: [{ code: "artifact_missing", message: "secret" }] }),
@@ -1041,7 +1058,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     const connection = runtimeConnection(server.url, () => currentTime);
     const capabilityUpdates = vi.spyOn(connection, "setVerifiedCapabilities");
     const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
-    const imUpdates = vi.spyOn(connection, "setImCliReadiness");
     const heartbeats: Array<Record<string, unknown>> = [];
     let releaseHung!: (result: { ready: true; issues: [] } | { ready: false; issues: [] }) => void;
     const hung = new Promise<{ ready: true; issues: [] } | { ready: false; issues: [] }>((resolve) => {
@@ -1109,19 +1125,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         { provider: "claude-code", status: "ready" },
       ]),
     );
-    expect(imUpdates.mock.calls.map(([observation]) => observation)).toEqual(
-      expect.arrayContaining([
-        { provider: "feishu", status: "ready" },
-        { provider: "slack", status: "ready" },
-      ]),
-    );
     const codexUnavailableAtStart = readinessUpdates.mock.calls.filter(
       ([observation]) => observation.provider === "codex" && observation.status === "unavailable",
     ).length;
     const running = runtime.run();
     await vi.waitFor(() => expect(codexProbe).toHaveBeenCalledTimes(2));
     const claudeAtHungRefresh = claudeProbe.mock.calls.length;
-    const imReadyAtHungRefresh = imUpdates.mock.calls.filter(([{ status }]) => status === "ready").length;
     const capabilitiesAtHungRefresh = capabilityUpdates.mock.calls.length;
     await vi.waitFor(() =>
       expect(
@@ -1146,11 +1155,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     ).toEqual({ provider: "codex", status: "unavailable" });
 
     await vi.waitFor(() => expect(claudeProbe.mock.calls.length).toBeGreaterThan(claudeAtHungRefresh));
-    await vi.waitFor(() =>
-      expect(imUpdates.mock.calls.filter(([{ status }]) => status === "ready").length).toBeGreaterThan(
-        imReadyAtHungRefresh,
-      ),
-    );
     await vi.waitFor(() => expect(capabilityUpdates.mock.calls.length).toBeGreaterThan(capabilitiesAtHungRefresh));
 
     currentTime += RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1;
@@ -1164,10 +1168,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
           { provider: "codex", status: "unavailable" },
           { provider: "claude-code", status: "ready" },
         ]),
-        imCliReadiness: expect.arrayContaining([
-          { provider: "feishu", status: "ready" },
-          { provider: "slack", status: "ready" },
-        ]),
+        imCliReadiness: [],
       });
     });
 

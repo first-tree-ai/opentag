@@ -4,7 +4,13 @@ import type {
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
+  ImCliProvider,
   ImCliReadinessStatus,
+  IntegrationCredentialExecutionReason,
+  IntegrationCredentialExecutionStatus,
+  ProviderCliExpectedIdentity,
+  ProviderCliHandoffProgress,
+  ProviderCliValidationGrantFrame,
   ProviderReadinessStatus,
   RuntimeImCredentialGrantRequest,
   RuntimeImCredentialGrantResult,
@@ -110,6 +116,7 @@ export interface SlackConnectionMaterial {
 }
 
 interface ImBindingReadinessInput {
+  id: string;
   agentId: string;
   provider: "feishu" | "slack";
   status: ImBindingState;
@@ -117,6 +124,7 @@ interface ImBindingReadinessInput {
   observedConnectedAt: Date | null;
   observedAt: Date | null;
   grantedCapabilities: string[];
+  credentialGeneration: number;
   credentialStatus: "valid" | "invalid";
 }
 
@@ -139,6 +147,8 @@ interface ImBindingReadiness {
   handoff: ImBindingHandoffStatus;
   agentRuntimeReadiness: ProviderReadinessStatus;
   providerCliReadiness: ImCliReadinessStatus;
+  credentialExecutionReadiness: IntegrationCredentialExecutionStatus;
+  credentialExecutionReason?: IntegrationCredentialExecutionReason;
   reauthorizationRequired: boolean;
   connection: { state: "connected" | "disconnected"; observedAt: string } | null;
 }
@@ -288,6 +298,23 @@ function slackInstallationInspectionInput(installation: typeof slackInstallation
   };
 }
 
+function providerCliProgress(
+  artifactStatus: ImCliReadinessStatus,
+  credential: { status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason },
+): ProviderCliHandoffProgress | undefined {
+  if (credential.reason === "upgrade_required" || credential.status === "needs_attention") {
+    return {
+      phase: "needs_attention",
+      ...(credential.reason ? { reason: credential.reason } : {}),
+    };
+  }
+  if (artifactStatus !== "ready") {
+    return artifactStatus === "unavailable" ? { phase: "needs_attention" } : { phase: "preparing_cli" };
+  }
+  if (credential.status === "ready") return undefined;
+  return { phase: "checking_credentials" };
+}
+
 function needsScopeUpdate(
   status: "provisioning" | "active" | "reauthorization_required" | "error" | "disabled",
   provider: "feishu" | "slack",
@@ -303,7 +330,21 @@ export class ImBindingService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #agentRuntimeReadiness: (agentId: string) => Promise<ProviderReadinessStatus>;
-  readonly #imCliReadiness: (agentId: string, provider: "feishu" | "slack") => Promise<ImCliReadinessStatus>;
+  readonly #imCliReadiness: (
+    agentId: string,
+    provider: "feishu" | "slack",
+    integrationId: string,
+    credentialGeneration: number,
+  ) => Promise<ImCliReadinessStatus>;
+  readonly #credentialExecutionReadiness: (
+    agentId: string,
+    provider: "feishu" | "slack",
+    integrationId: string,
+    credentialGeneration: number,
+  ) => Promise<{ status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason }>;
+  readonly #onActiveBindingChanged:
+    | ((input: { agentId: string; workspaceComputerId: string }) => Promise<void> | void)
+    | undefined;
 
   constructor(
     database: DatabaseClient,
@@ -315,7 +356,18 @@ export class ImBindingService {
       imCliReadiness?: (
         agentId: string,
         provider: "feishu" | "slack",
+        integrationId: string,
+        credentialGeneration: number,
       ) => Promise<ImCliReadinessStatus> | ImCliReadinessStatus;
+      credentialExecutionReadiness?: (
+        agentId: string,
+        provider: "feishu" | "slack",
+        integrationId: string,
+        credentialGeneration: number,
+      ) =>
+        | Promise<{ status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason }>
+        | { status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason };
+      onActiveBindingChanged?: (input: { agentId: string; workspaceComputerId: string }) => Promise<void> | void;
     } = {},
   ) {
     this.#database = database;
@@ -323,7 +375,13 @@ export class ImBindingService {
     this.#cipher = cipher;
     this.#now = options.now ?? (() => new Date());
     this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
-    this.#imCliReadiness = async (agentId, provider) => (await options.imCliReadiness?.(agentId, provider)) ?? "ready";
+    this.#imCliReadiness = async (agentId, provider, integrationId, credentialGeneration) =>
+      (await options.imCliReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? "checking";
+    this.#credentialExecutionReadiness = async (agentId, provider, integrationId, credentialGeneration) =>
+      (await options.credentialExecutionReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? {
+        status: "unconfirmed",
+      };
+    this.#onActiveBindingChanged = options.onActiveBindingChanged;
   }
 
   async getAgentWorkspaceComputerId(agentId: string): Promise<string | undefined> {
@@ -334,6 +392,115 @@ export class ImBindingService {
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     return agent?.workspaceComputerId ?? undefined;
+  }
+
+  async listActiveProviderCliRequirements(workspaceComputerId: string): Promise<
+    readonly {
+      agentId: string;
+      credentialGeneration: number;
+      expectedIdentity: ProviderCliExpectedIdentity;
+      integrationId: string;
+      provider: ImCliProvider;
+    }[]
+  > {
+    const rows = await this.#database
+      .select({
+        binding: imBindings,
+        slackInstallation: slackInstallations,
+      })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
+      .where(
+        and(eq(agents.computerId, workspaceComputerId), eq(agents.status, "active"), eq(imBindings.status, "active")),
+      );
+    const requirements: {
+      agentId: string;
+      credentialGeneration: number;
+      expectedIdentity: ProviderCliExpectedIdentity;
+      integrationId: string;
+      provider: ImCliProvider;
+    }[] = [];
+    for (const row of rows) {
+      const identity = this.#expectedIdentity(row.binding, row.slackInstallation);
+      if (!identity) continue;
+      requirements.push({
+        agentId: row.binding.agentId,
+        credentialGeneration:
+          row.binding.provider === "slack" && row.slackInstallation
+            ? row.slackInstallation.credentialGeneration
+            : row.binding.credentialGeneration,
+        expectedIdentity: identity,
+        integrationId: row.binding.id,
+        provider: row.binding.provider,
+      });
+    }
+    return requirements;
+  }
+
+  async issueIntegrationCliValidationGrant(input: {
+    agentId: string;
+    computerId: string;
+    credentialGeneration: number;
+    integrationId: string;
+    provider: ImCliProvider;
+    workspaceComputerId: string;
+  }): Promise<
+    { expectedIdentity: ProviderCliExpectedIdentity; grant: ProviderCliValidationGrantFrame["grant"] } | undefined
+  > {
+    const [row] = await this.#database
+      .select({
+        binding: imBindings,
+        slackInstallation: slackInstallations,
+        workspaceComputerId: agents.computerId,
+        computerId: accountComputers.currentInstallationId,
+        agentStatus: agents.status,
+      })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
+      .where(and(eq(imBindings.id, input.integrationId), eq(imBindings.agentId, input.agentId)))
+      .limit(1);
+    if (
+      !row ||
+      row.agentStatus !== "active" ||
+      row.workspaceComputerId !== input.workspaceComputerId ||
+      row.computerId !== input.computerId
+    ) {
+      return undefined;
+    }
+    if (row.binding.status !== "active" || row.binding.provider !== input.provider) return undefined;
+    const identity = this.#expectedIdentity(row.binding, row.slackInstallation);
+    if (!identity) return undefined;
+    if (row.binding.provider === "feishu") {
+      if (row.binding.credentialGeneration !== input.credentialGeneration) return undefined;
+      const credential = this.#decodeFeishuCredential(row.binding.encryptedCredential);
+      if (!credential || credential.appId !== row.binding.externalAppId) return undefined;
+      return {
+        expectedIdentity: identity,
+        grant: {
+          provider: "feishu",
+          appId: credential.appId,
+          appSecret: credential.appSecret,
+          teamBrand: row.binding.externalTeamBrand === "lark" ? "lark" : "feishu",
+        },
+      };
+    }
+    const installation = row.slackInstallation;
+    if (
+      !installation ||
+      installation.status !== "active" ||
+      installation.credentialGeneration !== input.credentialGeneration
+    ) {
+      return undefined;
+    }
+    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
+    if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return undefined;
+    return {
+      expectedIdentity: identity,
+      grant: { provider: "slack", botAccessToken: credential.botAccessToken },
+    };
   }
 
   async issueRuntimeCredentialGrant(
@@ -472,6 +639,7 @@ export class ImBindingService {
     });
     try {
       const activated = await this.#activateSlackInstallation(input, credential, transaction);
+      if (!transaction) await this.#notifyActiveBindingChanged(activated.agentId).catch(() => undefined);
       return {
         imBindingId: activated.id,
         agentId: activated.agentId,
@@ -501,23 +669,23 @@ export class ImBindingService {
       grantedScopes: [...new Set(input.grantedScopes)].sort(),
     });
     try {
-      return (
-        await this.#activate(
-          {
-            agentId: input.agentId,
-            provider: "feishu",
-            identity: {
-              appId: input.appId,
-              teamId: input.teamId,
-              enterpriseId: null,
-              botId: input.botOpenId,
-              teamBrand: input.teamBrand ?? null,
-            },
-            credential,
+      const activated = await this.#activate(
+        {
+          agentId: input.agentId,
+          provider: "feishu",
+          identity: {
+            appId: input.appId,
+            teamId: input.teamId,
+            enterpriseId: null,
+            botId: input.botOpenId,
+            teamBrand: input.teamBrand ?? null,
           },
-          transaction,
-        )
-      ).id;
+          credential,
+        },
+        transaction,
+      );
+      if (!transaction) await this.#notifyActiveBindingChanged(activated.agentId).catch(() => undefined);
+      return activated.id;
     } catch (error) {
       if (isImBindingUniqueViolation(error, "im_bindings_feishu_app_current_unique")) {
         throw new ImBindingServiceError(
@@ -726,6 +894,7 @@ export class ImBindingService {
     await this.#assertCanRead(callerUserId, agentId);
     const [row] = await this.#database
       .select({
+        id: imBindings.id,
         agentId: imBindings.agentId,
         provider: imBindings.provider,
         status: imBindings.status,
@@ -754,6 +923,10 @@ export class ImBindingService {
       row.provider === "slack" && row.slackInstallation
         ? row.slackInstallation.grantedCapabilities
         : row.grantedCapabilities;
+    const credentialGeneration =
+      row.provider === "slack" && row.slackInstallation
+        ? row.slackInstallation.credentialGeneration
+        : row.credentialGeneration;
     const status =
       row.provider === "slack" && row.slackInstallation?.status === "reauthorization_required"
         ? "reauthorization_required"
@@ -761,7 +934,7 @@ export class ImBindingService {
     return (
       await this.#readiness(
         this.#withCredentialStatus(
-          { ...row, status, observedConnectedAt, observedAt, grantedCapabilities },
+          { ...row, status, observedConnectedAt, observedAt, grantedCapabilities, credentialGeneration },
           credential.status,
         ),
       )
@@ -831,7 +1004,7 @@ export class ImBindingService {
   }
 
   async disable(callerUserId: string, imBindingId: string): Promise<void> {
-    await this.#database.transaction(async (transaction) => {
+    const agentId = await this.#database.transaction(async (transaction) => {
       const [candidate] = await transaction
         .select({ agentId: imBindings.agentId })
         .from(imBindings)
@@ -849,7 +1022,9 @@ export class ImBindingService {
         throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM binding was not found");
       }
       await disableImBindingInTransaction(transaction, imBindingId, this.#now());
+      return imBinding.agentId;
     });
+    await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
   }
 
   async diagnostics(callerUserId: string, imBindingId: string): Promise<ImBindingDiagnostics> {
@@ -914,6 +1089,10 @@ export class ImBindingService {
       ready: readiness.handoff.handoffReady,
       agentRuntimeReadiness: readiness.agentRuntimeReadiness,
       providerCliReadiness: readiness.providerCliReadiness,
+      credentialExecutionReadiness: readiness.credentialExecutionReadiness,
+      ...(readiness.credentialExecutionReason
+        ? { credentialExecutionReason: readiness.credentialExecutionReason }
+        : {}),
       credentialGeneration: imBinding.credentialGeneration,
       credentialStatus: credential.status,
       requiredCapabilities: credential.requiredCapabilities,
@@ -1071,9 +1250,19 @@ export class ImBindingService {
   }
 
   async disableSlackInstallationFromProvider(installationId: string, generation: number): Promise<boolean> {
-    return this.#database.transaction(async (transaction) => {
-      return this.#disableSlackInstallation(transaction, installationId, this.#now(), generation);
+    const result = await this.#database.transaction(async (transaction) => {
+      const [installation] = await transaction
+        .select({ agentId: slackInstallations.agentId })
+        .from(slackInstallations)
+        .where(eq(slackInstallations.id, installationId))
+        .limit(1);
+      const disabled = await this.#disableSlackInstallation(transaction, installationId, this.#now(), generation);
+      return { agentId: installation?.agentId, disabled };
     });
+    if (result.disabled && result.agentId) {
+      await this.#notifyActiveBindingChanged(result.agentId).catch(() => undefined);
+    }
+    return result.disabled;
   }
 
   async assertCanManage(
@@ -1109,9 +1298,15 @@ export class ImBindingService {
   }
 
   async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
-    const [agentRuntimeReadiness, providerCliReadiness] = await Promise.all([
+    const [agentRuntimeReadiness, providerCliReadiness, credentialExecution] = await Promise.all([
       this.#agentRuntimeReadiness(imBinding.agentId),
-      this.#imCliReadiness(imBinding.agentId, imBinding.provider),
+      this.#imCliReadiness(imBinding.agentId, imBinding.provider, imBinding.id, imBinding.credentialGeneration),
+      this.#credentialExecutionReadiness(
+        imBinding.agentId,
+        imBinding.provider,
+        imBinding.id,
+        imBinding.credentialGeneration,
+      ),
     ]);
     const reauthorizationRequired =
       imBinding.status === "reauthorization_required" ||
@@ -1132,16 +1327,28 @@ export class ImBindingService {
         : null;
     const connectionReady =
       imBinding.provider === "slack" ? imBinding.observedConnectedAt !== null : connection?.state === "connected";
+    const layersReady =
+      agentRuntimeReadiness === "ready" &&
+      providerCliReadiness === "ready" &&
+      credentialExecution.status === "ready" &&
+      connectionReady;
+    const providerCli = providerCliProgress(providerCliReadiness, credentialExecution);
     const handoff: ImBindingHandoffStatus =
       bindingState !== "active"
         ? { bindingState, handoffReady: false }
-        : agentRuntimeReadiness === "ready" && providerCliReadiness === "ready" && connectionReady
+        : layersReady
           ? { bindingState, handoffReady: true }
-          : { bindingState, handoffReady: false };
+          : {
+              bindingState,
+              handoffReady: false,
+              ...(providerCli ? { providerCli } : {}),
+            };
     return {
       handoff,
       agentRuntimeReadiness,
       providerCliReadiness,
+      credentialExecutionReadiness: credentialExecution.status,
+      ...(credentialExecution.reason ? { credentialExecutionReason: credentialExecution.reason } : {}),
       reauthorizationRequired,
       connection,
     };
@@ -1229,6 +1436,41 @@ export class ImBindingService {
       requiredCapabilities,
       missingCapabilities,
     };
+  }
+
+  #expectedIdentity(
+    binding: typeof imBindings.$inferSelect,
+    installation: typeof slackInstallations.$inferSelect | null,
+  ): ProviderCliExpectedIdentity | undefined {
+    if (binding.provider === "feishu") {
+      if (!binding.externalAppId || !binding.externalBotId) return undefined;
+      return {
+        provider: "feishu",
+        appId: binding.externalAppId,
+        botOpenId: binding.externalBotId,
+        teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",
+      };
+    }
+    if (!installation) return undefined;
+    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
+    if (!credential || !installation.externalTeamId || !installation.externalBotId) return undefined;
+    return {
+      provider: "slack",
+      teamId: installation.externalTeamId,
+      botUserId: installation.externalBotId,
+      botId: credential.botId,
+    };
+  }
+
+  async notifyProviderCliRequirementChanged(agentId: string): Promise<void> {
+    await this.#notifyActiveBindingChanged(agentId);
+  }
+
+  async #notifyActiveBindingChanged(agentId: string): Promise<void> {
+    if (!this.#onActiveBindingChanged) return;
+    const workspaceComputerId = await this.getAgentWorkspaceComputerId(agentId);
+    if (!workspaceComputerId) return;
+    await this.#onActiveBindingChanged({ agentId, workspaceComputerId });
   }
 
   #decodeFeishuCredential(encryptedCredential: string | null): z.infer<typeof FeishuCredentialSchema> | undefined {

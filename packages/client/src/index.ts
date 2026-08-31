@@ -291,6 +291,10 @@ export {
   providerCliProbeEnvironment,
 } from "./runtime/provider-cli/probe.js";
 export {
+  ProviderCliReconciler,
+  type ProviderCliReconcilerOptions,
+} from "./runtime/provider-cli/reconciler.js";
+export {
   PROVIDER_CLI_SELECTION_SCHEMA_VERSION,
   type ProviderCliSelection,
   type ProviderCliSelectionRecord,
@@ -348,6 +352,20 @@ export {
   type ProviderCliWarning,
   type ProviderCliWarningCode,
 } from "./runtime/provider-cli/types.js";
+export {
+  classifyLarkAuthStatus,
+  classifySlackAuthTest,
+  classifySpawnFailure,
+  extractBoundedJson,
+} from "./runtime/provider-cli/validation-classify.js";
+export {
+  deriveProviderCliValidationRequestKey,
+  exchangeFeishuTenantToken,
+  FeishuTokenExchangeError,
+  type ProviderCliValidationRequest,
+  ProviderCliValidationRunner,
+  type ProviderCliValidationRunnerOptions,
+} from "./runtime/provider-cli/validation-runner.js";
 export {
   type RuntimeBusinessFrame,
   RuntimeConnection,

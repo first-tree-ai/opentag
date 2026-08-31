@@ -4,6 +4,7 @@ import type {
   AgentSummary,
   ImBindingHandoffStatus,
   ImBindingSummary,
+  ProviderCliHandoffProgress,
   ProviderReadinessStatus,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
@@ -34,6 +35,7 @@ export type AgentAvailability = {
     handoff: {
       state: "ready" | "action_required" | "setting_up" | "not_connected" | "unconfirmed";
       lastConfirmedAt: string | null;
+      providerCli?: ProviderCliHandoffProgress;
     };
     channel: {
       state: "connected" | "not_connected" | "unconfirmed";
@@ -95,6 +97,9 @@ export function projectAgentAvailability(
     handoff: {
       state: handoffState,
       lastConfirmedAt: binding?.lastRuntimeObservationAt ?? binding?.lastValidatedAt ?? null,
+      ...(handoff && handoff.bindingState === "active" && !handoff.handoffReady && handoff.providerCli
+        ? { providerCli: handoff.providerCli }
+        : {}),
     },
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",

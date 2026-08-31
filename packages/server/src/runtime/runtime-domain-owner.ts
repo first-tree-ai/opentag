@@ -598,6 +598,9 @@ export class RuntimeDomainOwner {
       }
       return undefined;
     }
+    if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
+      return undefined;
+    }
     if (frame.type === "im:credential") {
       if (!this.#options.onImCredentialGrant) return businessFailureResult(frame);
       const version = this.#registry.capabilityVersion(
@@ -1023,6 +1026,9 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;
+  }
+  if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
+    return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;
   }
   return `turn:${frame.turnId}`;
 }

@@ -169,6 +169,13 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "im:credential:result") return;
+    if (
+      frame.type === "provider-cli:requirement" ||
+      frame.type === "provider-cli:validation:grant" ||
+      frame.type === "provider-cli:cancel"
+    ) {
+      return;
+    }
     if (frame.type === "agent-runtime:test") {
       await this.#runAgentRuntimeTest(frame);
       return;

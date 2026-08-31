@@ -97,7 +97,19 @@ export const SETUP_COPY = {
     generating: "Generating QR code…",
     waiting: "Waiting for you to scan…",
     cliMissing: (provider: string) =>
-      `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,
+      `${provider} messages are sent through its official CLI. After this app is connected, the OpenTag daemon prepares it automatically. opentag doctor only checks; it does not install.`,
+    preparingCli: "Preparing CLI",
+    checkingCredentials: "Checking credentials",
+    cliUnavailable: "OpenTag could not prepare or validate the messaging CLI on this computer.",
+    needsAttention: {
+      upgrade_required: "Upgrade the OpenTag client on this computer, then reconnect.",
+      credential_rejected: "Reauthorize this messaging app. The current credential was rejected.",
+      identity_mismatch: "Reauthorize this messaging app. The bot identity does not match.",
+      scope_missing: "Grant the missing messaging permissions, then reauthorize.",
+      provider_unreachable:
+        "The messaging provider could not be reached after several attempts. Check the network and try again.",
+      rate_limited: "The messaging provider is rate-limiting checks. Wait a moment, then try again.",
+    } as const,
     slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
     slackAction: "Add to Slack",
     slackWaiting: "Waiting for you to finish in Slack…",

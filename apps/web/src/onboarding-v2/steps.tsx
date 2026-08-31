@@ -1,3 +1,4 @@
+import type { ProviderCliHandoffProgress } from "@opentag/shared/browser";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import {
   COMPUTER_CONNECT_COMMAND_PLACEHOLDER,
@@ -377,6 +378,18 @@ function MessagingPicker({
   );
 }
 
+function providerCliWaitingCopy(progress: ProviderCliHandoffProgress): string {
+  if (progress.phase === "preparing_cli") return m.onboarding_v2_messaging_cli_preparing();
+  if (progress.phase === "checking_credentials") return m.onboarding_v2_messaging_cli_checking_credentials();
+  if (!progress.reason) return m.onboarding_v2_messaging_cli_unavailable();
+  if (progress.reason === "upgrade_required") return m.onboarding_v2_messaging_cli_upgrade_required();
+  if (progress.reason === "credential_rejected") return m.onboarding_v2_messaging_cli_credential_rejected();
+  if (progress.reason === "identity_mismatch") return m.onboarding_v2_messaging_cli_identity_mismatch();
+  if (progress.reason === "scope_missing") return m.onboarding_v2_messaging_cli_scope_missing();
+  if (progress.reason === "provider_unreachable") return m.onboarding_v2_messaging_cli_provider_unreachable();
+  return m.onboarding_v2_messaging_cli_rate_limited();
+}
+
 function MessagingConnection({
   computerOnline,
   messaging,
@@ -410,12 +423,14 @@ function MessagingConnection({
   const waitingReason =
     computerOnline === false
       ? m.onboarding_v2_messaging_computer_offline()
-      : cliState === "failed" && provider
-        ? m.onboarding_v2_messaging_cli_missing({
-            provider:
-              provider === "feishu" ? m.onboarding_v2_messaging_lark_title() : m.onboarding_v2_messaging_slack_title(),
-          })
-        : undefined;
+      : messaging.kind === "waiting-handoff" && messaging.providerCli
+        ? providerCliWaitingCopy(messaging.providerCli)
+        : cliState === "failed" && provider
+          ? m.onboarding_v2_messaging_cli_missing({
+              provider:
+                provider === "feishu" ? m.onboarding_v2_messaging_lark_title() : m.onboarding_v2_messaging_slack_title(),
+            })
+          : undefined;
   return (
     <div className="flex flex-col items-center gap-3">
       {/*

@@ -146,6 +146,7 @@ describe("Agent CLI core", () => {
       ready: false,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "install",
+      credentialExecutionReadiness: "unconfirmed",
       credentialGeneration: 0,
       credentialStatus: "invalid",
       requiredCapabilities: ["im:message"],
@@ -161,6 +162,7 @@ describe("Agent CLI core", () => {
       lastErrorCode: null,
     };
     expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReadiness\tinstall");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialExecutionReadiness\tunconfirmed");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("agentRuntimeReadiness\tready");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialGeneration\t0");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialStatus\tinvalid");
@@ -211,6 +213,7 @@ describe("Agent CLI core", () => {
       ready: true,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "ready",
+      credentialExecutionReadiness: "ready",
       credentialGeneration: 2,
       credentialStatus: "valid",
       requiredCapabilities: ["im:message"],
@@ -596,6 +599,7 @@ describe("Agent CLI core", () => {
       ready: true,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "ready",
+      credentialExecutionReadiness: "ready",
       credentialGeneration: 1,
       credentialStatus: "valid",
       requiredCapabilities: [],

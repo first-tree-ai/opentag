@@ -57,6 +57,10 @@ import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
+import { resolveAccountHome } from "./provider-cli/account-layout.js";
+import { ProviderCliManager } from "./provider-cli/manager.js";
+import { ProviderCliReconciler } from "./provider-cli/reconciler.js";
+import { ProviderCliValidationRunner } from "./provider-cli/validation-runner.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import {
   FileRuntimeDurabilityStore,
@@ -251,6 +255,7 @@ export class ComposedClientRuntime {
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
   readonly workspace: AgentWorkspaceManager;
+  readonly #providerCliReconciler?: { close(): Promise<void> };
   readonly #runtime: ClientRuntime;
   readonly #refreshCapability: () => Promise<void>;
   readonly #capabilityRefreshIntervalMs: number;
@@ -275,9 +280,11 @@ export class ComposedClientRuntime {
       refreshCapability: () => Promise<void>;
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
+      providerCliReconciler?: { close(): Promise<void> };
     },
   ) {
     this.#runtime = runtime;
+    this.#providerCliReconciler = components.providerCliReconciler;
     this.bindingStore = components.bindingStore;
     this.custody = components.custody;
     this.credentialEnvironment = components.credentialEnvironment;
@@ -310,6 +317,7 @@ export class ComposedClientRuntime {
       } finally {
         this.reportOwner.stop();
         await this.credentialEnvironment.close();
+        await this.#providerCliReconciler?.close();
       }
     }
   }
@@ -321,7 +329,11 @@ export class ComposedClientRuntime {
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
     this.runner.stop();
-    void Promise.allSettled([this.runtimeManager.close(), this.credentialEnvironment.close()]);
+    void Promise.allSettled([
+      this.runtimeManager.close(),
+      this.credentialEnvironment.close(),
+      this.#providerCliReconciler?.close() ?? Promise.resolve(),
+    ]);
     this.#runtime.stop();
   }
 
@@ -442,20 +454,6 @@ export async function createClientRuntime(
   const refreshCapability = async (): Promise<void> => {
     const results = await Promise.allSettled([
       ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
-      refreshImCliReadiness(
-        connection,
-        "feishu",
-        options.larkCliCommand ?? "lark-cli",
-        sourceEnvironment,
-        readinessSignal,
-      ),
-      refreshImCliReadiness(
-        connection,
-        "slack",
-        options.slackCliCommand ?? "slack",
-        sourceEnvironment,
-        readinessSignal,
-      ),
     ]);
     readinessSignal.throwIfAborted();
     const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
@@ -502,6 +500,12 @@ export async function createClientRuntime(
     connection,
     home: options.home,
     logger: moduleLogger("im-credential-environment"),
+  });
+  const providerCliReconciler = new ProviderCliReconciler({
+    connection,
+    manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
+    signal: readinessSignal,
+    validation: new ProviderCliValidationRunner({ home: options.home }),
   });
   const proofManager = new SessionCliProofManager(options.home);
   const runtimeManager = new SessionRuntimeManager({
@@ -592,6 +596,7 @@ export async function createClientRuntime(
     runtimeManager,
     workspace,
     refreshCapability,
+    providerCliReconciler,
     capabilityAbort,
     capabilityRefreshIntervalMs: Math.max(
       10,

@@ -1,5 +1,6 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import * as m from "../../paraglide/messages.js";
+import { SETUP_COPY } from "../../setup/copy.js";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -283,7 +284,7 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
     im_error: "The messaging connection failed. Reconnect Feishu or Slack to receive messages.",
     im_disabled: "Messaging is turned off for this Agent. Reconnect Feishu or Slack to receive messages.",
-    handoff_unavailable: "Messages cannot be sent to this Agent.",
+    handoff_unavailable: providerCliRecoveryMessage(agent),
   };
   return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);
 }
@@ -299,6 +300,14 @@ function runtimeRecoveryMessage(agent: AgentDetailView): string {
   if (status === "install") return `Install ${providerName} on this agent's computer.`;
   if (status === "sign-in") return `Sign in to ${providerName} on this agent's computer.`;
   return `${providerName} is not available on this agent's computer.`;
+}
+
+function providerCliRecoveryMessage(agent: AgentDetailView): string {
+  const progress = agent.availability.dependencies.handoff.providerCli;
+  if (!progress) return "Messages cannot be sent to this Agent.";
+  if (progress.phase === "preparing_cli") return SETUP_COPY.messaging.preparingCli;
+  if (progress.phase === "checking_credentials") return SETUP_COPY.messaging.checkingCredentials;
+  return progress.reason ? SETUP_COPY.messaging.needsAttention[progress.reason] : SETUP_COPY.messaging.cliUnavailable;
 }
 /**
  * The two dependencies an Agent needs to do any work, each presented on its own terms. They are

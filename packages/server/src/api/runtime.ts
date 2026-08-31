@@ -2,6 +2,7 @@ import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import type { AgentRuntimeTestOwner } from "../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import type { ProviderCliReconcileOwner } from "../runtime/provider-cli-reconcile-owner.js";
 import type { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
 import { type RuntimeBusinessOptions, RuntimeSession, type RuntimeSessionOptions } from "../runtime/runtime-session.js";
 import type { ComputerAuthVerifier, ComputerService } from "../services/computers/index.js";
@@ -10,6 +11,7 @@ import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-con
 export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   agentRuntimeTestOwner?: AgentRuntimeTestOwner;
   domainOwner?: RuntimeDomainOwner;
+  providerCliReconcileOwner?: ProviderCliReconcileOwner;
   registry?: ConnectionRegistry;
 }
 
@@ -67,14 +69,23 @@ export function registerRuntimeRoutes(
   const registry = options.registry ?? new ConnectionRegistry();
   const domainOwner = options.domainOwner;
   const agentRuntimeTestOwner = options.agentRuntimeTestOwner;
+  const providerCliReconcileOwner = options.providerCliReconcileOwner;
   const sessionOptions: RuntimeSessionOptions = {
     authTimeoutMs: options.authTimeoutMs,
     business:
       options.business ??
-      composeRuntimeBusinessOptions(agentRuntimeTestOwner?.businessOptions(), domainOwner?.businessOptions()),
+      composeRuntimeBusinessOptions(
+        providerCliReconcileOwner?.businessOptions(),
+        agentRuntimeTestOwner?.businessOptions(),
+        domainOwner?.businessOptions(),
+      ),
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
     now: options.now,
+    onRegistered: async (input) => {
+      await options.onRegistered?.(input);
+      await providerCliReconcileOwner?.onComputerRegistered(input);
+    },
     registerTimeoutMs: options.registerTimeoutMs,
   };
   app.get(HTTP_PATHS.computerRuntimeWebSocket, { websocket: true }, (socket, request) => {
@@ -90,6 +101,7 @@ export function registerRuntimeRoutes(
   app.addHook("onClose", async () => {
     clearInterval(sweep);
     agentRuntimeTestOwner?.close();
+    providerCliReconcileOwner?.close();
     domainOwner?.close();
     registry.closeAll();
   });

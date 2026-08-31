@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-30
+> Last synced with: 2026-08-31
 
 ## 前置要求
 
@@ -69,6 +69,11 @@ pnpm --filter @opentag/server test:integration
 但排除根目录 `scripts/`、Server PostgreSQL integration tests 和 Provider E2E。该统计是用于定位缺口和安排
 优先级的测量基线，不属于 Pull Request 必过检查，暂不设置全仓或分 workspace 覆盖率阈值。只有在重复运行的
 统计结果稳定后，才应增加回退阈值。
+
+`pnpm test:coverage` 会逐个测量 Vitest project，再把各 workspace 的 summary 拼到
+`coverage/unit/coverage-summary.json`，把 detailed Istanbul map 拼到 `coverage/unit/coverage-final.json`。一次合并
+的 Vitest 运行会低估覆盖率，因此这两份聚合不能交给 coverage provider 去做 merge。Pull Request 会另跑
+`Patch Coverage`：它读取这份 detailed map，并在本次新增或改动的可执行 TypeScript 行命中率低于 80% 时失败。
 
 Pull Request 必过 CI 仍会运行全部离线单测。Agent Runtime 继续使用
 `packages/client/vitest.agent-runtime.config.ts` 中独立的 100% 门槛，并由

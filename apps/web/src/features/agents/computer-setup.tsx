@@ -1,6 +1,7 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
+import * as m from "../../paraglide/messages.js";
 import { readConnectCodeVerdict } from "../../setup/connect-code-verdict.js";
 import { Banner, Button, ClipboardText, Loader, Text } from "../../ui/design-system.js";
 
@@ -14,9 +15,6 @@ import { Banner, Button, ClipboardText, Loader, Text } from "../../ui/design-sys
  * verdict is refused if it names any other.
  */
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
-const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. Generate a new one to continue.";
-const CONNECT_CODE_STATUS_FAILURE_MESSAGE = "Unable to refresh the connection command status";
-const COMPUTER_REFRESH_FAILURE_MESSAGE = "Unable to refresh Computers";
 /**
  * The command and validity Preview shows in place of an issued one. Review needs the shape of this
  * step — a long install-and-connect line, its copy affordance and a running validity — and none of
@@ -136,7 +134,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
       setGenerating(false);
     } catch (cause) {
       if (!mounted.current || connectAttempt.current !== attempt) return;
-      setError(errorMessage(cause, "Unable to create a Computer connection command"));
+      setError(errorMessage(cause, m.agents_computer_connect_command_create_failed()));
       setGenerating(false);
     }
   }
@@ -156,7 +154,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
       setWaitingForComputer(false);
       setComputerConnected(false);
       setRemainingMs(undefined);
-      setError(CONNECT_CODE_EXPIRED_MESSAGE);
+      setError(m.agents_computer_connect_code_expired());
     };
     const complete = (connected: WorkspaceComputerSummary) => {
       if (!active || completed || activePollCycle.current !== pollCycle) return;
@@ -188,7 +186,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
       try {
         ({ computers } = await browserApi.computers());
       } catch (cause) {
-        reportPollFailure(cause, COMPUTER_REFRESH_FAILURE_MESSAGE);
+        reportPollFailure(cause, m.agents_computers_refresh_failed());
         return;
       }
       const connected = computers.find(
@@ -202,7 +200,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
       try {
         status = await browserApi.computerConnectCodeStatus(codeId);
       } catch (cause) {
-        reportPollFailure(cause, CONNECT_CODE_STATUS_FAILURE_MESSAGE);
+        reportPollFailure(cause, m.agents_computer_connect_status_refresh_failed());
         return;
       }
       if (!active || completed || activePollCycle.current !== pollCycle) return;
@@ -231,7 +229,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
   return (
     <section className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
       <Text as="h2" variant="heading">
-        {targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}
+        {targetName ? m.agents_computer_reconnect({ name: targetName }) : m.agents_computer_connect_local()}
       </Text>
       {/*
         Connecting a new Computer needs no machine named: whichever terminal runs the command is the
@@ -240,7 +238,9 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
         to happen on that machine.
       */}
       <Text as="p" variant="secondary">
-        Generate a command, then run it in the terminal{targetName ? ` on ${targetName}` : ""}.
+        {targetName
+          ? m.agents_computer_generate_command_on({ name: targetName })
+          : m.agents_computer_generate_command()}
       </Text>
       <Button loading={generating} disabled={generating} onClick={() => void connectComputer()}>
         Generate connection command
@@ -249,28 +249,36 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
         <>
           <ClipboardText
             className="max-w-full"
-            labels={{ copyAction: "Copy command" }}
+            labels={{ copyAction: m.agents_computer_copy_command() }}
             size="sm"
             text={bootstrapCommand}
-            tooltip={{ copiedText: "Copied!", side: "top", text: "Copy command" }}
+            tooltip={{
+              copiedText: m.agents_computer_copied(),
+              side: "top",
+              text: m.agents_computer_copy_command(),
+            }}
           />
           <div className="flex flex-wrap items-center gap-3">
             {waitingForComputer && remainingMs !== undefined ? (
-              <p className="text-sm text-kumo-subtle">Expires in {formatRemaining(remainingMs)}</p>
+              <p className="text-sm text-kumo-subtle">
+                {m.agents_computer_expires_in({ time: formatRemaining(remainingMs) })}
+              </p>
             ) : null}
           </div>
           {waitingForComputer || computerConnected ? (
             <p className="flex items-center gap-2" role="status">
               {waitingForComputer ? (
                 <span aria-hidden="true">
-                  <Loader aria-label="Waiting for Computer connection" size="sm" />
+                  <Loader aria-label={m.agents_waiting_for_computer_connection()} size="sm" />
                 </span>
               ) : null}
               {waitingForComputer
-                ? `Waiting for ${targetName ?? "the Computer"} to connect…`
+                ? targetName
+                  ? m.agents_waiting_for_computer({ name: targetName })
+                  : m.agents_waiting_for_computer_generic()
                 : targetName
-                  ? `${targetName} is connected.`
-                  : "Computer connected."}
+                  ? m.agents_computer_target_connected({ name: targetName })
+                  : m.agents_computer_connected()}
             </p>
           ) : null}
         </>

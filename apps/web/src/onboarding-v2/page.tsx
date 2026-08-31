@@ -194,7 +194,6 @@ function OnboardingV2Flow({
     draft,
     destinationConfirmed: destinationConfirmed || destinationPreselected || resumed,
     draftConfirmed: draftConfirmed || resumed,
-    connect: backend.connect,
     selectedComputerId: backend.selectedComputerId,
     readiness: backend.readiness,
     cloudComputer,
@@ -204,23 +203,9 @@ function OnboardingV2Flow({
   };
   const flow = deriveFlowState(facts);
 
-  // The connect code is issued when the page that shows it is first reached, not before: an
-  // unseen code would spend its validity in the background. A Computer that is already connected
-  // needs none, and `issueConnectCode` only acts on an idle connection.
-  //
-  // A run whose Account already has a Computer needs none either, and issuing one anyway would do
-  // more than waste it: the code enrols a *new* machine, so an Account meant to have one could end
-  // up with two.
-  const connectingNewComputer = backend.selectedComputerId === undefined;
   useEffect(() => {
-    if (flow.page === "computer" && connectingNewComputer) backend.issueConnectCode();
-  }, [backend.issueConnectCode, connectingNewComputer, flow.page]);
-
-  // Which step the reader is on is the page's to know. The connection is watched while they are on
-  // the one that can act on it, and left alone once they are past it.
-  useEffect(() => {
-    if (flow.page === "messaging" || flow.complete) backend.markPastConnectStep();
-  }, [backend.markPastConnectStep, flow.complete, flow.page]);
+    if (flow.page === "messaging" || flow.complete) backend.markPastComputerStep();
+  }, [backend.markPastComputerStep, flow.complete, flow.page]);
 
   /*
    * Setup is completed from the finished flow. Reporting it from the render that first sees
@@ -306,7 +291,7 @@ function OnboardingV2Flow({
   }, [backend, destinationPreselected, onDraftChange]);
 
   return (
-    <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas">
+    <div className={`otv2-shell flex min-h-screen flex-col bg-kumo-canvas ${lab ? "pb-20 sm:pb-0" : ""}`}>
       <header className="flex items-center justify-between p-6">
         <span className="text-lg font-semibold text-kumo-strong">{COPY.brand}</span>
         {reviewMode ? null : (
@@ -375,13 +360,13 @@ function OnboardingV2Flow({
             />
           ) : flow.page === "computer" ? (
             <ComputerStep
+              adapter={backend.computerConnectAdapter}
               computer={accountComputer}
-              connect={backend.connect}
               creation={backend.creation}
               draft={draft}
               onBack={resumed ? undefined : backToAgent}
+              onComputerConnected={backend.computerConnected}
               onCreate={() => backend.createAgent(draft)}
-              onRefreshCommand={backend.refreshConnectCode}
               readiness={backend.readiness}
             />
           ) : (

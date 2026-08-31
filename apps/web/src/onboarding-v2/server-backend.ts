@@ -1,34 +1,28 @@
 /**
  * The flow, against the real Server.
  *
- * Everything here is polled rather than pushed, because that is what the Server offers: there is no
- * socket that tells a browser a Computer arrived or a probe came back. One interval drives the
- * whole connect step — the countdown, the arrival, and the readiness that follows it — so the page
- * never has two clocks disagreeing about the same moment.
+ * Everything outside the shared ComputerConnect lifecycle is polled rather than pushed, because
+ * that is what the Server offers. This adapter observes the selected Computer's availability and
+ * readiness; issuance, redemption, expiry and reissue belong to ComputerConnect.
  */
 
-import type {
-  AgentRuntimeProvider,
-  ComputerConnectCodeStatus,
-  ImBindingHandoffStatus,
-  WorkspaceComputerSummary,
-} from "@opentag/shared/browser";
+import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, browserApi } from "../api.js";
+import { browserApi } from "../api.js";
+import { formatRelativeTime } from "../i18n/format.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
-import { readConnectCodeVerdict } from "../setup/connect-code-verdict.js";
-import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
+import type { CreatedAgent, KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { COPY } from "./copy.js";
-import type {
-  AgentDraft,
-  ConnectState,
-  CreationState,
-  MessagingProvider,
-  MessagingState,
-  ReadinessFacts,
+import {
+  type AgentDraft,
+  type CreationState,
+  type MessagingProvider,
+  type MessagingState,
+  type ReadinessFacts,
+  readinessPassed,
 } from "./flow.js";
 
-/** The connect step polls the issued code's status at this rate while it waits for a Computer. */
+/** Availability and readiness keep settling while the Computer step is open. */
 const COMPUTER_POLL_MS = 1_500;
 /** The Feishu attempt is a QR the user scans on a phone; there is nothing to see faster than this. */
 const FEISHU_POLL_MS = 2_000;
@@ -37,29 +31,6 @@ const HANDOFF_POLL_MS = 2_000;
 
 export function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback;
-}
-
-/**
- * Which Computer this run is waiting for is the Server's call, never an inference from the
- * Computers list. The status read for the issued code says pending until a machine redeems it and
- * then names the exact Computer that did, so another machine enrolling — or coming back — during
- * the wait cannot be mistaken for this reader's. Reachability is a separate question: redemption is
- * durable, and the exact Computer is adopted only once the Computers list shows it online on a
- * connection that postdates the redemption.
- */
-async function findRedeemedComputer(
-  computerId: string,
-  redeemedAt: string,
-): Promise<WorkspaceComputerSummary | undefined> {
-  const { computers } = await browserApi.computers();
-  const computer = computers.find((candidate) => candidate.computerId === computerId);
-  if (computer?.connectionStatus !== "online" || computer.connectedAt === null) return undefined;
-  return Date.parse(computer.connectedAt) >= Date.parse(redeemedAt) ? computer : undefined;
-}
-
-/** The connection being waited on, unless the wait has moved on since the poll left. */
-function issuedConnection(connect: ConnectState) {
-  return connect.kind === "issued" ? connect : undefined;
 }
 
 /**
@@ -107,19 +78,12 @@ function readReadiness(computer: WorkspaceComputerSummary, runtime: AgentRuntime
  * keeps that dependency visible instead of threading it through every call.
  */
 export function useServerBackend(draft: AgentDraft): OnboardingBackend {
-  const [connect, setConnect] = useState<ConnectState>({ kind: "idle" });
   const [computer, setComputer] = useState<WorkspaceComputerSummary>();
+  const [selectedComputer, setSelectedComputer] = useState<KnownComputer>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   const [agent, setAgent] = useState<CreatedAgent>();
   const [creation, setCreation] = useState<CreationState>("idle");
-  /**
-   * Two kinds of failure, kept apart. The connection error belongs to the poll and is retired by
-   * the next successful one. An action error belongs to something the reader did — creating the
-   * Agent, starting a messaging app — and only that action may clear it, or a poll a second later
-   * would erase the explanation while they were still reading it.
-   */
-  const [connectionError, setConnectionError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   /**
    * No third-party plan sign-in exists on the Server yet, so this stays idle. It is part of the
@@ -129,35 +93,20 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [planSignIn] = useState<PlanSignIn>("idle");
   const [resuming, setResuming] = useState(true);
   const [resumeError, setResumeError] = useState<string>();
+  const [pastComputerStep, setPastComputerStep] = useState(false);
+  const [lastPassedReadiness, setLastPassedReadiness] = useState<ReadinessFacts>();
+  const [computerPollEpoch, setComputerPollEpoch] = useState(0);
+  const computerPollEpochRef = useRef(computerPollEpoch);
+  computerPollEpochRef.current = computerPollEpoch;
   /** Discards the reply of a read the reader has already asked to redo. */
   const resumeRun = useRef(0);
 
   /** The Computer this run enrolled. Messaging and creation both need it after the step is left. */
   const computerId = useRef<string | undefined>(undefined);
-  /** The code this run is waiting on, and the Server's redemption verdict once it lands. */
-  const connectCodeId = useRef<string | undefined>(undefined);
-  const redeemed = useRef<{ computerId: string; redeemedAt: string } | undefined>(undefined);
-  const expiresAt = useRef(0);
-  /** Bumped by every reissue and by unmount, so a reply from a superseded attempt is discarded. */
+  /** Bumped by reset and unmount so replies from an abandoned run are discarded. */
   const attempt = useRef(0);
   const creationRef = useRef<CreationState>("idle");
   const feishuTimer = useRef(0);
-  /** The connection as it stands, readable from a callback without making an updater impure. */
-  /**
-   * The Computer this run is repairing, when it is repairing one. A code issued against it names
-   * its target, so the machine that answers is that machine — there is nothing to infer, and
-   * nothing about who owns what to decide from an arrival.
-   */
-  const repairTarget = useRef<string | undefined>(undefined);
-  /**
-   * Latched once the reader is past the step the connection belongs to. Losing a Computer matters
-   * on that step, where it hides the command that brings the machine back; past it the Agent
-   * already exists, and pulling someone out of choosing or scanning a messaging app over a lid
-   * they are about to reopen costs more than it tells them.
-   */
-  const pastConnectStep = useRef(false);
-  const connectRef = useRef<ConnectState>({ kind: "idle" });
-  connectRef.current = connect;
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -186,10 +135,29 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setResuming(true);
     try {
       {
-        const { agents } = await browserApi.agents();
+        const [{ agents }, { computers }] = await Promise.all([browserApi.agents(), browserApi.computers()]);
         if (!live()) return;
         const active = agents.filter((candidate) => candidate.status === "active");
-        if (active.length === 0) return;
+
+        /*
+         * Redeeming a Computer command and creating its Agent are separate durable writes. A
+         * refresh can land between them, so inventory must be resumed even when no Agent exists
+         * yet; otherwise the page would forget the enrolled Computer and issue a second create
+         * command. Prefer the reachable row where legacy data contains more than one.
+         */
+        if (active.length === 0) {
+          const enrolled = computers.find((candidate) => candidate.connectionStatus === "online") ?? computers[0];
+          if (!enrolled) return;
+          computerId.current = enrolled.computerId;
+          setComputer(enrolled);
+          setSelectedComputer({
+            id: enrolled.computerId,
+            displayName: enrolled.displayName,
+            availability: enrolled.connectionStatus,
+            lastSeen: enrolled.lastSeenAt ? formatRelativeTime(enrolled.lastSeenAt) : undefined,
+          });
+          return;
+        }
 
         /*
          * The Agent names its Computer, but that is a foreign key rather than a state: it says which
@@ -198,30 +166,27 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
          * hide the command that is the only way to bring the machine back — so the connection is
          * read, not inferred. One extra round trip buys not saying something untrue.
          */
-        const { computers } = await browserApi.computers();
-        if (!live()) return;
-        const online = new Map(
-          computers.filter((one) => one.connectionStatus === "online").map((one) => [one.computerId, one]),
-        );
+        const byId = new Map(computers.map((one) => [one.computerId, one]));
         // Where the Account has more than one, the Agent whose Computer is actually there is the one
         // this run can finish. Otherwise the first, which is the Server's own order.
-        const existing = active.find((candidate) => online.has(candidate.computer.computerId)) ?? active[0];
+        const existing =
+          active.find((candidate) => byId.get(candidate.computer.computerId)?.connectionStatus === "online") ??
+          active[0];
         if (!existing) return;
         setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
-        const enrolled = online.get(existing.computer.computerId);
-        // Offline or gone: the step issues a code that repairs this exact Computer.
-        repairTarget.current = enrolled ? undefined : existing.computer.computerId;
+        const enrolled = byId.get(existing.computer.computerId);
+        computerId.current = existing.computer.computerId;
+        setSelectedComputer({
+          id: existing.computer.computerId,
+          displayName: enrolled?.displayName ?? existing.computer.displayName,
+          availability: enrolled?.connectionStatus ?? "unknown",
+          lastSeen: enrolled?.lastSeenAt ? formatRelativeTime(enrolled.lastSeenAt) : undefined,
+        });
         if (enrolled) {
-          computerId.current = enrolled.computerId;
           setComputer(enrolled);
-          // Already enrolled, so this step has nothing to ask for: it reports the machine rather
-          // than issuing a command that would spend its validity unseen.
-          setConnect({ kind: "connected", command: "", computerName: enrolled.displayName });
         }
-        // An offline or missing Computer leaves the connection idle, which is what makes the step
-        // issue a fresh code — and the machine that redeems it is the one this run continues with.
 
         /*
          * Handoff readiness, not binding state. The Server refuses to complete setup unless the
@@ -272,198 +237,47 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     void readAccount();
   }, [readAccount]);
 
-  const issue = useCallback(async () => {
-    const mine = attempt.current + 1;
-    attempt.current = mine;
-    // Everything keyed to the run just superseded is released with it — what the reader can see as
-    // well as what they cannot. A move left mid-flight would otherwise hold its own gate shut for
-    // the rest of the session, and a move that was refused would leave behind an explanation that
-    // no longer applies beside a control with nothing left to try.
-    setConnect({ kind: "issuing" });
-    setConnectionError(undefined);
-    try {
-      /*
-       * A Computer this Account already has is repaired, not replaced. The Agent is bound to that
-       * exact machine, so a code that named no target would enrol a second Computer beside it and
-       * leave the Agent pointing at the one that went away — a reinstall would cost an Account a
-       * duplicate every time. Naming the target also settles which machine answered: the Server
-       * repairs the Computer the code was issued for, so nothing has to be inferred from an
-       * arrival.
-       */
-      const repairing = repairTarget.current;
-      const issued = await browserApi.issueComputerConnectCode(
-        repairing ? { mode: "repair", targetComputerId: repairing } : undefined,
-      );
-      if (!mounted.current || attempt.current !== mine) return;
-      connectCodeId.current = issued.connectCodeId;
-      redeemed.current = undefined;
-      expiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
-      setConnect({ kind: "issued", command: issued.bootstrapCommand, expiresAt: expiresAt.current });
-    } catch (cause) {
-      if (!mounted.current || attempt.current !== mine) return;
-      setConnect({ kind: "idle" });
-      setConnectionError(errorMessage(cause, COPY.errors.connectCode));
-    }
+  const computerConnected = useCallback((connected: WorkspaceComputerSummary) => {
+    computerId.current = connected.computerId;
+    setComputer(connected);
+    setSelectedComputer({
+      id: connected.computerId,
+      displayName: connected.displayName,
+      availability: "online",
+      lastSeen: connected.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
+    });
   }, []);
 
-  const issueConnectCode = useCallback(() => {
-    // Decide outside a state updater and update the ref before starting work. A same-flush repeat,
-    // including StrictMode's second effect run, sees `issuing` and cannot mint another code.
-    if (connectRef.current.kind !== "idle") return;
-    connectRef.current = { kind: "issuing" };
-    void issue();
-  }, [issue]);
-
-  const refreshConnectCode = useCallback(() => {
-    if (connectRef.current.kind === "issuing") return;
-    connectRef.current = { kind: "issuing" };
-    void issue();
-  }, [issue]);
-
-  /** A failed read of the verdict: reported unless the Server has disowned the code entirely. */
-  const failIssuedCodePoll = useCallback((cause: unknown) => {
-    if (!(cause instanceof ApiError && cause.status === 404)) {
-      setConnectionError(errorMessage(cause, COPY.errors.computers));
-      return;
-    }
-    /*
-     * A code the Server no longer acknowledges can never be redeemed, and a raw 404 is no answer
-     * to give a reader holding a command. The code fails closed through the same recoverable
-     * terminal as an expiry: the dead command stays on screen, Refresh reissues, and no Computer
-     * is adopted.
-     */
-    const waiting = issuedConnection(connectRef.current);
-    if (waiting) {
-      setConnectionError(undefined);
-      setConnect({ kind: "expired", command: waiting.command });
-    }
-  }, []);
-
-  /** Adopts the redeemed Computer once it is verifiably online; otherwise the wait continues. */
-  const adoptRedeemedComputer = useCallback(async (mine: number) => {
-    const verdict = redeemed.current;
-    if (!verdict) return;
-    let arrived: WorkspaceComputerSummary | undefined;
-    try {
-      arrived = await findRedeemedComputer(verdict.computerId, verdict.redeemedAt);
-    } catch (cause) {
-      if (mounted.current && attempt.current === mine) {
-        setConnectionError(errorMessage(cause, COPY.errors.computers));
-      }
-      return;
-    }
-    const stillWaiting = issuedConnection(connectRef.current);
-    if (!(mounted.current && attempt.current === mine) || !stillWaiting || !arrived) return;
-    computerId.current = arrived.computerId;
-    setComputer(arrived);
-    setConnectionError(undefined);
-    setConnect({ kind: "connected", command: stillWaiting.command, computerName: arrived.displayName });
-  }, []);
-
-  /** One read of the issued code's verdict; the interval effect only paces it. */
-  const pollIssuedCode = useCallback(
-    async (codeId: string, mine: number) => {
-      const alive = () => mounted.current && attempt.current === mine;
-      let status: ComputerConnectCodeStatus;
-      try {
-        status = await browserApi.computerConnectCodeStatus(codeId);
-      } catch (cause) {
-        if (alive()) failIssuedCodePoll(cause);
-        return;
-      }
-      if (!alive()) return;
-      const waiting = issuedConnection(connectRef.current);
-      if (!waiting) return;
-      const verdict = readConnectCodeVerdict(status);
-      if (verdict.kind === "wait") {
-        // A poll that succeeds retires whatever the last failed one put on screen.
-        setConnectionError(undefined);
-        return;
-      }
-      if (verdict.kind === "expire") {
-        // The Server has closed the code and nothing can redeem it now, so the wait ends the way
-        // a local expiry ends it — the dead command stays on screen with its refresh offered.
-        setConnect({ kind: "expired", command: waiting.command });
-        return;
-      }
-      /*
-       * Redeemed. The verdict is latched: which machine answered never changes, and no other
-       * machine enrolling or returning during the wait can satisfy it. The Computer is adopted
-       * once the Computers list shows that exact machine online on a connection that postdates
-       * the redemption — a machine that redeemed but has not connected yet keeps the wait
-       * open, which is the only honest reading of "your computer is connected".
-       */
-      redeemed.current ??= { computerId: verdict.computerId, redeemedAt: verdict.redeemedAt };
-      await adoptRedeemedComputer(mine);
-    },
-    [adoptRedeemedComputer, failIssuedCodePoll],
-  );
-
-  // One interval for the whole wait. It expires the code on the Server's own clock rather than a
-  // local countdown, and the Server's redemption verdict — never a reading of the Computers list —
-  // decides which Computer this run's command enrolled.
+  // Availability is independent of a connection attempt. Keep observing the selected Computer so
+  // opening OpenTag on that machine is the default recovery path and needs no repair code at all.
+  // The same read keeps readiness fresh once it is online.
   useEffect(() => {
-    if (connect.kind !== "issued") return;
+    const selectedId = selectedComputer?.id;
+    if (!selectedId) return;
     const mine = attempt.current;
-    const timer = window.setInterval(() => {
-      if (attempt.current !== mine) return;
-      if (Date.now() >= expiresAt.current) {
-        setConnect((current) => (current.kind === "issued" ? { kind: "expired", command: current.command } : current));
-        return;
-      }
-      const codeId = connectCodeId.current;
-      if (!codeId) return;
-      void pollIssuedCode(codeId, mine);
-    }, COMPUTER_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [connect.kind, pollIssuedCode]);
-
-  // Once the Computer is here, the same cadence keeps reading its readiness. The daemon re-probes on
-  // its own schedule, so a failure that gets repaired in a terminal turns green here with no page
-  // action — which is the whole reason the step offers a command instead of a retry button.
-  useEffect(() => {
-    if (connect.kind !== "connected") return;
-    const mine = attempt.current;
+    const observationRun = computerPollEpoch;
     const timer = window.setInterval(() => {
       void browserApi.computers().then(
         (value) => {
-          if (!mounted.current || attempt.current !== mine) return;
-          const mineNow = value.computers.find((computer) => computer.computerId === computerId.current);
-          /*
-           * A machine can leave after it arrived — a lid closes, a daemon stops. Checking only on
-           * the way in left the page saying "Your computer is connected." about a machine the
-           * Server had already given up on, with the command that could bring it back hidden
-           * because the command only renders when the connection is *not* live.
-           *
-           * Returning to idle is what reopens that command. It is held back once a messaging app is
-           * under way: by then the Agent exists, and pulling someone out of a QR scan over a lid
-           * they are about to open again would cost more than it tells them.
-           */
-          if (mineNow?.connectionStatus !== "online") {
-            // Held here, the reader is not pulled off a step they are working through — but the
-            // Computer is still recorded, because reachability depends on it and a wait that has
-            // gone stale cannot say what it is waiting for.
-            //
-            // This holds them against a *lost connection* only. Readiness going backwards is not
-            // covered and is not meant to be: it fails the check the later step was reached
-            // through, so the flow returns to the step whose check rows say which line failed.
-            if (mineNow) setComputer(mineNow);
-            if (pastConnectStep.current) return;
-            computerId.current = undefined;
-            setComputer(undefined);
-            setConnect({ kind: "idle" });
-            return;
-          }
-          setComputer(mineNow);
-          // A poll that succeeds retires whatever the last failed one put on screen; otherwise
-          // "We lost contact" stays above "Your computer is connected."
-          setConnectionError(undefined);
+          if (!mounted.current || attempt.current !== mine || computerPollEpochRef.current !== observationRun) return;
+          const observed = value.computers.find((candidate) => candidate.computerId === selectedId);
+          setComputer(observed);
+          setSelectedComputer((current) =>
+            current?.id === selectedId
+              ? {
+                  id: selectedId,
+                  displayName: observed?.displayName ?? current.displayName,
+                  availability: observed?.connectionStatus ?? "unknown",
+                  lastSeen: observed?.lastSeenAt ? formatRelativeTime(observed.lastSeenAt) : current.lastSeen,
+                }
+              : current,
+          );
         },
         () => undefined,
       );
     }, COMPUTER_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [connect.kind]);
+  }, [computerPollEpoch, selectedComputer?.id]);
 
   /*
    * An installed messaging app is not a reachable Agent. Between the two sits an observation the
@@ -604,29 +418,17 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   const reset = useCallback(() => {
     attempt.current += 1;
+    setComputerPollEpoch((current) => current + 1);
     window.clearInterval(feishuTimer.current);
-    computerId.current = undefined;
-    connectCodeId.current = undefined;
-    redeemed.current = undefined;
-    expiresAt.current = 0;
     creationRef.current = "idle";
-    connectRef.current = { kind: "idle" };
-    setConnect({ kind: "idle" });
-    setComputer(undefined);
     setMessaging({ kind: "idle" });
     setAgent(undefined);
     setCreation("idle");
-    repairTarget.current = undefined;
-    pastConnectStep.current = false;
     setResuming(false);
     setResumeError(undefined);
     setActionError(undefined);
-    setConnectionError(undefined);
-  }, []);
-
-  /** Told by the page when the reader has moved past the step the connection belongs to. */
-  const markPastConnectStep = useCallback(() => {
-    pastConnectStep.current = true;
+    setPastComputerStep(false);
+    setLastPassedReadiness(undefined);
   }, []);
 
   /** Reads the Account again after a failed read, which is the only way out of that state. */
@@ -635,59 +437,69 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, [readAccount]);
 
   const startPlanSignIn = useCallback(() => undefined, []);
+  const markPastComputerStep = useCallback(() => setPastComputerStep(true), []);
 
-  const computerOnline = computer === undefined ? undefined : computer.connectionStatus === "online";
+  const computerOnline =
+    selectedComputer?.availability === "online"
+      ? true
+      : selectedComputer?.availability === "offline"
+        ? false
+        : undefined;
+  const knownComputers = selectedComputer ? [selectedComputer] : [];
 
-  const readiness = useMemo(
-    () => (computer ? readReadiness(computer, draft.runtime) : undefined),
+  const liveReadiness = useMemo(
+    () => (computer?.connectionStatus === "online" ? readReadiness(computer, draft.runtime) : undefined),
     [computer, draft.runtime],
   );
+  useEffect(() => {
+    if (readinessPassed(liveReadiness, draft.runtime)) setLastPassedReadiness(liveReadiness);
+  }, [draft.runtime, liveReadiness]);
+  const readiness = liveReadiness ?? (pastComputerStep ? lastPassedReadiness : undefined);
 
   return useMemo(
     () => ({
       agent,
       computerOnline,
-      connect,
+      computerConnected,
       createAgent,
       creation,
-      error: actionError ?? connectionError,
-      issueConnectCode,
+      error: actionError,
+      knownComputers,
+      markPastComputerStep,
       messaging,
       messagingProvider,
       planSignIn,
       readiness,
-      refreshConnectCode,
       reset,
-      markPastConnectStep,
       resumeError,
       resuming,
       retryResume,
       startMessaging,
       startPlanSignIn,
       startSlackInstall,
+      selectedComputerId: selectedComputer?.id,
     }),
     [
       actionError,
       agent,
       computerOnline,
-      connect,
-      connectionError,
+      computerConnected,
       createAgent,
       creation,
-      issueConnectCode,
+      knownComputers,
+      markPastComputerStep,
       messaging,
       messagingProvider,
       planSignIn,
       readiness,
-      refreshConnectCode,
       reset,
-      markPastConnectStep,
       resumeError,
       resuming,
       retryResume,
       startMessaging,
       startPlanSignIn,
       startSlackInstall,
+      selectedComputer?.id,
     ],
   );
 }

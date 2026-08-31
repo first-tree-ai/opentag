@@ -149,6 +149,6 @@ describe("the messaging wait at ab76497", () => {
 
     // Which is why the messaging step has no copy for an unready runtime: this is the answer to
     // it, and the check rows here name the line that failed.
-    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Your computer" })).toBeTruthy();
   });
 });

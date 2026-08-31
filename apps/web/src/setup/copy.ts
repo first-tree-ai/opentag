@@ -10,9 +10,9 @@
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
- * Every check carries a line of detail in every state, not only when it fails. The list is the
- * page's spine while the user works in their terminal, so its rows must not change height as
- * results land — a list that reflows under someone is worse than one that says "checking".
+ * Copy for the numbered computer-check rows. Every row carries a line of detail in every state,
+ * not only when it fails, so the list does not reflow as results land. A missing messaging CLI is
+ * named later, as a sentence (`SETUP_COPY.messaging.cliMissing`) rather than a third check line.
  */
 export const CHECK_COPY: Record<
   CheckRow["id"],
@@ -34,15 +34,6 @@ export const CHECK_COPY: Record<
       passed: () => "Signed in and ready.",
       failed: (runtime) => `${runtime} is installed but not signed in.`,
       blocked: () => "We'll know once the CLI is installed.",
-    },
-  },
-  "messaging-cli": {
-    title: () => "Lark CLI is installed",
-    detail: {
-      pending: () => "Looking for lark-cli.",
-      passed: () => "Found on this computer.",
-      failed: () => "We need lark-cli to send Lark messages.",
-      blocked: () => "",
     },
   },
 };

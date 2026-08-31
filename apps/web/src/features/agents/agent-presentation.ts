@@ -344,19 +344,35 @@ export type AgentDependencyStatus = {
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
   const { computer, runtime } = agent.availability.dependencies;
-  const action = { label: "View Computer", section: "computer" as const };
-  /*
-   * "this Computer" rather than the machine name: the identity line directly above this sentence
-   * already carries the name, and repeating it made one row read as though it named two machines.
-   */
-  const recovery = computerRecoveryMessage(agent, "this Computer");
-  if (computer.state === "unconfirmed") return { action, detail: recovery, label: "Unknown", tone: "neutral" };
-  if (computer.state === "action_required") return { action, detail: recovery, label: "Offline", tone: "warning" };
   const providerName = runtimeProviderName(runtime.provider);
   /*
-   * A reachable Computer whose Provider readiness could not be read is `runtime_unconfirmed`, not
-   * ready. Falling through to Online here would paint missing evidence as a working Agent.
+   * Every branch carries the exit, including the healthy one. This card is the only Computer
+   * recovery surface on the Agent home now that the banner is gone, so a state without an exit
+   * leaves the Computer reachable only by hunting through Settings.
+   *
+   * The wording is derived from these two dependency fields rather than from
+   * `computerRecoveryMessage`, which answers a different question: it branches on the Agent-wide
+   * `availability.reason`, and a higher-ranked reason such as `agent_suspended` masks the runtime
+   * one -- which made this row label a Provider as "Checking" while its sentence claimed the
+   * connection was unconfirmed, about a Computer that was online.
    */
+  const action = { label: "View Computer", section: "computer" as const };
+  if (computer.state === "unconfirmed") {
+    return {
+      action,
+      detail: "OpenTag could not confirm this Computer's current connection.",
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  if (computer.state === "action_required") {
+    return {
+      action,
+      detail: "OpenTag is not running on this Computer. Start it there to bring it back online.",
+      label: "Offline",
+      tone: "warning",
+    };
+  }
   if (!runtime.status) {
     return {
       action,
@@ -365,16 +381,37 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
       tone: "neutral",
     };
   }
+  if (runtime.status === "checking") {
+    return {
+      action,
+      detail: `OpenTag is still checking ${providerName} on this Computer.`,
+      label: `Checking ${providerName}`,
+      tone: "info",
+    };
+  }
+  if (runtime.status === "install") {
+    return {
+      action,
+      detail: `${providerName} is not installed on this Computer.`,
+      label: `${providerName} not installed`,
+      tone: "warning",
+    };
+  }
+  if (runtime.status === "sign-in") {
+    return {
+      action,
+      detail: `${providerName} is not signed in on this Computer.`,
+      label: `${providerName} sign-in required`,
+      tone: "warning",
+    };
+  }
   if (runtime.status !== "ready") {
-    // Named per Provider status, and worded by the same helper the Computer settings page uses.
-    const detail = recovery;
-    if (runtime.status === "checking") return { detail, label: `Checking ${providerName}`, tone: "info" };
-    if (runtime.status === "install")
-      return { action, detail, label: `${providerName} not installed`, tone: "warning" };
-    if (runtime.status === "sign-in") {
-      return { action, detail, label: `${providerName} sign-in required`, tone: "warning" };
-    }
-    return { action, detail, label: `${providerName} unavailable`, tone: "warning" };
+    return {
+      action,
+      detail: `${providerName} is unavailable on this Computer.`,
+      label: `${providerName} unavailable`,
+      tone: "warning",
+    };
   }
   return { action, label: "Online", tone: "success" };
 }

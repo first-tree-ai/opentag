@@ -2061,6 +2061,94 @@ describe("OpenTag Web App Shell", () => {
     expect(within(messagingRow).getByText("OpenTag could not confirm whether messages reach this Agent.")).toBeTruthy();
   });
 
+  it("keeps a repair exit in every Computer state", async () => {
+    /*
+     * The mirror of the messaging case below, and the assertion whose absence let `Checking` ship
+     * without an exit. This card is the only Computer recovery surface on the Agent home, so a
+     * state that drops the link leaves no route to the Computer from this page at all.
+     *
+     * Each row's sentence is asserted with its label because the two are derived from different
+     * places: the label from the per-dependency `runtime.status`, the sentence previously from the
+     * Agent-wide reason, which let a paused Agent label a Provider "Checking" while claiming the
+     * connection was unconfirmed about a Computer that was online.
+     */
+    const readiness = (status: "checking" | "install" | "sign-in" | "unavailable" | "ready") =>
+      [{ observedAt: "2026-08-20T00:00:00.000Z", provider: "codex" as const, status }] as const;
+    const states = [
+      {
+        detail: "OpenTag could not confirm this Computer's current connection.",
+        label: "Unknown",
+        options: { computerEvidenceFails: true },
+      },
+      {
+        detail: "OpenTag is not running on this Computer. Start it there to bring it back online.",
+        label: "Offline",
+        options: { computerStatus: () => "offline" as const },
+      },
+      {
+        detail: "OpenTag is still checking Codex on this Computer.",
+        label: "Checking Codex",
+        options: { computerProviderReadiness: readiness("checking") },
+      },
+      {
+        detail: "Codex is not installed on this Computer.",
+        label: "Codex not installed",
+        options: { computerProviderReadiness: readiness("install") },
+      },
+      {
+        detail: "Codex is not signed in on this Computer.",
+        label: "Codex sign-in required",
+        options: { computerProviderReadiness: readiness("sign-in") },
+      },
+      {
+        detail: "Codex is unavailable on this Computer.",
+        label: "Codex unavailable",
+        options: { computerProviderReadiness: readiness("unavailable") },
+      },
+      { detail: undefined, label: "Online", options: { computerProviderReadiness: readiness("ready") } },
+    ];
+    for (const state of states) {
+      installApi({ bound: true, ...state.options });
+      window.history.replaceState({}, "", `/agents/${agentId}`);
+      const rendered = render(<App />);
+
+      expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+      const row = screen
+        .getByRole("region", { name: "Connection" })
+        .querySelector('[data-ui="connection-computer"]') as HTMLElement;
+      expect(row).toBeTruthy();
+      expect(within(row).getByText(state.label)).toBeTruthy();
+      if (state.detail) expect(within(row).getByText(state.detail)).toBeTruthy();
+      expect(within(row).getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
+        `/agents/${agentId}/settings/computer`,
+      );
+      rendered.unmount();
+    }
+  });
+
+  it("does not let a paused Agent make the Computer row contradict itself", async () => {
+    /*
+     * `agent_suspended` outranks every dependency reason, so a row deriving its sentence from the
+     * Agent-wide reason described a masked state: "Checking Codex" beside "could not confirm this
+     * Computer's current connection", about a Computer that was online and confirmed.
+     */
+    installApi({
+      bound: true,
+      initialStatus: "suspended",
+      computerProviderReadiness: [{ observedAt: "2026-08-20T00:00:00.000Z", provider: "codex", status: "checking" }],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const row = screen
+      .getByRole("region", { name: "Connection" })
+      .querySelector('[data-ui="connection-computer"]') as HTMLElement;
+    expect(within(row).getByText("Checking Codex")).toBeTruthy();
+    expect(within(row).getByText("OpenTag is still checking Codex on this Computer.")).toBeTruthy();
+    expect(within(row).queryByText(/could not confirm this Computer's current connection/)).toBeNull();
+  });
+
   it("names the channel and keeps a repair exit in every messaging state", async () => {
     /*
      * Messaging is what makes an Agent reachable, and this card replaced the header control that

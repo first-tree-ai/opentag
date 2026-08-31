@@ -10,7 +10,12 @@ import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { accountComputers, agents } from "./db/schema/index.js";
-import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
+import {
+  createBackgroundFailureSupervisor,
+  createServerDiagnosticReporter,
+  initTelemetry,
+  shutdownTelemetry,
+} from "./observability/index.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -98,6 +103,11 @@ export async function startServer(): Promise<void> {
   let app: ReturnType<typeof createApp> | undefined;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
+  const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
+    logger: (payload, message) => app?.log.error(payload, message),
+    onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
+    onCounter: (name, labels) => app?.log.info({ name, ...labels }, "Background failure counter"),
+  });
 
   try {
     knownSecrets.push(
@@ -216,6 +226,7 @@ export async function startServer(): Promise<void> {
       runtimeReady: runtimeReadyForAgent,
       onDiagnostic: reportDiagnostic,
       policy: imCallPolicy,
+      supervisor: backgroundFailureSupervisor,
     });
     const feishuSetupService = new FeishuSetupService({
       database,
@@ -225,6 +236,7 @@ export async function startServer(): Promise<void> {
       registrations: new DefaultFeishuRegistrationGateway(undefined, imCallPolicy),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
+      supervisor: backgroundFailureSupervisor,
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
@@ -252,6 +264,7 @@ export async function startServer(): Promise<void> {
       domain: domainOwner,
       registry,
       onDiagnostic: reportDiagnostic,
+      supervisor: backgroundFailureSupervisor,
     });
     const setupResetService = config.stagingSetupReset
       ? new OnboardingResetService({

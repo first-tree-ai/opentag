@@ -3,6 +3,7 @@ import { hasRequiredFeishuTenantScopes } from "@opentag/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
+import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
 import {
   emitRootSpan,
   imAttrs,
@@ -51,6 +52,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #leaseMs: number;
   readonly #maintenanceMs: number;
   readonly #onDiagnostic: (code: string) => void;
+  readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #runtimeReady: (agentId: string) => Promise<boolean>;
   readonly #policy: ExternalCallPolicy;
   readonly #maintenanceBackoffBaseMs: number;
@@ -81,6 +83,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     maintenanceMs?: number;
     runtimeReady?: (agentId: string) => Promise<boolean> | boolean;
     onDiagnostic?: (code: string) => void;
+    supervisor?: BackgroundFailureSupervisor;
     afterActivationAgentLocked?: () => Promise<void>;
     /* type-only */ policy?: ExternalCallPolicy;
     /* type-only */ maintenanceBackoffBaseMs?: number;
@@ -100,6 +103,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#maintenanceBackoffMaxMs = Math.max(this.#maintenanceBackoffBaseMs, input.maintenanceBackoffMaxMs ?? 30_000);
     this.#now = input.now ?? (() => new Date());
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+    this.#supervisor = input.supervisor;
     this.#afterActivationAgentLocked = input.afterActivationAgentLocked;
   }
 
@@ -541,8 +545,11 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
             ...imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }),
             ...outcomeAttrs("reconnecting"),
           });
-          void this.#observeDisconnected(handoff.imBindingId, handoff.epoch).catch(() =>
-            this.#onDiagnostic("FEISHU_CONNECTION_OBSERVATION_FAILED"),
+          this.#trackDetached(
+            "FEISHU_CONNECTION_OBSERVATION_FAILED",
+            this.#observeDisconnected(handoff.imBindingId, handoff.epoch),
+            "socket",
+            handoff.imBindingId,
           );
         }
       },
@@ -553,8 +560,11 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
             ...imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }),
             ...outcomeAttrs("reconnected"),
           });
-          void this.#observeConnected(handoff.imBindingId, handoff.epoch).catch(() =>
-            this.#onDiagnostic("FEISHU_CONNECTION_OBSERVATION_FAILED"),
+          this.#trackDetached(
+            "FEISHU_CONNECTION_OBSERVATION_FAILED",
+            this.#observeConnected(handoff.imBindingId, handoff.epoch),
+            "socket",
+            handoff.imBindingId,
           );
         }
       },
@@ -570,9 +580,12 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
             },
             new Error(code),
           );
-          void this.#imBindings
-            .recordDiagnosticError(handoff.imBindingId, code)
-            .catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DIAGNOSTIC_FAILED"));
+          this.#trackDetached(
+            "FEISHU_CONNECTION_DIAGNOSTIC_FAILED",
+            this.#imBindings.recordDiagnosticError(handoff.imBindingId, code),
+            "provider",
+            handoff.imBindingId,
+          );
         }
       },
     });
@@ -631,7 +644,31 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   }
 
   #scheduleMaintenance(): void {
-    void this.maintain().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_MAINTENANCE_FAILED"));
+    this.#trackDetached("FEISHU_CONNECTION_MAINTENANCE_FAILED", this.maintain(), "scheduler");
+  }
+
+  #trackDetached(
+    code: string,
+    operation: Promise<unknown>,
+    phase: "provider" | "scheduler" | "socket",
+    requestId?: string,
+  ): void {
+    const observed = operation.catch((error: unknown) => {
+      this.#onDiagnostic(code);
+      throw error;
+    });
+    if (this.#supervisor) {
+      this.#supervisor.track(observed, {
+        code,
+        category: phase === "provider" ? "dependency" : "internal",
+        retryability: "backoff",
+        phase,
+        ...(requestId ? { requestId } : {}),
+        operation: "feishu.connection",
+      });
+      return;
+    }
+    void observed.catch(() => undefined);
   }
 }
 

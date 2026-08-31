@@ -1,5 +1,6 @@
 import { setImmediate as waitImmediate } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 
 describe("KeyedTaskScheduler", () => {
@@ -107,6 +108,40 @@ describe("KeyedTaskScheduler", () => {
     expect(scheduler.stats()).toMatchObject({ active: 1, queued: 1, lanes: 2, oldestQueueAgeMs: 250 });
     release?.();
     await waitImmediate();
+    scheduler.close();
+  });
+
+  it("supervises rejected task promises with one structured event and counter", async () => {
+    const events: unknown[] = [];
+    const counters: unknown[] = [];
+    const supervisor = new BackgroundFailureSupervisor({
+      onEvent: (event) => events.push(event),
+      onCounter: (name, labels) => counters.push({ name, labels }),
+    });
+    const scheduler = new KeyedTaskScheduler({
+      maxConcurrent: 1,
+      maxQueuedPerKey: 1,
+      maxQueuedTotal: 1,
+      supervisor,
+    });
+    expect(
+      scheduler.enqueue("agent-1", async () => {
+        throw new Error("task failed");
+      }),
+    ).toBe(true);
+    await waitImmediate();
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(counters).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "diagnostic.error",
+      error: {
+        code: "RUNTIME_SCHEDULER_TASK_FAILED",
+        category: "internal",
+        retryability: "never",
+        phase: "scheduler",
+        requestId: "agent-1",
+      },
+    });
     scheduler.close();
   });
 });

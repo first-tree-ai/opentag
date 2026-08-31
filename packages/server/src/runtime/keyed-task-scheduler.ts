@@ -75,7 +75,21 @@ export class KeyedTaskScheduler {
       this.#active += 1;
       void Promise.resolve()
         .then(task.run)
-        .catch(() => undefined)
+        .catch((error: unknown) => {
+          this.#options.supervisor?.track(
+            async () => {
+              throw error;
+            },
+            {
+              code: "RUNTIME_SCHEDULER_TASK_FAILED",
+              category: "internal",
+              retryability: "never",
+              phase: "scheduler",
+              requestId: key,
+              operation: "keyed-task-scheduler",
+            },
+          );
+        })
         .finally(() => {
           lane.running = false;
           this.#active -= 1;

@@ -1,7 +1,9 @@
 import type { MeResponse } from "@opentag/shared/browser";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
-import { Button, Field, KumoInputControl, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
+import { getLocale, isLocale, LOCALE_LABELS, locales, setLocale, toLocale } from "../../i18n/locale.js";
+import * as m from "../../paraglide/messages.js";
+import { Button, Field, KumoInputControl, Select, SettingsList, SettingsRow, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
 import { useAccount } from "../session/session-context.js";
 
@@ -133,6 +135,26 @@ export function AccountSettings({
               required
               value={displayName}
             />
+          </Field>
+        </SettingsRow>
+        <SettingsRow label={m.account_language_label()} description={m.account_language_description()}>
+          <Field htmlFor="account-language" label={m.account_language_label()}>
+            <Select
+              aria-label={m.account_language_label()}
+              id="account-language"
+              renderValue={(locale) => LOCALE_LABELS[locale]}
+              value={getLocale()}
+              onValueChange={(value) => {
+                const locale = toLocale(value);
+                if (locale && isLocale(locale)) setLocale(locale);
+              }}
+            >
+              {locales.map((locale) => (
+                <Select.Option key={locale} value={locale}>
+                  {LOCALE_LABELS[locale]}
+                </Select.Option>
+              ))}
+            </Select>
           </Field>
         </SettingsRow>
       </SettingsList>

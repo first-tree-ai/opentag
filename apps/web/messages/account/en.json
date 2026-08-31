@@ -1,3 +1,5 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "account_language_description": "Choose the language used throughout OpenTag.",
+  "account_language_label": "Language"
 }

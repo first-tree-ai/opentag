@@ -49,7 +49,7 @@ describe("stopAgentSessions", () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => ({ for: async () => [{ status: "active" }] }),
+            limit: async () => [{ status: "active" }],
           }),
         }),
       }),
@@ -81,7 +81,7 @@ describe("stopAgentSessions", () => {
       select: () => ({
         from: () => ({
           where: () => ({
-            limit: () => ({ for: async () => [{ status: "suspended" }] }),
+            limit: async () => [{ status: "suspended" }],
           }),
         }),
       }),

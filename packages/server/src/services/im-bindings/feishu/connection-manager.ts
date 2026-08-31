@@ -3,6 +3,7 @@ import { hasRequiredFeishuTenantScopes } from "@opentag/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
+import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
 import {
   emitRootSpan,
   imAttrs,
@@ -12,6 +13,7 @@ import {
   traceFeishuInbound,
   withRootSpan,
 } from "../../../observability/index.js";
+import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { classifyImInboundPersistenceError, type ImMessageInbox } from "../../im/index.js";
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
 import { FeishuAdapter } from "./adapter.js";
@@ -45,13 +47,22 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     appSecret: string;
     teamId: string | null;
     teamBrand?: "feishu" | "lark" | null;
+    /* type-only */ policy?: ExternalCallPolicy;
   }) => FeishuAdapter;
   readonly #leaseMs: number;
   readonly #maintenanceMs: number;
   readonly #onDiagnostic: (code: string) => void;
+  readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #runtimeReady: (agentId: string) => Promise<boolean>;
+  readonly #policy: ExternalCallPolicy;
+  readonly #maintenanceBackoffBaseMs: number;
+  readonly #maintenanceBackoffMaxMs: number;
+  readonly #now: () => Date;
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
+  readonly #maintenanceControllers = new Map<string, AbortController>();
+  readonly #maintenanceFailures = new Map<string, number>();
+  readonly #maintenanceNextAt = new Map<string, number>();
   #maintaining = false;
   #timer: ReturnType<typeof setInterval> | undefined;
   #stopped = true;
@@ -66,22 +77,33 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       appSecret: string;
       teamId: string | null;
       teamBrand?: "feishu" | "lark" | null;
+      /* type-only */ policy?: ExternalCallPolicy;
     }) => FeishuAdapter;
     leaseMs?: number;
     maintenanceMs?: number;
     runtimeReady?: (agentId: string) => Promise<boolean> | boolean;
     onDiagnostic?: (code: string) => void;
+    supervisor?: BackgroundFailureSupervisor;
     afterActivationAgentLocked?: () => Promise<void>;
+    /* type-only */ policy?: ExternalCallPolicy;
+    /* type-only */ maintenanceBackoffBaseMs?: number;
+    /* type-only */ maintenanceBackoffMaxMs?: number;
+    /* type-only */ now?: () => Date;
   }) {
     this.#database = input.database;
     this.#inbox = input.inbox;
     this.#instanceId = input.instanceId;
     this.#imBindings = input.imBindings;
-    this.#createAdapter = input.createAdapter ?? ((options) => new FeishuAdapter(options));
+    this.#createAdapter = input.createAdapter ?? ((options) => new FeishuAdapter({ ...options, policy: this.#policy }));
     this.#leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
     this.#maintenanceMs = input.maintenanceMs ?? DEFAULT_MAINTENANCE_MS;
     this.#runtimeReady = async (agentId) => (await input.runtimeReady?.(agentId)) ?? true;
+    this.#policy = input.policy ?? new ExternalCallPolicy();
+    this.#maintenanceBackoffBaseMs = Math.max(1, input.maintenanceBackoffBaseMs ?? 500);
+    this.#maintenanceBackoffMaxMs = Math.max(this.#maintenanceBackoffBaseMs, input.maintenanceBackoffMaxMs ?? 30_000);
+    this.#now = input.now ?? (() => new Date());
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+    this.#supervisor = input.supervisor;
     this.#afterActivationAgentLocked = input.afterActivationAgentLocked;
   }
 
@@ -95,6 +117,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
 
   async stop(): Promise<void> {
     this.#stopped = true;
+    for (const controller of this.#maintenanceControllers.values()) controller.abort();
+    this.#maintenanceControllers.clear();
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     const owned = [...this.#owned.entries()];
@@ -144,9 +168,19 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     let handoff: { imBindingId: string; epoch: number; generation: number; appId: string } | undefined;
     const detachHandlers = this.#attachHandlers(candidate, () => handoff);
     try {
-      const identity = await candidate.validateBinding();
+      const identity = await this.#policy.run("feishu.binding.validate", () => candidate.validateBinding(), {
+        maxAttempts: 1,
+        circuitKey: `feishu:binding:${input.appId}`,
+      });
       if (identity.externalAppId !== input.appId) throw new FeishuOperationError("FEISHU_APP_IDENTITY_MISMATCH");
-      const grantedScopes = await candidate.listGrantedWorkspaceScopes();
+      const grantedScopes = await this.#policy.run(
+        "feishu.binding.scopes",
+        () => candidate.listGrantedWorkspaceScopes(),
+        {
+          maxAttempts: 1,
+          circuitKey: `feishu:binding:${input.appId}`,
+        },
+      );
       if (!hasRequiredFeishuTenantScopes(grantedScopes)) {
         throw new FeishuOperationError("FEISHU_SCOPE_REAUTH_REQUIRED");
       }
@@ -313,12 +347,28 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       const candidates = await this.#imBindings.listFeishuConnectionIds(afterId, CONNECTION_SCAN_PAGE_SIZE);
       for (const imBindingId of candidates) {
         if (this.#owned.has(imBindingId)) continue;
+        const nextAt = this.#maintenanceNextAt.get(imBindingId) ?? 0;
+        if (nextAt > this.#now().getTime()) continue;
         const epoch = await this.#claim(imBindingId, false);
         if (epoch === undefined) continue;
-        await this.#connectClaimed(imBindingId, epoch).catch(async (error) => {
-          await this.#imBindings.recordDiagnosticError(imBindingId, diagnosticCode(error));
-          await this.#release(imBindingId, epoch);
-        });
+        const controller = new AbortController();
+        this.#maintenanceControllers.set(imBindingId, controller);
+        await this.#connectClaimed(imBindingId, epoch, controller.signal)
+          .then(() => {
+            this.#maintenanceFailures.delete(imBindingId);
+            this.#maintenanceNextAt.delete(imBindingId);
+          })
+          .catch(async (error) => {
+            const failures = (this.#maintenanceFailures.get(imBindingId) ?? 0) + 1;
+            this.#maintenanceFailures.set(imBindingId, failures);
+            const delay = Math.min(this.#maintenanceBackoffMaxMs, this.#maintenanceBackoffBaseMs * 2 ** (failures - 1));
+            this.#maintenanceNextAt.set(imBindingId, this.#now().getTime() + delay);
+            await this.#imBindings.recordDiagnosticError(imBindingId, diagnosticCode(error));
+            await this.#release(imBindingId, epoch);
+          })
+          .finally(() => {
+            this.#maintenanceControllers.delete(imBindingId);
+          });
       }
       if (candidates.length < CONNECTION_SCAN_PAGE_SIZE) break;
       afterId = candidates.at(-1);
@@ -358,32 +408,43 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     });
   }
 
-  async #connectClaimed(imBindingId: string, epoch: number): Promise<void> {
+  async #connectClaimed(imBindingId: string, epoch: number, signal?: AbortSignal): Promise<void> {
     await withRootSpan(
       "feishu.connection.connect",
       imAttrs({ provider: "feishu", bindingId: imBindingId }),
       async () => {
+        let adapter: FeishuAdapter | undefined;
         try {
           const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId);
           if (!material) throw new FeishuOperationError("FEISHU_BINDING_NOT_ACTIVE");
-          const adapter = this.#createAdapter({
+          const createdAdapter = this.#createAdapter({
             appId: material.appId,
             appSecret: material.appSecret,
             teamId: material.teamId,
             teamBrand: material.teamBrand,
           });
-          const identity = await adapter.validateBinding();
+          adapter = createdAdapter;
+          const identity = await this.#policy.run(
+            "feishu.connection.validate",
+            () => createdAdapter.validateBinding(),
+            {
+              maxAttempts: 1,
+              signal,
+              circuitKey: `feishu:binding:${imBindingId}`,
+            },
+          );
           if (identity.externalBotId !== material.botOpenId) {
             throw new FeishuOperationError("FEISHU_BOT_IDENTITY_MISMATCH");
           }
           await this.#replaceOwned(imBindingId, {
-            adapter,
+            adapter: createdAdapter,
             epoch,
             generation: material.generation,
             appId: material.appId,
           });
           setActiveSpanAttributes(outcomeAttrs("connected"));
         } catch (error) {
+          await adapter?.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
           const code = diagnosticCode(error);
           setActiveSpanAttributes(outcomeAttrs(connectionOutcome(code), code));
           throw error;
@@ -484,8 +545,11 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
             ...imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }),
             ...outcomeAttrs("reconnecting"),
           });
-          void this.#observeDisconnected(handoff.imBindingId, handoff.epoch).catch(() =>
-            this.#onDiagnostic("FEISHU_CONNECTION_OBSERVATION_FAILED"),
+          this.#trackDetached(
+            "FEISHU_CONNECTION_OBSERVATION_FAILED",
+            this.#observeDisconnected(handoff.imBindingId, handoff.epoch),
+            "socket",
+            handoff.imBindingId,
           );
         }
       },
@@ -496,8 +560,11 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
             ...imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }),
             ...outcomeAttrs("reconnected"),
           });
-          void this.#observeConnected(handoff.imBindingId, handoff.epoch).catch(() =>
-            this.#onDiagnostic("FEISHU_CONNECTION_OBSERVATION_FAILED"),
+          this.#trackDetached(
+            "FEISHU_CONNECTION_OBSERVATION_FAILED",
+            this.#observeConnected(handoff.imBindingId, handoff.epoch),
+            "socket",
+            handoff.imBindingId,
           );
         }
       },
@@ -513,9 +580,12 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
             },
             new Error(code),
           );
-          void this.#imBindings
-            .recordDiagnosticError(handoff.imBindingId, code)
-            .catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DIAGNOSTIC_FAILED"));
+          this.#trackDetached(
+            "FEISHU_CONNECTION_DIAGNOSTIC_FAILED",
+            this.#imBindings.recordDiagnosticError(handoff.imBindingId, code),
+            "provider",
+            handoff.imBindingId,
+          );
         }
       },
     });
@@ -574,7 +644,31 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   }
 
   #scheduleMaintenance(): void {
-    void this.maintain().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_MAINTENANCE_FAILED"));
+    this.#trackDetached("FEISHU_CONNECTION_MAINTENANCE_FAILED", this.maintain(), "scheduler");
+  }
+
+  #trackDetached(
+    code: string,
+    operation: Promise<unknown>,
+    phase: "provider" | "scheduler" | "socket",
+    requestId?: string,
+  ): void {
+    const observed = operation.catch((error: unknown) => {
+      this.#onDiagnostic(code);
+      throw error;
+    });
+    if (this.#supervisor) {
+      this.#supervisor.track(observed, {
+        code,
+        category: phase === "provider" ? "dependency" : "internal",
+        retryability: "backoff",
+        phase,
+        ...(requestId ? { requestId } : {}),
+        operation: "feishu.connection",
+      });
+      return;
+    }
+    void observed.catch(() => undefined);
   }
 }
 

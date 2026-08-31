@@ -218,6 +218,27 @@
       "when": 1788077592745,
       "tag": "0030_low_ulik",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788161887121,
+      "tag": "0031_majestic_shiva",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788186258806,
+      "tag": "0032_durable_turn_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788196536534,
+      "tag": "0033_clear_default_agent_instructions",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { messagingProviderChoices, messagingProviderLabel } from "../../im/provider-label.js";
+import * as m from "../../paraglide/messages.js";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -78,15 +79,12 @@ export function computerRecoveryMessage(agent: AgentDetailView, computerName = a
 }
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {
-  if (binding.bindingState === "reauthorization_required" && binding.provider === "feishu") {
-    return "Permissions update required";
-  }
   return {
-    active: "Connected",
-    provisioning: "Setting up",
-    reauthorization_required: "Permissions update required",
-    error: "Connection error",
-    disabled: "Disabled",
+    active: m.im_connected(),
+    provisioning: m.im_connecting(),
+    reauthorization_required: m.im_permissions_required(),
+    error: m.im_connection_error(),
+    disabled: m.im_disconnected(),
   }[binding.bindingState];
 }
 
@@ -250,7 +248,7 @@ export function agentAvailabilityRecovery(
 ): { label: string; link: AgentSettingsSectionLink } | undefined {
   if (agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
-    return { label: "Manage Agent", link: agentSettingsSectionLink(agent.id, "manage") };
+    return { label: m.agent_settings_pause_or_delete(), link: agentSettingsSectionLink(agent.id, "manage") };
   }
   if (
     agent.availability.reason === "im_not_connected" ||
@@ -306,7 +304,6 @@ function runtimeRecoveryMessage(agent: AgentDetailView): string {
  */
 export type AgentDependencyStatus = {
   action?: { label: string; section: AgentSettingsSection };
-  detail?: string;
   label: string;
   tone: StatusTone;
 };
@@ -315,101 +312,83 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
   const { computer, runtime } = agent.availability.dependencies;
   const providerName = runtimeProviderName(runtime.provider);
   /*
-   * Every branch carries the exit, including the healthy one. This card is the only Computer
-   * recovery surface on the Agent home now that the banner is gone, so a state without an exit
-   * leaves the Computer reachable only by hunting through Settings.
-   *
-   * The wording is derived from these two dependency fields rather than from
-   * `computerRecoveryMessage`, which answers a different question: it branches on the Agent-wide
-   * `availability.reason`, and a higher-ranked reason such as `agent_suspended` masks the runtime
-   * one -- which made this row label a Provider as "Checking" while its sentence claimed the
-   * connection was unconfirmed, about a Computer that was online.
+   * The status is derived from these dependency fields rather than the Agent-wide reason. A
+   * higher-ranked reason such as `agent_suspended` can mask a runtime problem, but it must not make
+   * this row contradict the Computer evidence. Healthy and self-resolving states stay quiet;
+   * actionable states name the exact next step instead of adding an explanatory sentence.
    */
-  const action = { label: "View Computer", section: "computer" as const };
   if (computer.state === "unconfirmed") {
     return {
-      action,
-      detail: "OpenTag could not confirm this Computer's current connection.",
-      label: "Unknown",
+      action: { label: m.agents_status_action_view_computer(), section: "computer" },
+      label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
   if (computer.state === "action_required") {
     return {
-      action,
-      detail: "OpenTag is not running on this Computer. Start it there to bring it back online.",
-      label: "Offline",
+      action: { label: m.agents_status_action_open_computer_setup(), section: "computer" },
+      label: m.agents_status_computer_offline(),
       tone: "warning",
     };
   }
   if (!runtime.status) {
     return {
-      action,
-      detail: `OpenTag could not confirm ${providerName} on this Computer.`,
-      label: "Unknown",
+      action: { label: m.agents_status_action_view_computer(), section: "computer" },
+      label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
   if (runtime.status === "checking") {
     return {
-      action,
-      detail: `OpenTag is still checking ${providerName} on this Computer.`,
-      label: `Checking ${providerName}`,
+      label: m.agents_status_computer_checking_runtime({ providerName }),
       tone: "info",
     };
   }
   if (runtime.status === "install") {
     return {
-      action,
-      detail: `${providerName} is not installed on this Computer.`,
-      label: `${providerName} not installed`,
+      action: { label: m.agents_status_action_set_up_runtime({ providerName }), section: "computer" },
+      label: m.agents_status_computer_runtime_not_installed({ providerName }),
       tone: "warning",
     };
   }
   if (runtime.status === "sign-in") {
     return {
-      action,
-      detail: `${providerName} is not signed in on this Computer.`,
-      label: `${providerName} sign-in required`,
+      action: { label: m.agents_status_action_sign_in_to_runtime({ providerName }), section: "computer" },
+      label: m.agents_status_computer_runtime_sign_in_required({ providerName }),
       tone: "warning",
     };
   }
   if (runtime.status !== "ready") {
     return {
-      action,
-      detail: `${providerName} is unavailable on this Computer.`,
-      label: `${providerName} unavailable`,
+      action: { label: m.agents_status_action_troubleshoot_runtime({ providerName }), section: "computer" },
+      label: m.agents_status_computer_runtime_unavailable({ providerName }),
       tone: "warning",
     };
   }
-  return { action, label: "Online", tone: "success" };
+  return { label: m.agents_status_computer_ready(), tone: "success" };
 }
 
 export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
-  const action = { label: "View messaging", section: "messaging" as const };
   if (agent.messaging.kind === "unconfirmed") {
     return {
-      action,
-      detail: "OpenTag could not read this Agent's messaging connection.",
-      label: "Unknown",
+      action: { label: m.agents_status_action_view_channel(), section: "messaging" },
+      label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
   const binding = agent.messaging.value;
   if (!binding) {
     return {
-      action: { label: "Connect messaging", section: "messaging" },
-      detail: "Connect a chat app so teammates can send this Agent work.",
-      label: "Not connected",
+      action: { label: m.agents_status_action_connect_channel(), section: "messaging" },
+      label: m.agents_status_channel_not_connected(),
       tone: "neutral",
     };
   }
   const handoff = agent.availability.dependencies.handoff;
   if (binding.bindingState === "active" && handoff.state === "action_required") {
     return {
-      action,
-      detail: "Messages cannot be delivered to this Agent right now.",
-      label: "Cannot receive messages",
+      action: { label: m.agents_status_action_fix_messaging(), section: "messaging" },
+      label: m.agents_status_channel_cannot_receive_messages(),
       tone: "warning",
     };
   }
@@ -419,28 +398,32 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
    */
   if (binding.bindingState === "active" && handoff.state === "unconfirmed") {
     return {
-      action,
-      detail: "OpenTag could not confirm whether messages reach this Agent.",
-      label: "Unknown",
+      action: { label: m.agents_status_action_view_channel(), section: "messaging" },
+      label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
-  const detail: Record<ImBindingSummary["bindingState"], string | undefined> = {
-    active: undefined,
-    provisioning: "The messaging connection is still being set up.",
-    reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
-    error: "The messaging connection failed. Reconnect it to receive messages.",
-    disabled: "Messaging is turned off for this Agent. Reconnect it to receive messages.",
+  const actions: Partial<Record<ImBindingSummary["bindingState"], AgentDependencyStatus["action"]>> = {
+    provisioning: { label: m.agents_status_action_view_setup(), section: "messaging" },
+    reauthorization_required: { label: m.agents_status_action_update_permissions(), section: "messaging" },
+    error: { label: m.agents_status_action_reconnect_channel(), section: "messaging" },
+    disabled: { label: m.agents_status_action_reconnect_channel(), section: "messaging" },
   };
-  /*
-   * The exit stays even when the channel is healthy. This card replaced the header's messaging
-   * control, so dropping it on success would leave changing the bound bot reachable only by
-   * hunting through Settings.
-   */
+  // Healthy channels stay quiet; Settings remains the place to change an already working binding.
   return {
-    action,
-    detail: detail[binding.bindingState],
-    label: messagingConnectionLabel(binding),
+    action: actions[binding.bindingState],
+    label: agentMessagingConnectionLabel(binding),
     tone: messagingConnectionTone(binding),
   };
+}
+
+function agentMessagingConnectionLabel(binding: ImBindingSummary): string {
+  const labels: Record<ImBindingSummary["bindingState"], string> = {
+    active: m.agents_status_channel_connected(),
+    provisioning: m.agents_status_channel_setting_up(),
+    reauthorization_required: m.agents_status_channel_permissions_update_required(),
+    error: m.agents_status_channel_connection_error(),
+    disabled: m.agents_status_channel_disabled(),
+  };
+  return labels[binding.bindingState];
 }

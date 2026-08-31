@@ -169,6 +169,78 @@ describe("RuntimeDomainOwner", () => {
     await expect(pending).rejects.toMatchObject({ code: "stopped" });
     expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred");
   });
+
+  it("releases delivery custody when the runtime send fails synchronously", async () => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseDeliveryDispatch");
+    const failingSocket = socketFixture([], new Error("send failed"));
+    await fixture.registry.register(
+      {
+        computerId: fixture.computerId,
+        workspaceComputerId: fixture.computerId,
+        workspaceId: fixture.context.workspaceId,
+        instanceId: fixture.instanceId,
+        lastHeartbeatAt: 1,
+        socket: failingSocket,
+      },
+      async () => undefined,
+    );
+    const owner = new RuntimeDomainOwner(fixture.registry, custody, { requestTimeoutMs: 1_000 });
+    const request = deliveryRequest();
+    await expect(owner.requestDelivery(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    await vi.waitFor(() => expect(release).toHaveBeenCalledWith(request, expect.any(String), "retry"));
+    expect(custody.hasDispatch(request.deliveryId)).toBe(false);
+  });
+
+  it("compensates a dispatch marker when registry send throws synchronously", async () => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseDeliveryDispatch");
+    const owner = new RuntimeDomainOwner(
+      {
+        send: vi.fn(() => {
+          throw new Error("sync send failed");
+        }),
+      } as never,
+      custody,
+    );
+    const request = deliveryRequest();
+
+    await expect(owner.requestDelivery(fixture.computerId, fixture.instanceId, request)).rejects.toThrow(
+      "sync send failed",
+    );
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), "retry");
+    expect(custody.hasDispatch(request.deliveryId)).toBe(false);
+  });
+
+  it("releases delivery custody when a dispatch times out", async () => {
+    const fixture = await ownerFixture(5);
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseDeliveryDispatch");
+    const owner = new RuntimeDomainOwner(fixture.registry, custody, { requestTimeoutMs: 5 });
+    const request = deliveryRequest();
+    const pending = owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
+    await expect(pending).rejects.toMatchObject({ code: "timeout" });
+    await vi.waitFor(() => expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred"));
+    expect(custody.hasDispatch(request.deliveryId)).toBe(true);
+  });
+
+  it("releases steer custody when admission capacity rejects after begin", async () => {
+    const fixture = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const release = vi.spyOn(custody, "releaseSteerDispatch");
+    const owner = new RuntimeDomainOwner(fixture.registry, custody, { maxPendingRequests: 1 });
+    const reconcile = reconcileRequest(fixture.computerId);
+    owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcile);
+    const request = steerRequest(deliveryRequest());
+    await expect(owner.requestSteer(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
+      code: "capacity",
+    });
+    expect(release).toHaveBeenCalledWith(request, expect.any(String), "deferred");
+  });
   it("passes the negotiated credential grant version to the authority callback", async () => {
     const onImCredentialGrant = vi.fn(async (request) => ({
       type: "im:credential:result" as const,
@@ -926,14 +998,14 @@ function retainedClaim(report: TurnReportRequest) {
   };
 }
 
-function socketFixture(frames: unknown[]): WebSocket {
+function socketFixture(frames: unknown[], sendError?: Error): WebSocket {
   return {
     readyState: WebSocket.OPEN,
     close: vi.fn(),
     terminate: vi.fn(),
     send: vi.fn((serialized: string, callback: (error?: Error) => void) => {
       frames.push(JSON.parse(serialized));
-      callback();
+      callback(sendError);
     }),
   } as unknown as WebSocket;
 }
@@ -1090,6 +1162,22 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     }
     this.#dispatches.set(request.deliveryId, { inputHash, requestId: request.requestId });
     return "dispatched";
+  }
+
+  async releaseDeliveryDispatch(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    disposition: "retry" | "deferred",
+  ): Promise<"released" | "already_released" | "conflict"> {
+    const current = this.#dispatches.get(request.deliveryId);
+    if (!current) return "already_released";
+    if (current.requestId !== request.requestId || current.inputHash !== inputHash) return "conflict";
+    if (disposition === "retry") this.#dispatches.delete(request.deliveryId);
+    return "released";
+  }
+
+  hasDispatch(deliveryId: string): boolean {
+    return this.#dispatches.has(deliveryId);
   }
 
   async recordSteered(): Promise<"steered"> {

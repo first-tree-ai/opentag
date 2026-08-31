@@ -1,10 +1,12 @@
 import {
+  ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
   type ChannelName,
   CompleteWorkspaceSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
+  ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
   HTTP_PATHS,
   ListAgentsResponseSchema,
@@ -19,7 +21,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { AgentService } from "../services/agents/index.js";
-import type { UserAuthService } from "../services/auth/index.js";
+import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import {
   buildComputerConnectCommand,
   type ComputerService,
@@ -44,6 +46,7 @@ const TaskDetailQuerySchema = z
   })
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
+const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
@@ -52,8 +55,10 @@ export interface AccountRoutesOptions {
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
   /**
-   * Undoing setup so onboarding can be walked again. Staging decides whether it exists at all, and
-   * the service answers a request outside staging exactly like a path that was never registered.
+   * Undoing setup so onboarding can be walked again. Staging decides whether it exists at all: the
+   * routes are registered only where the service is supplied, and each one re-checks `enabled`
+   * before doing anything, so a deployment that has the routes but not the feature answers exactly
+   * like one that never registered them.
    */
   setupResetService?: AccountSetupResetService;
   taskService?: TaskService;
@@ -62,6 +67,8 @@ export interface AccountRoutesOptions {
 
 /** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
 export interface AccountSetupResetService {
+  /** Whether this deployment offers the reset at all; false outside staging. */
+  readonly enabled: boolean;
   reboard(accountId: string): Promise<void>;
   resetOnboarding(accountId: string): Promise<void>;
 }
@@ -142,12 +149,24 @@ export function registerAccountRoutes(
         .code(201)
         .send(
           ComputerConnectCodeIssueResponseSchema.parse({
+            connectCodeId: issued.connectCodeId,
             bootstrapCommand: buildComputerConnectCommand({ code: issued.code, environment, publicUrl }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),
             mode: issued.mode,
           }),
         );
+    });
+
+    /*
+     * The pollable correlation for a code this Account issued: pending until redemption, the exact
+     * Computer after it. The id in the path is the only thing named, and ownership is checked
+     * against the token's Account — a foreign id is indistinguishable from one that never existed.
+     */
+    app.get(ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { connectCodeId } = parseRequest(ConnectCodeParamsSchema, request.params);
+      const status = await machineAuthService.getConnectCodeStatusForAccount(accountId(request), connectCodeId);
+      return reply.header("Cache-Control", "no-store").code(200).send(ComputerConnectCodeStatusSchema.parse(status));
     });
   }
 
@@ -174,7 +193,21 @@ export function registerAccountRoutes(
      * how much to undo. There is no field here that could name somebody else's Account, which is
      * what makes this safe to offer to every signed-in tester rather than to administrators.
      */
+    /*
+     * Reachability is the whole answer a client needs: outside staging the reset is absent rather
+     * than closed, so a deployment that does not offer it is indistinguishable from one that never
+     * had it. A caller asks this before offering the operations, rather than discovering the answer
+     * by attempting one.
+     */
+    app.get(HTTP_PATHS.accountSetupReset, { preHandler }, async (_request, reply) => {
+      if (!setupResetService.enabled) throw resetNotOffered();
+      return reply.code(204).send();
+    });
+
     app.post(HTTP_PATHS.accountSetupReset, { preHandler }, async (request, reply) => {
+      // Checked before the body is read, so a malformed request cannot tell a deployment that has
+      // the route but not the feature apart from one that never registered it.
+      if (!setupResetService.enabled) throw resetNotOffered();
       const { mode } = parseRequest(AccountSetupResetRequestSchema, request.body);
       const account = accountId(request);
       if (mode === "all") await setupResetService.resetOnboarding(account);
@@ -182,4 +215,8 @@ export function registerAccountRoutes(
       return reply.code(204).send();
     });
   }
+}
+
+function resetNotOffered(): AuthServiceError {
+  return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
 }

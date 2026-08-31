@@ -2,6 +2,10 @@
 
 [English](../direct-provider-cli.md)
 
+本地第三方包、路径、执行身份与凭证交接由已随产品发布的 Provider CLI 管理基础能力定义。
+OpenTag-managed Provider CLI 是当前操作系统账户可直接使用的全局命令；只有被授权的
+Turn 才会取得 OpenTag 投影的临时凭证。
+
 OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影和 provider 原生入站引用，不提供消息发送、回复、Reaction 或上传 API。
 
 每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的

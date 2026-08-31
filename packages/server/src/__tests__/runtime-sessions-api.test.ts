@@ -39,6 +39,7 @@ describe("Runtime Session CLI routes", () => {
       payload: { messageId: randomUUID(), message: "task" },
     });
     expect(created.statusCode).toBe(200);
+    expect(created.headers["cache-control"]).toBe("no-store");
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ message: "task" }), source);
     const response = await app.inject({
       method: "POST",
@@ -47,6 +48,7 @@ describe("Runtime Session CLI routes", () => {
       payload: { messageId, targetSessionId: randomUUID(), message: "done" },
     });
     expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(authenticate).toHaveBeenCalledWith("proof");
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ messageId }), source);
 
@@ -56,6 +58,7 @@ describe("Runtime Session CLI routes", () => {
       headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
     });
     expect(listed.statusCode).toBe(200);
+    expect(listed.headers["cache-control"]).toBe("no-store");
     expect(listInternalSessions).toHaveBeenCalledWith(source.sessionId, { recursive: true, limit: 100 });
 
     const nonRecursive = await app.inject({

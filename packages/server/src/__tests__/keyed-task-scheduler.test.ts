@@ -1,5 +1,6 @@
 import { setImmediate as waitImmediate } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 
 describe("KeyedTaskScheduler", () => {
@@ -86,6 +87,61 @@ describe("KeyedTaskScheduler", () => {
     expect(scheduler.enqueue("b", async () => undefined)).toBe(false);
     release?.();
     await waitImmediate();
+    scheduler.close();
+  });
+
+  it("reports queue age from an injected clock while preserving independent lanes", async () => {
+    let now = 1_000;
+    const scheduler = new KeyedTaskScheduler({
+      maxConcurrent: 1,
+      maxQueuedPerKey: 2,
+      maxQueuedTotal: 3,
+      now: () => now,
+    });
+    let release: (() => void) | undefined;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    expect(scheduler.enqueue("a", async () => blocked)).toBe(true);
+    expect(scheduler.enqueue("b", async () => undefined)).toBe(true);
+    now = 1_250;
+    expect(scheduler.stats()).toMatchObject({ active: 1, queued: 1, lanes: 2, oldestQueueAgeMs: 250 });
+    release?.();
+    await waitImmediate();
+    scheduler.close();
+  });
+
+  it("supervises rejected task promises with one structured event and counter", async () => {
+    const events: unknown[] = [];
+    const counters: unknown[] = [];
+    const supervisor = new BackgroundFailureSupervisor({
+      onEvent: (event) => events.push(event),
+      onCounter: (name, labels) => counters.push({ name, labels }),
+    });
+    const scheduler = new KeyedTaskScheduler({
+      maxConcurrent: 1,
+      maxQueuedPerKey: 1,
+      maxQueuedTotal: 1,
+      supervisor,
+    });
+    expect(
+      scheduler.enqueue("agent-1", async () => {
+        throw new Error("task failed");
+      }),
+    ).toBe(true);
+    await waitImmediate();
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(counters).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "diagnostic.error",
+      error: {
+        code: "RUNTIME_SCHEDULER_TASK_FAILED",
+        category: "internal",
+        retryability: "never",
+        phase: "scheduler",
+        requestId: "agent-1",
+      },
+    });
     scheduler.close();
   });
 });

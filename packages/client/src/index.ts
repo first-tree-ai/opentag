@@ -214,6 +214,111 @@ export {
 } from "./runtime/local-computer-configuration.js";
 export { renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
 export {
+  ProviderCliAccountError,
+  type ProviderCliAccountLayout,
+  providerCliArtifactId,
+  providerCliLauncherPath,
+  providerCliLockFilePath,
+  providerCliStateFilePath,
+  providerCliVersionDirPath,
+  resolveAccountHome,
+  resolveProviderCliAccountLayout,
+} from "./runtime/provider-cli/account-layout.js";
+export {
+  catalogExecutableDigests,
+  findCatalogArtifact,
+  findProviderCliCatalogEntry,
+  PROVIDER_CLI_CATALOG,
+  type ProviderCliCatalogArtifact,
+  type ProviderCliCatalogEntry,
+  type ProviderCliProbeContract,
+  requireProviderCliCatalogEntry,
+} from "./runtime/provider-cli/catalog.js";
+export {
+  detectProviderCliCandidates,
+  type IgnoredProviderCliCandidate,
+  type ProviderCliCandidate,
+  type ProviderCliDetection,
+  type ProviderCliDetectOptions,
+  rankProviderCliCandidates,
+  verifyProviderCliCandidateFingerprint,
+} from "./runtime/provider-cli/detector.js";
+export {
+  executableFormatSupportsHost,
+  inspectExecutableFormat,
+  type ProviderCliExecutableFormat,
+} from "./runtime/provider-cli/executable-format.js";
+export {
+  computeFileIdentity,
+  computeTargetFingerprint,
+  MAX_PROVIDER_CLI_EXECUTABLE_BYTES,
+  type ProviderCliFileIdentity,
+} from "./runtime/provider-cli/fingerprint.js";
+export {
+  createProviderCliFetcher,
+  defaultProviderCliFetcher,
+  type ProviderCliFetcher,
+  ProviderCliInstallError,
+  ProviderCliInstaller,
+  type ProviderCliInstallerOptions,
+  type ProviderCliManagedInstall,
+  resolveProviderCliArtifactUrl,
+} from "./runtime/provider-cli/installer.js";
+export {
+  inspectGlobalCommand,
+  inspectProviderCliLauncher,
+  type ProviderCliGlobalCommandStatus,
+  reconcileProviderCliLauncher,
+  reconcileProviderCliShim,
+  renderProviderCliLauncher,
+  renderProviderCliShim,
+} from "./runtime/provider-cli/launcher.js";
+export {
+  ProviderCliLockBusyError,
+  withProviderCliLock,
+} from "./runtime/provider-cli/lock.js";
+export {
+  type ProviderCliEnsureOptions,
+  ProviderCliManager,
+  type ProviderCliManagerDeps,
+  type ProviderCliPhaseEvent,
+} from "./runtime/provider-cli/manager.js";
+export {
+  defaultProviderCliExecFile,
+  type ProviderCliExecFile,
+  type ProviderCliProbeOutcome,
+  probeProviderCliExecutable,
+  providerCliProbeEnvironment,
+} from "./runtime/provider-cli/probe.js";
+export {
+  PROVIDER_CLI_SELECTION_SCHEMA_VERSION,
+  type ProviderCliSelection,
+  type ProviderCliSelectionRecord,
+  providerCliSelectionTargetPath,
+  readProviderCliSelection,
+  writeProviderCliSelection,
+} from "./runtime/provider-cli/selection-store.js";
+export {
+  extractProviderCliExecutable,
+  ProviderCliArchiveError,
+} from "./runtime/provider-cli/tar.js";
+export {
+  mapProviderCliLocalStateToReadiness,
+  type ProviderCliCandidateReport,
+  type ProviderCliDiagnostic,
+  type ProviderCliDiagnosticCode,
+  type ProviderCliEnsureAction,
+  type ProviderCliEnsureResult,
+  type ProviderCliInspection,
+  type ProviderCliLocalState,
+  type ProviderCliPhase,
+  type ProviderCliPhaseRecord,
+  type ProviderCliProvider,
+  type ProviderCliTrust,
+  type ProviderCliWarning,
+  type ProviderCliWarningCode,
+} from "./runtime/provider-cli/types.js";
+export {
   type RuntimeBusinessFrame,
   RuntimeConnection,
   RuntimeConnectionError,
@@ -226,12 +331,35 @@ export {
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export {
+  DEFAULT_RUNTIME_RETRY_POLICY,
+  type DurableFailure,
+  type DurableRetryability,
+  type DurableWorkKind,
+  type DurableWorkRecord,
+  type DurableWorkStatus,
+  defaultRuntimeRetryScheduler,
+  FileRuntimeDurabilityStore,
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityFailure,
+  RuntimeDurabilityMetrics,
+  type RuntimeDurabilityMetricsSnapshot,
+  type RuntimeDurabilityStore,
+  type RuntimeRetryPolicy,
+  type RuntimeRetryScheduler,
+  retryDelay,
+  retryExhausted,
+} from "./runtime/runtime-durability.js";
+export {
   type AgentRuntimePaths,
   agentRuntimePaths,
   deriveRuntimeKey,
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
+export {
+  ServerRuntimeDurabilityStore,
+  type ServerRuntimeDurabilityStoreOptions,
+} from "./runtime/server-runtime-durability-store.js";
 export {
   type CustodyResult,
   type LocalSessionBinding,

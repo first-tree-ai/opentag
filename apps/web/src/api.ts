@@ -1,14 +1,19 @@
 import {
   type AccountComputerConnectCodeIssueRequest,
+  type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentRuntimeTestRequest,
+  type AgentRuntimeTestResponse,
+  AgentRuntimeTestResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountComputerConnectCodePath,
   agentByIdPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
@@ -16,17 +21,21 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
+  type ComputerConnectCodeStatus,
+  ComputerConnectCodeStatusSchema,
   type CreateAgentRequest,
   type EmailSignInRequest,
   type EmailSignUpRequest,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
@@ -153,6 +162,19 @@ export class BrowserApi {
     });
   }
 
+  testAgentRuntime(
+    agentId: string,
+    input: AgentRuntimeTestRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentRuntimeTestResponse> {
+    return this.request(agentRuntimeTestPath(agentId), AgentRuntimeTestResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   suspendAgent(agentId: string): Promise<AgentAdminConfig> {
     return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
       method: "POST",
@@ -201,6 +223,13 @@ export class BrowserApi {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
   }
 
+  cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.request(feishuSetupAttemptCancelPath(attemptId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {
     return this.request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
       method: "POST",
@@ -237,6 +266,39 @@ export class BrowserApi {
       ...(input ? { body: JSON.stringify(input) } : {}),
       headers: { ...(input ? { "content-type": "application/json" } : {}), ...this.csrfHeaders() },
     });
+  }
+
+  /**
+   * Whether this deployment offers the staging internal tools. Outside staging the interface is
+   * absent rather than closed, and everything behind it is open to any authenticated Account where
+   * it is present, so reachability is the whole answer.
+   */
+  async internalToolsOffered(): Promise<boolean> {
+    const response = await this.fetchWithRefresh(HTTP_PATHS.accountSetupReset);
+    if (response.status === 204) return true;
+    if (response.status === 404) return false;
+    throw this.apiError(response, await response.json().catch(() => undefined));
+  }
+
+  /**
+   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
+   * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
+   */
+  resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.accountSetupReset, {
+      method: "POST",
+      body: JSON.stringify({ mode }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  /**
+   * The Server's own verdict on a code this Account issued: pending until a machine redeems it,
+   * then the exact Computer that did. This — never a Computers-list heuristic — is how a waiting
+   * page learns which Computer its command enrolled.
+   */
+  computerConnectCodeStatus(connectCodeId: string): Promise<ComputerConnectCodeStatus> {
+    return this.request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema);
   }
 
   async health(path: "/healthz" | "/readyz"): Promise<{ latencyMs: number; observedAt: string; status: string }> {

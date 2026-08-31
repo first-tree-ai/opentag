@@ -3,20 +3,23 @@ import {
   AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
+  AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   AGENT_USAGE_WINDOW_DAYS,
   AgentAdminConfigSchema,
   AgentDetailSchema,
+  AgentRuntimeTestRequestSchema,
+  AgentRuntimeTestResponseSchema,
   AgentUsageDetailSchema,
   AgentUsageWindowDaysSchema,
   RebindAgentComputerRequestSchema,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
-import type { AgentService } from "../services/agents/index.js";
+import type { AgentRuntimeTestService, AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
@@ -31,11 +34,33 @@ function authenticatedUserId(request: FastifyRequest): string {
   return userId;
 }
 
+function requestDisconnectSignal(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): { dispose(): void; signal: AbortSignal } {
+  const controller = new AbortController();
+  const abortIfDisconnected = () => {
+    if (controller.signal.aborted || reply.sent || reply.raw.writableEnded) return;
+    controller.abort();
+  };
+  if (request.raw.aborted || reply.raw.destroyed) abortIfDisconnected();
+  request.raw.once("aborted", abortIfDisconnected);
+  reply.raw.once("close", abortIfDisconnected);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      request.raw.off("aborted", abortIfDisconnected);
+      reply.raw.off("close", abortIfDisconnected);
+    },
+  };
+}
+
 export function registerAgentRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   agentService: AgentService,
   authOptions?: UserAuthPreHandlerOptions,
+  runtimeTest?: AgentRuntimeTestService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
@@ -100,5 +125,21 @@ export function registerAgentRoutes(
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     await agentService.deleteById(authenticatedUserId(request), agentId);
     return reply.code(204).send();
+  });
+
+  if (!runtimeTest) return;
+
+  app.post(AGENT_RUNTIME_TEST_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const input = parseRequest(AgentRuntimeTestRequestSchema, request.body);
+    const disconnect = requestDisconnectSignal(request, reply);
+    try {
+      const response = AgentRuntimeTestResponseSchema.parse(
+        await runtimeTest.test(authenticatedUserId(request), agentId, input, disconnect.signal),
+      );
+      return reply.code(200).send(response);
+    } finally {
+      disconnect.dispose();
+    }
   });
 }

@@ -53,9 +53,11 @@ export const SETUP_COPY = {
     copyFallback: "Copying is unavailable here. The command is selected — press Ctrl or Cmd + C.",
     expiresIn: (remaining: string) => `Expires in ${remaining}`,
     expired: "This command has expired.",
+    expiredStatus: "Connection command expired.",
     refresh: "Get a new command",
     waiting: "Waiting for your computer…",
     connected: "Your computer is connected.",
+    preparing: "Preparing connection command…",
 
     /*
      * The same step, once the Account has its computer. An Account has one, so there is nothing to
@@ -67,9 +69,16 @@ export const SETUP_COPY = {
     yoursLead: "Your AI worker runs on your own computer.",
     online: "Online",
     offline: "Offline",
+    unknown: "Unable to confirm",
     lastSeen: (when: string) => `last seen ${when}`,
-    /** Reconnecting repairs this exact machine, rather than replacing it with a second one. */
-    offlineLead: "This computer is offline. Reconnect it and this page will continue on its own.",
+    offlineLead: (computerName: string) =>
+      `${computerName} is offline. Start OpenTag on that Computer; this page will continue when it reconnects.`,
+    unknownLead: (computerName: string) =>
+      `We can't confirm ${computerName} right now. Start OpenTag on that Computer; this page will continue when it reconnects.`,
+    generateRepair: "Need to reinstall? Generate a repair command.",
+    hideRepair: "Hide repair command",
+    repairCommandComment: (computerName: string) => `# Run this command in the terminal on ${computerName}`,
+    waitingRepair: (computerName: string) => `Waiting for ${computerName} to connect…`,
   },
 
   messaging: {
@@ -88,7 +97,9 @@ export const SETUP_COPY = {
     feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu workspace" },
     slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
     feishuIntro: "Scan this with Feishu. You'll finish the last step inside Feishu itself.",
+    feishuPreparing: "OpenTag is preparing a secure Feishu authorization.",
     qrAlt: "Scan this QR code in Feishu",
+    generating: "Generating QR code…",
     waiting: "Waiting for you to scan…",
     cliMissing: (provider: string) =>
       `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,

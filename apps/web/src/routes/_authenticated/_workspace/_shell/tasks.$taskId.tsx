@@ -1,11 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { TaskDetailPage } from "../../../../features/tasks-page.js";
+import { Redirect } from "../../../../features/navigation/redirect.js";
 
 export const Route = createFileRoute("/_authenticated/_workspace/_shell/tasks/$taskId")({
-  component: TaskDetailRoute,
+  component: LegacyTaskDetailRoute,
 });
 
-function TaskDetailRoute() {
-  const { taskId } = Route.useParams();
-  return <TaskDetailPage taskId={taskId} />;
+function LegacyTaskDetailRoute() {
+  return <Redirect replace to="/agents" />;
 }

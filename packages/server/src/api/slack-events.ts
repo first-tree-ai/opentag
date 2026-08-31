@@ -4,6 +4,7 @@ import type { ImMessageInbox } from "../services/im/index.js";
 import type { ImBindingService, SlackInstallationIngress } from "../services/im-bindings/index.js";
 import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
+import type { SlackWebhookReceiptStore } from "../services/im-bindings/slack/webhook-receipt-store.js";
 
 interface SlackEnvelopeBase {
   type?: string;
@@ -39,7 +40,11 @@ function isIdentityLessUrlVerification(rawBody: Buffer): boolean {
   }
 }
 
-export interface SlackEventsRouteOptions {
+export type SlackWebhookReceiptStoreLike = Pick<SlackWebhookReceiptStore, "claim" | "markProcessed" | "markFailed">;
+
+type SlackEventsReceiptOptions = { receipts?: SlackWebhookReceiptStoreLike };
+
+export interface SlackEventsRouteOptions extends SlackEventsReceiptOptions {
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
   createAdapter(installation: SlackInstallationIngress): SlackAdapter;
@@ -139,6 +144,38 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     return reply.code(200).send({ ok: true });
   };
 
+  const processWithReceipt = async (
+    installation: SlackInstallationIngress,
+    envelope: SlackEnvelopeBase,
+    reply: FastifyReply,
+  ) => {
+    if (!options.receipts || envelope.type !== "event_callback" || !envelope.event_id || !envelope.event) {
+      return processEnvelope(installation, envelope, reply);
+    }
+    const claim = await options.receipts.claim({
+      installationId: installation.installationId,
+      credentialGeneration: installation.generation,
+      eventId: envelope.event_id,
+    });
+    if (!claim.accepted || !claim.receiptId) return reply.code(200).send({ ok: true });
+    // A real reply object cannot be used after the HTTP request is acknowledged. The work function
+    // only uses it to construct status responses, so this sink keeps those responses off the wire.
+    const backgroundReply = {
+      code: () => backgroundReply,
+      send: () => backgroundReply,
+    } as unknown as FastifyReply;
+    void processEnvelope(installation, envelope, backgroundReply)
+      .then(() => options.receipts?.markProcessed(claim.receiptId as string))
+      .catch(async (error: unknown) => {
+        const code =
+          error && typeof error === "object" && "code" in error && typeof error.code === "string"
+            ? error.code
+            : "SLACK_EVENT_PROCESSING_FAILED";
+        await options.receipts?.markFailed(claim.receiptId as string, code).catch(() => undefined);
+      });
+    return reply.code(200).send({ ok: true });
+  };
+
   app.post(AGENT_SLACK_EVENTS_TEMPLATE, async (request, reply) => {
     if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "invalid_body" });
     const agentId = (request.params as { agentId?: unknown }).agentId;
@@ -169,7 +206,7 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     if (envelope.api_app_id !== installation.appId || envelope.team_id !== installation.teamId) {
       return reply.code(401).send({ error: "binding_mismatch" });
     }
-    return processEnvelope(installation, envelope, reply);
+    return processWithReceipt(installation, envelope, reply);
   });
 
   app.post(SLACK_EVENTS_PATH, async (request, reply) => {
@@ -218,6 +255,6 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
         ? reply.code(200).send({ challenge: envelope.challenge })
         : reply.code(400).send({ error: "invalid_challenge" });
     }
-    return processEnvelope(installation, envelope, reply);
+    return processWithReceipt(installation, envelope, reply);
   });
 }

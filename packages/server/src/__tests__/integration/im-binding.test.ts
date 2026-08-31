@@ -360,6 +360,7 @@ async function respondingRuntime(input: {
   computerId: string;
   deliveryGate?: Promise<void>;
   instanceId: string;
+  onFrame?: (frame: Record<string, unknown>) => void;
   negotiatedCapabilities?: Readonly<Record<string, number>>;
   requestTimeoutMs?: number;
   reconcileResult?: (frame: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>;
@@ -386,6 +387,7 @@ async function respondingRuntime(input: {
     send: vi.fn((serialized: string, callback: (error?: Error) => void) => {
       const frame = JSON.parse(serialized) as Record<string, unknown>;
       frames.push(frame);
+      input.onFrame?.(frame);
       callback();
       queueMicrotask(() => {
         void (async () => {
@@ -4347,12 +4349,15 @@ describe("IM binding persistence", () => {
           .set({ currentInstanceId: instanceId })
           .where(eq(accountComputers.id, value.workspaceComputer.id));
         await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-payload-hash-${state}`));
+        const dispatched = deferred<DirectImMessageDeliveryRequest>();
         const runtime = await respondingRuntime({
           acceptDeliveries: state === "accepted",
           database: value.database,
           computerId: value.computer.id,
           instanceId,
-          requestTimeoutMs: 100,
+          onFrame: (frame) => {
+            if (frame.type === "im:deliver") dispatched.resolve(frame as unknown as DirectImMessageDeliveryRequest);
+          },
           workspaceComputerId: value.workspaceComputer.id,
           workspaceId: value.bootstrap.workspaceId,
         });
@@ -4361,7 +4366,10 @@ describe("IM binding persistence", () => {
           registry: runtime.registry,
           domain: runtime.domain,
         });
-        await worker.runOnce();
+        const run = worker.runOnce();
+        await dispatched.promise;
+        if (state === "pending") runtime.domain.close();
+        await run;
         const [stored] = await value.database.select().from(imMessageDeliveries);
         if (stored?.dispatchPayload?.type !== "im:deliver") {
           throw new Error("Direct delivery custody payload was not persisted");
@@ -4730,26 +4738,28 @@ describe("IM binding persistence", () => {
           .set({ currentInstanceId: firstInstanceId })
           .where(eq(accountComputers.id, value.workspaceComputer.id));
         await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-retained-${durableState}`));
+        const dispatched = deferred<DirectImMessageDeliveryRequest>();
         const first = await respondingRuntime({
           acceptDeliveries: false,
           database: value.database,
           computerId: value.computer.id,
           instanceId: firstInstanceId,
-          requestTimeoutMs: 100,
+          onFrame: (frame) => {
+            if (frame.type === "im:deliver") dispatched.resolve(frame as unknown as DirectImMessageDeliveryRequest);
+          },
           workspaceComputerId: value.workspaceComputer.id,
           workspaceId: value.bootstrap.workspaceId,
         });
         owners.push(first.domain);
-        await imDeliveryWorker({
+        const firstWorker = imDeliveryWorker({
           database: value.database,
           registry: first.registry,
           domain: first.domain,
-        }).runOnce();
-        const firstFrame = first.frames.find(
-          (frame): frame is DirectImMessageDeliveryRequest =>
-            typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "im:deliver",
-        );
-        if (!firstFrame) throw new Error("Initial delivery frame was not dispatched");
+        });
+        const firstRun = firstWorker.runOnce();
+        const firstFrame = await dispatched.promise;
+        first.domain.close();
+        await firstRun;
         const turnId = `turn-${durableState}-retained`;
         const report = turnReportFor({
           agentId: firstFrame.agentId,

@@ -1,5 +1,7 @@
 import claudeMark from "../assets/claude.svg";
 import feishuMark from "../assets/feishu.svg";
+import openAIBlossomBlack from "../assets/openai-blossom-black.svg";
+import openAIBlossomWhite from "../assets/openai-blossom-white.svg";
 import slackMark from "../assets/slack.svg";
 
 /**
@@ -50,6 +52,19 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
     );
   }
 
+  if (brand === "codex") {
+    return (
+      <span
+        aria-hidden="true"
+        className="inline-flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-sm font-medium text-kumo-subtle overflow-hidden"
+        data-brand={brand}
+      >
+        <img alt="" className="otv2-codex-mark--light size-8" src={openAIBlossomBlack} />
+        <img alt="" className="otv2-codex-mark--dark size-8" src={openAIBlossomWhite} />
+      </span>
+    );
+  }
+
   const art = ART[brand];
   if (art) {
     return (
@@ -63,11 +78,6 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
     );
   }
 
-  /*
-   * Codex has no asset here. Taking one out of an installed application establishes where the bytes
-   * came from and nothing about redistributing them from this repository, and openai.com serves 403
-   * to direct asset requests. So it keeps a neutral mark rather than a file we have no grant for.
-   */
   return (
     <span
       aria-hidden="true"

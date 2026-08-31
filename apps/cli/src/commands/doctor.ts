@@ -5,9 +5,17 @@ export function registerDoctorCommand(program: Command): void {
   program
     .command("doctor")
     .description("Run read-only baseline diagnostics for the selected OpenTag Home")
-    .action(async () => {
-      const result = await runDoctor();
-      console.log(result.message);
+    .option("--json", "print JSON")
+    .action(async (options: { json?: boolean }) => {
+      const result = await runDoctor().catch((error: unknown) => {
+        process.exitCode = 1;
+        throw error;
+      });
       process.exitCode = result.exitCode;
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify({ ok: result.exitCode === 0, result })}\n`);
+      } else {
+        process.stdout.write(`${result.message}\n`);
+      }
     });
 }

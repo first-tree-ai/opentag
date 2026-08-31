@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { type AgentRuntimeProvider, AgentRuntimeProviderSchema } from "./agent.js";
+import { type AgentRuntimeProvider, AgentRuntimeProviderSchema, AgentRuntimeTestFailureCodeSchema } from "./agent.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -44,6 +44,45 @@ export const RuntimeOpaqueIdSchema = z
   .regex(opaqueIdPattern, "Runtime IDs must be opaque, path-safe ASCII identifiers");
 export const RuntimeSequenceSchema = z.number().int().safe().nonnegative();
 export const RuntimeSha256Schema = z.string().regex(/^[a-f0-9]{64}$/, "Expected a lowercase SHA-256 digest");
+
+export const RuntimeDurableWorkKindSchema = z.enum(["session-message", "turn-report"]);
+export const RuntimeDurableWorkStatusSchema = z.enum([
+  "accepted",
+  "running",
+  "succeeded",
+  "retryable",
+  "failed",
+  "dead-letter",
+]);
+export const RuntimeDurableFailureSchema = z
+  .object({
+    category: z.string().min(1).max(64),
+    code: z.string().min(1).max(128),
+    message: z
+      .string()
+      .min(1)
+      .max(2 * 1024),
+    phase: z.string().min(1).max(64),
+    requestId: z.string().min(1).max(128),
+    retryability: z.enum(["retryable", "terminal"]),
+  })
+  .strict();
+export const RuntimeDurableWorkRecordSchema = z
+  .object({
+    attempts: RuntimeSequenceSchema,
+    acceptedAt: RuntimeSequenceSchema,
+    key: RuntimeOpaqueIdSchema,
+    kind: RuntimeDurableWorkKindSchema,
+    lastError: RuntimeDurableFailureSchema.optional(),
+    nextAttemptAt: RuntimeSequenceSchema.optional(),
+    payload: z.unknown(),
+    status: RuntimeDurableWorkStatusSchema,
+    updatedAt: RuntimeSequenceSchema,
+  })
+  .strict();
+export const RuntimeDurableWorkListResponseSchema = z
+  .object({ items: z.array(RuntimeDurableWorkRecordSchema).max(1024) })
+  .strict();
 
 export const RuntimeRevisionSchema = z
   .object({
@@ -671,6 +710,49 @@ export const TurnReportResultSchema = z
   })
   .strict();
 
+export const AgentRuntimeTestRequestFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:test"),
+    requestId: RuntimeRequestIdSchema,
+    computerId: z.string().uuid(),
+    provider: AgentRuntimeProviderSchema,
+    model: RuntimeModelSchema.optional(),
+    reasoningEffort: RuntimeReasoningEffortSchema.optional(),
+  })
+  .strict();
+
+export const AgentRuntimeTestCancelFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:test:cancel"),
+    requestId: RuntimeRequestIdSchema,
+  })
+  .strict();
+
+export const AgentRuntimeTestResultFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:test:result"),
+    requestId: RuntimeRequestIdSchema,
+    status: z.enum(["passed", "failed"]),
+    code: AgentRuntimeTestFailureCodeSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status === "passed" && frame.code !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["code"],
+        message: "A passed Agent Runtime test forbids a failure code",
+      });
+    }
+    if (frame.status === "failed" && frame.code === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["code"],
+        message: "A failed Agent Runtime test requires a failure code",
+      });
+    }
+  });
+
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
@@ -678,6 +760,8 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionMessageDeliveryRequestSchema,
   TurnReportResultSchema,
   RuntimeImCredentialGrantResultSchema,
+  AgentRuntimeTestRequestFrameSchema,
+  AgentRuntimeTestCancelFrameSchema,
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
@@ -692,6 +776,11 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
 
 export type RuntimeRevision = z.infer<typeof RuntimeRevisionSchema>;
 export type RuntimeUsage = z.infer<typeof RuntimeUsageSchema>;
+export type RuntimeDurableWorkKind = z.infer<typeof RuntimeDurableWorkKindSchema>;
+export type RuntimeDurableWorkStatus = z.infer<typeof RuntimeDurableWorkStatusSchema>;
+export type RuntimeDurableFailure = z.infer<typeof RuntimeDurableFailureSchema>;
+export type RuntimeDurableWorkRecord = z.infer<typeof RuntimeDurableWorkRecordSchema>;
+export type RuntimeDurableWorkListResponse = z.infer<typeof RuntimeDurableWorkListResponseSchema>;
 export type EffectiveRuntimeSnapshot = z.infer<typeof EffectiveRuntimeSnapshotSchema>;
 export type InputRejectReason = z.infer<typeof InputRejectReasonSchema>;
 export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>;
@@ -716,6 +805,9 @@ export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
 export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;
 export type TurnReportResult = z.infer<typeof TurnReportResultSchema>;
+export type AgentRuntimeTestRequestFrame = z.infer<typeof AgentRuntimeTestRequestFrameSchema>;
+export type AgentRuntimeTestCancelFrame = z.infer<typeof AgentRuntimeTestCancelFrameSchema>;
+export type AgentRuntimeTestResultFrame = z.infer<typeof AgentRuntimeTestResultFrameSchema>;
 export type ServerRuntimeBusinessFrame = z.infer<typeof ServerRuntimeBusinessFrameSchema>;
 export type ClientRuntimeBusinessFrame = z.infer<typeof ClientRuntimeBusinessFrameSchema>;
 

@@ -30,14 +30,59 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version-file: .node-version
           cache: pnpm
+
+      - name: Verify toolchain
+        run: pnpm toolchain:check
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
 
       - name: Measure unit coverage
-        run: pnpm test:coverage
+        run: |
+          pnpm exec turbo run build --summarize
+          pnpm --silent bundle:report
+          node scripts/unit-coverage.mjs
+
+      - name: Summarize coverage provenance
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
+          import { join } from "node:path";
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          if (!summaryPath) process.exit(0);
+          const runsDirectory = ".turbo/runs";
+          const rows = new Map();
+          try {
+            const files = readdirSync(runsDirectory)
+              .filter((file) => file.endsWith(".json"))
+              .map((file) => ({ file, mtime: statSync(join(runsDirectory, file)).mtimeMs }))
+              .sort((left, right) => left.mtime - right.mtime);
+            for (const { file } of files) {
+              const run = JSON.parse(readFileSync(join(runsDirectory, file), "utf8"));
+              for (const task of run.tasks ?? []) {
+                rows.set(`${run.execution?.command ?? "turbo run"}:${task.taskId}`, {
+                  result: task.cache?.status === "HIT" ? "cache hit" : "executed",
+                  task: task.taskId,
+                });
+              }
+            }
+          } catch {
+            // The explicit fresh-execution line below remains useful when no build summary exists.
+          }
+          const table = [...rows.values()]
+            .sort((left, right) => left.task.localeCompare(right.task))
+            .map(({ task, result }) => `| ${task} | ${result} |`)
+            .join("\n");
+          appendFileSync(
+            summaryPath,
+            `\n### Coverage provenance\n\nCoverage measurement: **fresh execution** (\`node scripts/unit-coverage.mjs\`).\n\n` +
+              `Turbo build identity (from the run summary):\n\n| Task | Result |\n| --- | --- |\n${table || "| (summary unavailable) | executed |"}\n`,
+          );
+          NODE
 
       - name: Enforce changed-line coverage
         env:
@@ -46,8 +91,8 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from "node:fs";
-          import path from "node:path";
           import { spawnSync } from "node:child_process";
+          import { evaluatePatchCoverage } from "./scripts/unit-coverage-gate.mjs";
 
           const repositoryRoot = process.cwd();
           const baseSha = process.env.BASE_SHA;
@@ -58,78 +103,22 @@ jobs:
 
           const diff = spawnSync(
             "git",
-            ["diff", "--unified=0", "--no-color", `${baseSha}...HEAD`, "--", "*.ts", "*.tsx"],
+            ["diff", "--unified=0", "--no-color", "--find-renames", `${baseSha}...HEAD`],
             { encoding: "utf8" },
           );
-          if (diff.status !== 0) {
+          if (diff.error || diff.status !== 0) {
             throw new Error(diff.stderr || "Unable to read the pull-request diff");
           }
 
-          const changedLines = new Map();
-          let currentFile;
-          let nextLine;
-          for (const line of diff.stdout.split("\n")) {
-            if (line.startsWith("+++ b/")) {
-              currentFile = line.slice(6);
-              continue;
-            }
-            if (line.startsWith("@@")) {
-              const match = line.match(/\+([0-9]+)(?:,([0-9]+))?/);
-              if (!match) throw new Error(`Unable to parse diff hunk: ${line}`);
-              nextLine = Number(match[1]);
-              continue;
-            }
-            if (!currentFile || nextLine === undefined || line.startsWith("\\")) continue;
-            if (line.startsWith("+")) {
-              if (!line.startsWith("+++")) {
-                const lines = changedLines.get(currentFile) ?? [];
-                lines.push(nextLine);
-                changedLines.set(currentFile, lines);
-                nextLine += 1;
-              }
-              continue;
-            }
-            if (line.startsWith("-")) continue;
-            nextLine += 1;
-          }
-
-          const coveragePath = path.join(repositoryRoot, "coverage/unit/coverage-final.json");
-          const coverage = JSON.parse(readFileSync(coveragePath, "utf8"));
-          const lineHitsByFile = new Map();
-          for (const [rawFile, fileCoverage] of Object.entries(coverage)) {
-            const file = path.posix.normalize(
-              (path.isAbsolute(rawFile) ? path.relative(repositoryRoot, rawFile) : rawFile).replaceAll("\\", "/"),
-            );
-            const lineHits = new Map();
-            for (const [statementId, statement] of Object.entries(fileCoverage.statementMap ?? {})) {
-              const line = statement.start?.line;
-              if (!Number.isInteger(line)) continue;
-              const hits = fileCoverage.s?.[statementId] ?? 0;
-              lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hits));
-            }
-            lineHitsByFile.set(file, lineHits);
-          }
-
-          let covered = 0;
-          let total = 0;
-          const uncovered = [];
-          for (const [file, lines] of changedLines) {
-            const lineHits = lineHitsByFile.get(path.posix.normalize(file));
-            if (!lineHits) continue;
-            for (const line of lines) {
-              if (!lineHits.has(line)) continue;
-              total += 1;
-              if (lineHits.get(line) > 0) covered += 1;
-              else uncovered.push(`${file}:${line}`);
-            }
-          }
-
-          if (total === 0) {
-            console.log("Patch coverage: no executable changed lines were found.");
+          const coverage = JSON.parse(readFileSync(`${repositoryRoot}/coverage/unit/coverage-final.json`, "utf8"));
+          const result = evaluatePatchCoverage({ coverage, diff: diff.stdout, repositoryRoot, threshold });
+          if (result.total === 0) {
+            console.log("Patch coverage: no executable changed lines were found (explicit pass).");
             process.exit(0);
           }
-          const percent = (covered / total) * 100;
-          console.log(`Patch coverage: ${covered}/${total} lines (${percent.toFixed(2)}%), threshold ${threshold.toFixed(2)}%.`);
-          if (uncovered.length > 0) console.log(`Uncovered changed lines:\n${uncovered.join("\n")}`);
-          if (percent < threshold) process.exit(1);
+          console.log(
+            `Patch coverage: ${result.covered}/${result.total} lines (${result.percent.toFixed(2)}%), threshold ${threshold.toFixed(2)}%.`,
+          );
+          if (result.uncovered.length > 0) console.log(`Uncovered changed lines:\n${result.uncovered.join("\n")}`);
+          if (!result.passed) process.exit(1);
           NODE

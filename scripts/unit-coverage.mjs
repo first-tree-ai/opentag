@@ -27,6 +27,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+export {
+  buildLineHitsByFile,
+  evaluatePatchCoverage,
+  extractChangedLines,
+  isSupportedSourcePath,
+  normalizeCoveragePath,
+  SUPPORTED_SOURCE_EXTENSIONS,
+} from "./unit-coverage-gate.mjs";
+
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Each Vitest project alongside the workspace whose sources it is the only suite able to execute. */

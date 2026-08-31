@@ -10,6 +10,7 @@
   "scripts": {
     "prepare": "node scripts/install-git-hooks.mjs",
     "worktree:setup": "node scripts/worktree-bootstrap.mjs --force",
+    "toolchain:check": "node scripts/toolchain-check.mjs",
     "build": "turbo run build && pnpm --silent bundle:report",
     "bundle:report": "node scripts/report-bundle-sizes.mjs",
     "dev": "turbo run dev",

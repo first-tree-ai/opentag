@@ -76,7 +76,7 @@ function validateCorrespondence(entries, sqlTags) {
 }
 
 function validateManifest(manifest, manifestPath) {
-  if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.entries)) {
+  if (manifest?.version !== 1 || !Array.isArray(manifest.entries)) {
     fail(`manifest must have version 1 and an entries array (${manifestPath})`);
   }
   return manifest.entries.map((entry, expectedIndex) => {

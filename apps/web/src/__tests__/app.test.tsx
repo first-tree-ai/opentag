@@ -9,6 +9,41 @@ const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const taskSessionId = "11111111-1111-4111-8111-111111111111";
+const secondComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
+const creationIntentKey = `opentag.agent-creation.intent:${userId}`;
+
+/** Two Computers an Agent could run on, so a reader has something to choose between. */
+const twoReadyComputers = [
+  {
+    id: computerId,
+    displayName: "Ada's Mac",
+    platform: "darwin",
+    connectionStatus: "online",
+    providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+    connectedAt: "2026-08-20T00:00:00.000Z",
+    lastSeenAt: "2026-08-20T00:00:00.000Z",
+  },
+  {
+    id: secondComputerId,
+    displayName: "Zulu Tower",
+    platform: "linux",
+    connectionStatus: "online",
+    providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:01.000Z" }],
+    connectedAt: "2026-08-20T00:00:01.000Z",
+    lastSeenAt: "2026-08-20T00:00:01.000Z",
+  },
+];
+
+/** Writes one version-3 creation intent, the shape a previous visit would have left behind. */
+function storeCreationIntent(record: { creationIntentId: string; request: Record<string, unknown> }) {
+  const stored = { version: 3, accountId: userId, ...record };
+  window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 3, accountId: userId, records: [stored] }));
+  return stored;
+}
+
+function agentCreationPosts() {
+  return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
+}
 
 const agentSummary = {
   id: agentId,
@@ -903,202 +938,85 @@ describe("OpenTag Web App Shell", () => {
     expect(trigger).toBe(document.activeElement);
   });
 
-  it("names the Computer the Account has in New Agent without offering another", async () => {
+  it("lets the Account owner connect another Computer from New Agent", async () => {
     installApi();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
 
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
+    const trigger = within(dialog).getByRole("button", { name: "Connect another Computer" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+
+    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel Computer connection" }).getAttribute("aria-expanded"),
+    ).toBe("true");
     expect(within(dialog).getByRole("heading", { name: "Where it runs" })).toBeTruthy();
-    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
     expect(within(dialog).getByText("Ready to run")).toBeTruthy();
-
-    // An Account has one Computer, so there is nothing to choose between and nothing to add. The
-    // enrolment command produces a new Computer, which is the duplicate this surface must not offer
-    // beside the machine the Account already has.
-    expect(within(dialog).queryByRole("button", { name: "Change Computer" })).toBeNull();
-    expect(within(dialog).queryByRole("button", { name: "Connect another Computer" })).toBeNull();
-    expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-    expect(within(dialog).queryByRole("button", { name: "Generate connection command" })).toBeNull();
-
-    // Choosing a Runtime is a different capability and stays: the Provider is fixed at creation.
-    expect(within(dialog).getByRole("button", { name: "Change Runtime" })).toBeTruthy();
   });
 
-  it("names the Computer that can run an Agent when an Account holds several enrollments", async () => {
-    // Enrollments from before the one-Computer rule, ordered so that every shortcut names a
-    // different machine: the first entry is unreachable, the first reachable one has no Runtime,
-    // and only the last is a route an Agent could actually run on.
+  it("binds the Agent to the Computer the reader selected, not the default one", async () => {
+    installApi({ computers: twoReadyComputers });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+
+    // The Account has both; the form defaults to one and the reader picks the other. What the
+    // request binds to has to be the choice, not the default.
+    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /Zulu Tower/ }));
+    fireEvent.change(within(dialog).getByLabelText("Display name"), { target: { value: "Research Assistant" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create Agent" }));
+
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
+      ).toHaveLength(1),
+    );
+    const created = vi
+      .mocked(fetch)
+      .mock.calls.find(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
+    expect(JSON.parse(String(created?.[1]?.body))).toMatchObject({ computerId: secondComputerId });
+  });
+
+  it("lists every Computer the Account has and still offers another", async () => {
     installApi({
       computers: [
+        ...twoReadyComputers,
         {
-          id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          id: "a5fe9af3-d1c6-472b-b78c-8a7ccf512750",
           displayName: "Ada's Retired Mac",
           platform: "darwin",
           connectionStatus: "offline",
-          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
           connectedAt: "2026-08-20T00:00:00.000Z",
           lastSeenAt: "2026-08-20T00:00:00.000Z",
-        },
-        {
-          id: "a5fe9af3-d1c6-472b-b78c-8a7ccf512750",
-          displayName: "Ada's Spare",
-          platform: "linux",
-          connectionStatus: "online",
-          providerReadiness: [{ provider: "codex", status: "install", observedAt: "2026-08-20T00:00:01.000Z" }],
-          connectedAt: "2026-08-20T00:00:01.000Z",
-          lastSeenAt: "2026-08-20T00:00:01.000Z",
-        },
-        {
-          id: computerId,
-          displayName: "Zed Tower",
-          platform: "darwin",
-          connectionStatus: "online",
-          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:02.000Z" }],
-          connectedAt: "2026-08-20T00:00:02.000Z",
-          lastSeenAt: "2026-08-20T00:00:02.000Z",
-        },
-      ],
-    });
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
-
-    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    expect(within(dialog).getByText("Zed Tower")).toBeTruthy();
-    expect(within(dialog).getByText("Ready to run")).toBeTruthy();
-    // One Computer is named, not chosen between, so the others are absent rather than unselected.
-    expect(within(dialog).queryByText("Ada's Retired Mac")).toBeNull();
-    expect(within(dialog).queryByText("Ada's Spare")).toBeNull();
-
-    // The Computer page has to reach the same machine from the same rows: it repairs what it names,
-    // and New Agent creates on what it names. Naming different rows would leave the Account
-    // managing one machine and running on another.
-    fireEvent.keyDown(dialog, { key: "Escape" });
-    await act(async () => {
-      window.history.pushState({}, "", "/agents/computers");
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
-    const listed = await screen.findByRole("region", { name: "Your Computer" });
-    expect(within(listed).getByText("Zed Tower")).toBeTruthy();
-    expect(within(listed).queryByText("Ada's Retired Mac")).toBeNull();
-    expect(within(listed).queryByText("Ada's Spare")).toBeNull();
-  });
-
-  it("names the Computer carrying the Agents when an Account's enrollments are all unreachable", async () => {
-    // All offline is exactly when repair matters, and the page acts on this answer: an alphabetical
-    // tiebreak would name an idle spare, hide the machine the Account's Agent runs on, and point
-    // the one repair action on the page at the wrong enrollment.
-    installApi({
-      computers: [
-        {
-          id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
-          displayName: "AAA Spare Box",
-          platform: "linux",
-          connectionStatus: "offline",
-          agentIds: [],
-          connectedAt: "2026-08-20T00:00:00.000Z",
-          lastSeenAt: "2026-08-20T00:00:00.000Z",
-        },
-        {
-          id: computerId,
-          displayName: "Ada's Mac",
-          platform: "darwin",
-          connectionStatus: "offline",
-          agentIds: [agentId],
-          connectedAt: "2026-08-20T00:00:01.000Z",
-          lastSeenAt: "2026-08-20T00:00:01.000Z",
         },
       ],
     });
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
 
-    const listed = await screen.findByRole("region", { name: "Your Computer" });
-    expect(within(listed).getByText("Ada's Mac")).toBeTruthy();
-    expect(within(listed).queryByText("AAA Spare Box")).toBeNull();
-    expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
-  });
-
-  it("does not resume a stored creation intent onto a Computer the form no longer shows", async () => {
-    const hiddenComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
-    const record = {
-      version: 3,
-      accountId: userId,
-      creationIntentId: "6c1b0f52-2a3f-4a3a-9a1a-2f0b6a1c4d55",
-      request: {
-        name: "zulu-agent",
-        displayName: "Zulu Agent",
-        runtimeProvider: "codex",
-        computerId: hiddenComputerId,
-      },
-    };
-    // An intent written by a build that let the reader pick a Computer. Its machine is still a
-    // ready route, so it is not stale in the sense the old resume test asked about — it is simply
-    // not the machine this form now shows.
-    window.localStorage.setItem(
-      `opentag.agent-creation.intent:${userId}`,
-      JSON.stringify({ version: 3, accountId: userId, records: [record] }),
-    );
-    installApi({
-      computers: [
-        {
-          id: computerId,
-          displayName: "Ada's Mac",
-          platform: "darwin",
-          connectionStatus: "online",
-          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
-          connectedAt: "2026-08-20T00:00:00.000Z",
-          lastSeenAt: "2026-08-20T00:00:00.000Z",
-        },
-        {
-          id: hiddenComputerId,
-          displayName: "Zulu Tower",
-          platform: "linux",
-          connectionStatus: "online",
-          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:01.000Z" }],
-          connectedAt: "2026-08-20T00:00:01.000Z",
-          lastSeenAt: "2026-08-20T00:00:01.000Z",
-        },
-      ],
-    });
-    window.history.replaceState({}, "", "/agents/new");
-    render(<App />);
-
-    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
-    expect(screen.queryByText("Zulu Tower")).toBeNull();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    // Creating an Agent on a machine that is nowhere on screen is the harm; the fields the reader
-    // typed survive, so the intent is available to submit against the Computer they can see.
-    expect(
-      vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
-    ).toHaveLength(0);
-    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Zulu Agent");
+    const listed = await screen.findByRole("region", { name: "Enrolled Computers" });
+    // An Account may hold several, so the page shows all of them and adding one stays available
+    // rather than disappearing once the first exists.
+    expect(within(listed).getAllByRole("listitem")).toHaveLength(3);
+    for (const name of ["Ada's Mac", "Zulu Tower", "Ada's Retired Mac"]) {
+      expect(within(listed).getByText(name)).toBeTruthy();
+    }
+    expect(screen.getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
   });
 
   it("does not resume a stored creation intent onto a Runtime the form is not offering", async () => {
-    // The other half of the same rule. The Computer matches, so only the Provider makes this intent
-    // a different route from the one on screen — and creating on a Runtime the reader is not being
-    // shown is the same hidden action as creating on a hidden machine.
-    const record = {
-      version: 3,
-      accountId: userId,
+    storeCreationIntent({
       creationIntentId: "0a2f7d19-8b44-4d2e-8c31-5f6a7b8c9d01",
-      request: {
-        name: "claude-agent",
-        displayName: "Claude Agent",
-        runtimeProvider: "claude-code",
-        computerId,
-      },
-    };
-    window.localStorage.setItem(
-      `opentag.agent-creation.intent:${userId}`,
-      JSON.stringify({ version: 3, accountId: userId, records: [record] }),
-    );
-    // Only Codex is ready here, so the form resolves the Computer the intent names but a Runtime it
-    // does not.
+      request: { name: "claude-agent", displayName: "Claude Agent", runtimeProvider: "claude-code", computerId },
+    });
+    // The Computer matches; only the Runtime makes this a different route from the one on screen.
     installApi({ computerProviderReadiness: [{ provider: "codex", status: "ready", observedAt: null }] });
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
@@ -1109,73 +1027,68 @@ describe("OpenTag Web App Shell", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(
-      vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
-    ).toHaveLength(0);
+    expect(agentCreationPosts()).toHaveLength(0);
     expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Claude Agent");
   });
 
-  it("retires a hidden-route intent once an explicit creation supersedes it", async () => {
-    const hiddenComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
-    const intentKey = `opentag.agent-creation.intent:${userId}`;
-    const hidden = {
-      version: 3,
-      accountId: userId,
+  it("resumes a stored creation intent that names the selected route", async () => {
+    // The control: the gate has to refuse an unselected route without disabling resume, which is
+    // the whole reason a creation intent is persisted.
+    const record = storeCreationIntent({
+      creationIntentId: "4d3c2b1a-9e8f-4a7b-8c6d-5e4f3a2b1c00",
+      request: { name: "resumed-agent", displayName: "Resumed Agent", runtimeProvider: "codex", computerId },
+    });
+    installApi();
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
+    expect(JSON.parse(String(agentCreationPosts()[0]?.[1]?.body))).toMatchObject({
+      computerId,
+      creationIntentId: record.creationIntentId,
+      runtimeProvider: "codex",
+    });
+  });
+
+  it("retires an abandoned intent once an explicit creation supersedes it", async () => {
+    // The abandoned intent names a Computer that is not a route today, so it does not resume and
+    // the reader carries on against a machine that is. Its record has to go with the creation:
+    // left behind, it resumes the moment its machine is a ready route again.
+    storeCreationIntent({
       creationIntentId: "8f1e2d3c-4b5a-4c6d-9e8f-1a2b3c4d5e66",
       request: {
         name: "zulu-agent",
         displayName: "Zulu Agent",
         runtimeProvider: "codex",
-        computerId: hiddenComputerId,
+        computerId: secondComputerId,
       },
-    };
-    window.localStorage.setItem(intentKey, JSON.stringify({ version: 3, accountId: userId, records: [hidden] }));
-    const visibleComputers = [
-      {
-        id: computerId,
-        displayName: "Ada's Mac",
-        platform: "darwin",
-        connectionStatus: "online",
-        providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
-        connectedAt: "2026-08-20T00:00:00.000Z",
-        lastSeenAt: "2026-08-20T00:00:00.000Z",
-      },
-      {
-        id: hiddenComputerId,
-        displayName: "Zulu Tower",
-        platform: "linux",
-        connectionStatus: "online",
-        providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:01.000Z" }],
-        connectedAt: "2026-08-20T00:00:01.000Z",
-        lastSeenAt: "2026-08-20T00:00:01.000Z",
-      },
-    ];
-    installApi({ computers: visibleComputers });
+    });
+    const offlineSecond = { ...(twoReadyComputers[1] as Record<string, unknown>), connectionStatus: "offline" };
+    installApi({ computers: [twoReadyComputers[0] as Record<string, unknown>, offlineSecond] });
     window.history.replaceState({}, "", "/agents/new");
     const first = render(<App />);
 
-    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    // The stored intent selects its own machine, and that machine cannot run an Agent, so nothing
+    // is sent and the reader is left to choose another.
+    expect(await screen.findByText("Zulu Tower")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(agentCreationPosts()).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change Computer" }));
+    fireEvent.click(screen.getByRole("button", { name: /Ada's Mac/ }));
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Visible Agent" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
+    await waitFor(() => expect(window.localStorage.getItem(creationIntentKey)).toBeNull());
 
-    await waitFor(() =>
-      expect(
-        vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
-      ).toHaveLength(1),
-    );
-    // The act these records exist to survive is over. One left behind is not inert: the resume
-    // effect would send it as soon as its machine became the resolved one again.
-    await waitFor(() => expect(window.localStorage.getItem(intentKey)).toBeNull());
-
-    // And prove it, rather than inferring it from an empty store: come back with the abandoned
-    // intent's Computer as the only machine, so its old route is exactly what the form displays.
-    // `installApi` swaps the implementation and keeps the call history, so the second visit is
-    // measured as growth rather than as an absolute count.
-    const postsBeforeReturning = vi
-      .mocked(fetch)
-      .mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST").length;
+    // Prove it rather than infer it from an empty store: come back with that machine online, which
+    // is exactly the state that would have resumed the abandoned record. `installApi` swaps the
+    // implementation and keeps the call history, so this is measured as growth.
+    const postsBeforeReturning = agentCreationPosts().length;
     first.unmount();
-    installApi({ computers: [visibleComputers[1] as Record<string, unknown>] });
+    installApi({ computers: [twoReadyComputers[1] as Record<string, unknown>] });
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
 
@@ -1183,75 +1096,42 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(
-      vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
-    ).toHaveLength(postsBeforeReturning);
+    expect(agentCreationPosts()).toHaveLength(postsBeforeReturning);
   });
 
-  it("resumes a stored creation intent that names the route on screen", async () => {
-    // The control for the two cases above: the gate has to refuse a hidden route without disabling
-    // resume, which is the whole reason a creation intent is persisted.
-    const record = {
-      version: 3,
-      accountId: userId,
-      creationIntentId: "4d3c2b1a-9e8f-4a7b-8c6d-5e4f3a2b1c00",
-      request: { name: "resumed-agent", displayName: "Resumed Agent", runtimeProvider: "codex", computerId },
-    };
-    window.localStorage.setItem(
-      `opentag.agent-creation.intent:${userId}`,
-      JSON.stringify({ version: 3, accountId: userId, records: [record] }),
-    );
-    installApi();
-    window.history.replaceState({}, "", "/agents/new");
-    render(<App />);
-
-    await waitFor(() =>
-      expect(
-        vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
-      ).toHaveLength(1),
-    );
-    const created = vi
-      .mocked(fetch)
-      .mock.calls.find(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
-    expect(JSON.parse(String(created?.[1]?.body))).toMatchObject({
-      computerId,
-      creationIntentId: record.creationIntentId,
-      runtimeProvider: "codex",
-    });
-  });
-
-  it("adopts the Computer that connects while New Agent is open and keeps the form", async () => {
-    const connectedComputer = {
-      id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
-      displayName: "Ada's Linux Computer",
-      platform: "linux",
+  it("refreshes and selects a newly connected Computer in New Agent", async () => {
+    const connectedComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const existingComputer = {
+      id: computerId,
+      displayName: "Ada's Mac",
+      platform: "darwin",
       arch: "arm64",
       clientVersion: "0.0.1",
       connectionStatus: "online",
-      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:02.000Z" }],
+      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+      connectedAt: "2026-08-20T00:00:00.000Z",
+      lastSeenAt: "2026-08-20T00:00:01.000Z",
+    };
+    const connectedComputer = {
+      ...existingComputer,
+      id: connectedComputerId,
+      displayName: "Ada's Linux Computer",
+      platform: "linux",
       connectedAt: "2026-08-20T00:00:02.000Z",
-      lastSeenAt: "2026-08-20T00:00:02.000Z",
     };
     let finishRefresh: (() => void) | undefined;
     const refreshPending = new Promise<void>((resolve) => {
       finishRefresh = resolve;
     });
-    // The Account has no Computer, which is the only state where this dialog offers enrolment at
-    // all. The machine that arrives is therefore the Account's Computer, with nothing to pick.
     installApi({
       computers: async (connected) => {
         if (connected) await refreshPending;
-        return connected ? [connectedComputer] : [];
+        return connected ? [existingComputer, connectedComputer] : [existingComputer];
       },
     });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    // Enrolment is offered here, and only here: the Account has no Computer, so this is the one
-    // state where the command that creates one cannot produce a duplicate. It stays inside the
-    // dialog rather than sending the reader to a separate setup destination.
-    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
-    expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
     fireEvent.change(within(dialog).getByLabelText("Display name"), {
       target: { value: "Research Assistant" },
     });
@@ -1259,6 +1139,8 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(within(dialog).getByLabelText("Agent name"), {
       target: { value: "research-assistant" },
     });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
     vi.useFakeTimers();
     vi.setSystemTime("2026-08-20T00:00:00.000Z");
@@ -1287,7 +1169,7 @@ describe("OpenTag Web App Shell", () => {
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-      expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement);
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -1339,32 +1221,120 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
-  it("answers an offline Computer in New Agent with reconnection rather than enrolment", async () => {
-    const offlineComputer = {
+  it("completes an existing Computer reconnection in New Agent", async () => {
+    const disconnectedAt = "2026-08-20T00:00:00.000Z";
+    const reconnectedAt = "2026-08-20T00:00:02.000Z";
+    const existingComputer = {
       id: computerId,
       displayName: "Ada's Mac",
       platform: "darwin",
       arch: "arm64",
       clientVersion: "0.0.1",
-      connectionStatus: "offline",
-      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
-      connectedAt: "2026-08-20T00:00:00.000Z",
+      connectionStatus: "online",
+      providerReadiness: [{ provider: "codex", status: "ready", observedAt: disconnectedAt }],
+      connectedAt: disconnectedAt,
       lastSeenAt: "2026-08-20T00:00:01.000Z",
     };
-    installApi({ computers: () => [offlineComputer] });
+    installApi({
+      computers: (connected) =>
+        connected ? [{ ...existingComputer, connectedAt: reconnectedAt }] : [existingComputer],
+    });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.change(within(dialog).getByLabelText("Display name"), {
+      target: { value: "Research Assistant" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Edit Agent name" }));
+    fireEvent.change(within(dialog).getByLabelText("Agent name"), {
+      target: { value: "research-assistant" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
-    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
-    expect(within(dialog).getByText("Computer offline")).toBeTruthy();
-    expect(within(dialog).getByText("Reconnect Ada's Mac from the Computer page to continue.")).toBeTruthy();
+    vi.useFakeTimers();
+    vi.setSystemTime(disconnectedAt);
+    try {
+      const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
+      generateButton.focus();
+      await act(async () => {
+        fireEvent.click(generateButton);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
 
-    // The machine that stopped answering is repaired in place. Offering the enrolment command here
-    // is what would leave the Account with a second Computer to explain.
-    expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-    expect(within(dialog).queryByRole("button", { name: "Generate connection command" })).toBeNull();
-    expect(within(dialog).queryByRole("button", { name: "Change Computer" })).toBeNull();
+      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
+      expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
+      expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
+      expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Computer connection inside the New Agent dialog when no runtime is available", async () => {
+    const connectedComputer = {
+      id: computerId,
+      displayName: "Ada's Mac",
+      platform: "darwin",
+      arch: "arm64",
+      clientVersion: "0.0.1",
+      connectionStatus: "online",
+      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:02.000Z" }],
+      connectedAt: "2026-08-20T00:00:02.000Z",
+      lastSeenAt: "2026-08-20T00:00:02.000Z",
+    };
+    let finishRefresh: (() => void) | undefined;
+    const refreshPending = new Promise<void>((resolve) => {
+      finishRefresh = resolve;
+    });
+    installApi({
+      computers: async (connected) => {
+        if (connected) await refreshPending;
+        return connected ? [connectedComputer] : [];
+      },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
+    expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-08-20T00:00:00.000Z");
+    try {
+      generateButton.focus();
+      await act(async () => {
+        fireEvent.click(generateButton);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(1_500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      await act(async () => {
+        finishRefresh?.();
+        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
+        // starts settles across several microtask turns; drain them rather than counting them.
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("creates an Agent from the dialog without a second creation screen", async () => {
@@ -2801,7 +2771,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(within(menu).queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(within(menu).queryByText("Secondary")).toBeNull();
-    expect(within(menu).getByRole("menuitem", { name: "Computer" })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: "Computers" })).toBeTruthy();
     expect(within(menu).queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 
@@ -3385,103 +3355,19 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
-  it("opens the Computer page from the account menu", async () => {
+  it("opens the Computers page from the account menu", async () => {
     installApi();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    const computers = screen.getByRole("menuitem", { name: "Computer" });
+    const computers = screen.getByRole("menuitem", { name: "Computers" });
     expect(computers.getAttribute("href")).toBe("/agents/computers");
     fireEvent.click(computers);
-    expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Your Computer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
     expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
-    // The Account has this machine, so the page does not also offer the command that would enroll
-    // a second one.
-    expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
     expect(window.location.pathname).toBe("/agents/computers");
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
-  });
-
-  it("repairs an unreachable Computer from the Computer page before any Agent exists", async () => {
-    // The Account has one Computer and it has stopped answering, with no Agent to reach a recovery
-    // from. This page is the only Computer surface that needs no Agent, so it has to be the way
-    // back — and the way back is a repair of this machine, never a second enrolment beside it.
-    installApi({
-      emptyAgents: true,
-      computers: (connected) => [
-        {
-          id: computerId,
-          displayName: "Ada's Mac",
-          platform: "darwin",
-          connectionStatus: connected ? "online" : "offline",
-          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
-          connectedAt: connected ? "2026-08-20T00:00:02.000Z" : "2026-08-20T00:00:00.000Z",
-          lastSeenAt: connected ? "2026-08-20T00:00:02.000Z" : "2026-08-20T00:00:00.000Z",
-        },
-      ],
-    });
-    window.history.replaceState({}, "", "/agents/computers");
-    render(<App />);
-
-    expect(await screen.findByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
-    expect(screen.getByText("Offline")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-
-    vi.useFakeTimers();
-    vi.setSystemTime("2026-08-20T00:00:00.000Z");
-    try {
-      await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Generate connection command" }));
-      });
-
-      const issued = vi
-        .mocked(fetch)
-        .mock.calls.find(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");
-      // A create code would be refused on this machine as an identity conflict, and would enroll a
-      // second Computer on a replacement one. The code names the Computer it restores instead.
-      expect(JSON.parse(String(issued?.[1]?.body))).toEqual({ mode: "repair", targetComputerId: computerId });
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_500);
-      });
-      expect(screen.getByRole("status").textContent).toBe("Ada's Mac is connected.");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("shows one Computer on the Computer page when the Account holds several enrollments", async () => {
-    installApi({
-      computers: [
-        {
-          id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
-          displayName: "Ada's Retired Mac",
-          platform: "darwin",
-          connectionStatus: "offline",
-          connectedAt: "2026-08-20T00:00:00.000Z",
-          lastSeenAt: "2026-08-20T00:00:00.000Z",
-        },
-        {
-          id: computerId,
-          displayName: "Ada's Mac",
-          platform: "darwin",
-          connectionStatus: "online",
-          connectedAt: "2026-08-20T00:00:02.000Z",
-          lastSeenAt: "2026-08-20T00:00:02.000Z",
-        },
-      ],
-    });
-    window.history.replaceState({}, "", "/agents/computers");
-    render(<App />);
-
-    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
-    // Singular copy over a list of machines would be the page contradicting itself. The Account is
-    // told about its Computer, resolved the same way every other surface resolves it.
-    expect(within(screen.getByRole("region", { name: "Your Computer" })).getAllByRole("listitem")).toHaveLength(1);
-    expect(screen.queryByText("Ada's Retired Mac")).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: /^Reconnect / })).toBeNull();
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {

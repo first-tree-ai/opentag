@@ -149,7 +149,7 @@ export function AppShellContent() {
                   />
                   <DropdownMenu.Content aria-label="Account" ref={accountMenuRef}>
                     <DropdownMenu.Item href="/agents/computers" onClickCapture={() => setOpenMobile(false)}>
-                      Computer
+                      Computers
                     </DropdownMenu.Item>
                     <DropdownMenu.Item
                       onClick={() => {

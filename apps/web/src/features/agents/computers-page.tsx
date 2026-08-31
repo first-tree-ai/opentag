@@ -2,20 +2,13 @@ import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { StatusIndicator, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
 import { AsyncState, toResourceState } from "../resource/resource-state.js";
-import { resolveAccountComputer } from "./account-computer.js";
 import { useComputersQuery } from "./agent-queries.js";
 import { ComputerSetup } from "./computer-setup.js";
 
 /**
- * The Account's Computer, and the way to get it answering again. A Computer can be connected before
- * an Agent exists, so this page cannot be folded into the Agent list without making that first-run
- * path unnecessarily indirect — and because it is the one Computer surface that needs no Agent, it
- * has to carry the exit for a machine that stops answering before the Account has one.
- *
- * Which exit it is, is the whole point. Enrolment appears only while the Account has no Computer,
- * because the command it hands out creates a *new* machine. A Computer that is merely unreachable
- * gets a repair of that exact machine instead, which keeps its identity, its Agents and its place
- * rather than leaving a second Computer beside the one it replaced.
+ * Lists the Account's enrolled Computers and keeps the connection flow available as its own
+ * management surface. A Computer can be enrolled before an Agent exists, so this page cannot be
+ * folded into the Agent list without making that first-run path unnecessarily indirect.
  */
 export function ComputersPage() {
   // The one Computers entry every surface reads, watched because this page is where an operator
@@ -23,25 +16,14 @@ export function ComputersPage() {
   const state = toResourceState(useComputersQuery(true));
 
   return (
-    <Page title="Computer" description="The Computer your Agents run on.">
+    <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">
       <AsyncState state={state}>
-        {(value) => {
-          const computer = resolveAccountComputer(value.computers, (candidate) => ({
-            connectionStatus: candidate.connectionStatus,
-            runtimeReady: (candidate.providerReadiness ?? []).some((provider) => provider.status === "ready"),
-            agentCount: candidate.agentIds.length,
-            displayName: candidate.displayName,
-          }));
-          return (
-            <div className="grid gap-6">
-              <ComputerList computers={computer ? [computer] : []} />
-              {computer === undefined ? <ComputerSetup /> : null}
-              {computer?.connectionStatus === "offline" ? (
-                <ComputerSetup target={{ computerId: computer.computerId, displayName: computer.displayName }} />
-              ) : null}
-            </div>
-          );
-        }}
+        {(value) => (
+          <div className="grid gap-6">
+            <ComputerList computers={value.computers} />
+            <ComputerSetup />
+          </div>
+        )}
       </AsyncState>
     </Page>
   );
@@ -54,11 +36,11 @@ export function ComputerList({ computers }: { computers: readonly WorkspaceCompu
       className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
     >
       <Text as="h2" id="enrolled-computers-heading" variant="heading">
-        Your Computer
+        Enrolled Computers
       </Text>
       {computers.length === 0 ? (
         <Text as="p" variant="secondary">
-          No Computer is connected yet.
+          No Computers are enrolled yet.
         </Text>
       ) : (
         <ul className="grid divide-y divide-kumo-line">

@@ -250,7 +250,6 @@ export function agentCreationFactsFromOwnComputers(computers: readonly Workspace
       id: computer.computerId,
       displayName: computer.displayName,
       connectionStatus: computer.connectionStatus,
-      agentCount: computer.agentIds.length,
     })),
     providers: computers.flatMap((computer) =>
       (computer.providerReadiness ?? []).map((readiness) => ({

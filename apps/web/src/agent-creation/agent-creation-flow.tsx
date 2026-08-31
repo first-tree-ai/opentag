@@ -7,7 +7,6 @@ import type {
 import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import { resolveAccountComputer } from "../features/agents/account-computer.js";
 import { ComputerSetup } from "../features/agents/computer-setup.js";
 import { compareText } from "../i18n/format.js";
 import {
@@ -28,8 +27,6 @@ export interface AgentCreationComputer {
   readonly id: string;
   readonly displayName: string;
   readonly connectionStatus: "online" | "offline";
-  /** Agents already bound to this Computer, which is what identifies it when none is reachable. */
-  readonly agentCount: number;
 }
 
 export interface AgentCreationProvider {
@@ -130,12 +127,16 @@ export function AgentCreationFlow({
   const [nameError, setNameError] = useState<string>();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [changingComputer, setChangingComputer] = useState(false);
   const [changingRuntime, setChangingRuntime] = useState(false);
+  const [connectingComputer, setConnectingComputer] = useState(false);
+  const [selectedComputerId, setSelectedComputerId] = useState(() => pendingIntent?.request.computerId);
   const [selectedProvider, setSelectedProvider] = useState<AgentRuntimeProvider | undefined>(
     () => pendingIntent?.request.runtimeProvider,
   );
   const firstFieldRef = useRef<HTMLInputElement>(null);
   const nameFieldRef = useRef<HTMLInputElement>(null);
+  const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
   const resumeAttemptedRef = useRef(false);
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
@@ -152,19 +153,11 @@ export function AgentCreationFlow({
   const agentNameVisible = agentNameDisclosure === "always" || nameUnderivable;
   const readyRoutes = useMemo(() => resolveReadyRoutes(facts), [facts]);
   const defaultReadyRoute = readyRoutes[0];
-  // The Account has one Computer, so this resolves which machine the form is talking about rather
-  // than honouring a choice — through the same policy the Computer page uses, so the machine an
-  // Agent is created on is the machine the Account manages and repairs.
-  const displayedComputer = useMemo(
-    () =>
-      resolveAccountComputer(facts.computers, (computer) => ({
-        connectionStatus: computer.connectionStatus,
-        runtimeReady: facts.providers.some((provider) => provider.computerId === computer.id && provider.runtimeReady),
-        agentCount: computer.agentCount,
-        displayName: computer.displayName,
-      })),
-    [facts.computers, facts.providers],
-  );
+  const displayedComputer =
+    facts.computers.find((computer) => computer.id === selectedComputerId) ??
+    defaultReadyRoute?.computer ??
+    facts.computers.find((computer) => computer.connectionStatus === "online") ??
+    facts.computers[0];
   const displayedProvider =
     facts.providers.find(
       (provider) => provider.computerId === displayedComputer?.id && provider.provider === selectedProvider,
@@ -213,6 +206,7 @@ export function AgentCreationFlow({
       [...facts.providers]
         .filter((provider) => provider.computerId === connectedComputerId)
         .sort((left, right) => providerRank(left.provider) - providerRank(right.provider))[0]?.provider;
+    setSelectedComputerId(connectedComputer.id);
     setSelectedProvider(connectedProvider);
     connectedComputerIdRef.current = undefined;
   }, [facts.computers, facts.providers, readyRoutes]);
@@ -226,7 +220,7 @@ export function AgentCreationFlow({
     if (!computerRefreshStartedRef.current) return;
     restoreComputerSetupFocusRef.current = false;
     computerRefreshStartedRef.current = false;
-    firstFieldRef.current?.focus();
+    (computerChangeButtonRef.current ?? firstFieldRef.current)?.focus();
   }, [refreshing]);
 
   const create = useCallback(
@@ -270,17 +264,18 @@ export function AgentCreationFlow({
     if (!pendingIntent || resumeAttemptedRef.current) return;
     /*
      * A resume finishes what the reader started, so it may only send what the reader is looking at.
-     * An intent stored by an older build can name a Computer this form no longer displays — one of
-     * several enrollments, resolved away — and sending it then creates the Agent on a machine that
-     * is nowhere on screen. Requiring the stored route to be the displayed route keeps the target
-     * visible; a stored intent that names another machine is simply not resumed, leaving its fields
-     * on the form for the reader to submit against the Computer they can see.
+     * "Is that route still ready" is a weaker question than "is that the route on screen": with
+     * several Computers to choose between, a stored intent can name a machine or a Runtime this
+     * form is not currently showing, and sending it then creates the Agent somewhere the reader
+     * never saw. Requiring the stored route to be the selected route keeps the target visible; an
+     * intent naming another route is not resumed, and its fields stay on the form for the reader to
+     * submit against what they can see.
      */
-    const resumesTheDisplayedRoute =
+    const resumesTheSelectedRoute =
       selectedRoute !== undefined &&
       selectedRoute.computer.id === pendingIntent.request.computerId &&
       selectedRoute.provider === pendingIntent.request.runtimeProvider;
-    if (!resumesTheDisplayedRoute) return;
+    if (!resumesTheSelectedRoute) return;
     resumeAttemptedRef.current = true;
     void create(pendingIntent.request, pendingIntent);
   }, [create, pendingIntent, selectedRoute]);
@@ -381,7 +376,10 @@ export function AgentCreationFlow({
       </div>
 
       <RuntimeRouteSection
+        changingComputer={changingComputer}
         changingRuntime={changingRuntime}
+        connectingComputer={connectingComputer}
+        computerChangeButtonRef={computerChangeButtonRef}
         displayedComputer={displayedComputer}
         displayedProvider={displayedProvider}
         facts={facts}
@@ -390,8 +388,23 @@ export function AgentCreationFlow({
         refreshing={refreshing}
         selectedRoute={selectedRoute}
         submitting={submitting}
+        onChangeComputer={(computer) => {
+          const providers = [...facts.providers]
+            .filter((provider) => provider.computerId === computer.id)
+            .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
+          const nextProvider =
+            providers.find((provider) => provider.provider === displayedProvider?.provider)?.provider ??
+            readyRoutes.find((route) => route.computer.id === computer.id)?.provider ??
+            providers[0]?.provider;
+          setSelectedComputerId(computer.id);
+          setSelectedProvider(nextProvider);
+          setChangingComputer(false);
+          setChangingRuntime(false);
+        }}
         onChangeRuntime={(provider) => {
+          if (displayedComputer) setSelectedComputerId(displayedComputer.id);
           setSelectedProvider(provider.provider);
+          setChangingComputer(false);
           setChangingRuntime(false);
         }}
         onConnected={(computer) => {
@@ -399,10 +412,24 @@ export function AgentCreationFlow({
           restoreComputerSetupFocusRef.current = true;
           computerRefreshStartedRef.current = false;
           if (onCancel) onComputerRefreshFocus?.();
+          setConnectingComputer(false);
+          setChangingComputer(false);
           onRefresh();
         }}
         onRefresh={onRefresh}
+        onToggleComputerSetup={() => {
+          restoreComputerSetupFocusRef.current = false;
+          computerRefreshStartedRef.current = false;
+          setConnectingComputer((current) => !current);
+        }}
+        onToggleComputer={() => {
+          setChangingRuntime(false);
+          setConnectingComputer(false);
+          setChangingComputer((current) => !current);
+        }}
         onToggleRuntime={() => {
+          setChangingComputer(false);
+          setConnectingComputer(false);
           setChangingRuntime((current) => !current);
         }}
       />
@@ -432,13 +459,19 @@ export function AgentCreationFlow({
 }
 
 function RuntimeRouteSection({
+  changingComputer,
   changingRuntime,
+  connectingComputer,
+  computerChangeButtonRef,
   displayedComputer,
   displayedProvider,
   facts,
+  onChangeComputer,
   onChangeRuntime,
   onConnected,
   onRefresh,
+  onToggleComputerSetup,
+  onToggleComputer,
   onToggleRuntime,
   preview,
   readyRoutes,
@@ -446,13 +479,19 @@ function RuntimeRouteSection({
   selectedRoute,
   submitting,
 }: {
+  changingComputer: boolean;
   changingRuntime: boolean;
+  connectingComputer: boolean;
+  computerChangeButtonRef: { current: HTMLButtonElement | null };
   displayedComputer: AgentCreationComputer | undefined;
   displayedProvider: AgentCreationProvider | undefined;
   facts: AgentCreationFacts;
+  onChangeComputer: (computer: AgentCreationComputer) => void;
   onChangeRuntime: (provider: AgentCreationProvider) => void;
   onConnected: (computer: AgentCreationComputer) => void;
   onRefresh: () => void;
+  onToggleComputerSetup: () => void;
+  onToggleComputer: () => void;
   onToggleRuntime: () => void;
   preview: boolean;
   readyRoutes: readonly ReadyRoute[];
@@ -460,10 +499,12 @@ function RuntimeRouteSection({
   selectedRoute: ReadyRoute | undefined;
   submitting: boolean;
 }) {
+  const onlineComputers = facts.computers.filter((computer) => computer.connectionStatus === "online");
   const attention = providerAttention(facts, displayedComputer, displayedProvider);
   const providerOptions = [...facts.providers]
     .filter((provider) => provider.computerId === displayedComputer?.id)
     .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
+  const computerOptions = [...facts.computers].sort((left, right) => compareText(left.displayName, right.displayName));
   // The heading names the section and everything under it answers it: the route rows label
   // themselves Computer and Runtime, and where there is no Computer yet the setup panel names the
   // task. A sentence here would only say those labels again, which is one more line between the
@@ -490,7 +531,6 @@ function RuntimeRouteSection({
                 id: computer.computerId,
                 displayName: computer.displayName,
                 connectionStatus: computer.connectionStatus,
-                agentCount: computer.agentIds.length,
               })
             }
           />
@@ -508,6 +548,18 @@ function RuntimeRouteSection({
                   label={displayedComputer.connectionStatus === "online" ? "Online" : "Offline"}
                   tone={displayedComputer.connectionStatus === "online" ? "success" : "warning"}
                 />
+                <Button
+                  aria-controls="new-agent-computer-picker"
+                  aria-expanded={changingComputer}
+                  aria-label="Change Computer"
+                  disabled={submitting || refreshing}
+                  ref={computerChangeButtonRef}
+                  size="compact"
+                  variant="inline"
+                  onClick={onToggleComputer}
+                >
+                  Change
+                </Button>
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3 p-3">
@@ -536,6 +588,60 @@ function RuntimeRouteSection({
               </div>
             </div>
           </div>
+
+          {changingComputer ? (
+            <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-computer-picker">
+              <strong className="text-sm font-medium text-kumo-strong">Choose Computer</strong>
+              <div className="grid gap-2">
+                {computerOptions.map((computer) => {
+                  const routes = readyRoutes.filter((route) => route.computer.id === computer.id);
+                  return (
+                    <Button
+                      aria-pressed={computer.id === displayedComputer.id}
+                      className="h-auto w-full justify-between text-left"
+                      data-selected={computer.id === displayedComputer.id ? "true" : undefined}
+                      disabled={submitting || refreshing}
+                      key={computer.id}
+                      type="button"
+                      onClick={() => onChangeComputer(computer)}
+                    >
+                      <span className="grid gap-1">
+                        <strong>{computer.displayName}</strong>
+                        <small>{computerRouteSummary(computer, routes.length)}</small>
+                      </span>
+                      <span>{computer.connectionStatus === "online" ? "Online" : "Offline"}</span>
+                    </Button>
+                  );
+                })}
+              </div>
+              <div className="flex justify-start">
+                <Button
+                  aria-controls="new-agent-computer-setup"
+                  aria-expanded={connectingComputer}
+                  disabled={submitting}
+                  size="compact"
+                  variant="inline"
+                  onClick={onToggleComputerSetup}
+                >
+                  {connectingComputer ? "Cancel Computer connection" : "Connect another Computer"}
+                </Button>
+              </div>
+              {connectingComputer ? (
+                <div className="grid gap-4" id="new-agent-computer-setup">
+                  <ComputerSetup
+                    preview={preview}
+                    onConnected={(computer) =>
+                      onConnected({
+                        id: computer.computerId,
+                        displayName: computer.displayName,
+                        connectionStatus: computer.connectionStatus,
+                      })
+                    }
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {changingRuntime ? (
             <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-runtime-picker">
@@ -571,7 +677,11 @@ function RuntimeRouteSection({
             </div>
           ) : displayedComputer.connectionStatus === "offline" ? (
             <RuntimeAttention
-              detail={`Reconnect ${displayedComputer.displayName} from the Computer page to continue.`}
+              detail={
+                onlineComputers.length === 0
+                  ? "Reconnect one of your Computers to continue."
+                  : `Reconnect ${displayedComputer.displayName} or choose another Computer to continue.`
+              }
               label="Computer offline"
               refreshing={refreshing}
               tone="warning"
@@ -594,6 +704,12 @@ function RuntimeRouteSection({
 
 function RouteState({ label, tone }: { label: string; tone: "success" | "warning" | "neutral" }) {
   return <StatusIndicator label={label} tone={tone} />;
+}
+
+function computerRouteSummary(computer: AgentCreationComputer, readyRuntimeCount: number): string {
+  if (computer.connectionStatus === "offline") return "Computer offline";
+  if (readyRuntimeCount === 0) return "No Runtime ready";
+  return `${readyRuntimeCount} ${readyRuntimeCount === 1 ? "Runtime" : "Runtimes"} ready`;
 }
 
 function providerStatusLabel(provider: AgentCreationProvider | undefined): string {
@@ -801,8 +917,9 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
  * Retires every creation intent this Account holds, which is what a successful creation makes of
  * them: they exist to survive one act of creating one Agent, and the reader may have abandoned
  * several along the way by changing the name or the route. A record left behind is not inert — the
- * resume effect will send it the moment its old route is displayed again, creating a second Agent
- * nobody asked for. Refusing to resume a hidden route only defers that; retiring the record ends it.
+ * resume effect will send it the moment its route is the selected one again, creating a second
+ * Agent nobody asked for. Refusing to resume an unselected route only defers that; retiring the
+ * record ends it.
  */
 async function clearCreationIntents(accountId: string): Promise<void> {
   await withCreationLock(accountId, () => {

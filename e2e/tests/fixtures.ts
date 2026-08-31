@@ -103,6 +103,9 @@ async function waitFor(description: string, predicate: () => Promise<boolean>, t
 async function startDaemon(
   runtime: RuntimeFile,
 ): Promise<{ daemon: ReturnType<typeof spawn>; openTagHome: string; temporaryHome: string }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(runtime.accountComputerId)) {
+    throw new Error("The E2E runtime is missing its canonical Account Computer identity");
+  }
   const temporaryHome = await mkdtemp(join(tmpdir(), "opentag-e2e-daemon-"));
   const home = join(temporaryHome, "home");
   const openTagHome = join(temporaryHome, "opentag-home");

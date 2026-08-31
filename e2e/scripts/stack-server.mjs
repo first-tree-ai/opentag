@@ -18,6 +18,8 @@ const databaseName = process.env.OPENTAG_E2E_DATABASE ?? "opentag_e2e";
 const databaseURL = new URL(adminDatabaseURL);
 databaseURL.pathname = `/${databaseName}`;
 const devEmail = "e2e@opentag.local";
+const accountComputerId = "44444444-4444-4444-8444-444444444444";
+const installationId = "55555555-5555-4555-8555-555555555555";
 const encryptionKey = Buffer.alloc(32, 7).toString("base64");
 const runtimeFile = join(repositoryRoot, "e2e", ".runtime.json");
 
@@ -97,6 +99,14 @@ async function bootstrapAndSeed() {
   });
   const result = JSON.parse(bootstrap.stdout);
   const userId = result.userId;
+  await psql(
+    databaseURL,
+    `insert into computers (
+       id, owner_account_id, current_installation_id, display_name, platform, arch, client_version
+     ) values (
+       '${accountComputerId}', '${userId}', '${installationId}', 'E2E Computer', 'linux', 'x86_64', 'e2e'
+     );`,
+  );
   await mkdir(dirname(runtimeFile), { recursive: true });
   await writeFile(
     runtimeFile,
@@ -105,6 +115,7 @@ async function bootstrapAndSeed() {
         adminDatabaseURL,
         databaseURL: databaseURL.toString(),
         userId,
+        accountComputerId,
         devEmail,
         baseURL,
       },

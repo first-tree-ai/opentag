@@ -402,6 +402,35 @@ export {
 export * from "./session.js";
 export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
+export {
+  BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
+  boundedSerialize,
+  type DiagnosticEvent,
+  DiagnosticEventSchema,
+  ErrorPhaseSchema,
+  type ErrorRetryability,
+  ErrorRetryabilitySchema,
+  RetryabilitySchema,
+  redactDiagnostic,
+  redactSensitive,
+  STRUCTURED_ERROR_MAX_CAUSE_DEPTH,
+  STRUCTURED_ERROR_MESSAGE_MAX_BYTES,
+  STRUCTURED_ERROR_REQUEST_ID_MAX_BYTES,
+  STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS,
+  STRUCTURED_ERROR_SERIALIZATION_MAX_DEPTH,
+  STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS,
+  type StructuredError,
+  type StructuredErrorCategory,
+  StructuredErrorCategorySchema,
+  type StructuredErrorCause,
+  StructuredErrorCauseSchema,
+  StructuredErrorCodeSchema,
+  StructuredErrorMessageSchema,
+  type StructuredErrorPhase,
+  StructuredErrorPhaseSchema,
+  StructuredErrorSchema,
+  serializeDiagnostic,
+} from "./structured-errors.js";
 export * from "./task.js";
 export {
   type AccountSetupResetMode,

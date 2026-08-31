@@ -20,6 +20,18 @@ The repository pins pnpm in `package.json` and pins the development Node.js patc
 `engine-strict=true` in `.npmrc`, so an unsupported Node.js version fails dependency installation instead of producing
 only an engine warning. Do not use npm or Yarn to update dependencies.
 
+## Local development workflow
+
+The README keeps the product overview and the Docker Compose dependency sample concise. Keep the repository-specific
+workflow in this guide:
+
+1. Start the local PostgreSQL service and run the Server health-check path.
+2. Bootstrap an Account, install the development CLI, and exchange the Account login code.
+3. Enroll a Computer, start its daemon, and create an Agent configuration.
+4. Configure Google sign-in or the loopback development bypass when the Web App is needed.
+
+The sections below contain the commands and environment details for each step.
+
 ## Git hooks and worktrees
 
 `pnpm install` runs the root `prepare` script, which installs three hooks into the clone's hooks directory:

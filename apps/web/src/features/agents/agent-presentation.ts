@@ -2,7 +2,6 @@ import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
-import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 export const agentAvatarTones = ["brand", "amber", "blue", "neutral"] as const;
 
@@ -15,11 +14,10 @@ export function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[numb
 }
 
 /**
- * Every state a viewer can act on carries the Settings section that explains it. A state without an
- * exit reads as a dead end: the card reports a failure the viewer cannot follow anywhere.
+ * The card states what is true and how urgent it is; it carries no exit of its own. Opening the
+ * Agent is the single follow-up, and the Agent page is where each failed dependency is explained.
  */
 export function agentCardStatus(agent: AgentListItem): {
-  action?: { label: string; section: AgentSettingsSection };
   detail?: string;
   label: string;
   priority: number;
@@ -34,32 +32,18 @@ export function agentCardStatus(agent: AgentListItem): {
     return { detail: "Unable to confirm readiness", label: status.label, priority: 1, tone: status.tone };
   }
   if (agent.availability.state === "action_required") {
-    const action =
-      agent.availability.reason === "computer_offline"
-        ? { label: "View Computer", section: "computer" as const }
-        : agent.availability.reason === "runtime_unavailable"
-          ? // Provider readiness is observed per Computer, so the Computer page is where it is explained.
-            { label: "View Computer", section: "computer" as const }
-          : { label: "View messaging", section: "messaging" as const };
-    return {
-      action,
-      detail: "Cannot receive new work",
-      label: status.label,
-      priority: 0,
-      tone: status.tone,
-    };
+    /*
+     * No recovery exit on the card. What to do about a stuck Agent depends on which dependency
+     * failed, and that explanation lives on the Agent itself; the card states the problem and
+     * lets its own open-the-Agent target carry the viewer to where it can be fixed.
+     */
+    return { detail: "Cannot receive new work", label: status.label, priority: 0, tone: status.tone };
   }
   if (agent.availability.state === "setting_up") {
     return { detail: "Messaging setup in progress", label: status.label, priority: 2, tone: status.tone };
   }
   if (agent.availability.state === "not_connected") {
-    return {
-      action: { label: "Connect messaging", section: "messaging" },
-      detail: "Cannot receive new work",
-      label: status.label,
-      priority: 2,
-      tone: status.tone,
-    };
+    return { detail: "Cannot receive new work", label: status.label, priority: 2, tone: status.tone };
   }
   if (agent.activity.state === "working") {
     return {
@@ -297,7 +281,7 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     handoff_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
     computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
-    computer_offline: "This Agent's Computer is offline. Retrying automatically.",
+    computer_offline: "This agent's computer is offline. Retrying automatically.",
     runtime_unavailable: runtimeRecoveryMessage(agent),
     im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
     im_provisioning: "The messaging connection is still being set up.",
@@ -316,10 +300,10 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
 function runtimeRecoveryMessage(agent: AgentDetailView): string {
   const { provider, status } = agent.availability.dependencies.runtime;
   const providerName = runtimeProviderName(provider);
-  if (status === "checking") return `Still checking ${providerName} on this Agent's Computer.`;
-  if (status === "install") return `Install ${providerName} on this Agent's Computer.`;
-  if (status === "sign-in") return `Sign in to ${providerName} on this Agent's Computer.`;
-  return `${providerName} is not available on this Agent's Computer.`;
+  if (status === "checking") return `Still checking ${providerName} on this agent's computer.`;
+  if (status === "install") return `Install ${providerName} on this agent's computer.`;
+  if (status === "sign-in") return `Sign in to ${providerName} on this agent's computer.`;
+  return `${providerName} is not available on this agent's computer.`;
 }
 
 export function initials(value: string): string {

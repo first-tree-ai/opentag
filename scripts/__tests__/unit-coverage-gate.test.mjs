@@ -182,3 +182,31 @@ test("an instrumented line with zero hits is still uncovered, whatever it contai
   assert.equal(result.passed, false);
   assert.deepEqual(result.uncovered, ["src/example.tsx:2"]);
 });
+
+test("a changed line inside an unrun multi-line statement is judged by that statement", () => {
+  // The current provider emits single-line statements, so this case is theoretical today. Recording
+  // the span keeps the skip rule meaning "no statement covers this line": a provider that reported
+  // ranges would otherwise let an unrun statement's inner lines pass as uncoverable.
+  const diff = [
+    "diff --git a/src/example.ts b/src/example.ts",
+    "--- a/src/example.ts",
+    "+++ b/src/example.ts",
+    "@@ -1,0 +12 @@",
+    "+    unreachableArgument,",
+    "",
+  ].join("\n");
+  const spanning = {
+    path: "src/example.ts",
+    s: { 0: 0 },
+    statementMap: { 0: { start: { line: 10, column: 0 }, end: { line: 14, column: 3 } } },
+  };
+  const result = evaluatePatchCoverage({
+    diff,
+    coverage: { "src/example.ts": spanning },
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.total, 1);
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.uncovered, ["src/example.ts:12"]);
+});

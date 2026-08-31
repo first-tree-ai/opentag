@@ -104,17 +104,28 @@ export function normalizeCoveragePath(rawPath, repositoryRoot) {
   return normalizePath(isAbsolute(value) ? relative(repositoryRoot, value) : value);
 }
 
-/** Map each normalized repository path to its maximum Istanbul statement hit per source line. */
+/**
+ * Map each normalized repository path to its maximum statement hit per source line.
+ *
+ * A statement claims every line it spans, not just the one it starts on. The current provider emits
+ * single-line statements, so today that is the same map either way; recording the span means the
+ * gate asks "does any statement cover this line", which is the question it means to ask, rather
+ * than depending on a provider property nothing enforces.
+ */
 export function buildLineHitsByFile(coverage, repositoryRoot) {
   const lineHitsByFile = new Map();
   for (const [rawFile, fileCoverage] of Object.entries(coverage ?? {})) {
     const file = normalizeCoveragePath(rawFile, repositoryRoot);
     const lineHits = lineHitsByFile.get(file) ?? new Map();
     for (const [statementId, statement] of Object.entries(fileCoverage?.statementMap ?? {})) {
-      const line = statement?.start?.line;
-      if (!Number.isInteger(line)) continue;
-      const hits = Number(fileCoverage?.s?.[statementId] ?? 0);
-      lineHits.set(line, Math.max(lineHits.get(line) ?? 0, Number.isFinite(hits) ? hits : 0));
+      const start = statement?.start?.line;
+      if (!Number.isInteger(start)) continue;
+      const end = Number.isInteger(statement?.end?.line) ? Math.max(statement.end.line, start) : start;
+      const rawHits = Number(fileCoverage?.s?.[statementId] ?? 0);
+      const hits = Number.isFinite(rawHits) ? rawHits : 0;
+      for (let line = start; line <= end; line += 1) {
+        lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hits));
+      }
     }
     lineHitsByFile.set(file, lineHits);
   }
@@ -129,7 +140,7 @@ function evaluateChangedFile({ file, lines, lineHits }) {
   let total = 0;
   for (const { content, line } of lines) {
     if (!isExecutableSourceLine(content)) continue;
-    // The provider instrumented this file and emitted nothing for this line: it is a declaration or
+    // The provider instrumented this file and no statement covers this line: it is a declaration or
     // a literal, not a statement a test could reach.
     if (instrumented && !lineHits.has(line)) continue;
     total += 1;

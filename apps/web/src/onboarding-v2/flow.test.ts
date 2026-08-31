@@ -2,12 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   type AgentDraft,
   type ConnectState,
-  deriveChecks,
   deriveFlowState,
   type FlowFacts,
-  formatRemaining,
   initialFacts,
-  messagingCliCheck,
   type ReadinessFacts,
   readinessPassed,
   validateAgentName,
@@ -100,49 +97,9 @@ describe("deriveFlowState", () => {
   });
 });
 
-describe("deriveChecks", () => {
-  it("reports every row as pending before the first probe resolves", () => {
-    expect(deriveChecks(undefined).map((check) => check.state)).toEqual(["pending", "pending"]);
-  });
-
-  it("passes both runtime rows when the runtime is ready", () => {
-    expect(deriveChecks(ready).map((check) => check.state)).toEqual(["passed", "passed"]);
-  });
-
-  it("leaves the messaging CLI out: its provider is not chosen yet", () => {
+describe("readinessPassed", () => {
+  it("does not wait on the messaging CLI: its provider is not chosen yet", () => {
     // A missing lark-cli used to block a user who was going to pick Slack.
-    expect(deriveChecks(ready).map((check) => check.id)).toEqual(["runtime-cli", "runtime-auth"]);
     expect(readinessPassed({ runtime: "ready", messagingCli: { feishu: "install", slack: "install" } })).toBe(true);
-  });
-
-  it("treats a sign-in failure as proof the CLI runs", () => {
-    const checks = deriveChecks({ runtime: "sign-in", messagingCli: { feishu: "ready", slack: "ready" } });
-    expect(checks[0]).toEqual({ id: "runtime-cli", state: "passed" });
-    expect(checks[1]).toEqual({ id: "runtime-auth", state: "failed" });
-  });
-
-  it("blocks the sign-in row when the CLI is missing, rather than guessing", () => {
-    const checks = deriveChecks({ runtime: "install", messagingCli: { feishu: "ready", slack: "ready" } });
-    expect(checks[0]).toEqual({ id: "runtime-cli", state: "failed" });
-    expect(checks[1]).toEqual({ id: "runtime-auth", state: "blocked" });
-  });
-
-  it("reports the chosen provider's CLI separately, at handoff", () => {
-    const facts = { runtime: "ready", messagingCli: { feishu: "install", slack: "ready" } } as const;
-    expect(messagingCliCheck(facts, "feishu")).toBe("failed");
-    expect(messagingCliCheck(facts, "slack")).toBe("passed");
-    // A CLI the Server has not reported on is still being checked, not failing.
-    expect(messagingCliCheck({ runtime: "ready", messagingCli: {} }, "slack")).toBe("pending");
-  });
-});
-
-describe("formatRemaining", () => {
-  it("renders minutes and zero-padded seconds", () => {
-    expect(formatRemaining(15 * 60 * 1_000)).toBe("15:00");
-    expect(formatRemaining(65_000)).toBe("1:05");
-  });
-
-  it("never renders a negative duration", () => {
-    expect(formatRemaining(-1_000)).toBe("0:00");
   });
 });

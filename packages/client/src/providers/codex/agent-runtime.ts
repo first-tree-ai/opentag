@@ -276,7 +276,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected async steerProvider(request: AgentSteerRequest): Promise<void> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
     const turnId = await this.#activeTurnId();
     const response = requireRecord(
       await this.#client.request("turn/steer", {
@@ -291,7 +291,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected async respondProvider(response: AgentInteractionResponse): Promise<void> {
+  protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {
     const request = this.#wireInteractions.get(response.requestId);
     /* v8 ignore next -- Base and the serial Codex envelope queue fence this map with the public interaction. */
     if (!request) throw new AgentRuntimeError("interaction_not_found", "Codex interaction is no longer pending");
@@ -300,7 +300,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#wireInteractions.delete(response.requestId);
   }
 
-  protected async abortProvider(request: AgentAbortRequest): Promise<void> {
+  protected override async abortProvider(request: AgentAbortRequest): Promise<void> {
     const turnId = await this.#activeTurnId();
     /* v8 ignore next 3 -- Base validates expectedRunId before entering the Provider hook. */
     if (request.expectedRunId !== this.#context?.runId) {

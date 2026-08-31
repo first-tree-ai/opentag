@@ -3,10 +3,13 @@
  *
  * Everything expressible as a class — layout, colour, radius, type, and every reserved height the
  * flow depends on — now sits on the element itself. What stayed is the styling that is driven by
- * an attribute the page already publishes for assistive technology (`aria-pressed`, `data-state`,
- * `data-status`), and the command block, which is a terminal quotation with its own palette and its
- * own wrapping rules. Stating those as variants would spread one decision across a dozen class
- * lists; stating them here keeps each in one place.
+ * an attribute the page already publishes for assistive technology (`aria-pressed`, `data-status`).
+ * Stating those as variants would spread one decision across a dozen class lists; stating them here
+ * keeps each in one place.
+ *
+ * Only what belongs to this flow alone lives here. The styling of the setup pieces it shares with
+ * Agent settings — the command block, the check rows, the QR frame, the waiting dot — travels with
+ * those pieces in `../setup/setup.css`.
  */
 
 /* Brand mark ------------------------------------------------------------- */
@@ -78,154 +81,6 @@
   color: var(--text-color-kumo-inverse);
 }
 
-/* Check markers ---------------------------------------------------------- */
-
-/*
- * These two need to read as green and amber at 22px. The operational status palette is tuned for
- * large surfaces and goes indistinct at this size, so the pair is stated locally.
- */
-.otv2-check__marker {
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--color-kumo-hairline);
-  line-height: 1;
-}
-
-.otv2-check[data-state="passed"] .otv2-check__marker {
-  border-color: #17a04a;
-  background: #e6f7ec;
-  color: #17a04a;
-}
-
-.otv2-check[data-state="failed"] .otv2-check__marker {
-  border-color: #d98207;
-  background: #fdf1de;
-  color: #d98207;
-}
-
-.otv2-check[data-state="pending"] .otv2-check__marker {
-  border-style: dashed;
-  animation: otv2-fade 1.4s ease-in-out infinite;
-}
-
-@keyframes otv2-fade {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-
-  50% {
-    opacity: 1;
-  }
-}
-
-/* Command block ---------------------------------------------------------- */
-
-/*
- * The block carries its own near-black surface in both modes: it is a terminal quotation, and it
- * reads as one only if it does not follow the page.
- */
-.otv2-command__body {
-  position: relative;
-  background: #0b101d;
-  border-color: var(--color-kumo-hairline);
-  transition: opacity 160ms ease;
-}
-
-.otv2-command__code {
-  margin: 0;
-  color: #e6e9e0;
-  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "PingFang SC", monospace;
-  font-size: 13px;
-  line-height: 1.55;
-
-  /* Wraps rather than scrolling sideways: a command that runs off the edge cannot be read, and
-     `break-word` keeps short tokens like `sh` whole. */
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-}
-
-.otv2-command__comment {
-  color: #9fb27f;
-}
-
-/*
- * The trailing token is an opaque secret and breaks strictly by character. Left to break at its own
- * hyphens and underscores, two codes of the same length wrap to a different number of lines and the
- * block changes height when one is reissued.
- *
- * `overflow-wrap: anywhere` is not enough on its own: it still prefers an existing break opportunity
- * when there is one, so a code ending in `-` or `_` took an extra line at some widths — 19 of 200
- * random codes at 320px. `word-break: break-all` ignores those opportunities entirely. It is scoped
- * to this span and no wider: on the whole command it would split short words like `sh`, which reads
- * as a typo in something the reader is about to run.
- */
-.otv2-command__token {
-  word-break: break-all;
-}
-
-/*
- * Sized as a real target rather than around the icon: a Kumo icon is 16px, which on a compact
- * button reads as an afterthought next to the command it belongs to.
- */
-.otv2-command__copy {
-  width: 48px;
-  min-width: 48px;
-  height: 48px;
-  min-height: 48px;
-  padding: 0;
-  background: transparent;
-
-  /* The same value the command itself is set in, so the control is as legible as what it copies. */
-  color: #e6e9e0;
-}
-
-.otv2-command__copy svg {
-  width: 24px;
-  height: 24px;
-}
-
-.otv2-command__copy:hover:not(:disabled) {
-  background: rgb(230 233 224 / 14%);
-  color: #fff;
-}
-
-.otv2-command__copy:active:not(:disabled) {
-  background: rgb(230 233 224 / 22%);
-}
-
-/* The block's shape while its command is still being issued: same box, nothing legible in it. */
-.otv2-command-pending {
-  opacity: 0.35;
-  filter: blur(3px);
-  pointer-events: none;
-}
-
-/*
- * An expired command says so on the block itself, over a heavy scrim: the block is the thing that
- * expired, and a line underneath is easy to miss when the command above it still looks runnable.
- * The scrim sits over the content rather than fading the whole block, so the notice stays legible.
- */
-.otv2-command[data-expired="true"] .otv2-command__code,
-.otv2-command[data-expired="true"] .otv2-command__copy {
-  opacity: 0.18;
-}
-
-.otv2-command__expired {
-  position: absolute;
-  inset: 0;
-  background: rgb(11 16 29 / 78%);
-  color: #e6e9e0;
-}
-
-.otv2-command__expired button {
-  color: #cfe3a6;
-}
-
-.otv2-command__expired button:hover {
-  color: #e8f5cd;
-}
-
 /* Measurements ----------------------------------------------------------- */
 
 /*
@@ -252,10 +107,6 @@
  * Anything that changes length while someone is reading is given the height of its tallest state,
  * so the step's footer keeps one position. These are measured, not chosen.
  */
-.otv2-slot--status {
-  min-height: 28px;
-}
-
 .otv2-slot--outcome {
   min-height: 50px;
 }
@@ -266,11 +117,6 @@
 
 .otv2-field-error {
   min-height: 20px;
-}
-
-/* A check row's second line is a status, and a failure reads longer than what it replaces. */
-.otv2-check {
-  min-height: 73px;
 }
 
 @media (width <= 640px) {
@@ -289,38 +135,11 @@
   }
 }
 
-/* Below this width a failing check's status takes a second line. */
-@media (width <= 399px) {
-  .otv2-check {
-    min-height: 90px;
-  }
-}
-
 /* And below this one the repair summary takes a second pair of lines. */
 @media (width <= 359px) {
   .otv2-slot--outcome {
     min-height: 114px;
   }
-}
-
-/* The waiting dot carries its own animation. */
-.otv2-pulse {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-kumo-brand);
-  animation: otv2-fade 1.4s ease-in-out infinite;
-}
-
-/* The QR keeps its box whether or not a code has arrived, so the panel never changes height. */
-.otv2-qr {
-  width: 208px;
-  height: 208px;
-}
-
-.otv2-qr__image {
-  width: 100%;
-  height: 100%;
 }
 
 /* Slack's published button, at the size Slack publishes it. */

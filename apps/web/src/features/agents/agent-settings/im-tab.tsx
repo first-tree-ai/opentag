@@ -385,7 +385,7 @@ function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; bind
   if (computerState === "action_required") {
     return (
       <p className="text-sm text-kumo-subtle">
-        The channel itself is connected. Messages wait until this Agent's Computer is online.{" "}
+        The channel itself is connected. Messages wait until this agent's computer is online.{" "}
         <Link className="text-kumo-link" {...agentSettingsSectionLink(agent.id, "computer")}>
           View Computer
         </Link>
@@ -396,7 +396,7 @@ function MessagingChannelNote({ agent, binding }: { agent: AgentDetailView; bind
     return (
       <p className="text-sm text-kumo-subtle">
         The channel itself is connected. Messages wait until {runtimeProviderName(agent.runtimeProvider)} is ready on
-        this Agent's Computer.{" "}
+        this agent's computer.{" "}
         <Link className="text-kumo-link" {...agentSettingsSectionLink(agent.id, "computer")}>
           View Computer
         </Link>

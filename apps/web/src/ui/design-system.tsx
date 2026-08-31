@@ -49,6 +49,7 @@ import {
   Cpu,
   DotsThreeVertical,
   Gear,
+  type IconWeight,
   Info,
   Laptop,
   List,
@@ -361,7 +362,11 @@ const icons: Record<IconName, PhosphorIcon> = {
   user: User,
 };
 
-export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement> & { name: IconName }) {
+export function Icon({
+  className,
+  name,
+  ...props
+}: SVGAttributes<SVGSVGElement> & { name: IconName; weight?: IconWeight }) {
   const Glyph = icons[name];
   return (
     <Glyph

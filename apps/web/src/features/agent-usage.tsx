@@ -59,7 +59,7 @@ export function AgentUsageOverview({
         <div className="flex flex-wrap items-center gap-4">
           <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
           <Link className="text-sm text-kumo-link" params={{ agentId }} state={{ agent }} to="/agents/$agentId/usage">
-            View details
+            View Details
           </Link>
         </div>
       </div>

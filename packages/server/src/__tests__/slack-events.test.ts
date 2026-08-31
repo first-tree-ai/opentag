@@ -188,6 +188,20 @@ describe("Slack Events API ingress", () => {
       },
     });
     apps.push(firstParty);
+    const malformed = "not-json";
+    const malformedSignature = `v0=${createHmac("sha256", "first-party-signing").update(`v0:${timestamp}:${malformed}`).digest("hex")}`;
+    const malformedResponse = await firstParty.inject({
+      method: "POST",
+      url: "/api/v1/im-bindings/slack/events",
+      payload: malformed,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": malformedSignature,
+      },
+    });
+    expect(malformedResponse.statusCode).toBe(400);
+    expect(malformedResponse.json()).toEqual({ error: "invalid_route" });
     const invalid = await firstParty.inject(signedRequest(payload, "wrong-secret"));
     expect(invalid.statusCode).toBe(401);
     const verified = await firstParty.inject(signedRequest(payload, "first-party-signing"));
@@ -236,6 +250,20 @@ describe("Slack Events API ingress", () => {
     const mismatchResponse = await mismatched.app.inject(signedRequest(envelope));
     expect(mismatchResponse.statusCode).toBe(401);
     expect(mismatchResponse.json()).toEqual({ error: "binding_mismatch" });
+
+    const agentMismatch = createServices();
+    const agentMismatchResponse = await agentMismatch.app.inject({
+      ...signedRequest({
+        type: "event_callback",
+        api_app_id: "A2",
+        team_id: "T1",
+        event_id: "Ev-agent-mismatch",
+        event: { type: "app_mention" },
+      }),
+      url: "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events",
+    });
+    expect(agentMismatchResponse.statusCode).toBe(401);
+    expect(agentMismatchResponse.json()).toEqual({ error: "binding_mismatch" });
   });
 
   it("validates URL verification and event callback envelope fields", async () => {

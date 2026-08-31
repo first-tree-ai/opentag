@@ -10,6 +10,8 @@ import {
   storeBoundAccountComputer,
   writeMachineCredentialsAtomically,
 } from "../auth/machine-credentials.js";
+import { computerIdentityPath, writeComputerIdentityAtomically } from "../runtime/computer-identity.js";
+import { inspectLocalComputerConfiguration } from "../runtime/local-computer-configuration.js";
 
 const COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const ENROLLMENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -79,5 +81,175 @@ describe("machine credentials", () => {
         home,
       ),
     ).rejects.toThrow("unusable OpenTag Computer credential");
+  });
+
+  it("reports a completely unconfigured Home without touching the filesystem", async () => {
+    const home = join(await newHome(), "not-created");
+    await expect(inspectLocalComputerConfiguration(home)).resolves.toEqual({
+      identity: { status: "missing", detail: "Computer identity is not configured" },
+      credentials: { status: "missing", detail: "No Computer credentials are configured" },
+      binding: {
+        status: "invalid",
+        credentialCount: 0,
+        detail: "A valid identity and Computer credential are required before their binding can be verified",
+      },
+    });
+  });
+
+  it("recognizes a canonical identity and matching credential binding", async () => {
+    const home = await newHome();
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(credential(), home);
+
+    await expect(inspectLocalComputerConfiguration(home)).resolves.toEqual({
+      identity: {
+        status: "valid",
+        value: { version: 2, computerId: COMPUTER_ID, serverUrl: SERVER_URL },
+      },
+      credentials: { status: "valid", value: { version: 2, computer: credential() } },
+      binding: { status: "valid", credentialCount: 1, serverUrl: SERVER_URL },
+    });
+  });
+
+  it("distinguishes missing, malformed, and non-canonical identity data", async () => {
+    const missingIdentityHome = await newHome();
+    await storeBoundAccountComputer(credential(), missingIdentityHome);
+    await expect(inspectLocalComputerConfiguration(missingIdentityHome)).resolves.toMatchObject({
+      identity: { status: "missing" },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+
+    const malformedHome = await newHome();
+    await writeComputerIdentityAtomically(malformedHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(credential(), malformedHome);
+    await writeFile(computerIdentityPath(malformedHome), "{not-json", "utf8");
+    await expect(inspectLocalComputerConfiguration(malformedHome)).resolves.toMatchObject({
+      identity: { status: "invalid", detail: expect.stringContaining("Expected property name") },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+
+    const nonCanonicalHome = await newHome();
+    await writeComputerIdentityAtomically(nonCanonicalHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: "https://opentag.example/",
+    });
+    await storeBoundAccountComputer(credential(), nonCanonicalHome);
+    await expect(inspectLocalComputerConfiguration(nonCanonicalHome)).resolves.toMatchObject({
+      identity: { status: "invalid", detail: "Computer identity contains a non-canonical Server origin" },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+
+    const invalidIdentityUrlHome = await newHome();
+    await writeComputerIdentityAtomically(invalidIdentityUrlHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: "not-a-url",
+    });
+    await storeBoundAccountComputer(credential(), invalidIdentityUrlHome);
+    await expect(inspectLocalComputerConfiguration(invalidIdentityUrlHome)).resolves.toMatchObject({
+      identity: { status: "invalid", detail: "Computer identity contains an invalid Server origin" },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+  });
+
+  it("reports invalid origins, mismatched IDs, and mismatched Server origins", async () => {
+    const invalidCredentialHome = await newHome();
+    await writeComputerIdentityAtomically(invalidCredentialHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: SERVER_URL,
+    });
+    await writeFile(
+      machineCredentialsPath(invalidCredentialHome),
+      JSON.stringify({ version: 2, computer: credential({ serverUrl: "https://opentag.example/" }) }),
+      "utf8",
+    );
+    await expect(inspectLocalComputerConfiguration(invalidCredentialHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "invalid", detail: "A stored Computer credential contains a non-canonical Server origin" },
+      binding: { status: "invalid", credentialCount: 0 },
+    });
+
+    const invalidCredentialUrlHome = await newHome();
+    await writeComputerIdentityAtomically(invalidCredentialUrlHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: SERVER_URL,
+    });
+    await writeFile(
+      machineCredentialsPath(invalidCredentialUrlHome),
+      JSON.stringify({ version: 2, computer: credential({ serverUrl: "not-a-url" }) }),
+      "utf8",
+    );
+    await expect(inspectLocalComputerConfiguration(invalidCredentialUrlHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "invalid", detail: "A stored Computer credential contains an invalid Server origin" },
+      binding: { status: "invalid", credentialCount: 0 },
+    });
+
+    const mismatchedIdHome = await newHome();
+    await writeComputerIdentityAtomically(mismatchedIdHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(
+      credential({ computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512751" }),
+      mismatchedIdHome,
+    );
+    await expect(inspectLocalComputerConfiguration(mismatchedIdHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "valid" },
+      binding: {
+        status: "invalid",
+        credentialCount: 1,
+        detail: "Stored Computer credentials do not belong to the local Computer identity",
+      },
+    });
+
+    const mismatchedOriginHome = await newHome();
+    await writeComputerIdentityAtomically(mismatchedOriginHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(credential({ serverUrl: "https://other.example" }), mismatchedOriginHome);
+    await expect(inspectLocalComputerConfiguration(mismatchedOriginHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "valid" },
+      binding: {
+        status: "invalid",
+        credentialCount: 1,
+        detail: "The Computer identity and stored credential refer to different Server origins",
+      },
+    });
+  });
+
+  it("fails closed when either strict reader rejects a corrupted credentials file", async () => {
+    const home = await newHome();
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: SERVER_URL,
+    });
+    await writeFile(machineCredentialsPath(home), "{not-json", "utf8");
+    await expect(inspectLocalComputerConfiguration(home)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "invalid", detail: expect.stringContaining("Expected property name") },
+      binding: { status: "invalid", credentialCount: 0 },
+    });
   });
 });

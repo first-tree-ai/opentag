@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CHECK_COPY, CommandBlock } from "../setup/index.js";
+import { COPY } from "./copy.js";
 import { SCENARIOS } from "./mock-backend.js";
 import { OnboardingV2MockPage } from "./page.js";
 
@@ -68,6 +70,11 @@ describe("OnboardingV2Page", () => {
   afterEach(() => {
     vi.useRealTimers();
     Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("uses plural repair copy when multiple checks fail", () => {
+    expect(CHECK_COPY["runtime-cli"].detail.failed("Codex")).toBe("We can't find the Codex command on this computer.");
+    expect(COPY.check.failedIntro(2)).toBe("2 things need fixing before your agent can run.");
   });
 
   it("marks the cloud computer as coming soon, because the Server cannot allocate one yet", () => {
@@ -192,6 +199,27 @@ describe("OnboardingV2Page", () => {
     const payload = writeText.mock.calls[0]?.[0] as string;
     expect(payload.startsWith("# Install the OpenTag CLI")).toBe(true);
     expect(payload).toContain("install.sh | sh");
+    await advance(1_600);
+    expect(screen.getAllByRole("button", { name: /Copy/ })[0]).toBeTruthy();
+  });
+
+  it("falls back to selecting the command when clipboard access fails", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard unavailable"));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    render(
+      <CommandBlock
+        command="opentag computer connect --code abc"
+        comment="# Connect this computer"
+        copyLabel="Copy command"
+        copiedLabel="Copied"
+        fallbackHint="Select the command and copy it manually."
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    await act(async () => undefined);
+    expect(screen.getByRole("status").textContent).toBe("Select the command and copy it manually.");
+    expect(writeText).toHaveBeenCalledWith("# Connect this computer\nopentag computer connect --code abc");
   });
 
   it("counts the command's validity down and offers a fresh one once it expires", async () => {
@@ -215,8 +243,9 @@ describe("OnboardingV2Page", () => {
     await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
-    // The messaging CLI is not checked here: no provider has been chosen yet.
-    expect(screen.queryByText("Lark CLI is installed")).toBeNull();
+    // The messaging CLI is not a computer-step row: no provider has been chosen yet, and a
+    // missing one is named later as a sentence on the messaging step, not a third check line.
+    expect(screen.queryByText(/lark-cli/i)).toBeNull();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 
@@ -242,7 +271,7 @@ describe("OnboardingV2Page", () => {
     await reachCheckStep();
 
     // Mid-probe: every row already has its detail line.
-    const rowsWhileChecking = document.querySelectorAll(".otv2-check");
+    const rowsWhileChecking = document.querySelectorAll(".ots-check");
     expect(rowsWhileChecking).toHaveLength(2);
     for (const row of rowsWhileChecking) {
       // One title and one detail line, always both, so a resolving row never changes height.
@@ -251,8 +280,8 @@ describe("OnboardingV2Page", () => {
     }
 
     await settleCheck();
-    expect(document.querySelectorAll(".otv2-check")).toHaveLength(2);
-    for (const row of document.querySelectorAll(".otv2-check")) {
+    expect(document.querySelectorAll(".ots-check")).toHaveLength(2);
+    for (const row of document.querySelectorAll(".ots-check")) {
       expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
   });
@@ -279,7 +308,7 @@ describe("OnboardingV2Page", () => {
     // Still probing: the slot already holds its waiting line, in the same shape step 3 uses.
     const slot = () => document.querySelector('[data-ui="onboarding-v2-check-outcome"]');
     expect(slot()?.textContent ?? "").toContain("Waiting for the computer check…");
-    expect(slot()?.querySelector(".otv2-pulse")).toBeTruthy();
+    expect(slot()?.querySelector(".ots-pulse")).toBeTruthy();
 
     await settleCheck();
     expect(slot()).toBeTruthy();

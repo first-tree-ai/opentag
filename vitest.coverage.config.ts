@@ -47,7 +47,7 @@ export default defineConfig({
         "packages/server/src/**/*.{ts,tsx}",
       ],
       provider: "v8",
-      reporter: ["text", "json-summary", "html"],
+      reporter: ["text", "json", "json-summary", "html"],
       reportOnFailure: true,
       reportsDirectory: "coverage/unit",
     },

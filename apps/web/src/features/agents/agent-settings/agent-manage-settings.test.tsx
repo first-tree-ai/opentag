@@ -75,6 +75,10 @@ const config: AgentAdminConfig = {
   runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
 };
 
+const activeConfig: AgentAdminConfig = { ...config, status: "active" };
+const activeAgent = { ...agentView, status: "active", activity: { state: "working" } } as AgentDetailView;
+const idleActiveAgent = { ...activeAgent, activity: { state: "idle" } } as AgentDetailView;
+
 function AgentListProbe() {
   const state = useAgentListView(accountId);
   return (
@@ -188,5 +192,32 @@ describe("Deleting an Agent", () => {
     // them dropped, coming back to the Agent has nothing to show while it re-reads — rather than
     // painting the deleted Agent from the cache first.
     await waitFor(() => expect(screen.getByTestId("agent-detail").textContent).toBe("loading"));
+  });
+});
+
+describe("Agent lifecycle actions", () => {
+  it("reports a failed pause and lets the viewer close its confirmation", async () => {
+    vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("pause conflict"));
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("alert").textContent).toBe("pause conflict");
+    fireEvent.click(screen.getByRole("button", { name: "Keep active" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("shows lifecycle errors inline when no confirmation is needed", async () => {
+    vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("status update failed"));
+    await renderInRouter(
+      <AgentManageSettings agent={idleActiveAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    expect((await screen.findByRole("status")).textContent).toBe("status update failed");
   });
 });

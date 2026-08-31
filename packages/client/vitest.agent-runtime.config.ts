@@ -1,5 +1,18 @@
 import { defineConfig } from "vitest/config";
 
+/**
+ * The Agent Runtime 100% gate is authoritative on ubuntu-latest (the platform
+ * used by CI). Runtime discovery and process ownership intentionally retain
+ * host-specific paths that are not meaningful to execute on every host:
+ * `agent-runtime-installation.ts` handles Windows `PATHEXT`, macOS desktop
+ * locations, and the Windows login-shell skip; `login-shell-path.ts` selects
+ * zsh versus bash, skips Windows, and applies macOS protected-root handling;
+ * provider process adapters and the watchdog choose platform-specific process
+ * groups; and `client-runtime-composition.ts` has a Windows-only executable
+ * suffix probe. Tests inject a platform for discovery/login-shell logic where
+ * possible, while the remaining process branches are covered by the Ubuntu
+ * CI authority boundary.
+ */
 export default defineConfig({
   test: {
     include: [

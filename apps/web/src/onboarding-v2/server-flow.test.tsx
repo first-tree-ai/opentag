@@ -217,6 +217,35 @@ describe("the onboarding flow against the Server", () => {
   });
 
   /*
+   * Scanning is not a way through for every reader. A real Lark tenant reports `link expired` from
+   * Lark's own scanner for this launcher URL — even for a code minted against Lark's own domain —
+   * while the identical URL opened in a browser completes the authorization and creates the app.
+   * The code therefore has to be openable here, not only scannable: this step was the only connect
+   * surface offering no alternative, and defaulting non-Chinese readers to Lark is what made that
+   * the common case rather than an edge one.
+   */
+  it("offers the code as a link, not only as something to scan", async () => {
+    computersReturning([], [computer()]);
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockImplementation(async (_agentId, _intent, brand) =>
+      attempt({ brand: brand ?? "feishu", qrUrl: "https://accounts.example/launcher?user_code=ABCD-EFGH" }),
+    );
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockImplementation(async (id) => attempt({ id }));
+
+    render(<OnboardingV2Page />);
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/^Feishu/);
+    await settle();
+
+    const link = screen.getByRole("link", { name: /Open the (Feishu|Lark) authorization page/ });
+    expect(link.getAttribute("href")).toBe("https://accounts.example/launcher?user_code=ABCD-EFGH");
+  });
+
+  /*
    * A switch that cannot release its code is not a switch: the Server reuses an attempt still
    * awaiting a scan, so minting after a failed cancel puts the same code back on screen under the
    * other brand's name. It says so instead.

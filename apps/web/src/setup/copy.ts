@@ -88,8 +88,17 @@ export const SETUP_COPY = {
      */
     feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu or Lark workspace" },
     slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
-    feishuIntro: (brand: string) => `Scan this with ${brand}. You'll finish the last step inside ${brand} itself.`,
+    /*
+     * Scanning is offered, not promised. A Lark tenant reports `link expired` for this launcher URL
+     * from inside Lark's own scanner — including on a code minted against Lark's own domain — while
+     * the same URL opened in a browser completes the authorization and creates the app. Telling a
+     * reader to scan, and giving them nothing else, would hand a whole brand an instruction that
+     * does not work for them.
+     */
+    feishuIntro: (brand: string) => `Scan this with ${brand}, or open it in your browser.`,
     qrAlt: (brand: string) => `Scan this QR code in ${brand}`,
+    /** The way through for a reader whose client cannot scan, said in terms of what it does. */
+    feishuOpenLink: (brand: string) => `Open the ${brand} authorization page`,
     /**
      * A code is minted against one of the two domains and cannot be authorized from the other, so
      * the reader whose company is on the brand we guessed wrong needs a way out while they are

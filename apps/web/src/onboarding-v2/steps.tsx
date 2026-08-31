@@ -372,6 +372,18 @@ function MessagingConnection({
             {messaging.kind === "waiting" ? <QrCode brand={messaging.brand} value={messaging.qrValue} /> : null}
           </div>
           {/*
+            The same code, openable rather than only scannable. Lark's own client refuses this
+            launcher URL — a real tenant reports `link expired` from its scanner even for a code
+            minted against Lark's own domain, while the identical URL in a browser completes the
+            authorization. A QR alone is therefore not a way through for every reader, and this step
+            was the only connect surface that offered nothing else; the settings one already links.
+          */}
+          {messaging.kind === "waiting" ? (
+            <a className="text-sm text-kumo-brand" href={messaging.qrValue} rel="noreferrer" target="_blank">
+              {COPY.messaging.feishuOpenLink(messagingProviderLabel("feishu", messaging.brand))}
+            </a>
+          ) : null}
+          {/*
             A refused code is not retried on sight, so this is the only way back to one. Saying
             "Waiting for you to scan…" over an empty box would be untrue: nothing is waiting.
           */}

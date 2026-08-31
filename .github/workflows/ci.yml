@@ -303,6 +303,8 @@ jobs:
           --env BETTER_AUTH_SECRET=ci-only-better-auth-secret-at-least-32-characters
           --env OPENTAG_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           --env OPENTAG_PUBLIC_URL=https://localhost:18000
+          # Container Smoke runs one server process, so assert the documented single-process boundary explicitly.
+          --env OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true
           opentag-server:ci
 
       - name: Wait for readiness endpoint

@@ -19,6 +19,7 @@ import {
   Text,
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
+import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
 import { TaskMessageBody } from "./task-message-body.js";
 
@@ -34,17 +35,17 @@ const statusPresentation: Record<TaskStatus, { readonly label: string; readonly 
   idle: { label: "Idle", tone: "neutral" },
 };
 
-export function TasksPage() {
+export function TasksPage({ agentId }: { agentId?: string } = {}) {
   const [query, setQuery] = useState("");
-  const [agentId, setAgentId] = useState("all");
+  const [selectedAgentId, setSelectedAgentId] = useState("all");
   const [status, setStatus] = useState<TaskFilter>("all");
   /*
    * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
    * stays retryable — the behavior the hand-rolled append kept its own error state for.
    */
   const tasksQuery = useInfiniteQuery({
-    queryKey: queryKeys.tasks.list(),
-    queryFn: ({ pageParam }) => browserApi.tasks({ cursor: pageParam }),
+    queryKey: agentId ? queryKeys.tasks.byAgent(agentId) : queryKeys.tasks.list(),
+    queryFn: ({ pageParam }) => browserApi.tasks({ agentId, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     // The API reports the end of the list as null; the cache reads undefined as "no page after this".
     getNextPageParam: (page) => page.nextCursor ?? undefined,
@@ -85,10 +86,12 @@ export function TasksPage() {
           .join(" ")
           .includes(normalizedQuery);
       return (
-        matchesQuery && (agentId === "all" || task.agent.id === agentId) && (status === "all" || task.status === status)
+        matchesQuery &&
+        (agentId ? task.agent.id === agentId : selectedAgentId === "all" || task.agent.id === selectedAgentId) &&
+        (status === "all" || task.status === status)
       );
     });
-  }, [agentId, loaded, query, status]);
+  }, [agentId, loaded, query, selectedAgentId, status]);
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
@@ -117,14 +120,20 @@ export function TasksPage() {
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-            <option value="all">All Agents</option>
-            {agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.displayName}
-              </option>
-            ))}
-          </TaskSelect>
+          {!agentId ? (
+            <TaskSelect
+              label="Filter by Agent"
+              value={selectedAgentId}
+              onChange={(event) => setSelectedAgentId(event.target.value)}
+            >
+              <option value="all">All Agents</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.displayName}
+                </option>
+              ))}
+            </TaskSelect>
+          ) : null}
           <TaskSelect
             label="Filter by status"
             value={status}
@@ -249,7 +258,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
         <Text as="h2" id="agent-tasks-heading" variant="heading">
           Tasks
         </Text>
-        <Link className="text-sm text-kumo-link" to="/tasks">
+        <Link className="text-sm text-kumo-link" {...agentTasksLink(agentId)}>
           All Tasks
         </Link>
       </div>
@@ -308,7 +317,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   );
 }
 
-export function TaskDetailPage({ taskId }: { taskId?: string }) {
+export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?: string }) {
   /*
    * The Task itself, its internal Sessions and its collaboration messages come from the first page
    * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
@@ -328,22 +337,22 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   const terminalTaskError = taskQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
   const loadMoreError = taskQuery.isFetchNextPageError && !terminalTaskError ? taskError : null;
 
-  if (terminalTaskError) return <TaskUnavailable error={terminalTaskError} />;
+  if (terminalTaskError) return <TaskUnavailable agentId={agentId} error={terminalTaskError} />;
   if (taskId !== undefined && taskQuery.isPending) {
     return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
   }
   if (!first) {
     // No Task id at all is the same answer as one the Server does not have.
     const error = taskId === undefined ? new ApiError(404, "Task not found") : asError(taskQuery.error);
-    return <TaskUnavailable error={error} />;
+    return <TaskUnavailable agentId={agentId} error={error} />;
   }
 
   const { task } = first;
   const status = statusPresentation[task.status];
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
-      <nav aria-label="Breadcrumb">
-        <Link className="inline-flex items-center gap-1" to="/tasks">
+      <nav className="flex items-center gap-3" aria-label="Breadcrumb">
+        <Link {...agentTasksLink(agentId ?? task.agent.id)}>
           <Icon name="arrow-left" />
           Tasks
         </Link>
@@ -409,7 +418,7 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   );
 }
 
-function TaskUnavailable({ error }: { error: Error }) {
+function TaskUnavailable({ agentId, error }: { agentId?: string; error: Error }) {
   const notFound = error instanceof ApiError && error.status === 404;
   return (
     <section className="grid gap-3" data-ui="task-not-found">
@@ -419,7 +428,7 @@ function TaskUnavailable({ error }: { error: Error }) {
       <Text as="p" variant="secondary">
         {notFound ? "This Task does not exist or is outside your Account." : error.message}
       </Text>
-      <Link to="/tasks">Back to Tasks</Link>
+      {agentId ? <Link {...agentTasksLink(agentId)}>Back to Tasks</Link> : <Link to="/agents">Back to Agents</Link>}
     </section>
   );
 }
@@ -526,7 +535,7 @@ function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSu
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
       <td className="p-3" data-label="Task">
-        <Link params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
+        <Link {...agentTaskDetailLink(task.agent.id, task.id)} title={task.title}>
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">

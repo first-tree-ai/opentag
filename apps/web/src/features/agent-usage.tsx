@@ -11,7 +11,16 @@ import { browserApi } from "../api.js";
 import { formatCompactNumber, formatDay, formatNumber } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
-import { Button, ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
+import {
+  Button,
+  ChartPalette,
+  Icon,
+  KumoSelectControl,
+  Loader,
+  Meter,
+  Text,
+  TimeseriesChart,
+} from "../ui/design-system.js";
 import type { AgentDetailView } from "./agents/agent-model.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
 
@@ -56,14 +65,18 @@ export function AgentUsageOverview({
         <Text as="h2" id="agent-usage-overview-heading" variant="heading">
           Usage
         </Text>
-        <div className="flex flex-wrap items-center gap-4">
-          <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
-          <Link className="text-sm text-kumo-link" params={{ agentId }} state={{ agent }} to="/agents/$agentId/usage">
-            View Details
-          </Link>
-        </div>
+        <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </div>
       <UsageSummaryState state={state} compact onRetry={retry} />
+      <Link
+        className="inline-flex items-center justify-self-end gap-1 text-sm text-kumo-link"
+        params={{ agentId }}
+        state={{ agent }}
+        to="/agents/$agentId/usage"
+      >
+        View details
+        <Icon className="size-3.5" name="chevron-right" />
+      </Link>
     </section>
   );
 }

@@ -29,9 +29,13 @@ import { Route as AuthenticatedWorkspaceShellTasksIndexRouteImport } from './rou
 import { Route as AuthenticatedWorkspaceShellTasksTaskIdRouteImport } from './routes/_authenticated/_workspace/_shell/tasks.$taskId'
 import { Route as AuthenticatedWorkspaceShellAgentsAgentIdIndexRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.index'
 import { Route as AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.$legacySection'
+import { Route as AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.integrations'
+import { Route as AuthenticatedWorkspaceShellAgentsAgentIdSkillsRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.skills'
 import { Route as AuthenticatedWorkspaceShellAgentsAgentIdUsageRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.usage'
 import { Route as AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.settings.index'
 import { Route as AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.settings.$section'
+import { Route as AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.tasks.index'
+import { Route as AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRouteImport } from './routes/_authenticated/_workspace/_shell/agents.$agentId.tasks.$taskId'
 
 const AuthenticatedRoute = AuthenticatedRouteImport.update({
   id: '/_authenticated',
@@ -146,6 +150,18 @@ const AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute =
     path: '/agents/$agentId/$legacySection',
     getParentRoute: () => AuthenticatedWorkspaceShellRoute,
   } as any)
+const AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute =
+  AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRouteImport.update({
+    id: '/agents/$agentId/integrations',
+    path: '/agents/$agentId/integrations',
+    getParentRoute: () => AuthenticatedWorkspaceShellRoute,
+  } as any)
+const AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute =
+  AuthenticatedWorkspaceShellAgentsAgentIdSkillsRouteImport.update({
+    id: '/agents/$agentId/skills',
+    path: '/agents/$agentId/skills',
+    getParentRoute: () => AuthenticatedWorkspaceShellRoute,
+  } as any)
 const AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute =
   AuthenticatedWorkspaceShellAgentsAgentIdUsageRouteImport.update({
     id: '/agents/$agentId/usage',
@@ -162,6 +178,18 @@ const AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute =
   AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRouteImport.update({
     id: '/agents/$agentId/settings/$section',
     path: '/agents/$agentId/settings/$section',
+    getParentRoute: () => AuthenticatedWorkspaceShellRoute,
+  } as any)
+const AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute =
+  AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRouteImport.update({
+    id: '/agents/$agentId/tasks/',
+    path: '/agents/$agentId/tasks/',
+    getParentRoute: () => AuthenticatedWorkspaceShellRoute,
+  } as any)
+const AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute =
+  AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRouteImport.update({
+    id: '/agents/$agentId/tasks/$taskId',
+    path: '/agents/$agentId/tasks/$taskId',
     getParentRoute: () => AuthenticatedWorkspaceShellRoute,
   } as any)
 
@@ -182,10 +210,14 @@ export interface FileRoutesByFullPath {
   '/agents/': typeof AuthenticatedWorkspaceShellAgentsIndexRoute
   '/tasks/': typeof AuthenticatedWorkspaceShellTasksIndexRoute
   '/agents/$agentId/$legacySection': typeof AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute
+  '/agents/$agentId/integrations': typeof AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute
+  '/agents/$agentId/skills': typeof AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute
   '/agents/$agentId/usage': typeof AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute
   '/agents/$agentId/': typeof AuthenticatedWorkspaceShellAgentsAgentIdIndexRoute
   '/agents/$agentId/settings/$section': typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute
+  '/agents/$agentId/tasks/$taskId': typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute
   '/agents/$agentId/settings/': typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRoute
+  '/agents/$agentId/tasks/': typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof AuthenticatedWorkspaceShellIndexRoute
@@ -204,10 +236,14 @@ export interface FileRoutesByTo {
   '/agents': typeof AuthenticatedWorkspaceShellAgentsIndexRoute
   '/tasks': typeof AuthenticatedWorkspaceShellTasksIndexRoute
   '/agents/$agentId/$legacySection': typeof AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute
+  '/agents/$agentId/integrations': typeof AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute
+  '/agents/$agentId/skills': typeof AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute
   '/agents/$agentId/usage': typeof AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute
   '/agents/$agentId': typeof AuthenticatedWorkspaceShellAgentsAgentIdIndexRoute
   '/agents/$agentId/settings/$section': typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute
+  '/agents/$agentId/tasks/$taskId': typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute
   '/agents/$agentId/settings': typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRoute
+  '/agents/$agentId/tasks': typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -230,10 +266,14 @@ export interface FileRoutesById {
   '/_authenticated/_workspace/_shell/agents/': typeof AuthenticatedWorkspaceShellAgentsIndexRoute
   '/_authenticated/_workspace/_shell/tasks/': typeof AuthenticatedWorkspaceShellTasksIndexRoute
   '/_authenticated/_workspace/_shell/agents/$agentId/$legacySection': typeof AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute
+  '/_authenticated/_workspace/_shell/agents/$agentId/integrations': typeof AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute
+  '/_authenticated/_workspace/_shell/agents/$agentId/skills': typeof AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute
   '/_authenticated/_workspace/_shell/agents/$agentId/usage': typeof AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute
   '/_authenticated/_workspace/_shell/agents/$agentId/': typeof AuthenticatedWorkspaceShellAgentsAgentIdIndexRoute
   '/_authenticated/_workspace/_shell/agents/$agentId/settings/$section': typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute
+  '/_authenticated/_workspace/_shell/agents/$agentId/tasks/$taskId': typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute
   '/_authenticated/_workspace/_shell/agents/$agentId/settings/': typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRoute
+  '/_authenticated/_workspace/_shell/agents/$agentId/tasks/': typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -254,10 +294,14 @@ export interface FileRouteTypes {
     | '/agents/'
     | '/tasks/'
     | '/agents/$agentId/$legacySection'
+    | '/agents/$agentId/integrations'
+    | '/agents/$agentId/skills'
     | '/agents/$agentId/usage'
     | '/agents/$agentId/'
     | '/agents/$agentId/settings/$section'
+    | '/agents/$agentId/tasks/$taskId'
     | '/agents/$agentId/settings/'
+    | '/agents/$agentId/tasks/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -276,10 +320,14 @@ export interface FileRouteTypes {
     | '/agents'
     | '/tasks'
     | '/agents/$agentId/$legacySection'
+    | '/agents/$agentId/integrations'
+    | '/agents/$agentId/skills'
     | '/agents/$agentId/usage'
     | '/agents/$agentId'
     | '/agents/$agentId/settings/$section'
+    | '/agents/$agentId/tasks/$taskId'
     | '/agents/$agentId/settings'
+    | '/agents/$agentId/tasks'
   id:
     | '__root__'
     | '/_authenticated'
@@ -301,10 +349,14 @@ export interface FileRouteTypes {
     | '/_authenticated/_workspace/_shell/agents/'
     | '/_authenticated/_workspace/_shell/tasks/'
     | '/_authenticated/_workspace/_shell/agents/$agentId/$legacySection'
+    | '/_authenticated/_workspace/_shell/agents/$agentId/integrations'
+    | '/_authenticated/_workspace/_shell/agents/$agentId/skills'
     | '/_authenticated/_workspace/_shell/agents/$agentId/usage'
     | '/_authenticated/_workspace/_shell/agents/$agentId/'
     | '/_authenticated/_workspace/_shell/agents/$agentId/settings/$section'
+    | '/_authenticated/_workspace/_shell/agents/$agentId/tasks/$taskId'
     | '/_authenticated/_workspace/_shell/agents/$agentId/settings/'
+    | '/_authenticated/_workspace/_shell/agents/$agentId/tasks/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -455,6 +507,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRouteImport
       parentRoute: typeof AuthenticatedWorkspaceShellRoute
     }
+    '/_authenticated/_workspace/_shell/agents/$agentId/integrations': {
+      id: '/_authenticated/_workspace/_shell/agents/$agentId/integrations'
+      path: '/agents/$agentId/integrations'
+      fullPath: '/agents/$agentId/integrations'
+      preLoaderRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRouteImport
+      parentRoute: typeof AuthenticatedWorkspaceShellRoute
+    }
+    '/_authenticated/_workspace/_shell/agents/$agentId/skills': {
+      id: '/_authenticated/_workspace/_shell/agents/$agentId/skills'
+      path: '/agents/$agentId/skills'
+      fullPath: '/agents/$agentId/skills'
+      preLoaderRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdSkillsRouteImport
+      parentRoute: typeof AuthenticatedWorkspaceShellRoute
+    }
     '/_authenticated/_workspace/_shell/agents/$agentId/usage': {
       id: '/_authenticated/_workspace/_shell/agents/$agentId/usage'
       path: '/agents/$agentId/usage'
@@ -476,6 +542,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRouteImport
       parentRoute: typeof AuthenticatedWorkspaceShellRoute
     }
+    '/_authenticated/_workspace/_shell/agents/$agentId/tasks/': {
+      id: '/_authenticated/_workspace/_shell/agents/$agentId/tasks/'
+      path: '/agents/$agentId/tasks'
+      fullPath: '/agents/$agentId/tasks/'
+      preLoaderRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRouteImport
+      parentRoute: typeof AuthenticatedWorkspaceShellRoute
+    }
+    '/_authenticated/_workspace/_shell/agents/$agentId/tasks/$taskId': {
+      id: '/_authenticated/_workspace/_shell/agents/$agentId/tasks/$taskId'
+      path: '/agents/$agentId/tasks/$taskId'
+      fullPath: '/agents/$agentId/tasks/$taskId'
+      preLoaderRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRouteImport
+      parentRoute: typeof AuthenticatedWorkspaceShellRoute
+    }
   }
 }
 
@@ -492,10 +572,14 @@ interface AuthenticatedWorkspaceShellRouteChildren {
   AuthenticatedWorkspaceShellAgentsIndexRoute: typeof AuthenticatedWorkspaceShellAgentsIndexRoute
   AuthenticatedWorkspaceShellTasksIndexRoute: typeof AuthenticatedWorkspaceShellTasksIndexRoute
   AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute
+  AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute
+  AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute
   AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute
   AuthenticatedWorkspaceShellAgentsAgentIdIndexRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdIndexRoute
   AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute
+  AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute
   AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRoute
+  AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute: typeof AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute
 }
 
 const AuthenticatedWorkspaceShellRouteChildren: AuthenticatedWorkspaceShellRouteChildren =
@@ -524,14 +608,22 @@ const AuthenticatedWorkspaceShellRouteChildren: AuthenticatedWorkspaceShellRoute
       AuthenticatedWorkspaceShellTasksIndexRoute,
     AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute:
       AuthenticatedWorkspaceShellAgentsAgentIdLegacySectionRoute,
+    AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute:
+      AuthenticatedWorkspaceShellAgentsAgentIdIntegrationsRoute,
+    AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute:
+      AuthenticatedWorkspaceShellAgentsAgentIdSkillsRoute,
     AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute:
       AuthenticatedWorkspaceShellAgentsAgentIdUsageRoute,
     AuthenticatedWorkspaceShellAgentsAgentIdIndexRoute:
       AuthenticatedWorkspaceShellAgentsAgentIdIndexRoute,
     AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute:
       AuthenticatedWorkspaceShellAgentsAgentIdSettingsSectionRoute,
+    AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute:
+      AuthenticatedWorkspaceShellAgentsAgentIdTasksTaskIdRoute,
     AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRoute:
       AuthenticatedWorkspaceShellAgentsAgentIdSettingsIndexRoute,
+    AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute:
+      AuthenticatedWorkspaceShellAgentsAgentIdTasksIndexRoute,
   }
 
 const AuthenticatedWorkspaceShellRouteWithChildren =

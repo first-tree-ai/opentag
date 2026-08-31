@@ -23,6 +23,10 @@ const COMPLETE_ATTEMPTS = 3;
 /** Allocating the cloud Computer the Agent will be created on. */
 const ALLOCATE_COMPUTER_MS = 700;
 
+function localDraft(): AgentDraft {
+  return { ...emptyDraft(), destination: "local" };
+}
+
 /**
  * The redesigned onboarding flow, against the real Server.
  *
@@ -31,7 +35,7 @@ const ALLOCATE_COMPUTER_MS = 700;
  * given that after it runs.
  */
 export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string) => Promise<void> | void } = {}) {
-  const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
+  const [draft, setDraft] = useState<AgentDraft>(localDraft);
   const backend = useServerBackend(draft);
 
   /*
@@ -91,6 +95,7 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
       backend={backend}
       cloudAvailable={false}
       draft={draft}
+      destinationPreselected
       onComplete={onComplete}
       onDraftChange={setDraft}
     />
@@ -138,6 +143,7 @@ function OnboardingV2Flow({
   backend,
   cloudAvailable,
   draft,
+  destinationPreselected = false,
   lab,
   onComplete,
   onDraftChange,
@@ -145,12 +151,14 @@ function OnboardingV2Flow({
   backend: OnboardingBackend;
   cloudAvailable: boolean;
   draft: AgentDraft;
+  /** Production currently supports only local Agents, so it begins at the Agent step. */
+  destinationPreselected?: boolean;
   lab?: React.ReactNode;
   /** Told when the flow has actually finished, so setup can be marked complete. */
   onComplete?: (agentId: string) => Promise<void> | void;
   onDraftChange: (draft: AgentDraft) => void;
 }) {
-  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
+  const [destinationConfirmed, setDestinationConfirmed] = useState(destinationPreselected);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
   /*
    * The confirmations exist so a page is left deliberately rather than the moment its fields
@@ -163,7 +171,7 @@ function OnboardingV2Flow({
 
   const facts: FlowFacts = {
     draft,
-    destinationConfirmed: destinationConfirmed || resumed,
+    destinationConfirmed: destinationConfirmed || destinationPreselected || resumed,
     draftConfirmed: draftConfirmed || resumed,
     connect: backend.connect,
     readiness: backend.readiness,
@@ -249,13 +257,13 @@ function OnboardingV2Flow({
 
   const startOver = useCallback(() => {
     window.clearTimeout(cloudTimer.current);
-    onDraftChange(emptyDraft());
-    setDestinationConfirmed(false);
+    onDraftChange(destinationPreselected ? localDraft() : emptyDraft());
+    setDestinationConfirmed(destinationPreselected);
     setDraftConfirmed(false);
     setCloudComputer("idle");
     setMessagingProvider(undefined);
     backend.reset();
-  }, [backend, onDraftChange]);
+  }, [backend, destinationPreselected, onDraftChange]);
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas">
@@ -287,7 +295,10 @@ function OnboardingV2Flow({
             </div>
           ) : null}
           {flow.complete ? (
-            <DoneStep name={backend.agent?.name ?? draft.name} />
+            <DoneStep
+              name={backend.agent?.name ?? draft.name}
+              provider={messagingProvider ?? backend.messagingProvider}
+            />
           ) : flow.page === "destination" ? (
             <DestinationStep
               cloudAvailable={cloudAvailable}
@@ -300,7 +311,7 @@ function OnboardingV2Flow({
               cloudComputer={cloudComputer}
               creation={backend.creation}
               draft={draft}
-              onBack={resumed ? undefined : backToDestination}
+              onBack={resumed || destinationPreselected ? undefined : backToDestination}
               onChange={onDraftChange}
               onSignIn={backend.startPlanSignIn}
               onSubmit={submitCloud}

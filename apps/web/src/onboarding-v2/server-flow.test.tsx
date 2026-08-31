@@ -97,8 +97,6 @@ function press(name: string | RegExp) {
 
 /** Local route, Codex, default name — the shortest path to the step that talks to the Server. */
 async function reachComputerStep() {
-  press(/Local computer/);
-  press("Continue");
   press(/Codex/);
   press("Continue");
   await settle();
@@ -123,6 +121,17 @@ describe("the onboarding flow against the Server", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("starts the formal flow at Create agent while leaving runtime detection to the next step", async () => {
+    computersReturning([]);
+    render(<OnboardingV2Page />);
+
+    await settle();
+    expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Where should your agent run?" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Codex/ })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: /Claude Code/ })).toHaveProperty("disabled", false);
   });
 
   it("walks from the connect command to a created Agent and a scanned Lark code", async () => {
@@ -174,10 +183,55 @@ describe("the onboarding flow against the Server", () => {
     computersReturning([]);
     render(<OnboardingV2Page />);
     await settle();
-    press(/Local computer/);
-    press("Continue");
 
     expect(screen.getByLabelText("Agent name")).toBeTruthy();
+  });
+
+  it("checks and preserves the runtime selected on the Create agent step", async () => {
+    computersReturning(
+      [],
+      [
+        computer({
+          providerReadiness: [
+            { provider: "codex", status: "ready", observedAt: NOW },
+            { provider: "claude-code", status: "install", observedAt: NOW },
+          ],
+        }),
+      ],
+    );
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    render(<OnboardingV2Page />);
+
+    await settle();
+    press(/Claude Code/);
+    press("Continue");
+    await settle();
+    await tick(POLL_MS);
+
+    expect(screen.getByText("Claude Code CLI is installed")).toBeTruthy();
+    expect(screen.getByText("We can't find the Claude Code command on this computer.")).toBeTruthy();
+    expect(screen.queryByText("Codex CLI is installed")).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("labels a not-yet-issued Lark QR as generating rather than scannable", async () => {
+    computersReturning([], [computer()]);
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt({ qrUrl: null }));
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ qrUrl: null }));
+    render(<OnboardingV2Page />);
+
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/Lark/);
+    await settle();
+
+    expect(screen.getByText("Generating QR code…")).toBeTruthy();
+    expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
   });
 
   it("keeps the reader on the check while the runtime is still being probed", async () => {

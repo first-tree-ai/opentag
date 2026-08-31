@@ -61,6 +61,7 @@ export const SETUP_COPY = {
     copyFallback: "Copying is unavailable here. The command is selected — press Ctrl or Cmd + C.",
     expiresIn: (remaining: string) => `Expires in ${remaining}`,
     expired: "This command has expired.",
+    expiredStatus: "Connection command expired.",
     refresh: "Get a new command",
     waiting: "Waiting for your computer…",
     connected: "Your computer is connected.",
@@ -78,7 +79,9 @@ export const SETUP_COPY = {
     feishu: { title: "Lark", description: "Also called Feishu" },
     slack: { title: "Slack", description: "Your Slack workspace" },
     feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
+    feishuPreparing: "OpenTag is preparing a secure Lark authorization.",
     qrAlt: "Scan this QR code in Lark",
+    generating: "Generating QR code…",
     waiting: "Waiting for you to scan…",
     cliMissing: (provider: string) =>
       `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,

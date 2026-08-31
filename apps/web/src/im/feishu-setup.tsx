@@ -95,6 +95,9 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         creatingRef.current = false;
         if (current && attemptRef.current !== current && started.id === current.id) return true;
         setError(undefined);
+        // Advancing the lifecycle retires the old poll, so clear the request state before the
+        // guarded `finally` intentionally stops observing that retired lifecycle.
+        setLoading(false);
         if (attemptRef.current?.id !== started.id || !ACTIVE_STATES.includes(started.state)) {
           lifecycleRef.current = lifecycle + 1;
         }

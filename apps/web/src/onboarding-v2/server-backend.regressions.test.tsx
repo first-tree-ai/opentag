@@ -291,8 +291,6 @@ describe("Server-backed onboarding: the defects it had", () => {
     render(<OnboardingV2Page />);
 
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await settle();

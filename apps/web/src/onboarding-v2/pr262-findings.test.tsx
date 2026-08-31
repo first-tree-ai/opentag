@@ -147,8 +147,6 @@ function press(name: string | RegExp) {
 }
 
 async function reachComputerStep() {
-  press(/Local computer/);
-  press("Continue");
   press(/Codex/);
   press("Continue");
   await settle();

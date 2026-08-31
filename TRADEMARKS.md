@@ -31,6 +31,8 @@ than using the published file.
 | `apps/web/src/assets/slack.svg` | Slack | Slack Technologies, LLC, a Salesforce company |
 | `apps/web/src/assets/feishu.svg` | Feishu / Lark | Beijing Feishu Technology Co., Ltd. |
 | `apps/web/src/assets/claude.svg` | Claude | Anthropic PBC |
+| `apps/web/src/assets/openai-blossom-black.svg` | OpenAI Blossom, black | OpenAI, L.L.C. |
+| `apps/web/src/assets/openai-blossom-white.svg` | OpenAI Blossom, white | OpenAI, L.L.C. |
 | `apps/web/src/assets/google-sign-in-light@2x.png` | Sign in with Google | Google LLC |
 
 ## Conditions we are keeping to
@@ -39,10 +41,12 @@ than using the published file.
   developer documentation embeds it, rather than copied into this repository. It is used unmodified
   at its published proportions, as [Slack's brand guidelines](https://slack.com/media-kit) require,
   and is never restyled, recoloured, or rebuilt from our own components.
-- **Codex.** No asset is carried. openai.com serves 403 to direct asset requests, and taking the
-  icon out of an installed application would establish where the bytes came from without
-  establishing permission to redistribute them here. It shows a neutral mark until a publisher-
-  provided asset whose terms cover this use is available.
+- **Codex.** The interface uses the unmodified OpenAI Blossom files from OpenAI's official
+  [logo package](https://cdn.openai.com/brand/openai-logos.zip), under OpenAI's
+  [brand guidelines and Marks usage terms](https://openai.com/brand/). It identifies Codex as an
+  OpenAI service, appears beside the explicit “Codex / OpenAI” label, and remains subordinate to
+  OpenTag's own brand. The black and white published variants preserve the mark in light and dark
+  colour schemes without recolouring it.
 - **Google.** The sign-in button follows
   [Google's branding guidelines](https://developers.google.com/identity/branding-guidelines).
 - **Every mark.** Displayed at its own proportions, never altered, and never used in a way that

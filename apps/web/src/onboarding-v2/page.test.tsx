@@ -150,6 +150,17 @@ describe("OnboardingV2Page", () => {
     }
   });
 
+  it("uses OpenAI's published Blossom art for Codex instead of a letter stand-in", () => {
+    render(<OnboardingV2MockPage />);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    const codexMark = document.querySelector('[data-brand="codex"]');
+    expect(codexMark?.querySelector('source[media="(prefers-color-scheme: dark)"]')).toBeTruthy();
+    expect(codexMark?.querySelector("img")).toBeTruthy();
+    expect(codexMark?.textContent).toBe("");
+  });
+
   it("holds the name error's line before there is an error to show", () => {
     render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
@@ -202,6 +213,8 @@ describe("OnboardingV2Page", () => {
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
     expect(screen.getByText("This command has expired.")).toBeTruthy();
+    expect(screen.getByText("Connection command expired.")).toBeTruthy();
+    expect(screen.queryByText("Waiting for your computer…")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
     await advance(ISSUE_MS);
@@ -231,6 +244,7 @@ describe("OnboardingV2Page", () => {
     // A light pointer back to the terminal, not a command block: the repair is already running there.
     expect(screen.getByText("opentag doctor --fix").tagName).toBe("CODE");
     expect(screen.getByText(/Continue in your terminal or agent for instructions/)).toBeTruthy();
+    expect(screen.queryByText(/doctor --fix again/)).toBeNull();
     expect(screen.queryByRole("button", { name: /check again/i })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /Copy/ })).toHaveLength(0);
   });
@@ -441,6 +455,7 @@ describe("OnboardingV2Page", () => {
       await advanceMock("Return from Slack");
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+      expect(screen.getByText("Tag @opentag in Slack to put it to work.")).toBeTruthy();
     });
 
     it("offers the same Slack install on the cloud route", async () => {

@@ -63,6 +63,7 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
       <ol className="flex gap-2 m-0 p-0 list-none">
         {steps.map((step, index) => (
           <li
+            aria-current={step.status === "current" ? "step" : undefined}
             className="otv2-rail__step flex flex-1 items-center gap-2 min-w-0 pt-3 text-xs text-kumo-subtle"
             data-status={step.status}
             key={step.id}
@@ -74,6 +75,7 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
               {step.status === "complete" ? <Icon name="check" /> : index + 1}
             </span>
             <span data-ui="onboarding-v2-rail-label">{STEP_LABELS[step.id]}</span>
+            {step.status === "complete" ? <span className="sr-only">Completed</span> : null}
           </li>
         ))}
       </ol>
@@ -362,7 +364,9 @@ function MessagingConnection({
       ) : null}
       {provider === "feishu" ? (
         <div className={PANEL}>
-          <p className="text-kumo-subtle m-0">{COPY.messaging.feishuIntro}</p>
+          <p className="text-kumo-subtle m-0">
+            {messaging.kind === "waiting" ? COPY.messaging.feishuIntro : COPY.messaging.feishuPreparing}
+          </p>
           <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
           </div>
@@ -389,6 +393,11 @@ function MessagingConnection({
                 {COPY.messaging.retry}
               </Button>
             </div>
+          ) : messaging.kind === "idle" || messaging.kind === "issuing" ? (
+            <p className={WAITING_LINE} role="status">
+              <span aria-hidden="true" className="ots-pulse shrink-0" />
+              {COPY.messaging.generating}
+            </p>
           ) : (
             <p className={WAITING_LINE} role="status">
               <span aria-hidden="true" className="ots-pulse shrink-0" />
@@ -714,7 +723,7 @@ export function ComputerStep({
         </div>
       )}
 
-      <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />
+      <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" expired={connect.kind === "expired"} />
 
       {connected ? (
         <>
@@ -841,7 +850,7 @@ export function MessagingStep({
   );
 }
 
-export function DoneStep({ name }: { name: string }) {
+export function DoneStep({ name, provider }: { name: string; provider?: MessagingProvider }) {
   return (
     <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
       <span
@@ -854,7 +863,7 @@ export function DoneStep({ name }: { name: string }) {
         <Text as="h1" size="lg" variant="heading">
           {COPY.done.title(name)}
         </Text>
-        <p className="text-kumo-subtle m-0">{COPY.done.description(name)}</p>
+        <p className="text-kumo-subtle m-0">{COPY.done.description(name, provider)}</p>
       </header>
     </section>
   );

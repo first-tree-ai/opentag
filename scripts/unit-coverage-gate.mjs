@@ -27,18 +27,49 @@ export function isSupportedSourcePath(value) {
   if (segments.some((segment) => EXCLUDED_DIRECTORY_NAMES.has(segment))) return false;
   if (segments.includes("paraglide") && segments.includes("src")) return false;
   const name = fileName(path);
+  if (/^vitest(?:\..+)?\.config\.(?:cjs|cts|js|mjs|mts|ts)$/.test(name)) return false;
   if (/\.d\.(?:cts|mts|ts)$/.test(name)) return false;
   if (/\.(?:test|spec)\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/.test(name)) return false;
   return SUPPORTED_SOURCE_EXTENSIONS.has(extname(name).toLowerCase());
 }
 
-function isExecutableSourceLine(value) {
+function declarationKind(value) {
   const trimmed = value.trim();
-  if (!trimmed) return false;
-  if (/^(?:\/\/|\/\*|\*|\*\/)/.test(trimmed)) return false;
-  if (/^(?:import\s+type|export\s+(?:type|interface)\b|type\s+\w|interface\s+\w|declare\s+)/.test(trimmed)) {
+  if (/^(?:import|export\s*\{)/.test(trimmed)) return "module";
+  if (/^(?:export\s+)?(?:interface|type)\b/.test(trimmed)) return "type";
+  return undefined;
+}
+
+function declarationDepth(value) {
+  let depth = 0;
+  for (const character of value) {
+    if (character === "{") depth += 1;
+    if (character === "}") depth -= 1;
+  }
+  return depth;
+}
+
+function isExecutableSourceLine(value, declaration) {
+  const trimmed = value.trim();
+  if (declaration.kind) {
+    declaration.depth += declarationDepth(value);
+    if (declaration.depth <= 0 && (value.includes(";") || (declaration.kind === "type" && value.includes("}")))) {
+      declaration.kind = undefined;
+    }
     return false;
   }
+  if (!trimmed) return false;
+  if (/^(?:\/\/|\/\*|\*|\*\/)/.test(trimmed)) return false;
+  const kind = declarationKind(value);
+  if (kind) {
+    declaration.kind = kind;
+    declaration.depth = declarationDepth(value);
+    if (declaration.depth <= 0 && (value.includes(";") || (kind === "type" && value.includes("}")))) {
+      declaration.kind = undefined;
+    }
+    return false;
+  }
+  if (/^(?:import\s+type|type\s+\w|interface\s+\w|declare\s+|readonly\b)/.test(trimmed)) return false;
   if (/^[{}[\]();,:]+$/.test(trimmed)) return false;
   return true;
 }
@@ -119,8 +150,9 @@ function evaluateChangedFile({ file, lines, lineHits }) {
   const uncovered = [];
   let covered = 0;
   let total = 0;
+  const declaration = { depth: 0, kind: undefined };
   for (const { content, line } of lines) {
-    if (!isExecutableSourceLine(content)) continue;
+    if (!isExecutableSourceLine(content, declaration)) continue;
     total += 1;
     if (!lineHits?.has(line)) {
       uncovered.push(`${file}:${line} (missing coverage entry)`);

@@ -134,4 +134,28 @@ test("supported script extensions are included while coverage artifacts remain e
   assert.equal(isSupportedSourcePath("scripts/toolchain-check.mjs"), false);
   assert.equal(isSupportedSourcePath("src/example.test.ts"), false);
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
+  assert.equal(isSupportedSourcePath("packages/client/vitest.agent-runtime.config.ts"), false);
+});
+
+test("multiline TypeScript declarations and re-exports are not treated as executable lines", () => {
+  const diff = [
+    "--- a/src/example.ts",
+    "+++ b/src/example.ts",
+    "@@ -1,0 +1,11 @@",
+    "+import {",
+    "+  value,",
+    '+} from "./value.js";',
+    "+export {",
+    "+  value,",
+    "+  type Value,",
+    '+} from "./value.js";',
+    "+export interface Example {",
+    "+  readonly value: Value;",
+    "+}",
+    "+export const executable = value;",
+    "",
+  ].join("\n");
+  const result = evaluatePatchCoverage({ diff, coverage: {}, repositoryRoot: "/repo", threshold: 80 });
+  assert.equal(result.total, 1);
+  assert.deepEqual(result.uncovered, ["src/example.ts:11 (missing coverage entry)"]);
 });

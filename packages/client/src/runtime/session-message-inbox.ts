@@ -34,7 +34,7 @@ interface QueuedMessage {
 
 interface RememberedMessage {
   hash: string;
-  status: "accepted" | "rejected" | "retryable" | "succeeded" | "failed" | "dead-letter";
+  readonly status: "accepted" | "rejected" | "retryable" | "succeeded" | "failed" | "dead-letter";
   reason?: InputRejectReason;
 }
 
@@ -47,13 +47,13 @@ export interface SessionMessageInboxOptions {
   maxQueuedPerSession?: number;
   maxQueuedTotal?: number;
   maxRememberedMessages?: number;
-  metrics?: RuntimeDurabilityMetrics;
-  now?: () => number;
-  onFailure?(failure: DurableFailure): void;
-  persistence?: RuntimeDurabilityStore;
-  retryPolicy?: Partial<RuntimeRetryPolicy>;
-  scheduler?: RuntimeRetryScheduler;
-  timeoutScheduler?: RuntimeRetryScheduler;
+  readonly metrics?: RuntimeDurabilityMetrics;
+  readonly now?: () => number;
+  readonly onFailure?: (failure: DurableFailure) => void;
+  readonly persistence?: RuntimeDurabilityStore;
+  readonly retryPolicy?: Partial<RuntimeRetryPolicy>;
+  readonly scheduler?: RuntimeRetryScheduler;
+  readonly timeoutScheduler?: RuntimeRetryScheduler;
   reconciler: Pick<
     SessionReconciler,
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"

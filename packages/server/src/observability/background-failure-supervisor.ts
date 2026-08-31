@@ -183,7 +183,7 @@ export class BackgroundFailureSupervisor {
         code: DEFAULT_CODE,
         category: "internal",
         retryability: "never",
-        phase: context.phase ?? "unknown",
+        phase: "unknown",
         message: "Background failure could not be classified",
       };
     }

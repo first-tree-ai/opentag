@@ -14,6 +14,8 @@ export const STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS = 32;
 
 const diagnosticCodePattern = /^[A-Za-z][A-Za-z0-9_.:-]{0,119}$/;
 
+export const StructuredErrorCodeSchema = z.string().regex(diagnosticCodePattern);
+
 /** The stable high-level class used for operational routing and dashboards. */
 export const StructuredErrorCategorySchema = z.enum([
   "validation",
@@ -54,7 +56,7 @@ export const StructuredErrorPhaseSchema = z.enum([
   "unknown",
 ]);
 
-const diagnosticMessageSchema = z.string().min(1).max(STRUCTURED_ERROR_MESSAGE_MAX_BYTES);
+export const StructuredErrorMessageSchema = z.string().min(1).max(STRUCTURED_ERROR_MESSAGE_MAX_BYTES);
 
 type StructuredErrorCauseInput = {
   code?: string;
@@ -69,11 +71,11 @@ type StructuredErrorCauseInput = {
 export const StructuredErrorCauseSchema: z.ZodType<StructuredErrorCauseInput> = z.lazy(() =>
   z
     .object({
-      code: z.string().regex(diagnosticCodePattern).optional(),
+      code: StructuredErrorCodeSchema.optional(),
       category: StructuredErrorCategorySchema.optional(),
       retryability: ErrorRetryabilitySchema.optional(),
       phase: StructuredErrorPhaseSchema.optional(),
-      message: diagnosticMessageSchema,
+      message: StructuredErrorMessageSchema,
       cause: StructuredErrorCauseSchema.optional(),
     })
     .strict(),
@@ -81,12 +83,12 @@ export const StructuredErrorCauseSchema: z.ZodType<StructuredErrorCauseInput> = 
 
 export const StructuredErrorSchema = z
   .object({
-    code: z.string().regex(diagnosticCodePattern),
+    code: StructuredErrorCodeSchema,
     category: StructuredErrorCategorySchema,
     retryability: ErrorRetryabilitySchema,
     phase: StructuredErrorPhaseSchema,
     requestId: z.string().min(1).max(STRUCTURED_ERROR_REQUEST_ID_MAX_BYTES).optional(),
-    message: diagnosticMessageSchema,
+    message: StructuredErrorMessageSchema,
     cause: StructuredErrorCauseSchema.optional(),
   })
   .strict();
@@ -106,6 +108,9 @@ export type StructuredErrorPhase = z.infer<typeof StructuredErrorPhaseSchema>;
 export type StructuredErrorCause = z.infer<typeof StructuredErrorCauseSchema>;
 export type StructuredError = z.infer<typeof StructuredErrorSchema>;
 export type DiagnosticEvent = z.infer<typeof DiagnosticEventSchema>;
+
+export const RetryabilitySchema = ErrorRetryabilitySchema;
+export const ErrorPhaseSchema = StructuredErrorPhaseSchema;
 
 const REDACTED = "[REDACTED]";
 const CIRCULAR = "[CIRCULAR]";
@@ -157,6 +162,31 @@ function scrubString(value: string): string {
     .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@");
 }
 
+function redactErrorValue(value: Error, seen: WeakSet<object>, depth: number): Record<string, unknown> {
+  const error = value as Error & { code?: unknown; cause?: unknown };
+  const output: Record<string, unknown> = {
+    name: scrubString(error.name),
+    message: scrubString(error.message),
+  };
+  if (typeof error.code === "string") output.code = scrubString(error.code);
+  if (error.cause !== undefined) output.cause = redactValue(error.cause, seen, depth + 1);
+  return output;
+}
+
+function redactArray(value: unknown[], seen: WeakSet<object>, depth: number): unknown[] {
+  return value
+    .slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS)
+    .map((item) => redactValue(item, seen, depth + 1));
+}
+
+function redactObject(value: object, seen: WeakSet<object>, depth: number): Record<string, unknown> {
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value).slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS)) {
+    output[key] = isSensitiveKey(key) ? REDACTED : redactValue(child, seen, depth + 1);
+  }
+  return output;
+}
+
 function redactValue(value: unknown, seen: WeakSet<object>, depth: number): unknown {
   if (value === null || value === undefined || typeof value === "boolean" || typeof value === "number") {
     return value;
@@ -167,29 +197,9 @@ function redactValue(value: unknown, seen: WeakSet<object>, depth: number): unkn
   if (depth >= STRUCTURED_ERROR_SERIALIZATION_MAX_DEPTH) return TRUNCATED;
   if (seen.has(value)) return CIRCULAR;
   seen.add(value);
-
-  if (value instanceof Error) {
-    const error = value as Error & { code?: unknown; cause?: unknown };
-    const output: Record<string, unknown> = {
-      name: scrubString(error.name),
-      message: scrubString(error.message),
-    };
-    if (typeof error.code === "string") output.code = scrubString(error.code);
-    if (error.cause !== undefined) output.cause = redactValue(error.cause, seen, depth + 1);
-    return output;
-  }
-
-  if (Array.isArray(value)) {
-    return value
-      .slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS)
-      .map((item) => redactValue(item, seen, depth + 1));
-  }
-
-  const output: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value).slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS)) {
-    output[key] = isSensitiveKey(key) ? REDACTED : redactValue(child, seen, depth + 1);
-  }
-  return output;
+  if (value instanceof Error) return redactErrorValue(value, seen, depth);
+  if (Array.isArray(value)) return redactArray(value, seen, depth);
+  return redactObject(value, seen, depth);
 }
 
 /** Return a detached, recursively redacted copy. The input object is never mutated. */

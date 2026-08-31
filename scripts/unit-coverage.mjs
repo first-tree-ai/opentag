@@ -20,6 +20,8 @@
  *   node scripts/unit-coverage.mjs                 # every workspace, then the aggregate table
  *   node scripts/unit-coverage.mjs --project server  # one workspace, for a fast inner loop
  *   node scripts/unit-coverage.mjs --scope 'packages/server/src/services/im-bindings/**'
+ *   node scripts/unit-coverage.mjs --update-floors  # ratchet the checked-in floors upward
+ *   node scripts/unit-coverage.mjs --update-floors --allow-floor-decrease  # explicit decrease
  */
 
 import { spawnSync } from "node:child_process";

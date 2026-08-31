@@ -22,6 +22,33 @@
   --on-dark: #f8f7f0; /* text on dark sections */
 }
 
+/* Kumo semantic base. These aliases make the application canvas, surfaces, text, and borders
+ * inherit the OpenTag palette without changing Kumo component internals. */
+:root[data-theme="opentag"],
+[data-theme="opentag"] {
+  --color-kumo-canvas: var(--bg);
+  --color-kumo-elevated: var(--card);
+  --color-kumo-recessed: var(--brand-100);
+  --color-kumo-base: var(--card);
+  --color-kumo-tint: var(--brand-100);
+  --color-kumo-contrast: var(--fg);
+  --color-kumo-overlay: var(--card);
+  --color-kumo-control: var(--card);
+  --color-kumo-interact: var(--border-strong);
+  --color-kumo-fill: var(--border);
+  --color-kumo-fill-hover: var(--brand-100);
+  --color-kumo-line: var(--border);
+  --color-kumo-hairline: var(--border);
+  --color-kumo-focus: var(--brand-ink);
+  --text-color-kumo-default: var(--fg);
+  --text-color-kumo-inverse: var(--on-dark);
+  --text-color-kumo-strong: var(--fg);
+  --text-color-kumo-subtle: var(--fg-2);
+  --text-color-kumo-inactive: var(--muted-fg);
+  --text-color-kumo-placeholder: var(--muted-fg);
+  --text-color-kumo-link: var(--brand-ink);
+}
+
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--text-color-kumo-default);

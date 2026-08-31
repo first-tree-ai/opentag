@@ -599,7 +599,11 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
-    expect(screen.getByRole("link", { name: "OpenTag" }).getAttribute("href")).toBe("/agents");
+    const brandLink = screen.getByRole("link", { name: "OpenTag" });
+    expect(brandLink.getAttribute("href")).toBe("/agents");
+    const brandLogo = brandLink.querySelector("img");
+    expect(brandLogo?.getAttribute("alt")).toBe("");
+    expect(brandLogo?.classList.contains("size-6")).toBe(true);
     expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByText("Example")).toBeNull();
@@ -612,9 +616,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/Monitor availability/)).toBeNull();
     expect(screen.getByText("1 Agent · 0 currently working")).toBeTruthy();
     expect(within(agentRow as HTMLElement).queryByText("@reviewer")).toBeNull();
-    expect(within(agentRow as HTMLElement).getByText("Tasks")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("Last checked")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).queryByText("Tokens")).toBeNull();
+    expect(within(agentRow as HTMLElement).getByText("Tasks (30d)")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).getByText("Tokens (30d)")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).getByText("428K")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).queryByText("Last checked")).toBeNull();
+    expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-avatar"]')?.classList.contains("size-10")).toBe(
+      true,
+    );
     const rowState = (agentRow as HTMLElement).querySelector('[data-ui="agent-row-state"]');
     expect(rowState).toBeTruthy();
     expect(within(agentRow as HTMLElement).getByText("Messaging disconnected")).toBeTruthy();
@@ -1641,13 +1649,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: "View details" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
     /*
      * Status sits beside Usage without adding another visible card title. Its two rows name the
-     * execution environment and channel directly, so Settings remains the header's only trailing
+     * execution environment and messaging dependency directly, so Settings remains the header's only trailing
      * link.
      */
     expect(screen.queryByText("Connection")).toBeNull();
     const status = screen.getByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Computer")).toBeTruthy();
-    expect(within(status).getByText("Message channel")).toBeTruthy();
+    expect(within(status).getByText("Messaging")).toBeTruthy();
     expect(within(status).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
     expect(within(status).getByText("Feishu · @reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Feishu · @reviewer" })).toBeNull();
@@ -1779,7 +1787,7 @@ describe("OpenTag Web App Shell", () => {
     const status = await screen.findByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Setup in progress")).toBeTruthy();
     const setupLink = within(status).getByRole("link", { name: "View setup" });
-    expect(setupLink.parentElement?.getAttribute("data-ui")).toBe("agent-status-message-channel");
+    expect(setupLink.closest('[data-ui="agent-status-message-channel"]')).toBeTruthy();
     fireEvent.click(setupLink);
     expect(await screen.findByRole("heading", { name: "Messaging" })).toBeTruthy();
     const backLink = screen.getByRole("link", { name: "Back to Reviewer" });

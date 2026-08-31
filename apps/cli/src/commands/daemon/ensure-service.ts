@@ -1,23 +1,16 @@
 import type { Command } from "commander";
-import {
-  type CommandExitCode,
-  commandExitCode,
-  presentCommand,
-  redactSecrets,
-  toCommandError,
-} from "../../core/command/policy.js";
+import * as commandPolicy from "../../core/command/policy.js";
 import { type DaemonServiceReconcileResult, reconcileDaemonService } from "../../core/daemon/reconcile-service.js";
 
 export const ENSURE_SERVICE_DEFERRED_EXIT_CODE = 3;
+type EnsureErrorOption = { writeError?: (message: string) => void };
+type EnsureOutputOption = { writeOutput?: (message: string) => void };
+type EnsureJsonOption = { json?: boolean };
+type EnsureServiceCallbacks = EnsureErrorOption & EnsureOutputOption & EnsureJsonOption;
+type EnsureServiceOptions = { reconcileService?: () => Promise<DaemonServiceReconcileResult> } & EnsureServiceCallbacks;
+type EnsureServiceResult = Promise<commandPolicy.CommandExitCode>;
 
-export async function executeDaemonEnsureService(
-  options: {
-    reconcileService?: () => Promise<DaemonServiceReconcileResult>;
-    writeError?: (message: string) => void;
-    writeOutput?: (message: string) => void;
-    json?: boolean;
-  } = {},
-): Promise<CommandExitCode> {
+export async function executeDaemonEnsureService(options: EnsureServiceOptions = {}): EnsureServiceResult {
   const writeOutput = options.writeOutput ?? ((message: string) => process.stdout.write(`${message}\n`));
   const writeError = options.writeError ?? ((message: string) => process.stderr.write(`${message}\n`));
   try {
@@ -30,13 +23,13 @@ export async function executeDaemonEnsureService(
     return 0;
   } catch (error) {
     if (options.json) {
-      const commandError = toCommandError(error, "request");
-      return presentCommand(
-        { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
+      const commandError = commandPolicy.toCommandError(error, "request");
+      return commandPolicy.presentCommand(
+        { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
         { json: true, stderr: writeError },
       );
     }
-    writeError(redactSecrets(error instanceof Error ? error.message : String(error)));
+    writeError(commandPolicy.redactSecrets(error instanceof Error ? error.message : String(error)));
     return 1;
   }
 }

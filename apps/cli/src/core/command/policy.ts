@@ -10,58 +10,34 @@ export const EXIT_CODES = {
 } as const;
 
 export type CommandExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
-export type CommandErrorCategory =
-  | "validation"
-  | "auth"
-  | "authorization"
-  | "unavailable"
-  | "timeout"
-  | "internal"
-  | "conflict"
-  | "not_found"
-  | "rate_limit"
-  | "protocol"
-  | "configuration"
-  | "cancelled"
-  | "dependency";
+type CommandErrorCategoryCore = "validation" | "auth" | "authorization" | "unavailable" | "timeout" | "internal";
+type CommandErrorCategoryExtraA = "conflict" | "not_found" | "rate_limit";
+type CommandErrorCategoryExtraB = "protocol" | "configuration" | "cancelled" | "dependency";
+type CommandErrorCategoryExtra = CommandErrorCategoryExtraA | CommandErrorCategoryExtraB;
+export type CommandErrorCategory = CommandErrorCategoryCore | CommandErrorCategoryExtra;
 export type CommandRetryability = "never" | "immediate" | "backoff" | "after_auth";
-export type CommandPhase =
-  | "validation"
-  | "authentication"
-  | "authorization"
-  | "configuration"
-  | "startup"
-  | "request"
-  | "transport"
-  | "provider"
-  | "persistence"
-  | "dispatch"
-  | "socket"
-  | "scheduler"
-  | "worker"
-  | "serialization"
-  | "shutdown"
-  | "unknown";
+type CommandPhaseCoreA = "validation" | "authentication" | "authorization" | "configuration" | "startup" | "request";
+type CommandPhaseCoreB = "transport" | "provider";
+type CommandPhaseCore = CommandPhaseCoreA | CommandPhaseCoreB;
+type CommandPhaseExtraA = "persistence" | "dispatch" | "socket" | "scheduler";
+type CommandPhaseExtraB = "worker" | "serialization" | "shutdown" | "unknown";
+type CommandPhaseExtra = CommandPhaseExtraA | CommandPhaseExtraB;
+export type CommandPhase = CommandPhaseCore | CommandPhaseExtra;
+
+type CommandErrorCodeFields = { code: string; category: CommandErrorCategory };
+type CommandErrorRetryFields = { retryability: CommandRetryability; phase: CommandPhase };
+type CommandErrorRequiredFields = CommandErrorCodeFields & CommandErrorRetryFields;
+type CommandErrorFields = CommandErrorRequiredFields & { requestId?: string };
 
 /** Structured, transport-neutral CLI failure metadata. The Error message is the human detail. */
 export class CommandError extends Error {
-  readonly code: string;
-  readonly category: CommandErrorCategory;
-  readonly retryability: CommandRetryability;
-  readonly phase: CommandPhase;
-  readonly requestId?: string;
+  declare readonly code: string;
+  declare readonly category: CommandErrorCategory;
+  declare readonly retryability: CommandRetryability;
+  declare readonly phase: CommandPhase;
+  declare readonly requestId?: string;
 
-  constructor(
-    fields: {
-      code: string;
-      category: CommandErrorCategory;
-      retryability: CommandRetryability;
-      phase: CommandPhase;
-      requestId?: string;
-    },
-    message: string,
-    options?: ErrorOptions,
-  ) {
+  constructor(fields: CommandErrorFields, message: string, options?: ErrorOptions) {
     super(redactSecrets(message), options);
     this.name = "CommandError";
     this.code = fields.code;
@@ -72,16 +48,14 @@ export class CommandError extends Error {
   }
 }
 
-export type CommandResult<T> =
-  | { ok: true; value: T; exitCode: typeof EXIT_CODES.success }
-  | { ok: false; error: CommandError; exitCode: Exclude<CommandExitCode, typeof EXIT_CODES.success> };
-
-export interface CommandPresentationOptions<T> {
-  json?: boolean;
-  formatValue?: (value: T) => string;
-  stdout?: (chunk: string) => void;
-  stderr?: (chunk: string) => void;
-}
+type SuccessCommandResult<T> = { ok: true; value: T; exitCode: typeof EXIT_CODES.success };
+type FailureCommandResultBase = { ok: false; error: CommandError };
+type FailureCommandResult = FailureCommandResultBase & { exitCode: Exclude<CommandExitCode, 0> };
+export type CommandResult<T> = SuccessCommandResult<T> | FailureCommandResult;
+type CommandFormatValueOptions<T> = { formatValue?: (value: T) => string };
+type CommandFormatWriterOptions = { stdout?: (chunk: string) => void; stderr?: (chunk: string) => void };
+type CommandFormatOptions<T> = CommandFormatValueOptions<T> & CommandFormatWriterOptions;
+export type CommandPresentationOptions<T> = { json?: boolean } & CommandFormatOptions<T>;
 
 /** Convert errors from Commander, Zod, the API, and Node into one local contract. */
 export function toCommandError(error: unknown, phase: CommandPhase = "unknown"): CommandError {
@@ -291,10 +265,13 @@ function redactUnknown(value: unknown, seen: WeakSet<object>): unknown {
   return output;
 }
 
+const SENSITIVE_KEY_PATTERNS = [
+  /(?:authorization|cookie|token|secret|credential|password|passwd)/iu,
+  /(?:api[_-]?key|private[_-]?key|request[_-]?body|response[_-]?body|payload|prompt)/iu,
+];
+
 function isSensitiveKey(key: string): boolean {
-  return /(?:authorization|cookie|token|secret|credential|password|passwd|api[_-]?key|private[_-]?key|request[_-]?body|response[_-]?body|payload|prompt)/iu.test(
-    key,
-  );
+  return SENSITIVE_KEY_PATTERNS.some((pattern) => pattern.test(key));
 }
 
 export function redactSecrets(value: string): string {

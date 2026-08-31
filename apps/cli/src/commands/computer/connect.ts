@@ -3,21 +3,10 @@ import { resolveOpenTagHome } from "@opentag/client";
 import type { Command } from "commander";
 import { channelConfig } from "../../core/channel/config.js";
 import { resolveChannelEnvironment } from "../../core/channel/environment.js";
-import {
-  type CommandResult,
-  commandExitCode,
-  presentCommand,
-  redactSecrets,
-  toCommandError,
-} from "../../core/command/policy.js";
+import * as commandPolicy from "../../core/command/policy.js";
 import { ComputerConnectServiceInstallError, runComputerConnect } from "../../core/computer/connect.js";
 
-interface ComputerConnectCommandOptions {
-  home?: string;
-  server?: string;
-  start?: boolean;
-  json?: boolean;
-}
+type ComputerConnectCommandOptions = { home?: string; server?: string; start?: boolean; json?: boolean };
 
 export function registerComputerConnectCommand(computer: Command): void {
   computer
@@ -40,7 +29,7 @@ export function registerComputerConnectCommand(computer: Command): void {
           serverUrl,
         });
         if (options.json) {
-          process.exitCode = presentCommand({ ok: true, value: result, exitCode: 0 }, { json: true });
+          process.exitCode = commandPolicy.presentCommand({ ok: true, value: result, exitCode: 0 }, { json: true });
         } else {
           process.stdout.write(`${result.message}\n`);
           if (result.service)
@@ -49,18 +38,16 @@ export function registerComputerConnectCommand(computer: Command): void {
         }
       } catch (error) {
         if (error instanceof ComputerConnectServiceInstallError) {
-          process.stdout.write(`${redactSecrets(error.connectResult.message)}\n`);
-          process.stderr.write(
-            `${redactSecrets(
-              `Daemon service reload failed; machine credentials were preserved. Run ${channelConfig.binName} daemon restart to retry.`,
-            )}\n`,
-          );
+          process.stdout.write(`${commandPolicy.redactSecrets(error.connectResult.message)}\n`);
+          const reloadFailure = "Daemon service reload failed; machine credentials were preserved.";
+          const reloadRetry = `Run ${channelConfig.binName} daemon restart to retry.`;
+          process.stderr.write(`${commandPolicy.redactSecrets(`${reloadFailure} ${reloadRetry}`)}\n`);
           process.exitCode = 1;
           return;
         }
-        const commandError = toCommandError(error, "request");
-        process.exitCode = presentCommand(
-          { ok: false, error: commandError, exitCode: commandExitCode(commandError) } as CommandResult<never>,
+        const commandError = commandPolicy.toCommandError(error, "request");
+        process.exitCode = commandPolicy.presentCommand(
+          { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
           { json: options.json === true },
         );
       }

@@ -6,11 +6,7 @@ import { channelConfig } from "../core/channel/config.js";
 import { resolveChannelEnvironment } from "../core/channel/environment.js";
 import { executeCommand } from "../core/command/policy.js";
 
-interface LoginCommandOptions {
-  home?: string;
-  server?: string;
-  json?: boolean;
-}
+type LoginCommandOptions = { home?: string; server?: string; json?: boolean };
 
 interface LoginCommandDependencies {
   login?: typeof runLogin;

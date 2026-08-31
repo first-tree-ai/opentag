@@ -1,27 +1,19 @@
-import {
-  type CommandExitCode,
-  commandExitCode,
-  presentCommand,
-  redactSecrets,
-  toCommandError,
-} from "../../core/command/policy.js";
-import {
-  createDaemonServiceManager,
-  type DaemonServiceManager,
-  formatDaemonServiceInfo,
-} from "../../core/daemon/service/index.js";
+import * as commandPolicy from "../../core/command/policy.js";
+import type { DaemonServiceManager } from "../../core/daemon/service/index.js";
+import { createDaemonServiceManager, formatDaemonServiceInfo } from "../../core/daemon/service/index.js";
 
 export type DaemonServiceAction = "installAndStart" | "restart" | "start" | "status" | "stop" | "uninstall";
+type DaemonErrorOption = { writeError?: (message: string) => void };
+type DaemonOutputOption = { writeOutput?: (message: string) => void };
+type DaemonJsonOption = { json?: boolean };
+type DaemonServiceCallbacks = DaemonErrorOption & DaemonOutputOption & DaemonJsonOption;
+type DaemonServiceCommandOptions = { manager?: DaemonServiceManager } & DaemonServiceCallbacks;
+type DaemonServiceResult = Awaited<ReturnType<DaemonServiceManager[DaemonServiceAction]>>;
 
 export async function executeDaemonServiceCommand(
   action: DaemonServiceAction,
-  options: {
-    manager?: DaemonServiceManager;
-    writeError?: (message: string) => void;
-    writeOutput?: (message: string) => void;
-    json?: boolean;
-  } = {},
-): Promise<CommandExitCode> {
+  options: DaemonServiceCommandOptions = {},
+): Promise<commandPolicy.CommandExitCode> {
   try {
     const manager = options.manager ?? (await createDaemonServiceManager());
     const info = await manager[action]();
@@ -31,28 +23,22 @@ export async function executeDaemonServiceCommand(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (options.json) {
-      const commandError = toCommandError(error, "request");
-      return presentCommand(
-        { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
+      const commandError = commandPolicy.toCommandError(error, "request");
+      return commandPolicy.presentCommand(
+        { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
         { json: true, stderr: options.writeError },
       );
     }
-    (options.writeError ?? ((value) => process.stderr.write(`${value}\n`)))(redactSecrets(message));
+    (options.writeError ?? ((value) => process.stderr.write(`${value}\n`)))(commandPolicy.redactSecrets(message));
     return 1;
   }
 }
 
-function renderDaemonServiceOutput(
-  info: Awaited<ReturnType<DaemonServiceManager[DaemonServiceAction]>>,
-  json: boolean,
-): string {
+function renderDaemonServiceOutput(info: DaemonServiceResult, json: boolean): string {
   return json ? JSON.stringify({ ok: true, result: info }) : formatDaemonServiceInfo(info);
 }
 
-function daemonServiceExitCode(
-  action: DaemonServiceAction,
-  state: Awaited<ReturnType<DaemonServiceManager[DaemonServiceAction]>>["state"],
-): 0 | 1 {
+function daemonServiceExitCode(action: DaemonServiceAction, state: DaemonServiceResult["state"]): 0 | 1 {
   if (action === "stop") return ["inactive", "not-installed"].includes(state) ? 0 : 1;
   if (action === "uninstall") return state === "not-installed" ? 0 : 1;
   return state === "active" ? 0 : 1;

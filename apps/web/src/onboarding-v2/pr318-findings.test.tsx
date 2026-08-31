@@ -191,6 +191,23 @@ describe("a Computer the Account already has", () => {
     expect(chosenComputer()).toContain(ONLINE_MAC);
   });
 
+  it("still checks the preselected Computer after Start over", async () => {
+    render(<OnboardingV2MockPage />);
+    chooseInventory("One, online");
+    await reachComputerStep();
+    expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start over" }));
+    await reachComputerStep();
+
+    // Start over takes the verdict away without changing which machine is preselected. If the check
+    // is only asked for when the machine changes, the step waits for an answer nobody will give:
+    // Continue disabled, nothing for the outside world to do, no way out but reselecting.
+    expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
+    await advanceMock("Return check result");
+    expect(continueButton().disabled).toBe(false);
+  });
+
   it("preselects a reachable Computer over an unreachable one", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("Several");

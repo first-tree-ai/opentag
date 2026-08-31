@@ -301,17 +301,31 @@ export function useMockBackend(
     return connect.kind === "connected" ? NEW_ARRIVAL : undefined;
   }, [connect.kind, knownComputers, selectedComputerId]);
 
-  // The check runs against whichever Computer is being prepared, exactly like the daemon's eager
-  // first probe. A machine the Account already had is checked no less than one that just arrived,
-  // and a reader who changes their mind gets a check for the machine they changed it to.
+  /** What the answer on screen answers: which machine, under which outcome the lab is asking about. */
+  const [answering, setAnswering] = useState<string>();
+
+  /*
+   * The check runs against whichever Computer is being prepared, exactly like the daemon's eager
+   * first probe. A machine the Account already had is checked no less than one that just arrived.
+   *
+   * What makes it run again is the absence of an answer *to the question currently being asked* —
+   * not a change of machine. Keying it to the subject alone left `reset` (Start over) holding a
+   * preselected machine whose verdict it had just cleared and would never ask about again: same
+   * subject, no re-run, "Waiting for the computer check…" for ever, with nothing left to press.
+   * Anything that takes the answer away — Start over, choosing another machine, asking the lab for
+   * a different outcome — now gets a new one asked for.
+   */
   useEffect(() => {
     if (preparedComputerId === undefined) return;
+    const asking = `${preparedComputerId}|${scenario.runtime}|${scenario.messagingCli}`;
+    if (answering === asking && (readiness !== undefined || checkResult !== undefined)) return;
+    setAnswering(asking);
     setReadiness({ runtime: "checking", messagingCli: { feishu: "checking", slack: "checking" } });
     setCheckResult({
       runtime: scenario.runtime,
       messagingCli: { feishu: scenario.messagingCli, slack: scenario.messagingCli },
     });
-  }, [preparedComputerId, scenario.messagingCli, scenario.runtime]);
+  }, [answering, checkResult, preparedComputerId, readiness, scenario.messagingCli, scenario.runtime]);
 
   /**
    * Choosing a different Computer takes the previous one's verdict off the screen. A result that

@@ -39,6 +39,7 @@ import {
   SlackConfigurationService,
   SlackOAuthService,
   SlackOAuthStateService,
+  SlackWebhookReceiptStore,
 } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
@@ -237,6 +238,9 @@ export async function startServer(): Promise<void> {
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
     const imResourceService = new ImResourceService(database, resolveImAdapter, imCallPolicy);
+    const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
+    });
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
@@ -300,6 +304,7 @@ export async function startServer(): Promise<void> {
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
+        receipts: slackWebhookReceipts,
         ...(config.slackOAuth ? { firstPartySigningSecret: config.slackOAuth.signingSecret } : {}),
         createAdapter: (binding) =>
           new SlackAdapter({

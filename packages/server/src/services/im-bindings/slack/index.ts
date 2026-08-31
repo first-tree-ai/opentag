@@ -11,3 +11,8 @@ export type { SlackOAuthAppConfig, SlackOAuthCallbackInput, SlackOAuthStartResul
 export { SlackOAuthService } from "./oauth-service.js";
 export { SlackOAuthStateService } from "./oauth-state.js";
 export { preparseSlackRoute, verifySlackSignature } from "./signature.js";
+export {
+  type SlackWebhookReceiptClaim,
+  type SlackWebhookReceiptMetric,
+  SlackWebhookReceiptStore,
+} from "./webhook-receipt-store.js";

@@ -488,4 +488,61 @@ describe("Slack Events API ingress", () => {
       expect(logs).not.toContain("raw-request-body-detail");
     },
   );
+
+  it("claims a durable receipt before acknowledging and records asynchronous failures", async () => {
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({ accepted: true, duplicate: false, receiptId: "receipt-1" }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    const { app, inbox, adapter } = createServices({ receipts: receipts as never });
+    inbox.ingest.mockRejectedValue(new Error("provider processing failed"));
+    adapter.normalizeInbound.mockReturnValue([{ providerEventId: "Ev-async-failure" }]);
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-async-failure",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(receipts.claim).toHaveBeenCalledWith({
+      installationId: installation().installationId,
+      credentialGeneration: installation().generation,
+      eventId: "Ev-async-failure",
+    });
+    await vi.waitFor(() =>
+      expect(receipts.markFailed).toHaveBeenCalledWith("receipt-1", "SLACK_EVENT_PROCESSING_FAILED"),
+    );
+  });
+
+  it("acknowledges duplicate receipts without normalizing or ingesting again", async () => {
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({
+        accepted: false,
+        duplicate: true,
+        receiptId: "receipt-existing",
+        status: "processed",
+      }),
+      markProcessed: vi.fn(),
+      markFailed: vi.fn(),
+    };
+    const { app, inbox, createAdapter } = createServices({ receipts: receipts as never });
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-duplicate",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(createAdapter).not.toHaveBeenCalled();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+  });
 });

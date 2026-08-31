@@ -1,11 +1,11 @@
 import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
-import { fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
-import { AgentUsageOverview, AgentUsageTab } from "./agent-usage.js";
+import { AgentUsageOverview, AgentUsageTab, usageWindowLabel } from "./agent-usage.js";
 
 const usage: AgentUsageDetail = {
   windowDays: 30,
@@ -89,6 +89,44 @@ describe("AgentUsageOverview", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
     expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
+  });
+
+  it("normalizes non-error failures and explains unavailable token coverage", async () => {
+    vi.spyOn(browserApi, "agentUsage").mockRejectedValueOnce("provider unavailable");
+    await renderInRouter(<AgentUsageOverview agentId="agent-string-error" />);
+    expect((await screen.findByRole("alert")).textContent).toContain("provider unavailable");
+    cleanup();
+
+    vi.restoreAllMocks();
+    vi.spyOn(browserApi, "agentUsage").mockRejectedValueOnce({});
+    await renderInRouter(<AgentUsageOverview agentId="agent-unknown-error" />);
+    expect((await screen.findByRole("alert")).textContent).toContain("Usage is temporarily unavailable");
+    cleanup();
+
+    vi.restoreAllMocks();
+    vi.spyOn(browserApi, "agentUsage").mockResolvedValue({
+      ...usage,
+      tasks: 2,
+      measuredTasks: 0,
+      tokens: 10,
+      inputTokens: 6,
+      outputTokens: 4,
+      daily: [
+        {
+          date: "2026-08-25",
+          inputTokens: 6,
+          cachedInputTokens: 0,
+          outputTokens: 4,
+          tokens: 10,
+          tasks: 2,
+          measuredTasks: 0,
+        },
+      ],
+    });
+    await renderInRouter(<AgentUsageTab agentId="agent-covered" />);
+    expect(await screen.findByText("Token data unavailable.")).toBeTruthy();
+    expect(screen.getByRole("img", { name: /10 Tokens used/ })).toBeTruthy();
+    expect(usageWindowLabel(1)).toBe("Last 24 hours");
   });
 
   it("surfaces a terminal refetch error instead of showing cached usage", async () => {

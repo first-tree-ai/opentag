@@ -92,6 +92,7 @@ export function createLoginShellDiscovery(): LoginShellDiscovery {
       enabled = true;
     },
   };
+}
 
 interface SharedProviderRefreshContext {
   readonly connection: RuntimeConnection;

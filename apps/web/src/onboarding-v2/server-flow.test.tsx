@@ -83,12 +83,20 @@ function computersReturning(...pages: readonly (readonly WorkspaceComputerSummar
 
 /** The Server's verdict on the issued code: the exact Computer redeemed it. */
 function redeemedVerdict() {
-  return vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
-    connectCodeId: CONNECT_CODE_ID,
-    state: "redeemed",
-    computerId: COMPUTER_ID,
-    redeemedAt: REDEEMED_AT,
-  });
+  return vi
+    .spyOn(browserApi, "computerConnectCodeStatus")
+    .mockResolvedValueOnce({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "pending",
+      computerId: null,
+      redeemedAt: null,
+    })
+    .mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "redeemed",
+      computerId: COMPUTER_ID,
+      redeemedAt: REDEEMED_AT,
+    });
 }
 
 async function settle() {
@@ -158,7 +166,7 @@ describe("the onboarding flow against the Server", () => {
   });
 
   it("walks from the connect command to a created Agent and a scanned Lark code", async () => {
-    computersReturning([computer()]);
+    computersReturning([], [computer()]);
     redeemedVerdict();
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
@@ -171,13 +179,15 @@ describe("the onboarding flow against the Server", () => {
 
     await settle();
     await reachComputerStep();
+    await settle();
 
     // The block breaks the code by character, so the command lives across two spans in one <code>.
     expect(document.querySelector("code")?.textContent).toContain(COMMAND);
     expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
 
     await tick(POLL_MS);
-    expect(screen.getByText("Your computer is connected.")).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("Online")).toBeTruthy();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
 
     press("Continue");

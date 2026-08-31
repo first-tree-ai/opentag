@@ -204,6 +204,30 @@ describe("ComputerConnect", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("keeps polling the exact redeemed Computer after the command deadline", async () => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 1,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    const computers = vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+
+    render(<ComputerConnect intent={{ mode: "create" }} onConnected={onConnected} />);
+    await flushAsync();
+    await vi.waitFor(() => {
+      expect((screen.getByRole("button", { name: "Copy command" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    computers.mockResolvedValue({ computers: [computer] });
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+
+    expect(onConnected).toHaveBeenCalledWith(computer);
+    expect(screen.queryByText("This command has expired.")).toBeNull();
+    expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
+  });
+
   it.each(["expired", "revoked"] as const)("keeps a %s command in place and disables copying", async (state) => {
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
@@ -260,7 +284,7 @@ describe("ComputerConnect", () => {
     expect((screen.getByRole("button", { name: "Copy command" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("retires an old in-flight poll when an expired command is replaced", async () => {
+  it("waits for an in-flight deadline verdict before offering a replacement", async () => {
     const oldPoll = deferred<ComputerConnectCodeStatus>();
     vi.spyOn(browserApi, "issueComputerConnectCode")
       .mockResolvedValueOnce({
@@ -286,9 +310,15 @@ describe("ComputerConnect", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
+    expect(screen.queryByRole("button", { name: "Get a new command" })).toBeNull();
+    oldPoll.resolve({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "expired",
+      computerId: null,
+      redeemedAt: null,
+    });
     await flushAsync();
-    oldPoll.resolve(redeemed());
+    fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
     await flushAsync();
 
     expect(computers).not.toHaveBeenCalled();

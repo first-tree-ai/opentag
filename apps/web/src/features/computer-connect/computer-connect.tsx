@@ -1,5 +1,5 @@
-import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { useCallback, useEffect, useRef, useState } from "react";
+import type { ComputerConnectCodeStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } from "../../setup/index.js";
@@ -20,22 +20,59 @@ export interface ComputerConnectProps {
   readonly onConnected?: (computer: WorkspaceComputerSummary) => void;
 }
 
-interface IssuedCommand {
+export interface ComputerConnectAdapter {
+  readonly issue: (intent: ComputerConnectIntent) => Promise<{
+    readonly bootstrapCommand: string;
+    readonly connectCodeId: string;
+    readonly expiresIn: number;
+    readonly issuedAt: string;
+  }>;
+  readonly status: (connectCodeId: string) => Promise<ComputerConnectCodeStatus>;
+  readonly computers: () => Promise<{ readonly computers: readonly WorkspaceComputerSummary[] }>;
+}
+
+export interface IssuedComputerConnectCommand {
   readonly command: string;
   readonly connectCodeId: string;
   readonly expiresAt: number;
 }
 
-type AttemptState =
+interface RedeemedComputerConnectCommand {
+  readonly computerId: string;
+  readonly redeemedAt: string;
+}
+
+export type ComputerConnectState =
   | { readonly kind: "issuing" }
   | { readonly kind: "issue-failed" }
-  | { readonly kind: "issued"; readonly issued: IssuedCommand }
-  | { readonly kind: "expired"; readonly issued: IssuedCommand }
-  | { readonly kind: "connected"; readonly issued: IssuedCommand; readonly computer: WorkspaceComputerSummary };
+  | { readonly kind: "issued"; readonly issued: IssuedComputerConnectCommand }
+  | {
+      readonly kind: "redeemed";
+      readonly issued: IssuedComputerConnectCommand;
+      readonly redeemed: RedeemedComputerConnectCommand;
+    }
+  | { readonly kind: "expired"; readonly issued: IssuedComputerConnectCommand }
+  | {
+      readonly kind: "connected";
+      readonly issued: IssuedComputerConnectCommand;
+      readonly computer: WorkspaceComputerSummary;
+    };
+
+export interface ComputerConnectLifecycle {
+  readonly error: string | undefined;
+  readonly reissue: () => void;
+  readonly state: ComputerConnectState;
+}
+
+export interface ComputerConnectLifecycleProps extends ComputerConnectProps {
+  readonly adapter?: ComputerConnectAdapter;
+  readonly children: (lifecycle: ComputerConnectLifecycle) => ReactNode;
+}
 
 type PollResult =
   | { readonly kind: "wait" }
   | { readonly kind: "expire" }
+  | { readonly kind: "redeemed"; readonly redeemed: RedeemedComputerConnectCommand }
   | { readonly kind: "connected"; readonly computer: WorkspaceComputerSummary };
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -52,51 +89,86 @@ function isFreshlyConnected(computer: WorkspaceComputerSummary, redeemedAt: stri
 }
 
 async function readPollResult(
-  issued: IssuedCommand,
+  adapter: ComputerConnectAdapter,
+  issued: IssuedComputerConnectCommand,
   targetComputerId: string | undefined,
   isCurrent: () => boolean,
 ): Promise<PollResult> {
-  const verdict = readConnectCodeVerdict(await browserApi.computerConnectCodeStatus(issued.connectCodeId));
+  const verdict = readConnectCodeVerdict(await adapter.status(issued.connectCodeId));
   if (!isCurrent() || verdict.kind === "wait") return { kind: "wait" };
   if (verdict.kind === "expire") return { kind: "expire" };
   if (targetComputerId && verdict.computerId !== targetComputerId) return { kind: "wait" };
-  const { computers } = await browserApi.computers();
+  const { computers } = await adapter.computers();
   if (!isCurrent()) return { kind: "wait" };
   const connected = computers.find(
     (computer) => computer.computerId === verdict.computerId && isFreshlyConnected(computer, verdict.redeemedAt),
   );
-  return connected ? { kind: "connected", computer: connected } : { kind: "wait" };
+  return connected
+    ? { kind: "connected", computer: connected }
+    : { kind: "redeemed", redeemed: { computerId: verdict.computerId, redeemedAt: verdict.redeemedAt } };
+}
+
+async function pollRedeemedComputer({
+  adapter,
+  isCurrent,
+  onConnected,
+  redeemed,
+  setError,
+}: {
+  readonly adapter: ComputerConnectAdapter;
+  readonly isCurrent: () => boolean;
+  readonly onConnected: (computer: WorkspaceComputerSummary) => void;
+  readonly redeemed: RedeemedComputerConnectCommand;
+  readonly setError: (message: string | undefined) => void;
+}): Promise<void> {
+  try {
+    const { computers } = await adapter.computers();
+    if (!isCurrent()) return;
+    setError(undefined);
+    const connected = computers.find(
+      (computer) => computer.computerId === redeemed.computerId && isFreshlyConnected(computer, redeemed.redeemedAt),
+    );
+    if (connected) onConnected(connected);
+  } catch (cause) {
+    if (isCurrent()) setError(errorMessage(cause, m.computer_connect_poll_failed()));
+  }
 }
 
 async function pollIssuedCommand({
+  adapter,
   expire,
   issued,
   isCurrent,
   onConnected,
+  onRedeemed,
   setError,
   targetComputerId,
 }: {
+  readonly adapter: ComputerConnectAdapter;
   readonly expire: () => void;
-  readonly issued: IssuedCommand;
+  readonly issued: IssuedComputerConnectCommand;
   readonly isCurrent: () => boolean;
   readonly onConnected: (computer: WorkspaceComputerSummary) => void;
+  readonly onRedeemed: (redeemed: RedeemedComputerConnectCommand) => void;
   readonly setError: (message: string | undefined) => void;
   readonly targetComputerId?: string;
 }): Promise<void> {
   if (!isCurrent()) return;
-  if (Date.now() >= issued.expiresAt) {
-    expire();
-    return;
-  }
   try {
-    const result = await readPollResult(issued, targetComputerId, isCurrent);
+    const result = await readPollResult(adapter, issued, targetComputerId, isCurrent);
     if (!isCurrent()) return;
     if (result.kind === "expire") {
       expire();
       return;
     }
     setError(undefined);
-    if (result.kind === "connected") onConnected(result.computer);
+    if (result.kind === "connected") {
+      onConnected(result.computer);
+    } else if (result.kind === "redeemed") {
+      onRedeemed(result.redeemed);
+    } else if (Date.now() >= issued.expiresAt) {
+      expire();
+    }
   } catch (cause) {
     if (isCurrent()) setError(errorMessage(cause, m.computer_connect_poll_failed()));
   }
@@ -109,32 +181,55 @@ async function pollIssuedCommand({
  * module owns every ordering rule inside that seam, including retiring stale issue and poll work.
  */
 export function ComputerConnect({ intent, onConnected }: ComputerConnectProps) {
+  return (
+    <ComputerConnectLifecycleRoot intent={intent} onConnected={onConnected}>
+      {(lifecycle) => <ComputerConnectPresentation intent={intent} lifecycle={lifecycle} />}
+    </ComputerConnectLifecycleRoot>
+  );
+}
+
+const browserAdapter: ComputerConnectAdapter = {
+  issue: (intent) =>
+    browserApi.issueComputerConnectCode(
+      intent.mode === "repair" ? { mode: "repair", targetComputerId: intent.target.computerId } : { mode: "create" },
+    ),
+  status: (connectCodeId) => browserApi.computerConnectCodeStatus(connectCodeId),
+  computers: () => browserApi.computers(),
+};
+
+/**
+ * Render seam for pages that keep their own layout while sharing the complete connection lifecycle.
+ * The adapter is intentionally the only varying dependency: production and Review Lab both drive
+ * the same state machine, including stale-work retirement and exact repair-target validation.
+ */
+export function ComputerConnectLifecycleRoot({
+  adapter = browserAdapter,
+  children,
+  intent,
+  onConnected,
+}: ComputerConnectLifecycleProps) {
   const targetComputerId = intent.mode === "repair" ? intent.target.computerId : undefined;
-  const targetName = intent.mode === "repair" ? intent.target.displayName : undefined;
   const attemptKey = `${intent.mode}:${targetComputerId ?? ""}`;
   return (
-    <ComputerConnectAttempt
-      key={attemptKey}
-      mode={intent.mode}
-      onConnected={onConnected}
-      targetComputerId={targetComputerId}
-      targetName={targetName}
-    />
+    <ComputerConnectAttempt adapter={adapter} key={attemptKey} intent={intent} onConnected={onConnected}>
+      {children}
+    </ComputerConnectAttempt>
   );
 }
 
 function ComputerConnectAttempt({
-  mode,
+  adapter,
+  children,
+  intent,
   onConnected,
-  targetComputerId,
-  targetName,
 }: {
-  readonly mode: ComputerConnectIntent["mode"];
+  readonly adapter: ComputerConnectAdapter;
+  readonly children: ComputerConnectLifecycleProps["children"];
+  readonly intent: ComputerConnectIntent;
   readonly onConnected?: (computer: WorkspaceComputerSummary) => void;
-  readonly targetComputerId?: string;
-  readonly targetName?: string;
 }) {
-  const [state, setState] = useState<AttemptState>({ kind: "issuing" });
+  const targetComputerId = intent.mode === "repair" ? intent.target.computerId : undefined;
+  const [state, setState] = useState<ComputerConnectState>({ kind: "issuing" });
   const [error, setError] = useState<string>();
   const mounted = useRef(false);
   const started = useRef(false);
@@ -151,9 +246,7 @@ function ComputerConnectAttempt({
     setState({ kind: "issuing" });
     setError(undefined);
     try {
-      const issued = await browserApi.issueComputerConnectCode(
-        mode === "repair" && targetComputerId ? { mode: "repair", targetComputerId } : { mode: "create" },
-      );
+      const issued = await adapter.issue(intent);
       if (!mounted.current || generation.current !== mine) return;
       setState({
         kind: "issued",
@@ -168,7 +261,7 @@ function ComputerConnectAttempt({
       setState(previous.kind === "expired" ? previous : { kind: "issue-failed" });
       setError(errorMessage(cause, m.computer_connect_issue_failed()));
     }
-  }, [mode, targetComputerId]);
+  }, [adapter, intent]);
 
   useEffect(() => {
     mounted.current = true;
@@ -184,8 +277,9 @@ function ComputerConnectAttempt({
   }, [issue]);
 
   useEffect(() => {
-    if (state.kind !== "issued") return;
+    if (state.kind !== "issued" && state.kind !== "redeemed") return;
     const { expiresAt } = state.issued;
+    const redeemed = state.kind === "redeemed" ? state.redeemed : undefined;
     const mine = generation.current;
     let active = true;
     let polling = false;
@@ -205,36 +299,62 @@ function ComputerConnectAttempt({
       setState({ kind: "connected", issued: state.issued, computer });
       onConnectedRef.current?.(computer);
     };
+    const latchRedeemed = (value: RedeemedComputerConnectCommand) => {
+      if (!current()) return;
+      completed = true;
+      setState({ kind: "redeemed", issued: state.issued, redeemed: value });
+    };
     const poll = () => {
       if (polling) return;
       polling = true;
-      void pollIssuedCommand({
-        expire,
-        issued: state.issued,
-        isCurrent: current,
-        onConnected: complete,
-        setError,
-        targetComputerId,
-      }).finally(() => {
+      const work = redeemed
+        ? pollRedeemedComputer({ adapter, isCurrent: current, onConnected: complete, redeemed, setError })
+        : pollIssuedCommand({
+            adapter,
+            expire,
+            issued: state.issued,
+            isCurrent: current,
+            onConnected: complete,
+            onRedeemed: latchRedeemed,
+            setError,
+            targetComputerId,
+          });
+      void work.finally(() => {
         polling = false;
       });
     };
 
     const pollTimer = window.setInterval(poll, COMPUTER_POLL_INTERVAL_MS);
-    const expiryTimer = window.setTimeout(expire, Math.max(0, expiresAt - Date.now()));
+    // At the local deadline, ask the Server once more instead of expiring blindly: redemption is
+    // durable and can precede inventory propagation. Once latched, the exact Computer is polled
+    // without any code TTL because issuing another command would risk duplicate enrollment.
+    const expiryTimer = redeemed ? undefined : window.setTimeout(poll, Math.max(0, expiresAt - Date.now()));
     poll();
     return () => {
       active = false;
       window.clearInterval(pollTimer);
-      window.clearTimeout(expiryTimer);
+      if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
     };
-  }, [state, targetComputerId]);
+  }, [adapter, state, targetComputerId]);
+
+  return children({ error, reissue: () => void issue(), state });
+}
+
+function ComputerConnectPresentation({
+  intent,
+  lifecycle,
+}: {
+  readonly intent: ComputerConnectIntent;
+  readonly lifecycle: ComputerConnectLifecycle;
+}) {
+  const { error, reissue, state } = lifecycle;
+  const targetName = intent.mode === "repair" ? intent.target.displayName : undefined;
 
   if (state.kind === "issue-failed") {
     return (
       <div className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
         {error ? <Banner variant="error" role="alert" description={error} /> : null}
-        <Button className="w-fit" onClick={() => void issue()}>
+        <Button className="w-fit" onClick={reissue}>
           {m.computer_connect_retry_issue()}
         </Button>
       </div>
@@ -268,13 +388,14 @@ function ComputerConnectAttempt({
             state.kind === "expired" ? (
               <>
                 <span>{m.computer_connect_expired()}</span>
-                <Button size="compact" variant="inline" onClick={() => void issue()}>
+                <Button size="compact" variant="inline" onClick={reissue}>
                   {m.computer_connect_reissue()}
                 </Button>
               </>
             ) : undefined
           }
           fallbackHint={m.computer_connect_copy_fallback()}
+          inert={state.kind === "redeemed"}
         />
       )}
       <AttemptStatus state={state} targetName={targetName} />
@@ -283,7 +404,7 @@ function ComputerConnectAttempt({
   );
 }
 
-function AttemptStatus({ state, targetName }: { readonly state: AttemptState; readonly targetName?: string }) {
+function AttemptStatus({ state, targetName }: { readonly state: ComputerConnectState; readonly targetName?: string }) {
   let content = null;
   if (state.kind === "issuing") {
     content = (
@@ -294,7 +415,7 @@ function AttemptStatus({ state, targetName }: { readonly state: AttemptState; re
         {m.computer_connect_issuing()}
       </p>
     );
-  } else if (state.kind === "issued") {
+  } else if (state.kind === "issued" || state.kind === "redeemed") {
     content = (
       <p className="flex items-center gap-2 text-kumo-subtle">
         <span aria-hidden="true" className="ots-pulse shrink-0" />

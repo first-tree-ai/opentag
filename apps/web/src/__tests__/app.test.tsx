@@ -2075,6 +2075,11 @@ describe("OpenTag Web App Shell", () => {
       screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST"),
+    ).toHaveLength(0);
   });
 
   it("offers machine recovery on the Connected computer page when the Computer is offline", async () => {
@@ -2084,7 +2089,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Reconnect this Computer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeTruthy();
   });
 
   it("withholds machine recovery when the Computer is reachable but its Provider is not", async () => {
@@ -2096,7 +2101,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Codex is not installed on Ada's Mac.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Reconnect this Computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeNull();
   });
 
   it("generates a command naming the assigned Computer without leaving the Agent", async () => {
@@ -2104,10 +2109,18 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Reconnect this Computer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Need to reinstall? Generate a repair command." }));
 
     expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
+    const repairRequests = vi
+      .mocked(fetch)
+      .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");
+    expect(repairRequests).toHaveLength(1);
+    expect(JSON.parse(String(repairRequests[0]?.[1]?.body))).toEqual({
+      mode: "repair",
+      targetComputerId: computerId,
+    });
     expect(window.location.pathname).toBe(`/agents/${agentId}/settings/computer`);
   });
 
@@ -2121,12 +2134,24 @@ describe("OpenTag Web App Shell", () => {
     expect(
       screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
     ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
 
     computerStatus = "online";
     fireEvent(window, new Event("focus"));
 
     expect(await screen.findByText("Online")).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(/Start it there/)).toBeNull());
+
+    computerStatus = "offline";
+    fireEvent(window, new Event("focus"));
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST"),
+    ).toHaveLength(1);
   });
 
   it("explains an unready Provider on the Computer page instead of the model settings", async () => {

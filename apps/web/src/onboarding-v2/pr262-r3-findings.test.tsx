@@ -7,7 +7,7 @@
  */
 
 import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { OnboardingV2Page } from "./page.js";
@@ -106,10 +106,7 @@ describe("resume at 6b6920a", () => {
     expect(screen.queryByText("Your computer is connected.")).toBeNull();
   });
 
-  it("offers a way to reconnect a Computer that is no longer there", async () => {
-    // The command block renders only while the connection is not `connected`, and resume sets
-    // `connected` unconditionally — so the reader is held on a check that can never settle, with
-    // Continue disabled and nothing on the page that could bring the machine back.
+  it("offers explicit repair without issuing it before the reader asks", async () => {
     resumeOntoDepartedComputer();
 
     render(<OnboardingV2Page />);
@@ -117,6 +114,9 @@ describe("resume at 6b6920a", () => {
     await tick(5_000);
 
     expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
+    expect(document.querySelector("code")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    await settle();
     expect(document.querySelector("code")).not.toBeNull();
   });
 

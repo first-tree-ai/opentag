@@ -23,7 +23,7 @@
   "usage_token_usage_over_time": "Token 用量趋势",
   "usage_tokens": "Tokens",
   "usage_tokens_used": "已使用 {tokens} Tokens · {window}",
-  "usage_tokens_used_value": "{tokens} Tokens",
+  "usage_tokens_used_value": "Token：{tokens}",
   "usage_try_again": "再试一次",
   "usage_unavailable_fallback": "用量暂时不可用，请重试。",
   "usage_view_details": "查看详情",

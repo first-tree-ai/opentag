@@ -20,7 +20,7 @@
   "agents_computer_expires_in": "将在 {time} 后过期",
   "agents_computer_generate_command": "生成命令，然后在终端中运行。",
   "agents_computer_generate_command_on": "生成命令，然后在 {name} 上的终端中运行。",
-  "agents_computer_identity": "{name} · {platform} · {runtime}",
+  "agents_computer_identity": "电脑：{name} · 平台：{platform} · 运行时：{runtime}",
   "agents_computer_offline": "离线",
   "agents_computer_online": "在线",
   "agents_computer_reconnect": "重新连接 {name}",

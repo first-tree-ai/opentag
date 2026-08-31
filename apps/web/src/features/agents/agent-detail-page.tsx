@@ -70,7 +70,7 @@ export function AgentObjectHeader({
           {...(backToSettings ? agentDetailLink(agent.id) : ({ to: "/agents" } as const))}
         >
           <Icon name="arrow-left" />
-          {backToSettings ? agent.displayName : "Agents"}
+          {backToSettings ? agent.displayName : m.agents_title()}
         </Link>
       ) : null}
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -90,7 +90,7 @@ export function AgentObjectHeader({
             </div>
             <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
               {handle ? <span>@{handle}</span> : null}
-              {showCreator ? <span>Created by {agent.createdBy.displayName}</span> : null}
+              {showCreator ? <span>{m.agents_created_by({ name: agent.createdBy.displayName })}</span> : null}
             </p>
           </div>
         </div>
@@ -101,7 +101,7 @@ export function AgentObjectHeader({
               state={{ agent }}
               {...agentSettingsLink(agent.id)}
             >
-              <Icon name="settings" /> Settings
+              <Icon name="settings" /> {m.agents_settings()}
             </Link>
           ) : null}
         </div>
@@ -135,7 +135,11 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
           // optional for exactly this: the messaging row below omits it the same way.
           identity={
             agent.computer
-              ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeName}`
+              ? m.agents_computer_identity({
+                  name: agent.computer.displayName,
+                  platform: platformLabel(agent.computer.platform),
+                  runtime: runtimeName,
+                })
               : undefined
           }
           name={m.agents_status_computer()}
@@ -241,7 +245,7 @@ export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
   return (
     <section
       className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-tint p-4"
-      aria-label={`Agent status: ${status.label}`}
+      aria-label={m.agents_lifecycle_aria({ status: status.label })}
       data-ui="agent-lifecycle-notice"
     >
       <div className="grid gap-1">

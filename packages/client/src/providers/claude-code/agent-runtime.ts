@@ -224,7 +224,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected async abortProvider(_request: AgentAbortRequest): Promise<void> {
+  protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
     if (this.#terminalClaimed) return;
     await this.#process?.interrupt();
   }

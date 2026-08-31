@@ -58,6 +58,13 @@ function json(value: unknown, status = 200) {
  * trigger here is what Chrome does on a real click, and is the condition the component was written
  * against.
  */
+/** How many times the Agent's configuration has been read, to tell a re-read from the absence of one. */
+function configReadCount(): number {
+  return vi
+    .mocked(fetch)
+    .mock.calls.filter(([input, init]) => String(input).endsWith("/config") && init?.method !== "PATCH").length;
+}
+
 function clickButton(button: HTMLElement) {
   button.focus();
   fireEvent.click(button);
@@ -1991,6 +1998,7 @@ describe("OpenTag Web App Shell", () => {
       if (offline && String(input).startsWith(`/api/v1/agents/${agentId}`)) throw new TypeError("Failed to fetch");
       return baseFetch(input, init);
     });
+    const configReadsBefore = configReadCount();
     fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
     expect((await identity.findByRole("alert")).textContent).toBe("Failed to fetch");
 
@@ -2003,6 +2011,10 @@ describe("OpenTag Web App Shell", () => {
       "Danger zone",
     ]);
     expect((identity.getByLabelText("Display name") as HTMLInputElement).value).toBe("Draft I Typed");
+    // Nothing asked to re-read. The screen surviving this is the point, but it survives twice over --
+    // once because the read was never requested, and once because a failed read would degrade rather
+    // than blank. Asserting the request is what keeps the first of those from being deleted quietly.
+    expect(configReadCount()).toBe(configReadsBefore);
 
     // And it recovers on its own once the request can be made again, without a reload.
     offline = false;

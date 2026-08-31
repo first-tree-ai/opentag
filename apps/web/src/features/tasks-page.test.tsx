@@ -410,7 +410,7 @@ describe("Tasks debug view", () => {
 
     // Away and back: the Agent id is the same again, but the list underneath is a different load.
     view.rerender(<AgentTasksSection agentId={otherAgentId} />);
-    view.rerender(<AgentTasksSection agentId={agentId} />);
+    view.rerender(<AgentTasksSection agentId="44444444-4444-4444-8444-444444444444" />);
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
 
     releaseFirstPage({
@@ -530,5 +530,141 @@ describe("Tasks debug view", () => {
     expect(screen.getByRole("heading", { name: "Loading Tasks" })).toBeTruthy();
     resolve({ tasks: [], nextCursor: null });
     await waitFor(() => expect(screen.getByRole("heading", { name: "No Tasks found" })).toBeTruthy());
+  });
+
+  it("renders Agent Tasks loading, empty, append success, and append failure states", async () => {
+    let release: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
+    vi.spyOn(browserApi, "tasks").mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    const view = await renderInRouter(<AgentTasksSection agentId={agentId} />);
+    expect(screen.getByText("Loading Tasks…")).toBeTruthy();
+    release({ tasks: [], nextCursor: null });
+    expect(
+      await screen.findByText("No Tasks yet. Message this Agent in your chat app to put it to work."),
+    ).toBeTruthy();
+
+    vi.mocked(browserApi.tasks)
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "next" })
+      .mockResolvedValueOnce({
+        tasks: [{ ...task, id: "66666666-6666-4666-8666-666666666666", title: "Next Task" }],
+        nextCursor: null,
+      });
+    view.rerender(<AgentTasksSection agentId="44444444-4444-4444-8444-444444444444" />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByRole("link", { name: "Next Task" })).toBeTruthy();
+
+    vi.mocked(browserApi.tasks)
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "retry" })
+      .mockRejectedValueOnce(new Error("Agent append failed"));
+    view.rerender(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Could not load more Tasks.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("reports when an Agent's Tasks cannot be loaded", async () => {
+    vi.spyOn(browserApi, "tasks").mockRejectedValueOnce(new ApiError(503, "Tasks unavailable"));
+
+    await renderInRouter(<AgentTasksSection agentId={agentId} />);
+
+    expect(await screen.findByText("Tasks are temporarily unavailable.")).toBeTruthy();
+  });
+
+  it("renders missing, unavailable, and empty Task detail states", async () => {
+    const view = await renderInRouter(<TaskDetailPage />, { path: "/tasks/missing" });
+    expect(await screen.findByRole("heading", { name: "Task not found" })).toBeTruthy();
+    expect(screen.getByText("Task not found")).toBeTruthy();
+
+    vi.spyOn(browserApi, "task").mockRejectedValueOnce(new ApiError(404, "not found"));
+    view.rerender(<TaskDetailPage taskId={sessionId} />);
+    expect(await screen.findByText("This Task does not exist or is outside your Account.")).toBeTruthy();
+
+    vi.mocked(browserApi.task).mockRejectedValueOnce(new Error("database unavailable"));
+    view.rerender(<TaskDetailPage taskId="66666666-6666-4666-8666-666666666666" />);
+    expect(await screen.findByRole("heading", { name: "Task unavailable" })).toBeTruthy();
+    expect(screen.getByText("database unavailable")).toBeTruthy();
+
+    vi.mocked(browserApi.task).mockResolvedValueOnce({
+      ...detail,
+      turns: [],
+      internalSessions: [],
+      collaborationMessages: [],
+    });
+    view.rerender(<TaskDetailPage taskId="77777777-7777-4777-8777-777777777777" />);
+    expect(await screen.findByRole("heading", { name: "No Turns recorded" })).toBeTruthy();
+  });
+
+  it("shows pending and terminal Turn details, errors, and collaboration messages", async () => {
+    const root = detail.turns[0];
+    if (!root) throw new Error("Expected the Task fixture to include a root Turn");
+    const pending = {
+      ...root,
+      deliveryId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      delivery: { ...root.delivery, state: "accepted" as const, attemptCount: 2, reason: null, lastErrorCode: null },
+      message: {
+        ...root.message,
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        authorDisplayName: null,
+        fallbackText: "",
+      },
+      report: null,
+    } satisfies TaskDetail["turns"][number];
+    const failed = {
+      ...root,
+      deliveryId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      delivery: {
+        ...root.delivery,
+        state: "terminal_rejected" as const,
+        attemptCount: 3,
+        reason: "Rejected by runtime",
+        lastErrorCode: "RUNTIME_REJECTED",
+      },
+      message: { ...root.message, id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", fallbackText: "Rejected input" },
+      report: {
+        ...root.report,
+        finalText: null,
+        errorReason: "Provider failed",
+        usage: null,
+        traceSummary: { lastSequence: 0, droppedEvents: 2 },
+        outcome: "failed" as const,
+      },
+    } satisfies TaskDetail["turns"][number];
+    const collaboration = {
+      id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      sourceSessionId: sessionId,
+      targetSessionId: "55555555-5555-4555-8555-555555555555",
+      content: "Please verify the deployment state.",
+      outcome: "accepted" as const,
+      attemptCount: 1,
+      lastErrorCode: null,
+      createdAt: "2026-08-27T01:20:00.000Z",
+      updatedAt: "2026-08-27T01:21:00.000Z",
+    };
+    const firstSession = detail.internalSessions[0];
+    if (!firstSession) throw new Error("Expected an internal session");
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      turns: [pending, failed],
+      internalSessions: [{ ...firstSession, endedAt: "2026-08-27T01:30:00.000Z", runtimeModel: null }],
+      collaborationMessages: [collaboration],
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const conversation = await screen.findByLabelText("Task conversation");
+    expect(within(conversation).getByText("The Turn is running or its report has not arrived.")).toBeTruthy();
+    expect(within(conversation).getByText("No text content")).toBeTruthy();
+    expect(within(conversation).getByText("Delivery terminal_rejected.")).toBeTruthy();
+    const runtimeDetails = within(conversation).getAllByText("Runtime details")[0];
+    if (!runtimeDetails) throw new Error("Runtime details toggle is missing");
+    fireEvent.click(runtimeDetails);
+    expect(within(conversation).getByText(/2 attempts/)).toBeTruthy();
+    expect(within(conversation).getByText("Provider failed")).toBeTruthy();
+    fireEvent.click(screen.getByText(/Internal collaboration · 1 Sessions · 1 messages/));
+    expect(screen.getByText("Ended")).toBeTruthy();
+    expect(screen.getByText("Please verify the deployment state.")).toBeTruthy();
   });
 });

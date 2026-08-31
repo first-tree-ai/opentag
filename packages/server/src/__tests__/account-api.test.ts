@@ -119,6 +119,13 @@ function services() {
         issuedAt: new Date("2026-08-19T00:00:00.000Z"),
         mode: "create",
       }),
+      exchangeConnectCode: vi.fn().mockResolvedValue({
+        computerId,
+        credentialId: "credential-id",
+        machineToken: "machine-token",
+        workspaceComputerId: computerId,
+        workspaceId,
+      }),
     },
     taskService: {
       list: vi.fn().mockResolvedValue({ tasks: [taskSummary], nextCursor: null }),
@@ -305,6 +312,33 @@ describe("Account-native management collections", () => {
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ agents: [agentListItem] });
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
+  });
+
+  it("exchanges a Computer connect code and strips legacy authority fields", async () => {
+    const { app, service } = appWith();
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.computerConnectExchange,
+      payload: {
+        arch: "arm64",
+        clientVersion: "1.0.0",
+        code: "sixteen-character-code",
+        computerId,
+        displayName: "Laptop",
+        platform: "darwin",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({ computerId, machineToken: "machine-token", workspaceComputerId: computerId });
+    expect(service.machineAuthService.exchangeConnectCode).toHaveBeenCalledWith({
+      arch: "arm64",
+      clientVersion: "1.0.0",
+      code: "sixteen-character-code",
+      computerId,
+      displayName: "Laptop",
+      platform: "darwin",
+    });
   });
 
   it("does not register management Workspace routes", async () => {

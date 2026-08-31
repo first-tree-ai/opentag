@@ -12,7 +12,13 @@ const traceExporter = vi.hoisted(() =>
 );
 vi.mock("@opentelemetry/exporter-trace-otlp-http", () => ({ OTLPTraceExporter: traceExporter }));
 
-import { initTelemetry, isTelemetryEnabled, parseHeaderString, shutdownTelemetry } from "../logfire-init.js";
+import {
+  AllowlistedSpanProcessor,
+  initTelemetry,
+  isTelemetryEnabled,
+  parseHeaderString,
+  shutdownTelemetry,
+} from "../logfire-init.js";
 
 beforeEach(async () => {
   await shutdownTelemetry();
@@ -80,5 +86,31 @@ describe("Logfire lifecycle", () => {
     expect(traceExporter).not.toHaveBeenCalled();
     expect(() => parseHeaderString("x-api-key=one,X-API-Key=two")).toThrow("duplicate header");
     expect(() => parseHeaderString("x-api-key=\r\nsecret")).toThrow("invalid header");
+    expect(() => parseHeaderString("x api=value")).toThrow("invalid header");
+    expect(() => parseHeaderString("x-api-key=")).toThrow("invalid header");
+  });
+
+  it("forwards force-flush requests through the allowlisted processor", async () => {
+    const forceFlush = vi.fn(async () => undefined);
+    const processor = {
+      forceFlush,
+      onStart: vi.fn(),
+      onEnd: vi.fn(),
+      onEnding: vi.fn(),
+      shutdown: vi.fn(async () => undefined),
+    };
+    await initTelemetry(
+      {
+        endpoint: "https://collector.example.test/v1/traces",
+        environment: "test",
+        headers: "",
+        sampleRate: 1,
+      },
+      "server-instance-force-flush",
+      { processor },
+    );
+
+    await new AllowlistedSpanProcessor(processor).forceFlush();
+    expect(forceFlush).toHaveBeenCalledOnce();
   });
 });

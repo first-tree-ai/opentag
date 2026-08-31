@@ -1,7 +1,13 @@
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ServerHealthTimeoutError } from "@opentag/client";
+import {
+  ServerHealthConfigurationError,
+  ServerHealthHttpError,
+  ServerHealthNetworkError,
+  ServerHealthResponseError,
+  ServerHealthTimeoutError,
+} from "@opentag/client";
 import { Command, type CommanderError } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerDoctorCommand } from "../commands/doctor.js";
@@ -234,6 +240,38 @@ describe("doctor daemon service", () => {
     expect(check(result.checks, "daemon.service")).toMatchObject({ blocking: true, status: "unknown" });
     expect(result.exitCode).toBe(1);
   });
+
+  it("classifies local inspection and runtime detector failures as unknown", async () => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home, {
+      inspectLocalConfiguration: vi.fn().mockRejectedValue(new Error("private local details")),
+      runtimeDetector: vi.fn().mockRejectedValue(new Error("runtime detector details")),
+    });
+
+    expect(check(result.checks, "local.identity")).toMatchObject({ status: "unknown", blocking: true });
+    expect(check(result.checks, "local.credentials")).toMatchObject({ status: "unknown", blocking: true });
+    expect(check(result.checks, "local.binding")).toMatchObject({ status: "unknown", blocking: true });
+    expect(check(result.checks, "runtime.any-installed")).toMatchObject({ status: "unknown", blocking: true });
+    expect(check(result.checks, "runtime.codex.installation")).toMatchObject({ status: "unknown" });
+    expect(result.message).toContain("private local details");
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("uses default daemon and runtime detectors for a supported report shape", async () => {
+    const home = await createHome();
+    const result = await runDoctor({
+      arch: "arm64",
+      channel: "stable",
+      cliVersion: "0.1.0",
+      env: { OPENTAG_HOME: home },
+      healthChecker: vi.fn().mockResolvedValue({ service: "opentag-server", status: "ok" } as const),
+      nodeVersion: "v24.0.0",
+      platform: "freebsd",
+    });
+
+    expect(check(result.checks, "daemon.service")).toMatchObject({ status: "unknown", blocking: true });
+    expect(check(result.checks, "runtime.any-installed")).toBeDefined();
+  });
 });
 
 describe("doctor Server health", () => {
@@ -264,6 +302,21 @@ describe("doctor Server health", () => {
       status: "fail",
     });
     expect(result.exitCode).toBe(1);
+  });
+
+  it.each([
+    [new ServerHealthConfigurationError("bad URL"), /invalid enrolled Server URL/iu],
+    [new ServerHealthNetworkError("network down"), /could not reach/iu],
+    [new ServerHealthHttpError(503), /HTTP 503/iu],
+    [new ServerHealthResponseError("bad response"), /invalid health response/iu],
+    [new Error("unexpected health error"), /health status could not be determined/iu],
+  ])("classifies %s without exposing implementation details", async (error, detail) => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home, { healthChecker: vi.fn().mockRejectedValue(error) });
+    expect(check(result.checks, "server.health")).toMatchObject({
+      status: "fail",
+      detail: expect.stringMatching(detail),
+    });
   });
 });
 

@@ -49,6 +49,7 @@
     "@electric-sql/pglite": "^0.5.8",
     "@testcontainers/postgresql": "^11.14.0",
     "@types/ws": "^8.18.1",
-    "drizzle-kit": "^0.31.10"
+    "drizzle-kit": "^0.31.10",
+    "vitest": "^3.2.0"
   }
 }

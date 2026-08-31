@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi } from "../api.js";
+import * as client from "../index.js";
 
 const grantedAt = "2026-08-19T00:00:00.000Z";
 
@@ -8,6 +9,14 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("OpenTagApi Workspace surface", () => {
+  it("re-exports the complete public client barrel", () => {
+    expect(client.OpenTagApi).toBe(OpenTagApi);
+    expect(client.RuntimeConnection).toBeDefined();
+    expect(client.SessionBindingStore).toBeDefined();
+    expect(client.inspectLocalComputerConfiguration).toBeDefined();
+    expect(client.CodexAgentRuntimeFactory).toBeDefined();
+  });
+
   it("exposes only the Phase 1 Workspace compatibility seam", () => {
     const api = new OpenTagApi("https://opentag.example.com", vi.fn<typeof fetch>());
 

@@ -1,5 +1,5 @@
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCredentials, writeMachineCredentialsAtomically } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
-import { createDaemonServiceManager } from "../core/daemon/service/index.js";
+import { createDaemonServiceManager, formatDaemonServiceInfo } from "../core/daemon/service/index.js";
 import { createLaunchdBackend, renderLaunchdPlist, renderLaunchdWrapper } from "../core/daemon/service/launchd.js";
 import { buildServicePath } from "../core/daemon/service/shared.js";
 import { createSystemdBackend, renderSystemdUnit } from "../core/daemon/service/systemd.js";
@@ -20,6 +20,103 @@ afterEach(async () => {
 });
 
 describe("systemd service backend", () => {
+  it("formats complete service information and exposes unsupported platform behavior", async () => {
+    expect(
+      formatDaemonServiceInfo({
+        currentHome: "/tmp/home",
+        definitionPath: "/tmp/unit",
+        detail: "needs attention",
+        drifted: true,
+        logHint: "journal",
+        pid: 42,
+        platform: "systemd",
+        runtimeOwner: { consistency: "consistent", pid: 42 },
+        serviceId: "opentag",
+        state: "active",
+        configuredHome: "/tmp/home",
+      }),
+    ).toContain("Runtime owner: 42/consistent");
+    expect(
+      formatDaemonServiceInfo({
+        currentHome: "/tmp/home",
+        definitionPath: "/tmp/unit",
+        drifted: false,
+        logHint: "journal",
+        platform: "unsupported",
+        runtimeOwner: undefined,
+        serviceId: "opentag",
+        state: "unknown",
+      }),
+    ).toContain("Runtime owner: missing");
+
+    const home = await temporaryDirectory("opentag-unsupported-home-");
+    const userHome = await temporaryDirectory("opentag-unsupported-user-");
+    const manager = await createDaemonServiceManager({
+      home,
+      invocation: { args: [], program: "/usr/bin/opentag" },
+      platform: "freebsd",
+      runner: fakeRunner(),
+      userHome,
+      uid: 1000,
+      username: "test",
+    });
+    await expect(manager.status()).resolves.toMatchObject({ platform: "unsupported", state: "unknown" });
+    await expect(manager.preflight()).rejects.toThrow("supports Linux and macOS only");
+    await expect(manager.installAndStart()).rejects.toThrow("supports Linux and macOS only");
+    await expect(manager.start()).rejects.toThrow("does not expose a verifiable OPENTAG_HOME");
+  });
+
+  it("rejects invalid and unenrolled machine credentials before service mutation", async () => {
+    const userHome = await temporaryDirectory("opentag-invalid-credentials-user-");
+    const home = await temporaryDirectory("opentag-invalid-credentials-home-");
+    const runner = fakeRunner((_, args) =>
+      args.includes("show-environment") ? result(0, "", "") : result(3, "inactive", ""),
+    );
+    const manager = await createDaemonServiceManager({
+      home,
+      invocation: { args: [], program: "/usr/bin/opentag" },
+      platform: "linux",
+      runner,
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    await expect(manager.installAndStart()).rejects.toThrow("not enrolled");
+    await writeFileWithParents(`${resolveDaemonPaths(home).config}/computer-credentials.json`, "malformed");
+    await expect(manager.installAndStart()).rejects.toThrow("credentials are invalid");
+  });
+
+  it("refuses mutation when the daemon owner record is malformed", async () => {
+    const userHome = await temporaryDirectory("opentag-owner-malformed-user-");
+    const home = await temporaryDirectory("opentag-owner-malformed-home-");
+    const unitPath = join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`);
+    const invocation = { args: [], program: "/usr/bin/opentag" };
+    await writeFileWithParents(
+      unitPath,
+      renderSystemdUnit({
+        home,
+        invocation,
+        path: buildServicePath(invocation, "linux"),
+        serviceId: channelConfig.serviceId,
+      }),
+    );
+    await writeFileWithParents(resolveDaemonPaths(home).daemonOwner, "{}\n");
+    const runner = fakeRunner((_, args) => {
+      if (args.includes("is-active")) return result(0, "active", "");
+      if (args.includes("MainPID")) return result(0, "42", "");
+      return result(0, "", "");
+    });
+    const manager = await createDaemonServiceManager({
+      home,
+      invocation,
+      platform: "linux",
+      runner,
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    await expect(manager.start()).rejects.toThrow("owner record is malformed");
+  });
   it("renders a user unit with an absolute hidden entry and no secrets", () => {
     const unit = renderSystemdUnit({
       home: "/Users/Test Home/.opentag-dev%1",
@@ -271,6 +368,168 @@ describe("systemd service backend", () => {
     expect((await backend.status()).detail).toBeTruthy();
   });
 
+  it.each([
+    ["orphaned timeout", { code: null, stdout: "", stderr: "", timedOut: true }, "definition-less service target"],
+    ["orphaned loaded", result(0, "loaded", ""), "service target loaded"],
+    ["orphaned manager error", result(1, "", "manager denied"), "manager denied"],
+  ] as const)("reports a definition-less systemd target as unknown after %s", async (_label, response, detail) => {
+    const userHome = await temporaryDirectory("opentag-systemd-orphan-");
+    const runner = fakeRunner((_, args) => (args.includes("LoadState") ? response : result(0, "", "")));
+    const backend = createSystemdBackend({
+      home: "/tmp/systemd-orphan",
+      invocation: { args: [], program: "/usr/bin/opentag" },
+      runner,
+      serviceId: "opentag",
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    await expect(backend.status()).resolves.toMatchObject({
+      state: response.code === 0 && response.stdout === "not-found" ? "not-installed" : "unknown",
+    });
+    if (response.stdout !== "not-found") expect((await backend.status()).detail).toContain(detail);
+  });
+
+  it("covers systemd definition, manager, and inactive-state diagnostics", async () => {
+    const userHome = await temporaryDirectory("opentag-systemd-status-");
+    const unitPath = join(userHome, ".config", "systemd", "user", "opentag.service");
+    const invocation = { args: [], program: "/usr/bin/opentag" };
+    await writeFileWithParents(unitPath, "[Service]\nExecStart=/bin/true\n");
+    const invalidRunner = fakeRunner(() => result(0, "active", ""));
+    const invalidBackend = createSystemdBackend({
+      home: "/tmp/home",
+      invocation,
+      runner: invalidRunner,
+      serviceId: "opentag",
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    await expect(invalidBackend.status()).resolves.toMatchObject({ state: "unknown", drifted: true });
+
+    await writeFileWithParents(
+      unitPath,
+      renderSystemdUnit({
+        home: "/tmp/home",
+        invocation,
+        path: buildServicePath(invocation, "linux"),
+        serviceId: "opentag",
+      }),
+    );
+    const cases: Array<[string, CommandResult, string]> = [
+      ["active timeout", { code: null, stdout: "", stderr: "", timedOut: true }, "timed out"],
+      ["active failure", result(1, "unexpected", "manager denied"), "manager denied"],
+      ["inactive", result(3, "deactivating", ""), "inactive"],
+    ];
+    for (const [label, activeResult, expected] of cases) {
+      const runner = fakeRunner((_, args) => (args.includes("is-active") ? activeResult : result(0, "", "")));
+      const backend = createSystemdBackend({
+        home: "/tmp/home",
+        invocation,
+        runner,
+        serviceId: "opentag",
+        uid: 1000,
+        userHome,
+        username: "test",
+      });
+      const info = await backend.status();
+      expect(info.state, label).toBe(expected === "inactive" ? "inactive" : "unknown");
+      if (expected !== "inactive") expect(info.detail).toBeTruthy();
+    }
+  });
+
+  it("handles systemd preflight, missing installation, and uninstall stop verification failures", async () => {
+    const userHome = await temporaryDirectory("opentag-systemd-ops-");
+    const invocation = { args: [], program: "/usr/bin/opentag" };
+    const unavailable = createSystemdBackend({
+      home: "/tmp/home",
+      invocation,
+      runner: fakeRunner((_, args) =>
+        args.includes("show-environment") ? result(1, "", "not running") : result(0, "", ""),
+      ),
+      serviceId: "opentag",
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    await expect(unavailable.preflight()).rejects.toThrow("not running");
+    const missingRunner = fakeRunner();
+    const missing = createSystemdBackend({
+      home: "/tmp/home",
+      invocation,
+      runner: missingRunner,
+      serviceId: "opentag",
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    await expect(missing.start()).rejects.toThrow("not installed");
+    await expect(missing.restart()).rejects.toThrow("not installed");
+    await expect(missing.stop()).resolves.toMatchObject({ state: "not-installed" });
+    await expect(missing.uninstall()).resolves.toMatchObject({ state: "not-installed" });
+
+    const unitPath = join(userHome, ".config", "systemd", "user", "opentag.service");
+    await writeFileWithParents(
+      unitPath,
+      renderSystemdUnit({ home: "/tmp/home", invocation, path: "/usr/bin", serviceId: "opentag" }),
+    );
+    for (const afterStop of [
+      { code: 0, stdout: "active", stderr: "", timedOut: false },
+      { code: null, stdout: "", stderr: "", timedOut: true },
+      result(3, "deactivating", ""),
+    ]) {
+      const runner = fakeRunner((_, args) => {
+        if (args.includes("disable")) return result(0, "", "");
+        if (args.includes("is-active")) return afterStop;
+        return result(0, "", "");
+      });
+      const backend = createSystemdBackend({
+        home: "/tmp/home",
+        invocation,
+        runner,
+        serviceId: "opentag",
+        uid: 1000,
+        userHome,
+        username: "test",
+      });
+      await expect(backend.uninstall()).rejects.toThrow("did not confirm");
+    }
+  });
+
+  it("restarts an already active current systemd unit without issuing start", async () => {
+    const userHome = await temporaryDirectory("opentag-systemd-current-");
+    const invocation = { args: [], program: "/usr/bin/opentag" };
+    const unitPath = join(userHome, ".config", "systemd", "user", "opentag.service");
+    const expected = renderSystemdUnit({
+      home: "/tmp/home",
+      invocation,
+      path: buildServicePath(invocation, "linux"),
+      serviceId: "opentag",
+    });
+    await writeFileWithParents(unitPath, expected);
+    const calls: string[] = [];
+    const runner = fakeRunner((program, args) => {
+      calls.push(`${program} ${args.join(" ")}`);
+      if (args.includes("show-environment")) return result(0, "", "");
+      if (args.includes("is-active")) return result(0, "active", "");
+      if (args.includes("MainPID")) return result(0, "123", "");
+      if (program === "loginctl") return result(0, "", "");
+      return result(0, "", "");
+    });
+    const backend = createSystemdBackend({
+      home: "/tmp/home",
+      invocation,
+      runner,
+      serviceId: "opentag",
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    await expect(backend.installAndStart()).resolves.toMatchObject({ state: "active", pid: 123, drifted: false });
+    expect(calls).not.toContain("systemctl --user start opentag.service");
+    expect(calls).not.toContain("systemctl --user restart opentag.service");
+  });
+
   it("refuses non-stop mutation when systemd cannot verify a live owner's PID", async () => {
     const userHome = await temporaryDirectory("opentag-systemd-");
     const home = await temporaryDirectory("opentag-systemd-home-");
@@ -506,8 +765,193 @@ describe("launchd service backend", () => {
     expect(wrapper).toContain("'/usr/bin/node' '/app/index.mjs' 'daemon' 'service-run'");
   });
 
+  it("covers launchd orphan, malformed, and transient status reports", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-status-");
+    const home = join(userHome, "home");
+    const invocation = { args: [], program: "/usr/local/bin/opentag" };
+    const scenarios: Array<[string, CommandResult, string]> = [
+      ["orphan timeout", { code: null, stdout: "", stderr: "", timedOut: true }, "definition-less service target"],
+      ["orphan error", result(1, "", "permission denied"), "permission denied"],
+      ["loaded timeout", { code: null, stdout: "", stderr: "", timedOut: true }, "launchctl print timed out"],
+      ["loaded error", result(1, "", "permission denied"), "permission denied"],
+    ];
+    for (const [label, response, expectedDetail] of scenarios) {
+      const runner = fakeRunner((_, args) => (args[0] === "print" ? response : result(0, "", "")));
+      const backend = createLaunchdBackend({
+        home,
+        invocation,
+        runner,
+        serviceId: "opentag",
+        uid: 501,
+        userHome,
+        sleep: async () => undefined,
+      });
+      if (label.startsWith("loaded")) await writeLaunchdDefinitions({ home, invocation, userHome });
+      const info = await backend.status();
+      expect(info.state, label).toBe("unknown");
+      expect(info.detail).toContain(expectedDetail);
+      if (label.startsWith("loaded")) {
+        const { rm: remove } = await import("node:fs/promises");
+        await remove(join(userHome, "Library", "LaunchAgents", "opentag.plist"));
+      }
+    }
+  });
+
+  it("reports loaded LaunchAgents without a valid PID or process state", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-pid-");
+    const home = join(userHome, "home");
+    const invocation = { args: [], program: "/usr/local/bin/opentag" };
+    await writeLaunchdDefinitions({ home, invocation, userHome });
+    for (const output of ["state = running", "state = unknown", "pid = 0"]) {
+      const runner = fakeRunner((_, args) => (args[0] === "print" ? result(0, output, "") : result(0, "", "")));
+      const backend = createLaunchdBackend({ home, invocation, runner, serviceId: "opentag", uid: 501, userHome });
+      await expect(backend.status()).resolves.toMatchObject({
+        state: output === "state = unknown" ? "inactive" : "unknown",
+      });
+    }
+    const invalidUserHome = await temporaryDirectory("opentag-launchd-invalid-");
+    const invalidPlist = join(invalidUserHome, "Library", "LaunchAgents", "opentag.plist");
+    await writeFileWithParents(invalidPlist, "<plist></plist>");
+    const invalid = createLaunchdBackend({
+      home,
+      invocation,
+      runner: fakeRunner(),
+      serviceId: "opentag",
+      uid: 501,
+      userHome: invalidUserHome,
+    });
+    await expect(invalid.status()).resolves.toMatchObject({
+      state: "unknown",
+      detail: expect.stringContaining("valid OPENTAG_HOME"),
+    });
+  });
+
+  it("handles launchd manager failures, eviction exhaustion, bootstrap retries, and missing installs", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-ops-");
+    const home = join(userHome, "home");
+    const invocation = { args: [], program: "/usr/local/bin/opentag" };
+    const unavailable = createLaunchdBackend({
+      home,
+      invocation,
+      runner: fakeRunner((_, args) => (args[0] === "print" ? result(1, "", "domain unavailable") : result(0, "", ""))),
+      serviceId: "opentag",
+      uid: 501,
+      userHome,
+    });
+    await expect(unavailable.preflight()).rejects.toThrow("domain unavailable");
+    const timedOut = createLaunchdBackend({
+      home,
+      invocation,
+      runner: fakeRunner((_, args) =>
+        args[0] === "print" ? { code: null, stdout: "", stderr: "", timedOut: true } : result(0, "", ""),
+      ),
+      serviceId: "opentag",
+      uid: 501,
+      userHome,
+    });
+    await expect(timedOut.preflight()).rejects.toThrow("command timed out");
+
+    const missing = createLaunchdBackend({
+      home,
+      invocation,
+      runner: fakeRunner(),
+      serviceId: "opentag",
+      uid: 501,
+      userHome,
+    });
+    await expect(missing.start()).rejects.toThrow("not installed");
+    await expect(missing.restart()).rejects.toThrow("not installed");
+    await expect(missing.stop()).resolves.toMatchObject({ state: "not-installed" });
+    await expect(missing.uninstall()).resolves.toMatchObject({ state: "not-installed" });
+
+    await writeLaunchdDefinitions({ home, invocation, userHome });
+    const exhausted = createLaunchdBackend({
+      activationAttempts: 1,
+      evictionAttempts: 1,
+      evictionDelayMs: 0,
+      home,
+      invocation,
+      runner: fakeRunner((_, args) =>
+        args[0] === "print" ? result(0, "state = running\npid = 1", "") : result(0, "", ""),
+      ),
+      serviceId: "opentag",
+      sleep: async () => undefined,
+      uid: 501,
+      userHome,
+    });
+    await expect(exhausted.stop()).rejects.toThrow("did not evict");
+
+    let bootstrapAttempts = 0;
+    const retryRunner = fakeRunner((_, args) => {
+      if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+      if (args[0] === "print") return result(1, "", "Could not find service");
+      if (args[0] === "bootout") return result(1, "", "No such process");
+      if (args[0] === "bootstrap") {
+        bootstrapAttempts += 1;
+        return bootstrapAttempts === 1 ? result(1, "", "busy") : result(0, "", "");
+      }
+      return result(0, "", "");
+    });
+    const retry = createLaunchdBackend({
+      activationAttempts: 1,
+      activationDelayMs: 0,
+      evictionAttempts: 1,
+      evictionDelayMs: 0,
+      home: join(userHome, "retry-home"),
+      invocation,
+      runner: retryRunner,
+      serviceId: "opentag",
+      sleep: async () => undefined,
+      uid: 501,
+      userHome,
+    });
+    await expect(retry.installAndStart()).rejects.toThrow("did not become active");
+    expect(bootstrapAttempts).toBe(2);
+
+    const unknownLoaded = createLaunchdBackend({
+      home,
+      invocation,
+      runner: fakeRunner((_, args) => {
+        if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+        if (args[0] === "print") return result(1, "other state", "permission denied");
+        return result(0, "", "");
+      }),
+      serviceId: "opentag",
+      uid: 501,
+      userHome,
+    });
+    await expect(unknownLoaded.start()).rejects.toThrow("start state check failed");
+  });
+
+  it("uninstalls a loaded launchd service without touching the host account", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-uninstall-");
+    const home = join(userHome, "home");
+    const invocation = { args: [], program: "/usr/local/bin/opentag" };
+    await writeLaunchdDefinitions({ home, invocation, userHome });
+    const runner = fakeRunner((_, args) => {
+      if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+      if (args[0] === "print") return result(1, "", "Could not find service");
+      return result(0, "", "");
+    });
+    const backend = createLaunchdBackend({
+      home,
+      invocation,
+      runner,
+      serviceId: "opentag",
+      sleep: async () => undefined,
+      uid: 501,
+      userHome,
+    });
+    await expect(backend.uninstall()).resolves.toMatchObject({ state: "not-installed" });
+    await expect(readFile(join(userHome, "Library", "LaunchAgents", "opentag.plist"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(readFile(join(home, "state", "service", "opentag"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("ignores the invoking shell HOME when locating the account LaunchAgent definition", async () => {
     const shellHome = await temporaryDirectory("opentag-launchd-shell-home-");
+    const userHome = await temporaryDirectory("opentag-launchd-user-home-");
     const home = await temporaryDirectory("opentag-launchd-home-");
     vi.stubEnv("HOME", shellHome);
     const manager = await createDaemonServiceManager({
@@ -515,10 +959,13 @@ describe("launchd service backend", () => {
       invocation: { args: [], program: "/usr/local/bin/opentag" },
       platform: "darwin",
       runner: fakeRunner(() => result(113, "", "Could not find service")),
+      uid: 501,
+      userHome,
+      username: "test",
     });
 
     await expect(manager.status()).resolves.toMatchObject({
-      definitionPath: join(userInfo().homedir, "Library", "LaunchAgents", `${channelConfig.serviceId}.plist`),
+      definitionPath: join(userHome, "Library", "LaunchAgents", `${channelConfig.serviceId}.plist`),
     });
   });
 

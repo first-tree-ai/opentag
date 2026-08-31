@@ -5,7 +5,6 @@ import {
   configureClientLoggerForService,
   createClientRuntime,
   createLogger,
-  OpenTagApi,
   RuntimeConnection,
   RuntimeConnectionError,
   readMachineCredentials,
@@ -15,7 +14,9 @@ import {
 } from "@opentag/client";
 import { CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
-import { applyDaemonEnvironment } from "./environment.js";
+import { resolveChannelEnvironment } from "../channel/environment.js";
+import { resolveCommandContext } from "../command/context.js";
+import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environment.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
@@ -75,7 +76,8 @@ export class DaemonRuntimeConfigurationError extends Error {
 }
 
 export async function runDaemonService(options: DaemonRuntimeOptions = {}): Promise<void> {
-  const home = options.home ?? resolveOpenTagHome();
+  const environment = resolveChannelEnvironment(process.env);
+  const home = options.home ?? resolveOpenTagHome(environment);
   const paths = resolveDaemonPaths(home);
   const signals = options.signals ?? process;
   const instanceId = randomUUID();
@@ -100,8 +102,9 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   let failure: unknown;
   let failed = false;
   try {
-    const environmentResult = await applyDaemonEnvironment(home, process.env);
-    if (process.env.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
+    const environmentResult = await applyDaemonEnvironment(home, resolveChannelEnvironment(process.env));
+    const daemonEnvironment = buildDaemonChildEnvironment(environmentResult);
+    if (daemonEnvironment.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
     const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);
     lifecycleLogger = logger;
     terminalLogger = logger;
@@ -152,7 +155,9 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         instanceId: connectionInstanceId,
         workspaceComputerId: credential.workspaceComputerId,
       });
-      const api = new OpenTagApi(credential.serverUrl);
+      const apiContext = await resolveCommandContext({ home, serverUrl: credential.serverUrl });
+      if (!apiContext.api) throw new Error("Command context did not resolve an API");
+      const api = apiContext.api;
       const connection = new RuntimeConnection({
         arch: arch(),
         clientVersion: CLI_VERSION,
@@ -165,6 +170,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       });
       const runtime = await createClientRuntime(connection, {
         home,
+        environment: daemonEnvironment,
         clientVersion: CLI_VERSION,
         cliCommand: channelConfig.binName,
         logger: runtimeLogger,

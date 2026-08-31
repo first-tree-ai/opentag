@@ -185,7 +185,7 @@ describe("OpenTagApi Agent methods", () => {
     await expect(noContent.deleteAgent("access", agentId)).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
 
     for (const [status, category] of [
-      [400, "credential"],
+      [400, "validation"],
       [429, "rate_limit"],
       [503, "transient"],
     ] as const) {
@@ -223,6 +223,7 @@ describe("OpenTagApi Agent methods", () => {
       .mockResolvedValueOnce(jsonResponse({ ...agent, status: "suspended", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, revision: 3 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, computerId, revision: 4 }))
+      .mockResolvedValueOnce(jsonResponse({ status: "passed" }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
@@ -246,6 +247,10 @@ describe("OpenTagApi Agent methods", () => {
     await api.suspendAgent("access", agentId);
     await api.reactivateAgent("access", agentId);
     await api.rebindAgentComputer("access", agentId, computerId);
+    await api.testAgentRuntime("access", agentId, {
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 1,
+    });
     await api.deleteAgent("access", agentId);
 
     expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
@@ -258,6 +263,7 @@ describe("OpenTagApi Agent methods", () => {
       [`https://opentag.example/api/v1/agents/${agentId}/suspend`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}/reactivate`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}/computer/rebind`, "POST"],
+      [`https://opentag.example/api/v1/agents/${agentId}/runtime-test`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "DELETE"],
     ]);
     for (const [, init] of fetchImpl.mock.calls) {
@@ -350,7 +356,7 @@ describe("OpenTagApi Agent methods", () => {
         name: "Bestony",
         runtimeProvider: "codex",
       }),
-    ).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN", status: 400, message: "Authentication failed" });
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR", category: "validation", status: 400 });
   });
 
   it("rejects an invalid success response", async () => {

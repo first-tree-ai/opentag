@@ -50,6 +50,9 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
+      - name: Verify toolchain
+        run: pnpm toolchain:check
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
 
@@ -57,13 +60,56 @@ jobs:
         run: pnpm check
 
       - name: Build
-        run: pnpm build
+        run: pnpm exec turbo run build --summarize && pnpm --silent bundle:report
 
       - name: Type-check
-        run: pnpm typecheck
+        run: pnpm exec turbo run typecheck --summarize
 
       - name: Test
-        run: pnpm test
+        run: node --test --test-concurrency=1 scripts/__tests__/*.test.mjs && pnpm exec turbo run test --concurrency=2 --summarize
+
+      - name: Summarize Turbo cache provenance
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
+          import { join } from "node:path";
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          if (!summaryPath) process.exit(0);
+          const runsDirectory = ".turbo/runs";
+          let files = [];
+          try {
+            files = readdirSync(runsDirectory)
+              .filter((file) => file.endsWith(".json"))
+              .map((file) => ({ file, mtime: statSync(join(runsDirectory, file)).mtimeMs }))
+              .sort((left, right) => left.mtime - right.mtime);
+          } catch {
+            appendFileSync(summaryPath, "\n### Turbo cache provenance\n\nNo Turbo run summaries were produced.\n");
+            process.exit(0);
+          }
+
+          const rows = new Map();
+          for (const { file } of files) {
+            const run = JSON.parse(readFileSync(join(runsDirectory, file), "utf8"));
+            for (const task of run.tasks ?? []) {
+              const command = run.execution?.command ?? "turbo run";
+              rows.set(`${command}:${task.taskId}`, {
+                result: task.cache?.status === "HIT" ? "cache hit" : "executed",
+                task: task.taskId,
+              });
+            }
+          }
+
+          const body = [...rows.values()]
+            .sort((left, right) => left.task.localeCompare(right.task))
+            .map(({ task, result }) => `| ${task} | ${result} |`)
+            .join("\n");
+          appendFileSync(
+            summaryPath,
+            `\n### Turbo cache provenance\n\n| Task | Result |\n| --- | --- |\n${body || "| (none) | executed |"}\n`,
+          );
+          NODE
 
       - name: Test PostgreSQL integration
         run: pnpm --filter @opentag/server test:integration
@@ -89,6 +135,8 @@ jobs:
         include:
           - node: "22.13.0"
             name: Node 22.13.0 Compatibility
+          - node: "24"
+            name: Node 24 Compatibility
           - node: "26"
             name: Node 26 Compatibility
     steps:
@@ -129,6 +177,9 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
+
+      - name: Verify toolchain
+        run: pnpm toolchain:check
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
@@ -216,6 +267,9 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
+      - name: Verify toolchain
+        run: pnpm toolchain:check
+
       - name: Build source CLI and dependencies
         run: |
           pnpm install --frozen-lockfile --config.engine-strict=true
@@ -242,6 +296,7 @@ jobs:
           exit 1
 
       - name: Start container
+        # Container Smoke runs one server process, so assert the documented single-process boundary explicitly.
         run: >-
           docker run --detach --name opentag-server-ci --network opentag-ci --publish 18000:8000
           --env OPENTAG_DATABASE_URL=postgresql://opentag:opentag@opentag-postgres-ci:5432/opentag
@@ -249,6 +304,7 @@ jobs:
           --env BETTER_AUTH_SECRET=ci-only-better-auth-secret-at-least-32-characters
           --env OPENTAG_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           --env OPENTAG_PUBLIC_URL=https://localhost:18000
+          --env OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true
           opentag-server:ci
 
       - name: Wait for readiness endpoint

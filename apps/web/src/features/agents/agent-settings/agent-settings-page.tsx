@@ -96,6 +96,7 @@ export function AgentConfigSettingsContent({
         if (section === "instructions" || section === "execution") {
           return (
             <RuntimeConfigurationForm
+              computerOnline={agent.availability.dependencies.computer.state === "ready"}
               initialConfig={config}
               save={(input) => browserApi.updateAgent(config.id, input)}
               section={section}
@@ -122,65 +123,70 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
       <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>
         {(config) => (
           <div className="grid gap-6">
-            {agentSettingsGroups.map((group) => (
-              <section
-                className={group.label ? "mt-4 grid gap-3 border-t border-kumo-line pt-2" : "grid gap-3"}
-                key={group.key}
-                aria-label={group.label ?? "Agent setup"}
-                aria-labelledby={group.label ? `agent-settings-${group.key}` : undefined}
-              >
-                {group.label ? (
-                  <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
-                    {group.label}
-                  </Text>
-                ) : null}
-                <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
-                  {agentSettingsSections
-                    .filter((item) => item.group === group.key)
-                    .map((item) => {
-                      const content = (
-                        <>
-                          <span
-                            className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint"
-                            aria-hidden="true"
-                            data-ui="agent-settings-entry-icon"
+            {agentSettingsGroups.map((group) => {
+              const label = group.label?.() ?? null;
+              return (
+                <section
+                  className={label ? "mt-2 grid gap-3" : "grid gap-3"}
+                  key={group.key}
+                  aria-label={label ?? "Agent setup"}
+                  aria-labelledby={label ? `agent-settings-${group.key}` : undefined}
+                >
+                  {label ? (
+                    <Text as="h2" id={`agent-settings-${group.key}`} variant="heading">
+                      {label}
+                    </Text>
+                  ) : null}
+                  <div className="grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line">
+                    {agentSettingsSections
+                      .filter((item) => item.group === group.key)
+                      .map((item) => {
+                        const content = (
+                          <>
+                            <span
+                              className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint"
+                              aria-hidden="true"
+                              data-ui="agent-settings-entry-icon"
+                            >
+                              <Icon name={item.icon} />
+                            </span>
+                            <span className="grid min-w-0 flex-1 gap-1">
+                              <strong className="text-sm font-medium text-kumo-strong">{item.label()}</strong>
+                              <span className="text-sm text-kumo-subtle">
+                                {agentSettingsSummary(agent, config, item.key)}
+                              </span>
+                            </span>
+                          </>
+                        );
+                        /*
+                         * Every row opens its page. A row that is a link only sometimes cannot be
+                         * predicted from looking at the list, and the Computer page is worth reading
+                         * whether or not the Computer currently needs attention.
+                         */
+                        const computerNeedsReview =
+                          item.key === "computer" && agent.availability.dependencies.computer.state !== "ready";
+                        return (
+                          <Link
+                            className="flex items-center gap-3 border-b border-kumo-line p-4 outline-none transition-colors last:border-b-0 hover:bg-kumo-tint active:bg-kumo-recessed focus-visible:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
+                            key={item.key}
+                            data-ui="agent-settings-entry"
+                            {...agentSettingsSectionLink(agent.id, item.key)}
                           >
-                            <Icon name={item.icon} />
-                          </span>
-                          <span className="grid min-w-0 flex-1 gap-1">
-                            <strong>{item.label}</strong>
-                            <small>{agentSettingsSummary(agent, config, item.key)}</small>
-                          </span>
-                        </>
-                      );
-                      /*
-                       * Every row opens its page. A row that is a link only sometimes cannot be
-                       * predicted from looking at the list, and the Computer page is worth reading
-                       * whether or not the Computer currently needs attention.
-                       */
-                      const computerNeedsReview =
-                        item.key === "computer" && agent.availability.dependencies.computer.state !== "ready";
-                      return (
-                        <Link
-                          className="flex items-center gap-3 border-b border-kumo-line p-4 last:border-b-0"
-                          key={item.key}
-                          data-ui="agent-settings-entry"
-                          {...agentSettingsSectionLink(agent.id, item.key)}
-                        >
-                          {content}
-                          <span
-                            className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
-                            aria-hidden="true"
-                          >
-                            {computerNeedsReview ? <small>Review</small> : null}
-                            <Icon name="chevron-right" />
-                          </span>
-                        </Link>
-                      );
-                    })}
-                </div>
-              </section>
-            ))}
+                            {content}
+                            <span
+                              className="ml-auto flex shrink-0 items-center gap-2 text-kumo-subtle"
+                              aria-hidden="true"
+                            >
+                              {computerNeedsReview ? <span className="text-xs">Review</span> : null}
+                              <Icon name="chevron-right" />
+                            </span>
+                          </Link>
+                        );
+                      })}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
       </AsyncState>

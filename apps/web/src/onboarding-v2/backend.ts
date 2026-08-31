@@ -9,15 +9,9 @@
  * rather than a fake of the API.
  */
 
-import type {
-  AgentDraft,
-  ConnectState,
-  CreationState,
-  MessagingProvider,
-  MessagingState,
-  ReadinessFacts,
-  Runtime,
-} from "./flow.js";
+import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { ComputerConnectAdapter } from "../features/computer-connect/computer-connect.js";
+import type { AgentDraft, CreationState, MessagingProvider, MessagingState, ReadinessFacts, Runtime } from "./flow.js";
 
 export type PlanSignIn = "idle" | "pending" | "signed-in";
 
@@ -31,13 +25,14 @@ export interface CreatedAgent {
 export interface KnownComputer {
   readonly id: string;
   readonly displayName: string;
-  readonly online: boolean;
+  readonly availability: "online" | "offline" | "unknown";
   /** Human phrasing for how long ago it was seen, shown only when it is offline. */
   readonly lastSeen?: string;
 }
 
 export interface OnboardingBackend {
-  readonly connect: ConnectState;
+  /** Review Lab's deterministic transport; production uses ComputerConnect's browser adapter. */
+  readonly computerConnectAdapter?: ComputerConnectAdapter;
   readonly readiness: ReadinessFacts | undefined;
   readonly messaging: MessagingState;
   /**
@@ -55,13 +50,19 @@ export interface OnboardingBackend {
    * command. An Account is meant to have exactly one; the shape stays a list because Accounts that
    * predate that rule can still hold more, and the step has to pick without asking the reader.
    *
-   * Optional because only the mock answers it today: the Server implementation still treats every
-   * run as a first connection, and a page that required the list would break that flow before the
-   * real read exists. An implementation that omits it gets the behaviour it has now.
+   * Optional so small test backends can omit inventory. Production and Review Lab both provide the
+   * selected Computer when one already exists.
    */
   readonly knownComputers?: readonly KnownComputer[];
   /** The one this run is preparing, or `undefined` when there is none and one must be connected. */
   readonly selectedComputerId?: string | undefined;
+  /** Adopts only the exact Computer the shared connection lifecycle has verified online. */
+  readonly computerConnected: (computer: WorkspaceComputerSummary) => void;
+  /**
+   * Records that readiness has already carried this run beyond the Computer page. Availability
+   * can change later without rewinding messaging setup.
+   */
+  readonly markPastComputerStep: () => void;
   readonly planSignIn: PlanSignIn;
   /**
    * Creating the Agent belongs here rather than to the page: it is the one step that writes to the
@@ -103,16 +104,7 @@ export interface OnboardingBackend {
   readonly resumeBlocked: { readonly agentId: string; readonly agentName: string } | undefined;
   /** Reads it again. A failed read has to be recoverable: this route is the gate's only exit. */
   readonly retryResume: () => void;
-  /**
-   * Told by the page once the reader is past the step the Computer connection belongs to. Losing a
-   * Computer matters on that step; past it, interrupting them costs more than it tells them.
-   */
-  readonly markPastConnectStep: () => void;
   readonly startPlanSignIn: () => void;
-  /** Issues the first connect code. Safe to call repeatedly; only an idle connection acts on it. */
-  readonly issueConnectCode: () => void;
-  /** Replaces an expired code with a fresh one, restarting the wait. */
-  readonly refreshConnectCode: () => void;
   readonly createAgent: (draft: AgentDraft) => void;
   readonly startMessaging: (provider: "feishu" | "slack") => void;
   /** Slack's install is a link out; this is the user leaving for Slack. */

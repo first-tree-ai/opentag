@@ -1,5 +1,5 @@
 {
-  "id": "ab29e43a-047e-494a-a613-f642a9011b61",
+  "id": "1b63d85f-ba5d-499b-b99b-b9d284f7ec12",
   "prevId": "4393adc9-0b9e-49e0-9114-95a761365550",
   "version": "7",
   "dialect": "postgresql",
@@ -130,13 +130,13 @@
           "name": "workspace_computer_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "computer_id": {
           "name": "computer_id",
           "type": "uuid",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "name": {
           "name": "name",
@@ -372,10 +372,6 @@
         "agents_computer_matches_enrollment": {
           "name": "agents_computer_matches_enrollment",
           "value": "\"agents\".\"computer_id\" = \"agents\".\"workspace_computer_id\""
-        },
-        "agents_computer_pair": {
-          "name": "agents_computer_pair",
-          "value": "(\"agents\".\"computer_id\" is null) = (\"agents\".\"workspace_computer_id\" is null)"
         }
       },
       "isRLSEnabled": false
@@ -4786,6 +4782,164 @@
         }
       },
       "isRLSEnabled": false
+    },
+    "public.slack_webhook_receipts": {
+      "name": "slack_webhook_receipts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "installation_id": {
+          "name": "installation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_generation": {
+          "name": "credential_generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "slack_webhook_receipt_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'processing'"
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "processed_at": {
+          "name": "processed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "last_error_code": {
+          "name": "last_error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_error_at": {
+          "name": "last_error_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "slack_webhook_receipts_identity_unique": {
+          "name": "slack_webhook_receipts_identity_unique",
+          "columns": [
+            {
+              "expression": "installation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "credential_generation",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "slack_webhook_receipts_status_idx": {
+          "name": "slack_webhook_receipts_status_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "slack_webhook_receipts_installation_id_slack_installations_id_fk": {
+          "name": "slack_webhook_receipts_installation_id_slack_installations_id_fk",
+          "tableFrom": "slack_webhook_receipts",
+          "tableTo": "slack_installations",
+          "columnsFrom": [
+            "installation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "slack_webhook_receipts_generation_nonnegative": {
+          "name": "slack_webhook_receipts_generation_nonnegative",
+          "value": "\"slack_webhook_receipts\".\"credential_generation\" >= 1"
+        },
+        "slack_webhook_receipts_event_id_bounded": {
+          "name": "slack_webhook_receipts_event_id_bounded",
+          "value": "length(\"slack_webhook_receipts\".\"event_id\") between 1 and 255"
+        },
+        "slack_webhook_receipts_failure_shape": {
+          "name": "slack_webhook_receipts_failure_shape",
+          "value": "(\"slack_webhook_receipts\".\"status\" <> 'failed' and \"slack_webhook_receipts\".\"last_error_code\" is null and \"slack_webhook_receipts\".\"last_error_at\" is null)\n        or (\"slack_webhook_receipts\".\"status\" = 'failed' and \"slack_webhook_receipts\".\"last_error_code\" is not null and \"slack_webhook_receipts\".\"last_error_at\" is not null)"
+        },
+        "slack_webhook_receipts_processed_shape": {
+          "name": "slack_webhook_receipts_processed_shape",
+          "value": "(\"slack_webhook_receipts\".\"status\" = 'processed' and \"slack_webhook_receipts\".\"processed_at\" is not null)\n        or (\"slack_webhook_receipts\".\"status\" <> 'processed')"
+        }
+      },
+      "isRLSEnabled": false
     }
   },
   "enums": {
@@ -4958,6 +5112,15 @@
         "active",
         "reauthorization_required",
         "disabled"
+      ]
+    },
+    "public.slack_webhook_receipt_status": {
+      "name": "slack_webhook_receipt_status",
+      "schema": "public",
+      "values": [
+        "processing",
+        "processed",
+        "failed"
       ]
     }
   },

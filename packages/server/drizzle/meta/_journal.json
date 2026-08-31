@@ -222,8 +222,29 @@
     {
       "idx": 31,
       "version": "7",
-      "when": 1788131994493,
-      "tag": "0031_zippy_secret_warriors",
+      "when": 1788161887121,
+      "tag": "0031_majestic_shiva",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788186258806,
+      "tag": "0032_durable_turn_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788196536534,
+      "tag": "0033_clear_default_agent_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788208560698,
+      "tag": "0034_legal_kat_farrell",
       "breakpoints": true
     }
   ]

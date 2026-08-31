@@ -3,6 +3,7 @@ import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
+import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import { type ImBindingService, ImBindingServiceError, type VerifiedFeishuBinding } from "../im-binding-service.js";
 import {
@@ -38,6 +39,7 @@ export class FeishuSetupService {
   readonly #instanceId: string;
   readonly #imBindings: ImBindingService;
   readonly #onDiagnostic: (code: string) => void;
+  readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #registrations: FeishuRegistrationGateway;
   readonly #running = new Map<string, FeishuRegistration>();
   #heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -50,6 +52,7 @@ export class FeishuSetupService {
     registrations: FeishuRegistrationGateway;
     activation: FeishuBindingActivation;
     onDiagnostic?: (code: string) => void;
+    supervisor?: BackgroundFailureSupervisor;
   }) {
     this.#database = input.database;
     this.#cipher = input.cipher;
@@ -58,12 +61,13 @@ export class FeishuSetupService {
     this.#registrations = input.registrations;
     this.#activation = input.activation;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+    this.#supervisor = input.supervisor;
   }
 
   start(): void {
     if (this.#heartbeatTimer) return;
     this.#heartbeatTimer = setInterval(() => {
-      void this.#heartbeat().catch(() => this.#onDiagnostic("FEISHU_SETUP_HEARTBEAT_FAILED"));
+      this.#trackDetached("FEISHU_SETUP_HEARTBEAT_FAILED", this.#heartbeat(), "scheduler");
     }, OWNER_HEARTBEAT_MS);
     this.#heartbeatTimer.unref();
   }
@@ -234,8 +238,11 @@ export class FeishuSetupService {
       throw new Error("Feishu setup slot admission did not converge");
     }
     this.#running.set(attemptId, registration);
-    void this.#complete(attemptId, agentId, registration).catch(() =>
-      this.#onDiagnostic("FEISHU_SETUP_COMPLETION_FAILED"),
+    this.#trackDetached(
+      "FEISHU_SETUP_COMPLETION_FAILED",
+      this.#complete(attemptId, agentId, registration),
+      "provider",
+      attemptId,
     );
     return this.#toAttempt(row);
   }
@@ -366,6 +373,25 @@ export class FeishuSetupService {
           inArray(imBindings.setupState, ["awaiting_user", "validating"]),
         ),
       );
+  }
+
+  #trackDetached(code: string, operation: Promise<unknown>, phase: "provider" | "scheduler", requestId?: string): void {
+    const observed = operation.catch((error: unknown) => {
+      this.#onDiagnostic(code);
+      throw error;
+    });
+    if (this.#supervisor) {
+      this.#supervisor.track(observed, {
+        code,
+        category: phase === "provider" ? "dependency" : "internal",
+        retryability: "backoff",
+        phase,
+        ...(requestId ? { requestId } : {}),
+        operation: "feishu.setup",
+      });
+      return;
+    }
+    void observed.catch(() => undefined);
   }
 
   async #currentForAgent(agentId: string): Promise<typeof imBindings.$inferSelect | undefined> {

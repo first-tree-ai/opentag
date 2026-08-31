@@ -5,11 +5,15 @@ import {
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentRuntimeTestRequest,
+  type AgentRuntimeTestResponse,
+  AgentRuntimeTestResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
@@ -18,17 +22,21 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
+  type ComputerConnectCodeStatus,
+  ComputerConnectCodeStatusSchema,
   type CreateAgentRequest,
   type EmailSignInRequest,
   type EmailSignUpRequest,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
@@ -156,6 +164,19 @@ export class BrowserApi {
     });
   }
 
+  testAgentRuntime(
+    agentId: string,
+    input: AgentRuntimeTestRequest,
+    signal?: AbortSignal,
+  ): Promise<AgentRuntimeTestResponse> {
+    return this.request(agentRuntimeTestPath(agentId), AgentRuntimeTestResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      ...(signal ? { signal } : {}),
+    });
+  }
+
   suspendAgent(agentId: string): Promise<AgentAdminConfig> {
     return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
       method: "POST",
@@ -210,6 +231,13 @@ export class BrowserApi {
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+  }
+
+  cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.request(feishuSetupAttemptCancelPath(attemptId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {
@@ -272,6 +300,15 @@ export class BrowserApi {
       body: JSON.stringify({ mode }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
+  }
+
+  /**
+   * The Server's own verdict on a code this Account issued: pending until a machine redeems it,
+   * then the exact Computer that did. This — never a Computers-list heuristic — is how a waiting
+   * page learns which Computer its command enrolled.
+   */
+  computerConnectCodeStatus(connectCodeId: string): Promise<ComputerConnectCodeStatus> {
+    return this.request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema);
   }
 
   async health(path: "/healthz" | "/readyz"): Promise<{ latencyMs: number; observedAt: string; status: string }> {

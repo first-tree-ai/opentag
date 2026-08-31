@@ -7,7 +7,7 @@
  */
 
 import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { OnboardingV2Page } from "./page.js";
@@ -16,6 +16,7 @@ const NOW = "2026-08-29T00:00:00.000Z";
 const COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
 
 function existingAgent(): AgentListItem {
   return {
@@ -68,9 +69,17 @@ function resumeOntoDepartedComputer() {
   vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
   vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [departedComputer()] });
   vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+    connectCodeId: CONNECT_CODE_ID,
     bootstrapCommand: "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABC",
     expiresIn: 900,
     issuedAt: NOW,
+  });
+  // The repair code is never redeemed in these tests: the wait never concludes without a verdict.
+  vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+    connectCodeId: CONNECT_CODE_ID,
+    state: "pending",
+    computerId: null,
+    redeemedAt: null,
   });
 }
 
@@ -97,10 +106,7 @@ describe("resume at 6b6920a", () => {
     expect(screen.queryByText("Your computer is connected.")).toBeNull();
   });
 
-  it("offers a way to reconnect a Computer that is no longer there", async () => {
-    // The command block renders only while the connection is not `connected`, and resume sets
-    // `connected` unconditionally — so the reader is held on a check that can never settle, with
-    // Continue disabled and nothing on the page that could bring the machine back.
+  it("offers explicit repair without issuing it before the reader asks", async () => {
     resumeOntoDepartedComputer();
 
     render(<OnboardingV2Page />);
@@ -108,6 +114,9 @@ describe("resume at 6b6920a", () => {
     await tick(5_000);
 
     expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
+    expect(document.querySelector("code")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    await settle();
     expect(document.querySelector("code")).not.toBeNull();
   });
 

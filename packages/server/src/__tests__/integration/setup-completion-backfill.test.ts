@@ -32,7 +32,8 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
-const THROUGH_0030_IDX = 30;
+const THROUGH_0030_COUNT = 31;
+const CURRENT_MIGRATION_COUNT = 35;
 
 type Journal = {
   version: string;
@@ -68,9 +69,6 @@ async function readJournal(): Promise<Journal> {
 }
 
 /** The current head, read from the ledger, so a later migration does not restate this suite's subject. */
-async function headMigrationCount(): Promise<number> {
-  return (await readJournal()).entries.length;
-}
 
 async function truncatedMigrations(lastIndex: number): Promise<string> {
   const journal = await readJournal();
@@ -196,16 +194,17 @@ function errorChain(error: unknown): string {
 describe("Account setup completion backfill", () => {
   it("journals 0029 and 0030 after 0028 and migrates an empty database", async () => {
     const journal = await readJournal();
-    expect(journal.entries.slice(THROUGH_0028_IDX, THROUGH_0030_IDX + 1).map((entry) => entry.tag)).toEqual([
-      "0028_overjoyed_speedball",
-      "0029_tiresome_bedlam",
-      "0030_low_ulik",
-    ]);
+    const through0030 = journal.entries.filter(({ idx }) => idx <= 30);
+    expect(journal.entries).toHaveLength(CURRENT_MIGRATION_COUNT);
+    expect(through0030).toHaveLength(THROUGH_0030_COUNT);
+    expect(through0030.at(-3)?.tag).toBe("0028_overjoyed_speedball");
+    expect(through0030.at(-2)?.tag).toBe("0029_tiresome_bedlam");
+    expect(through0030.at(-1)?.tag).toBe("0030_low_ulik");
 
     await migrateDatabase(databaseUrl, migrationsFolder);
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {
-      expect(await journalCount(sql)).toBe(journal.entries.length);
+      expect(await journalCount(sql)).toBe(CURRENT_MIGRATION_COUNT);
       const [column] = await sql<{ data_type: string; is_nullable: string }[]>`
         select data_type, is_nullable
         from information_schema.columns
@@ -239,7 +238,7 @@ describe("Account setup completion backfill", () => {
       await migrateDatabase(databaseUrl, migrationsFolder);
       const after = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(after)).toBe(await headMigrationCount());
+        expect(await journalCount(after)).toBe(CURRENT_MIGRATION_COUNT);
         expect(await accountSetup(after)).toEqual({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),
@@ -269,7 +268,7 @@ describe("Account setup completion backfill", () => {
       await migrateDatabase(databaseUrl, migrationsFolder);
       const after = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(after)).toBe(await headMigrationCount());
+        expect(await journalCount(after)).toBe(CURRENT_MIGRATION_COUNT);
         expect(await accountSetup(after)).toEqual({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),
@@ -329,7 +328,7 @@ describe("Account setup completion backfill", () => {
       await migrateDatabase(databaseUrl, migrationsFolder);
       const retried = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(retried)).toBe(await headMigrationCount());
+        expect(await journalCount(retried)).toBe(CURRENT_MIGRATION_COUNT);
         expect(await accountSetup(retried)).toMatchObject({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),

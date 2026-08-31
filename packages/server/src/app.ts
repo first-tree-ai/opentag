@@ -13,6 +13,7 @@ import { registerImResourceRoute } from "./api/im-resources.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
+import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
@@ -21,7 +22,7 @@ import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
-import { type AgentService, AgentServiceError } from "./services/agents/index.js";
+import { type AgentRuntimeTestService, type AgentService, AgentServiceError } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
@@ -40,6 +41,7 @@ export interface CreateAppOptions {
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
+  agentRuntimeTestService?: AgentRuntimeTestService;
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   connectCode?: {
@@ -60,6 +62,7 @@ export interface CreateAppOptions {
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
+  runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   /**
    * Undoing setup so onboarding can be walked again. Any staging deployment supplies it, and every
@@ -127,6 +130,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const readiness = options.readiness ?? new BootstrapReadiness();
 
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
+  if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
 
   app.register(fastifyOpenTelemetry, {
     wrapRoutes: true,
@@ -222,7 +226,7 @@ export function createApp(options: CreateAppOptions = {}) {
       authOptions,
     });
     if (options.agentService) {
-      registerAgentRoutes(app, authService, options.agentService, authOptions);
+      registerAgentRoutes(app, authService, options.agentService, authOptions, options.agentRuntimeTestService);
     }
     if (
       options.agentService ||

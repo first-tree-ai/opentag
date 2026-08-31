@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Text } from "../../ui/design-system.js";
+import { ComputerConnect } from "../computer-connect/computer-connect.js";
 import { useComputersQuery } from "./agent-queries.js";
-import { ComputerSetup } from "./computer-setup.js";
 
 /**
  * Giving an Agent the Computer its Account has.
@@ -71,7 +71,10 @@ export function AgentComputerChoice({
     void bind(computer.computerId);
   }, [computer, target, bind]);
 
-  function retry(computerId: string) {
+  // Records the attempt before starting it, so a bind begun from outside the effect -- a retry, or a
+  // Computer that just enrolled -- cannot then be started a second time by the effect itself.
+  function bindTo(computerId: string) {
+    attempted.current = `${agentId}:${computerId}`;
     void bind(computerId);
   }
 
@@ -80,7 +83,7 @@ export function AgentComputerChoice({
       <div className="grid gap-4">
         <Banner variant="error" role="alert" description={error} />
         <div>
-          <Button disabled={binding} size="compact" variant="secondary" onClick={() => retry(computer.computerId)}>
+          <Button disabled={binding} size="compact" variant="secondary" onClick={() => bindTo(computer.computerId)}>
             {m.common_try_again()}
           </Button>
         </div>
@@ -146,10 +149,10 @@ export function AgentComputerChoice({
       <Text variant="heading">{m.agents_computer_choice_connect_new()}</Text>
       {/*
        * Connecting is offered only to an Account that has none, so the machine that arrives is the
-       * Computer this Account has. Refetching is what binds it: the read that finds it runs the
-       * bind above, and the Agent lands on it without asking the reader to confirm the obvious.
+       * Computer this Account has -- and the connect step now hands it back, so the Agent is bound
+       * to the machine that actually enrolled rather than to whatever a re-read happens to find.
        */}
-      <ComputerSetup onConnected={() => void computersQuery.refetch()} />
+      <ComputerConnect intent={{ mode: "create" }} onConnected={(computer) => bindTo(computer.computerId)} />
     </div>
   );
 }

@@ -10,10 +10,11 @@
   "scripts": {
     "prepare": "node scripts/install-git-hooks.mjs",
     "worktree:setup": "node scripts/worktree-bootstrap.mjs --force",
+    "toolchain:check": "node scripts/toolchain-check.mjs",
     "build": "turbo run build && pnpm --silent bundle:report",
     "bundle:report": "node scripts/report-bundle-sizes.mjs",
     "dev": "turbo run dev",
-    "check": "biome check . && node scripts/third-party-notices.mjs --check",
+    "check": "biome check . && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",
@@ -22,6 +23,7 @@
     "test:e2e:doctor-docker": "node scripts/e2e/doctor-docker.mjs",
     "test:coverage": "pnpm build && node scripts/unit-coverage.mjs",
     "check:node-compat": "pnpm build && pnpm test && node scripts/node-compat-smoke.mjs",
+    "check:schema-drift": "node scripts/check-schema-drift.mjs",
     "notices:write": "node scripts/third-party-notices.mjs --write"
   },
   "devDependencies": {

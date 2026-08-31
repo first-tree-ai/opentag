@@ -18,6 +18,8 @@ const OTHER_COMPUTER = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const POLL_MS = 1_500;
+const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+const REDEEMED_AT = "2026-08-29T00:05:00.000Z";
 
 function agentOn(computerId: string, displayName: string): AgentListItem {
   return {
@@ -68,10 +70,18 @@ describe("repair and handoff at cabaf79", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(new Date(NOW));
     vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(async () => ({
+      connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: "sh install",
       expiresIn: 900,
       issuedAt: new Date(Date.now()).toISOString(),
     }));
+    // A code the test says nothing about stays pending: the wait never concludes without a verdict.
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "pending",
+      computerId: null,
+      redeemedAt: null,
+    });
   });
 
   afterEach(() => {
@@ -103,35 +113,46 @@ describe("repair and handoff at cabaf79", () => {
   });
 
   it("does not accept another machine against a repair code", async () => {
-    // Lock-in for the new `findRepaired`: the code names its target, so a different Computer
-    // enrolling during the wait cannot satisfy it — which is what removed the heuristic from the
-    // path that mutates ownership.
+    // Lock-in for the repair correlation: the code names its target, and the Server's verdict is
+    // the only thing that can settle the wait — a different Computer enrolling during the wait
+    // cannot satisfy it, here or on any path that mutates ownership.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     let call = 0;
     vi.spyOn(browserApi, "computers").mockImplementation(async () => {
       call += 1;
+      // 1 = the resume read; the verdict stays pending, so nothing later is even consulted.
       const departed = machine(AGENT_COMPUTER, "Ada's old Mac", false);
-      if (call <= 2) return { computers: [departed] };
+      if (call <= 1) return { computers: [departed] };
       return { computers: [departed, machine(OTHER_COMPUTER, "Someone else's Mac", true)] };
     });
 
     render(<OnboardingV2Page />);
     await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    await settle();
     await tick(POLL_MS * 4);
 
     expect(screen.queryByText("Your computer is connected.")).toBeNull();
-    expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
+    expect(screen.getByText("Waiting for Ada's old Mac to connect…")).toBeTruthy();
   });
 
   it("accepts the named machine coming back", async () => {
-    // The other half of the same lock-in: the repair target returning does settle it.
+    // The other half of the same lock-in: the Server reports the repair code redeemed by its
+    // target, and the target back online on a fresh connection settles it.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's Mac")] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      state: "redeemed",
+      computerId: AGENT_COMPUTER,
+      redeemedAt: REDEEMED_AT,
+    });
     let call = 0;
     vi.spyOn(browserApi, "computers").mockImplementation(async () => {
       call += 1;
-      if (call <= 2) return { computers: [machine(AGENT_COMPUTER, "Ada's Mac", false)] };
+      // 1 = the resume read; the verdict's redemption read finds the machine back.
+      if (call <= 1) return { computers: [machine(AGENT_COMPUTER, "Ada's Mac", false)] };
       return { computers: [machine(AGENT_COMPUTER, "Ada's Mac", true, "2026-08-29T00:09:00.000Z")] };
     });
 

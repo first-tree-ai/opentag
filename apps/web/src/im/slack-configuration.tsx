@@ -5,39 +5,6 @@ import { Banner } from "../ui/design-system.js";
 
 type SlackOAuthIntent = "create" | "reauthorize";
 
-const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
-  AUTH_INVALID_TOKEN: "Sign in again, then retry adding OpenTag to Slack.",
-  IM_BINDING_FORBIDDEN: "Only the Account owner can manage this Slack configuration.",
-  IM_BINDING_PROVIDER_IMMUTABLE:
-    "This Agent is connected to a different IM provider. Disable that binding before connecting Slack.",
-  SLACK_APP_TEAM_ALREADY_BOUND:
-    "This Slack App installation is already connected to another OpenTag Agent. Disconnect that Agent first, or use a different Slack workspace.",
-  SLACK_AUTH_IDENTITY_INCOMPLETE:
-    "Slack did not identify this authorization as an installed Bot. Start OpenTag Slack again from this Agent.",
-  SLACK_AUTH_INVALID: "Slack rejected this authorization. Start OpenTag Slack again from this Agent.",
-  SLACK_BINDING_IDENTITY_MISMATCH:
-    "The Slack App, Team, or Bot identity does not match this operation. Reauthorize the current OpenTag Slack installation.",
-  SLACK_CONFIGURATION_CONFLICT: "The Slack binding changed. Start OpenTag Slack again from this Agent.",
-  SLACK_OAUTH_FAILED: "The Slack authorization flow is invalid or expired. Start it again from this Agent.",
-  SLACK_SCOPE_REAUTH_REQUIRED: "The installed App is missing required bot scopes. Reauthorize OpenTag Slack and retry.",
-  SLACK_TOKEN_REVOKED: "Slack revoked the Bot Token. Reauthorize to install fresh credentials.",
-  SLACK_UPSTREAM_UNAVAILABLE: "Slack did not return installation details. Check Slack availability and retry.",
-};
-
-/**
- * The message for a Slack failure code, resolved when the failure is handled.
- *
- * The migrated entry is looked up here rather than placed in the table above, because a table entry
- * is evaluated at import — before `configureLocaleRuntime()` replaces Paraglide's resolver, which
- * would persist a locale the reader never chose — and would also freeze the text in whichever
- * language was active when the module loaded. The rest of this table is still English literals; when
- * the `im` lane migrates them, the whole table becomes thunks and this seam goes away.
- */
-function slackConfigurationMessage(code: string): string | undefined {
-  if (code === "AGENT_COMPUTER_NOT_BOUND") return m.im_slack_agent_computer_not_bound();
-  return SLACK_CONFIGURATION_MESSAGES[code];
-}
-
 export interface SlackConfigurationControl {
   /** Starts the first-party OpenTag Slack OAuth install when the server has configured it. */
   startOAuth: (intent?: SlackOAuthIntent) => Promise<boolean>;
@@ -66,10 +33,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     url.searchParams.delete("slack_oauth");
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     if (oauthError) {
-      setError(
-        slackConfigurationMessage(oauthError) ??
-          "The Slack authorization flow is invalid or expired. Start it again from this Agent.",
-      );
+      setError(slackConfigurationMessage(oauthError));
       return;
     }
     setSaved(true);
@@ -86,7 +50,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
       window.location.assign(started.authorizationUrl);
       return true;
     } catch (cause) {
-      setError(normalizeSlackConfigurationError(cause, "Unable to start OpenTag Slack authorization"));
+      setError(normalizeSlackConfigurationError(cause));
       return false;
     } finally {
       setLoading(false);
@@ -98,24 +62,26 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     startOAuth,
     feedback: (
       <>
-        {saved ? (
-          <Banner
-            variant="secondary"
-            role="status"
-            description="Slack configuration is active. A future signed event will verify the App-to-Bot identity before runtime access becomes ready; Request URL verification remains observation-only, and no test message is required to save this generation."
-          />
-        ) : null}
+        {saved ? <Banner variant="secondary" role="status" description={m.im_slack_connected()} /> : null}
         {error ? <Banner variant="error" role="alert" description={error} /> : null}
       </>
     ),
   });
 }
 
-function normalizeSlackConfigurationError(cause: unknown, fallback: string): string {
+function normalizeSlackConfigurationError(cause: unknown): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
-  if (code) {
-    const message = slackConfigurationMessage(code);
-    if (message) return message;
+  return code ? slackConfigurationMessage(code) : m.im_slack_authorization_failed();
+}
+
+function slackConfigurationMessage(code: string): string {
+  // An Agent with no Computer has nowhere to run, so nothing is installed for it and no route is
+  // claimed. That is a different repair from a Slack permission problem, and saying so is the only
+  // way the reader learns the fix is on the Agent rather than in Slack.
+  if (code === "AGENT_COMPUTER_NOT_BOUND") return m.im_slack_agent_computer_not_bound();
+  if (code === "SLACK_SCOPE_REAUTH_REQUIRED" || code === "SLACK_TOKEN_REVOKED") {
+    return m.im_slack_permissions_missing();
   }
-  return cause instanceof Error ? cause.message : fallback;
+  if (code === "SLACK_UPSTREAM_UNAVAILABLE") return m.im_slack_unavailable();
+  return m.im_slack_authorization_failed();
 }

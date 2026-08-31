@@ -3,6 +3,7 @@ import {
   type AccountComputerConnectCodeIssueRequest,
   type ChannelName,
   type ComputerConnectCodeMode,
+  type ComputerConnectCodeStatus,
   getChannelConfig,
   isSupportedClientVersion,
   unsupportedClientVersionMessage,
@@ -41,6 +42,11 @@ export interface ComputerAuthContext {
 }
 
 export interface IssuedComputerConnectCode {
+  /**
+   * The code row's own id. Opaque and non-secret: the issuing Account polls it for the redemption
+   * verdict, and it is worthless at the exchange, which still requires the code itself.
+   */
+  connectCodeId: string;
   code: string;
   expiresAt: Date;
   expiresIn: number;
@@ -109,6 +115,47 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         workspaceId: await ensureSchemaWorkspaceId(transaction, accountId, now),
       });
     });
+  }
+
+  /**
+   * The redemption verdict for one code, readable only by the Account that issued it. Any other
+   * Account — and any Workspace the caller does not hold — gets the same 404 as a code that never
+   * existed, so the read cannot be used to probe somebody else's enrollments. Expired and revoked
+   * codes still answer, but never name a Computer: redemption is the only state that carries one.
+   */
+  async getConnectCodeStatusForAccount(accountId: string, connectCodeId: string): Promise<ComputerConnectCodeStatus> {
+    const [connectCode] = await this.#database
+      .select({
+        id: computerConnectCodes.id,
+        issuedByAccountId: computerConnectCodes.issuedByAccountId,
+        consumedComputerId: computerConnectCodes.consumedComputerId,
+        consumedAt: computerConnectCodes.consumedAt,
+        revokedAt: computerConnectCodes.revokedAt,
+        expiresAt: computerConnectCodes.expiresAt,
+      })
+      .from(computerConnectCodes)
+      .where(eq(computerConnectCodes.id, connectCodeId))
+      .limit(1);
+    if (!connectCode || connectCode.issuedByAccountId !== accountId) {
+      throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
+    }
+    // Redemption is durable evidence: it answers with the exact Computer whether or not that
+    // machine is connected right now, because reachability moves and this fact does not.
+    if (connectCode.consumedAt && connectCode.consumedComputerId) {
+      return {
+        connectCodeId: connectCode.id,
+        state: "redeemed",
+        computerId: connectCode.consumedComputerId,
+        redeemedAt: connectCode.consumedAt.toISOString(),
+      };
+    }
+    if (connectCode.revokedAt) {
+      return { connectCodeId: connectCode.id, state: "revoked", computerId: null, redeemedAt: null };
+    }
+    if (connectCode.expiresAt <= this.#now()) {
+      return { connectCodeId: connectCode.id, state: "expired", computerId: null, redeemedAt: null };
+    }
+    return { connectCodeId: connectCode.id, state: "pending", computerId: null, redeemedAt: null };
   }
 
   async exchangeConnectCode(input: MachineEnrollmentInput): Promise<MachineEnrollmentResult> {
@@ -224,17 +271,21 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     const code = `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}`;
     const expiresIn = COMPUTER_CONNECT_CODE_TTL_SECONDS;
     const expiresAt = new Date(input.now.getTime() + expiresIn * 1000);
-    await transaction.insert(computerConnectCodes).values({
-      ...schemaRequiredConnectCodeProjection(workspaceId),
-      tokenHash: hashSecret(code),
-      issuedByUserId: input.accountId,
-      issuedByAccountId: input.accountId,
-      mode: input.mode,
-      targetComputerId: input.mode === "repair" ? input.targetComputerId : null,
-      createdAt: input.now,
-      expiresAt,
-    });
-    return { code, expiresAt, expiresIn, issuedAt: input.now, mode: input.mode };
+    const [inserted] = await transaction
+      .insert(computerConnectCodes)
+      .values({
+        ...schemaRequiredConnectCodeProjection(workspaceId),
+        tokenHash: hashSecret(code),
+        issuedByUserId: input.accountId,
+        issuedByAccountId: input.accountId,
+        mode: input.mode,
+        targetComputerId: input.mode === "repair" ? input.targetComputerId : null,
+        createdAt: input.now,
+        expiresAt,
+      })
+      .returning({ id: computerConnectCodes.id });
+    if (!inserted) throw new Error("The Computer connect code was not created");
+    return { connectCodeId: inserted.id, code, expiresAt, expiresIn, issuedAt: input.now, mode: input.mode };
   }
 
   async #createComputer(

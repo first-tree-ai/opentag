@@ -1,0 +1,26 @@
+# Shared contracts
+/packages/shared/** @bestony
+
+# Client runtime
+/packages/client/src/runtime/** @bestony
+
+# Server runtime
+/packages/server/src/runtime/** @bestony
+
+# IM providers
+/packages/server/src/services/im-bindings/** @bestony
+
+# Web
+/apps/web/** @bestony
+
+# CLI
+/apps/cli/** @bestony
+
+# Migrations
+/packages/server/drizzle/** @bestony
+
+# CI and release
+/.github/** @bestony
+/scripts/** @bestony
+/turbo.json @bestony
+/Dockerfile @bestony

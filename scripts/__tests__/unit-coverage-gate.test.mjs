@@ -91,18 +91,37 @@ test("CRLF diff lines are parsed without changing the new-line numbers", () => {
   assert.equal(result.total, 1);
 });
 
-test("a changed executable line missing from coverage-final.json fails closed", () => {
+test("a file nothing measured fails closed however small its share of the patch", () => {
+  // The guarantee is that a package which silently stops being instrumented cannot read as clean.
+  // A one-line patch would fail the threshold anyway, so it proves nothing; this dilutes the
+  // unmeasured file to a tenth of the patch, where the percentage alone would pass it at 90%.
+  const measured = ["--- a/src/measured.ts", "+++ b/src/measured.ts", "@@ -0,0 +1,9 @@"].concat(
+    Array.from({ length: 9 }, (_, index) => `+export const covered${index} = ${index};`),
+  );
+  const diff = measured
+    .concat(["--- a/src/unmeasured.ts", "+++ b/src/unmeasured.ts", "@@ -0,0 +1 @@", "+export const missing = 1;", ""])
+    .join("\n");
   const result = evaluatePatchCoverage({
-    diff: ["--- a/src/missing.ts", "+++ b/src/missing.ts", "@@ -1,0 +7 @@", "+export const missing = 1;", ""].join(
-      "\n",
-    ),
-    coverage: {},
+    diff,
+    coverage: {
+      "src/measured.ts": {
+        path: "src/measured.ts",
+        s: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [index, 1])),
+        statementMap: Object.fromEntries(
+          Array.from({ length: 9 }, (_, index) => [
+            index,
+            { start: { line: index + 1, column: 0 }, end: { line: index + 1, column: 21 } },
+          ]),
+        ),
+      },
+    },
     repositoryRoot: "/repo",
     threshold: 80,
   });
-  assert.equal(result.total, 1);
+  assert.equal(result.percent, 90);
   assert.equal(result.passed, false);
-  assert.deepEqual(result.uncovered, ["src/missing.ts:7 (missing coverage entry)"]);
+  assert.deepEqual(result.unmeasured, ["src/unmeasured.ts"]);
+  assert.deepEqual(result.uncovered, ["src/unmeasured.ts:1 (missing coverage entry)"]);
 });
 
 test("an uncovered changed line counts against the threshold without imposing 100 percent", () => {

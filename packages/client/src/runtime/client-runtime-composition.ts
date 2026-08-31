@@ -37,6 +37,7 @@ import {
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AdmissionController } from "./admission-controller.js";
+import { AgentRuntimeAvailabilityTester } from "./agent-runtime-availability-tester.js";
 import {
   AgentRuntimeExecutableDiscoveryError,
   AgentRuntimeExecutableNotFoundError,
@@ -559,10 +560,14 @@ export async function createClientRuntime(
     runtimeManager,
     credentialEnvironment,
   });
+  const availabilityTester = new AgentRuntimeAvailabilityTester({
+    factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
+  });
   const runtime = new ClientRuntime(connection, {
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
+    availabilityTester,
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {

@@ -110,6 +110,225 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(row?.code).toBe("IM_DELIVERY_AGENT_NOT_ACTIVE");
   });
 
+  it("rejects claims that exceed the queue-age budget", async () => {
+    vi.useFakeTimers({ now: new Date("2026-08-31T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      const now = new Date();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(now.getTime() - 1_000) })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const metrics: Array<{ name: string; value: number; agentId?: string }> = [];
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        now: () => now,
+        maxQueueAgeMs: 100,
+        onMetric: (metric) => metrics.push(metric),
+      });
+
+      await worker.runOnce();
+
+      expect(metrics).toEqual([
+        { name: "queue_age_ms", value: 1_000, agentId: fixture.agentId },
+        { name: "saturation", value: 1, agentId: fixture.agentId },
+        { name: "retry", value: 1 },
+      ]);
+      const [row] = await unit.database
+        .select({ code: imMessageDeliveries.lastErrorCode })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row?.code).toBe("IM_DELIVERY_QUEUE_AGE_EXCEEDED");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rechecks placement admission after the external-work boundary", async () => {
+    const fixture = await workerFixture(unit);
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      beforeDeliveryAdmission: async () => {
+        await unit.database
+          .update(sessionPlacements)
+          .set({ generation: 2 })
+          .where(eq(sessionPlacements.sessionId, fixture.sessionId));
+      },
+    });
+
+    await worker.runOnce();
+
+    const [row] = await unit.database
+      .select({ code: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.code).toBe("IM_DELIVERY_AGENT_NOT_ACTIVE");
+  });
+
+  it("records operation timeouts and renews a live claim with the injected clock", async () => {
+    vi.useFakeTimers({ now: new Date("2026-08-31T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      const base = Date.now();
+      const attemptAt = new Date(base - 1_000);
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: attemptAt })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      let clockNow = base;
+      const metrics: Array<{ name: string; value: number; agentId?: string }> = [];
+      let releaseAdmission: (() => void) | undefined;
+      const admissionRelease = new Promise<void>((resolve) => {
+        releaseAdmission = resolve;
+      });
+      let admissionCalled = false;
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        now: () => new Date(clockNow),
+        claimRenewMs: 50,
+        claimLeaseMs: 30_000,
+        operationTimeoutMs: 1_000,
+        beforeDeliveryAdmission: async () => {
+          admissionCalled = true;
+          await admissionRelease;
+        },
+        onMetric: (metric) => metrics.push(metric),
+      });
+
+      const running = worker.runOnce();
+      await vi.waitFor(() => expect(admissionCalled).toBe(true), { timeout: 50, interval: 1 });
+      clockNow = base + 500;
+      await vi.advanceTimersByTimeAsync(50);
+      const [renewed] = await unit.database
+        .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(renewed?.nextAttemptAt.getTime()).toBe(base + 500 + 30_000);
+
+      await vi.advanceTimersByTimeAsync(950);
+      await expect(running).resolves.toBeUndefined();
+      releaseAdmission?.();
+      expect(metrics).toContainEqual({ name: "timeout", value: 1, agentId: fixture.agentId });
+      const [row] = await unit.database
+        .select({ code: imMessageDeliveries.lastErrorCode })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row?.code).toBe("IM_DELIVERY_OPERATION_TIMEOUT");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("persists a saturation disposition when an agent lane is full", async () => {
+    const fixtures = [await workerFixture(unit), await workerFixture(unit), await workerFixture(unit)];
+    const registry = new ConnectionRegistry();
+    for (const fixture of fixtures) {
+      await registry.register(
+        {
+          computerId: fixture.computerId,
+          workspaceComputerId: fixture.computerId,
+          workspaceId: fixture.workspaceId,
+          instanceId: fixture.instanceId,
+          lastHeartbeatAt: Date.now(),
+          socket: { close: vi.fn(), terminate: vi.fn() } as never,
+        },
+        async () => undefined,
+      );
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    }
+    let releaseAdmission: (() => void) | undefined;
+    const admissionRelease = new Promise<void>((resolve) => {
+      releaseAdmission = resolve;
+    });
+    let blockFirst = true;
+    let admissionCalled = false;
+    const metrics: Array<{ name: string; value: number; agentId?: string }> = [];
+    const domain = {
+      requestReconcile: vi.fn(
+        async (
+          _computerId: string,
+          _instanceId: string,
+          request: { requestId: string; sessionId: string; placementGeneration: number },
+          onDispatched?: () => void,
+        ) => {
+          onDispatched?.();
+          return {
+            type: "session:reconcile:result" as const,
+            requestId: request.requestId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "ready" as const,
+          };
+        },
+      ),
+      requestDelivery: vi.fn(
+        async (
+          _computerId: string,
+          _instanceId: string,
+          request: DirectImMessageDeliveryRequest,
+          onDispatched?: () => void,
+        ) => {
+          onDispatched?.();
+          return {
+            type: "im:deliver:result" as const,
+            requestId: request.requestId,
+            deliveryId: request.deliveryId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "accepted" as const,
+            turnId: "turn-saturation",
+          };
+        },
+      ),
+    };
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixtures[0]?.runtime) },
+      registry,
+      maxConcurrent: 1,
+      maxQueuedPerAgent: 1,
+      maxQueuedTotal: 1,
+      beforeDeliveryAdmission: async () => {
+        if (!blockFirst) return;
+        blockFirst = false;
+        admissionCalled = true;
+        await admissionRelease;
+      },
+      onMetric: (metric) => metrics.push(metric),
+    });
+
+    const first = worker.runOnce();
+    await vi.waitFor(() => expect(admissionCalled).toBe(true));
+    const second = worker.runOnce();
+    const third = worker.runOnce();
+    for (let attempt = 0; attempt < 20; attempt += 1) await Promise.resolve();
+    await expect(third).resolves.toBeUndefined();
+    worker.stop();
+    releaseAdmission?.();
+    await Promise.all([first, second]);
+
+    expect(metrics.some((metric) => metric.name === "saturation" && metric.value === 1)).toBe(true);
+    const rows = await unit.database
+      .select({ code: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.lastErrorCode, "IM_DELIVERY_WORKER_SATURATED"));
+    expect(rows).toHaveLength(2);
+  });
+
   it("handles runtime absence, stale correlations, malformed payloads, and terminal rejection", async () => {
     const absent = await workerFixture(unit);
     const absentDiagnostic = vi.fn();
@@ -1006,6 +1225,7 @@ function fakeDomain(
     steerStatus?: string;
     steerReason?: string;
     steerFailure?: boolean;
+    deliveryHang?: boolean;
     onDelivery?: (request: DirectImMessageDeliveryRequest) => void;
     onEvent?: (event: string) => void;
   } = {},
@@ -1037,6 +1257,7 @@ function fakeDomain(
         options.onEvent?.("delivery");
         options.onDelivery?.(request);
         onDispatched?.();
+        if (options.deliveryHang) await new Promise<void>(() => undefined);
         if (options.deliveryFailure) throw new Error("delivery failed");
         const hash = computeDirectInputHash(request);
         await custody.beginDeliveryDispatch(request, hash, {

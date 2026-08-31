@@ -20,8 +20,9 @@ Computer enrollment、Agent、runtime readiness 和 IM binding 会立即推进�
 `/internal` 是仅 staging 可用的内部工具索引页，两种 reset 都以按钮的形式放在上面，各自带一次确认。入口在账号菜单里的
 **Internal tools**——它只在 Server 应答「本部署提供这些工具」时才渲染，production 看到的还是它一直以来的那个菜单。
 
-本文余下部分描述的是这个页面发出的请求，供你想手动调用时参考。有一点两种方式都适用：两种 reset 都会把 Account 送回 setup
-门内，而账号菜单本身就在这道门后面，所以跑完之后你会停在 onboarding 里、没有菜单可以回去。此时直接敲 `/internal` 仍然打得开。
+本文余下部分描述的是这个页面发出的请求，供你想手动调用时参考。有一点两种方式都适用：两种 reset 都会把 Account 恢复成
+setup 未完成的状态，而这正是应用在显示其它任何东西之前会检查的状态——所以跑完之后你会落在 onboarding 里，你来时用的那个
+账号菜单不再被渲染。此时直接敲 `/internal` 仍然打得开。
 
 ## 每个测试者使用自己的 Account
 
@@ -74,7 +75,7 @@ await fetch("/api/v1/me/setup/reset", {
 });
 ```
 
-返回 `204` 表示该 Account 已回到 setup gate 之外；刷新页面就会自动进入 `/onboarding`。
+返回 `204` 表示该 Account 的 setup 完成标记已被清除；刷新页面就会自动进入 `/onboarding`。
 
 ### `mode: "reboard"`
 

@@ -23,9 +23,9 @@ Reach it from **Internal tools** in the account menu, which is rendered only whe
 deployment offers the tools at all — production shows the menu it has always shown.
 
 The rest of this document describes the request the page makes, for when you want to drive it by hand instead. One
-thing to know either way: both resets take the Account back inside the setup gate, and the account menu lives behind
-that gate, so after running one you are in onboarding without a menu to return through. `/internal` still opens if you
-type it.
+thing to know either way: both resets return the Account to an incomplete setup, which is the state the app checks
+before it will show you anything else — so after running one you land in onboarding, and the account menu you came
+through is no longer rendered. `/internal` still opens if you type it.
 
 ## Each tester uses their own Account
 
@@ -83,7 +83,7 @@ await fetch("/api/v1/me/setup/reset", {
 });
 ```
 
-A `204` means the Account is back outside the setup gate; reload and `/onboarding` opens on its own.
+A `204` means setup completion is cleared; reload and `/onboarding` opens on its own.
 
 ### `mode: "reboard"`
 

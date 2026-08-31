@@ -6,9 +6,13 @@ import { useComputersQuery } from "./agent-queries.js";
 import { ComputerSetup } from "./computer-setup.js";
 
 /**
- * Lists the Account's enrolled Computers and keeps the connection flow available as its own
- * management surface. A Computer can be enrolled before an Agent exists, so this page cannot be
- * folded into the Agent list without making that first-run path unnecessarily indirect.
+ * The Account's Computer and, when there is none, the flow that connects one. A Computer can be
+ * connected before an Agent exists, so this page cannot be folded into the Agent list without
+ * making that first-run path unnecessarily indirect.
+ *
+ * Connecting appears only while the Account has no Computer. The command it hands out enrolls a
+ * *new* machine, so offering it beside one the Account already has is what would leave a duplicate
+ * to repair or explain — including when the machine here is the unreachable one.
  */
 export function ComputersPage() {
   // The one Computers entry every surface reads, watched because this page is where an operator
@@ -16,12 +20,12 @@ export function ComputersPage() {
   const state = toResourceState(useComputersQuery(true));
 
   return (
-    <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">
+    <Page title="Computer" description="The Computer your Agents run on.">
       <AsyncState state={state}>
         {(value) => (
           <div className="grid gap-6">
             <ComputerList computers={value.computers} />
-            <ComputerSetup />
+            {value.computers.length === 0 ? <ComputerSetup /> : null}
           </div>
         )}
       </AsyncState>
@@ -36,11 +40,11 @@ export function ComputerList({ computers }: { computers: readonly WorkspaceCompu
       className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
     >
       <Text as="h2" id="enrolled-computers-heading" variant="heading">
-        Enrolled Computers
+        Your Computer
       </Text>
       {computers.length === 0 ? (
         <Text as="p" variant="secondary">
-          No Computers are enrolled yet.
+          No Computer is connected yet.
         </Text>
       ) : (
         <ul className="grid divide-y divide-kumo-line">

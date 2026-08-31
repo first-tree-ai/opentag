@@ -127,16 +127,12 @@ export function AgentCreationFlow({
   const [nameError, setNameError] = useState<string>();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  const [changingComputer, setChangingComputer] = useState(false);
   const [changingRuntime, setChangingRuntime] = useState(false);
-  const [connectingComputer, setConnectingComputer] = useState(false);
-  const [selectedComputerId, setSelectedComputerId] = useState(() => pendingIntent?.request.computerId);
   const [selectedProvider, setSelectedProvider] = useState<AgentRuntimeProvider | undefined>(
     () => pendingIntent?.request.runtimeProvider,
   );
   const firstFieldRef = useRef<HTMLInputElement>(null);
   const nameFieldRef = useRef<HTMLInputElement>(null);
-  const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
   const resumeAttemptedRef = useRef(false);
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
@@ -153,8 +149,10 @@ export function AgentCreationFlow({
   const agentNameVisible = agentNameDisclosure === "always" || nameUnderivable;
   const readyRoutes = useMemo(() => resolveReadyRoutes(facts), [facts]);
   const defaultReadyRoute = readyRoutes[0];
+  // The Account has one Computer, so this resolves which machine the form is talking about rather
+  // than honouring a choice: the route that is ready, else the one that is online, else the one
+  // that is there. An Account still holding several from before the rule sees the same single row.
   const displayedComputer =
-    facts.computers.find((computer) => computer.id === selectedComputerId) ??
     defaultReadyRoute?.computer ??
     facts.computers.find((computer) => computer.connectionStatus === "online") ??
     facts.computers[0];
@@ -206,7 +204,6 @@ export function AgentCreationFlow({
       [...facts.providers]
         .filter((provider) => provider.computerId === connectedComputerId)
         .sort((left, right) => providerRank(left.provider) - providerRank(right.provider))[0]?.provider;
-    setSelectedComputerId(connectedComputer.id);
     setSelectedProvider(connectedProvider);
     connectedComputerIdRef.current = undefined;
   }, [facts.computers, facts.providers, readyRoutes]);
@@ -220,7 +217,7 @@ export function AgentCreationFlow({
     if (!computerRefreshStartedRef.current) return;
     restoreComputerSetupFocusRef.current = false;
     computerRefreshStartedRef.current = false;
-    (computerChangeButtonRef.current ?? firstFieldRef.current)?.focus();
+    firstFieldRef.current?.focus();
   }, [refreshing]);
 
   const create = useCallback(
@@ -368,10 +365,7 @@ export function AgentCreationFlow({
       </div>
 
       <RuntimeRouteSection
-        changingComputer={changingComputer}
         changingRuntime={changingRuntime}
-        connectingComputer={connectingComputer}
-        computerChangeButtonRef={computerChangeButtonRef}
         displayedComputer={displayedComputer}
         displayedProvider={displayedProvider}
         facts={facts}
@@ -380,23 +374,8 @@ export function AgentCreationFlow({
         refreshing={refreshing}
         selectedRoute={selectedRoute}
         submitting={submitting}
-        onChangeComputer={(computer) => {
-          const providers = [...facts.providers]
-            .filter((provider) => provider.computerId === computer.id)
-            .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
-          const nextProvider =
-            providers.find((provider) => provider.provider === displayedProvider?.provider)?.provider ??
-            readyRoutes.find((route) => route.computer.id === computer.id)?.provider ??
-            providers[0]?.provider;
-          setSelectedComputerId(computer.id);
-          setSelectedProvider(nextProvider);
-          setChangingComputer(false);
-          setChangingRuntime(false);
-        }}
         onChangeRuntime={(provider) => {
-          if (displayedComputer) setSelectedComputerId(displayedComputer.id);
           setSelectedProvider(provider.provider);
-          setChangingComputer(false);
           setChangingRuntime(false);
         }}
         onConnected={(computer) => {
@@ -404,24 +383,10 @@ export function AgentCreationFlow({
           restoreComputerSetupFocusRef.current = true;
           computerRefreshStartedRef.current = false;
           if (onCancel) onComputerRefreshFocus?.();
-          setConnectingComputer(false);
-          setChangingComputer(false);
           onRefresh();
         }}
         onRefresh={onRefresh}
-        onToggleComputerSetup={() => {
-          restoreComputerSetupFocusRef.current = false;
-          computerRefreshStartedRef.current = false;
-          setConnectingComputer((current) => !current);
-        }}
-        onToggleComputer={() => {
-          setChangingRuntime(false);
-          setConnectingComputer(false);
-          setChangingComputer((current) => !current);
-        }}
         onToggleRuntime={() => {
-          setChangingComputer(false);
-          setConnectingComputer(false);
           setChangingRuntime((current) => !current);
         }}
       />
@@ -451,19 +416,13 @@ export function AgentCreationFlow({
 }
 
 function RuntimeRouteSection({
-  changingComputer,
   changingRuntime,
-  connectingComputer,
-  computerChangeButtonRef,
   displayedComputer,
   displayedProvider,
   facts,
-  onChangeComputer,
   onChangeRuntime,
   onConnected,
   onRefresh,
-  onToggleComputerSetup,
-  onToggleComputer,
   onToggleRuntime,
   preview,
   readyRoutes,
@@ -471,19 +430,13 @@ function RuntimeRouteSection({
   selectedRoute,
   submitting,
 }: {
-  changingComputer: boolean;
   changingRuntime: boolean;
-  connectingComputer: boolean;
-  computerChangeButtonRef: { current: HTMLButtonElement | null };
   displayedComputer: AgentCreationComputer | undefined;
   displayedProvider: AgentCreationProvider | undefined;
   facts: AgentCreationFacts;
-  onChangeComputer: (computer: AgentCreationComputer) => void;
   onChangeRuntime: (provider: AgentCreationProvider) => void;
   onConnected: (computer: AgentCreationComputer) => void;
   onRefresh: () => void;
-  onToggleComputerSetup: () => void;
-  onToggleComputer: () => void;
   onToggleRuntime: () => void;
   preview: boolean;
   readyRoutes: readonly ReadyRoute[];
@@ -491,12 +444,10 @@ function RuntimeRouteSection({
   selectedRoute: ReadyRoute | undefined;
   submitting: boolean;
 }) {
-  const onlineComputers = facts.computers.filter((computer) => computer.connectionStatus === "online");
   const attention = providerAttention(facts, displayedComputer, displayedProvider);
   const providerOptions = [...facts.providers]
     .filter((provider) => provider.computerId === displayedComputer?.id)
     .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
-  const computerOptions = [...facts.computers].sort((left, right) => compareText(left.displayName, right.displayName));
   // The heading names the section and everything under it answers it: the route rows label
   // themselves Computer and Runtime, and where there is no Computer yet the setup panel names the
   // task. A sentence here would only say those labels again, which is one more line between the
@@ -540,18 +491,6 @@ function RuntimeRouteSection({
                   label={displayedComputer.connectionStatus === "online" ? "Online" : "Offline"}
                   tone={displayedComputer.connectionStatus === "online" ? "success" : "warning"}
                 />
-                <Button
-                  aria-controls="new-agent-computer-picker"
-                  aria-expanded={changingComputer}
-                  aria-label="Change Computer"
-                  disabled={submitting || refreshing}
-                  ref={computerChangeButtonRef}
-                  size="compact"
-                  variant="inline"
-                  onClick={onToggleComputer}
-                >
-                  Change
-                </Button>
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3 p-3">
@@ -580,60 +519,6 @@ function RuntimeRouteSection({
               </div>
             </div>
           </div>
-
-          {changingComputer ? (
-            <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-computer-picker">
-              <strong className="text-sm font-medium text-kumo-strong">Choose Computer</strong>
-              <div className="grid gap-2">
-                {computerOptions.map((computer) => {
-                  const routes = readyRoutes.filter((route) => route.computer.id === computer.id);
-                  return (
-                    <Button
-                      aria-pressed={computer.id === displayedComputer.id}
-                      className="h-auto w-full justify-between text-left"
-                      data-selected={computer.id === displayedComputer.id ? "true" : undefined}
-                      disabled={submitting || refreshing}
-                      key={computer.id}
-                      type="button"
-                      onClick={() => onChangeComputer(computer)}
-                    >
-                      <span className="grid gap-1">
-                        <strong>{computer.displayName}</strong>
-                        <small>{computerRouteSummary(computer, routes.length)}</small>
-                      </span>
-                      <span>{computer.connectionStatus === "online" ? "Online" : "Offline"}</span>
-                    </Button>
-                  );
-                })}
-              </div>
-              <div className="flex justify-start">
-                <Button
-                  aria-controls="new-agent-computer-setup"
-                  aria-expanded={connectingComputer}
-                  disabled={submitting}
-                  size="compact"
-                  variant="inline"
-                  onClick={onToggleComputerSetup}
-                >
-                  {connectingComputer ? "Cancel Computer connection" : "Connect another Computer"}
-                </Button>
-              </div>
-              {connectingComputer ? (
-                <div className="grid gap-4" id="new-agent-computer-setup">
-                  <ComputerSetup
-                    preview={preview}
-                    onConnected={(computer) =>
-                      onConnected({
-                        id: computer.computerId,
-                        displayName: computer.displayName,
-                        connectionStatus: computer.connectionStatus,
-                      })
-                    }
-                  />
-                </div>
-              ) : null}
-            </div>
-          ) : null}
 
           {changingRuntime ? (
             <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-runtime-picker">
@@ -669,11 +554,7 @@ function RuntimeRouteSection({
             </div>
           ) : displayedComputer.connectionStatus === "offline" ? (
             <RuntimeAttention
-              detail={
-                onlineComputers.length === 0
-                  ? "Reconnect one of your Computers to continue."
-                  : `Reconnect ${displayedComputer.displayName} or choose another Computer to continue.`
-              }
+              detail={`Reconnect ${displayedComputer.displayName} to continue.`}
               label="Computer offline"
               refreshing={refreshing}
               tone="warning"
@@ -696,12 +577,6 @@ function RuntimeRouteSection({
 
 function RouteState({ label, tone }: { label: string; tone: "success" | "warning" | "neutral" }) {
   return <StatusIndicator label={label} tone={tone} />;
-}
-
-function computerRouteSummary(computer: AgentCreationComputer, readyRuntimeCount: number): string {
-  if (computer.connectionStatus === "offline") return "Computer offline";
-  if (readyRuntimeCount === 0) return "No Runtime ready";
-  return `${readyRuntimeCount} ${readyRuntimeCount === 1 ? "Runtime" : "Runtimes"} ready`;
 }
 
 function providerStatusLabel(provider: AgentCreationProvider | undefined): string {

@@ -874,55 +874,50 @@ describe("OpenTag Web App Shell", () => {
     expect(trigger).toBe(document.activeElement);
   });
 
-  it("lets the Account owner connect another Computer from New Agent", async () => {
+  it("names the Computer the Account has in New Agent without offering another", async () => {
     installApi();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
 
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
-    const trigger = within(dialog).getByRole("button", { name: "Connect another Computer" });
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-
-    fireEvent.click(trigger);
-
-    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
-    expect(within(dialog).getByRole("button", { name: "Generate connection command" })).toBeTruthy();
-    expect(
-      within(dialog).getByRole("button", { name: "Cancel Computer connection" }).getAttribute("aria-expanded"),
-    ).toBe("true");
     expect(within(dialog).getByRole("heading", { name: "Where it runs" })).toBeTruthy();
+    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
     expect(within(dialog).getByText("Ready to run")).toBeTruthy();
+
+    // An Account has one Computer, so there is nothing to choose between and nothing to add. The
+    // enrolment command produces a new Computer, which is the duplicate this surface must not offer
+    // beside the machine the Account already has.
+    expect(within(dialog).queryByRole("button", { name: "Change Computer" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Connect another Computer" })).toBeNull();
+    expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Generate connection command" })).toBeNull();
+
+    // Choosing a Runtime is a different capability and stays: the Provider is fixed at creation.
+    expect(within(dialog).getByRole("button", { name: "Change Runtime" })).toBeTruthy();
   });
 
-  it("refreshes and selects a newly connected Computer in New Agent", async () => {
-    const connectedComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
-    const existingComputer = {
-      id: computerId,
-      displayName: "Ada's Mac",
-      platform: "darwin",
+  it("adopts the Computer that connects while New Agent is open and keeps the form", async () => {
+    const connectedComputer = {
+      id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      displayName: "Ada's Linux Computer",
+      platform: "linux",
       arch: "arm64",
       clientVersion: "0.0.1",
       connectionStatus: "online",
-      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
-      connectedAt: "2026-08-20T00:00:00.000Z",
-      lastSeenAt: "2026-08-20T00:00:01.000Z",
-    };
-    const connectedComputer = {
-      ...existingComputer,
-      id: connectedComputerId,
-      displayName: "Ada's Linux Computer",
-      platform: "linux",
+      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:02.000Z" }],
       connectedAt: "2026-08-20T00:00:02.000Z",
+      lastSeenAt: "2026-08-20T00:00:02.000Z",
     };
     let finishRefresh: (() => void) | undefined;
     const refreshPending = new Promise<void>((resolve) => {
       finishRefresh = resolve;
     });
+    // The Account has no Computer, which is the only state where this dialog offers enrolment at
+    // all. The machine that arrives is therefore the Account's Computer, with nothing to pick.
     installApi({
       computers: async (connected) => {
         if (connected) await refreshPending;
-        return connected ? [existingComputer, connectedComputer] : [existingComputer];
+        return connected ? [connectedComputer] : [];
       },
     });
     render(<App />);
@@ -935,8 +930,6 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(within(dialog).getByLabelText("Agent name"), {
       target: { value: "research-assistant" },
     });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
     vi.useFakeTimers();
     vi.setSystemTime("2026-08-20T00:00:00.000Z");
@@ -965,7 +958,7 @@ describe("OpenTag Web App Shell", () => {
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -1017,58 +1010,32 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
-  it("completes an existing Computer reconnection in New Agent", async () => {
-    const disconnectedAt = "2026-08-20T00:00:00.000Z";
-    const reconnectedAt = "2026-08-20T00:00:02.000Z";
-    const existingComputer = {
+  it("answers an offline Computer in New Agent with reconnection rather than enrolment", async () => {
+    const offlineComputer = {
       id: computerId,
       displayName: "Ada's Mac",
       platform: "darwin",
       arch: "arm64",
       clientVersion: "0.0.1",
-      connectionStatus: "online",
-      providerReadiness: [{ provider: "codex", status: "ready", observedAt: disconnectedAt }],
-      connectedAt: disconnectedAt,
+      connectionStatus: "offline",
+      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+      connectedAt: "2026-08-20T00:00:00.000Z",
       lastSeenAt: "2026-08-20T00:00:01.000Z",
     };
-    installApi({
-      computers: (connected) =>
-        connected ? [{ ...existingComputer, connectedAt: reconnectedAt }] : [existingComputer],
-    });
+    installApi({ computers: () => [offlineComputer] });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    fireEvent.change(within(dialog).getByLabelText("Display name"), {
-      target: { value: "Research Assistant" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Edit Agent name" }));
-    fireEvent.change(within(dialog).getByLabelText("Agent name"), {
-      target: { value: "research-assistant" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
-    vi.useFakeTimers();
-    vi.setSystemTime(disconnectedAt);
-    try {
-      const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
-      generateButton.focus();
-      await act(async () => {
-        fireEvent.click(generateButton);
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_500);
-      });
+    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+    expect(within(dialog).getByText("Computer offline")).toBeTruthy();
+    expect(within(dialog).getByText("Reconnect Ada's Mac to continue.")).toBeTruthy();
 
-      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
-      expect(within(dialog).getByText("Codex")).toBeTruthy();
-      expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
-      expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
-      expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
-    } finally {
-      vi.useRealTimers();
-    }
+    // The machine that stopped answering is repaired in place. Offering the enrolment command here
+    // is what would leave the Account with a second Computer to explain.
+    expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Generate connection command" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Change Computer" })).toBeNull();
   });
 
   it("keeps Computer connection inside the New Agent dialog when no runtime is available", async () => {
@@ -1127,7 +1094,7 @@ describe("OpenTag Web App Shell", () => {
 
       expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
       expect(within(dialog).getByText("Codex")).toBeTruthy();
-      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -2564,7 +2531,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(within(menu).queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(within(menu).queryByText("Secondary")).toBeNull();
-    expect(within(menu).getByRole("menuitem", { name: "Computers" })).toBeTruthy();
+    expect(within(menu).getByRole("menuitem", { name: "Computer" })).toBeTruthy();
     expect(within(menu).queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 
@@ -3148,17 +3115,20 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
-  it("opens the Computers page from the account menu", async () => {
+  it("opens the Computer page from the account menu", async () => {
     installApi();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    const computers = screen.getByRole("menuitem", { name: "Computers" });
+    const computers = screen.getByRole("menuitem", { name: "Computer" });
     expect(computers.getAttribute("href")).toBe("/agents/computers");
     fireEvent.click(computers);
-    expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Your Computer" })).toBeTruthy();
     expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
+    // The Account has this machine, so the page does not also offer the command that would enroll
+    // a second one.
+    expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
     expect(window.location.pathname).toBe("/agents/computers");
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
   });

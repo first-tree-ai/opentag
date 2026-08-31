@@ -303,6 +303,36 @@ export {
   ProviderCliArchiveError,
 } from "./runtime/provider-cli/tar.js";
 export {
+  type ProviderCliTurnLauncherSpec,
+  renderProviderCliTurnLauncher,
+} from "./runtime/provider-cli/turn-launcher.js";
+export {
+  deriveProviderCliHomeNamespace,
+  deriveProviderCliSessionKey,
+  MAX_PROVIDER_CLI_TURN_IDENTITY_BYTES,
+  MAX_PROVIDER_CLI_TURN_PLAN_BYTES,
+  PROVIDER_CLI_TURN_PLAN_SCHEMA_VERSION,
+  type ProviderCliTurnPlan,
+  type ProviderCliTurnPlanCommand,
+  ProviderCliTurnPlanError,
+  type ProviderCliTurnPlanErrorCode,
+  parseProviderCliTurnPlan,
+  providerCliCommandForProvider,
+  readProviderCliTurnPlan,
+} from "./runtime/provider-cli/turn-plan.js";
+export {
+  type ProviderCliPreparedTurnPlan,
+  ProviderCliTurnPlanManager,
+  type ProviderCliTurnPlanManagerDeps,
+  type ProviderCliTurnPlanPrepareInput,
+} from "./runtime/provider-cli/turn-plan-manager.js";
+export {
+  type ExecuteProviderCliTurnPlanOptions,
+  executeProviderCliTurnPlan,
+  parseProviderCliTurnRunnerArgv,
+  runProviderCliTurnRunner,
+} from "./runtime/provider-cli/turn-runner.js";
+export {
   mapProviderCliLocalStateToReadiness,
   type ProviderCliCandidateReport,
   type ProviderCliDiagnostic,

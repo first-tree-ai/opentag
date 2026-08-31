@@ -76,6 +76,24 @@ interface SharedProviderRefresh {
   waiters: number;
 }
 
+export interface LoginShellDiscovery {
+  readonly options: ResolveAgentRuntimeExecutableOptions;
+  enable(): void;
+}
+
+export function createLoginShellDiscovery(): LoginShellDiscovery {
+  let enabled = false;
+  function includeLoginShell(): boolean {
+    return enabled;
+  }
+  return {
+    options: { includeLoginShell },
+    enable() {
+      enabled = true;
+    },
+  };
+}
+
 async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
   if (!signal) return refresh;
   signal.throwIfAborted();
@@ -254,10 +272,8 @@ export async function createClientRuntime(
     codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
     "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
   };
-  let includeLoginShell = false;
-  const discovery: ResolveAgentRuntimeExecutableOptions = {
-    includeLoginShell: () => includeLoginShell,
-  };
+  const loginShellDiscovery = createLoginShellDiscovery();
+  const discovery = loginShellDiscovery.options;
   const factories =
     options.factories ??
     (options.factory
@@ -420,7 +436,7 @@ export async function createClientRuntime(
     capabilityAbort.abort(error);
     throw error;
   }
-  includeLoginShell = true;
+  loginShellDiscovery.enable();
 
   const bindingStore = new SessionBindingStore({
     home: options.home,

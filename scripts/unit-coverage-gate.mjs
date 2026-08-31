@@ -49,7 +49,7 @@ export function extractChangedLines(diffText) {
 
   for (const rawLine of String(diffText ?? "").split("\n")) {
     const line = rawLine.replace(/\r$/, "");
-    if (line.startsWith("+++ ")) {
+    if (line.startsWith("+++ b/") || line === "+++ /dev/null") {
       const path = line.slice(4);
       currentFile = path === "/dev/null" ? undefined : path.startsWith("b/") ? path.slice(2) : path;
       nextLine = undefined;
@@ -116,7 +116,7 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
     for (const { content, line } of lines) {
       if (!isExecutableSourceLine(content)) continue;
       total += 1;
-      if (!lineHits || !lineHits.has(line)) {
+      if (!lineHits?.has(line)) {
         uncovered.push(`${file}:${line} (missing coverage entry)`);
       } else if (lineHits.get(line) > 0) {
         covered += 1;

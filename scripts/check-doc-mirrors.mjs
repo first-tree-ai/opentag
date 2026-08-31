@@ -95,11 +95,12 @@ function markedSectionRanges(content) {
   }
 
   const ranges = [];
-  for (const heading of headings) {
-    const next = headings.find((candidate) => candidate.line > heading.line && candidate.level <= heading.level);
-    const end = (next?.line ?? lines.length + 1) - 1;
-    const hasMarker = lines.slice(heading.line - 1, end).some((line) => line.trim() === DIVERGENCE_MARKER);
-    if (hasMarker) ranges.push({ start: heading.line, end });
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() !== DIVERGENCE_MARKER) continue;
+    const owner = [...headings].reverse().find((heading) => heading.line <= index + 1);
+    if (!owner) continue;
+    const next = headings.find((candidate) => candidate.line > owner.line && candidate.level <= owner.level);
+    ranges.push({ start: owner.line, end: (next?.line ?? lines.length + 1) - 1 });
   }
   return ranges;
 }

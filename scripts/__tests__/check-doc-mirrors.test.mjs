@@ -20,7 +20,7 @@ function fixture({ marker = false } = {}) {
   runGit(root, "config", "user.email", "test@example.invalid");
   runGit(root, "config", "user.name", "Doc Mirror Test");
   const canonical = marker
-    ? "# Guide\n\n## Intentional section\n\n<!-- doc-mirror: allow-divergence -->\n\nOriginal text.\n"
+    ? "# Guide\n\n## Intentional section\n\n<!-- doc-mirror: allow-divergence -->\n\nOriginal text.\n\n## Required mirror\n\nKeep mirrored.\n"
     : "# Guide\n\n## Section\n\nOriginal text.\n";
   writeFileSync(join(root, "guide.md"), canonical);
   writeFileSync(join(root, "guide.zh-CN.md"), "# 指南\n\n原始文本。\n");
@@ -30,10 +30,15 @@ function fixture({ marker = false } = {}) {
   return { root, base, canonicalPath: "guide.md", mirrorPath: "guide.zh-CN.md" };
 }
 
-function finishFixture(fixtureData, { changeMirror = false, text = "Updated text." } = {}) {
+function finishFixture(
+  fixtureData,
+  { changeMirror = false, changeOutsideMarker = false, text = "Updated text." } = {},
+) {
   const canonicalPath = join(fixtureData.root, fixtureData.canonicalPath);
   const current = readFileSync(canonicalPath, "utf8");
-  writeFileSync(canonicalPath, text.includes("\n") ? `${text}\n` : current.replace("Original text.", text));
+  const changed = text.includes("\n") ? text : current.replace("Original text.", text);
+  const updated = changeOutsideMarker ? changed.replace("Keep mirrored.", "Changed outside.") : changed;
+  writeFileSync(canonicalPath, updated.endsWith("\n") ? updated : `${updated}\n`);
   if (changeMirror) writeFileSync(join(fixtureData.root, fixtureData.mirrorPath), "# 指南\n\n更新文本。\n");
   runGit(fixtureData.root, "add", fixtureData.canonicalPath, ...(changeMirror ? [fixtureData.mirrorPath] : []));
   runGit(fixtureData.root, "commit", "--quiet", "-m", "change docs");
@@ -79,6 +84,18 @@ test("the divergence marker suppresses the mirror requirement for its section", 
     const head = finishFixture(fixtureData, { text: "Changed text." });
     const result = runChecker(fixtureData.root, fixtureData.base, head);
     assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  } finally {
+    rmSync(fixtureData.root, { recursive: true, force: true });
+  }
+});
+
+test("the divergence marker does not suppress an unmarked sibling section", () => {
+  const fixtureData = fixture({ marker: true });
+  try {
+    const head = finishFixture(fixtureData, { changeOutsideMarker: true });
+    const result = runChecker(fixtureData.root, fixtureData.base, head);
+    assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.match(`${result.stdout}${result.stderr}`, /guide\.zh-CN\.md/);
   } finally {
     rmSync(fixtureData.root, { recursive: true, force: true });
   }

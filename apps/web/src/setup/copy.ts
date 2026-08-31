@@ -7,6 +7,7 @@
  * Agent's settings. Copy that only one of those surfaces says stays with that surface.
  */
 
+import { messagingProviderLabel } from "../im/provider-label.js";
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
@@ -71,14 +72,18 @@ export const SETUP_COPY = {
     description: "Pick the app your team already works in.",
     providerLabel: "Messaging app",
     /**
-     * Lark is the name this product goes by in English; Feishu is the same app under its
-     * mainland China name. The provider's id stays `feishu`, because that is the Server's own
-     * vocabulary — only what the reader sees changes here.
+     * Feishu and Lark are one channel behind a regional switch, and the brand is only learned from
+     * the authorization result — a first connect has no brand yet, so the code this card leads to
+     * is always minted against Feishu. It therefore names Feishu alone: an "also called Feishu/Lark"
+     * would walk a Lark tenant into a code their account cannot authorize.
+     *
+     * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
+     * picker cannot drift from what the same provider is called everywhere else in the product.
      */
-    feishu: { title: "Lark", description: "Also called Feishu" },
-    slack: { title: "Slack", description: "Your Slack workspace" },
-    feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
-    qrAlt: "Scan this QR code in Lark",
+    feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu workspace" },
+    slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
+    feishuIntro: "Scan this with Feishu. You'll finish the last step inside Feishu itself.",
+    qrAlt: "Scan this QR code in Feishu",
     waiting: "Waiting for you to scan…",
     cliMissing: (provider: string) =>
       `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,

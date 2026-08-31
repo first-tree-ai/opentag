@@ -16,6 +16,7 @@ const EXCLUDED_ROOT_NAMES = new Set(["e2e", "scripts"]);
 const NON_EXECUTABLE_NODE_KINDS = new Set([
   ts.SyntaxKind.ImportDeclaration,
   ts.SyntaxKind.ImportEqualsDeclaration,
+  ts.SyntaxKind.ExportDeclaration,
   ts.SyntaxKind.InterfaceDeclaration,
   ts.SyntaxKind.TypeAliasDeclaration,
   ts.SyntaxKind.TypeLiteral,
@@ -37,6 +38,7 @@ export function isSupportedSourcePath(value) {
   if (segments.some((segment) => EXCLUDED_DIRECTORY_NAMES.has(segment))) return false;
   if (segments.includes("paraglide") && segments.includes("src")) return false;
   const name = fileName(path);
+  if (/^vitest(?:\..+)?\.config\.(?:cjs|cts|js|mjs|mts|ts)$/.test(name)) return false;
   if (/\.d\.(?:cts|mts|ts)$/.test(name)) return false;
   if (/\.(?:test|spec)\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/.test(name)) return false;
   return SUPPORTED_SOURCE_EXTENSIONS.has(extname(name).toLowerCase());

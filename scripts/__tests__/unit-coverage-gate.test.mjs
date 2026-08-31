@@ -15,6 +15,40 @@ function statementCoverage(file, line, hits) {
   };
 }
 
+async function evaluateTypeScriptSource(source, lineHits = {}) {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "opentag-coverage-gate-"));
+  const file = "example.ts";
+  try {
+    await writeFile(join(repositoryRoot, file), `${source}\n`);
+    const sourceLines = source.split("\n");
+    const diff = [
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      `@@ -0,0 +1,${sourceLines.length} @@`,
+      ...sourceLines.map((line) => `+${line}`),
+      "",
+    ].join("\n");
+    const entries = Object.entries(lineHits);
+    const statementMap = Object.fromEntries(
+      entries.map(([line], index) => [
+        String(index),
+        { start: { line: Number(line), column: 0 }, end: { line: Number(line) } },
+      ]),
+    );
+    const coverage = entries.length
+      ? {
+          [file]: {
+            s: Object.fromEntries(entries.map(([_line, hits], index) => [String(index), hits])),
+            statementMap,
+          },
+        }
+      : {};
+    return evaluatePatchCoverage({ coverage, diff, repositoryRoot, threshold: 80 });
+  } finally {
+    await rm(repositoryRoot, { force: true, recursive: true });
+  }
+}
+
 test("an added executable line with zero hits fails the patch gate", () => {
   const diff = [
     "diff --git a/src/example.ts b/src/example.ts",
@@ -128,40 +162,61 @@ test("a diff with no executable changes passes explicitly", () => {
   assert.equal(result.reason, "no executable changed lines");
 });
 
-test("TypeScript multiline imports and type declarations are not treated as executable", async () => {
-  const repositoryRoot = await mkdtemp(join(tmpdir(), "opentag-coverage-gate-"));
-  try {
-    const source = [
-      'import { dependency } from "./dependency.js";',
+test("TypeScript multiline imports, exports, and type declarations are not treated as executable", async () => {
+  const result = await evaluateTypeScriptSource(
+    [
+      "import {",
+      "  dependency,",
+      '} from "./dependency.js";',
+      "export {",
+      "  dependency,",
+      "  type Dependency,",
+      '} from "./dependency.js";',
       "type Options = {",
       "  dependency: string;",
       "};",
-      "interface Marker {",
+      "export interface Marker {",
       "  dependency: string;",
       "}",
       "export const executable = dependency;",
-    ].join("\n");
-    await writeFile(join(repositoryRoot, "example.ts"), `${source}\n`);
-    const diff = [
-      "--- a/example.ts",
-      "+++ b/example.ts",
-      "@@ -0,0 +1,8 @@",
-      ...source.split("\n").map((line) => `+${line}`),
-      "",
-    ].join("\n");
-    const result = evaluatePatchCoverage({
-      diff,
-      coverage: { "example.ts": statementCoverage("example.ts", 8, 1) },
-      repositoryRoot,
-      threshold: 80,
-    });
-    assert.equal(result.total, 1);
-    assert.equal(result.covered, 1);
-    assert.equal(result.passed, true);
-    assert.deepEqual(result.uncovered, []);
-  } finally {
-    await rm(repositoryRoot, { force: true, recursive: true });
-  }
+    ].join("\n"),
+    { 14: 1 },
+  );
+  assert.equal(result.total, 1);
+  assert.equal(result.covered, 1);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.uncovered, []);
+});
+
+test("type-literal property signatures are not treated as executable lines", async () => {
+  const result = await evaluateTypeScriptSource(
+    ["type Example = {", "  code?: string;", "  message: string;", "};", "const executable = true;"].join("\n"),
+    { 5: 1 },
+  );
+  assert.equal(result.total, 1);
+  assert.equal(result.covered, 1);
+  assert.deepEqual(result.uncovered, []);
+});
+
+test("function-valued type-literal signatures are not treated as executable lines", async () => {
+  const result = await evaluateTypeScriptSource(
+    ["export interface Hooks {", "  onEvent?: (event: unknown) => void;", "  now?: () => Date;", "}"].join("\n"),
+  );
+  assert.equal(result.total, 0);
+  assert.equal(result.passed, true);
+});
+
+test("bare expressions in multiline arrays remain executable lines", async () => {
+  const result = await evaluateTypeScriptSource(
+    ["const values = [", "  firstValue,", "  secondValue,", "];"].join("\n"),
+    { 1: 1 },
+  );
+  assert.equal(result.total, 3);
+  assert.equal(result.covered, 1);
+  assert.deepEqual(result.uncovered, [
+    "example.ts:2 (missing coverage entry)",
+    "example.ts:3 (missing coverage entry)",
+  ]);
 });
 
 test("supported script extensions are included while coverage artifacts remain excluded", () => {
@@ -173,4 +228,5 @@ test("supported script extensions are included while coverage artifacts remain e
   assert.equal(isSupportedSourcePath("scripts/toolchain-check.mjs"), false);
   assert.equal(isSupportedSourcePath("src/example.test.ts"), false);
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
+  assert.equal(isSupportedSourcePath("packages/client/vitest.agent-runtime.config.ts"), false);
 });

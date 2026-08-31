@@ -117,6 +117,29 @@ describe("BackgroundFailureSupervisor", () => {
         cause: { message: "nested" },
       },
     });
+    expect(JSON.stringify(events[0])).toContain("Cause chain exceeded the diagnostic depth limit");
+
+    const metadataCause = {
+      code: "UPSTREAM_TIMEOUT",
+      category: "timeout",
+      retryability: "backoff",
+      phase: "transport",
+      message: "upstream password=hidden",
+    };
+    await expect(supervisor.supervise(Promise.reject("metadata failure"), { cause: metadataCause })).rejects.toBe(
+      "metadata failure",
+    );
+    expect(events[1]).toMatchObject({
+      error: {
+        cause: {
+          code: "UPSTREAM_TIMEOUT",
+          category: "timeout",
+          retryability: "backoff",
+          phase: "transport",
+          message: expect.stringContaining("password=[REDACTED]"),
+        },
+      },
+    });
 
     const objectFailure: Record<string, unknown> = {
       code: "OBJECT_FAILURE",
@@ -127,7 +150,7 @@ describe("BackgroundFailureSupervisor", () => {
       cause: { category: "not-a-category", message: "invalid metadata" },
     };
     await expect(supervisor.supervise(Promise.reject(objectFailure))).rejects.toBe(objectFailure);
-    expect(events[1]).toMatchObject({
+    expect(events[2]).toMatchObject({
       error: {
         code: "OBJECT_FAILURE",
         category: "internal",

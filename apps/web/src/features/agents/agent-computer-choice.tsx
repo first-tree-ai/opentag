@@ -33,6 +33,15 @@ export function AgentComputerChoice({
   const computersQuery = useComputersQuery();
   const [binding, setBinding] = useState(false);
   const [error, setError] = useState<string>();
+  /*
+   * What this surface is binding to, held here rather than read back out of the Computers query.
+   * A Computer that just enrolled is known to the connect step and not to that query -- it reads
+   * through its own adapter and does not refill this cache -- so deriving the bind target from the
+   * inventory would leave a failed bind for a brand new Computer invisible and unretryable.
+   */
+  const [pending, setPending] = useState<{ computerId: string; displayName: string }>();
+  /** Retires the writes of a bind that a later one, or a different Agent, has superseded. */
+  const generation = useRef(0);
   // A bind is attempted once per Agent-and-Computer pair. Without this a failure would be retried by
   // every render the failure itself causes, and the reader would watch an error flicker instead of
   // reading it. The Agent belongs in the key because this surface outlives any one of them: reused
@@ -47,43 +56,59 @@ export function AgentComputerChoice({
   const target = computer ? `${agentId}:${computer.computerId}` : undefined;
 
   const bind = useCallback(
-    async (computerId: string) => {
+    async (goal: { computerId: string; displayName: string }) => {
+      // Recorded before the call starts, so a bind begun outside the effect -- a retry, or a
+      // Computer that just enrolled -- cannot then be started a second time by the effect itself.
+      const mine = generation.current + 1;
+      generation.current = mine;
+      attempted.current = `${agentId}:${goal.computerId}`;
+      setPending(goal);
+      setBinding(true);
+      setError(undefined);
       try {
-        setBinding(true);
-        setError(undefined);
-        await browserApi.rebindAgentComputer(agentId, computerId);
+        await browserApi.rebindAgentComputer(agentId, goal.computerId);
+        /*
+         * Two binds can be in flight when this surface is reused for a second Agent, and they can
+         * settle in either order. Every write below belongs to the attempt that is still current;
+         * without this an older Agent's late reply would overwrite the newer one's result and clear
+         * a `binding` that is still true, which is an invitation to start a second bind for it.
+         */
+        if (generation.current !== mine) return;
         onBound();
       } catch (cause) {
+        if (generation.current !== mine) return;
         setError(cause instanceof Error && cause.message ? cause.message : m.agents_computer_choice_bind_failed());
       } finally {
-        setBinding(false);
+        if (generation.current === mine) setBinding(false);
       }
     },
     [agentId, onBound],
   );
 
+  // A different Agent answers for itself: the previous one's target and failure are not its result,
+  // and any bind still in flight for it must not write over this one.
+  useEffect(() => {
+    // Nothing to retire while the attempt on record is this Agent's own.
+    if (attempted.current?.startsWith(`${agentId}:`)) return;
+    generation.current += 1;
+    setPending(undefined);
+    setError(undefined);
+    setBinding(false);
+  }, [agentId]);
+
   useEffect(() => {
     if (!computer || !target || attempted.current === target) return;
-    attempted.current = target;
-    // A new target answers for itself. Leaving the previous one's failure on screen would attribute
-    // it to an Agent that has not been tried yet.
-    setError(undefined);
-    void bind(computer.computerId);
+    void bind(computer);
   }, [computer, target, bind]);
 
-  // Records the attempt before starting it, so a bind begun from outside the effect -- a retry, or a
-  // Computer that just enrolled -- cannot then be started a second time by the effect itself.
-  function bindTo(computerId: string) {
-    attempted.current = `${agentId}:${computerId}`;
-    void bind(computerId);
-  }
-
-  if (error && computer) {
+  // Keyed on what was actually being bound, not on the inventory, so a Computer the connect step
+  // just produced can still report its failure and be retried -- without issuing a second code.
+  if (error && pending) {
     return (
       <div className="grid gap-4">
         <Banner variant="error" role="alert" description={error} />
         <div>
-          <Button disabled={binding} size="compact" variant="secondary" onClick={() => bindTo(computer.computerId)}>
+          <Button disabled={binding} size="compact" variant="secondary" onClick={() => void bind(pending)}>
             {m.common_try_again()}
           </Button>
         </div>
@@ -142,7 +167,10 @@ export function AgentComputerChoice({
     );
   }
 
-  if (computer) return <p>{m.agents_computer_choice_binding({ name: computer.displayName })}</p>;
+  // `pending` covers the moment after a Computer enrols: it is the Account's only machine, but this
+  // query has not been told about it, and offering to connect another one there would be wrong.
+  const binding_target = computer ?? pending;
+  if (binding_target) return <p>{m.agents_computer_choice_binding({ name: binding_target.displayName })}</p>;
 
   return (
     <div className="grid gap-2">
@@ -152,7 +180,10 @@ export function AgentComputerChoice({
        * Computer this Account has -- and the connect step now hands it back, so the Agent is bound
        * to the machine that actually enrolled rather than to whatever a re-read happens to find.
        */}
-      <ComputerConnect intent={{ mode: "create" }} onConnected={(computer) => bindTo(computer.computerId)} />
+      <ComputerConnect
+        intent={{ mode: "create" }}
+        onConnected={(connected) => void bind({ computerId: connected.computerId, displayName: connected.displayName })}
+      />
     </div>
   );
 }

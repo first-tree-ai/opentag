@@ -241,6 +241,93 @@ describe("An Agent with no Computer", () => {
     expect(rebind.mock.calls.filter(([id]) => id === SECOND_AGENT_ID)).toHaveLength(1);
   });
 
+  it("keeps a newly connected Computer's bind failure visible and retryable", async () => {
+    /*
+     * The Computer that just enrolled is known to the connect step and not to the shared inventory
+     * query -- the connect step reads through its own adapter and never refills that cache. A bind
+     * target derived from the inventory therefore does not exist for a Computer that has only just
+     * arrived, which used to hide the failure entirely and leave the reader on "Connect a Computer"
+     * with an Agent that never got one. Inside the setup gate that is terminal.
+     */
+    const redeemedAt = "2026-08-20T00:05:00.000Z";
+    const fresh: WorkspaceComputerSummary = {
+      ...accountComputer,
+      connectionStatus: "online",
+      connectedAt: "2026-08-20T00:05:01.000Z",
+    };
+    let inventoryReads = 0;
+    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
+      inventoryReads += 1;
+      // First read is the surface's own query, on an Account that genuinely has none.
+      return { computers: inventoryReads === 1 ? [] : [fresh] };
+    });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand: "opentag computer connect -- code",
+      connectCodeId: "6f0f6b1e-9d2c-4a3b-8c1d-0e9f8a7b6c5d",
+      expiresIn: 900,
+      issuedAt: "2026-08-20T00:04:00.000Z",
+    });
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+      connectCodeId: "6f0f6b1e-9d2c-4a3b-8c1d-0e9f8a7b6c5d",
+      state: "redeemed",
+      computerId: COMPUTER_ID,
+      redeemedAt,
+    });
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockRejectedValue(new Error("Bind refused"));
+    const onAgentChanged = vi.fn();
+
+    await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={onAgentChanged} />);
+
+    // The connect step polls, reports the exact Computer its code redeemed, and the bind fails.
+    expect(await screen.findByText("Bind refused", undefined, { timeout: 8_000 })).toBeTruthy();
+    expect(rebind).toHaveBeenCalledWith(UNBOUND_AGENT_ID, COMPUTER_ID);
+    expect(onAgentChanged).not.toHaveBeenCalled();
+
+    const issued = vi.mocked(browserApi.issueComputerConnectCode).mock.calls.length;
+    rebind.mockResolvedValue(boundConfig);
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(onAgentChanged).toHaveBeenCalled());
+    // Retrying the bind must not start the enrolment over: the machine is already here.
+    expect(vi.mocked(browserApi.issueComputerConnectCode).mock.calls).toHaveLength(issued);
+  }, 15_000);
+
+  it("does not let a superseded bind overwrite the current Agent's result", async () => {
+    /*
+     * Reused for a second Agent while the first bind is still in flight, the two can settle in
+     * either order. The attempted key stops the wrong bind from starting; it does nothing about a
+     * late reply writing over a newer one, which would show the previous Agent's error against this
+     * one and clear a `binding` that is still true -- an invitation to start a second bind for it.
+     */
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [accountComputer] });
+    const rejectors = new Map<string, (cause: Error) => void>();
+    const rebind = vi
+      .spyOn(browserApi, "rebindAgentComputer")
+      .mockImplementation(
+        (agentId: string) => new Promise<AgentAdminConfig>((_resolve, reject) => rejectors.set(agentId, reject)),
+      );
+
+    const { rerender } = await renderInRouter(
+      <AgentComputerSettings agent={unbound()} onAgentChanged={() => undefined} />,
+    );
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(UNBOUND_AGENT_ID, COMPUTER_ID));
+
+    rerender(<AgentComputerSettings agent={unbound(SECOND_AGENT_ID)} onAgentChanged={() => undefined} />);
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(SECOND_AGENT_ID, COMPUTER_ID));
+
+    await act(async () => {
+      rejectors.get(SECOND_AGENT_ID)?.(new Error("Second Agent failed"));
+    });
+    expect(await screen.findByText("Second Agent failed")).toBeTruthy();
+
+    await act(async () => {
+      rejectors.get(UNBOUND_AGENT_ID)?.(new Error("First Agent failed late"));
+    });
+
+    expect(screen.getByText("Second Agent failed")).toBeTruthy();
+    expect(screen.queryByText("First Agent failed late")).toBeNull();
+  });
+
   it("does not show one Agent's bind failure against the next one", async () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [accountComputer] });
     const rebind = vi

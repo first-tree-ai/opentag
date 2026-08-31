@@ -75,7 +75,14 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("failed");
-    expect(failures).toEqual([expect.objectContaining({ code: "runtime_blocked", retryability: "terminal" })]);
+    expect(failures).toEqual([
+      expect.objectContaining({
+        code: "runtime_blocked",
+        category: "unavailable",
+        phase: "transport",
+        retryability: "never",
+      }),
+    ]);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ code: "runtime_blocked", messageId: request.messageId, status: "failed" }),
       "Session message failed permanently",
@@ -886,11 +893,11 @@ function recordFor(
 
 function failureFor(request: SessionMessageDeliveryRequest, code: string): DurableFailure {
   return {
-    category: "runtime",
+    category: "unavailable",
     code,
     message: code,
-    phase: "runtime",
+    phase: "transport",
     requestId: request.requestId,
-    retryability: "retryable",
+    retryability: "backoff",
   };
 }

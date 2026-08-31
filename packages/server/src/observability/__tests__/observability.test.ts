@@ -24,6 +24,7 @@ import { safeFeishuSetupErrorCode } from "../../services/im-bindings/feishu/erro
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
 import { ImBindingServiceError } from "../../services/im-bindings/im-binding-service.js";
 import { OPENTAG_ATTR } from "../attributes.js";
+import { BackgroundFailureSupervisor } from "../background-failure-supervisor.js";
 import { traceDeliveryClaim } from "../delivery-tracing.js";
 import { createServerDiagnosticReporter } from "../diagnostics.js";
 import { traceFeishuInbound } from "../feishu-tracing.js";
@@ -310,6 +311,43 @@ describe("span helpers", () => {
 });
 
 describe("background and WebSocket tracing", () => {
+  it("supervises the Feishu maintenance timer with one event and counter", async () => {
+    const events: unknown[] = [];
+    const counters: unknown[] = [];
+    const supervisor = new BackgroundFailureSupervisor({
+      onEvent: (event) => events.push(event),
+      onCounter: (name, labels) => counters.push({ name, labels }),
+    });
+    const database = {
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+      })),
+    };
+    const imBindings = {
+      listFeishuConnectionIds: vi.fn().mockRejectedValue(new Error("maintenance failed")),
+    };
+    const manager = new FeishuConnectionManager({
+      database: database as never,
+      inbox: {} as never,
+      instanceId: randomUUID(),
+      imBindings: imBindings as never,
+      supervisor,
+    });
+    manager.start();
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(counters).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "diagnostic.error",
+      error: {
+        code: "FEISHU_CONNECTION_MAINTENANCE_FAILED",
+        category: "internal",
+        retryability: "backoff",
+        phase: "scheduler",
+      },
+    });
+    await manager.stop();
+  });
+
   it("keeps raw Feishu setup failures out of persisted diagnostics, logger codes, and traces", async () => {
     const agentId = randomUUID();
     const rawFailure = Object.assign(new Error("FEISHU_PRIVATE_APP_SECRET"), {

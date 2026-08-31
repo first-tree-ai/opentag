@@ -17,6 +17,7 @@ import {
   type DurableFailure,
   type DurableWorkRecord,
   defaultRuntimeRetryScheduler,
+  durableFailureFromUnknown,
   type RuntimeDurabilityMetrics,
   type RuntimeDurabilityStore,
   type RuntimeRetryPolicy,
@@ -421,12 +422,17 @@ export class SessionMessageInbox {
     phase: string,
     error: unknown,
   ): Promise<void> {
-    const failure = toFailure(record.payload.requestId, phase, error);
+    const failure = durableFailureFromUnknown(
+      record.payload.requestId,
+      phase,
+      error,
+      phase === "credential" ? "credential_unavailable" : phase === "prompt" ? "provider_failed" : "runtime_failed",
+    );
     this.#emitFailure(failure);
     const attempts = record.attempts + 1;
     const now = this.#now();
     const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
-    if (failure.retryability === "terminal") {
+    if (failure.retryability === "never") {
       await this.#transition(candidate, "failed", { nextAttemptAt: undefined }).catch(() => undefined);
       this.#remember(record.key, { hash, status: "failed", reason: "provider_unavailable" });
       this.#logger.warn(
@@ -513,36 +519,6 @@ function normalizeRetryPolicy(overrides: Partial<RuntimeRetryPolicy> | undefined
       throw new Error(`Runtime retry ${name} must be a positive safe integer`);
   }
   return policy;
-}
-
-function toFailure(requestId: string, phase: string, error: unknown): DurableFailure {
-  if (error && typeof error === "object" && "code" in error && "category" in error && "retryability" in error) {
-    const candidate = error as Partial<DurableFailure>;
-    if (
-      typeof candidate.code === "string" &&
-      typeof candidate.category === "string" &&
-      typeof candidate.retryability === "string" &&
-      typeof candidate.phase === "string" &&
-      typeof candidate.requestId === "string"
-    ) {
-      return {
-        code: candidate.code,
-        category: candidate.category,
-        retryability: candidate.retryability as DurableFailure["retryability"],
-        phase: candidate.phase,
-        requestId: candidate.requestId,
-        message: typeof candidate.message === "string" ? candidate.message.slice(0, 256) : "Runtime operation failed",
-      };
-    }
-  }
-  return {
-    code: phase === "credential" ? "credential_unavailable" : phase === "prompt" ? "provider_failed" : "runtime_failed",
-    category: phase,
-    retryability: "retryable",
-    phase,
-    requestId,
-    message: error instanceof Error ? error.message.slice(0, 256) : "Runtime operation failed",
-  };
 }
 
 export type SessionMessageTurnContext =

@@ -1,4 +1,12 @@
 import { OpenTagApiError } from "@opentag/client";
+import {
+  type ErrorRetryability,
+  redactSensitive,
+  type StructuredError,
+  StructuredErrorCategorySchema,
+  StructuredErrorPhaseSchema,
+  StructuredErrorSchema,
+} from "@opentag/shared";
 
 /** Process exit values shared by every user-facing CLI command. */
 export const EXIT_CODES = {
@@ -10,19 +18,9 @@ export const EXIT_CODES = {
 } as const;
 
 export type CommandExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
-type CommandErrorCategoryCore = "validation" | "auth" | "authorization" | "unavailable" | "timeout" | "internal";
-type CommandErrorCategoryExtraA = "conflict" | "not_found" | "rate_limit";
-type CommandErrorCategoryExtraB = "protocol" | "configuration" | "cancelled" | "dependency";
-type CommandErrorCategoryExtra = CommandErrorCategoryExtraA | CommandErrorCategoryExtraB;
-export type CommandErrorCategory = CommandErrorCategoryCore | CommandErrorCategoryExtra;
-export type CommandRetryability = "never" | "immediate" | "backoff" | "after_auth";
-type CommandPhaseCoreA = "validation" | "authentication" | "authorization" | "configuration" | "startup" | "request";
-type CommandPhaseCoreB = "transport" | "provider";
-type CommandPhaseCore = CommandPhaseCoreA | CommandPhaseCoreB;
-type CommandPhaseExtraA = "persistence" | "dispatch" | "socket" | "scheduler";
-type CommandPhaseExtraB = "worker" | "serialization" | "shutdown" | "unknown";
-type CommandPhaseExtra = CommandPhaseExtraA | CommandPhaseExtraB;
-export type CommandPhase = CommandPhaseCore | CommandPhaseExtra;
+export type CommandErrorCategory = StructuredError["category"];
+export type CommandRetryability = ErrorRetryability;
+export type CommandPhase = StructuredError["phase"];
 
 type CommandErrorCodeFields = { code: string; category: CommandErrorCategory };
 type CommandErrorRetryFields = { retryability: CommandRetryability; phase: CommandPhase };
@@ -36,15 +34,29 @@ export class CommandError extends Error {
   declare readonly retryability: CommandRetryability;
   declare readonly phase: CommandPhase;
   declare readonly requestId?: string;
+  readonly structuredError: StructuredError;
 
   constructor(fields: CommandErrorFields, message: string, options?: ErrorOptions) {
-    super(redactSecrets(message), options);
+    const safeMessage = redactSecrets(message);
+    super(safeMessage, options);
     this.name = "CommandError";
     this.code = fields.code;
     this.category = fields.category;
     this.retryability = fields.retryability;
     this.phase = fields.phase;
     if (fields.requestId) this.requestId = fields.requestId;
+    this.structuredError = StructuredErrorSchema.parse({
+      code: this.code,
+      category: this.category,
+      retryability: this.retryability,
+      phase: this.phase,
+      ...(this.requestId ? { requestId: this.requestId.slice(0, 256) } : {}),
+      message: safeMessage.slice(0, 2_048),
+    });
+  }
+
+  toStructuredError(): StructuredError {
+    return this.structuredError;
   }
 }
 
@@ -90,6 +102,23 @@ function classifyGenericError(error: unknown, phase: CommandPhase): CommandError
   const code = typeof candidate.code === "string" && candidate.code.length > 0 ? candidate.code : "INTERNAL_ERROR";
   const message = typeof candidate.message === "string" ? candidate.message : String(error);
   const requestId = typeof candidate.requestId === "string" ? candidate.requestId : undefined;
+  if (
+    StructuredErrorCategorySchema.safeParse(candidate.category).success &&
+    StructuredErrorPhaseSchema.safeParse((candidate as { phase?: unknown }).phase).success &&
+    isRetryability((candidate as { retryability?: unknown }).retryability)
+  ) {
+    return new CommandError(
+      {
+        code,
+        category: candidate.category as CommandErrorCategory,
+        retryability: (candidate as { retryability: CommandRetryability }).retryability,
+        phase: (candidate as { phase: CommandPhase }).phase,
+        ...(requestId ? { requestId } : {}),
+      },
+      message,
+      { cause: error },
+    );
+  }
   if (candidate.category === "validation" || phase === "validation") {
     return new CommandError({ code, category: "validation", retryability: "never", phase: "validation" }, message, {
       cause: error,
@@ -204,16 +233,50 @@ export async function executeCommand<T>(
 function mapApiError(error: OpenTagApiError): Omit<ConstructorParameters<typeof CommandError>[0], never> {
   switch (error.category) {
     case "credential":
-      return { code: error.code, category: "auth", retryability: "after_auth", phase: "authentication" };
+      return {
+        code: error.code,
+        category: "auth",
+        retryability: "after_auth",
+        phase: "authentication",
+        ...(error.requestId ? { requestId: error.requestId } : {}),
+      };
     case "validation":
-      return { code: error.code, category: "validation", retryability: "never", phase: "validation" };
+      return {
+        code: error.code,
+        category: "validation",
+        retryability: "never",
+        phase: "validation",
+        ...(error.requestId ? { requestId: error.requestId } : {}),
+      };
     case "rate_limit":
-      return { code: error.code, category: "rate_limit", retryability: "backoff", phase: "request" };
+      return {
+        code: error.code,
+        category: "rate_limit",
+        retryability: "backoff",
+        phase: "request",
+        ...(error.requestId ? { requestId: error.requestId } : {}),
+      };
     case "transient":
-      return { code: error.code, category: "unavailable", retryability: "backoff", phase: "transport" };
+      return {
+        code: error.code,
+        category: "unavailable",
+        retryability: "backoff",
+        phase: "transport",
+        ...(error.requestId ? { requestId: error.requestId } : {}),
+      };
     default:
-      return { code: error.code, category: "internal", retryability: "never", phase: "request" };
+      return {
+        code: error.code,
+        category: error.structuredError.category,
+        retryability: error.structuredError.retryability,
+        phase: error.structuredError.phase,
+        ...(error.requestId ? { requestId: error.requestId } : {}),
+      };
   }
+}
+
+function isRetryability(value: unknown): value is CommandRetryability {
+  return value === "never" || value === "immediate" || value === "backoff" || value === "after_auth";
 }
 
 function isZodError(
@@ -275,13 +338,5 @@ function isSensitiveKey(key: string): boolean {
 }
 
 export function redactSecrets(value: string): string {
-  return value
-    .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
-    .replace(/(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*)[^\r\n]+/giu, "$1[REDACTED]")
-    .replace(
-      /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
-      "$1[REDACTED]",
-    )
-    .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
-    .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@");
+  return redactSensitive(value);
 }

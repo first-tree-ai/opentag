@@ -1,27 +1,22 @@
 import { randomUUID } from "node:crypto";
-import type { ErrorCategory, ErrorCode, ValidationIssue } from "@opentag/shared";
+import {
+  type ErrorCategory,
+  type ErrorCode,
+  redactSensitive,
+  type ErrorRetryability as SharedErrorRetryability,
+  type StructuredErrorCategory,
+  StructuredErrorCategorySchema,
+  type StructuredErrorCause,
+  type StructuredErrorPhase,
+  StructuredErrorPhaseSchema,
+  type ValidationIssue,
+} from "@opentag/shared";
 
 export const OPEN_TAG_API_REQUEST_TIMEOUT_MS = 30_000;
 export const REQUEST_ID_HEADER = "x-request-id";
 
-export type ErrorRetryability = "never" | "immediate" | "backoff" | "after_auth";
-export type ErrorPhase =
-  | "validation"
-  | "authentication"
-  | "authorization"
-  | "configuration"
-  | "startup"
-  | "request"
-  | "transport"
-  | "provider"
-  | "persistence"
-  | "dispatch"
-  | "socket"
-  | "scheduler"
-  | "worker"
-  | "serialization"
-  | "shutdown"
-  | "unknown";
+export type ErrorRetryability = SharedErrorRetryability;
+export type ErrorPhase = StructuredErrorPhase;
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -29,14 +24,7 @@ export interface RequestOptions {
   requestId?: string;
 }
 
-export interface RequestCause {
-  code?: string;
-  category?: ErrorCategory;
-  retryability?: ErrorRetryability;
-  phase?: ErrorPhase;
-  message: string;
-  cause?: RequestCause;
-}
+export type RequestCause = StructuredErrorCause;
 
 export interface RequestErrorOptions {
   cause?: unknown;
@@ -72,13 +60,22 @@ export function createRequestId(): string {
   return randomUUID();
 }
 
-export function safeCause(error: unknown): RequestCause | undefined {
+export function safeCause(error: unknown, seen = new WeakSet<object>(), depth = 0): RequestCause | undefined {
   if (error === undefined) return undefined;
+  if (depth >= 8) return { message: "Cause chain exceeded the diagnostic depth limit" };
   if (error instanceof Error) {
+    if (seen.has(error)) return { message: "Cause chain contained a circular reference" };
+    seen.add(error);
     const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-    const nested = "cause" in error ? safeCause(error.cause) : undefined;
+    const category = "category" in error ? canonicalCategory(error.category) : undefined;
+    const retryability = "retryability" in error ? canonicalRetryability(error.retryability) : undefined;
+    const phase = "phase" in error ? canonicalPhase(error.phase) : undefined;
+    const nested = "cause" in error ? safeCause(error.cause, seen, depth + 1) : undefined;
     return {
       ...(code ? { code } : {}),
+      ...(category ? { category } : {}),
+      ...(retryability ? { retryability } : {}),
+      ...(phase ? { phase } : {}),
       message: sanitizeCauseMessage(error.message),
       ...(nested ? { cause: nested } : {}),
     };
@@ -87,10 +84,30 @@ export function safeCause(error: unknown): RequestCause | undefined {
 }
 
 export function sanitizeCauseMessage(message: string): string {
-  return message
-    .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
-    .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
-    .slice(0, 2_048);
+  const sanitized = redactSensitive(message);
+  return (typeof sanitized === "string" ? sanitized : "[REDACTED]").slice(0, 2_048);
+}
+
+function canonicalCategory(value: unknown): StructuredErrorCategory | undefined {
+  if (StructuredErrorCategorySchema.safeParse(value).success) return value as StructuredErrorCategory;
+  if (value === "credential") return "auth";
+  if (value === "deterministic") return "conflict";
+  if (value === "transient") return "unavailable";
+  return undefined;
+}
+
+function canonicalRetryability(value: unknown): ErrorRetryability | undefined {
+  return value === "never" || value === "immediate" || value === "backoff" || value === "after_auth"
+    ? value
+    : value === "retryable"
+      ? "backoff"
+      : value === "terminal"
+        ? "never"
+        : undefined;
+}
+
+function canonicalPhase(value: unknown): ErrorPhase | undefined {
+  return StructuredErrorPhaseSchema.safeParse(value).success ? (value as ErrorPhase) : undefined;
 }
 
 export function statusFallback(status: number): {

@@ -1,36 +1,139 @@
 import { dirname, resolve } from "node:path";
+import {
+  type ErrorRetryability,
+  redactSensitive,
+  type StructuredError,
+  StructuredErrorCategorySchema,
+  StructuredErrorPhaseSchema,
+  StructuredErrorSchema,
+} from "@opentag/shared";
 import { ensurePrivateDirectory, readDurableJson, writeDurableJson } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
 export type DurableWorkKind = "session-message" | "turn-report";
 export type DurableWorkStatus = "accepted" | "running" | "succeeded" | "retryable" | "failed" | "dead-letter";
-export type DurableRetryability = "retryable" | "terminal";
+/** The durable state machine stores taxonomy retry policy, not a second retry enum. */
+export type DurableRetryability = ErrorRetryability;
+export type DurableFailure = StructuredError;
 
-export interface DurableFailure {
-  readonly category: string;
+export class RuntimeDurabilityFailure extends Error {
+  readonly category: StructuredError["category"];
   readonly code: string;
-  readonly message: string;
-  readonly phase: string;
+  readonly phase: StructuredError["phase"];
   readonly requestId: string;
   readonly retryability: DurableRetryability;
-}
-
-export class RuntimeDurabilityFailure extends Error implements DurableFailure {
-  readonly category: string;
-  readonly code: string;
-  readonly phase: string;
-  readonly requestId: string;
-  readonly retryability: DurableRetryability;
+  readonly structuredError: DurableFailure;
 
   constructor(failure: DurableFailure) {
-    super(failure.message);
+    const structured = StructuredErrorSchema.parse(failure);
+    super(structured.message, structured.cause ? { cause: structured.cause } : undefined);
     this.name = "RuntimeDurabilityFailure";
-    this.category = failure.category;
-    this.code = failure.code;
-    this.phase = failure.phase;
-    this.requestId = failure.requestId;
-    this.retryability = failure.retryability;
+    this.category = structured.category;
+    this.code = structured.code;
+    this.phase = structured.phase;
+    this.requestId = structured.requestId ?? "unknown";
+    this.retryability = structured.retryability;
+    this.structuredError = structured;
   }
+}
+
+/**
+ * Convert an operation failure into the shared, bounded taxonomy used by the durable state machines.
+ * Legacy `retryable`/`terminal` values are accepted while old on-disk records drain.
+ */
+export function durableFailureFromUnknown(
+  requestId: string,
+  phase: string,
+  error: unknown,
+  fallbackCode: string,
+): DurableFailure {
+  const source = structuredFailureCandidate(error);
+  const sourcePhase = typeof source.phase === "string" ? source.phase : phase;
+  const normalizedPhase = normalizePhase(sourcePhase);
+  const normalizedRetryability = normalizeRetryability(source.retryability);
+  const normalizedCategory = normalizeCategory(source.category, normalizedPhase);
+  const code = typeof source.code === "string" && source.code.length > 0 ? source.code : fallbackCode;
+  const message = boundedFailureMessage(
+    typeof source.message === "string"
+      ? source.message
+      : error instanceof Error
+        ? error.message
+        : "Runtime operation failed",
+  );
+  const candidate = {
+    code,
+    category: normalizedCategory,
+    retryability: normalizedRetryability,
+    phase: normalizedPhase,
+    requestId: boundedRequestId(
+      typeof source.requestId === "string" && source.requestId.length > 0 ? source.requestId : requestId,
+    ),
+    message,
+    ...(source.cause && typeof source.cause === "object" ? { cause: source.cause } : {}),
+  };
+  const parsed = StructuredErrorSchema.safeParse(candidate);
+  if (parsed.success) return parsed.data;
+  return StructuredErrorSchema.parse({
+    code: fallbackCode,
+    category: "internal",
+    retryability: "backoff",
+    phase: "unknown",
+    requestId: boundedRequestId(requestId),
+    message: "Runtime operation failed",
+  });
+}
+
+function structuredFailureCandidate(error: unknown): Record<string, unknown> {
+  if (error && typeof error === "object") {
+    const candidate = error as Record<string, unknown>;
+    if (candidate.structuredError && typeof candidate.structuredError === "object") {
+      return candidate.structuredError as Record<string, unknown>;
+    }
+    return candidate;
+  }
+  return {};
+}
+
+function normalizeRetryability(value: unknown): ErrorRetryability {
+  if (value === "never" || value === "immediate" || value === "backoff" || value === "after_auth") return value;
+  if (value === "terminal") return "never";
+  return "backoff";
+}
+
+function normalizePhase(value: string): StructuredError["phase"] {
+  if (StructuredErrorPhaseSchema.safeParse(value).success) return value as StructuredError["phase"];
+  const aliases: Record<string, StructuredError["phase"]> = {
+    credential: "authentication",
+    confirmation: "request",
+    persist: "persistence",
+    prompt: "provider",
+    runtime: "transport",
+    server: "transport",
+  };
+  return aliases[value] ?? "unknown";
+}
+
+function normalizeCategory(value: unknown, phase: StructuredError["phase"]): StructuredError["category"] {
+  if (StructuredErrorCategorySchema.safeParse(value).success) return value as StructuredError["category"];
+  if (value === "credential") return "auth";
+  if (value === "provider" || value === "server") return "dependency";
+  if (value === "transport" || value === "runtime") return "unavailable";
+  if (phase === "authentication") return "auth";
+  if (phase === "provider") return "dependency";
+  if (phase === "transport") return "unavailable";
+  if (phase === "persistence") return "dependency";
+  return "internal";
+}
+
+function boundedRequestId(value: string): string {
+  return value.slice(0, 256) || "unknown";
+}
+
+function boundedFailureMessage(value: unknown): string {
+  const redacted = redactSensitive(value);
+  return (
+    (typeof redacted === "string" ? redacted : "Runtime operation failed").slice(0, 256) || "Runtime operation failed"
+  );
 }
 
 export interface DurableWorkRecord<T = unknown> {

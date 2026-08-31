@@ -42,7 +42,7 @@ describe("AgentUsageOverview", () => {
     await renderInRouter(<AgentUsageOverview agentId="agent-1" />);
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText("Partial data.")).toBeNull();
+    expect(screen.queryByText("Partial data")).toBeNull();
   });
 
   it("uses chart headings without repeating their meaning in helper copy", async () => {
@@ -52,6 +52,9 @@ describe("AgentUsageOverview", () => {
 
     expect(await screen.findByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Usage period" }).textContent).toBe("Last 30 days");
+    expect(screen.getByRole("table", { name: "Token breakdown" })).toBeTruthy();
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Type", "Usage"]);
     expect(screen.queryByText("Total Tokens recorded each day.")).toBeNull();
     expect(screen.queryByText("Input and output within the selected period.")).toBeNull();
   });
@@ -66,8 +69,8 @@ describe("AgentUsageOverview", () => {
       </>,
     );
 
-    expect(await screen.findByText("Partial data.")).toBeTruthy();
-    expect(screen.getAllByText("Partial data.")).toHaveLength(1);
+    expect(await screen.findByText("Partial data")).toBeTruthy();
+    expect(screen.getAllByText("Partial data")).toHaveLength(1);
     expect(loadUsage).toHaveBeenCalledTimes(1);
   });
 
@@ -82,10 +85,10 @@ describe("AgentUsageOverview", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(
       "Usage aggregation is delayed. Try again shortly.",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Retry Agent usage" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText("Partial data.")).toBeNull();
+    expect(screen.queryByText("Partial data")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
     expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
@@ -124,7 +127,7 @@ describe("AgentUsageOverview", () => {
       ],
     });
     await renderInRouter(<AgentUsageTab agentId="agent-covered" />);
-    expect(await screen.findByText("Token data unavailable.")).toBeTruthy();
+    expect(await screen.findByText("Token data unavailable")).toBeTruthy();
     expect(screen.getByRole("img", { name: /10 Tokens used/ })).toBeTruthy();
     expect(usageWindowLabel(1)).toBe("Last 24 hours");
   });

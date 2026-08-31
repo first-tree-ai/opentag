@@ -12,9 +12,9 @@ export { type LoginOptions, type LoginResult, runLogin } from "./core/auth/login
 export { channelConfig } from "./core/channel/config.js";
 export { resolveCommandContext } from "./core/command/context.js";
 export { buildChildEnvironment } from "./core/command/environment.js";
+export type { CommandResult } from "./core/command/policy.js";
 export {
   CommandError,
-  type CommandResult,
   commandExitCode,
   EXIT_CODES,
   executeCommand,

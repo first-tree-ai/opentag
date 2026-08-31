@@ -170,6 +170,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       });
       const runtime = await createClientRuntime(connection, {
         home,
+        environment: daemonEnvironment,
         clientVersion: CLI_VERSION,
         cliCommand: channelConfig.binName,
         logger: runtimeLogger,

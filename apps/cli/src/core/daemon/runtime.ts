@@ -102,7 +102,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   let failure: unknown;
   let failed = false;
   try {
-    const environmentResult = await applyDaemonEnvironment(home, process.env);
+    const environmentResult = await applyDaemonEnvironment(home, resolveChannelEnvironment(process.env));
     const daemonEnvironment = buildDaemonChildEnvironment(environmentResult);
     if (daemonEnvironment.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
     const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);

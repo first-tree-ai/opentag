@@ -676,15 +676,19 @@ describe("re-boarding an Account without taking anything down", () => {
     expect(value.closeEnrollment).not.toHaveBeenCalled();
   });
 
-  it("succeeds on the very state a full reset refuses to commit on", async () => {
+  it("clears setup completion without the cleanup a first-run commit verifies", async () => {
     const value = await fixture();
     const before = await facts(value.database, value.tester);
     expect(before.activeAgents).toBe(1);
     expect(before.usableCodes).toBeGreaterThan(0);
 
-    // This is what separates the two modes. `resetOnboarding` verifies that no Agent, credential or
-    // usable code survives before it clears the marker, and would raise the conflict here. Re-board
-    // never asks that question, which is why the two cannot share a commit path.
+    // This is what separates the two modes. The commit step behind a first-run reset verifies, under
+    // the lock, that no Agent, credential or usable code survives before it clears the marker, and
+    // would refuse the state seeded here. Re-board reaches the same marker without that gate, which
+    // is why it cannot reuse that commit path.
+    //
+    // `resetOnboarding` itself never meets the refusal, because it removes those resources before it
+    // commits; the gate exists for the case where cleanup did not take effect.
     await expect(value.reset.reboard(value.tester.accountId)).resolves.toBeUndefined();
 
     const after = await facts(value.database, value.tester);

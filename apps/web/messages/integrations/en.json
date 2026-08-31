@@ -1,3 +1,14 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "integrations_cell_label": "{name}. {description}",
+  "integrations_column_category": "Category",
+  "integrations_column_name": "Name",
+  "integrations_column_status": "Status",
+  "integrations_demo": "Demo",
+  "integrations_demo_data": "Demo data",
+  "integrations_page_description": "Services OpenTag could work with to find context and complete work.",
+  "integrations_page_title": "Integrations",
+  "integrations_scroll_hint": "Scroll horizontally to see category and status.",
+  "integrations_table_name": "Demo Integrations",
+  "integrations_table_region": "Integrations table"
 }

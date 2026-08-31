@@ -42,19 +42,24 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  CaretDown,
   CaretRight,
+  CaretUp,
+  ChartLine,
   ChatCircle,
   Check,
   Copy,
   Cpu,
   DotsThreeVertical,
   Gear,
+  House,
   type IconWeight,
   Info,
   Laptop,
   List,
   MagnifyingGlass,
   type Icon as PhosphorIcon,
+  PlugsConnected,
   Plus,
   Shield,
   User,
@@ -331,10 +336,14 @@ export type IconName =
   | "arrow-left"
   | "arrow-right"
   | "check"
+  | "chevron-down"
   | "chevron-right"
+  | "chevron-up"
   | "close"
   | "copy"
   | "instructions"
+  | "home"
+  | "integrations"
   | "laptop"
   | "message"
   | "model"
@@ -342,16 +351,22 @@ export type IconName =
   | "plus"
   | "settings"
   | "shield"
-  | "user";
+  | "sign-out"
+  | "user"
+  | "usage";
 
 const icons: Record<IconName, PhosphorIcon> = {
   "arrow-left": ArrowLeft,
   "arrow-right": ArrowRight,
   check: Check,
+  "chevron-down": CaretDown,
   "chevron-right": CaretRight,
+  "chevron-up": CaretUp,
   close: X,
   copy: Copy,
   instructions: List,
+  home: House,
+  integrations: PlugsConnected,
   laptop: Laptop,
   message: ChatCircle,
   model: Cpu,
@@ -359,7 +374,9 @@ const icons: Record<IconName, PhosphorIcon> = {
   plus: Plus,
   settings: Gear,
   shield: Shield,
+  "sign-out": ArrowRight,
   user: User,
+  usage: ChartLine,
 };
 
 export function Icon({

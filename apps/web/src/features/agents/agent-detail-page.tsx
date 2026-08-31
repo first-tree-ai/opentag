@@ -26,7 +26,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
     <AsyncState state={state}>
       {(agent) => (
         <section className="grid gap-6">
-          <AgentObjectHeader agent={agent} />
+          <AgentObjectHeader agent={agent} showBackLink={false} />
           <div className="grid gap-6">
             <AgentLifecycleNotice agent={agent} />
             {/*
@@ -45,7 +45,15 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   );
 }
 
-export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
+export function AgentObjectHeader({
+  agent,
+  backToSettings,
+  showBackLink = true,
+}: {
+  agent: AgentDetailView;
+  backToSettings?: boolean;
+  showBackLink?: boolean;
+}) {
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
   /*
@@ -56,13 +64,15 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
     agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack" ? undefined : agent.name;
   return (
     <header className="grid gap-4">
-      <Link
-        className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link"
-        {...(backToSettings ? agentDetailLink(agent.id) : ({ to: "/agents" } as const))}
-      >
-        <Icon name="arrow-left" />
-        {backToSettings ? agent.displayName : "Agents"}
-      </Link>
+      {showBackLink ? (
+        <Link
+          className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link"
+          {...(backToSettings ? agentDetailLink(agent.id) : ({ to: "/agents" } as const))}
+        >
+          <Icon name="arrow-left" />
+          {backToSettings ? agent.displayName : "Agents"}
+        </Link>
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
           <span

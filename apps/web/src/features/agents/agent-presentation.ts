@@ -79,14 +79,14 @@ export function computerRecoveryMessage(agent: AgentDetailView, computerName = a
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {
   if (binding.bindingState === "reauthorization_required" && binding.provider === "feishu") {
-    return "Permissions update required";
+    return "Permissions need updating";
   }
   return {
     active: "Connected",
     provisioning: "Setting up",
-    reauthorization_required: "Permissions update required",
-    error: "Connection error",
-    disabled: "Disabled",
+    reauthorization_required: "Permissions need updating",
+    error: "Connection failed",
+    disabled: "Disconnected",
   }[binding.bindingState];
 }
 
@@ -320,21 +320,21 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
   }
   if (computer.state === "action_required") {
     return {
-      action: { label: m.agents_status_action_reconnect_computer(), section: "computer" },
+      action: { label: m.agents_status_action_open_computer_setup(), section: "computer" },
       label: m.agents_status_computer_offline(),
       tone: "warning",
     };
   }
   if (!runtime.status) {
     return {
-      action: { label: m.agents_status_action_check_runtime({ providerName }), section: "computer" },
+      action: { label: m.agents_status_action_view_computer(), section: "computer" },
       label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
   if (runtime.status === "checking") {
     return {
-      label: m.agents_status_computer_checking_runtime(),
+      label: m.agents_status_computer_checking_runtime({ providerName }),
       tone: "info",
     };
   }
@@ -354,7 +354,7 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
   }
   if (runtime.status !== "ready") {
     return {
-      action: { label: m.agents_status_action_check_runtime({ providerName }), section: "computer" },
+      action: { label: m.agents_status_action_troubleshoot_runtime({ providerName }), section: "computer" },
       label: m.agents_status_computer_runtime_unavailable({ providerName }),
       tone: "warning",
     };
@@ -381,7 +381,7 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
   const handoff = agent.availability.dependencies.handoff;
   if (binding.bindingState === "active" && handoff.state === "action_required") {
     return {
-      action: { label: m.agents_status_action_fix_delivery(), section: "messaging" },
+      action: { label: m.agents_status_action_fix_messaging(), section: "messaging" },
       label: m.agents_status_channel_cannot_receive_messages(),
       tone: "warning",
     };

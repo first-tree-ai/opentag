@@ -446,6 +446,49 @@ function runProject(project, scope) {
   }
 }
 
+function runSelectedProjects(selected, scope) {
+  const aggregate = {};
+  const detailedMaps = [];
+  const perProject = [];
+  const summaries = {};
+  const timings = [];
+  let anyFailed = false;
+  for (const project of selected) {
+    process.stdout.write(`\n── ${project.name} ──\n`);
+    const { detailed, failed, summary, timing } = runProject(project, scope);
+    anyFailed ||= failed;
+    detailedMaps.push(detailed);
+    summaries[project.name] = summary;
+    timings.push({ ...timing, name: project.name });
+    for (const [file, metrics] of Object.entries(summary)) {
+      if (file !== "total") aggregate[file] = metrics;
+    }
+    perProject.push({ lines: summary.total.lines, name: project.name });
+    const { covered, total, pct } = summary.total.lines;
+    process.stdout.write(
+      `   lines ${pct}% (${covered}/${total})${failed ? "  [tests failed]" : ""}; ` +
+        `duration ${timing.durationMs.toFixed(0)}ms; retries ${timing.retryCount} (flaky ${timing.flakyCount})\n`,
+    );
+  }
+  return { aggregate, anyFailed, detailedMaps, perProject, summaries, timings };
+}
+
+function enforceFloors({ floorDocument, options, selected, summaries }) {
+  const selectedFloors = Object.fromEntries(selected.map(({ name }) => [name, floorProjects(floorDocument)[name]]));
+  assertCoverageFloors(summaries, selectedFloors);
+  if (!options.updateFloors) return;
+  if (options.project || options.scope) {
+    throw new Error("--update-floors requires a full coverage run without --project or --scope");
+  }
+  floorDocument.projects = ratchetCoverageFloors({
+    allowDecrease: options.allowFloorDecrease,
+    existing: floorDocument.projects,
+    summaries,
+  });
+  writeFileSync(COVERAGE_FLOORS_PATH, `${JSON.stringify(floorDocument, null, 2)}\n`);
+  process.stdout.write(`Updated coverage floors in ${COVERAGE_FLOORS_PATH}\n`);
+}
+
 function main() {
   const options = parseArguments(process.argv.slice(2));
   const selected = options.project ? PROJECTS.filter((entry) => entry.name === options.project) : PROJECTS;
@@ -457,48 +500,11 @@ function main() {
   assertRepositoryCoverageManifest();
   const floorDocument = JSON.parse(readFileSync(COVERAGE_FLOORS_PATH, "utf8"));
 
-  const aggregate = {};
-  const detailedMaps = [];
-  const perProject = [];
-  const summaries = {};
-  const timings = [];
-  let anyFailed = false;
-
-  for (const project of selected) {
-    process.stdout.write(`\n── ${project.name} ──\n`);
-    const { detailed, failed, summary, timing } = runProject(project, options.scope);
-    anyFailed ||= failed;
-    detailedMaps.push(detailed);
-    summaries[project.name] = summary;
-    timings.push({ ...timing, name: project.name });
-
-    for (const [file, metrics] of Object.entries(summary)) {
-      if (file !== "total") {
-        aggregate[file] = metrics;
-      }
-    }
-    perProject.push({ lines: summary.total.lines, name: project.name });
-    const { covered, total, pct } = summary.total.lines;
-    process.stdout.write(
-      `   lines ${pct}% (${covered}/${total})${failed ? "  [tests failed]" : ""}; ` +
-        `duration ${timing.durationMs.toFixed(0)}ms; retries ${timing.retryCount} (flaky ${timing.flakyCount})\n`,
-    );
-  }
-
-  const selectedFloors = Object.fromEntries(selected.map(({ name }) => [name, floorProjects(floorDocument)[name]]));
-  assertCoverageFloors(summaries, selectedFloors);
-  if (options.updateFloors) {
-    if (options.project || options.scope) {
-      throw new Error("--update-floors requires a full coverage run without --project or --scope");
-    }
-    floorDocument.projects = ratchetCoverageFloors({
-      allowDecrease: options.allowFloorDecrease,
-      existing: floorDocument.projects,
-      summaries,
-    });
-    writeFileSync(COVERAGE_FLOORS_PATH, `${JSON.stringify(floorDocument, null, 2)}\n`);
-    process.stdout.write(`Updated coverage floors in ${COVERAGE_FLOORS_PATH}\n`);
-  }
+  const { aggregate, anyFailed, detailedMaps, perProject, summaries, timings } = runSelectedProjects(
+    selected,
+    options.scope,
+  );
+  enforceFloors({ floorDocument, options, selected, summaries });
 
   const totals = Object.values(aggregate).reduce(
     (accumulator, metrics) => ({

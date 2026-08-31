@@ -2,11 +2,16 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const EXPECTED_ROOT_EXPORTS = [
+  "CommandError",
   "CHANNEL",
   "CLI_PACKAGE_NAME",
   "CLI_VERSION",
+  "EXIT_CODES",
+  "buildChildEnvironment",
   "channelConfig",
+  "commandExitCode",
   "createProgram",
+  "executeCommand",
   "formatAgent",
   "formatAgentCreated",
   "formatAgentList",
@@ -26,7 +31,11 @@ const EXPECTED_ROOT_EXPORTS = [
   "runSessionCreate",
   "runSessionList",
   "runSessionSend",
+  "presentCommand",
+  "resolveCommandContext",
   "selectComputer",
+  "toCommandError",
+  "type CommandResult",
   "type DoctorOptions",
   "type DoctorResult",
   "type LoginOptions",
@@ -44,6 +53,15 @@ describe("CLI package public surface", () => {
       .flatMap((match) => (match[1] ?? "").split(","))
       .map((entry) => entry.replace(/\s+/g, " ").trim())
       .filter(Boolean)
+      .concat(
+        [...source.matchAll(/export\s+type\s*\{([\s\S]*?)\}\s*from/g)].flatMap((match) =>
+          (match[1] ?? "")
+            .split(",")
+            .map((entry) => `type ${entry.replace(/\s+/g, " ").trim()}`)
+            .filter((entry) => entry !== "type "),
+        ),
+        [...source.matchAll(/export\s+const\s+(\w+)/g)].map((match) => match[1] ?? ""),
+      )
       .sort();
 
     expect(exports).toEqual([...EXPECTED_ROOT_EXPORTS].sort());

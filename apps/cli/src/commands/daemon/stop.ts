@@ -5,7 +5,10 @@ export function registerDaemonStopCommand(daemon: Command): void {
   daemon
     .command("stop")
     .description("Stop the daemon service")
-    .action(async () => {
-      process.exitCode = await executeDaemonServiceCommand("stop");
+    .option("--json", "print JSON")
+    .action(async (options: { json?: boolean }) => {
+      process.exitCode = options.json
+        ? await executeDaemonServiceCommand("stop", { json: true })
+        : await executeDaemonServiceCommand("stop");
     });
 }

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, open, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { ensurePrivateDirectory, validatePrivateDirectory } from "@opentag/client";
+import { buildChildEnvironment } from "../command/environment.js";
 
 export interface ProcessLeaseRecord {
   pid: number;
@@ -287,7 +288,10 @@ export async function inspectDarwinProcessIdentity(
   pid: number,
   dependencies: DarwinProcessIdentityInspectionDependencies = {},
 ): Promise<ProcessIdentityInspection> {
-  const environment = { ...process.env, LANG: "C", LC_ALL: "C", TZ: "UTC" };
+  const environment = buildChildEnvironment(process.env, {
+    keys: ["LANG", "LC_ALL", "TZ"],
+    overrides: { LANG: "C", LC_ALL: "C", TZ: "UTC" },
+  });
   const startedAt = await (dependencies.readProcessStart ?? readDarwinProcessStart)(pid, environment);
   if (startedAt) return { id: `darwin:${startedAt}`, state: "identified" };
   return (dependencies.isProcessAlive ?? isProcessAlive)(pid) ? { state: "unverifiable" } : { state: "gone" };

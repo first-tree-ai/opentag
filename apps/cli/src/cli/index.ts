@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { CommanderError } from "commander";
-import "../core/channel/environment.js";
+import { type CommandResult, presentCommand, toCommandError } from "../core/command/policy.js";
 import { createProgram } from "./program.js";
 
 try {
@@ -10,7 +10,12 @@ try {
   // Commands that override exit behavior (e.g. provider-cli usage errors exit 2)
   // throw CommanderError; everything else already exited through commander.
   if (error instanceof CommanderError) {
-    process.exit(error.exitCode);
+    process.exit(error.exitCode === 0 ? 0 : 2);
   }
-  throw error;
+  const result: CommandResult<never> = {
+    ok: false,
+    error: toCommandError(error),
+    exitCode: 1,
+  };
+  process.exitCode = presentCommand(result, { json: process.argv.includes("--json") });
 }

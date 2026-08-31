@@ -46,6 +46,17 @@ export const TOKEN_COPY: Record<TokenSource, { readonly title: string; readonly 
 
 export const COPY = {
   loading: "Picking up where you left off…",
+  /**
+   * The Agent exists but has no computer, and this flow cannot give it one: the connect step proves
+   * that *a* machine arrived, not that it is the machine that ran this command. Choosing is the
+   * reader's, on the page built for it.
+   */
+  resumeBlocked: {
+    title: (agentName: string) => `${agentName} has no computer yet.`,
+    detail:
+      "Choose which computer it runs on from its settings. We can't do it from here, because this step can't tell which machine ran the command.",
+    action: "Open agent settings",
+  },
   brand: "OpenTag",
 
   nav: {

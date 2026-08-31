@@ -138,6 +138,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [planSignIn] = useState<PlanSignIn>("idle");
   const [resuming, setResuming] = useState(true);
   const [resumeError, setResumeError] = useState<string>();
+  const [resumeBlocked, setResumeBlocked] = useState<{ agentId: string; agentName: string }>();
   /** Discards the reply of a read the reader has already asked to redo. */
   const resumeRun = useRef(0);
 
@@ -190,6 +191,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     resumeRun.current = mine;
     const live = () => mounted.current && resumeRun.current === mine;
     setResumeError(undefined);
+    setResumeBlocked(undefined);
     setResuming(true);
     try {
       {
@@ -210,18 +212,34 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         const online = new Map(
           computers.filter((one) => one.connectionStatus === "online").map((one) => [one.computerId, one]),
         );
-        // Where the Account has more than one, the Agent whose Computer is actually there is the one
-        // this run can finish. Otherwise the first, which is the Server's own order.
-        const existing =
-          active.find((candidate) => candidate.computer && online.has(candidate.computer.computerId)) ?? active[0];
-        if (!existing) return;
-        setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
+        /*
+         * Only an Agent that has a Computer can be resumed here. This step's evidence is an arrival:
+         * a Computer that enrolled or reconnected since the baseline, which names a machine but does
+         * not identify the one that redeemed this code. That is enough to repair a Computer the
+         * Agent already names, and not enough to give a Computer to an Agent that has none — so an
+         * unbound Agent cannot be carried through this flow at all. Adopting one anyway would report
+         * a connection and then stop at messaging, which refuses an Agent with nowhere to run.
+         */
+        const bound = active.flatMap((candidate) =>
+          candidate.computer ? [{ agent: candidate, computer: candidate.computer }] : [],
+        );
+        const existing = bound.find(({ computer }) => online.has(computer.computerId)) ?? bound[0];
+        if (!existing) {
+          const unfinishable = active[0];
+          // Named, because "you have no Agent" would be false and would send the reader into a
+          // creation form that ends at the name it already has.
+          if (unfinishable) {
+            setResumeBlocked({ agentId: unfinishable.id, agentName: unfinishable.displayName });
+          }
+          return;
+        }
+        const { agent: resumed, computer: resumedComputer } = existing;
+        setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
-        const enrolled = existing.computer ? online.get(existing.computer.computerId) : undefined;
-        // Offline or gone: the step issues a code that repairs this exact Computer. An Agent with no
-        // Computer at all has none to repair, so the step issues a code any machine can answer.
-        repairTarget.current = enrolled ? undefined : (existing.computer?.computerId ?? undefined);
+        const enrolled = online.get(resumedComputer.computerId);
+        // Offline or gone: the step issues a code that repairs this exact Computer.
+        repairTarget.current = enrolled ? undefined : resumedComputer.computerId;
         if (enrolled) {
           computerId.current = enrolled.computerId;
           setComputer(enrolled);
@@ -229,8 +247,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           // than issuing a command that would spend its validity unseen.
           setConnect({ kind: "connected", command: "", computerName: enrolled.displayName });
         }
-        // An offline or missing Computer leaves the connection idle, which is what makes the step
-        // issue a fresh code — and whatever machine answers it gets bound to this Agent.
+        // An offline Computer leaves the connection idle, which is what makes the step issue a fresh
+        // code — targeted at that exact machine, so what answers it is not inferred.
 
         /*
          * Handoff readiness, not binding state. The Server refuses to complete setup unless the
@@ -239,7 +257,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
          * active before that observation lands, so treating "installed" as "finished" is how a
          * real callback ends up asking to complete something the Server will refuse.
          */
-        const handoff = await browserApi.imBindingHandoff(existing.id);
+        const handoff = await browserApi.imBindingHandoff(resumed.id);
         if (!live()) return;
         setMessaging(readMessaging(handoff));
 
@@ -257,7 +275,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
            * outage on this call strands a returning Account on an error instead.
            */
           try {
-            const binding = await browserApi.imBinding(existing.id);
+            const binding = await browserApi.imBinding(resumed.id);
             if (!live()) return;
             if (binding?.provider === "feishu" || binding?.provider === "slack") {
               setMessagingProvider(binding.provider);
@@ -574,6 +592,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     pastConnectStep.current = false;
     setResuming(false);
     setResumeError(undefined);
+    setResumeBlocked(undefined);
     setActionError(undefined);
     setConnectionError(undefined);
   }, []);
@@ -614,6 +633,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       reset,
       markPastConnectStep,
       resumeError,
+      resumeBlocked,
       resuming,
       retryResume,
       startMessaging,
@@ -637,6 +657,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       reset,
       markPastConnectStep,
       resumeError,
+      resumeBlocked,
       resuming,
       retryResume,
       startMessaging,

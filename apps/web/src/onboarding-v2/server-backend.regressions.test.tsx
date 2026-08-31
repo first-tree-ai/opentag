@@ -328,37 +328,41 @@ describe("Server-backed onboarding: the defects it had", () => {
     expect(calls).toBe(1);
   });
 
-  it("never turns an arrival into a durable placement for an Agent that has no Computer", async () => {
+  it("refuses to resume an Agent that has no Computer rather than reporting someone else's machine", async () => {
     /*
-     * A resume can now pick up an Agent that has no Computer, and the temptation is to give it
-     * whatever machine answers this run's code. `findArrival` cannot support that: it accepts any
-     * Computer on the Account that enrolled -- or merely reconnected -- since the baseline, and
-     * returns the first of them. Two machines arriving after issuance is the case that makes the
-     * guess visible, and writing the wrong one would run the Agent somewhere its owner never chose,
-     * permanently. Naming a machine on this step is all this evidence can carry; the durable move
-     * waits for the connect-code-to-Computer association in #295.
+     * The evidence this step has is an arrival: `findArrival` accepts any Computer on the Account
+     * that enrolled -- or merely reconnected -- since the baseline, and returns the first of them.
+     * That identifies a machine, not the machine that redeemed this code. Removing the durable
+     * rebind was not enough on its own, because the same guess was still being reported as this
+     * Agent's connection and the run then advanced into messaging, which refuses an Agent with
+     * nowhere to run. So an unbound Agent is not resumed at all: no code is issued, no arrival is
+     * adopted, and the reader is handed the page where choosing a Computer is explicit.
      */
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem({ computer: null })] });
     const unrelated = computer({
       computerId: "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
       displayName: "Someone else's laptop",
     });
-    // Three pages, because the resume reads the Computers too: nothing on the resume, nothing when
-    // the code is issued and the baseline is taken, then two machines at once.
     computersReturning(
-      [],
       [],
       [unrelated, computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })],
     );
-    issuing();
+    const issue = issuing();
     const rebind = vi.spyOn(browserApi, "rebindAgentComputer");
 
     const view = mount();
     await settle();
-    await connected(view);
+    await tick(POLL_MS);
 
+    expect(view.result.current.resumeBlocked).toEqual({ agentId: AGENT_ID, agentName: "opentag" });
+    // Neither arrival becomes this Agent's connection: `idle` carries no machine name, so the run
+    // never reports one, and nothing was written for it either.
+    expect(view.result.current.connect).toEqual({ kind: "idle" });
+    expect(view.result.current.readiness).toBeUndefined();
     expect(rebind).not.toHaveBeenCalled();
-    expect(view.result.current.connect.kind).toBe("connected");
+    expect(issue).not.toHaveBeenCalled();
+    // The run is not silently created either, so nothing advances toward messaging.
+    expect(view.result.current.creation).not.toBe("created");
   });
 
   it("clears a transient polling error once the Computer it was waiting for arrives", async () => {

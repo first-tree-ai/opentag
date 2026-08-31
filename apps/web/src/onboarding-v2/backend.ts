@@ -73,6 +73,14 @@ export interface OnboardingBackend {
   readonly resuming: boolean;
   /** Why the Account could not be read, if it could not. */
   readonly resumeError: string | undefined;
+  /**
+   * The Agent this flow found but cannot finish, when every Agent the Account has is one with no
+   * Computer. This flow's connect step proves nothing about which machine answered its code, so it
+   * cannot give that Agent one; carrying on would report a connection and then stop at messaging,
+   * which refuses an Agent that has nowhere to run. The reader is sent to where the choice is
+   * explicit instead.
+   */
+  readonly resumeBlocked: { readonly agentId: string; readonly agentName: string } | undefined;
   /** Reads it again. A failed read has to be recoverable: this route is the gate's only exit. */
   readonly retryResume: () => void;
   /**

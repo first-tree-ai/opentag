@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { initials } from "../../i18n/format.js";
+import * as m from "../../paraglide/messages.js";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { AgentUsageOverview } from "../agent-usage.js";
 import { AsyncState } from "../resource/resource-state.js";
@@ -15,6 +16,7 @@ import {
   agentStatusPresentation,
   messagingChannelLabel,
   platformLabel,
+  runtimeProviderName,
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -29,12 +31,12 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
           <div className="grid gap-6">
             <AgentLifecycleNotice agent={agent} />
             {/*
-             * Usage and Connection share a row: neither fills the width on its own, and a failed
+             * Usage and status share a row: neither fills the width on its own, and a failed
              * dependency belongs beside the work it is stopping rather than in a banner above it.
              */}
             <div className="grid gap-6 @min-[48rem]/workspace:grid-cols-2">
               <AgentUsageOverview agent={agent} agentId={agent.id} />
-              <AgentConnectionCard agent={agent} />
+              <AgentStatusCard agent={agent} />
             </div>
             <AgentTasksSection agentId={agent.id} />
           </div>
@@ -100,75 +102,94 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
 }
 
 /**
- * Computer and Messaging, side by side, each carrying its own status and its own repair exit. One
- * card rather than two: they are the pair an Agent needs before it can do anything, and reading
- * them together is how a viewer answers "can this Agent work" without holding two cards in mind.
+ * The two user-facing conditions an Agent needs before it can do work. Runtime readiness stays
+ * folded into Computer: it is part of the execution environment, and only needs to be named when
+ * it changes that row's status or recovery action.
  */
-export function AgentConnectionCard({ agent }: { agent: AgentDetailView }) {
+export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const computer = agentComputerStatus(agent);
   const messaging = agentMessagingStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   return (
     <section
-      className="grid content-start gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      aria-labelledby="agent-connection-heading"
-      data-ui="connection-overview"
+      className="grid rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-label={m.agents_status_region()}
+      data-ui="agent-status-overview"
     >
-      <Text as="h2" id="agent-connection-heading" variant="heading">
-        Connection
-      </Text>
-      <ConnectionRow
-        agent={agent}
-        identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)}`}
-        name="Computer"
-        status={computer}
-      />
-      <ConnectionRow
-        agent={agent}
-        identity={binding ? messagingChannelLabel(agent, binding) : undefined}
-        name="Messaging"
-        status={messaging}
-      />
+      <ul className="grid h-full content-start list-none">
+        <AgentStatusRow
+          agent={agent}
+          identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeProviderName(agent.runtimeProvider)}`}
+          name={m.agents_status_computer()}
+          status={computer}
+          uiName="computer"
+        />
+        <AgentStatusRow
+          agent={agent}
+          divided
+          identity={binding ? messagingChannelLabel(agent, binding) : undefined}
+          name={m.agents_status_message_channel()}
+          status={messaging}
+          uiName="message-channel"
+        />
+      </ul>
     </section>
   );
 }
 
-function ConnectionRow({
+function AgentStatusRow({
   agent,
+  divided = false,
   identity,
   name,
   status,
+  uiName,
 }: {
   agent: AgentDetailView;
+  divided?: boolean;
   identity?: string;
   name: string;
   status: AgentDependencyStatus;
+  uiName: string;
 }) {
   return (
-    <div className="grid gap-1 border-t border-kumo-line pt-3" data-ui={`connection-${name.toLowerCase()}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <strong className="text-sm">{name}</strong>
-        <StatusIndicator label={status.label} tone={status.tone} />
+    <li
+      className={`grid content-start ${divided ? "border-t border-kumo-line pt-4" : "pb-4"}`}
+      data-ui={`agent-status-${uiName}`}
+    >
+      <div className="grid gap-1">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <strong className="text-sm font-semibold text-kumo-strong">{name}</strong>
+          <span className={`text-sm font-medium ${dependencyStatusClassName(status.tone)}`}>{status.label}</span>
+        </div>
+        {identity ? <span className="min-w-0 truncate text-sm text-kumo-subtle">{identity}</span> : null}
       </div>
-      {identity ? <p className="truncate text-sm text-kumo-subtle">{identity}</p> : null}
-      {status.detail ? <p className="text-sm text-kumo-subtle">{status.detail}</p> : null}
       {status.action ? (
         <Link
-          className="w-fit text-sm text-kumo-link"
+          className="mt-3 inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
           state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
           {...agentSettingsSectionLink(agent.id, status.action.section)}
         >
           {status.action.label}
+          <Icon className="size-3.5" name="chevron-right" />
         </Link>
       ) : null}
-    </div>
+    </li>
   );
+}
+
+function dependencyStatusClassName(tone: AgentDependencyStatus["tone"]): string {
+  if (tone === "success") return "text-kumo-success";
+  if (tone === "warning") return "text-kumo-warning";
+  if (tone === "danger") return "text-kumo-danger";
+  if (tone === "info") return "text-kumo-subtle";
+  return "text-kumo-subtle";
 }
 
 export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
   /*
    * Only while the Agent is healthy. A failed dependency is already named, with its own exit, by
-   * the Connection card below, and saying it twice reads as two problems. A paused Agent is not a
+   * the status card below, and saying it twice reads as two problems. A paused Agent is not a
    * dependency failure and no card speaks for it, so it gets the notice beneath this header.
    */
   if (agent.availability.state !== "ready") return null;
@@ -182,7 +203,7 @@ export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
 
 /**
  * The Agent's own lifecycle, which no dependency row can carry. Computer and Messaging state their
- * own failures in the Connection card, but a paused Agent has nothing wrong with either -- it was
+ * own failures in the status card, but a paused Agent has nothing wrong with either -- it was
  * turned off -- so without this the home reports a healthy Computer and channel and never mentions
  * that the Agent is not running.
  */

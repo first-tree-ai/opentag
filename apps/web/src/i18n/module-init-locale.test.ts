@@ -43,10 +43,18 @@ describe("importing application modules before the locale runtime is configured"
     ["Agent presentation", () => import("../features/agents/agent-presentation.js")],
     ["the Computer picker", () => import("../features/agents/agent-computer-choice.js")],
     ["Agent settings sections", () => import("../features/agents/agent-settings/sections.js")],
-  ])("does not write a locale preference: %s", async (_label, load) => {
-    await load();
+  ])(
+    "does not write a locale preference: %s",
+    async (_label, load) => {
+      await load();
 
-    expect(written).not.toContain("PARAGLIDE_LOCALE");
-    expect(window.localStorage.getItem("PARAGLIDE_LOCALE")).toBeNull();
-  });
+      expect(written).not.toContain("PARAGLIDE_LOCALE");
+      expect(window.localStorage.getItem("PARAGLIDE_LOCALE")).toBeNull();
+    },
+    // These import real application modules, so the cost is a module graph rather than any wait the
+    // test controls. The Slack surface pulls the largest one and crosses the 5s default on a loaded
+    // machine; the budget is generous because a timeout here would report a locale defect that is
+    // really a slow import.
+    30_000,
+  );
 });

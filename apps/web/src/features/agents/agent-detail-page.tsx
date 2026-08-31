@@ -1,26 +1,23 @@
 import { Link } from "@tanstack/react-router";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { ProviderIcon } from "../../ui/provider-icon.js";
+import { AgentUsageOverview } from "../agent-usage.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
+import { AgentTasksSection } from "../tasks-page.js";
 import type { AgentDetailView } from "./agent-model.js";
-import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
 import {
   agentAvailabilityRecovery,
   agentRecoveryMessage,
   agentStatusPresentation,
-  agentUseInstruction,
-  formatRelativeTime,
   initials,
-  titleCase,
+  messagingChannelLabel,
 } from "./agent-presentation.js";
-import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink, agentUsageLink } from "./agent-routes.js";
+import { useAgentDetailView } from "./agent-queries.js";
+import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "./agent-routes.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
-  const state = useResource(() => loadAgentDetail(agentId), agentId, {
-    onBackgroundError: markAgentDetailUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  const state = useAgentDetailView(agentId, { watched: true });
   return (
     <AsyncState state={state}>
       {(agent) => (
@@ -28,8 +25,8 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
           <AgentObjectHeader agent={agent} />
           <div className="grid gap-6">
             {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
-            <AgentCurrentActivity agent={agent} />
-            <AgentContact agent={agent} />
+            <AgentUsageOverview agent={agent} agentId={agent.id} />
+            <AgentTasksSection agentId={agent.id} />
           </div>
         </section>
       )}
@@ -40,6 +37,12 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
 export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
+  /*
+   * The handle addresses the Agent in Feishu, where each Agent has its own bot. Slack routes one
+   * workspace Bot, so showing a per-Agent handle there names something nobody can address.
+   */
+  const handle =
+    agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack" ? undefined : agent.name;
   return (
     <header className="grid gap-4">
       <Link
@@ -64,18 +67,14 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
               </Text>
               <AgentAvailabilityAction agent={agent} />
             </div>
-            <p>
-              <span>@{agent.name}</span>
+            <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
+              {handle ? <span>@{handle}</span> : null}
               {showCreator ? <span>Created by {agent.createdBy.displayName}</span> : null}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
-          {!backToSettings ? (
-            <Link className="text-sm text-kumo-link" state={{ agent }} {...agentUsageLink(agent.id)}>
-              Usage
-            </Link>
-          ) : null}
+          {!backToSettings ? <AgentMessagingLink agent={agent} /> : null}
           {!backToSettings ? (
             <Link
               className={buttonClassName({ variant: "secondary" })}
@@ -116,102 +115,46 @@ export function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
   );
 }
 
-export function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
-  return (
-    <section
-      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      aria-labelledby="current-activity-heading"
-    >
-      <header className="flex items-center justify-between gap-3">
-        <Text as="h2" id="current-activity-heading" variant="heading">
-          Current work
-        </Text>
-      </header>
-      {agent.activity.state === "working" ? (
-        <div className="flex items-center gap-3">
-          <span className="size-3 rounded-full bg-kumo-brand" aria-hidden="true" />
-          <div>
-            <strong>Handling a request</strong>
-            <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-kumo-subtle">
-          <strong>No active work</strong>
-        </p>
-      )}
-    </section>
-  );
-}
-
-export function AgentContact({ agent }: { agent: AgentDetailView }) {
-  const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
-  return (
-    <section
-      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      aria-labelledby="agent-contact-heading"
-    >
-      <header className="flex items-center justify-between gap-3">
-        <Text as="h2" id="agent-contact-heading" variant="heading">
-          Messaging
-        </Text>
-      </header>
-      {agent.messaging.kind === "unconfirmed" ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            ?
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>Unable to confirm messaging</strong>
-            <small>Try again shortly</small>
-          </span>
-        </div>
-      ) : binding ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            {titleCase(binding.provider).charAt(0)}
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>
-              {titleCase(binding.provider)} · @{agent.name}
-            </strong>
-            <small>{agentUseInstruction(agent, binding.provider)}</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
-            {...agentSettingsSectionLink(agent.id, "messaging")}
-          >
-            Manage
-          </Link>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            +
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>No messaging connected</strong>
-            <small>Connect Feishu or Slack to start sending work</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ returnAgentId: agent.id, returnLabel: agent.displayName }}
-            {...agentSettingsSectionLink(agent.id, "messaging")}
-          >
-            Connect
-          </Link>
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
+  /*
+   * Only while the Agent is healthy. Every other state is already named, with its recovery exit, by
+   * the banner directly beneath this header, and saying it twice reads as two problems.
+   */
+  if (agent.availability.state !== "ready") return null;
   const status = agentStatusPresentation(agent);
   return (
     <div className="inline-flex">
       <StatusIndicator label={status.label} tone={status.tone} />
     </div>
+  );
+}
+
+/**
+ * One affordance for messaging, beside Settings. Messaging is what makes an Agent reachable, so this
+ * states the channel rather than hinting at it with a bare provider glyph, and the gear says the
+ * same control manages it. Every state — a live channel, unreadable evidence, nothing connected —
+ * renders the same three-part shape at the same height, so the header does not resize as the state
+ * changes and a missing binding keeps its entry point rather than disappearing.
+ */
+function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
+  const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
+  const label = binding
+    ? messagingChannelLabel(agent, binding)
+    : agent.messaging.kind === "unconfirmed"
+      ? "Messaging status unavailable"
+      : "Connect messaging";
+  return (
+    <Link
+      aria-label={label}
+      className={buttonClassName({ className: "max-w-64", variant: "secondary" })}
+      data-ui="agent-messaging-link"
+      state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
+      title={label}
+      {...agentSettingsSectionLink(agent.id, "messaging")}
+    >
+      {binding ? <ProviderIcon className="size-4 shrink-0" provider={binding.provider} /> : <Icon name="message" />}
+      <span className="truncate">{label}</span>
+      <Icon className="text-kumo-subtle" data-ui="agent-messaging-manage" name="settings" />
+    </Link>
   );
 }

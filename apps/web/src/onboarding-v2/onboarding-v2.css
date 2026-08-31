@@ -1,1202 +1,125 @@
 /*
- * Styles for the redesigned onboarding flow. Everything here is namespaced `otv2-` so this surface
- * can be developed, and later replaced, without touching the styles the current pages rely on.
+ * What is left of this surface's own styling after it was written in utilities.
+ *
+ * Everything expressible as a class — layout, colour, radius, type, and every reserved height the
+ * flow depends on — now sits on the element itself. What stayed is the styling that is driven by
+ * an attribute the page already publishes for assistive technology (`aria-pressed`, `data-status`).
+ * Stating those as variants would spread one decision across a dozen class lists; stating them here
+ * keeps each in one place.
+ *
+ * Only what belongs to this flow alone lives here. The styling of the setup pieces it shares with
+ * Agent settings — the command block, the check rows, the QR frame, the waiting dot — travels with
+ * those pieces in `../setup/setup.css`.
  */
 
-.otv2-shell {
-  /*
-   * The roles this surface is written in. They used to come from a global token stylesheet; the app
-   * now themes through Kumo, so each role is bound here instead — to a Kumo token wherever Kumo
-   * names the same role, and to a value only where it does not. Binding rather than inlining is
-   * what keeps this surface following the theme, dark mode included, without rewriting 1100 lines
-   * of rules that were tuned against these names.
-   */
-  --background: var(--color-kumo-canvas);
-  --surface: var(--color-kumo-base);
-  --surface-soft: var(--color-kumo-recessed);
-  --foreground: var(--text-color-kumo-strong);
-  --secondary-foreground: var(--text-color-kumo-default);
-  --muted: var(--text-color-kumo-subtle);
-  --border: var(--color-kumo-line);
-  --strong-border: var(--color-kumo-hairline);
-  --color-border-control: var(--color-kumo-hairline);
-  --color-bg-hover: var(--color-kumo-fill-hover);
-  --color-on-accent: var(--text-color-kumo-inverse);
-  --warning: var(--text-color-kumo-warning);
-  --error: var(--text-color-kumo-danger);
-  --color-status-success: var(--text-color-kumo-success);
-  --color-status-success-surface: var(--color-kumo-success-tint);
-
-  /* The theme states OpenTag's green as Kumo's brand pair, so these two resolve to the exact
-     values this surface was tuned against rather than approximations of them. */
-  --brand-ink: var(--color-kumo-brand);
-  --brand: var(--color-kumo-brand-hover);
-
-  /* A brand tint behind selected choices. Kumo's tints are neutral, so this one stays stated. */
-  --brand-light: #edf3df;
-
-  /* The command block carries its own near-black surface in both modes: it is a terminal
-     quotation, and it reads as one only if it does not follow the page. */
-  --dark-surface: #0b101d;
-
-  --font-display: inherit;
-  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "PingFang SC", monospace;
-
-  /* Whole pixels only, and no step exists that is not named here. */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --radius-control: 8px;
-  --radius-panel: 12px;
-
-  --text-micro: 0.75rem;
-  --text-meta: 0.75rem;
-  --text-ui: 0.8125rem;
-  --text-body: 0.875rem;
-  --text-subsection: 1rem;
-  --text-title: 1.5rem;
-  --text-brand: 1.5rem;
-
-  --fw-regular: 400;
-  --fw-medium: 500;
-  --fw-semibold: 600;
-
-  --lh-tight: 1.2;
-  --lh-ui: 1.45;
-  --lh-prose: 1.6;
-
-  --track-tight: -0.02em;
-  --track-label: 0.06em;
-
-  --layer-sidebar: 30;
-
-  --otv2-frame: 720px;
-
-  /* The OpenTag mark is drawn inline so it inherits the theme. Its parts are named here because a
-     colour belongs in the stylesheet, not in the shape. */
-  --otv2-mark-tint: var(--brand-light);
-  --otv2-mark-surface: var(--surface);
-  --otv2-mark-ink: var(--foreground);
-
-  /* The check markers need to read as green and amber at 22px. The operational status palette is
-     muted for large surfaces and goes indistinct at this size, so these two are stated locally. */
-  --otv2-pass: #17a04a;
-  --otv2-pass-surface: #e6f7ec;
-  --otv2-attention: #d98207;
-  --otv2-attention-surface: #fdf1de;
-
-  /* One pressed step below each resting surface, so a click reads as a colour change. */
-  --otv2-pressed: #d2d7c6;
-  --otv2-pressed-brand: #2b4703;
-  --otv2-pressed-brand-surface: #e2ebd0;
-
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-  background: var(--background);
-  color: var(--foreground);
-}
-
-.otv2-shell__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-6) var(--space-8);
-}
-
-.otv2-brand {
-  font-family: var(--font-display);
-  font-size: var(--text-brand);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--track-tight);
-}
-
-.otv2-restart {
-  border: 0;
-  background: none;
-  color: var(--muted);
-  font-family: inherit;
-  font-size: var(--text-ui);
-  cursor: pointer;
-}
-
-.otv2-restart:hover {
-  background: none;
-  color: var(--foreground);
-}
-
-.otv2-shell__main {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-8);
-  align-items: center;
-  width: min(100%, var(--otv2-frame));
-  margin: 0 auto;
-  padding: var(--space-4) var(--space-8) 96px;
-}
-
-.otv2-shell__content {
-  width: 100%;
-}
-
-/* Progress rail ---------------------------------------------------------- */
-
-.otv2-rail {
-  width: 100%;
-}
-
-.otv2-rail ol {
-  display: flex;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.otv2-rail__step {
-  display: flex;
-  flex: 1;
-  gap: var(--space-2);
-  align-items: center;
-  min-width: 0;
-  padding-top: var(--space-3);
-  border-top: 2px solid var(--border);
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.otv2-rail__step[data-status="current"] {
-  border-top-color: var(--brand);
-  color: var(--foreground);
-  font-weight: var(--fw-medium);
-}
-
-.otv2-rail__step[data-status="complete"] {
-  border-top-color: var(--brand);
-}
-
-.otv2-rail__marker {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--surface-soft);
-  font-size: var(--text-micro);
-  line-height: 1;
-}
-
-.otv2-rail__step[data-status="current"] .otv2-rail__marker {
-  background: var(--brand);
-  color: var(--color-on-accent);
-}
-
-.otv2-rail__step[data-status="complete"] .otv2-rail__marker {
-  background: var(--brand-light);
-  color: var(--brand-ink);
-}
-
-.otv2-rail__label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
+/* Brand mark ------------------------------------------------------------- */
 
 /*
- * Step scaffolding --------------------------------------------------------
- *
- * One vertical scale across every step:
- *   4px  a line bound to what sits directly above it — a heading and the line explaining it, a
- *        control and its error.
- *   12px an explanation and the control it introduces.
- *   24px between blocks, including before the footer.
+ * The OpenTag mark is drawn inline so it inherits the theme, which means its parts are named here
+ * rather than in the shape. An undefined custom property makes the whole presentation attribute
+ * invalid, so the mark would fall back to solid black rather than to a sensible colour.
  */
-
-.otv2-step {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-}
-
-.otv2-step__header h1 {
-  margin: 0 0 var(--space-1);
-  font-family: var(--font-display);
-  font-size: var(--text-title);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--track-tight);
-  line-height: var(--lh-tight);
-}
-
-.otv2-step__header p {
-  max-width: 56ch;
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-body);
-  line-height: var(--lh-prose);
-}
-
-/* The command and the one line that says how to run it stay together. */
-.otv2-command-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-/* A fact the step states rather than a choice it offers. */
-.otv2-note {
-  display: flex;
-  gap: var(--space-3);
-  align-items: flex-start;
-  margin: 0;
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--surface);
-  color: var(--secondary-foreground);
-  font-size: var(--text-body);
-  line-height: var(--lh-prose);
-}
-
-.otv2-note svg {
-  flex: 0 0 auto;
-  margin-top: 3px;
-  color: var(--brand);
-}
-
-/* A requirement that is not met yet, stated where the requirement became real. */
-.otv2-note--attention {
-  border-color: var(--otv2-attention);
-  background: var(--otv2-attention-surface);
-}
-
-.otv2-note--attention svg {
-  color: var(--otv2-attention);
-}
-
-/* The cloud route's offer, stated where it is the first thing read. Declared after the base rule
-   so its colours win on equal specificity. */
-.otv2-note--offer {
-  border-color: var(--brand);
-  background: var(--brand-light);
-  color: var(--foreground);
-  font-size: var(--text-subsection);
-}
-
-.otv2-step__header .otv2-privacy {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-
-.otv2-step__header .otv2-privacy svg {
-  flex: 0 0 auto;
-  margin-top: 3px;
-  color: var(--brand);
-}
-
-.otv2-step__header p + .otv2-privacy {
-  margin-top: var(--space-1);
-}
-
-/* Slack's own button, shown at its published proportions and never restyled. */
-.otv2-slack-install {
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: pointer;
-}
-
-.otv2-slack-install:hover,
-.otv2-shell .otv2-slack-install:active {
-  background: none;
-}
-
-.otv2-slack-install img {
-  display: block;
-  width: 139px;
-  height: 40px;
-}
-
-.otv2-signin {
-  gap: var(--space-2);
-}
-
-.otv2-signin h2 {
-  margin: 0;
-  font-size: var(--text-subsection);
-  font-weight: var(--fw-medium);
-}
-
-/* Holds the tallest of the three sign-in states, so approving one moves nothing below it. */
-.otv2-slot--signin {
-  min-height: 40px;
-  margin-top: var(--space-2);
-  align-items: flex-start;
-}
-
-.otv2-lab__check {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  color: var(--secondary-foreground);
-  font-size: var(--text-micro);
-}
-
-.otv2-muted {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-body);
-  line-height: var(--lh-prose);
-}
-
-.otv2-footnote {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.otv2-footnote--warn {
-  color: var(--warning);
-}
-
-.otv2-badge {
-  padding: 2px var(--space-2);
-  border-radius: 999px;
-  background: var(--surface-soft);
-  color: var(--muted);
-  font-size: var(--text-micro);
-  font-style: normal;
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
+:root {
+  --otv2-mark-tint: var(--color-kumo-tint);
+  --otv2-mark-surface: var(--color-kumo-base);
+  --otv2-mark-ink: var(--text-color-kumo-strong);
 }
 
 /* Choice cards ----------------------------------------------------------- */
 
-.otv2-choices {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.otv2-choices--grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-/* The first option leads on a row of its own, so it reads as the recommended one. */
-.otv2-choices--lead > li:first-child {
-  grid-column: 1 / -1;
-}
-
 .otv2-choice {
-  display: flex;
-  gap: var(--space-4);
-  align-items: center;
-  width: 100%;
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--surface);
   color: inherit;
   font: inherit;
   text-align: start;
 
-  /* Buttons do not inherit the document's wrapping, so the card's copy has to opt back in or a
+  /* Buttons do not inherit the document's wrapping, so a card's copy has to opt back in or a
      narrow viewport scrolls sideways instead of wrapping. */
   white-space: normal;
-  cursor: pointer;
   transition:
     border-color 120ms ease,
     background 120ms ease;
 }
 
 .otv2-choice:hover:not(:disabled) {
-  border-color: var(--strong-border);
-  background: var(--color-bg-hover);
+  background: var(--color-kumo-fill-hover);
 }
 
-/*
- * The app's global `button:hover` paints brand ink. Every bare button on this surface has to say
- * what its own hover is, or that rule shows through — it was turning the disabled Cloud card dark
- * green, which is both the wrong colour and a hover on something that cannot be pressed.
- */
-.otv2-choice:disabled:hover {
-  border-color: var(--border);
-  background: var(--surface);
+.otv2-choice[aria-pressed="true"] {
+  border-color: var(--color-kumo-brand);
+  background: var(--color-kumo-tint);
 }
 
-.otv2-choice[aria-pressed="true"]:hover {
-  border-color: var(--brand);
-  background: var(--brand-light);
+/* Nothing here shrinks under a click; it answers with colour instead. */
+.otv2-choice:active:not(:disabled) {
+  transform: none;
+  background: var(--color-kumo-tint);
 }
 
-/*
- * Pressing something changes its colour rather than its size, and never only its outline: nothing
- * on this surface shrinks under a click, and Kumo answers a press with a ring rather than a fill.
- * Each control states the tint it presses to, so they all answer a click the same way.
- */
 .otv2-shell button:active {
   transform: none;
 }
 
-.otv2-nav__next button:active:not(:disabled) {
-  background: var(--otv2-pressed-brand);
-}
-
-.otv2-nav__back button:active {
-  background: var(--otv2-pressed);
-}
-
-.otv2-command__expired button:active {
-  color: var(--otv2-pressed-brand);
-  text-decoration-color: currentcolor;
-}
-
-.otv2-choice:active:not(:disabled) {
-  border-color: var(--color-border-control);
-  background: var(--otv2-pressed);
-}
-
-.otv2-choice[aria-pressed="true"]:active {
-  border-color: var(--brand);
-  background: var(--otv2-pressed-brand-surface);
-}
-
-.otv2-restart:active {
-  background: none;
-  color: var(--otv2-pressed-brand);
-}
-
-.otv2-lab__toggle:active,
-.otv2-lab__segmented button:active {
-  background: var(--otv2-pressed);
-}
-
-.otv2-choice:focus-visible {
-  outline: 2px solid var(--brand);
-  outline-offset: 2px;
-}
-
-.otv2-choice:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.otv2-choice[aria-pressed="true"] {
-  border-color: var(--brand);
-  background: var(--brand-light);
-}
-
-/* The destination icons carry the whole meaning of their card, so they are sized to be seen. */
-.otv2-choice__icon {
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  color: var(--brand);
-}
-
-.otv2-choice__copy {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.otv2-choice__copy strong {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  font-size: var(--text-subsection);
-  font-weight: var(--fw-medium);
-}
-
-.otv2-choice__copy > span {
-  color: var(--muted);
-  font-size: var(--text-body);
-  line-height: var(--lh-ui);
-}
-
-.otv2-choice__go {
-  flex: 0 0 auto;
-  color: var(--muted);
-}
-
-/* An art mark fills its tile; a lettered stand-in keeps the tile's own background. */
-.otv2-mark--art {
-  background: none;
-}
-
-.otv2-mark__svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.otv2-mark {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-control);
-  background: var(--surface-soft);
-  font-family: var(--font-display);
-  font-size: var(--text-subsection);
-  font-weight: var(--fw-semibold);
-}
-
-/* Form ------------------------------------------------------------------- */
-
-.otv2-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-6);
-}
-
-.otv2-name {
-  width: 100%;
-  font-family: var(--font-mono);
-}
-
-.otv2-fieldset {
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.otv2-fieldset legend,
-.otv2-fieldset__label {
-  display: block;
-  padding: 0;
-  font-size: var(--text-ui);
-  font-weight: var(--fw-medium);
-}
-
-.otv2-fieldset__hint {
-  margin: var(--space-1) 0 var(--space-3);
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.otv2-fieldset .otv2-footnote {
-  margin-top: var(--space-3);
-}
-
-/* Every step's footer: Go back on the left, the forward action on the right, in the same place. */
-.otv2-nav {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  justify-content: space-between;
-  min-height: 40px;
-}
-
-.otv2-nav__back button {
-  padding-inline: var(--space-2);
-  color: var(--muted);
-}
-
-.otv2-nav__back button:hover {
-  color: var(--foreground);
-}
-
-/* Panels ----------------------------------------------------------------- */
-
-.otv2-panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--surface);
-}
-
-.otv2-panel--qr {
-  align-items: center;
-  gap: var(--space-4);
-  text-align: center;
-}
-
-.otv2-panel--slack {
-  align-items: center;
-  gap: var(--space-4);
-  text-align: center;
-}
-
-/*
- * Each provider's connection area sizes itself. They are very different heights — a code to scan
- * against a single install button — and reserving the taller for both left a hole under Slack.
- * Switching provider is a deliberate act, not something arriving under the reader, so the change
- * is the answer to what was just pressed. What must not move is anything *within* one provider,
- * which its own reserved slots handle.
- */
-.otv2-slot--messaging {
-  justify-content: flex-start;
-}
-
-/* Command block ---------------------------------------------------------- */
-
-.otv2-command {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-/*
- * Reserved space. Anything that appears, disappears or changes length while the user is reading
- * gets a slot of its own, so the page never moves under them.
- */
-.otv2-slot {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-
-.otv2-slot--status {
-  min-height: 28px;
-}
-
-.otv2-slot--outcome {
-  justify-content: flex-start;
-  /* Sized for the tallest state it holds: the two-line repair summary. */
-  min-height: 50px;
-}
-
-.otv2-field-error {
-  min-height: 18px;
-  margin: var(--space-1) 0 0;
-  color: var(--error);
-  font-size: var(--text-meta);
-  line-height: var(--lh-ui);
-}
-
-.otv2-field-error[data-empty="true"] {
-  visibility: hidden;
-}
-
-/* The same reserved line carries a plain note when the field is locked; that is not a failure. */
-.otv2-field-error[data-note="true"] {
-  color: var(--muted);
-}
-
-.otv2-name[readonly] {
-  background: var(--surface-soft);
-  color: var(--muted);
-  cursor: default;
-}
-
-/* The block's shape while its command is still being issued: same box, nothing legible in it. */
-.otv2-command-pending {
-  opacity: 0.35;
-  filter: blur(3px);
-  pointer-events: none;
-}
-
-.otv2-command__body {
-  display: flex;
-  gap: var(--space-3);
-  align-items: flex-start;
-  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
-  border: 1px solid var(--strong-border);
-  border-radius: var(--radius-control);
-  background: var(--dark-surface);
-  transition: opacity 160ms ease;
-}
-
-/*
- * An expired command says so on the block itself, over a heavy scrim: the block is the thing that
- * expired, and a line underneath is easy to miss when the command above it still looks runnable.
- * The scrim sits over the content rather than fading the whole block, so the notice stays legible.
- */
-.otv2-command__body {
-  position: relative;
-}
-
-.otv2-command__code {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  overflow-x: auto;
-  color: #e6e9e0;
-  font-family: var(--font-mono);
-  font-size: var(--text-ui);
-  line-height: var(--lh-ui);
-  white-space: pre-wrap;
-
-  /*
-   * Break between words, and inside one only when that word alone will not fit. `break-all` and
-   * `anywhere` both split short tokens — `sh` was landing across two lines — which reads as a
-   * typo in a command someone is about to run. The block reserves the height of its longest
-   * wrapping below, so a code whose hyphens fall differently still cannot resize it.
-   */
-  overflow-wrap: break-word;
-}
-
-.otv2-command__comment {
-  color: #8fa08c;
-}
-
-/* Breaks by character, so the block's height cannot depend on which characters a code happens to
-   contain. Everything around it still breaks between words. */
-.otv2-command__token {
-  overflow-wrap: anywhere;
-  word-break: break-all;
-}
-
-/*
- * Sits on the dark block, so it carries its own colours rather than the ghost variant's. Sized as
- * a real target rather than around the icon: a Kumo icon is 16px, which on a compact button reads
- * as an afterthought next to the command it belongs to.
- */
-.otv2-command__copy {
-  flex: 0 0 auto;
-  width: 48px;
-  min-width: 48px;
-  height: 48px;
-  min-height: 48px;
-  padding: 0;
-
-  /* The same value the command itself is set in, so the control is as legible as what it copies. */
-  background: transparent;
-  color: #e6e9e0;
-}
-
-.otv2-command__copy svg {
-  width: 24px;
-  height: 24px;
-}
-
-.otv2-command[data-expired="true"] .otv2-command__code,
-.otv2-command[data-expired="true"] .otv2-command__copy {
-  opacity: 0.18;
-}
-
-.otv2-command__expired {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-  border-radius: var(--radius-control);
-  background: rgb(11 16 29 / 78%);
-  color: #e6e9e0;
-  font-size: var(--text-body);
-  text-align: center;
-}
-
-.otv2-command__expired button {
-  color: #cfe3a6;
-}
-
-.otv2-command__expired button:hover {
-  color: #e8f5cd;
-}
-
-.otv2-command[data-muted="true"] .otv2-command__body {
-  opacity: 0.45;
-}
-
-.otv2-command__copy:hover:not(:disabled) {
-  background: rgb(230 233 224 / 14%);
-  color: #fff;
-}
-
-.otv2-shell .otv2-command__copy:active {
-  background: rgb(230 233 224 / 20%);
-}
-
-/* Copying is confirmed by colour and the check icon; the button does not change size. */
-.otv2-command__copy[data-copied="true"],
-.otv2-command__copy[data-copied="true"]:hover {
-  background: transparent;
-  color: #8fd07a;
-}
-
-/* The line that says how to run the command, with the command's validity on its far end. */
-.otv2-command-lead {
-  display: flex;
-  gap: var(--space-3);
-  align-items: baseline;
-  justify-content: space-between;
-
-  /* Holds the taller of its two states: an expiry notice reads longer than a countdown. */
-  min-height: 24px;
-}
-
-.otv2-command-lead p {
-  flex: 1;
-}
-
-.otv2-command__expiry {
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  align-items: baseline;
-  color: var(--muted);
-  font-size: var(--text-meta);
-  font-variant-numeric: tabular-nums;
-}
-
-.otv2-command__hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-/* Waiting and status ----------------------------------------------------- */
-
-.otv2-waiting {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-body);
-}
-
-.otv2-pulse {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--brand);
-  animation: otv2-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes otv2-pulse {
-  0%,
-  100% {
-    opacity: 0.25;
-    transform: scale(0.8);
-  }
-
-  50% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-.otv2-status {
-  align-self: flex-start;
-}
-
-/* Checks ----------------------------------------------------------------- */
-
-/*
- * The three checks are the one grouped surface on this step: everything else sits flat on the
- * page. Rows are a fixed shape — number, title, one line of detail — so results landing never
- * moves the list under someone who is reading it.
- */
-.otv2-checks {
-  display: flex;
-  flex-direction: column;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--surface);
-  list-style: none;
-}
-
-.otv2-check {
-  display: flex;
-  gap: var(--space-3);
-
-  /* Centred on the whole row, not on its first line: every row carries two lines of copy. */
-  align-items: center;
+/* Progress rail ---------------------------------------------------------- */
 
-  /* A row's second line is a status that changes as the check resolves, and a failure reads longer
-     than the message it replaces. Holding the tallest of those states is what keeps the rows below
-     it, and the footer under them, still while someone is reading. */
-  min-height: 73px;
-  padding: var(--space-4);
+.otv2-rail__step {
+  border-top: 2px solid var(--color-kumo-line);
 }
 
-.otv2-check + .otv2-check {
-  border-top: 1px solid var(--border);
+.otv2-rail__step[data-status="current"],
+.otv2-rail__step[data-status="complete"] {
+  border-top-color: var(--color-kumo-brand);
 }
 
-.otv2-check__marker {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--strong-border);
-  border-radius: 50%;
-  color: var(--muted);
-  font-size: var(--text-meta);
-  font-variant-numeric: tabular-nums;
+.otv2-rail__marker {
+  width: 18px;
+  height: 18px;
   line-height: 1;
 }
 
-.otv2-check[data-state="passed"] .otv2-check__marker {
-  border-color: var(--otv2-pass);
-  background: var(--otv2-pass-surface);
-  color: var(--otv2-pass);
-  font-weight: var(--fw-semibold);
+.otv2-rail__step[data-status="current"] .otv2-rail__marker {
+  background: var(--color-kumo-brand);
+  color: var(--text-color-kumo-inverse);
 }
 
-.otv2-check[data-state="failed"] .otv2-check__marker {
-  border-color: var(--otv2-attention);
-  background: var(--otv2-attention-surface);
-  color: var(--otv2-attention);
-  font-weight: var(--fw-semibold);
+/* Measurements ----------------------------------------------------------- */
+
+/*
+ * The numbers the flow depends on. They live here because this app compiles no utilities of its
+ * own: it ships Kumo's prebuilt sheet, so a bracketed class would be inert.
+ */
+
+/* The reading frame. */
+.otv2-frame {
+  width: min(100%, 720px);
 }
 
-.otv2-check[data-state="pending"] .otv2-check__marker {
-  border-style: dashed;
-  animation: otv2-fade 1.4s ease-in-out infinite;
+/* Cards sit side by side wherever two tracks fit, and stack when they do not. */
+.otv2-choices--grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
-@keyframes otv2-fade {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-
-  50% {
-    opacity: 1;
-  }
+/* The first option leads on a row of its own, so it reads as the recommended one. */
+.otv2-lead {
+  grid-column: 1 / -1;
 }
 
-.otv2-check__copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+/*
+ * Anything that changes length while someone is reading is given the height of its tallest state,
+ * so the step's footer keeps one position. These are measured, not chosen.
+ */
+.otv2-slot--outcome {
+  min-height: 50px;
 }
 
-.otv2-check__copy strong {
-  font-size: var(--text-body);
-  font-weight: var(--fw-medium);
+.otv2-slot--signin {
+  min-height: 40px;
 }
 
-.otv2-check[data-state="blocked"] .otv2-check__copy strong,
-.otv2-check[data-state="pending"] .otv2-check__copy strong {
-  color: var(--muted);
-  font-weight: var(--fw-regular);
-}
-
-.otv2-check__copy > span {
-  color: var(--muted);
-  font-size: var(--text-meta);
-  line-height: var(--lh-ui);
-}
-
-.otv2-repair {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.otv2-repair code {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--surface-soft);
-  font-family: var(--font-mono);
-  font-size: var(--text-ui);
-}
-
-.otv2-repair__intro {
-  margin: 0;
-  font-size: var(--text-body);
-  font-weight: var(--fw-medium);
-}
-
-/* QR --------------------------------------------------------------------- */
-
-.otv2-qr {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: #fff;
-}
-
-.otv2-qr__image,
-.otv2-qr__placeholder {
-  display: block;
-  width: 208px;
-  height: 208px;
-}
-
-.otv2-qr__placeholder {
-  border-radius: var(--radius-control);
-  background: var(--surface-soft);
-  animation: otv2-fade 1.4s ease-in-out infinite;
-}
-
-/* Done ------------------------------------------------------------------- */
-
-.otv2-step--done {
-  align-items: center;
-  padding-top: 48px;
-  text-align: center;
-}
-
-.otv2-done-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: var(--color-status-success-surface);
-  color: var(--color-status-success);
-}
-
-/* Mock controls ---------------------------------------------------------- */
-
-.otv2-lab {
-  position: fixed;
-  right: var(--space-6);
-  bottom: var(--space-6);
-  z-index: var(--layer-sidebar);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  align-items: flex-end;
-}
-
-/* Sits beside the panel toggle so the next event is always one click away. */
-.otv2-lab__advance {
-  box-shadow: 0 6px 20px rgb(22 33 27 / 18%);
-}
-
-.otv2-lab {
-  flex-direction: row;
-  align-items: flex-end;
-}
-
-.otv2-lab__stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  align-items: flex-end;
-}
-
-.otv2-lab__toggle:hover {
-  background: var(--color-bg-hover);
-}
-
-.otv2-lab__toggle {
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--strong-border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--secondary-foreground);
-  font-family: inherit;
-  font-size: var(--text-meta);
-  box-shadow: 0 6px 20px rgb(22 33 27 / 12%);
-  cursor: pointer;
-}
-
-/* `display: flex` below would otherwise defeat the `hidden` attribute's own `display: none`. */
-.otv2-lab__panel[hidden] {
-  display: none;
-}
-
-.otv2-lab__panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  width: 280px;
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--surface);
-  box-shadow: 0 12px 32px rgb(22 33 27 / 16%);
-}
-
-.otv2-lab__label {
-  color: var(--secondary-foreground);
-  font-size: var(--text-meta);
-  font-weight: var(--fw-medium);
-}
-
-.otv2-lab__hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: var(--text-micro);
-  line-height: var(--lh-ui);
-}
-
-.otv2-lab__row {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  justify-content: space-between;
-}
-
-.otv2-lab__segmented {
-  display: flex;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-}
-
-.otv2-lab__segmented button {
-  padding: var(--space-1) var(--space-3);
-  border: 0;
-  background: var(--surface);
-  color: var(--muted);
-  font-family: inherit;
-  font-size: var(--text-micro);
-  cursor: pointer;
-}
-
-.otv2-lab__segmented button:hover {
-  background: var(--color-bg-hover);
-}
-
-.otv2-lab__segmented button[aria-pressed="true"],
-.otv2-lab__segmented button[aria-pressed="true"]:hover {
-  background: var(--brand-light);
-  color: var(--brand-ink);
-}
-
-.otv2-lab__actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
+.otv2-field-error {
+  min-height: 20px;
 }
 
 @media (width <= 640px) {
-  /*
-   * There is no room for the validity beside the sentence at this width, so it takes its own line
-   * and the row reserves both states' height rather than growing when a code expires.
-   */
-  .otv2-command-lead {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-1);
-    min-height: 68px;
-  }
-
-  /* Both reserved slots hold a line more once their copy wraps at this width. */
   .otv2-slot--outcome {
     min-height: 71px;
   }
@@ -1205,28 +128,21 @@
     min-height: 34px;
   }
 
-  .otv2-choices--grid {
-    grid-template-columns: 1fr;
-  }
-
-  .otv2-rail__label {
-    display: none;
-  }
-
-  .otv2-shell__main {
-    padding-inline: var(--space-4);
+  .otv2-command-lead {
+    flex-direction: column;
+    align-items: flex-start;
+    min-height: 68px;
   }
 }
 
-/* Below this width a failing check's status takes a second line. */
-@media (width <= 399px) {
-  .otv2-check {
-    min-height: 90px;
-  }
-}
-
+/* And below this one the repair summary takes a second pair of lines. */
 @media (width <= 359px) {
   .otv2-slot--outcome {
     min-height: 114px;
   }
+}
+
+/* Slack's published button, at the size Slack publishes it. */
+.otv2-slack-install img {
+  height: 40px;
 }

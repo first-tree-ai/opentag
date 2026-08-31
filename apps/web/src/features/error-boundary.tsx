@@ -14,6 +14,10 @@ type AppErrorBoundaryState = {
   error?: BoundaryError;
 };
 
+abstract class ErrorBoundaryComponent extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  declare static getDerivedStateFromError: (error: unknown) => AppErrorBoundaryState;
+}
+
 /**
  * Keeps an unexpected render failure from leaving the application root blank.
  *
@@ -21,14 +25,14 @@ type AppErrorBoundaryState = {
  * around the router itself because providers, the router boot process, and non-route UI can fail
  * before a route match has a chance to install its own boundary.
  */
-export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
-  state: AppErrorBoundaryState = {};
+export class AppErrorBoundary extends ErrorBoundaryComponent {
+  override state: AppErrorBoundaryState = {};
 
-  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+  static override getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
     return { error: normalizeError(error) };
   }
 
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     reportBoundaryError("app", error, errorInfo);
   }
 
@@ -36,7 +40,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     window.location.reload();
   };
 
-  render() {
+  override render() {
     if (this.state.error) {
       return <StandaloneErrorPage actionLabel="Try again" onAction={this.reload} />;
     }

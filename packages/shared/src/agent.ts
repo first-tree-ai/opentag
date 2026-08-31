@@ -108,11 +108,12 @@ export const RebindAgentComputerRequestSchema = z
   .strict();
 
 export const AGENT_USAGE_WINDOW_DAYS = 30;
-export const AGENT_USAGE_WINDOW_OPTIONS = [7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
+export const AGENT_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
 export const AgentUsageWindowDaysSchema = z.union([
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[0]),
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[1]),
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[2]),
+  z.literal(AGENT_USAGE_WINDOW_OPTIONS[3]),
 ]);
 
 export const AgentListActivitySchema = z.discriminatedUnion("state", [

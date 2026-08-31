@@ -91,10 +91,10 @@ export function AgentManageSettings({
     setConfirmationError(undefined);
   }
   return (
-    <section className="grid gap-4">
+    <section aria-labelledby="agent-danger-zone-heading" className="grid gap-4">
       <header className="grid gap-2">
-        <Text as="h1" size="lg" variant="heading">
-          Manage Agent
+        <Text as="h2" id="agent-danger-zone-heading" variant="heading">
+          Danger zone
         </Text>
       </header>
       <SettingsList>

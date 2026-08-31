@@ -19,7 +19,13 @@ import {
 } from "../agent-presentation.js";
 import { agentSettingsSectionLink } from "../agent-routes.js";
 
-export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+export function AgentMessagingSettings({
+  agent,
+  onAgentChanged,
+}: {
+  agent: AgentDetailView;
+  onAgentChanged: () => void;
+}) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
   const [confirmation, setConfirmation] = useState<{ bindingId: string; kind: "disable_binding" }>();
@@ -89,7 +95,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   return (
     <div className="grid gap-6">
       <header className="grid gap-2">
-        <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
+        <Text as="h2" id="agent-messaging-heading" ref={messagingHeadingRef} tabIndex={-1} variant="heading">
           Messaging
         </Text>
       </header>

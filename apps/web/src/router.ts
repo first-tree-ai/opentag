@@ -24,12 +24,10 @@ declare module "@tanstack/react-router" {
 
   /**
    * History state carries an already-loaded Agent so a settings or usage page opened from a detail
-   * page does not flash a loading state, plus the Agent a "Back to …" shortcut should return to.
-   * The return destination is the Agent's id rather than a path so the link stays type-checked.
+   * page does not flash a loading state. Settings is one screen belonging to one Agent, so where
+   * "Back to …" returns to follows from the Agent itself and needs nothing carried here.
    */
   interface HistoryState {
     agent?: AgentDetailView;
-    returnLabel?: string;
-    returnAgentId?: string;
   }
 }

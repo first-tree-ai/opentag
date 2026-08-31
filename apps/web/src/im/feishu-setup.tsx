@@ -53,7 +53,7 @@ interface FeishuSetupError {
 
 /**
  * Owns one Feishu setup lifecycle for an Agent behind a small rendering seam.
- * ImTab refreshes its binding on success; onboarding can use the same callback
+ * The Messaging settings block refreshes its binding on success; onboarding can use the same callback
  * to reload fresh Server facts and derive its next step without learning setup internals.
  */
 export function FeishuSetup({ agentId, children, onSuccess }: FeishuSetupProps) {

@@ -74,11 +74,14 @@ test("sign-in rejects bad credentials and accepts the configured admin", async (
 test("Agent settings persist a change across reload", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   await page.goto(`/agents/${agentId}/settings/identity`, { waitUntil: "networkidle" });
-  const input = page.getByLabel("Display name");
+  // Settings is one screen, so the save confirmation is read from the Name block rather than from
+  // whichever live region the page happens to hold.
+  const name = page.getByRole("form", { name: "Name" });
+  const input = name.getByLabel("Display name");
   await expect(input).toHaveValue("E2E Agent");
   await input.fill("E2E Agent Updated");
-  await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page.getByRole("status")).toContainText("Name saved.");
+  await name.getByRole("button", { name: "Save changes" }).click();
+  await expect(name.getByRole("status")).toContainText("Name saved.");
   await page.reload({ waitUntil: "networkidle" });
   await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
 });

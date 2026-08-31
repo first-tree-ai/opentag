@@ -33,9 +33,13 @@ export function GeneralConfigForm({
     }
   }
   return (
-    <form className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line" onSubmit={submit}>
+    <form
+      aria-labelledby="agent-name-heading"
+      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      onSubmit={submit}
+    >
       <header className="grid gap-2">
-        <Text as="h1" size="lg" variant="heading">
+        <Text as="h2" id="agent-name-heading" variant="heading">
           Name
         </Text>
       </header>

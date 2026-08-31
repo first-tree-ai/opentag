@@ -155,7 +155,7 @@ function ConnectionRow({
       {status.action ? (
         <Link
           className="w-fit text-sm text-kumo-link"
-          state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
+          state={{ agent }}
           {...agentSettingsSectionLink(agent.id, status.action.section)}
         >
           {status.action.label}

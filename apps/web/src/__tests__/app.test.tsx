@@ -47,6 +47,15 @@ function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 }
 
+/**
+ * Clicks a control the way a browser does. `fireEvent.click` dispatches the event without moving
+ * focus, and a dialog opened from it then has no trigger to return focus to.
+ */
+function clickButton(button: HTMLElement) {
+  button.focus();
+  fireEvent.click(button);
+}
+
 function installApi(
   options: {
     agentCreator?: { userId: string; displayName: string };
@@ -1519,34 +1528,40 @@ describe("OpenTag Web App Shell", () => {
     expect(document.body.textContent).not.toContain("Private conversation content");
   });
 
-  it("groups all admin-only controls in a lightweight Settings directory", async () => {
+  it("administers every Agent setting on one screen rather than a directory of summaries", async () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Agent settings" })).toBeNull();
-    // One list in the order a viewer thinks about an Agent, with the irreversible actions held apart.
-    const setup = await screen.findByRole("region", { name: "Agent setup" });
-    expect(
-      [...setup.querySelectorAll('[data-ui="agent-settings-entry"] strong')].map((entry) => entry.textContent),
-    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model & reasoning"]);
-    expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /^Pause or delete/ })).toBeTruthy();
+    // The blocks in the order a viewer thinks about an Agent -- who it is, how it is reached, where
+    // it runs, how it works -- with the irreversible actions held apart at the end.
+    await screen.findByRole("heading", { name: "Danger zone" });
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Name",
+      "Messaging",
+      "Computer",
+      "Model",
+      "Resources",
+      "Danger zone",
+    ]);
+    // Nothing an operator has to see is a click away behind a summary line any more.
+    expect(screen.queryByTestId("agent-settings-entry")).toBeNull();
+    expect(document.querySelector('[data-ui="agent-settings-entry"]')).toBeNull();
+    const identity = within(screen.getByRole("form", { name: "Name" }));
+    expect((identity.getByLabelText("Display name") as HTMLInputElement).value).toBe("Reviewer");
+    const model = within(screen.getByRole("region", { name: "Model" }));
+    expect(model.getByText("Codex")).toBeTruthy();
+    expect(model.getAllByText("Provider default")).toHaveLength(2);
+    expect(model.getByRole("button", { name: "Change" })).toBeTruthy();
+    const resources = within(screen.getByRole("region", { name: "Resources" }));
+    expect(resources.getByText("Not customized · 0 characters")).toBeTruthy();
+    expect(resources.getByRole("button", { name: "Edit" })).toBeTruthy();
+    expect(screen.getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
-    expect(screen.getByRole("link", { name: /^Instructions / })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Model & reasoning/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /^Name Reviewer$/ })).toBeTruthy();
-    expect(screen.getByText("Computer")).toBeTruthy();
-    // Every row in the list opens; a row that is a link only sometimes cannot be predicted.
-    expect(screen.getByRole("link", { name: /^Computer / })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Pause or delete/ })).toBeTruthy();
-    expect(screen.getByText("Not configured")).toBeTruthy();
-    expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();
-    expect(screen.getByText("Reviewer")).toBeTruthy();
-    expect(screen.getByText("Ada's Mac · macOS · Online")).toBeTruthy();
-    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Model & reasoning" })).toBeNull();
   });
 
   it("returns to the Agent home when Messaging was opened from its Manage shortcut", async () => {
@@ -1563,19 +1578,19 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
   });
 
-  it("opens Connected computer recovery only when the Computer needs attention", async () => {
+  it("reports an offline Computer in place, with its recovery, rather than behind a row", async () => {
     installApi({ computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings`);
     render(<App />);
 
-    const computerLabel = await screen.findByText("Computer");
-    const computerLink = computerLabel.closest("a");
-    expect(screen.getByText("Ada's Mac · macOS · Offline")).toBeTruthy();
-    expect(screen.getByText("Review")).toBeTruthy();
-    if (!(computerLink instanceof HTMLAnchorElement)) {
-      throw new Error("Expected the Connected computer recovery row to be a link");
-    }
-    expect(computerLink.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
+    const computer = await screen.findByRole("region", { name: "Computer" });
+    expect(within(computer).getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(within(computer).getByText("Offline")).toBeTruthy();
+    expect(
+      within(computer).getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
+    ).toBeTruthy();
+    expect(within(computer).getByRole("button", { name: "Reconnect this Computer" })).toBeTruthy();
+    expect(within(computer).queryByRole("link")).toBeNull();
   });
 
   it("edits the Agent display name without exposing its permanent handle", async () => {
@@ -1635,7 +1650,6 @@ describe("OpenTag Web App Shell", () => {
 
     fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));
     fireEvent.click(await screen.findByRole("link", { name: "Settings" }));
-    fireEvent.click(await screen.findByRole("link", { name: /Pause or delete/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
     expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }));
@@ -1668,7 +1682,10 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    // A browser focuses the control it opens a dialog from, and the dialog returns focus to whatever
+    // held it. jsdom's fireEvent leaves focus where it was, which on a `/settings/manage` deep link
+    // is the block heading the anchor moved to, so the trigger is focused the way a click would.
+    clickButton(await screen.findByRole("button", { name: "Pause" }));
     const dialog = await screen.findByRole("dialog", { name: "Pause Reviewer?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Pause Agent" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to pause right now");
@@ -1790,9 +1807,9 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/runtime`);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Model & reasoning" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Model" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/settings/execution`);
-    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Execution" })).toBeNull();
   });
 
   it.each([
@@ -1809,6 +1826,15 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: action }).getAttribute("href")).toBe(`/${section}`);
   });
 
+  it("refuses a settings segment that anchors nothing", async () => {
+    installApi();
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/runtime`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Agent settings" })).toBeNull();
+  });
+
   it("does not preserve the removed Agent Access surface", async () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/access`);
@@ -1817,13 +1843,21 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe(`/agents/${agentId}/access`);
   });
 
-  it("keeps assigned Computer details in its own Settings page", async () => {
+  it("opens the settings screen at the Computer block, with focus on it", async () => {
     installApi({ bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
-    expect(screen.getByText("Online")).toBeTruthy();
+    const computer = await screen.findByRole("region", { name: "Computer" });
+    expect(within(computer).getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(within(computer).getByText("Online")).toBeTruthy();
+    // The deep link is an anchor into the screen: it moves the caret to the block a reader came for
+    // without hiding the rest of the Agent behind another click.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(computer).getByRole("heading", { name: "Computer" })),
+    );
+    expect(document.getElementById("agent-settings-computer")?.contains(computer)).toBe(true);
+    expect(screen.getByRole("heading", { name: "Model" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Execution" })).toBeNull();
     expect(screen.queryByText(/Turn timeout/i)).toBeNull();
@@ -1835,9 +1869,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
-    expect(screen.getByText("Offline")).toBeTruthy();
-    expect(screen.getByText(/Last seen/)).toBeTruthy();
+    const computer = await screen.findByRole("region", { name: "Computer" });
+    expect(within(computer).getByText("Offline")).toBeTruthy();
+    expect(within(computer).getByText(/Last seen/)).toBeTruthy();
     expect(
       screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
     ).toBeTruthy();
@@ -1849,7 +1883,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
+    await screen.findByRole("region", { name: "Computer" });
     expect(screen.getByRole("button", { name: "Reconnect this Computer" })).toBeTruthy();
   });
 
@@ -1907,9 +1941,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
-    expect(screen.getByText("Not ready")).toBeTruthy();
-    expect(screen.getByText("Claude Code is not signed in on Ada's Mac.")).toBeTruthy();
+    const computer = await screen.findByRole("region", { name: "Computer" });
+    expect(within(computer).getByText("Not ready")).toBeTruthy();
+    expect(within(computer).getByText("Claude Code is not signed in on Ada's Mac.")).toBeTruthy();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {
@@ -2600,7 +2634,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
     expect(await screen.findByText(/Permissions update required/)).toBeTruthy();
-    expect(screen.queryByText(/Online/)).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Connected channel" })).queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Change Feishu Bot" }));
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
@@ -2624,7 +2658,7 @@ describe("OpenTag Web App Shell", () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/Needs attention/)).toBeNull();
-    expect(screen.queryByText(/Online/)).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Connected channel" })).queryByText(/Online/)).toBeNull();
   });
 
   it("shows the selected runtime state beside a connected Slack channel", async () => {

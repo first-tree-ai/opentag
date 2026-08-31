@@ -29,14 +29,22 @@ export function AgentComputerSettings({
   return (
     <div className="grid gap-6">
       <section
-        aria-labelledby="computer-heading"
+        aria-labelledby="agent-computer-heading"
         className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
       >
+        {/*
+          The heading names the block, not the machine, because it sits among Name, Messaging, Model
+          and Resources on one screen and has to be findable as "Computer". Which machine it is stays
+          directly beneath, where it reads as this block's answer rather than as the page's subject.
+        */}
         <header className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <Text as="h1" id="computer-heading" size="lg" variant="heading">
-              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+          <div className="grid min-w-0 gap-1">
+            <Text as="h2" id="agent-computer-heading" variant="heading">
+              Computer
             </Text>
+            <p className="text-sm text-kumo-subtle">
+              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+            </p>
           </div>
           <StatusIndicator label={computerStatus} tone={computerTone} />
         </header>

@@ -1,5 +1,4 @@
 import type {
-  AgentAdminConfig,
   AgentSummary,
   ImBindingHandoffStatus,
   ImBindingSummary,
@@ -35,7 +34,11 @@ import {
   titleCase,
 } from "./agents/agent-presentation.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink, agentUsageLink } from "./agents/agent-routes.js";
-import { agentSettingsSummary } from "./agents/agent-settings/sections.js";
+import {
+  agentSettingsAnchorId,
+  agentSettingsSections,
+  isAgentSettingsSection,
+} from "./agents/agent-settings/sections.js";
 
 describe("Agent list order", () => {
   it("takes the incoming priority order on the first render", () => {
@@ -446,61 +449,23 @@ describe("Agent availability model and presentation", () => {
     expect(formatRelativeTime(new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString())).toBe("2 days ago");
   });
 
-  it("builds typed Agent links and settings summaries", () => {
-    const base = detail(projectAgentAvailability(agent, computer, binding("active"), handoff(true), true, true));
+  it("builds typed Agent links and names every settings anchor", () => {
     expect(agentDetailLink(agent.id).to).toBe("/agents/$agentId");
     expect(agentUsageLink(agent.id).to).toBe("/agents/$agentId/usage");
     expect(agentSettingsLink(agent.id).to).toBe("/agents/$agentId/settings");
     expect(agentSettingsSectionLink(agent.id, "computer").params.section).toBe("computer");
-    const config = {
-      id: agent.id,
-      createdByUserId: "user",
-      computerId: agent.computer.computerId,
-      name: agent.name,
-      displayName: agent.displayName,
-      runtimeProvider: agent.runtimeProvider,
-      receiveMode: agent.receiveMode,
-      status: agent.status,
-      revision: 1,
-      runtimeConfig: { revision: 1, instructions: "Custom", model: null, reasoningEffort: null, maxDurationMs: null },
-      createdAt: agent.updatedAt,
-      updatedAt: agent.updatedAt,
-    } satisfies AgentAdminConfig;
-    expect(agentSettingsSummary(detail(base.availability), config, "instructions")).toBe("Custom instructions");
-    expect(
-      agentSettingsSummary(
-        detail(base.availability),
-        { ...config, runtimeConfig: { ...config.runtimeConfig, instructions: " " } },
-        "instructions",
-      ),
-    ).toBe("Not configured");
-    expect(agentSettingsSummary(detail(base.availability), config, "execution")).toContain("Provider defaults");
-    expect(
-      agentSettingsSummary(
-        detail(base.availability),
-        { ...config, runtimeConfig: { ...config.runtimeConfig, model: null, reasoningEffort: "high" } },
-        "execution",
-      ),
-    ).toContain("Default model · High");
-    expect(
-      agentSettingsSummary(
-        detail(base.availability),
-        { ...config, runtimeConfig: { ...config.runtimeConfig, model: "custom", reasoningEffort: null } },
-        "execution",
-      ),
-    ).toContain("Default reasoning");
-    expect(
-      agentSettingsSummary({ ...detail(base.availability), messaging: { kind: "unconfirmed" } }, config, "messaging"),
-    ).toBe("Messaging status is temporarily unavailable");
-    expect(
-      agentSettingsSummary(
-        { ...detail(base.availability), messaging: { kind: "ready", value: undefined } },
-        config,
-        "messaging",
-      ),
-    ).toBe("No messaging channel connected");
-    expect(agentSettingsSummary(detail(base.availability), config, "identity")).toBe(agent.displayName);
-    expect(agentSettingsSummary(detail(base.availability), config, "computer")).toContain("macOS");
-    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Active");
+    // Every anchor a recovery exit can name has to resolve, and only those; an unknown segment is a
+    // not-found rather than a screen opened at nothing.
+    expect([...agentSettingsSections]).toEqual([
+      "identity",
+      "messaging",
+      "computer",
+      "execution",
+      "instructions",
+      "manage",
+    ]);
+    expect(agentSettingsSections.every((section) => isAgentSettingsSection(section))).toBe(true);
+    expect(isAgentSettingsSection("runtime")).toBe(false);
+    expect(agentSettingsAnchorId("computer")).toBe("agent-settings-computer");
   });
 });

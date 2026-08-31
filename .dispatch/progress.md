@@ -4,7 +4,7 @@
 
 - [x] 1. Survey observability, server/client error patterns, and shared package structure.
 - [x] 2. Add failing shared taxonomy and redaction tests first.
-- [ ] 3. Implement shared structured-error schemas and safe serialization; refresh exports snapshot.
+- [x] 3. Implement shared structured-error schemas and safe serialization; refresh exports snapshot.
 - [ ] 4. Implement and test the server background-failure supervisor.
 - [ ] 5. Write `docs/error-taxonomy.md`.
 - [ ] 6. Run `pnpm check`, `pnpm typecheck`, and `pnpm test`; clean the tree.
@@ -20,7 +20,7 @@ Item 1 found these current shapes and gaps:
 
 ## Next
 
-The new `structured-errors.test.ts` covers taxonomy parsing, diagnostic-event envelopes, sensitive key/header/body/message redaction, cycles, and byte bounds. It was run first and failed at collection because `structured-errors.ts` did not exist, confirming the tests are red before implementation. Next implement the shared contract and server supervisor within the owned paths. Runtime/service call-site adoption will remain an integration note only.
+The new `structured-errors.test.ts` covers taxonomy parsing, diagnostic-event envelopes, sensitive key/header/body/message redaction, cycles, and byte bounds. It was run first and failed at collection because `structured-errors.ts` did not exist, confirming the tests are red before implementation. The shared implementation now provides strict Zod schemas, recursive causes, key-pattern and string redaction, cycle/depth/collection bounds, and UTF-8 bounded JSON serialization. The public barrel and sorted export snapshot were refreshed. Shared typecheck and the full shared test command pass (18 files, 112 tests).
 
 ## Integration notes
 

@@ -261,6 +261,31 @@ describe("the attempt budget", () => {
      */
     expect(limiter.size).toBeLessThanOrEqual(50);
   });
+
+  it("shares the default budget across route registrations in one server process", async () => {
+    const first = createBrowserApp();
+    const second = createBrowserApp();
+    const request = { method: "GET" as const, url: HTTP_PATHS.authGoogleStart, remoteAddress: "198.51.100.77" };
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      expect((await first.app.inject(request)).statusCode).toBe(404);
+    }
+    expect((await second.app.inject(request)).statusCode).toBe(429);
+  });
+
+  it("fails closed in production unless the single-process boundary is explicit", () => {
+    const previousEnvironment = process.env.OPENTAG_ENV;
+    const previousAssertion = process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS;
+    process.env.OPENTAG_ENV = "prod";
+    delete process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS;
+    try {
+      expect(() => createBrowserApp()).toThrow(/shared rate limiter in production/);
+    } finally {
+      if (previousEnvironment === undefined) delete process.env.OPENTAG_ENV;
+      else process.env.OPENTAG_ENV = previousEnvironment;
+      if (previousAssertion === undefined) delete process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS;
+      else process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS = previousAssertion;
+    }
+  });
 });
 
 describe("email and password routes", () => {
@@ -276,6 +301,7 @@ describe("email and password routes", () => {
     });
 
     expect(response.statusCode).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(betterAuth.paths).toEqual(["/api/v1/auth/sign-up/email"]);
     const cookies = String(response.headers["set-cookie"]);
     expect(cookies).toContain("opentag.session_token=password-session");

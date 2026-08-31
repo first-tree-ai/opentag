@@ -5,7 +5,6 @@ import {
   type ComputerConnectLifecycle,
   ComputerConnectLifecycleRoot,
 } from "../features/computer-connect/computer-connect.js";
-import { messagingProviderLabel } from "../im/provider-label.js";
 import {
   CheckLine,
   CommandBlock,
@@ -1023,9 +1022,7 @@ export function DoneStep({
         <Text as="h1" size="lg" variant="heading">
           {COPY.done.title(name)}
         </Text>
-        <p className="text-kumo-subtle m-0">
-          {COPY.done.description(name, provider ? messagingProviderLabel(provider) : undefined)}
-        </p>
+        <p className="text-kumo-subtle m-0">{COPY.done.description(name, provider)}</p>
       </header>
       {completion ? (
         <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>

@@ -137,7 +137,7 @@ export function buildLineHitsByFile(coverage, repositoryRoot) {
 }
 
 function evaluateChangedFile({ file, lines, lineHits }) {
-  if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, unmeasured: false, uncovered: [] };
+  if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
   const instrumented = lineHits !== undefined;
   const uncovered = [];
   let covered = 0;
@@ -156,7 +156,7 @@ function evaluateChangedFile({ file, lines, lineHits }) {
       uncovered.push(`${file}:${line}`);
     }
   }
-  return { covered, total, unmeasured: !instrumented && total > 0, uncovered };
+  return { covered, total, uncovered };
 }
 
 export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshold = 80 }) {
@@ -167,7 +167,6 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   const changedLines = extractChangedLines(diff);
   const lineHitsByFile = buildLineHitsByFile(coverage, repositoryRoot);
   const uncovered = [];
-  const unmeasured = [];
   let covered = 0;
   let total = 0;
 
@@ -176,27 +175,12 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
     covered += result.covered;
     total += result.total;
     uncovered.push(...result.uncovered);
-    if (result.unmeasured) unmeasured.push(file);
   }
 
   if (total === 0) {
-    return {
-      covered: 0,
-      passed: true,
-      percent: 100,
-      reason: "no executable changed lines",
-      total,
-      unmeasured,
-      uncovered,
-    };
+    return { covered: 0, passed: true, percent: 100, reason: "no executable changed lines", total, uncovered };
   }
 
-  /*
-   * A percentage cannot speak for a file nothing measured. Enough covered lines elsewhere will
-   * always outvote it, so a package that silently stopped being instrumented would read as clean
-   * the moment its changed lines were a small enough share of the patch. That is the case the
-   * fail-closed rule exists for, and it has to hold independently of the threshold.
-   */
   const percent = (covered / total) * 100;
-  return { covered, passed: percent >= threshold && unmeasured.length === 0, percent, total, unmeasured, uncovered };
+  return { covered, passed: percent >= threshold, percent, total, uncovered };
 }

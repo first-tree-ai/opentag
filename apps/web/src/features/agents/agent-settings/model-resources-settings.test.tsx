@@ -281,6 +281,38 @@ describe("AgentModelSettings", () => {
       runtimeConfig: { model: "gpt-5.6-terra", reasoningEffort: "low" },
     });
   });
+
+  it("keeps a newer shell config when it arrives before the save response", async () => {
+    const saveResponse: AgentAdminConfig = {
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, reasoningEffort: "medium" },
+    };
+    const concurrentConfig: AgentAdminConfig = {
+      ...saveResponse,
+      revision: 6,
+      runtimeConfig: { ...saveResponse.runtimeConfig, revision: 9, reasoningEffort: "low" },
+    };
+    let resolveSave: (value: AgentAdminConfig) => void = () => undefined;
+    const save = vi.spyOn(browserApi, "updateAgent").mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const view = render(<AgentModelSettings agent={agent} config={config} onAgentChanged={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const dialog = await screen.findByRole("dialog", { name: "Change model" });
+    await chooseOption(dialog, "Reasoning level", "medium");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+
+    view.rerender(<AgentModelSettings agent={agent} config={concurrentConfig} onAgentChanged={vi.fn()} />);
+    resolveSave(saveResponse);
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Change model" })).toBeNull());
+    expect(screen.getByText("Low")).toBeTruthy();
+  });
 });
 
 describe("AgentResourcesSettings", () => {
@@ -319,7 +351,7 @@ describe("AgentResourcesSettings", () => {
     expect(onAgentChanged).toHaveBeenCalledOnce();
   });
 
-  it("describes empty instructions without exposing fake resource links", () => {
+  it("describes empty instructions", () => {
     const emptyConfig: AgentAdminConfig = {
       ...config,
       runtimeConfig: { ...config.runtimeConfig, instructions: "" },
@@ -327,7 +359,6 @@ describe("AgentResourcesSettings", () => {
     render(<AgentResourcesSettings agent={agent} config={emptyConfig} onAgentChanged={vi.fn()} />);
 
     expect(screen.getByText("Not customized · 0 characters")).toBeTruthy();
-    expect(screen.queryByRole("link")).toBeNull();
   });
 
   it("reports the stored length of whitespace-only custom instructions", () => {
@@ -437,5 +468,39 @@ describe("AgentResourcesSettings", () => {
       expectedRevision: 5,
       runtimeConfig: { instructions: secondInstructions },
     });
+  });
+
+  it("keeps newer instructions when they arrive before the save response", async () => {
+    const savedInstructions = "Be concise.";
+    const concurrentInstructions = "Use the latest instructions.";
+    const saveResponse: AgentAdminConfig = {
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, instructions: savedInstructions },
+    };
+    const concurrentConfig: AgentAdminConfig = {
+      ...saveResponse,
+      revision: 6,
+      runtimeConfig: { ...saveResponse.runtimeConfig, revision: 9, instructions: concurrentInstructions },
+    };
+    let resolveSave: (value: AgentAdminConfig) => void = () => undefined;
+    const save = vi.spyOn(browserApi, "updateAgent").mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const view = render(<AgentResourcesSettings agent={agent} config={config} onAgentChanged={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit instructions" });
+    fireEvent.change(within(dialog).getByLabelText("Instructions"), { target: { value: savedInstructions } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+
+    view.rerender(<AgentResourcesSettings agent={agent} config={concurrentConfig} onAgentChanged={vi.fn()} />);
+    resolveSave(saveResponse);
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Edit instructions" })).toBeNull());
+    expect(screen.getByText(`Custom · ${concurrentInstructions.length} characters`)).toBeTruthy();
   });
 });

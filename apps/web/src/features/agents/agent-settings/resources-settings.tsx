@@ -69,8 +69,10 @@ export function AgentResourcesSettings({
         expectedRevision: config.revision,
         runtimeConfig: { instructions: instructionsDraft },
       });
-      setConfig(updated);
-      setInstructionsDraft(updated.runtimeConfig.instructions);
+      const pendingConfig = pendingConfigRef.current;
+      const resolvedConfig = pendingConfig ? newerConfig(updated, pendingConfig) : updated;
+      setConfig(resolvedConfig);
+      setInstructionsDraft(resolvedConfig.runtimeConfig.instructions);
       setMessage("Instructions saved.");
       editingRef.current = false;
       pendingConfigRef.current = undefined;

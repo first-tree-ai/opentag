@@ -91,10 +91,12 @@ export function AgentModelSettings({
         expectedRevision: config.revision,
         runtimeConfig,
       });
-      setConfig(updated);
-      setModelDraft(updated.runtimeConfig.model ?? "");
-      setModelSelection(modelSelectionFor(updated));
-      setReasoningDraft(updated.runtimeConfig.reasoningEffort ?? "");
+      const pendingConfig = pendingConfigRef.current;
+      const resolvedConfig = pendingConfig ? newerConfig(updated, pendingConfig) : updated;
+      setConfig(resolvedConfig);
+      setModelDraft(resolvedConfig.runtimeConfig.model ?? "");
+      setModelSelection(modelSelectionFor(resolvedConfig));
+      setReasoningDraft(resolvedConfig.runtimeConfig.reasoningEffort ?? "");
       setMessage("Model settings saved.");
       editingRef.current = false;
       pendingConfigRef.current = undefined;

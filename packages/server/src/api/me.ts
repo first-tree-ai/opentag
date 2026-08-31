@@ -7,7 +7,7 @@ import {
   UpdateUserProfileRequestSchema,
   UserProfileSchema,
 } from "@opentag/shared";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { buildConnectBootstrapCommand, type ConnectCodeIssuer, type UserAuthService } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
@@ -25,14 +25,20 @@ export function registerMeRoutes(
   options: MeRoutesOptions = {},
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
-  app.get(HTTP_PATHS.me, { preHandler }, async (request, reply) =>
-    reply.code(200).send(MeResponseSchema.parse(request.authContext?.me)),
+  const noStore = async (_request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    reply.header("Cache-Control", "no-store");
+  };
+  app.get(HTTP_PATHS.me, { preHandler, onRequest: noStore }, async (request, reply) =>
+    reply.header("Cache-Control", "no-store").code(200).send(MeResponseSchema.parse(request.authContext?.me)),
   );
-  app.patch(HTTP_PATHS.me, { preHandler }, async (request, reply) => {
+  app.patch(HTTP_PATHS.me, { preHandler, onRequest: noStore }, async (request, reply) => {
     const userId = request.authContext?.me.user.id;
     if (!userId) throw new Error("Authenticated user context is missing");
     const input = parseRequest(UpdateUserProfileRequestSchema, request.body);
-    return reply.code(200).send(UserProfileSchema.parse(await authService.updateSelfProfile(userId, input)));
+    return reply
+      .header("Cache-Control", "no-store")
+      .code(200)
+      .send(UserProfileSchema.parse(await authService.updateSelfProfile(userId, input)));
   });
 
   if (options.connectCodeIssuer && options.environment && options.publicUrl) {

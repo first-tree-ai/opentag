@@ -82,11 +82,14 @@ function installApi(
     runtimeProvider?: "codex" | "claude-code";
     meDelayMsAfterProfileUpdate?: number;
     meFailuresAfterProfileUpdate?: number;
+    /** Answers the `/me` refresh a profile save starts, so a test can hold it across a sign-out. */
+    meAfterProfileUpdate?: () => Promise<Response> | Response;
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
     setupFailureCode?: string;
     setupCompletedAt?: string | null;
     unauthenticated?: boolean;
+    meAfterLogout?: () => Promise<Response> | Response;
     workspaceless?: boolean;
   } = {},
 ) {
@@ -115,6 +118,7 @@ function installApi(
   let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentDisplayName = "Ada";
   let profileUpdated = false;
+  let loggedOut = false;
   let meFailuresRemaining = options.meFailuresAfterProfileUpdate ?? 0;
   let computerConnectCodeIssued = false;
   vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -161,7 +165,9 @@ function installApi(
       return response;
     }
     if (path === "/api/v1/me") {
+      if (loggedOut && options.meAfterLogout) return options.meAfterLogout();
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
+      if (profileUpdated && options.meAfterProfileUpdate) return options.meAfterProfileUpdate();
       if (profileUpdated && options.meDelayMsAfterProfileUpdate) {
         await new Promise((resolve) => setTimeout(resolve, options.meDelayMsAfterProfileUpdate));
       }
@@ -468,7 +474,10 @@ function installApi(
         expiresAt: "2026-08-20T00:10:00.000Z",
       });
     }
-    if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
+    if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") {
+      loggedOut = true;
+      return new Response(null, { status: 204 });
+    }
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
 }
@@ -659,7 +668,7 @@ describe("OpenTag Web App Shell", () => {
     expect(signIn.getAttribute("data-ui")).toBe("login-provider-google");
     expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
-    expect(screen.getByText("Sign in to manage your Agents.")).toBeTruthy();
+    expect(screen.getByText("Sign in to manage your Agents and Computers.")).toBeTruthy();
   });
 
   it("offers the password form only where the server enabled it", async () => {
@@ -938,7 +947,9 @@ describe("OpenTag Web App Shell", () => {
       expect(dialog.contains(document.activeElement)).toBe(true);
       await act(async () => {
         finishRefresh?.();
-        await Promise.resolve();
+        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
+        // starts settles across several microtask turns; drain them rather than counting them.
+        await vi.advanceTimersByTimeAsync(0);
       });
 
       expect(within(dialog).getByText("Ada's Linux Computer")).toBeTruthy();
@@ -1101,7 +1112,9 @@ describe("OpenTag Web App Shell", () => {
       expect(dialog.contains(document.activeElement)).toBe(true);
       await act(async () => {
         finishRefresh?.();
-        await Promise.resolve();
+        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
+        // starts settles across several microtask turns; drain them rather than counting them.
+        await vi.advanceTimersByTimeAsync(0);
       });
 
       expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
@@ -1451,6 +1464,29 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => releaseAgentRead());
   });
 
+  // Route state cannot mask the response here — this navigation warms the Agent's detail read
+  // first, so the cache is what the terminal response has to outrank. The route-state window,
+  // where the read has never held data, is covered in `agent-queries.test.tsx`.
+  it.each([403, 404])("replaces a cached Agent with a terminal detail response (%d)", async (status) => {
+    let agentReads = 0;
+    installApi({
+      agentRead: () => {
+        agentReads += 1;
+      },
+      agentReadStatus: () => (agentReads > 1 ? status : undefined),
+      bound: true,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "View details" }));
+    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
+    await waitFor(() => expect(agentReads).toBe(2));
+    expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
+    expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
+  });
+
   it("shows confirmed active work without exposing conversation content", async () => {
     installApi({
       bound: true,
@@ -1565,6 +1601,31 @@ describe("OpenTag Web App Shell", () => {
     expect(confirmedDeleteButton.hasAttribute("disabled")).toBe(false);
     fireEvent.click(confirmedDeleteButton);
     await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+  });
+
+  it("evicts a deleted Agent before a failed list refresh can retain it", async () => {
+    let listReads = 0;
+    installApi({
+      agentListStatus: () => {
+        listReads += 1;
+        return listReads > 1 ? 503 : undefined;
+      },
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("link", { name: /Pause or delete/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Reviewer?" });
+    fireEvent.change(within(dialog).getByLabelText(/Type Reviewer to confirm/), { target: { value: "Reviewer" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+
+    expect(await screen.findByRole("heading", { name: "No Agents yet" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open Reviewer" })).toBeNull();
+    expect(listReads).toBe(2);
   });
 
   it("keeps lifecycle failures visible inside the confirmation dialog and allows retry", async () => {
@@ -2282,7 +2343,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(within(menu).queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(within(menu).queryByText("Secondary")).toBeNull();
-    expect(within(menu).queryByRole("menuitem", { name: "Computers" })).toBeNull();
+    expect(within(menu).getByRole("menuitem", { name: "Computers" })).toBeTruthy();
     expect(within(menu).queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 
@@ -2650,6 +2711,49 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("reports a failed Check again instead of announcing a Computer update", async () => {
+    let computerReadStatus: number | undefined;
+    installApi({
+      computerProviderReadiness: [{ provider: "codex", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" }],
+      computerReadStatus: () => computerReadStatus,
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(await within(dialog).findByText("Sign in to Codex")).toBeTruthy();
+
+    // The Account asked a question by pressing the button. A 503 is the answer "I could not check",
+    // and the cached Computer is not a substitute for it.
+    computerReadStatus = 503;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check again" }));
+
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Request failed");
+    // Not the degraded state a background re-read would have left: that reads as an answer about
+    // the Computer, when what happened is that the check did not complete.
+    expect(within(dialog).queryByText("Readiness unconfirmed")).toBeNull();
+    expect(within(dialog).queryByText("Computer connection updated")).toBeNull();
+  });
+
+  it("keeps a background Computer refresh failure on the retained Computers", async () => {
+    let computerReadStatus: number | undefined;
+    installApi({
+      computerProviderReadiness: [{ provider: "codex", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" }],
+      computerReadStatus: () => computerReadStatus,
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(await within(dialog).findByText("Sign in to Codex")).toBeTruthy();
+
+    // The control: revalidation nobody asked for still degrades rather than replacing the dialog.
+    computerReadStatus = 503;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await within(dialog).findByText("Readiness unconfirmed")).toBeTruthy();
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+  });
+
   it("removes a retained creation route after a terminal Computer refresh error", async () => {
     let computerReadStatus: number | undefined;
     installApi({ computerReadStatus: () => computerReadStatus });
@@ -2668,7 +2772,7 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete setup into onboarding without a Workspace grant", async () => {
     installApi({ workspaceless: true });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
     expect(
@@ -2680,7 +2784,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ workspaceless: true });
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(
       vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
@@ -2690,14 +2794,14 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete setup into onboarding", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
   });
 
   it("renders onboarding without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    await screen.findByRole("heading", { name: "Set up OpenTag" });
+    await screen.findByRole("heading", { name: "Where should your agent run?" });
 
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell
@@ -2706,7 +2810,7 @@ describe("OpenTag Web App Shell", () => {
     // nothing whether or not the shell rendered.
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
-    expect(screen.getAllByRole("link", { name: "OpenTag" })).toHaveLength(1);
+    expect(screen.queryAllByRole("link", { name: "OpenTag" })).toHaveLength(0);
   });
 
   it("keeps completed Accounts out of onboarding even when it is requested directly", async () => {
@@ -2749,12 +2853,93 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("sends a retired Computers bookmark to Agents", async () => {
-    installApi();
-    window.history.replaceState({}, "", "/agents/computers");
+  it("does not expose the previous Account while a post-logout route re-entry is loading", async () => {
+    let releaseMe: (response: Response) => void = () => undefined;
+    const pendingMe = new Promise<Response>((resolve) => {
+      releaseMe = resolve;
+    });
+    installApi({ meAfterLogout: () => pendingMe });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents");
+
+    expect(await screen.findByRole("link", { name: "Open Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+
+    await act(async () => {
+      window.history.pushState({}, "", "/agents");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByLabelText("Loading current server state")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open Reviewer" })).toBeNull();
+
+    await act(async () => {
+      releaseMe(json({ error: { message: "Sign in required" } }, 401));
+    });
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+  });
+
+  it("discards an Account refresh that outlived the session that started it", async () => {
+    let releaseRefresh: (response: Response) => void = () => undefined;
+    const pendingRefresh = new Promise<Response>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let releaseMe: (response: Response) => void = () => undefined;
+    const pendingMe = new Promise<Response>((resolve) => {
+      releaseMe = resolve;
+    });
+    installApi({ meAfterProfileUpdate: () => pendingRefresh, meAfterLogout: () => pendingMe });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Account" }));
+    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Ada Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save account profile" }));
+
+    // Sign out while the refresh that save started is still in flight. Clearing the cache cannot
+    // retire that read, because the cache never started it.
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+
+    // It left with a cookie that was still valid, so it answers for the Account that just left.
+    await act(async () => {
+      releaseRefresh(
+        json({
+          user: { id: userId, email: "ada@example.com", displayName: "Ada Renamed" },
+          setupCompletedAt: "2026-08-20T00:00:00.000Z",
+        }),
+      );
+    });
+
+    await act(async () => {
+      window.history.pushState({}, "", "/agents");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(await screen.findByLabelText("Loading current server state")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Ada Renamed");
+    expect(screen.queryByRole("button", { name: "Account menu" })).toBeNull();
+
+    await act(async () => {
+      releaseMe(json({ error: { message: "Sign in required" } }, 401));
+    });
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+  });
+
+  it("opens the Computers page from the account menu", async () => {
+    installApi();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    const computers = screen.getByRole("menuitem", { name: "Computers" });
+    expect(computers.getAttribute("href")).toBe("/agents/computers");
+    fireEvent.click(computers);
+    expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("Online")).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents/computers");
+    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {

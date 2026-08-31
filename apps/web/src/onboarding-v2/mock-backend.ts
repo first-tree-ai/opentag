@@ -10,7 +10,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ConnectState, MessagingCliStatus, MessagingState, ReadinessFacts, RuntimeStatus } from "./flow.js";
+import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
+import type {
+  AgentDraft,
+  ConnectState,
+  CreationState,
+  MessagingCliStatus,
+  MessagingState,
+  ReadinessFacts,
+  RuntimeStatus,
+} from "./flow.js";
 
 export interface MockScenario {
   readonly id: string;
@@ -139,27 +148,17 @@ export interface PendingEvent {
   readonly run: () => void;
 }
 
-export type PlanSignIn = "idle" | "pending" | "signed-in";
+export type { PlanSignIn } from "./backend.js";
 
-export interface MockBackend {
-  readonly connect: ConnectState;
-  readonly planSignIn: PlanSignIn;
-  readonly startPlanSignIn: () => void;
-  readonly readiness: ReadinessFacts | undefined;
-  readonly messaging: MessagingState;
-  /** Issues the first connect code. Safe to call repeatedly; only the idle state acts on it. */
-  readonly issueConnectCode: () => void;
-  /** Replaces an expired code with a fresh one, restarting the arrival. */
-  readonly refreshConnectCode: () => void;
-  readonly startMessaging: (provider: "feishu" | "slack") => void;
-  /** Slack's install is a link out; this stands in for the user leaving for Slack. */
-  readonly startSlackInstall: () => void;
+/** How long the mock pretends creating an Agent takes. */
+const CREATE_AGENT_MS = 900;
+
+export interface MockBackend extends OnboardingBackend {
   /** What is waiting to happen, if anything: the Computer arriving, the probe, or the scan. */
   readonly pending: PendingEvent | undefined;
   /** Lab controls — the page itself never offers these. */
   readonly expireNow: () => void;
   readonly repairNow: () => void;
-  readonly reset: () => void;
 }
 
 export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBackend {
@@ -170,6 +169,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   /** The result a running check will settle on, held so it can be applied on a clock or by hand. */
   const [checkResult, setCheckResult] = useState<ReadinessFacts | undefined>(undefined);
   const [planSignIn, setPlanSignIn] = useState<PlanSignIn>("idle");
+  const [creation, setCreation] = useState<CreationState>("idle");
+  const [agent, setAgent] = useState<CreatedAgent>();
 
   const timers = useRef<number[]>([]);
   const clearTimers = useCallback(() => {
@@ -231,8 +232,11 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   // The check runs when the Computer arrives, exactly like the daemon's eager first probe.
   useEffect(() => {
     if (connect.kind !== "connected") return;
-    setReadiness({ runtime: "checking", messagingCli: "checking" });
-    setCheckResult({ runtime: scenario.runtime, messagingCli: scenario.messagingCli });
+    setReadiness({ runtime: "checking", messagingCli: { feishu: "checking", slack: "checking" } });
+    setCheckResult({
+      runtime: scenario.runtime,
+      messagingCli: { feishu: scenario.messagingCli, slack: scenario.messagingCli },
+    });
   }, [connect.kind, scenario.messagingCli, scenario.runtime]);
 
   const settleCheck = useCallback(() => {
@@ -249,8 +253,8 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   }, [checkResult, settleCheck, timings.probeMs]);
 
   const repairNow = useCallback(() => {
-    setReadiness({ runtime: "checking", messagingCli: "checking" });
-    setCheckResult({ runtime: "ready", messagingCli: "ready" });
+    setReadiness({ runtime: "checking", messagingCli: { feishu: "checking", slack: "checking" } });
+    setCheckResult({ runtime: "ready", messagingCli: { feishu: "ready", slack: "ready" } });
   }, []);
 
   /** Only Lark has something to issue up front; Slack waits for the user to start its install. */
@@ -262,7 +266,7 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
         queueMicrotask(() => {
           later(() => {
             setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/feishu/${randomId()}` });
-            later(() => setMessaging({ kind: "connected" }), timings.scanMs);
+            later(() => setMessaging({ kind: "waiting-handoff" }), timings.scanMs);
           }, timings.issueMs);
         });
         return { kind: "issuing" };
@@ -273,16 +277,36 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
 
   const startSlackInstall = useCallback(() => {
     setMessaging((current) => (current.kind === "idle" ? { kind: "away" } : current));
-    later(() => setMessaging((current) => (current.kind === "away" ? { kind: "connected" } : current)), timings.scanMs);
+    later(
+      () => setMessaging((current) => (current.kind === "away" ? { kind: "waiting-handoff" } : current)),
+      timings.scanMs,
+    );
   }, [later, timings.scanMs]);
 
   const startPlanSignIn = useCallback(() => {
     setPlanSignIn((current) => (current === "idle" ? "pending" : current));
   }, []);
 
+  /** The Agent the real backend would have created, on the same seam and the same states. */
+  const createAgent = useCallback(
+    (draft: AgentDraft) => {
+      setCreation((current) => {
+        if (current !== "idle") return current;
+        later(() => {
+          setCreation("created");
+          setAgent({ id: randomId(), name: draft.name, runtimeProvider: draft.runtime ?? "codex" });
+        }, CREATE_AGENT_MS);
+        return "creating";
+      });
+    },
+    [later],
+  );
+
   const reset = useCallback(() => {
     clearTimers();
     setPlanSignIn("idle");
+    setCreation("idle");
+    setAgent(undefined);
     setConnect({ kind: "idle" });
     setReadiness(undefined);
     setCheckResult(undefined);
@@ -293,18 +317,33 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
     if (connect.kind === "issued") return { label: "Connect computer", run: arrive };
     if (checkResult) return { label: "Return check result", run: settleCheck };
     if (planSignIn === "pending") return { label: "Approve sign-in", run: () => setPlanSignIn("signed-in") };
-    if (messaging.kind === "waiting") return { label: "Scan QR code", run: () => setMessaging({ kind: "connected" }) };
+    if (messaging.kind === "waiting")
+      return { label: "Scan QR code", run: () => setMessaging({ kind: "waiting-handoff" }) };
     if (messaging.kind === "away")
-      return { label: "Return from Slack", run: () => setMessaging({ kind: "connected" }) };
+      return { label: "Return from Slack", run: () => setMessaging({ kind: "waiting-handoff" }) };
+    if (messaging.kind === "waiting-handoff")
+      return { label: "Confirm reachable", run: () => setMessaging({ kind: "connected" }) };
     return undefined;
   }, [arrive, checkResult, connect.kind, messaging.kind, planSignIn, settleCheck]);
 
   return useMemo(
     () => ({
+      agent,
+      // The mock's Computer does not leave once it has arrived.
+      computerOnline: connect.kind === "connected" ? true : undefined,
       connect,
+      createAgent,
+      creation,
+      error: undefined,
       readiness,
       messaging,
+      messagingProvider: undefined,
       planSignIn,
+      // The mock has nothing to read back; it is the flow as it runs the first time.
+      resuming: false,
+      resumeError: undefined,
+      retryResume: () => undefined,
+      markPastConnectStep: () => undefined,
       startPlanSignIn,
       issueConnectCode,
       refreshConnectCode: issue,
@@ -317,7 +356,10 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       reset,
     }),
     [
+      agent,
       connect,
+      createAgent,
+      creation,
       issue,
       issueConnectCode,
       messaging,

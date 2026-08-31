@@ -1,7 +1,9 @@
-import type { AgentAdminConfig } from "@opentag/shared/browser";
+import type { AgentAdminConfig, ListAgentsResponse } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import { queryKeys } from "../../../query/keys.js";
 import {
   Banner,
   Button,
@@ -24,6 +26,7 @@ export function AgentManageSettings({
   onAgentChanged: () => void;
 }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<string>();
   const [confirmation, setConfirmation] = useState<"delete" | "pause">();
@@ -64,6 +67,19 @@ export function AgentManageSettings({
       setMessage(undefined);
       setConfirmationError(undefined);
       await browserApi.deleteAgent(config.id);
+      // A confirmed delete is stronger than a later list revalidation. Evict the Agent from every
+      // cached list and remove its detail/config/evidence entries before the navigation can render
+      // stale data after a transient list failure.
+      //
+      // Cancel first: the list is watched on a 30-second interval and on focus, so a read that left
+      // before the delete is an ordinary thing to be holding here, and its late success would write
+      // the Agent straight back over the eviction.
+      await queryClient.cancelQueries({ queryKey: queryKeys.agents.listRoot() });
+      await queryClient.cancelQueries({ queryKey: queryKeys.agents.all(config.id) });
+      queryClient.setQueriesData<ListAgentsResponse>({ queryKey: queryKeys.agents.listRoot() }, (current) =>
+        current ? { ...current, agents: current.agents.filter((item) => item.id !== config.id) } : current,
+      );
+      queryClient.removeQueries({ queryKey: queryKeys.agents.all(config.id) });
       void navigate({ to: "/agents" });
     } catch (cause) {
       setConfirmationError(cause instanceof Error ? cause.message : "Unable to delete Agent");

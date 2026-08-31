@@ -1,8 +1,10 @@
 import type { TaskDetail, TaskSummary } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
+import { queryKeys } from "../query/keys.js";
 import { AgentTasksSection, TaskDetailPage, TasksPage } from "./tasks-page.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
@@ -75,6 +77,27 @@ const detail = {
   collaborationMessages: [],
   nextCursor: null,
 } satisfies TaskDetail;
+
+function RefreshTaskButton() {
+  const queryClient = useQueryClient();
+  return (
+    <button
+      type="button"
+      onClick={() => void queryClient.refetchQueries({ queryKey: queryKeys.tasks.detail(sessionId) })}
+    >
+      Refresh Task
+    </button>
+  );
+}
+
+function RefreshTasksButton() {
+  const queryClient = useQueryClient();
+  return (
+    <button type="button" onClick={() => void queryClient.refetchQueries({ queryKey: queryKeys.tasks.list() })}>
+      Refresh Tasks
+    </button>
+  );
+}
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -160,6 +183,83 @@ describe("Tasks debug view", () => {
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
   });
 
+  it.each([401, 403])("surfaces a terminal Tasks list refetch error instead of cached rows (%d)", async (status) => {
+    const taskRequest = vi
+      .spyOn(browserApi, "tasks")
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: null })
+      .mockRejectedValueOnce(new ApiError(status, `Tasks forbidden (${status})`));
+
+    await renderInRouter(
+      <>
+        <TasksPage />
+        <RefreshTasksButton />
+      </>,
+    );
+
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Tasks" }));
+
+    expect(await screen.findByRole("heading", { name: "Tasks unavailable" })).toBeTruthy();
+    expect(screen.getByText(`Tasks forbidden (${status})`)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: task.title })).toBeNull();
+    expect(taskRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([401, 403, 404, 410])("withdraws the loaded rows when a page append is refused (%d)", async (status) => {
+    vi.spyOn(browserApi, "tasks")
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "next-page" })
+      .mockRejectedValueOnce(new ApiError(status, `Tasks forbidden (${status})`));
+
+    await renderInRouter(<TasksPage />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    // Which page asked does not change what the status means: the rows already read are exactly
+    // what a refusal withdraws, so they must not survive behind an inline note beside the button.
+    expect(await screen.findByRole("heading", { name: "Tasks unavailable" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: task.title })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("keeps a non-terminal page append failure beside the rows it could not extend", async () => {
+    vi.spyOn(browserApi, "tasks")
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "next-page" })
+      .mockRejectedValueOnce(new ApiError(503, "Tasks temporarily unavailable"));
+
+    await renderInRouter(<TasksPage />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    expect(await screen.findByText("Tasks temporarily unavailable")).toBeTruthy();
+    expect(screen.getByRole("link", { name: task.title })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Tasks unavailable" })).toBeNull();
+  });
+
+  it.each([401, 403, 404, 410])(
+    "stops offering the Agent filter built from rows a terminal response withdrew (%d)",
+    async (status) => {
+      vi.spyOn(browserApi, "tasks")
+        .mockResolvedValueOnce({ tasks: [task], nextCursor: null })
+        .mockRejectedValueOnce(new ApiError(status, `Tasks forbidden (${status})`));
+
+      await renderInRouter(
+        <>
+          <TasksPage />
+          <RefreshTasksButton />
+        </>,
+      );
+      expect(await screen.findByRole("combobox", { name: "Filter by Agent" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Refresh Tasks" }));
+
+      // The Agent options are Agent names read off the withdrawn rows, so the toolbar has to go
+      // with them rather than keep naming Agents from a list the Server has just refused.
+      expect(await screen.findByRole("heading", { name: "Tasks unavailable" })).toBeTruthy();
+      expect(screen.queryByRole("combobox", { name: "Filter by Agent" })).toBeNull();
+      expect(document.body.textContent).not.toContain(task.agent.displayName);
+    },
+  );
+
   it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detail);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
@@ -177,6 +277,27 @@ describe("Tasks debug view", () => {
       within(conversation).getByText("1 attempt · Outcome completed · Effects completed · 150 tokens · 4 trace events"),
     ).toBeTruthy();
     expect(screen.getByLabelText("Copy Session")).toBeTruthy();
+  });
+
+  it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
+    const taskRequest = vi
+      .spyOn(browserApi, "task")
+      .mockResolvedValueOnce(detail)
+      .mockRejectedValueOnce(new ApiError(404, "Task not found"));
+
+    await renderInRouter(
+      <>
+        <TaskDetailPage taskId={sessionId} />
+        <RefreshTaskButton />
+      </>,
+      { path: `/tasks/${sessionId}` },
+    );
+
+    expect(await screen.findByRole("heading", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh Task" }));
+    expect(await screen.findByRole("heading", { name: "Task not found" })).toBeTruthy();
+    expect(screen.queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
+    expect(taskRequest).toHaveBeenCalledTimes(2);
   });
 
   it("renders a steered input as absorbed without a second report or usage", async () => {
@@ -356,6 +477,24 @@ describe("Tasks debug view", () => {
       expect(screen.queryByText("Stale Task A pagination failure")).toBeNull();
     },
   );
+
+  it.each([401, 403, 404, 410])("withdraws the conversation when a Turn append is refused (%d)", async (status) => {
+    const firstPage = { ...detail, nextCursor: "older-turns" } satisfies TaskDetail;
+    vi.spyOn(browserApi, "task")
+      .mockResolvedValueOnce(firstPage)
+      .mockRejectedValueOnce(new ApiError(status, `Task refused (${status})`));
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+
+    // The Server resolves the Task before it parses a cursor, so a terminal status on an append is
+    // about the Task itself. The stored output must not stay on screen behind an inline note.
+    expect(
+      await screen.findByRole("heading", { name: status === 404 ? "Task not found" : "Task unavailable" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Stored runtime final output" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load more Turns" })).toBeNull();
+  });
 
   it("clears a Task append error when taskId changes", async () => {
     const firstPage = { ...detail, nextCursor: "older-turns" } satisfies TaskDetail;

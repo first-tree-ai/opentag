@@ -182,7 +182,6 @@ export {
   HTTP_PATHS,
   IM_BINDING_BY_ID_TEMPLATE,
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
-  INTERNAL_ONBOARDING_LAB_PATH,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
   RUNTIME_IM_RESOURCE_TEMPLATE,
@@ -380,6 +379,10 @@ export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
 export * from "./task.js";
 export {
+  type AccountSetupResetMode,
+  AccountSetupResetModeSchema,
+  type AccountSetupResetRequest,
+  AccountSetupResetRequestSchema,
   type CompleteWorkspaceSetupRequest,
   CompleteWorkspaceSetupRequestSchema,
   type ListWorkspaceComputersResponse,

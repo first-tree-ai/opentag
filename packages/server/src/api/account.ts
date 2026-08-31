@@ -1,5 +1,6 @@
 import {
   AccountComputerConnectCodeIssueRequestSchema,
+  AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
   type ChannelName,
   CompleteWorkspaceSetupRequestSchema,
@@ -50,8 +51,19 @@ export interface AccountRoutesOptions {
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
+  /**
+   * Undoing setup so onboarding can be walked again. Staging decides whether it exists at all, and
+   * the service answers a request outside staging exactly like a path that was never registered.
+   */
+  setupResetService?: AccountSetupResetService;
   taskService?: TaskService;
   workspaceSetupService?: WorkspaceSetupService;
+}
+
+/** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
+export interface AccountSetupResetService {
+  reboard(accountId: string): Promise<void>;
+  resetOnboarding(accountId: string): Promise<void>;
 }
 
 function accountId(request: FastifyRequest): string {
@@ -151,6 +163,23 @@ export function registerAccountRoutes(
             await workspaceSetupService.completeForAccount(accountId(request), agentId),
           ),
         );
+    });
+  }
+
+  if (options.setupResetService) {
+    const setupResetService = options.setupResetService;
+
+    /*
+     * Reflexive by construction: the Account comes from the access token, and the body carries only
+     * how much to undo. There is no field here that could name somebody else's Account, which is
+     * what makes this safe to offer to every signed-in tester rather than to administrators.
+     */
+    app.post(HTTP_PATHS.accountSetupReset, { preHandler }, async (request, reply) => {
+      const { mode } = parseRequest(AccountSetupResetRequestSchema, request.body);
+      const account = accountId(request);
+      if (mode === "all") await setupResetService.resetOnboarding(account);
+      else await setupResetService.reboard(account);
+      return reply.code(204).send();
     });
   }
 }

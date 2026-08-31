@@ -2,10 +2,419 @@ import { randomUUID } from "node:crypto";
 import type { InputRejectReason, SessionMessageDeliveryRequest, SessionReconcileRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import {
+  type DurableFailure,
+  type DurableWorkRecord,
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityMetrics,
+  type RuntimeRetryScheduler,
+} from "../runtime/runtime-durability.js";
 import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 
 describe("SessionMessageInbox", () => {
+  it("rejects accepted work when the durable admission write fails", async () => {
+    const logger = { warn: vi.fn() };
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      logger,
+      persistence,
+      reconciler: inboxReconciler(),
+      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) },
+    });
+    const request = delivery();
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({
+      status: "rejected",
+      reason: "provider_unavailable",
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId }),
+      "Session message persistence failed",
+    );
+    inbox.stop();
+  });
+
+  it("records terminal failures and rejects duplicate delivery attempts", async () => {
+    const logger = { warn: vi.fn() };
+    const failures: unknown[] = [];
+    const request = delivery();
+    const terminalError = {
+      category: "runtime",
+      code: "runtime_blocked",
+      message: "runtime policy blocked the turn",
+      phase: "runtime",
+      requestId: request.requestId,
+      retryability: "terminal",
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      logger,
+      maxRememberedMessages: 2,
+      onFailure: (failure) => failures.push(failure),
+      reconciler: inboxReconciler(),
+      retryPolicy: { maxAttempts: 5, maxAgeMs: 10_000 },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => {
+          throw terminalError;
+        }),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
+    expect(failures).toEqual([expect.objectContaining({ code: "runtime_blocked", retryability: "terminal" })]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "runtime_blocked", messageId: request.messageId, status: "failed" }),
+      "Session message failed permanently",
+    );
+    await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "rejected",
+      reason: "provider_unavailable",
+    });
+    inbox.stop();
+  });
+
+  it("logs credential preparation failures before retrying visible work", async () => {
+    const logger = { warn: vi.fn() };
+    const credentials = {
+      cleanup: vi.fn(async () => undefined),
+      prepare: vi.fn(async () => {
+        throw new Error("credential store unavailable");
+      }),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      logger,
+      reconciler: inboxReconciler(),
+      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "visible" as const) },
+    });
+
+    const request = delivery();
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(credentials.prepare).toHaveBeenCalledOnce();
+    expect(credentials.cleanup).not.toHaveBeenCalled();
+    expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED", messageId: request.messageId }),
+      "Visible Session collaboration outbox preparation failed",
+    );
+    inbox.stop();
+  });
+
+  it("dead-letters a non-completed prompt result", async () => {
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } })),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    const request = delivery();
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    inbox.stop();
+  });
+
+  it("reconciles succeeded, failed, expired, and running persisted records", async () => {
+    let now = 10_000;
+    const store = new MemoryRuntimeDurabilityStore();
+    const succeeded = delivery({ text: "succeeded" });
+    const failed = delivery({ text: "failed" });
+    const expired = delivery({ text: "expired" });
+    const running = delivery({ text: "running" });
+    await Promise.all([
+      store.write(recordFor(succeeded, "succeeded")),
+      store.write(recordFor(failed, "failed", { attempts: 1, lastError: failureFor(failed, "runtime_failed") })),
+      store.write(recordFor(expired, "accepted", { acceptedAt: 1, attempts: 0 })),
+      store.write(recordFor(running, "running")),
+    ]);
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] })),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      logger: { warn: vi.fn() },
+      maxQueuedPerSession: 8,
+      now: () => now,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      retryPolicy: { maxAttempts: 5, maxAgeMs: 100 },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+
+    await inbox.ready();
+    await inbox.settled();
+    expect(inbox.getState(succeeded.messageId)?.status).toBe("succeeded");
+    expect(inbox.getState(failed.messageId)?.status).toBe("failed");
+    expect(inbox.getState(expired.messageId)?.status).toBe("dead-letter");
+    expect(inbox.getState(running.messageId)?.status).toBe("succeeded");
+    expect(runtime.prompt).toHaveBeenCalledOnce();
+    now += 1_000;
+    inbox.stop();
+  });
+
+  it("bounds hydrated recovery and logs when the queue is full", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const first = delivery({ text: "first recovery" });
+    const second = delivery({
+      text: "second recovery",
+      agentId: first.agentId,
+      targetSessionId: first.targetSessionId,
+    });
+    await store.write(recordFor(first, "retryable"));
+    await store.write(recordFor(second, "retryable"));
+    const admission = new AdmissionController();
+    const held = admission.reserve(first.targetSessionId, first.agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    held.reservation.markActive();
+    const logger = { warn: vi.fn() };
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      logger,
+      maxQueuedPerSession: 1,
+      now: () => 10_000,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) },
+    });
+
+    await inbox.ready();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: second.messageId, sessionId: second.targetSessionId }),
+      "Durable inbox capacity delayed recovery",
+    );
+    held.reservation.release();
+    inbox.stop();
+    await inbox.settled();
+  });
+
+  it("keeps retry state observable when retry persistence fails and evicts old receipts", async () => {
+    const logger = { warn: vi.fn() };
+    const first = delivery({ text: "first" });
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async (record: { key: string; status: string }) => {
+        if (record.key === `${first.targetSessionId}:${first.messageId}` && record.status === "retryable") {
+          throw new Error("disk full during retry");
+        }
+      }),
+    };
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        throw new Error("provider unavailable");
+      }),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      logger,
+      persistence,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await expect(inbox.accept(first)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", status: "retryable" }),
+      "Session message retry state could not be persisted",
+    );
+    expect(inbox.getState(first.messageId)?.status).toBe("retryable");
+    inbox.stop();
+
+    const remembered = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      maxRememberedMessages: 1,
+      reconciler: inboxReconciler("invalid_input"),
+      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) },
+    });
+    await remembered.accept(delivery({ text: "receipt one" }));
+    await remembered.accept(delivery({ text: "receipt two" }));
+    remembered.stop();
+  });
+
+  it("normalizes structured failure fields and bounded receipt memory", async () => {
+    const request = delivery();
+    const structured = {
+      category: "provider",
+      code: "provider_failed",
+      phase: "prompt",
+      requestId: request.requestId,
+      retryability: "retryable",
+      message: "x".repeat(400),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      maxRememberedMessages: 1,
+      onFailure: (failure) => expect(failure).toMatchObject({ code: "provider_failed", message: "x".repeat(256) }),
+      reconciler: inboxReconciler(),
+      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(async () => {
+                throw structured;
+              }),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.lastError?.message).toHaveLength(256);
+    inbox.stop();
+  });
+
+  it("persists running work, retries with an injected scheduler, and dead-letters after bounded attempts", async () => {
+    let now = 1_000;
+    const scheduled: Array<() => void> = [];
+    const scheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        scheduled.push(task);
+        return { cancel: () => undefined };
+      },
+    };
+    const store = new MemoryRuntimeDurabilityStore();
+    const metrics = new RuntimeDurabilityMetrics();
+    const request = delivery({ text: "retry me" });
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        throw new Error("provider unavailable");
+      }),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      maxRememberedMessages: 10,
+      metrics,
+      now: () => now,
+      persistence: store,
+      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 100 },
+      scheduler,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.status).toBe("retryable");
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(inbox.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 1 });
+    now += 1_000;
+    inbox.stop();
+  });
+
+  it("reconciles a running message after restart without reporting success from queue admission", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const request = delivery({ text: "resume me" });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const firstRuntime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        await gate;
+        return { runId: "first", status: "completed", output: [] };
+      }),
+    };
+    const first = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => firstRuntime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await expect(first.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await vi.waitFor(() => expect(firstRuntime.prompt).toHaveBeenCalledOnce());
+    expect(first.getState(request.messageId)?.status).toBe("running");
+    first.stop();
+    release();
+    await first.settled();
+
+    const resumedRuntime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] })),
+    };
+    const second = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => resumedRuntime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await second.ready();
+    await second.settled();
+    expect(resumedRuntime.prompt).toHaveBeenCalledOnce();
+    expect(second.getState(request.messageId)?.status).toBe("succeeded");
+    second.stop();
+  });
+
   it("accepts immediately, waits for shared admission, and drains one Session in FIFO order", async () => {
     const admission = new AdmissionController();
     const targetSessionId = randomUUID();
@@ -455,5 +864,33 @@ function credentialEnvironment() {
     prepare: vi.fn(async () => {
       throw new Error("Internal Sessions must not prepare provider credentials");
     }),
+  };
+}
+
+function recordFor(
+  request: SessionMessageDeliveryRequest,
+  status: DurableWorkRecord["status"],
+  overrides: Partial<DurableWorkRecord<SessionMessageDeliveryRequest>> = {},
+): DurableWorkRecord<SessionMessageDeliveryRequest> {
+  return {
+    acceptedAt: 10_000,
+    attempts: 0,
+    key: `${request.targetSessionId}:${request.messageId}`,
+    kind: "session-message",
+    payload: request,
+    status,
+    updatedAt: 10_000,
+    ...overrides,
+  };
+}
+
+function failureFor(request: SessionMessageDeliveryRequest, code: string): DurableFailure {
+  return {
+    category: "runtime",
+    code,
+    message: code,
+    phase: "runtime",
+    requestId: request.requestId,
+    retryability: "retryable",
   };
 }

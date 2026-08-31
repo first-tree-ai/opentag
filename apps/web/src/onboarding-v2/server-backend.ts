@@ -157,13 +157,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    */
   const repairTarget = useRef<string | undefined>(undefined);
   /**
-   * The resumed Agent that has no Computer at all, which is a different problem from one whose
-   * machine went away: there is nothing to repair, so whatever machine answers this run's code has
-   * to be given to the Agent. Cleared once that move lands, because a second arrival would
-   * otherwise move an Agent that already runs somewhere the reader chose.
-   */
-  const agentAwaitingComputer = useRef<string | undefined>(undefined);
-  /**
    * Latched once the reader is past the step the connection belongs to. Losing a Computer matters
    * on that step, where it hides the command that brings the machine back; past it the Agent
    * already exists, and pulling someone out of choosing or scanning a messaging app over a lid
@@ -229,7 +222,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         // Offline or gone: the step issues a code that repairs this exact Computer. An Agent with no
         // Computer at all has none to repair, so the step issues a code any machine can answer.
         repairTarget.current = enrolled ? undefined : (existing.computer?.computerId ?? undefined);
-        agentAwaitingComputer.current = existing.computer ? undefined : existing.id;
         if (enrolled) {
           computerId.current = enrolled.computerId;
           setComputer(enrolled);
@@ -348,7 +340,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         return;
       }
       void browserApi.computers().then(
-        async (value) => {
+        (value) => {
           if (!mounted.current || attempt.current !== mine) return;
           const arrived = repairTarget.current
             ? findRepaired(value.computers, repairTarget.current, baseline.current)
@@ -359,26 +351,15 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           const waiting = connectRef.current;
           if (!arrived || waiting.kind !== "issued") return;
           /*
-           * A machine that is not the one the Agent is bound to has to become it. An Agent's
-           * Computer can be changed after creation even though its runtime cannot, so the honest
-           * answer to "my laptop was replaced" is to move the Agent — not to insist the old machine
-           * comes back, and not to quietly finish setup with the Agent still pointing at a machine
-           * nobody checked. Until the move lands, this is not a connection worth reporting.
+           * An arrival is not evidence that this machine redeemed this code. `findArrival` accepts
+           * any Computer on the Account that enrolled -- or merely reconnected -- since the
+           * baseline, and takes the first of them. That is enough to name a machine on this step
+           * and nowhere near enough to write one into an Agent's durable placement, which is why
+           * this used to rebind an Agent that had no Computer and no longer does: a wrong guess
+           * would have run the Agent somewhere its owner never chose, permanently. Issue #295
+           * carries the connect-code-to-Computer association that would make the move provable;
+           * until it exists there is no subject here to move an Agent onto.
            */
-          const awaiting = agentAwaitingComputer.current;
-          if (awaiting) {
-            try {
-              await browserApi.rebindAgentComputer(awaiting, arrived.computerId);
-            } catch (cause) {
-              if (!mounted.current || attempt.current !== mine) return;
-              // The machine is here and the Agent still has nowhere to run, so the step keeps
-              // waiting rather than reporting a connection that would let setup try to finish.
-              setConnectionError(errorMessage(cause, COPY.errors.bindComputer));
-              return;
-            }
-            if (!mounted.current || attempt.current !== mine) return;
-            agentAwaitingComputer.current = undefined;
-          }
           computerId.current = arrived.computerId;
           setComputer(arrived);
           setConnectionError(undefined);
@@ -590,7 +571,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setAgent(undefined);
     setCreation("idle");
     repairTarget.current = undefined;
-    agentAwaitingComputer.current = undefined;
     pastConnectStep.current = false;
     setResuming(false);
     setResumeError(undefined);

@@ -291,13 +291,12 @@ describe("BrowserApi", () => {
       api.imBindingDiagnostics(userId),
       api.computers(),
       api.issueComputerConnectCode(),
-      api.resetOnboardingLab(),
       api.signUpWithPassword({ email: "ada@example.com", password: "password-password", displayName: "Ada" }),
       api.signInWithPassword({ email: "ada@example.com", password: "password-password" }),
       api.logout(),
     ];
     const results = await Promise.allSettled(operations);
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(6);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(5);
     expect(calls).toEqual(
       expect.arrayContaining([
         { path: "/api/v1/me/setup/complete", method: "POST" },
@@ -305,29 +304,19 @@ describe("BrowserApi", () => {
         { path: `/api/v1/sessions/${userId}?cursor=older`, method: undefined },
         { path: `/api/v1/agents/${userId}/config`, method: undefined },
         { path: `/api/v1/agents/${userId}`, method: "DELETE" },
-        { path: "/api/v1/internal/onboarding-lab", method: "POST" },
         { path: "/api/v1/auth/email/sign-up", method: "POST" },
         { path: "/api/v1/auth/browser/logout", method: "POST" },
       ]),
     );
   });
 
-  it("reports staging Lab reachability, health status, and malformed CSRF cookies", async () => {
+  it("reports health status and handles malformed CSRF cookies", async () => {
     const responses = [
-      new Response(null, { status: 204 }),
-      new Response(null, { status: 404 }),
-      new Response(
-        JSON.stringify({ error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Lab failed" } }),
-        { status: 503 },
-      ),
       new Response(JSON.stringify({ status: "ok" }), { status: 200, headers: { "content-type": "application/json" } }),
       new Response(JSON.stringify({ status: 42 }), { status: 200, headers: { "content-type": "application/json" } }),
     ];
     const fetchImpl = vi.fn<typeof fetch>(async () => responses.shift() ?? new Response(null, { status: 500 }));
     const api = new BrowserApi(fetchImpl);
-    await expect(api.onboardingLabOffered()).resolves.toBe(true);
-    await expect(api.onboardingLabOffered()).resolves.toBe(false);
-    await expect(api.onboardingLabOffered()).rejects.toMatchObject({ status: 503, message: "Lab failed" });
     await expect(api.health("/healthz")).resolves.toMatchObject({ status: "ok" });
     await expect(api.health("/readyz")).rejects.toMatchObject({ status: 200, message: "Health check failed" });
 

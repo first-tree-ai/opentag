@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
@@ -34,6 +34,16 @@ beforeAll(async () => {
 
 afterAll(async () => testDatabase.stop());
 beforeEach(async () => testDatabase.reset());
+
+/*
+ * Every fixture opens its own pool, so they are closed between tests rather than held until the
+ * file ends. Postgres caps its client count for the whole server, so a file that only ever opens
+ * pools starves the suites running beside it long before it runs out itself.
+ */
+const openPools: { end: () => Promise<unknown> }[] = [];
+afterEach(async () => {
+  await Promise.all(openPools.splice(0).map((pool) => pool.end()));
+});
 
 interface SeededAccount {
   accountId: string;
@@ -91,6 +101,7 @@ async function fixture(
     environment: "staging",
     registry: { closeEnrollment },
   });
+  openPools.push(client.sql);
   return { ...client, agentService, closeEnrollment, tester, machineAuth, registry, reset };
 }
 
@@ -661,5 +672,54 @@ describe("re-boarding an Account without taking anything down", () => {
     expect(after.binding).toMatchObject({ status: before.binding?.status });
     // A reset closes the live enrollment; re-boarding has no reason to.
     expect(value.closeEnrollment).not.toHaveBeenCalled();
+  });
+
+  it("succeeds on the very state a full reset refuses to commit on", async () => {
+    const value = await fixture();
+    const before = await facts(value.database, value.tester);
+    expect(before.activeAgents).toBe(1);
+    expect(before.usableCodes).toBeGreaterThan(0);
+
+    // This is what separates the two modes. `resetOnboarding` verifies that no Agent, credential or
+    // usable code survives before it clears the marker, and would raise the conflict here. Re-board
+    // never asks that question, which is why the two cannot share a commit path.
+    await expect(value.reset.reboard(value.tester.accountId)).resolves.toBeUndefined();
+
+    const after = await facts(value.database, value.tester);
+    expect(after).toMatchObject({ activeAgents: 1, accountSetupCompletedAt: null });
+    expect(after.usableCodes).toBe(before.usableCodes);
+    expect(after.activeCredentials).toBe(before.activeCredentials);
+  });
+
+  it("succeeds when it runs again on an already re-boarded Account", async () => {
+    const value = await fixture();
+
+    await value.reset.reboard(value.tester.accountId);
+    await expect(value.reset.reboard(value.tester.accountId)).resolves.toBeUndefined();
+
+    expect((await facts(value.database, value.tester)).accountSetupCompletedAt).toBeNull();
+  });
+
+  it("re-boards only the asking Account, leaving another tester's setup complete", async () => {
+    const value = await fixture();
+    const other = await seedOtherAccount(value.database, value.agentService, value.machineAuth);
+
+    await value.reset.reboard(value.tester.accountId);
+
+    expect((await facts(value.database, value.tester)).accountSetupCompletedAt).toBeNull();
+    const otherFacts = await facts(value.database, other);
+    expect(otherFacts.accountSetupCompletedAt).not.toBeNull();
+    expect(otherFacts.activeAgents).toBe(1);
+  });
+
+  it("refuses to re-board a suspended Account", async () => {
+    const value = await fixture();
+    await value.database.update(users).set({ suspendedAt: new Date() }).where(eq(users.id, value.tester.accountId));
+
+    // Re-board inherits this from the same row lock the full reset takes; that shared lock is the
+    // entire reason it does not need a guard of its own.
+    await expect(value.reset.reboard(value.tester.accountId)).rejects.toBeInstanceOf(AuthServiceError);
+
+    expect((await facts(value.database, value.tester)).accountSetupCompletedAt).not.toBeNull();
   });
 });

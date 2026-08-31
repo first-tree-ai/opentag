@@ -53,6 +53,15 @@ describe("CLI package public surface", () => {
       .flatMap((match) => (match[1] ?? "").split(","))
       .map((entry) => entry.replace(/\s+/g, " ").trim())
       .filter(Boolean)
+      .concat(
+        [...source.matchAll(/export\s+type\s*\{([\s\S]*?)\}\s*from/g)].flatMap((match) =>
+          (match[1] ?? "")
+            .split(",")
+            .map((entry) => `type ${entry.replace(/\s+/g, " ").trim()}`)
+            .filter((entry) => entry !== "type "),
+        ),
+        [...source.matchAll(/export\s+const\s+(\w+)/g)].map((match) => match[1] ?? ""),
+      )
       .sort();
 
     expect(exports).toEqual([...EXPECTED_ROOT_EXPORTS].sort());

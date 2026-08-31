@@ -4,6 +4,8 @@ import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import { compareText, foldCase, formatDateTime, formatNumber, formatRelativeTime, initials } from "../i18n/format.js";
+import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import {
   Button,
@@ -63,12 +65,12 @@ export function TasksPage() {
   const agents = useMemo(
     () =>
       [...new Map(loaded.map((task) => [task.agent.id, task.agent])).values()].sort((left, right) =>
-        left.displayName.localeCompare(right.displayName),
+        compareText(left.displayName, right.displayName),
       ),
     [loaded],
   );
   const tasks = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase();
+    const normalizedQuery = foldCase(query.trim());
     return loaded.filter((task) => {
       const matchesQuery =
         normalizedQuery.length === 0 ||
@@ -81,8 +83,8 @@ export function TasksPage() {
           task.source.channelId,
           task.source.threadKey,
         ]
+          .map((value) => foldCase(value ?? ""))
           .join(" ")
-          .toLocaleLowerCase()
           .includes(normalizedQuery);
       return (
         matchesQuery && (agentId === "all" || task.agent.id === agentId) && (status === "all" || task.status === status)
@@ -436,7 +438,7 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
                 <article className="rounded-md bg-kumo-recessed p-3" key={message.id}>
                   <p>{message.content}</p>
                   <small>
-                    {message.outcome} · {formatTimestamp(message.createdAt)} · {message.sourceSessionId} →{" "}
+                    {message.outcome} · {formatDateTime(message.createdAt)} · {message.sourceSessionId} →{" "}
                     {message.targetSessionId}
                   </small>
                 </article>
@@ -474,7 +476,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   return (
     <section
       className="grid gap-3"
-      aria-label={`Message sent at ${formatTimestamp(turn.message.occurredAt)}`}
+      aria-label={`Message sent at ${formatDateTime(turn.message.occurredAt)}`}
       data-ui="task-exchange"
     >
       <article className="rounded-lg bg-kumo-recessed p-4" data-ui="task-message-request">
@@ -483,12 +485,12 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
             className="grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
             aria-hidden="true"
           >
-            {getInitials(turn.message.authorDisplayName ?? turn.message.authorKind)}
+            {initials(turn.message.authorDisplayName ?? turn.message.authorKind)}
           </span>
           <span>
             <strong>{turn.message.authorDisplayName ?? turn.message.authorKind}</strong>
             <small>
-              {turn.attention} · {formatTimestamp(turn.message.occurredAt)}
+              {turn.attention} · {formatDateTime(turn.message.occurredAt)}
             </small>
           </span>
         </header>
@@ -511,7 +513,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
               {absorbedBy
                 ? "absorbed into running Turn"
                 : report
-                  ? `${report.outcome} · ${formatTimestamp(report.reportedAt)}`
+                  ? `${report.outcome} · ${formatDateTime(report.reportedAt)}`
                   : turn.delivery.state}
             </small>
           </span>
@@ -550,7 +552,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
                   `${turn.delivery.attemptCount} ${turn.delivery.attemptCount === 1 ? "attempt" : "attempts"}`,
                   report ? `Outcome ${report.outcome}` : null,
                   report ? `Effects ${report.executionEffects}` : null,
-                  tokenTotal === null ? null : `${tokenTotal.toLocaleString()} tokens`,
+                  tokenTotal === null ? null : String(m.format_tokens({ count: formatNumber(tokenTotal) })),
                   report ? `${report.traceSummary.lastSequence} trace events` : null,
                   report?.traceSummary.droppedEvents ? `${report.traceSummary.droppedEvents} dropped` : null,
                 ]
@@ -687,32 +689,8 @@ function TaskNotice({ action, heading, detail }: { action?: ReactNode; heading: 
   );
 }
 
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-function formatRelativeTime(value: string): string {
-  const deltaSeconds = Math.round((new Date(value).getTime() - Date.now()) / 1_000);
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-  const absolute = Math.abs(deltaSeconds);
-  if (absolute < 60) return formatter.format(deltaSeconds, "second");
-  const deltaMinutes = Math.round(deltaSeconds / 60);
-  if (Math.abs(deltaMinutes) < 60) return formatter.format(deltaMinutes, "minute");
-  const deltaHours = Math.round(deltaMinutes / 60);
-  if (Math.abs(deltaHours) < 24) return formatter.format(deltaHours, "hour");
-  return formatter.format(Math.round(deltaHours / 24), "day");
-}
-
 function shortId(value: string): string {
   return value.length <= 18 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
-}
-
-function getInitials(name: string): string {
-  return name
-    .split(/\s+/u)
-    .slice(0, 2)
-    .map((part) => part.charAt(0))
-    .join("");
 }
 
 function asError(value: unknown): Error {

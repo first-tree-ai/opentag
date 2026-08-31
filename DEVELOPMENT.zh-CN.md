@@ -70,6 +70,15 @@ pnpm --filter @opentag/server test:integration
 优先级的测量基线，不属于 Pull Request 必过检查，暂不设置全仓或分 workspace 覆盖率阈值。只有在重复运行的
 统计结果稳定后，才应增加回退阈值。
 
+## Web 国际化
+
+Web 消息位于 `apps/web/messages/<area>/{en,zh}.json`，Key 采用 `<area>_<surface>_<slot>`。在产出最终可见字符串的
+area 中，同时添加英文消息和手工编写的简体中文消息。两种语言的 key 集合、占位符和排序必须一致。句子使用
+Paraglide；日期和数字等 locale-aware 格式使用 `src/i18n/format.ts`。添加或修改消息后运行
+`pnpm --filter @opentag/web paraglide`；`typecheck`、`test` 和 Vite 构建也会通过 Turbo 依赖执行代码生成。如果生成
+产物看起来陈旧，删除 `apps/web/src/paraglide/` 后重新运行命令。绝不运行 `inlang machine translate` 或 Sherlock
+extract：数组 path pattern 会把合并后的完整目录重复写入每个 area 文件。
+
 `pnpm test:coverage` 会逐个测量 Vitest project，再把各 workspace 的 summary 拼到
 `coverage/unit/coverage-summary.json`，把 detailed Istanbul map 拼到 `coverage/unit/coverage-final.json`。一次合并
 的 Vitest 运行会低估覆盖率，因此这两份聚合不能交给 coverage provider 去做 merge。Pull Request 会另跑

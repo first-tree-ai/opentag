@@ -1,8 +1,9 @@
 import { useState } from "react";
+import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
 import { Button, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
-import { computerRecoveryMessage, formatDate, formatRelativeTime, platformLabel } from "../agent-presentation.js";
+import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
 import { ComputerSetup } from "../computer-setup.js";
 
 /**
@@ -76,7 +77,7 @@ export function AgentComputerSettings({
               {computerState.lastConfirmedAt ? (
                 <p>
                   Last seen {formatRelativeTime(computerState.lastConfirmedAt)} ·{" "}
-                  {formatDate(computerState.lastConfirmedAt)}
+                  {formatDateTime(computerState.lastConfirmedAt)}
                 </p>
               ) : null}
               <p>{computerRecoveryMessage(agent)}</p>

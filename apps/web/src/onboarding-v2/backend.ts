@@ -28,6 +28,14 @@ export interface CreatedAgent {
   readonly runtimeProvider: Runtime;
 }
 
+export interface KnownComputer {
+  readonly id: string;
+  readonly displayName: string;
+  readonly online: boolean;
+  /** Human phrasing for how long ago it was seen, shown only when it is offline. */
+  readonly lastSeen?: string;
+}
+
 export interface OnboardingBackend {
   readonly connect: ConnectState;
   readonly readiness: ReadinessFacts | undefined;
@@ -42,6 +50,18 @@ export interface OnboardingBackend {
    * the provider its binding already names; a first run has none and reports nothing.
    */
   readonly messagingProvider: MessagingProvider | undefined;
+  /**
+   * The Computers this Account already has, so the step can prepare one instead of asking for a
+   * command. An Account is meant to have exactly one; the shape stays a list because Accounts that
+   * predate that rule can still hold more, and the step has to pick without asking the reader.
+   *
+   * Optional because only the mock answers it today: the Server implementation still treats every
+   * run as a first connection, and a page that required the list would break that flow before the
+   * real read exists. An implementation that omits it gets the behaviour it has now.
+   */
+  readonly knownComputers?: readonly KnownComputer[];
+  /** The one this run is preparing, or `undefined` when there is none and one must be connected. */
+  readonly selectedComputerId?: string | undefined;
   readonly planSignIn: PlanSignIn;
   /**
    * Creating the Agent belongs here rather than to the page: it is the one step that writes to the

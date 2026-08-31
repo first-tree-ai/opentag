@@ -11,7 +11,10 @@
       "!e2e/screenshots",
       "!e2e/test-results",
       "!packages/server/drizzle",
-      "!apps/web/src/routeTree.gen.ts"
+      "!apps/web/src/routeTree.gen.ts",
+      "!apps/web/src/paraglide",
+      "!apps/web/project.inlang/cache",
+      "!apps/web/project.inlang/.meta.json"
     ]
   },
   "vcs": {

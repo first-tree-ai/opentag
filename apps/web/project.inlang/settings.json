@@ -1,0 +1,27 @@
+{
+  "$schema": "https://inlang.com/schema/project-settings",
+  "baseLocale": "en",
+  "locales": ["en", "zh"],
+  "modules": ["./node_modules/@inlang/plugin-message-format/dist/index.js"],
+  "plugin.inlang.messageFormat": {
+    "sort": "asc",
+    "pathPattern": [
+      "./messages/common/{locale}.json",
+      "./messages/format/{locale}.json",
+      "./messages/shell/{locale}.json",
+      "./messages/errors/{locale}.json",
+      "./messages/auth/{locale}.json",
+      "./messages/account/{locale}.json",
+      "./messages/agents/{locale}.json",
+      "./messages/agent-settings/{locale}.json",
+      "./messages/agent-create/{locale}.json",
+      "./messages/tasks/{locale}.json",
+      "./messages/usage/{locale}.json",
+      "./messages/skills/{locale}.json",
+      "./messages/integrations/{locale}.json",
+      "./messages/onboarding/{locale}.json",
+      "./messages/onboarding-v2/{locale}.json",
+      "./messages/im/{locale}.json"
+    ]
+  }
+}

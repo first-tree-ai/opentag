@@ -239,26 +239,6 @@ export class BrowserApi {
     });
   }
 
-  /**
-   * Whether this deployment offers the staging Onboarding Lab. Outside staging the interface is
-   * absent rather than closed, and both halves are open to any authenticated Account where it is
-   * present, so reachability is the whole answer.
-   */
-  async onboardingLabOffered(): Promise<boolean> {
-    const response = await this.fetchWithRefresh(HTTP_PATHS.internalOnboardingLab);
-    if (response.status === 204) return true;
-    if (response.status === 404) return false;
-    throw this.apiError(response, await response.json().catch(() => undefined));
-  }
-
-  /** Resets the authenticated staging Lab Account; it accepts no client-selected Account. */
-  resetOnboardingLab(): Promise<void> {
-    return this.requestNoContent(HTTP_PATHS.internalOnboardingLab, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
-  }
-
   async health(path: "/healthz" | "/readyz"): Promise<{ latencyMs: number; observedAt: string; status: string }> {
     const startedAt = performance.now();
     const response = await this.fetchImpl(path, { credentials: "same-origin" });

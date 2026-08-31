@@ -68,6 +68,27 @@ describe("deriveTaskTitle", () => {
     ).toBe("Ask @alice or owner@example.com about the failure");
   });
 
+  it("keeps malformed URLs unchanged and projects structured links and attachments", () => {
+    expect(
+      deriveTaskTitle({
+        ...input,
+        fallbackText: "Review https://[invalid-url",
+      }),
+    ).toBe("Review https://[invalid-url");
+    expect(
+      deriveTaskTitle({
+        ...input,
+        fallbackText: "ignored",
+        blocks: [
+          { type: "mention", externalId: "ou_alice", label: "@Alice" },
+          { type: "link", url: "https://example.com/docs", label: "the docs" },
+          { type: "image", resourceOrdinal: 1, label: "screenshot" },
+          { type: "file", resourceOrdinal: 2, label: "log.txt" },
+        ],
+      }),
+    ).toBe("@Alicethe docsscreenshotlog.txt");
+  });
+
   it("removes the exact addressed Slack identity from historical text-only content", () => {
     expect(
       deriveTaskTitle({

@@ -1,9 +1,13 @@
 /**
  * Every user-visible string in the onboarding flow, in one place. Copy is reviewed far more often
  * than layout during this phase, so it stays out of the components and can be read end to end.
+ *
+ * The two steps that are also reachable from an Agent's settings read their words from the shared
+ * setup copy, so the same work says the same thing on both surfaces.
  */
 
-import type { CheckRow, CheckState, CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
+import { SETUP_COPY } from "../setup/copy.js";
+import type { CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {
   agent: "Create agent",
@@ -38,44 +42,6 @@ export const CLOUD_RUNTIME_COPY: Record<CloudRuntime, { readonly title: string; 
 export const TOKEN_COPY: Record<TokenSource, { readonly title: string; readonly description: string }> = {
   opentag: { title: "OpenTag Tokens", description: "Select from all open source models." },
   "own-plan": { title: "Your own coding plan", description: "Use the subscription you already pay for" },
-};
-
-/**
- * Every check carries a line of detail in every state, not only when it fails. The list is the
- * page's spine while the user works in their terminal, so its rows must not change height as
- * results land — a list that reflows under someone is worse than one that says "checking".
- */
-export const CHECK_COPY: Record<
-  CheckRow["id"],
-  { readonly title: (runtime: string) => string; readonly detail: Record<CheckState, (runtime: string) => string> }
-> = {
-  "runtime-cli": {
-    title: (runtime) => `${runtime} CLI is installed`,
-    detail: {
-      pending: (runtime) => `Looking for the ${runtime} command.`,
-      passed: () => "Found on this computer.",
-      failed: (runtime) => `We can't find the ${runtime} command on this computer.`,
-      blocked: () => "",
-    },
-  },
-  "runtime-auth": {
-    title: (runtime) => `${runtime} is signed in`,
-    detail: {
-      pending: (runtime) => `Checking your ${runtime} sign-in.`,
-      passed: () => "Signed in and ready.",
-      failed: (runtime) => `${runtime} is installed but not signed in.`,
-      blocked: () => "We'll know once the CLI is installed.",
-    },
-  },
-  "messaging-cli": {
-    title: () => "Lark CLI is installed",
-    detail: {
-      pending: () => "Looking for lark-cli.",
-      passed: () => "Found on this computer.",
-      failed: () => "We need lark-cli to send Lark messages.",
-      blocked: () => "",
-    },
-  },
 };
 
 export const COPY = {
@@ -126,23 +92,11 @@ export const COPY = {
     nameFixed: "Your agent's name is set once it's created.",
   },
 
-  connect: {
-    title: "Connect your computer",
-    /** What the step is about, and what it means for your data: both belong with the title. */
-    lead: "Your AI worker runs on your own computer. Connect that computer to OpenTag.",
-    privacy: "Your code and data never leave your machine.",
-    /** How to run it, which belongs with the command itself. */
-    commandIntro: "Run this in your terminal, or paste it to your agent.",
-    commandComment: "# Install the OpenTag CLI and connect this computer to OpenTag.",
-    copy: "Copy",
-    copied: "Copied",
-    copyFallback: "Copying is unavailable here. The command is selected — press Ctrl or Cmd + C.",
-    expiresIn: (remaining: string) => `Expires in ${remaining}`,
-    expired: "This command has expired.",
-    refresh: "Get a new command",
-    waiting: "Waiting for your computer…",
-    connected: "Your computer is connected.",
-  },
+  /**
+   * Connecting a computer, and connecting a messaging app, are the same work here as they are when
+   * an Agent's settings reopens them later. Their words live with the pieces that show them.
+   */
+  connect: SETUP_COPY.connect,
 
   check: {
     title: "Computer check",
@@ -164,30 +118,7 @@ export const COPY = {
     creating: "Creating…",
   },
 
-  messaging: {
-    title: "Connect your messaging app",
-    description: "Pick the app your team already works in.",
-    providerLabel: "Messaging app",
-    /**
-     * Lark is the name this product goes by in English; Feishu is the same app under its
-     * mainland China name. The provider's id stays `feishu`, because that is the Server's own
-     * vocabulary — only what the reader sees changes here.
-     */
-    feishu: { title: "Lark", description: "Also called Feishu" },
-    slack: { title: "Slack", description: "Your Slack workspace" },
-    feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
-    qrAlt: "Scan this QR code in Lark",
-    waiting: "Waiting for you to scan…",
-    cliMissing: (provider: string) =>
-      `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,
-    slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
-    slackAction: "Add to Slack",
-    slackWaiting: "Waiting for you to finish in Slack…",
-    confirming: "Connected. Checking your agent can be reached…",
-    computerOffline: "Your computer is offline. Reconnect it and this will finish on its own.",
-    retry: "Try again",
-    failed: "That didn't work. Try again to get a new code.",
-  },
+  messaging: SETUP_COPY.messaging,
 
   done: {
     title: (name: string) => `${name} is ready.`,

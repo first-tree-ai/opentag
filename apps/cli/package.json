@@ -54,6 +54,7 @@
     "@opentag/client": "workspace:*",
     "@opentag/shared": "workspace:*",
     "commander": "^13.1.0",
+    "vitest": "^3.2.0",
     "ws": "^8.21.3"
   }
 }

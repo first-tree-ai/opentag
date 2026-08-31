@@ -130,8 +130,11 @@ export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
 }
 
 /**
- * One affordance for messaging, beside Settings. It always opens messaging settings, so a missing
- * binding and unreadable evidence keep their entry point rather than disappearing.
+ * One affordance for messaging, beside Settings. Messaging is what makes an Agent reachable, so this
+ * states the channel rather than hinting at it with a bare provider glyph, and the gear says the
+ * same control manages it. Every state — a live channel, unreadable evidence, nothing connected —
+ * renders the same three-part shape at the same height, so the header does not resize as the state
+ * changes and a missing binding keeps its entry point rather than disappearing.
  */
 function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
@@ -143,12 +146,15 @@ function AgentMessagingLink({ agent }: { agent: AgentDetailView }) {
   return (
     <Link
       aria-label={label}
-      className="grid size-9 place-items-center rounded-md text-kumo-subtle ring ring-kumo-line"
+      className={buttonClassName({ className: "max-w-64", variant: "secondary" })}
+      data-ui="agent-messaging-link"
       state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
       title={label}
       {...agentSettingsSectionLink(agent.id, "messaging")}
     >
-      {binding ? <ProviderIcon className="size-5" provider={binding.provider} /> : <Icon name="message" />}
+      {binding ? <ProviderIcon className="size-4 shrink-0" provider={binding.provider} /> : <Icon name="message" />}
+      <span className="truncate">{label}</span>
+      <Icon className="text-kumo-subtle" data-ui="agent-messaging-manage" name="settings" />
     </Link>
   );
 }

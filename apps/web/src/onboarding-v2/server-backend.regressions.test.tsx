@@ -17,7 +17,8 @@ import type {
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
-import { type AgentDraft, messagingCliCheck, type Runtime } from "./flow.js";
+import { messagingCliCheck } from "../setup/index.js";
+import type { AgentDraft, Runtime } from "./flow.js";
 import { OnboardingV2Page } from "./page.js";
 import { useServerBackend } from "./server-backend.js";
 import { ComputerStep } from "./steps.js";
@@ -262,7 +263,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     // Slack's result answers for Slack and for nothing else; Lark has simply not been probed.
     expect(view.result.current.readiness?.messagingCli.slack).toBe("ready");
     expect(view.result.current.readiness?.messagingCli.feishu).toBeUndefined();
-    expect(messagingCliCheck(view.result.current.readiness, "feishu")).toBe("pending");
+    expect(messagingCliCheck(view.result.current.readiness?.messagingCli.feishu)).toBe("pending");
   });
 
   it("stops polling a Lark attempt that Start over abandoned", async () => {

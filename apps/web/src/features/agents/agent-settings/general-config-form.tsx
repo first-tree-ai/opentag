@@ -4,17 +4,27 @@ import { browserApi } from "../../../api.js";
 import { Button, Field, KumoInputControl, Text } from "../../../ui/design-system.js";
 
 export function GeneralConfigForm({
-  initialConfig,
+  config,
   onAgentChanged,
 }: {
-  initialConfig: AgentAdminConfig;
-  onAgentChanged: () => void;
+  config: AgentAdminConfig;
+  onAgentChanged: (saved: AgentAdminConfig) => void;
 }) {
-  const [config, setConfig] = useState(initialConfig);
-  const [displayName, setDisplayName] = useState(initialConfig.displayName);
-  const [message, setMessage] = useState<string>();
+  /*
+   * The field follows the record until someone types in it, and the typing is held apart from the
+   * record rather than replacing it. That is what lets another block's write move this block's
+   * revision on: nothing here is a private copy of the Agent that a save would send back stale, and
+   * an untouched field that catches up with a new name does not read as an edit nobody made.
+   */
+  const [draft, setDraft] = useState<string>();
+  const [message, setMessage] = useState<{ kind: "error" | "success"; text: string }>();
   const [saving, setSaving] = useState(false);
-  const dirty = displayName !== config.displayName;
+  const displayName = draft ?? config.displayName;
+  const dirty = draft !== undefined && draft !== config.displayName;
+  function discard() {
+    setDraft(undefined);
+    setMessage(undefined);
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!dirty || saving) return;
@@ -22,12 +32,14 @@ export function GeneralConfigForm({
     setMessage(undefined);
     try {
       const updated = await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName });
-      setConfig(updated);
-      setDisplayName(updated.displayName);
-      setMessage("Name saved.");
-      onAgentChanged();
+      setDraft(undefined);
+      setMessage({ kind: "success", text: "Name saved." });
+      onAgentChanged(updated);
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save name");
+      // A refused write is a failure, not a status line. This block sits beside four others editing
+      // the same Agent, so a revision conflict here is an ordinary outcome rather than a rarity, and
+      // it has to interrupt the way the same refusal already does inside the Model dialog.
+      setMessage({ kind: "error", text: cause instanceof Error ? cause.message : "Unable to save name" });
     } finally {
       setSaving(false);
     }
@@ -50,7 +62,7 @@ export function GeneralConfigForm({
           required
           value={displayName}
           onChange={(event) => {
-            setDisplayName(event.currentTarget.value);
+            setDraft(event.currentTarget.value);
             setMessage(undefined);
           }}
         />
@@ -59,14 +71,7 @@ export function GeneralConfigForm({
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
           <span className="text-sm text-kumo-subtle">Unsaved changes</span>
           <div className="flex flex-wrap justify-end gap-2">
-            <Button
-              disabled={saving}
-              variant="ghost"
-              onClick={() => {
-                setDisplayName(config.displayName);
-                setMessage(undefined);
-              }}
-            >
+            <Button disabled={saving} variant="ghost" onClick={discard}>
               Discard
             </Button>
             <Button disabled={saving} type="submit">
@@ -75,7 +80,14 @@ export function GeneralConfigForm({
           </div>
         </div>
       ) : null}
-      {message ? <p role="status">{message}</p> : null}
+      {message ? (
+        <p
+          className={message.kind === "error" ? "text-sm text-kumo-danger" : undefined}
+          role={message.kind === "error" ? "alert" : "status"}
+        >
+          {message.text}
+        </p>
+      ) : null}
     </form>
   );
 }

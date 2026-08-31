@@ -30,7 +30,7 @@ describe("GeneralConfigForm", () => {
     const updated = { ...config, displayName: "Reviewer Bot", revision: 5 };
     const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
     const onAgentChanged = vi.fn();
-    render(<GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />);
+    render(<GeneralConfigForm config={config} onAgentChanged={onAgentChanged} />);
 
     fireEvent.submit(screen.getByRole("heading", { name: "Name" }).closest("form") as HTMLFormElement);
     expect(updateAgent).not.toHaveBeenCalled();
@@ -52,13 +52,14 @@ describe("GeneralConfigForm", () => {
       .spyOn(browserApi, "updateAgent")
       .mockRejectedValueOnce(new Error("revision conflict"))
       .mockRejectedValueOnce("unknown failure");
-    render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
+    render(<GeneralConfigForm config={config} onAgentChanged={vi.fn()} />);
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Conflict" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    expect((await screen.findByRole("status")).textContent).toBe("revision conflict");
+    expect((await screen.findByRole("alert")).textContent).toBe("revision conflict");
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Conflict again" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    expect((await screen.findByRole("status")).textContent).toBe("Unable to save name");
+    expect((await screen.findByRole("alert")).textContent).toBe("Unable to save name");
+    expect(screen.queryByRole("status")).toBeNull();
     expect(updateAgent).toHaveBeenCalledTimes(2);
   });
 });

@@ -49,7 +49,14 @@ function json(value: unknown, status = 200) {
 
 /**
  * Clicks a control the way a browser does. `fireEvent.click` dispatches the event without moving
- * focus, and a dialog opened from it then has no trigger to return focus to.
+ * focus, so what a dialog opened from it restores focus to on close is whatever held focus before
+ * -- which, on a `/settings/<section>` deep link, is the block heading the anchor moved to.
+ *
+ * Both restores the component asks for are lost to that: `returnFocusRef` never fires for a dialog
+ * that is unmounted rather than closed, and the component's own restore is overwritten by Base UI's
+ * restore-to-previously-focused. That is #341, not something this screen introduced; focusing the
+ * trigger here is what Chrome does on a real click, and is the condition the component was written
+ * against.
  */
 function clickButton(button: HTMLElement) {
   button.focus();
@@ -106,10 +113,18 @@ function installApi(
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
   let revision = lifecycleStatus === "active" ? 1 : 2;
+  let configDisplayName = agentSummary.displayName;
+  let runtimeConfig = {
+    revision: 1,
+    model: null as string | null,
+    reasoningEffort: null as string | null,
+    instructions: "",
+    maxDurationMs: null as number | null,
+  };
   const adminConfig = () => ({
     id: agentId,
     name: agentSummary.name,
-    displayName: agentSummary.displayName,
+    displayName: configDisplayName,
     runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
     receiveMode: agentSummary.receiveMode,
     status: lifecycleStatus,
@@ -118,13 +133,7 @@ function installApi(
     createdByUserId: options.agentCreator?.userId ?? userId,
     computerId,
     revision,
-    runtimeConfig: {
-      revision: 1,
-      model: null,
-      reasoningEffort: null,
-      instructions: "",
-      maxDurationMs: null,
-    },
+    runtimeConfig,
   });
   let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentDisplayName = "Ada";
@@ -388,7 +397,37 @@ function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}`) {
-      if (init?.method === "PATCH") return json(adminConfig());
+      /*
+       * The Agent record answers writes the way the Server does: a write carries the revision it was
+       * read at, a stale one is refused, and an accepted one moves the revision on. Anything less
+       * and a screen that edits one record from several places passes here while conflicting in
+       * production.
+       */
+      if (init?.method === "PATCH") {
+        const body = JSON.parse(String(init.body ?? "{}")) as {
+          displayName?: string;
+          expectedRevision?: number;
+          runtimeConfig?: { instructions?: string; model?: string | null; reasoningEffort?: string | null };
+        };
+        if (body.expectedRevision !== undefined && body.expectedRevision !== revision) {
+          return json(
+            {
+              error: {
+                code: "AGENT_REVISION_CONFLICT",
+                category: "deterministic",
+                message: `Expected revision ${body.expectedRevision}, but the Agent is at ${revision}`,
+              },
+            },
+            409,
+          );
+        }
+        if (body.displayName !== undefined) configDisplayName = body.displayName;
+        if (body.runtimeConfig) {
+          runtimeConfig = { ...runtimeConfig, ...body.runtimeConfig, revision: runtimeConfig.revision + 1 };
+        }
+        revision += 1;
+        return json(adminConfig());
+      }
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
       await options.agentRead?.();
       const failureStatus = options.agentReadStatus?.();
@@ -1826,6 +1865,51 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: action }).getAttribute("href")).toBe(`/${section}`);
   });
 
+  it("carries one Agent revision across the blocks, so a second edit is not a conflict", async () => {
+    installApi();
+    window.history.replaceState({}, "", `/agents/${agentId}/settings`);
+    render(<App />);
+
+    // Editing the instructions moves the Agent on to the next revision. Every other editor on the
+    // screen is looking at the same record, so the next save has to carry the revision that write
+    // produced -- not the one its own block happened to mount with.
+    const resources = within(await screen.findByRole("region", { name: "Resources" }));
+    clickButton(resources.getByRole("button", { name: "Edit" }));
+    const instructions = await screen.findByRole("dialog", { name: "Edit instructions" });
+    fireEvent.change(within(instructions).getByLabelText("Instructions"), { target: { value: "Be brief." } });
+    fireEvent.click(within(instructions).getByRole("button", { name: "Save changes" }));
+    expect(await resources.findByText("Custom · 9 characters")).toBeTruthy();
+
+    const identity = within(screen.getByRole("form", { name: "Name" }));
+    fireEvent.change(identity.getByLabelText("Display name"), { target: { value: "Research Reviewer" } });
+    fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
+    expect((await identity.findByRole("status")).textContent).toBe("Name saved.");
+
+    const revisions = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input, init]) => String(input) === `/api/v1/agents/${agentId}` && init?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String(init?.body)).expectedRevision);
+    expect(revisions).toEqual([1, 2]);
+  });
+
+  it("names the Agent in the danger zone by the name the Name block just saved", async () => {
+    installApi();
+    window.history.replaceState({}, "", `/agents/${agentId}/settings`);
+    render(<App />);
+
+    const identity = within(await screen.findByRole("form", { name: "Name" }));
+    fireEvent.change(identity.getByLabelText("Display name"), { target: { value: "Research Reviewer" } });
+    fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
+    expect(await identity.findByText("Name saved.")).toBeTruthy();
+
+    // The danger zone reads the same record, so it confirms against the current name and the
+    // current status rather than the ones it happened to mount with.
+    clickButton(await screen.findByRole("button", { name: "Pause" }));
+    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    expect(await screen.findByRole("dialog", { name: "Delete Research Reviewer?" })).toBeTruthy();
+  });
+
   it("refuses a settings segment that anchors nothing", async () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/runtime`);
@@ -1906,7 +1990,18 @@ describe("OpenTag Web App Shell", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Reconnect this Computer" }));
 
-    expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
+    // The panel belongs to the Computer block, so it sits under that block's heading rather than
+    // beside it. A second `h2` here would read as a seventh block, and would take the deep link's
+    // landing point with it.
+    expect(screen.getByRole("heading", { level: 3, name: "Reconnect Ada's Mac" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Name",
+      "Messaging",
+      "Computer",
+      "Model",
+      "Resources",
+      "Danger zone",
+    ]);
     expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/settings/computer`);
   });
@@ -2058,7 +2153,7 @@ describe("OpenTag Web App Shell", () => {
     const notice = screen.getByRole("region", { name: "Agent status: Suspended" });
     expect(within(notice).getByText("Suspended")).toBeTruthy();
     expect(within(notice).getByText("This Agent is paused. Resume it to start receiving messages again.")).toBeTruthy();
-    expect(within(notice).getByRole("link", { name: "Manage Agent" }).getAttribute("href")).toBe(
+    expect(within(notice).getByRole("link", { name: "View Danger zone" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/manage`,
     );
   });

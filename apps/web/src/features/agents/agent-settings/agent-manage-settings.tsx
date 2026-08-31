@@ -18,16 +18,17 @@ import type { AgentDetailView } from "../agent-model.js";
 
 export function AgentManageSettings({
   agent,
-  initialConfig,
+  config,
   onAgentChanged,
 }: {
   agent: AgentDetailView;
-  initialConfig: AgentAdminConfig;
-  onAgentChanged: () => void;
+  config: AgentAdminConfig;
+  onAgentChanged: (saved: AgentAdminConfig) => void;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [config, setConfig] = useState(initialConfig);
+  // Status and name are read from the shared record rather than copied here: this block sits beside
+  // four others editing the same Agent, and a copy taken at mount is a copy that goes stale.
   const [message, setMessage] = useState<string>();
   const [confirmation, setConfirmation] = useState<"delete" | "pause">();
   const [confirmationError, setConfirmationError] = useState<string>();
@@ -46,13 +47,12 @@ export function AgentManageSettings({
       setBusy(true);
       setMessage(undefined);
       setConfirmationError(undefined);
-      setConfig(
-        action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
-      );
+      const updated =
+        action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id);
       setMessage(action === "suspend" ? "Agent paused." : "Agent reactivated.");
       setRestorePauseFocus(confirmation === "pause");
       setConfirmation(undefined);
-      onAgentChanged();
+      onAgentChanged(updated);
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : "Unable to change Agent status";
       if (confirmation === "pause") setConfirmationError(error);

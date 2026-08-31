@@ -11,6 +11,7 @@ import {
   Text,
 } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
+import { newerConfig } from "./config-snapshot.js";
 
 export function AgentResourcesSettings({
   agent,
@@ -19,7 +20,7 @@ export function AgentResourcesSettings({
 }: {
   agent: AgentDetailView;
   config: AgentAdminConfig;
-  onAgentChanged: () => void;
+  onAgentChanged: (saved: AgentAdminConfig) => void;
 }) {
   const [config, setConfig] = useState(initialConfig);
   const [editing, setEditing] = useState(false);
@@ -77,7 +78,7 @@ export function AgentResourcesSettings({
       editingRef.current = false;
       pendingConfigRef.current = undefined;
       setEditing(false);
-      onAgentChanged();
+      onAgentChanged(resolvedConfig);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to save instructions");
     } finally {
@@ -147,9 +148,4 @@ function instructionsSummary(instructions: string): string {
   if (instructions.length === 0) return "Not customized · 0 characters";
   const length = Array.from(instructions).length;
   return `Custom · ${length} ${length === 1 ? "character" : "characters"}`;
-}
-
-function newerConfig(current: AgentAdminConfig | undefined, candidate: AgentAdminConfig): AgentAdminConfig {
-  if (!current || current.id !== candidate.id || candidate.revision >= current.revision) return candidate;
-  return current;
 }

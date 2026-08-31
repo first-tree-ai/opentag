@@ -22,6 +22,13 @@ const PREVIEW_BOOTSTRAP_COMMAND =
 const PREVIEW_CONNECT_CODE_REMAINING_MS = 900_000;
 
 export interface ComputerSetupProps {
+  /**
+   * Where the panel's own heading sits under the surface that opened it. It is a peer of the page's
+   * sections by default, and a level lower where the panel opens inside one of them -- a settings
+   * block whose heading is already an `h2` would otherwise gain a second `h2` that reads as a
+   * seventh block rather than as part of the Computer.
+   */
+  headingLevel?: "h2" | "h3";
   onConnected?: (computer: WorkspaceComputerSummary) => void;
   /**
    * Renders the panel for review only: it issues no connect code, starts no Computer polling and
@@ -43,9 +50,10 @@ function formatRemaining(remainingMs: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function ComputerSetup({ onConnected, preview, target }: ComputerSetupProps) {
+export function ComputerSetup({ headingLevel, onConnected, preview, target }: ComputerSetupProps) {
   return (
     <ComputerSetupLifecycle
+      headingLevel={headingLevel}
       key={target?.computerId ?? ""}
       onConnected={onConnected}
       preview={preview}
@@ -54,7 +62,7 @@ export function ComputerSetup({ onConnected, preview, target }: ComputerSetupPro
   );
 }
 
-function ComputerSetupLifecycle({ onConnected, preview = false, target }: ComputerSetupProps) {
+function ComputerSetupLifecycle({ headingLevel = "h2", onConnected, preview = false, target }: ComputerSetupProps) {
   const targetComputerId = target?.computerId;
   const targetName = target?.displayName;
   const [bootstrapCommand, setBootstrapCommand] = useState<string>();
@@ -187,7 +195,7 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
 
   return (
     <section className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
-      <Text as="h2" variant="heading">
+      <Text as={headingLevel} variant="heading">
         {targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}
       </Text>
       {/*

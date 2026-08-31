@@ -74,6 +74,7 @@ export function AgentComputerSettings({
                   {reconnecting ? (
                     <div className="grid gap-3" id="agent-computer-reconnect">
                       <ComputerSetup
+                        headingLevel="h3"
                         target={{
                           computerId: agent.computer.computerId,
                           displayName: agent.computer.displayName,

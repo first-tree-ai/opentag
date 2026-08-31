@@ -12,6 +12,7 @@ import { useAgentDetailView } from "../agent-queries.js";
 import { agentDetailLink } from "../agent-routes.js";
 import { AgentComputerSettings } from "./agent-computer-settings.js";
 import { AgentManageSettings } from "./agent-manage-settings.js";
+import { newerConfig, useLatestConfig } from "./config-snapshot.js";
 import { GeneralConfigForm } from "./general-config-form.js";
 import { AgentMessagingSettings } from "./messaging-settings.js";
 import { AgentModelSettings } from "./model-settings.js";
@@ -52,8 +53,21 @@ export function AgentSettingsPage({ agentId, section }: { agentId: string; secti
               <AgentSettingsContent
                 agent={agent}
                 anchor={anchor}
-                // A write can change the Agent and its config together, so both are dropped.
-                onAgentChanged={() => void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all(agentId) })}
+                onAgentChanged={(saved) => {
+                  /*
+                   * A write answers with the record it produced. Publishing that answer before the
+                   * refetch is what keeps the other blocks on this screen from holding a revision
+                   * the next save would be refused for -- they all edit one Agent, so the moment
+                   * one of them moves it on, the rest have to be looking at where it moved to.
+                   */
+                  if (saved) {
+                    queryClient.setQueryData<AgentAdminConfig>(queryKeys.agents.config(agentId), (current) =>
+                      newerConfig(current, saved),
+                    );
+                  }
+                  // A write can change the Agent and its config together, so both are dropped.
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all(agentId) });
+                }}
               />
             </div>
           </div>
@@ -70,7 +84,7 @@ function AgentSettingsContent({
 }: {
   agent: AgentDetailView;
   anchor: AgentSettingsSection | undefined;
-  onAgentChanged: () => void;
+  onAgentChanged: (saved?: AgentAdminConfig) => void;
 }) {
   // The config is read once for the whole screen: Name, Model, Resources and the danger zone all
   // describe the same record, and asking per block would show them settling at different times.
@@ -102,12 +116,15 @@ function AgentSettingsBlocks({
   agent: AgentDetailView;
   anchor: AgentSettingsSection | undefined;
   config: AgentAdminConfig;
-  onAgentChanged: () => void;
+  onAgentChanged: (saved?: AgentAdminConfig) => void;
 }) {
+  // One reading of the record for every editor, and one that only ever moves forward: a refetch
+  // that lands out of order behind a save must not hand a block a revision the Server has left.
+  const latest = useLatestConfig(config);
   return (
     <div className="grid gap-6">
       <AgentSettingsBlock anchor={anchor} section="identity">
-        <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />
+        <GeneralConfigForm config={latest} onAgentChanged={onAgentChanged} />
       </AgentSettingsBlock>
       <AgentSettingsBlock anchor={anchor} section="messaging">
         <AgentMessagingSettings agent={agent} onAgentChanged={onAgentChanged} />
@@ -116,14 +133,14 @@ function AgentSettingsBlocks({
         <AgentComputerSettings agent={agent} onAgentChanged={onAgentChanged} />
       </AgentSettingsBlock>
       <AgentSettingsBlock anchor={anchor} section="execution">
-        <AgentModelSettings agent={agent} config={config} onAgentChanged={onAgentChanged} />
+        <AgentModelSettings agent={agent} config={latest} onAgentChanged={onAgentChanged} />
       </AgentSettingsBlock>
       <AgentSettingsBlock anchor={anchor} section="instructions">
-        <AgentResourcesSettings agent={agent} config={config} onAgentChanged={onAgentChanged} />
+        <AgentResourcesSettings agent={agent} config={latest} onAgentChanged={onAgentChanged} />
       </AgentSettingsBlock>
       <div className="mt-4 border-t border-kumo-line pt-6">
         <AgentSettingsBlock anchor={anchor} section="manage">
-          <AgentManageSettings agent={agent} initialConfig={config} onAgentChanged={onAgentChanged} />
+          <AgentManageSettings agent={agent} config={latest} onAgentChanged={onAgentChanged} />
         </AgentSettingsBlock>
       </div>
     </div>
@@ -140,7 +157,10 @@ function AgentSettingsBlocks({
  * and, being the size of the block, would keep the caret parked over everything inside it.
  *
  * The heading is found rather than passed in so the six blocks stay unaware of being anchored; each
- * one owns its heading and this owns where a deep link lands.
+ * one owns its heading and this owns where a deep link lands. That rests on one invariant: a block's
+ * own heading is the first `h2` in its subtree. A panel a block opens inside itself -- the Computer's
+ * reconnect, Messaging's connected channel -- is therefore an `h3`, both because it belongs to the
+ * block rather than beside it and because a second `h2` above the real one would move the landing.
  */
 function AgentSettingsBlock({
   anchor,

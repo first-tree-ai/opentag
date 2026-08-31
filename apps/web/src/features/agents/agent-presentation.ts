@@ -241,7 +241,10 @@ export function agentAvailabilityRecovery(
 ): { label: string; link: AgentSettingsSectionLink } | undefined {
   if (agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
-    return { label: "Manage Agent", link: agentSettingsSectionLink(agent.id, "manage") };
+    // Named for where it lands. A recovery exit that says one thing and arrives at a heading saying
+    // another leaves a reader who followed it unsure they arrived, which is exactly the reader who
+    // followed it by keyboard.
+    return { label: "View Danger zone", link: agentSettingsSectionLink(agent.id, "manage") };
   }
   if (
     agent.availability.reason === "im_not_connected" ||

@@ -373,7 +373,7 @@ describe("Agent availability model and presentation", () => {
         ...base,
         availability: { ...base.availability, reason: "agent_suspended", state: "suspended" },
       }),
-    ).toMatchObject({ label: "Manage Agent" });
+    ).toMatchObject({ label: "View Danger zone" });
     expect(
       agentAvailabilityRecovery({
         ...base,

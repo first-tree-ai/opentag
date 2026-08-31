@@ -16,6 +16,7 @@ import {
   Text,
 } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
+import { newerConfig } from "./config-snapshot.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 
@@ -26,7 +27,7 @@ export function AgentModelSettings({
 }: {
   agent: AgentDetailView;
   config: AgentAdminConfig;
-  onAgentChanged: () => void;
+  onAgentChanged: (saved: AgentAdminConfig) => void;
 }) {
   const [config, setConfig] = useState(initialConfig);
   const [editing, setEditing] = useState(false);
@@ -101,7 +102,7 @@ export function AgentModelSettings({
       editingRef.current = false;
       pendingConfigRef.current = undefined;
       setEditing(false);
-      onAgentChanged();
+      onAgentChanged(resolvedConfig);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to save model settings");
     } finally {
@@ -225,11 +226,6 @@ function modelSelectionFor(config: AgentAdminConfig): string {
   if (model === null) return "";
   const suggestions = getRuntimeConfigurationOptions(config.runtimeProvider).modelSuggestions;
   return suggestions.includes(model) ? model : CUSTOM_MODEL_OPTION;
-}
-
-function newerConfig(current: AgentAdminConfig | undefined, candidate: AgentAdminConfig): AgentAdminConfig {
-  if (!current || current.id !== candidate.id || candidate.revision >= current.revision) return candidate;
-  return current;
 }
 
 function runtimeProviderName(provider: AgentAdminConfig["runtimeProvider"]): string {

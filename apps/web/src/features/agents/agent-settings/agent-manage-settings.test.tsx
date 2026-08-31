@@ -138,7 +138,7 @@ describe("Deleting an Agent", () => {
       <>
         <AgentListProbe />
         <RefreshAgentsButton />
-        <AgentManageSettings agent={agentView} initialConfig={config} onAgentChanged={() => undefined} />
+        <AgentManageSettings agent={agentView} config={config} onAgentChanged={() => undefined} />
       </>,
     );
     await waitFor(() => expect(screen.getByTestId("agent-list").textContent).toBe("Reviewer"));
@@ -167,7 +167,7 @@ describe("Deleting an Agent", () => {
       .mockResolvedValueOnce(agentDetail)
       .mockReturnValue(new Promise<AgentDetail>(() => undefined));
     const remove = vi.spyOn(browserApi, "deleteAgent").mockResolvedValue(undefined);
-    const manage = <AgentManageSettings agent={agentView} initialConfig={config} onAgentChanged={() => undefined} />;
+    const manage = <AgentManageSettings agent={agentView} config={config} onAgentChanged={() => undefined} />;
 
     const view = await renderInRouter(
       <>
@@ -198,9 +198,7 @@ describe("Deleting an Agent", () => {
 describe("Agent lifecycle actions", () => {
   it("reports a failed pause and lets the viewer close its confirmation", async () => {
     vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("pause conflict"));
-    await renderInRouter(
-      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
-    );
+    await renderInRouter(<AgentManageSettings agent={activeAgent} config={activeConfig} onAgentChanged={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
@@ -214,7 +212,7 @@ describe("Agent lifecycle actions", () => {
   it("shows lifecycle errors inline when no confirmation is needed", async () => {
     vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("status update failed"));
     await renderInRouter(
-      <AgentManageSettings agent={idleActiveAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+      <AgentManageSettings agent={idleActiveAgent} config={activeConfig} onAgentChanged={vi.fn()} />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));

@@ -105,12 +105,12 @@ export function normalizeCoveragePath(rawPath, repositoryRoot) {
 }
 
 /**
- * Map each normalized repository path to its maximum statement hit per source line.
+ * Record one statement's hits against every line it spans, keeping the highest count per line.
  *
- * A statement claims every line it spans, not just the one it starts on. The current provider emits
- * single-line statements, so today that is the same map either way; recording the span means the
- * gate asks "does any statement cover this line", which is the question it means to ask, rather
- * than depending on a provider property nothing enforces.
+ * A statement claims every line it covers, not just the one it starts on. The current provider
+ * emits single-line statements, so today the result is the same either way; recording the span
+ * means the gate can ask "does any statement cover this line", which is the question it means to
+ * ask, rather than depending on a provider property nothing enforces.
  */
 function recordStatementHits(lineHits, statement, rawHits) {
   const start = statement?.start?.line;
@@ -122,6 +122,7 @@ function recordStatementHits(lineHits, statement, rawHits) {
   }
 }
 
+/** Map each normalized repository path to its maximum statement hit per source line. */
 export function buildLineHitsByFile(coverage, repositoryRoot) {
   const lineHitsByFile = new Map();
   for (const [rawFile, fileCoverage] of Object.entries(coverage ?? {})) {

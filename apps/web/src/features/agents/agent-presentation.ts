@@ -2,6 +2,7 @@ import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
+import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 export const agentAvatarTones = ["brand", "amber", "blue", "neutral"] as const;
 
@@ -75,8 +76,7 @@ export function formatUsageNumber(value: number): string {
  * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
  * Agent creator audit-only while stating that enrollment implies no control of the physical host.
  */
-export function computerRecoveryMessage(agent: AgentDetailView): string {
-  const computerName = agent.computer.displayName;
+export function computerRecoveryMessage(agent: AgentDetailView, computerName = agent.computer.displayName): string {
   if (agent.availability.reason === "runtime_unavailable") {
     const { provider, status } = agent.availability.dependencies.runtime;
     const providerName = provider === "codex" ? "Codex" : "Claude Code";
@@ -88,7 +88,7 @@ export function computerRecoveryMessage(agent: AgentDetailView): string {
   if (agent.availability.dependencies.computer.state !== "action_required") {
     return "OpenTag could not confirm this Computer's current connection.";
   }
-  return `OpenTag is not running on ${computerName}. Start it there to bring this Computer back online.`;
+  return `OpenTag is not running on ${computerName}. Start it there to bring it back online.`;
 }
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {
@@ -328,4 +328,77 @@ export function formatRelativeTime(value: string): string {
   if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
   const elapsedDays = Math.floor(elapsedHours / 24);
   return `${elapsedDays} ${elapsedDays === 1 ? "day" : "days"} ago`;
+}
+
+/**
+ * The two dependencies an Agent needs to do any work, each presented on its own terms. They are
+ * deliberately not collapsed into one verdict: a connected channel can coexist with an offline
+ * Computer, and a viewer repairing one needs to see the other's state unchanged while they do it.
+ */
+export type AgentDependencyStatus = {
+  action?: { label: string; section: AgentSettingsSection };
+  detail?: string;
+  label: string;
+  tone: StatusTone;
+};
+
+export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
+  const { computer, runtime } = agent.availability.dependencies;
+  const action = { label: "View Computer", section: "computer" as const };
+  /*
+   * "this Computer" rather than the machine name: the identity line directly above this sentence
+   * already carries the name, and repeating it made one row read as though it named two machines.
+   */
+  const recovery = computerRecoveryMessage(agent, "this Computer");
+  if (computer.state === "unconfirmed") return { action, detail: recovery, label: "Unknown", tone: "neutral" };
+  if (computer.state === "action_required") return { action, detail: recovery, label: "Offline", tone: "warning" };
+  const providerName = runtimeProviderName(runtime.provider);
+  if (runtime.status && runtime.status !== "ready") {
+    // Named per Provider status, and worded by the same helper the Computer settings page uses.
+    const detail = recovery;
+    if (runtime.status === "checking") return { detail, label: `Checking ${providerName}`, tone: "info" };
+    if (runtime.status === "install")
+      return { action, detail, label: `${providerName} not installed`, tone: "warning" };
+    if (runtime.status === "sign-in") {
+      return { action, detail, label: `${providerName} sign-in required`, tone: "warning" };
+    }
+    return { action, detail, label: `${providerName} unavailable`, tone: "warning" };
+  }
+  return { action, label: "Online", tone: "success" };
+}
+
+export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
+  const action = { label: "View messaging", section: "messaging" as const };
+  if (agent.messaging.kind === "unconfirmed") {
+    return {
+      action,
+      detail: "OpenTag could not read this Agent's messaging connection.",
+      label: "Unknown",
+      tone: "neutral",
+    };
+  }
+  const binding = agent.messaging.value;
+  if (!binding) {
+    return {
+      action: { label: "Connect messaging", section: "messaging" },
+      detail: "Connect a chat app so teammates can send this Agent work.",
+      label: "Not connected",
+      tone: "neutral",
+    };
+  }
+  const handoff = agent.availability.dependencies.handoff;
+  if (binding.bindingState === "active" && handoff.state === "action_required") {
+    return {
+      action,
+      detail: "Messages cannot be delivered to this Agent right now.",
+      label: "Cannot receive messages",
+      tone: "warning",
+    };
+  }
+  /*
+   * The exit stays even when the channel is healthy. This card replaced the header's messaging
+   * control, so dropping it on success would leave changing the bound bot reachable only by
+   * hunting through Settings.
+   */
+  return { action, label: messagingConnectionLabel(binding), tone: messagingConnectionTone(binding) };
 }

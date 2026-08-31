@@ -1422,9 +1422,20 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "View Details" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
-    expect(screen.getByRole("link", { name: "Feishu · @reviewer" }).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/messaging`,
-    );
+    /*
+     * Connection sits beside Usage and names the channel, so the header carries no messaging
+     * control of its own -- Settings is its only trailing link.
+     */
+    expect(screen.getByRole("heading", { name: "Connection" })).toBeTruthy();
+    const connection = screen.getByRole("region", { name: "Connection" });
+    expect(within(connection).getByText("Feishu · @reviewer")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Feishu · @reviewer" })).toBeNull();
+    const header = screen.getByRole("heading", { name: "Reviewer" }).closest("header");
+    expect(
+      within(header as HTMLElement)
+        .getAllByRole("link")
+        .map((item) => item.textContent?.trim()),
+    ).toEqual(["Agents", "Settings"]);
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(`/agents/${agentId}/settings`);
     expect(screen.queryByRole("heading", { name: "Current work" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Messaging" })).toBeNull();
@@ -1541,7 +1552,8 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("link", { name: "Feishu · @reviewer" }));
+    const connection = await screen.findByRole("region", { name: "Connection" });
+    fireEvent.click(within(connection).getByRole("link", { name: "View messaging" }));
     expect(await screen.findByRole("heading", { name: "Messaging" })).toBeTruthy();
     const backLink = screen.getByRole("link", { name: "Back to Reviewer" });
     expect(backLink.getAttribute("href")).toBe(`/agents/${agentId}`);
@@ -1825,7 +1837,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Offline")).toBeTruthy();
     expect(screen.getByText(/Last seen/)).toBeTruthy();
     expect(
-      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
   });
@@ -1871,7 +1883,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Offline")).toBeTruthy();
     expect(
-      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
     ).toBeTruthy();
 
     computerStatus = "online";
@@ -1907,8 +1919,13 @@ describe("OpenTag Web App Shell", () => {
 
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("This agent's computer is offline. Retrying automatically.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View Computer" })).toBeTruthy();
+    const offlineReason = await screen.findByText(
+      "OpenTag is not running on this Computer. Start it there to bring it back online.",
+    );
+    const computerRow = offlineReason.closest('[data-ui="connection-computer"]') as HTMLElement;
+    expect(computerRow).toBeTruthy();
+    expect(within(computerRow).getByText("Offline")).toBeTruthy();
+    expect(within(computerRow).getByRole("link", { name: "View Computer" })).toBeTruthy();
   });
 
   it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
@@ -1957,8 +1974,11 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Messaging disconnected")).toBeNull();
     expect(screen.queryByText("Needs attention")).toBeNull();
     expect(screen.queryByText("Action required")).toBeNull();
-    expect(screen.getByText("Messages cannot be sent to this Agent.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View messaging" })).toBeTruthy();
+    const messagingRow = screen
+      .getByRole("region", { name: "Connection" })
+      .querySelector('[data-ui="connection-messaging"]') as HTMLElement;
+    expect(within(messagingRow).getByText("Messages cannot be delivered to this Agent right now.")).toBeTruthy();
+    expect(within(messagingRow).getByRole("link", { name: "View messaging" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();
@@ -1972,56 +1992,62 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Messaging status unavailable" }).getAttribute("href")).toBe(
+    const messagingRow = screen
+      .getByRole("region", { name: "Connection" })
+      .querySelector('[data-ui="connection-messaging"]') as HTMLElement;
+    // Unreadable evidence says so; it must not be reported as "no channel connected".
+    expect(within(messagingRow).getByText("Unknown")).toBeTruthy();
+    expect(within(messagingRow).getByText("OpenTag could not read this Agent's messaging connection.")).toBeTruthy();
+    expect(within(messagingRow).getByRole("link", { name: "View messaging" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/messaging`,
     );
+    expect(screen.queryByText("Not connected")).toBeNull();
     expect(screen.queryByRole("link", { name: "Connect messaging" })).toBeNull();
     expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("names the messaging channel on one manage control that keeps its shape in every state", async () => {
+  it("names the channel and keeps a repair exit in every messaging state", async () => {
     /*
-     * Messaging is what makes an Agent reachable, so this control is read before it is clicked. A
-     * bare provider glyph made a viewer guess at both the channel and what clicking it would do,
-     * and it collapsed to nothing readable when no channel was connected at all.
+     * Messaging is what makes an Agent reachable, and this card replaced the header control that
+     * used to carry it. Every state has to name what is true and still offer the way to change it:
+     * dropping the exit on a healthy channel would leave rebinding reachable only by hunting.
      */
-    installApi({ bound: true, provider: "slack" });
-    window.history.replaceState({}, "", `/agents/${agentId}`);
-    const connected = render(<App />);
-
-    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const link = screen.getByRole("link", { name: /^Slack/ });
-    expect(link.getAttribute("data-ui")).toBe("agent-messaging-link");
-    expect(link.textContent).toContain("Slack");
-    expect(link.getAttribute("href")).toBe(`/agents/${agentId}/settings/messaging`);
-    /*
-     * The gear is what says this control manages the channel rather than only naming it, and it
-     * trails the label. Asserted by its own hook rather than by counting glyphs: a glyph count
-     * happens to equal one today only because the provider mark is an `img`, so it would stop
-     * guarding the gear the day `ProviderIcon` renders an svg.
-     */
-    const manage = link.querySelector('[data-ui="agent-messaging-manage"]');
-    expect(manage).toBeTruthy();
-    expect(link.lastElementChild).toBe(manage);
-    const connectedClassName = link.className;
-    expect(connectedClassName).toMatch(/\bh-\d/);
-    connected.unmount();
-
-    // Same control, same size: the header must not resize as the messaging state changes.
-    for (const state of [{ bound: false }, { bound: true, bindingEvidenceFails: true }]) {
-      installApi(state);
+    const states = [
+      {
+        detail: "Slack · Reviewer",
+        label: "Connected",
+        exit: "View messaging",
+        options: { bound: true, provider: "slack" as const },
+      },
+      {
+        detail: "Connect a chat app so teammates can send this Agent work.",
+        label: "Not connected",
+        exit: "Connect messaging",
+        options: { bound: false },
+      },
+      {
+        detail: "OpenTag could not read this Agent's messaging connection.",
+        label: "Unknown",
+        exit: "View messaging",
+        options: { bound: true, bindingEvidenceFails: true },
+      },
+    ];
+    for (const state of states) {
+      installApi(state.options);
       window.history.replaceState({}, "", `/agents/${agentId}`);
       const rendered = render(<App />);
 
       expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-      const control = screen.getByRole("link", {
-        name: state.bound ? "Messaging status unavailable" : "Connect messaging",
-      });
-      expect(control.getAttribute("data-ui")).toBe("agent-messaging-link");
-      expect(control.textContent).toContain(state.bound ? "Messaging status unavailable" : "Connect messaging");
-      expect(control.querySelector('[data-ui="agent-messaging-manage"]')).toBe(control.lastElementChild);
-      expect(control.className).toBe(connectedClassName);
+      const row = screen
+        .getByRole("region", { name: "Connection" })
+        .querySelector('[data-ui="connection-messaging"]') as HTMLElement;
+      expect(row).toBeTruthy();
+      expect(within(row).getByText(state.label)).toBeTruthy();
+      expect(within(row).getByText(state.detail)).toBeTruthy();
+      expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(
+        `/agents/${agentId}/settings/messaging`,
+      );
       rendered.unmount();
     }
   });
@@ -2077,8 +2103,9 @@ describe("OpenTag Web App Shell", () => {
 
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
-    expect(await screen.findByRole("link", { name: "Slack · Reviewer" })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: /Slack · @reviewer/ })).toBeNull();
+    const connection = await screen.findByRole("region", { name: "Connection" });
+    expect(within(connection).getByText("Slack · Reviewer")).toBeTruthy();
+    expect(within(connection).queryByText(/Slack · @reviewer/)).toBeNull();
   });
 
   it("keeps the loaded Tasks when loading the next page fails", async () => {
@@ -2179,7 +2206,9 @@ describe("OpenTag Web App Shell", () => {
     expect(agentReads).toBe(2);
 
     releaseAgentRead();
-    expect(await screen.findByText("This agent's computer is offline. Retrying automatically.")).toBeTruthy();
+    expect(
+      await screen.findByText("OpenTag is not running on this Computer. Start it there to bring it back online."),
+    ).toBeTruthy();
   });
 
   it("invalidates a stale Agent detail after a background not-found response", async () => {

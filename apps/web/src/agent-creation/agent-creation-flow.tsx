@@ -139,6 +139,14 @@ export function AgentCreationFlow({
   const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
   const resumeAttemptedRef = useRef(false);
+  /**
+   * The creation intents this form is responsible for: the one it loaded, and any it appended by
+   * editing the request. Another page of this Account may be mid-flight with its own record, and
+   * that record is its idempotency key — erasing it would let a lost response retry as a fresh
+   * creation and produce a duplicate Agent.
+   */
+  const ownedIntentIds = useRef<Set<string> | undefined>(undefined);
+  ownedIntentIds.current ??= new Set(pendingIntent ? [pendingIntent.creationIntentId] : []);
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
   const restoreComputerSetupFocusRef = useRef(false);
   const computerRefreshStartedRef = useRef(false);
@@ -234,8 +242,9 @@ export function AgentCreationFlow({
       onSubmittingChange?.(true);
       try {
         record ??= await getOrCreateCreationIntent(accountId, request);
+        ownedIntentIds.current?.add(record.creationIntentId);
         const created = await createAgentOnce(record);
-        await clearCreationIntents(accountId);
+        await clearCreationIntents(accountId, [...(ownedIntentIds.current ?? [])]);
         onCreated(created);
       } catch (cause) {
         if (cause instanceof ApiError) {
@@ -914,15 +923,25 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
 }
 
 /**
- * Retires every creation intent this Account holds, which is what a successful creation makes of
- * them: they exist to survive one act of creating one Agent, and the reader may have abandoned
- * several along the way by changing the name or the route. A record left behind is not inert — the
- * resume effect will send it the moment its route is the selected one again, creating a second
- * Agent nobody asked for. Refusing to resume an unselected route only defers that; retiring the
- * record ends it.
+ * Retires the creation intents one form is responsible for, which is what a successful creation
+ * makes of them: they exist to survive one act of creating one Agent, and the reader may have
+ * abandoned several along the way by changing the name or the route. A record left behind is not
+ * inert — the resume effect will send it the moment its route is the selected one again, creating
+ * a second Agent nobody asked for. Refusing to resume an unselected route only defers that;
+ * retiring the record ends it.
+ *
+ * Records belonging to another page mid-flight are left alone. Each is that request's idempotency
+ * key, so erasing one would let a response lost after the Server committed retry as a fresh
+ * creation and produce the duplicate the key exists to prevent.
  */
-async function clearCreationIntents(accountId: string): Promise<void> {
+async function clearCreationIntents(accountId: string, creationIntentIds: readonly string[]): Promise<void> {
+  const retiring = new Set(creationIntentIds);
   await withCreationLock(accountId, () => {
+    const records = readCreationIntents(accountId).filter((record) => !retiring.has(record.creationIntentId));
+    if (records.length > 0) {
+      writeCreationIntents(accountId, records);
+      return;
+    }
     memoryIntentRecords.delete(accountId);
     memoryIntentFallbackAccounts.delete(accountId);
     try {

@@ -87,13 +87,19 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
       displayName: z.string().min(1),
     })
     .strict(),
+  /**
+   * `null` while the Agent has no Computer. An Agent is created before its Computer exists, so the
+   * binding is a later fact rather than a creation precondition, and a reader that cannot tell
+   * "not bound yet" from "bound to a machine we could not read" reports the wrong recovery.
+   */
   computer: z
     .object({
       computerId: z.string().uuid(),
       displayName: z.string().min(1),
       platform: z.enum(["darwin", "linux", "win32"]),
     })
-    .strict(),
+    .strict()
+    .nullable(),
   /**
    * Present when the Agent creator does not own the bound Computer. The Agent stays visible; execution
    * is rejected until the creator rebinds it to an owned Computer.
@@ -218,7 +224,7 @@ export const AgentListItemSchema = AgentSummarySchema.extend({
 
 export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
   createdByUserId: z.string().uuid(),
-  computerId: z.string().uuid(),
+  computerId: z.string().uuid().nullable(),
   revision: z.number().int().min(1),
   runtimeConfig: AgentRuntimeConfigSchema,
 }).strict();
@@ -229,7 +235,12 @@ export const CreateAgentRequestSchema = z
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
-    computerId: z.string().uuid(),
+    /**
+     * Optional: the Computer binding is changeable after creation, so requiring it here would state
+     * a creation-time precondition the product does not have. An Agent created without one exists
+     * and can be configured; it cannot run until a Computer is bound.
+     */
+    computerId: z.string().uuid().optional(),
     runtimeConfig: CreateAgentRuntimeConfigSchema.optional(),
   })
   .strict();

@@ -94,6 +94,8 @@ function installApi(
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     multipleMemberships?: boolean;
     agentCreateError?: "conflict" | "generic" | "name";
+    /** Serves an Agent the Server says has no Computer, which is not the same as one it cannot read. */
+    agentUnbound?: boolean;
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
     passwordSignInFails?: boolean;
     bindingReauth?: boolean;
@@ -132,6 +134,9 @@ function installApi(
   } = {},
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
+  // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
+  // the Server answers differently once the reader has chosen.
+  let agentUnbound = options.agentUnbound ?? false;
   let revision = lifecycleStatus === "active" ? 1 : 2;
   const adminConfig = () => ({
     id: agentId,
@@ -325,6 +330,7 @@ function installApi(
                 activity: options.agentActivity ?? agentListItem.activity,
                 status: lifecycleStatus,
                 runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+                ...(agentUnbound ? { computer: null } : {}),
               },
             ],
       });
@@ -467,9 +473,15 @@ function installApi(
         runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
         activity: options.agentActivity ?? { state: "idle" },
+        ...(agentUnbound ? { computer: null } : {}),
       });
     }
     if (path === `/api/v1/agents/${agentId}/config`) {
+      return json(adminConfig());
+    }
+    if (path === `/api/v1/agents/${agentId}/computer/rebind` && init?.method === "POST") {
+      agentUnbound = false;
+      revision += 1;
       return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/suspend` && init?.method === "POST") {
@@ -2330,6 +2342,17 @@ describe("OpenTag Web App Shell", () => {
       [{ observedAt: "2026-08-20T00:00:00.000Z", provider: "codex" as const, status }] as const;
     const states = [
       {
+        /*
+         * No Computer at all. It leads the table because every row below reads a fact about a
+         * machine, and this is the state where there is none to read: without its own branch it
+         * falls through to the Provider sentence and reports a Computer that does not exist.
+         * Its exit differs too -- there is nothing here to view.
+         */
+        exit: "Connect a Computer",
+        label: "No Computer",
+        options: { agentUnbound: true },
+      },
+      {
         exit: "View computer",
         label: "Status unavailable",
         options: { computerEvidenceFails: true },
@@ -2372,7 +2395,10 @@ describe("OpenTag Web App Shell", () => {
         .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
       expect(row).toBeTruthy();
       expect(within(row).getByText(state.label)).toBeTruthy();
-      expect(within(row).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
+      // The unbound row names no machine, because there is none to name.
+      if (!("options" in state && state.options?.agentUnbound)) {
+        expect(within(row).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
+      }
       if (state.exit) {
         expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(
           `/agents/${agentId}/settings/computer`,
@@ -3270,6 +3296,69 @@ describe("OpenTag Web App Shell", () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
+  it("lets an Account with no finished setup bind a Computer without leaving onboarding", async () => {
+    /*
+     * The recovery for an Agent that has no Computer has to work from inside the setup gate. It
+     * once linked to that Agent's Computer settings, which lives under the shell that redirects
+     * every Account with `setupCompletedAt === null` straight back to onboarding -- so the exit
+     * returned the reader to the screen they were trying to leave. A hook test cannot see that:
+     * only the real router mounts the route that redirects. So the recovery is rendered here, and
+     * this test drives it to a working bind rather than asserting a link's href.
+     */
+    installApi({ setupCompletedAt: null, agentUnbound: true });
+    render(<App />);
+
+    expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    // Reachable and resolved right here, not merely advertised: the Account has one Computer, so
+    // the Agent is put on it without the reader being asked which.
+
+    // The reader is out: the Agent has a Computer, the resume that refused this run reads again and
+    // continues. Asserting the blocked screen is gone is what a redirect loop could never satisfy.
+    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
+    // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
+  it("lets an Account with several Computers choose one without leaving onboarding", async () => {
+    /*
+     * Which machine an Agent runs on is the reader's question when the Account holds more than one,
+     * and this screen sits inside the setup gate -- so the choice has to be answerable here. A
+     * refusal, or a pointer to somewhere behind the gate, would strand an Account that has several.
+     */
+    installApi({
+      setupCompletedAt: null,
+      agentUnbound: true,
+      computers: () => [
+        {
+          id: "8c2b1d4e-5a6f-4b7c-8d9e-0f1a2b3c4d5e",
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+        {
+          id: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+          displayName: "Spare",
+          platform: "darwin",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+      ],
+    });
+    render(<App />);
+
+    expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+
+    // The second row, so this cannot pass by binding whichever Computer happens to be first.
+    fireEvent.click(await screen.findByRole("button", { name: "Use Spare" }));
+
+    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
+    // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
     expect(window.location.pathname).toBe("/onboarding");
   });
 

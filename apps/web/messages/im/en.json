@@ -53,6 +53,7 @@
   "im_permissions_required": "Permissions required",
   "im_receive_mode_failed": "Couldn’t update the message setting. Try again.",
   "im_reconnect": "Reconnect",
+  "im_slack_agent_computer_not_bound": "Connect a Computer to this Agent before connecting Slack.",
   "im_slack_authorization_failed": "Couldn’t connect Slack. Start the connection again from this Agent.",
   "im_slack_connected": "Slack connected.",
   "im_slack_permissions_missing": "Slack permissions are incomplete. Update permissions and try again.",

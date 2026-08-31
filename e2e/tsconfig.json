@@ -4,6 +4,7 @@
     "composite": true,
     "noEmit": true,
     "rootDir": ".",
+    "lib": ["ES2023", "DOM"],
     "types": ["node", "@playwright/test"]
   },
   "include": ["**/*.ts"]

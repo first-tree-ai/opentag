@@ -6,6 +6,7 @@ import notionMark from "../assets/integration-notion.svg";
 import sentryMark from "../assets/integration-sentry.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { integrationPreviews } from "../mock/capability-data.js";
+import * as m from "../paraglide/messages.js";
 import { Badge, LayerCard, Table, Text } from "../ui/design-system.js";
 
 const integrationMarks: Readonly<Record<string, string>> = {
@@ -42,30 +43,35 @@ export function IntegrationsPage() {
   return (
     <section className="grid gap-6" aria-labelledby="integrations-page-title" data-ui="integrations-page">
       <PageHeader
-        description="Services OpenTag could work with to find context and complete work."
-        title="Integrations"
+        description={m.integrations_page_description()}
+        title={m.integrations_page_title()}
         titleId="integrations-page-title"
       >
         <Text as="span" data-ui="integrations-demo-note" variant="secondary">
-          Demo data
+          {m.integrations_demo_data()}
         </Text>
       </PageHeader>
 
       <div className="grid min-w-0 gap-2">
         <div className="@min-[36rem]/workspace:hidden" id="integrations-scroll-hint">
           <Text as="p" size="sm" variant="secondary">
-            Scroll horizontally to see category and status.
+            {m.integrations_scroll_hint()}
           </Text>
         </div>
         <LayerCard className="p-0" data-ui="integrations-card">
           <section
             aria-describedby="integrations-scroll-hint"
-            aria-label="Integrations table"
+            aria-label={m.integrations_table_region()}
             className="min-w-0 overflow-x-auto rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
             // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus the horizontal scroll region.
             tabIndex={0}
           >
-            <Table aria-label="Demo Integrations" className="min-w-[36rem]" data-ui="integrations-table" layout="fixed">
+            <Table
+              aria-label={m.integrations_table_name()}
+              className="min-w-[36rem]"
+              data-ui="integrations-table"
+              layout="fixed"
+            >
               <colgroup>
                 <col />
                 <col className="w-40" />
@@ -73,15 +79,20 @@ export function IntegrationsPage() {
               </colgroup>
               <Table.Header>
                 <Table.Row>
-                  <Table.Head>Name</Table.Head>
-                  <Table.Head>Category</Table.Head>
-                  <Table.Head>Status</Table.Head>
+                  <Table.Head>{m.integrations_column_name()}</Table.Head>
+                  <Table.Head>{m.integrations_column_category()}</Table.Head>
+                  <Table.Head>{m.integrations_column_status()}</Table.Head>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
                 {integrationPreviews.map((integration) => (
                   <Table.Row key={integration.id}>
-                    <Table.Cell aria-label={`${integration.name}. ${integration.description}`}>
+                    <Table.Cell
+                      aria-label={m.integrations_cell_label({
+                        name: integration.name,
+                        description: integration.description,
+                      })}
+                    >
                       <span className="flex min-w-0 items-start gap-3">
                         <IntegrationMark abbreviation={integration.abbreviation} id={integration.id} />
                         <span className="grid min-w-0 gap-0.5">
@@ -96,7 +107,7 @@ export function IntegrationsPage() {
                     </Table.Cell>
                     <Table.Cell>{integration.category}</Table.Cell>
                     <Table.Cell>
-                      <Badge variant="neutral">Demo</Badge>
+                      <Badge variant="neutral">{m.integrations_demo()}</Badge>
                     </Table.Cell>
                   </Table.Row>
                 ))}

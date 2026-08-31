@@ -8,45 +8,49 @@ export type AgentSettingsSection = "instructions" | "execution" | "messaging" | 
 
 export type AgentSettingsGroup = "setup" | "danger";
 
+/*
+ * Labels are functions. Resolved here they would run at import, before `configureLocaleRuntime()`
+ * replaces Paraglide's persisting resolver, writing a locale preference the reader never chose.
+ */
 export const agentSettingsSections: ReadonlyArray<{
   key: AgentSettingsSection;
-  label: string;
+  label: () => string;
   group: AgentSettingsGroup;
   icon: IconName;
 }> = [
   {
     key: "identity",
-    label: m.common_name(),
+    label: () => m.common_name(),
     group: "setup",
     icon: "user",
   },
   {
     key: "messaging",
-    label: m.im_messaging_page_title(),
+    label: () => m.im_messaging_page_title(),
     group: "setup",
     icon: "message",
   },
   {
     key: "computer",
-    label: m.agents_status_computer(),
+    label: () => m.agents_status_computer(),
     group: "setup",
     icon: "laptop",
   },
   {
     key: "instructions",
-    label: m.agent_settings_instructions_title(),
+    label: () => m.agent_settings_instructions_title(),
     group: "setup",
     icon: "instructions",
   },
   {
     key: "execution",
-    label: m.agent_settings_model(),
+    label: () => m.agent_settings_model(),
     group: "setup",
     icon: "model",
   },
   {
     key: "manage",
-    label: m.agent_settings_pause_or_delete(),
+    label: () => m.agent_settings_pause_or_delete(),
     group: "danger",
     icon: "shield",
   },
@@ -58,7 +62,12 @@ export const agentSettingsSections: ReadonlyArray<{
  */
 export const agentSettingsGroups = [
   { key: "setup", label: null },
-  { key: "danger", label: m.agent_settings_danger_zone() },
+  /*
+   * A function, not a resolved string. A message called here would run at import, before
+   * `configureLocaleRuntime()` replaces Paraglide's persisting resolver -- which writes a locale
+   * preference the reader never chose and pins the language they happened to arrive with.
+   */
+  { key: "danger", label: () => m.agent_settings_danger_zone() },
 ] as const;
 
 export function agentSettingsSummary(
@@ -91,6 +100,8 @@ export function agentSettingsSummary(
   }
   if (section === "identity") return config.displayName;
   if (section === "computer") {
+    const computer = agent.computer;
+    if (!computer) return m.agent_settings_computer_none_summary();
     const state = agent.availability.dependencies.computer.state;
     const status =
       state === "ready"
@@ -98,7 +109,7 @@ export function agentSettingsSummary(
         : state === "action_required"
           ? m.agent_settings_computer_offline()
           : m.agent_settings_computer_unconfirmed();
-    return `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${status}`;
+    return `${computer.displayName} · ${platformLabel(computer.platform)} · ${status}`;
   }
   return config.status === "active"
     ? m.agent_settings_active_accepting_requests()

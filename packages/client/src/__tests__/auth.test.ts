@@ -108,6 +108,70 @@ describe("OpenTagApi", () => {
     expect(error).toMatchObject({ category });
     expect(String(error)).not.toContain("leaked");
   });
+
+  it("aborts a hanging request at the configured deadline and includes a request ID", async () => {
+    vi.useFakeTimers();
+    try {
+      let observedSignal: AbortSignal | undefined;
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation((_input, init) => {
+        observedSignal = init?.signal ?? undefined;
+        return new Promise<Response>(() => undefined);
+      });
+      const api = new OpenTagApi("https://opentag.example", fetchImpl, { timeoutMs: 25 });
+      const pending = api.me("access").catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(25);
+
+      await expect(pending).resolves.toMatchObject({
+        code: "REQUEST_TIMEOUT",
+        category: "transient",
+        retryability: "backoff",
+        phase: "transport",
+        requestId: expect.any(String),
+      });
+      expect(observedSignal?.aborted).toBe(true);
+      expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get("x-request-id")).toEqual(expect.any(String));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains the caller abort reason as the safe cause", async () => {
+    const reason = new Error("caller stopped this request");
+    const controller = new AbortController();
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      await new Promise<void>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+      throw reason;
+    });
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+    const pending = api.me("access", { signal: controller.signal });
+    controller.abort(reason);
+    const error = await pending.catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "REQUEST_CANCELLED",
+      category: "deterministic",
+      retryability: "never",
+      phase: "request",
+      cause: reason,
+    });
+  });
+
+  it.each([
+    [400, "validation", "VALIDATION_ERROR"],
+    [404, "deterministic", "RESOURCE_NOT_FOUND"],
+    [409, "deterministic", "VALIDATION_ERROR"],
+    [429, "rate_limit", "RATE_LIMITED"],
+    [500, "transient", "SERVICE_UNAVAILABLE"],
+  ] as const)("maps a malformed HTTP %s response without treating it as auth", async (status, category, code) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("not json", { status }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+    const error = await api.me("access").catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code, category, requestId: expect.any(String) });
+    expect((error as OpenTagApiError).category).not.toBe("credential");
+  });
 });
 
 describe("AccessTokenProvider", () => {
@@ -154,6 +218,73 @@ describe("AccessTokenProvider", () => {
       { accessToken: "new-access", expiresAt: "2026-08-18T00:15:00.000Z" },
     ]);
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a rotated refresh token when separate providers refresh one credential concurrently", async () => {
+    const home = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, home);
+    let resolveFirst:
+      | ((value: { accessToken: string; refreshToken: string; tokenType: "Bearer"; expiresIn: number }) => void)
+      | undefined;
+    const firstRefresh = vi.fn(
+      () =>
+        new Promise<{ accessToken: string; refreshToken: string; tokenType: "Bearer"; expiresIn: number }>(
+          (resolve) => {
+            resolveFirst = resolve;
+          },
+        ),
+    );
+    const secondRefresh = vi.fn().mockResolvedValue({
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    });
+    const first = new AccessTokenProvider({
+      api: { refresh: firstRefresh },
+      home,
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
+      lockRetryMs: 1,
+    });
+    const second = new AccessTokenProvider({
+      api: { refresh: secondRefresh },
+      home,
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
+      lockRetryMs: 1,
+    });
+
+    const firstPending = first.getAccessToken();
+    await vi.waitFor(() => expect(firstRefresh).toHaveBeenCalledWith("refresh"));
+    const secondPending = second.getAccessToken();
+    resolveFirst?.({
+      accessToken: "rotated-access",
+      refreshToken: "rotated-refresh",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    });
+    await expect(firstPending).resolves.toBe("rotated-access");
+    await expect(secondPending).resolves.toBe("rotated-access");
+    await expect(readCredentials(home)).resolves.toMatchObject({ refreshToken: "rotated-refresh" });
+    // The second provider waited for the lock, reloaded the winner, and did not overwrite its refresh token.
+    expect(secondRefresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("credential validation", () => {
+  it.each([
+    ["accessToken", { accessToken: "" }],
+    ["refreshToken", { refreshToken: "   " }],
+    ["expiry", { accessTokenExpiresAt: "1970-01-01T00:00:00.000Z" }],
+    ["server URL", { serverUrl: "https://opentag.example/api" }],
+  ] as const)("rejects a weak stored %s", async (_label, override) => {
+    const home = await temporaryHome();
+    await expect(writeCredentialsAtomically({ ...credentials, ...override }, home)).rejects.toThrow();
+  });
+
+  it("normalizes a valid origin before storing it", async () => {
+    const home = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, serverUrl: "https://opentag.example/" }, home);
+    await expect(readCredentials(home)).resolves.toMatchObject({ serverUrl: "https://opentag.example" });
   });
 });
 

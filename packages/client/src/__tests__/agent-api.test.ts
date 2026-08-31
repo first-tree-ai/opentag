@@ -185,7 +185,7 @@ describe("OpenTagApi Agent methods", () => {
     await expect(noContent.deleteAgent("access", agentId)).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
 
     for (const [status, category] of [
-      [400, "credential"],
+      [400, "validation"],
       [429, "rate_limit"],
       [503, "transient"],
     ] as const) {
@@ -346,7 +346,7 @@ describe("OpenTagApi Agent methods", () => {
         name: "Bestony",
         runtimeProvider: "codex",
       }),
-    ).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN", status: 400, message: "Authentication failed" });
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR", category: "validation", status: 400 });
   });
 
   it("rejects an invalid success response", async () => {

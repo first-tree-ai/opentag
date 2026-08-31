@@ -1,9 +1,12 @@
-import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
+import type { FeishuBrand, FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { formatDateTime } from "../i18n/format.js";
+import { SETUP_COPY } from "../setup/copy.js";
 import { Banner, Button, Loader } from "../ui/design-system.js";
+import { defaultFeishuBrand, otherFeishuBrand } from "./brand.js";
+import { messagingProviderLabel } from "./provider-label.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
@@ -35,6 +38,11 @@ const FEISHU_SETUP_MESSAGES: Record<string, string> = {
 export interface FeishuSetupControl {
   /** Starts one setup intent. False means no new attempt was started. */
   start: (intent?: FeishuSetupIntent) => Promise<boolean>;
+  /**
+   * Reissues the current attempt's code against the other regional brand. The domain is fixed when
+   * a code is minted, so this releases the attempt on screen before asking for a new one.
+   */
+  switchBrand: (brand: FeishuBrand) => Promise<boolean>;
   loading: boolean;
   /** Opaque lifecycle feedback for the caller to place in its existing layout. */
   feedback: ReactNode;
@@ -82,7 +90,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
   );
 
   const start = useCallback(
-    async (intent: FeishuSetupIntent = "create") => {
+    async (intent: FeishuSetupIntent = "create", brand?: FeishuBrand) => {
       const current = attemptRef.current;
       if (creatingRef.current || (current?.intent === intent && ACTIVE_STATES.includes(current.state))) return false;
 
@@ -91,7 +99,15 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
       setLoading(true);
       setError(undefined);
       try {
-        const started = await browserApi.createFeishuSetupAttempt(agentId, intent);
+        /*
+         * Only a first connect chooses a brand: a re-authorization or a replacement belongs to a
+         * binding that already knows its own, and the Server keeps that one whatever is asked for.
+         */
+        const started = await browserApi.createFeishuSetupAttempt(
+          agentId,
+          intent,
+          intent === "create" ? (brand ?? defaultFeishuBrand()) : undefined,
+        );
         if (lifecycleRef.current !== lifecycle) return false;
         creatingRef.current = false;
         if (current && attemptRef.current !== current && started.id === current.id) return true;
@@ -154,12 +170,31 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
     };
   }, [activeAttemptId]);
 
+  const switchBrand = useCallback(
+    async (brand: FeishuBrand) => {
+      const current = attemptRef.current;
+      /*
+       * Released before the replacement is asked for: the Server hands back an attempt that is
+       * still awaiting a scan, so creating first would return the very code the reader is leaving.
+       */
+      if (current && ACTIVE_STATES.includes(current.state)) {
+        attemptRef.current = undefined;
+        setAttempt(undefined);
+        lifecycleRef.current += 1;
+        await browserApi.cancelFeishuSetupAttempt(current.id).catch(() => undefined);
+      }
+      return start(current?.intent ?? "create", brand);
+    },
+    [start],
+  );
+
   return children({
     loading,
     start,
+    switchBrand,
     feedback: (
       <>
-        {attempt ? <FeishuSetupFeedback attempt={attempt} onRetry={start} /> : null}
+        {attempt ? <FeishuSetupFeedback attempt={attempt} onRetry={start} onSwitchBrand={switchBrand} /> : null}
         {error ? <Banner variant="error" role="alert" description={error.message} /> : null}
       </>
     ),
@@ -169,9 +204,11 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
 function FeishuSetupFeedback({
   attempt,
   onRetry,
+  onSwitchBrand,
 }: {
   attempt: FeishuSetupAttempt;
   onRetry: (intent: FeishuSetupIntent) => Promise<boolean>;
+  onSwitchBrand: (brand: FeishuBrand) => Promise<boolean>;
 }) {
   const recovery = setupRecovery(attempt);
   const active = ACTIVE_STATES.includes(attempt.state);
@@ -198,10 +235,18 @@ function FeishuSetupFeedback({
       {attempt.qrUrl ? (
         <>
           <br />
-          <FeishuQrCode value={attempt.qrUrl} />
+          <FeishuQrCode brand={attempt.brand} value={attempt.qrUrl} />
           <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-            Open Feishu authorization
+            Open {messagingProviderLabel("feishu", attempt.brand)} authorization
           </a>
+          {/*
+            A code is minted against one brand's domain and cannot be authorized from the other, so
+            the reader whose company is on the one we did not guess needs the way out here, beside
+            the code that will not work for them.
+          */}
+          <Button onClick={() => void onSwitchBrand(otherFeishuBrand(attempt.brand))} variant="secondary">
+            {SETUP_COPY.messaging.feishuBrandSwitch(messagingProviderLabel("feishu", otherFeishuBrand(attempt.brand)))}
+          </Button>
         </>
       ) : null}
       {RETRYABLE_STATES.includes(attempt.state) ? (
@@ -214,7 +259,7 @@ function FeishuSetupFeedback({
   );
 }
 
-function FeishuQrCode({ value }: { value: string }) {
+function FeishuQrCode({ brand, value }: { brand: FeishuBrand; value: string }) {
   const [source, setSource] = useState<string>();
   useEffect(() => {
     let active = true;
@@ -227,7 +272,7 @@ function FeishuQrCode({ value }: { value: string }) {
   }, [value]);
   return source ? (
     <img
-      alt="Scan this QR code in Feishu"
+      alt={SETUP_COPY.messaging.qrAlt(messagingProviderLabel("feishu", brand))}
       className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />

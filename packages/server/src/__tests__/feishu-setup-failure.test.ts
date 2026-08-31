@@ -227,6 +227,70 @@ describe("FeishuSetupService persistence", () => {
     );
   });
 
+  /*
+   * The whole point of deciding the brand before minting: the domain is fixed when the code is
+   * created, so a Lark tenant handed a Feishu code has nothing on the page that can rescue them.
+   * The attempt reports the brand back because the reader may reload, or arrive at an attempt some
+   * other tab started, and the code on screen has to say which app can read it.
+   */
+  it("mints against the brand the caller chose and reports it back", async () => {
+    const value = await setupFixture();
+    const gateway: FeishuRegistrationGateway = {
+      start: vi.fn(() => registration(new Promise(() => undefined))),
+    };
+    const service = new FeishuSetupService({
+      database: setupDatabase.database,
+      cipher: value.cipher,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindings,
+      registrations: gateway,
+      activation: { activateAtomicAttempt: vi.fn() },
+    });
+    const attempt = await service.createOrReuse(value.bootstrap.userId, value.agent.id, "create", "lark");
+    expect(gateway.start).toHaveBeenCalledWith(expect.objectContaining({ brand: "lark" }));
+    expect(attempt.brand).toBe("lark");
+    // Read back from storage rather than from the create call, which is the path a reload takes.
+    await expect(service.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({ brand: "lark" });
+    service.stop();
+  });
+
+  /*
+   * A binding that has already authorized knows its own brand, and that beats anything a caller
+   * inferred from a browser. Re-authorizing against the other domain would send the reader to a
+   * page that cannot see the App they are repairing.
+   */
+  it("keeps a bound team's own brand when the caller asks for the other one", async () => {
+    const value = await setupFixture();
+    const gateway: FeishuRegistrationGateway = {
+      start: vi.fn(() => registration(new Promise(() => undefined))),
+    };
+    const service = new FeishuSetupService({
+      database: setupDatabase.database,
+      cipher: value.cipher,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindings,
+      registrations: gateway,
+      activation: { activateAtomicAttempt: vi.fn() },
+    });
+    // An active binding has to satisfy the table's activated-secret shape, so it is inserted whole.
+    await setupDatabase.database.insert(imBindings).values({
+      agentId: value.agent.id,
+      provider: "feishu",
+      status: "active",
+      externalAppId: "cli_bound",
+      externalBotId: "ou_bound",
+      externalTeamBrand: "lark",
+      credentialSchemaVersion: 1,
+      credentialGeneration: 1,
+      encryptedCredential: value.cipher.encrypt(JSON.stringify({ appSecret: "secret" })),
+      activatedAt: setupNow,
+    });
+    const attempt = await service.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize", "feishu");
+    expect(gateway.start).toHaveBeenCalledWith(expect.objectContaining({ brand: "lark", existingAppId: "cli_bound" }));
+    expect(attempt.brand).toBe("lark");
+    service.stop();
+  });
+
   it("supports cancellation, failed registration, invalid attempts, and clean shutdown", async () => {
     const value = await setupFixture();
     let rejectResult!: (error: unknown) => void;

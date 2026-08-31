@@ -1,4 +1,6 @@
-import { type FormEvent, useEffect, useId, useState } from "react";
+import type { FeishuBrand } from "@opentag/shared/browser";
+import { type FormEvent, useCallback, useEffect, useId, useState } from "react";
+import { defaultFeishuBrand, otherFeishuBrand } from "../im/brand.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import {
   CheckLine,
@@ -314,6 +316,7 @@ function MessagingPicker({
 }
 
 function MessagingConnection({
+  brand,
   computerOnline,
   messaging,
   onRetry,
@@ -321,9 +324,10 @@ function MessagingConnection({
   provider,
   readiness,
 }: {
+  brand: FeishuBrand;
   computerOnline: boolean | undefined;
   messaging: MessagingState;
-  onRetry: (provider: MessagingProvider) => void;
+  onRetry: (provider: MessagingProvider, brand?: FeishuBrand) => void;
   onSlackInstall: () => void;
   provider: MessagingProvider | undefined;
   readiness: ReadinessFacts | undefined;
@@ -363,9 +367,9 @@ function MessagingConnection({
       ) : null}
       {provider === "feishu" ? (
         <div className={PANEL}>
-          <p className="text-kumo-subtle m-0">{COPY.messaging.feishuIntro}</p>
+          <p className="text-kumo-subtle m-0">{COPY.messaging.feishuIntro(messagingProviderLabel("feishu", brand))}</p>
           <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
-            {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
+            {messaging.kind === "waiting" ? <QrCode brand={messaging.brand} value={messaging.qrValue} /> : null}
           </div>
           {/*
             A refused code is not retried on sight, so this is the only way back to one. Saying
@@ -386,7 +390,7 @@ function MessagingConnection({
           ) : messaging.kind === "failed" ? (
             <div className="flex flex-col items-center gap-3">
               <p className="text-sm text-kumo-danger m-0">{COPY.messaging.failed}</p>
-              <Button onClick={() => onRetry(provider)} variant="secondary">
+              <Button onClick={() => onRetry(provider, brand)} variant="secondary">
                 {COPY.messaging.retry}
               </Button>
             </div>
@@ -396,6 +400,17 @@ function MessagingConnection({
               {COPY.messaging.waiting}
             </p>
           )}
+          {/*
+            The way out of a wrong guess, offered where the wrong code is: which of the two brands a
+            company is on cannot be read off the reader's language, and a code minted for one cannot
+            be authorized from the other. It stands under the code rather than replacing it, because
+            for most readers the guess is right and this is only reassurance that it can be changed.
+          */}
+          {messaging.kind === "waiting" || messaging.kind === "issuing" ? (
+            <Button onClick={() => onRetry(provider, otherFeishuBrand(brand))} variant="ghost">
+              {COPY.messaging.feishuBrandSwitch(messagingProviderLabel("feishu", otherFeishuBrand(brand)))}
+            </Button>
+          ) : null}
         </div>
       ) : provider === "slack" ? (
         <div className={PANEL}>
@@ -845,14 +860,30 @@ export function MessagingStep({
   messaging: MessagingState;
   onChoose: (provider: MessagingProvider) => void;
   onSlackInstall: () => void;
-  onStart: (provider: MessagingProvider) => void;
+  onStart: (provider: MessagingProvider, brand?: FeishuBrand) => void;
   provider: MessagingProvider | undefined;
   readiness: ReadinessFacts | undefined;
 }) {
+  /*
+   * The brand the reader last asked for. It is seeded from their language because that is the only
+   * signal available before anything is authorized, and it is what the first code is minted
+   * against — but a code on screen names the brand it was actually minted with, and that wins:
+   * after a switch, a reload, or an attempt another tab started, the two can differ.
+   */
+  const [chosenBrand, setChosenBrand] = useState<FeishuBrand>(defaultFeishuBrand);
+  const brand = messaging.kind === "waiting" ? messaging.brand : chosenBrand;
+  const start = useCallback(
+    (chosen: MessagingProvider, requested?: FeishuBrand) => {
+      if (requested) setChosenBrand(requested);
+      onStart(chosen, requested);
+    },
+    [onStart],
+  );
+
   // Feishu's code is issued as soon as it is picked; Slack waits for its install to be started.
   useEffect(() => {
-    if (provider && messaging.kind === "idle") onStart(provider);
-  }, [messaging.kind, onStart, provider]);
+    if (provider && messaging.kind === "idle") onStart(provider, chosenBrand);
+  }, [chosenBrand, messaging.kind, onStart, provider]);
 
   return (
     <section className={STEP} data-ui="onboarding-v2-step-messaging">
@@ -865,9 +896,10 @@ export function MessagingStep({
 
       <MessagingPicker onChoose={onChoose} provider={provider} />
       <MessagingConnection
+        brand={brand}
         computerOnline={computerOnline}
         messaging={messaging}
-        onRetry={onStart}
+        onRetry={start}
         onSlackInstall={onSlackInstall}
         provider={provider}
         readiness={readiness}

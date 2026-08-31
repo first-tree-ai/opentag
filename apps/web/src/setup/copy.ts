@@ -77,18 +77,26 @@ export const SETUP_COPY = {
     description: "Pick the app your team already works in.",
     providerLabel: "Messaging app",
     /**
-     * Feishu and Lark are one channel behind a regional switch, and the brand is only learned from
-     * the authorization result — a first connect has no brand yet, so the code this card leads to
-     * is always minted against Feishu. It therefore names Feishu alone: an "also called Feishu/Lark"
-     * would walk a Lark tenant into a code their account cannot authorize.
+     * Feishu and Lark are one channel behind a regional switch, so this card offers one choice and
+     * the brand is settled on the screen after it, where a code is minted against one domain and
+     * can be moved to the other. The picker names Feishu, the identifier's own brand, and says both
+     * in its description: nothing has been chosen yet, so promising one alone would be a guess made
+     * in the one place with nothing to base it on.
      *
      * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
      * picker cannot drift from what the same provider is called everywhere else in the product.
      */
-    feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu workspace" },
+    feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu or Lark workspace" },
     slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
-    feishuIntro: "Scan this with Feishu. You'll finish the last step inside Feishu itself.",
-    qrAlt: "Scan this QR code in Feishu",
+    feishuIntro: (brand: string) => `Scan this with ${brand}. You'll finish the last step inside ${brand} itself.`,
+    qrAlt: (brand: string) => `Scan this QR code in ${brand}`,
+    /**
+     * A code is minted against one of the two domains and cannot be authorized from the other, so
+     * the reader whose company is on the brand we guessed wrong needs a way out while they are
+     * looking at the code, not a step back they have to think to take. It names the other brand
+     * rather than saying "switch", because the reader knows which app they open.
+     */
+    feishuBrandSwitch: (brand: string) => `Use ${brand} instead`,
     waiting: "Waiting for you to scan…",
     cliMissing: (provider: string) =>
       `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,

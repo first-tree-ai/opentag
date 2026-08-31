@@ -13,6 +13,7 @@ function attempt(
 ): FeishuSetupAttempt {
   return {
     agentId,
+    brand: "feishu",
     qrUrl: null,
     expiresAt: "2026-08-20T00:15:00.000Z",
     errorCode: null,

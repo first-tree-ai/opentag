@@ -9,7 +9,9 @@
  * modes exist for judging the flow at its real pace.
  */
 
+import type { FeishuBrand } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { defaultFeishuBrand } from "../im/brand.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
 import type { AgentDraft, ConnectState, CreationState, MessagingState, ReadinessFacts } from "./flow.js";
@@ -362,13 +364,14 @@ export function useMockBackend(
 
   /** Only Feishu has something to issue up front; Slack waits for the user to start its install. */
   const startMessaging = useCallback(
-    (provider: "feishu" | "slack") => {
+    (provider: "feishu" | "slack", brand: FeishuBrand = defaultFeishuBrand()) => {
       if (provider !== "feishu") return;
       setMessaging((current) => {
-        if (current.kind !== "idle") return current;
+        // Asking for the brand that is not on screen reissues, exactly as the Server-backed one does.
+        if (current.kind !== "idle" && !(current.kind === "waiting" && current.brand !== brand)) return current;
         queueMicrotask(() => {
           later(() => {
-            setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/feishu/${randomId()}` });
+            setMessaging({ kind: "waiting", qrValue: `https://opentag.ai/${brand}/${randomId()}`, brand });
             later(() => setMessaging({ kind: "waiting-handoff" }), timings.scanMs);
           }, timings.issueMs);
         });

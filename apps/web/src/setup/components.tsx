@@ -1,7 +1,9 @@
+import type { FeishuBrand } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import { useEffect, useState } from "react";
 import { StatusIndicator } from "../ui/design-system.js";
 import "./setup.css";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import { type CheckRow, formatRemaining } from "./checks.js";
 import { CHECK_COPY, SETUP_COPY } from "./copy.js";
 
@@ -85,7 +87,7 @@ export function CheckLine({
   );
 }
 
-export function QrCode({ value }: { value: string }) {
+export function QrCode({ brand, value }: { brand: FeishuBrand; value: string }) {
   const [source, setSource] = useState<string>();
   useEffect(() => {
     let active = true;
@@ -99,5 +101,11 @@ export function QrCode({ value }: { value: string }) {
       active = false;
     };
   }, [value]);
-  return source ? <img alt={SETUP_COPY.messaging.qrAlt} className="ots-qr__image" src={source} /> : null;
+  return source ? (
+    <img
+      alt={SETUP_COPY.messaging.qrAlt(messagingProviderLabel("feishu", brand))}
+      className="ots-qr__image"
+      src={source}
+    />
+  ) : null;
 }

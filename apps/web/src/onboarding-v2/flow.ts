@@ -4,6 +4,7 @@
  * data. The page derives what to render from `deriveFlowState`; it never keeps a step cursor.
  */
 
+import type { FeishuBrand } from "@opentag/shared/browser";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 
 export const RUNTIMES = ["codex", "claude-code"] as const;
@@ -77,7 +78,12 @@ export interface ReadinessFacts {
 export type MessagingState =
   | { readonly kind: "idle" }
   | { readonly kind: "issuing" }
-  | { readonly kind: "waiting"; readonly qrValue: string }
+  /**
+   * A code on screen names the brand it was minted against, rather than the one the reader's
+   * locale would guess: after a switch, a reload, or an attempt another tab started, those two can
+   * differ, and the wrong one would tell the reader to scan with an app that cannot read it.
+   */
+  | { readonly kind: "waiting"; readonly qrValue: string; readonly brand: FeishuBrand }
   | { readonly kind: "away" }
   /**
    * Installed, but not yet reachable. The Server observes the messaging identity for itself, and

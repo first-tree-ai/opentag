@@ -17,6 +17,7 @@ const COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
+const SECOND_ATTEMPT_ID = "3b73a21e-f6c7-4474-91ea-4dabf0566a24";
 const POLL_MS = 1_500;
 const FEISHU_POLL_MS = 2_000;
 const HANDOFF_POLL_MS = 2_000;
@@ -60,6 +61,7 @@ function attempt(overrides: Partial<FeishuSetupAttempt> = {}): FeishuSetupAttemp
     id: ATTEMPT_ID,
     agentId: AGENT_ID,
     intent: "create",
+    brand: "feishu",
     state: "awaiting_user",
     qrUrl: "https://example.test/qr",
     expiresAt: "2026-08-29T00:10:00.000Z",
@@ -168,6 +170,50 @@ describe("the onboarding flow against the Server", () => {
     await tick(HANDOFF_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 2);
     expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+  });
+
+  /*
+   * The way out of a wrong guess. A code is minted against one brand's domain and cannot be
+   * authorized from the other, so switching is not a relabelling: the attempt on screen has to be
+   * released and a new code issued, or `createOrReuse` hands back the very code the reader left.
+   */
+  it("issues a fresh code against the other brand when the reader switches", async () => {
+    computersReturning([], [computer()]);
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    const create = vi
+      .spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockImplementation(async (_agentId, _intent, brand) =>
+        attempt({ id: brand === "lark" ? SECOND_ATTEMPT_ID : ATTEMPT_ID, brand: brand ?? "feishu" }),
+      );
+    const cancel = vi
+      .spyOn(browserApi, "cancelFeishuSetupAttempt")
+      .mockImplementation(async (id) => attempt({ id, state: "canceled", qrUrl: null }));
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockImplementation(async (id) => attempt({ id }));
+
+    render(<OnboardingV2Page />);
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/^Feishu/);
+    await settle();
+
+    const chosen = create.mock.calls[0]?.[2];
+    if (!chosen) throw new Error("The first connect did not name a brand");
+    const other = chosen === "feishu" ? "lark" : "feishu";
+    const otherLabel = other === "lark" ? "Lark" : "Feishu";
+    expect(
+      screen.getByRole("img", { name: `Scan this QR code in ${chosen === "lark" ? "Lark" : "Feishu"}` }),
+    ).toBeTruthy();
+
+    press(`Use ${otherLabel} instead`);
+    await settle();
+
+    // Released first, then reissued: the order is what stops the Server returning the old code.
+    expect(cancel).toHaveBeenCalledWith(chosen === "lark" ? SECOND_ATTEMPT_ID : ATTEMPT_ID);
+    expect(create).toHaveBeenLastCalledWith(AGENT_ID, "create", other);
+    expect(screen.getByRole("img", { name: `Scan this QR code in ${otherLabel}` })).toBeTruthy();
   });
 
   it("gives the agent name field an accessible name despite Kumo's own warning", async () => {

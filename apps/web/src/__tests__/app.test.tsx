@@ -454,12 +454,18 @@ function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
+      const body = JSON.parse(String(init.body)) as {
+        intent: "create" | "reauthorize" | "replace";
+        brand?: "feishu" | "lark";
+      };
       return json(
         {
           id: crypto.randomUUID(),
           agentId,
           intent: body.intent,
+          // The Server mints against the brand it was asked for, defaulting to Feishu, and says
+          // which one it used — a caller that named none still learns what it got.
+          brand: body.brand ?? "feishu",
           state: options.setupFailureCode ? "failed" : "awaiting_user",
           qrUrl: options.setupFailureCode ? null : "https://open.feishu.cn/setup",
           expiresAt: "2026-08-20T00:15:00.000Z",
@@ -2583,7 +2589,22 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Connect a Feishu Bot" }));
     expect(await screen.findByText("Feishu setup started")).toBeTruthy();
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
-    expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
+    /*
+     * A first connect decides the brand before the code is minted, from the reader's language, and
+     * the code says which of the two it is: minted against one domain, it cannot be authorized from
+     * the other. The way back to the other brand stands beside it, because the language a reader
+     * uses is a guess about their company, not a fact about it.
+     */
+    const brandRequest = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
+      );
+    const minted = (JSON.parse(String(brandRequest?.[1]?.body)) as { brand: "feishu" | "lark" }).brand;
+    const mintedLabel = minted === "lark" ? "Lark" : "Feishu";
+    const otherLabel = minted === "lark" ? "Feishu" : "Lark";
+    expect(await screen.findByRole("img", { name: `Scan this QR code in ${mintedLabel}` })).toBeTruthy();
+    expect(screen.getByRole("button", { name: `Use ${otherLabel} instead` })).toBeTruthy();
     await waitFor(() =>
       expect(
         vi

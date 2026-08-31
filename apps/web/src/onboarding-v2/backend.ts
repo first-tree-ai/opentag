@@ -9,6 +9,7 @@
  * rather than a fake of the API.
  */
 
+import type { FeishuBrand } from "@opentag/shared/browser";
 import type {
   AgentDraft,
   ConnectState,
@@ -106,7 +107,12 @@ export interface OnboardingBackend {
   /** Replaces an expired code with a fresh one, restarting the wait. */
   readonly refreshConnectCode: () => void;
   readonly createAgent: (draft: AgentDraft) => void;
-  readonly startMessaging: (provider: "feishu" | "slack") => void;
+  /**
+   * Starts, or re-starts, connecting a messaging app. The brand only means anything to Feishu, and
+   * asking for one that differs from the code already on screen is how the reader switches: the
+   * domain is fixed when a code is minted, so the running attempt is ended and a new code issued.
+   */
+  readonly startMessaging: (provider: "feishu" | "slack", brand?: FeishuBrand) => void;
   /** Slack's install is a link out; this is the user leaving for Slack. */
   readonly startSlackInstall: () => void;
   readonly reset: () => void;

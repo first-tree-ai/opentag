@@ -7,6 +7,7 @@ import { DefaultFeishuRegistrationGateway } from "../services/im-bindings/feishu
 interface RegistrationOptions {
   appId?: string;
   createOnly?: boolean;
+  domain?: string;
   signal: AbortSignal;
   appPreset: { name: string; desc: string };
   addons: { preset: boolean; scopes: { tenant: string[]; user?: string[] }; events: { items: { tenant: string[] } } };
@@ -24,6 +25,7 @@ describe("Feishu registration", () => {
       profile: { name: "Assistant", description: "OpenTag Agent: Assistant" },
       intent,
       receiveMode: "all_message",
+      brand: "feishu",
     });
     await expect(registration.qrReady).resolves.toMatchObject({ url: "https://open.feishu.cn/qr/create" });
     await expect(registration.result).resolves.toEqual({
@@ -43,6 +45,32 @@ describe("Feishu registration", () => {
     });
     expect(options.appId).toBeUndefined();
     expect(options.addons.scopes.user).toBeUndefined();
+    expect(options.domain).toBe("accounts.feishu.cn");
+  });
+
+  /*
+   * The domain is what makes a code authorizable, and it is fixed the moment the code is minted:
+   * the SDK begins its device flow against this host, so a Lark tenant handed a Feishu code has
+   * nothing on the page that can rescue them. The accounts host is also not the open-API host the
+   * bound app talks to afterwards, which is why this asserts the literal rather than reusing
+   * `feishuDomainForWorkspaceBrand`.
+   */
+  it("mints against the accounts domain of the brand it was asked for", async () => {
+    const register = vi.fn(async (rawOptions: unknown) => {
+      const options = rawOptions as RegistrationOptions;
+      options.onQRCodeReady({ url: "https://accounts.larksuite.com/qr/create", expireIn: 60 });
+      return { client_id: "cli_new", client_secret: "secret", user_info: { tenant_brand: "lark" } };
+    });
+    const registration = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
+      profile: { name: "Assistant", description: "OpenTag Agent: Assistant" },
+      intent: "create",
+      receiveMode: "all_message",
+      brand: "lark",
+    });
+    await registration.qrReady;
+    await expect(registration.result).resolves.toMatchObject({ teamBrand: "lark" });
+    const options = register.mock.calls[0]?.[0] as RegistrationOptions;
+    expect(options.domain).toBe("accounts.larksuite.com");
   });
 
   it("pins reauthorization to the existing App and forwards cancellation", async () => {
@@ -61,6 +89,7 @@ describe("Feishu registration", () => {
       intent: "reauthorize",
       existingAppId: "cli_existing",
       receiveMode: "mention_only",
+      brand: "feishu",
     });
     await registration.qrReady;
     const options = register.mock.calls[0]?.[0] as RegistrationOptions;

@@ -62,7 +62,7 @@ export function registerImBindingRoutes(
     app.post(AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
       const input = parseRequest(CreateFeishuSetupAttemptRequestSchema, request.body ?? {});
-      const attempt = await feishu.createOrReuse(authenticatedUserId(request), agentId, input.intent);
+      const attempt = await feishu.createOrReuse(authenticatedUserId(request), agentId, input.intent, input.brand);
       return reply.code(201).send(FeishuSetupAttemptSchema.parse(attempt));
     });
 

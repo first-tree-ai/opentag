@@ -373,7 +373,7 @@ describe("OnboardingV2Page", () => {
     await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Feishu/ }));
     await advance(ISSUE_MS);
     await advanceMock("Scan QR code");
     await advanceMock("Confirm reachable");
@@ -392,7 +392,7 @@ describe("OnboardingV2Page", () => {
       await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /^Feishu/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("button", { name: "Scan QR code" })).toBeTruthy();
     });
@@ -447,11 +447,11 @@ describe("OnboardingV2Page", () => {
       render(<OnboardingV2MockPage />);
       await reachMessagingStep();
 
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /^Feishu/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
       expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Feishu/ }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("button", { name: /^Feishu/ }).getAttribute("aria-pressed")).toBe("true");
     });
 
     it("installs Slack by sending the user there and bringing them back", async () => {
@@ -593,7 +593,7 @@ describe("OnboardingV2Page", () => {
       await advance(CREATE_MS);
 
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /^Feishu/ }));
       await advance(ISSUE_MS);
       await advanceMock("Scan QR code");
       await advanceMock("Confirm reachable");

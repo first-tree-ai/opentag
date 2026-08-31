@@ -45,6 +45,7 @@ const feishuAttempt = {
   id: attemptId,
   agentId,
   intent: "create" as const,
+  brand: "feishu" as const,
   state: "awaiting_user" as const,
   qrUrl: "https://open.feishu.cn/qr/example",
   expiresAt: "2026-08-19T01:00:00.000Z",
@@ -263,6 +264,20 @@ describe("ImBinding HTTP API", () => {
     });
     expect(createFeishu.statusCode).toBe(201);
     expect(createFeishu.json()).toEqual(feishuAttempt);
+    /*
+     * The brand travels with the intent, because it decides which domain the code is minted
+     * against and that is fixed the moment it is minted. A request that names none keeps Feishu,
+     * which is what every code was minted against before the choice existed.
+     */
+    expect(service.feishu.createOrReuse).toHaveBeenLastCalledWith(expect.any(String), agentId, "create", "feishu");
+    const createLark = await app.inject({
+      method: "POST",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+      payload: { intent: "create", brand: "lark" },
+    });
+    expect(createLark.statusCode).toBe(201);
+    expect(service.feishu.createOrReuse).toHaveBeenLastCalledWith(expect.any(String), agentId, "create", "lark");
     expect(
       (await app.inject({ method: "GET", url: feishuSetupAttemptPath(attemptId), headers: authorization })).json(),
     ).toEqual(feishuAttempt);

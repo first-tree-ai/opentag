@@ -168,6 +168,17 @@ export const ImBindingAdminDetailSchema = ImBindingSummarySchema.extend({
   lastErrorCode: z.string().min(1).max(120).nullable(),
 }).strict();
 
+/**
+ * Which regional brand of the one Feishu channel a connect code is minted against.
+ *
+ * Feishu and Lark are one channel behind a regional switch, not two providers, so this is a
+ * property of the attempt and of the bound team — never a second value in `ImProviderSchema`.
+ * The brand a binding ends up with is still learned from the authorization result, which is the
+ * only ground truth about the tenant; this is the intent the code was minted with, and the two
+ * are allowed to disagree.
+ */
+export const FeishuBrandSchema = z.enum(["feishu", "lark"]);
+
 export const FeishuSetupIntentSchema = z.enum(["create", "reauthorize", "replace"]);
 export const FeishuSetupStateSchema = z.enum([
   "awaiting_user",
@@ -183,6 +194,12 @@ export const FeishuSetupAttemptSchema = z
     id: z.string().uuid(),
     agentId: z.string().uuid(),
     intent: FeishuSetupIntentSchema,
+    /**
+     * The brand this attempt's code was minted against, echoed back so a reader who reloads — or
+     * who is handed a still-running attempt started by another tab — is told which of the two they
+     * are looking at, rather than the one their locale would have guessed.
+     */
+    brand: FeishuBrandSchema,
     state: FeishuSetupStateSchema,
     qrUrl: z.string().url().nullable(),
     expiresAt: z.string().datetime(),
@@ -192,8 +209,13 @@ export const FeishuSetupAttemptSchema = z
   })
   .strict();
 
+/**
+ * The brand defaults to Feishu rather than being required: an older client that does not send one
+ * keeps the behaviour it already had, and Feishu is also the safer of the two defaults, because the
+ * SDK recovers a Lark tenant that begins on the Feishu domain but has no path back the other way.
+ */
 export const CreateFeishuSetupAttemptRequestSchema = z
-  .object({ intent: FeishuSetupIntentSchema.default("create") })
+  .object({ intent: FeishuSetupIntentSchema.default("create"), brand: FeishuBrandSchema.default("feishu") })
   .strict();
 
 export const SlackConfigurationIntentSchema = z.enum(["create", "reauthorize"]);
@@ -285,6 +307,7 @@ export type ImBindingIdentity = z.infer<typeof ImBindingIdentitySchema>;
 export type ImBindingSummary = z.infer<typeof ImBindingSummarySchema>;
 export type ImBindingHandoffStatus = z.infer<typeof ImBindingHandoffStatusSchema>;
 export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
+export type FeishuBrand = z.infer<typeof FeishuBrandSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;
 export type FeishuSetupAttempt = z.infer<typeof FeishuSetupAttemptSchema>;

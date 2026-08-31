@@ -9,15 +9,28 @@ describe("messagingProviderLabel", () => {
   });
 
   /*
-   * The Feishu/Lark brand switch is not something a first connect can resolve, so a label that
-   * named both would promise a domain we cannot mint yet. This is the assertion that fails if an
-   * apposition ever creeps back into the helper.
+   * One code is minted against one domain, so a label that named both brands at once would
+   * describe something no connect attempt can be. The name follows the brand instead — and where
+   * no brand is known, it stays with Feishu rather than hedging.
    */
-  it("never names a brand the connect flow cannot deliver", () => {
+  it("names one brand at a time, never an apposition", () => {
     for (const provider of ["feishu", "slack"] as const) {
       expect(messagingProviderLabel(provider)).not.toMatch(/also called|aka|\(/i);
     }
     expect(messagingProviderLabel("feishu")).not.toMatch(/Lark/i);
+    expect(messagingProviderLabel("feishu", "lark")).not.toMatch(/Feishu/i);
+  });
+
+  /*
+   * The brand is a property of the tenant, decided before a code is minted. A reader connecting a
+   * Lark company is told Lark on every surface that knows it, which is the whole reason the label
+   * takes the brand rather than reading it back off a binding that does not exist yet.
+   */
+  it("follows the brand a connect attempt was minted against", () => {
+    expect(messagingProviderLabel("feishu", "lark")).toBe("Lark");
+    expect(messagingProviderLabel("feishu", "feishu")).toBe("Feishu");
+    // Slack has no regional brand; passing one changes nothing rather than being rejected.
+    expect(messagingProviderLabel("slack", "lark")).toBe("Slack");
   });
 
   /*
@@ -26,7 +39,7 @@ describe("messagingProviderLabel", () => {
    * hand-written string too, which is the mistake the helper exists to prevent.
    */
   it("names every channel the schema declares, joined into prose", () => {
-    const expected = ImProviderSchema.options.map(messagingProviderLabel);
+    const expected = ImProviderSchema.options.map((provider) => messagingProviderLabel(provider));
     const rendered = messagingProviderChoices();
     for (const label of expected) expect(rendered).toContain(label);
     expect(rendered).toBe(

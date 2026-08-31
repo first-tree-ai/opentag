@@ -67,6 +67,7 @@ function attempt(overrides: Partial<FeishuSetupAttempt> = {}): FeishuSetupAttemp
     id: ATTEMPT_ID,
     agentId: AGENT_ID,
     intent: "create",
+    brand: "feishu",
     state: "awaiting_user",
     qrUrl: "https://example.test/qr",
     expiresAt: "2026-08-29T00:10:00.000Z",

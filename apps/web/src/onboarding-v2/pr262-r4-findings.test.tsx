@@ -57,6 +57,7 @@ function scanned(): FeishuSetupAttempt {
     id: ATTEMPT_ID,
     agentId: AGENT_ID,
     intent: "create",
+    brand: "feishu",
     state: "succeeded",
     qrUrl: "https://example.test/qr",
     expiresAt: NOW,

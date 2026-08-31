@@ -63,6 +63,7 @@ function attempt(state: FeishuSetupAttempt["state"]): FeishuSetupAttempt {
     id: ATTEMPT_ID,
     agentId: AGENT_ID,
     intent: "create",
+    brand: "feishu",
     state,
     qrUrl: "https://example.test/qr",
     expiresAt: "2026-08-29T00:10:00.000Z",

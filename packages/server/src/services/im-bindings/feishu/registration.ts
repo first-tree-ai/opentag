@@ -1,5 +1,18 @@
 import { registerApp } from "@larksuiteoapi/node-sdk";
-import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
+import { FEISHU_REQUIRED_TENANT_SCOPES, type FeishuBrand } from "@opentag/shared";
+
+/**
+ * The account domains the registration device-flow runs against, one per regional brand.
+ *
+ * These are deliberately not `feishuDomainForWorkspaceBrand`: that helper returns the *open API*
+ * host an authorized binding talks to afterwards, while registration begins on the accounts host,
+ * and the two differ. Sharing one helper between them would look like consolidation and quietly
+ * point the QR code at an endpoint that has no registration route.
+ */
+const REGISTRATION_DOMAINS: Record<FeishuBrand, string> = {
+  feishu: "accounts.feishu.cn",
+  lark: "accounts.larksuite.com",
+};
 
 export interface FeishuAppProfile {
   name: string;
@@ -19,13 +32,22 @@ export interface FeishuRegistration {
   abort(): void;
 }
 
+export interface FeishuRegistrationStart {
+  profile: FeishuAppProfile;
+  intent: "create" | "reauthorize" | "replace";
+  existingAppId?: string;
+  receiveMode: "all_message" | "mention_only";
+  /**
+   * Which brand's accounts domain to mint the code against. The SDK's own default is Feishu, and
+   * its polling loop moves to the Lark domain by itself once the authorization result says the
+   * tenant is a Lark one — but only in that direction. Choosing Lark here therefore gives up that
+   * recovery, which is why the choice is offered to the reader rather than only inferred.
+   */
+  brand: FeishuBrand;
+}
+
 export interface FeishuRegistrationGateway {
-  start(input: {
-    profile: FeishuAppProfile;
-    intent: "create" | "reauthorize" | "replace";
-    existingAppId?: string;
-    receiveMode: "all_message" | "mention_only";
-  }): FeishuRegistration;
+  start(input: FeishuRegistrationStart): FeishuRegistration;
 }
 
 export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGateway {
@@ -35,12 +57,7 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
     this.#registerApp = register;
   }
 
-  start(input: {
-    profile: FeishuAppProfile;
-    intent: "create" | "reauthorize" | "replace";
-    existingAppId?: string;
-    receiveMode: "all_message" | "mention_only";
-  }): FeishuRegistration {
+  start(input: FeishuRegistrationStart): FeishuRegistration {
     const controller = new AbortController();
     let resolveQr: (value: { url: string; expiresAt: Date }) => void = () => undefined;
     let rejectQr: (reason: unknown) => void = () => undefined;
@@ -53,6 +70,7 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
         ? { appId: input.existingAppId }
         : { createOnly: false }),
       signal: controller.signal,
+      domain: REGISTRATION_DOMAINS[input.brand],
       source: "opentag",
       appPreset: {
         name: input.profile.name,

@@ -26,6 +26,7 @@ import {
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
+  type FeishuBrand,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
@@ -209,10 +210,16 @@ export class OpenTagApi {
     accessToken: string,
     agentId: string,
     intent: "create" | "reauthorize" | "replace" = "create",
+    brand?: FeishuBrand,
   ): Promise<FeishuSetupAttempt> {
     return this.#request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
       method: "POST",
-      body: JSON.stringify({ intent }),
+      /*
+       * The brand is sent only when the caller actually chose one. A re-authorization or a
+       * replacement inherits the brand of the binding it belongs to, and naming one here would
+       * read as a decision that the Server is right to ignore.
+       */
+      body: JSON.stringify(brand ? { intent, brand } : { intent }),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }

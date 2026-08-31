@@ -1,4 +1,4 @@
-import { type ImBindingSummary, ImProviderSchema } from "@opentag/shared/browser";
+import { type FeishuBrand, type ImBindingSummary, ImProviderSchema } from "@opentag/shared/browser";
 
 type MessagingProvider = ImBindingSummary["provider"];
 
@@ -7,12 +7,11 @@ type MessagingProvider = ImBindingSummary["provider"];
  *
  * Feishu and Lark are one channel behind a regional switch, not two providers: the same `feishu`
  * binding is delivered to either the Feishu or the Lark domain according to the team's brand. That
- * brand is currently only learned *from the authorization result*, so a first connect has none and
- * always mints against Feishu — which is why this label says Feishu alone and carries no "also
- * called" apposition. Naming both would invite a Lark tenant into a flow that hands them a QR code
- * their account cannot authorize. When the brand is chosen up front, from the user's country rather
- * than discovered afterwards, this is the one place the reader-facing name has to learn to follow
- * it.
+ * brand is decided before the code is minted, and confirmed afterwards from the authorization
+ * result, so the name follows it: a reader connecting a Lark tenant is told Lark throughout. Where
+ * no brand is known yet — a picker offering the channel before anything has been chosen, a binding
+ * summary that never carried one — the name falls back to Feishu, which is what an unqualified
+ * `feishu` binding was minted against.
  *
  * Labels used to be derived with `titleCase(provider)`, which turns the identifier straight into
  * reader-facing text. That happens to read correctly for `feishu`, which is why nothing looked
@@ -24,10 +23,10 @@ type MessagingProvider = ImBindingSummary["provider"];
  * reader-facing text, so the cost of it being quietly wrong is every surface at once. Adding a
  * provider fails to compile here until somebody gives it a name.
  */
-export function messagingProviderLabel(provider: MessagingProvider): string {
+export function messagingProviderLabel(provider: MessagingProvider, brand?: FeishuBrand): string {
   switch (provider) {
     case "feishu":
-      return "Feishu";
+      return brand === "lark" ? "Lark" : "Feishu";
     case "slack":
       return "Slack";
     default:
@@ -51,7 +50,7 @@ function assertNeverProvider(provider: never): never {
  * provider to the schema changes what these sentences say, without anyone remembering to come here.
  */
 export function messagingProviderChoices(): string {
-  const labels = ImProviderSchema.options.map(messagingProviderLabel);
+  const labels = ImProviderSchema.options.map((provider) => messagingProviderLabel(provider));
   const last = labels.at(-1) ?? "";
   return labels.length > 1 ? `${labels.slice(0, -1).join(", ")} or ${last}` : last;
 }

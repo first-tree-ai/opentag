@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared";
+import type { FeishuBrand, FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
@@ -26,6 +26,18 @@ export interface FeishuBindingActivation {
 
 interface AttemptSecret {
   qrUrl: string;
+  /**
+   * The brand the code was minted against, carried with the URL it belongs to rather than in its
+   * own column: it is meaningful only for the life of this attempt, and the durable brand of the
+   * team is `external_team_brand`, written later from the authorization result. Attempts started
+   * before this field existed read as Feishu, which is what they were minted against.
+   */
+  brand?: FeishuBrand;
+}
+
+/** Narrows the free-text brand column to the two values the registration flow can act on. */
+function brandForBinding(teamBrand: string | null | undefined): FeishuBrand | undefined {
+  return teamBrand === "feishu" || teamBrand === "lark" ? teamBrand : undefined;
 }
 
 const OWNER_HEARTBEAT_MS = 5_000;
@@ -93,7 +105,12 @@ export class FeishuSetupService {
     this.#running.clear();
   }
 
-  async createOrReuse(callerUserId: string, agentId: string, intent: FeishuSetupIntent): Promise<FeishuSetupAttempt> {
+  async createOrReuse(
+    callerUserId: string,
+    agentId: string,
+    intent: FeishuSetupIntent,
+    brand: FeishuBrand = "feishu",
+  ): Promise<FeishuSetupAttempt> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const current = await this.#currentForAgent(agentId);
     if (current?.setupAttemptId && current.setupState && ["awaiting_user", "validating"].includes(current.setupState)) {
@@ -135,6 +152,7 @@ export class FeishuSetupService {
       name: agent.displayName,
       description: `OpenTag Agent: ${agent.displayName}`,
     };
+    const mintedBrand = brandForBinding(existing?.externalTeamBrand) ?? brand;
     let registration: FeishuRegistration;
     try {
       registration = this.#registrations.start({
@@ -142,6 +160,13 @@ export class FeishuSetupService {
         intent,
         existingAppId: intent === "reauthorize" ? (existing?.externalAppId ?? undefined) : undefined,
         receiveMode: agent.receiveMode,
+        /*
+         * A binding that already exists knows its own brand, and that knowledge beats anything the
+         * caller inferred: re-authorizing or replacing must return to the domain the app was
+         * created on. Only a first connect has nothing to go on, and only there does the caller's
+         * choice decide.
+         */
+        brand: mintedBrand,
       });
     } catch (cause) {
       throw new FeishuOperationError(feishuSetupFailureCode(cause));
@@ -170,7 +195,9 @@ export class FeishuSetupService {
               setupState: "awaiting_user",
               setupOwnerInstanceId: this.#instanceId,
               setupOwnerHeartbeatAt: now,
-              encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
+              encryptedSetupContext: this.#cipher.encrypt(
+                JSON.stringify({ qrUrl: qr.url, brand: mintedBrand } satisfies AttemptSecret),
+              ),
               setupExpiresAt: qr.expiresAt,
               lastErrorCode: null,
               updatedAt: now,
@@ -196,7 +223,9 @@ export class FeishuSetupService {
             setupState: "awaiting_user",
             setupOwnerInstanceId: this.#instanceId,
             setupOwnerHeartbeatAt: now,
-            encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
+            encryptedSetupContext: this.#cipher.encrypt(
+              JSON.stringify({ qrUrl: qr.url, brand: mintedBrand } satisfies AttemptSecret),
+            ),
             setupExpiresAt: qr.expiresAt,
             createdAt: now,
             updatedAt: now,
@@ -419,6 +448,7 @@ export class FeishuSetupService {
       id: row.setupAttemptId,
       agentId: row.agentId,
       intent: row.setupIntent,
+      brand: secret?.brand ?? "feishu",
       state: row.setupState,
       qrUrl: !terminal && secret ? secret.qrUrl : null,
       expiresAt: (row.setupExpiresAt ?? row.updatedAt).toISOString(),

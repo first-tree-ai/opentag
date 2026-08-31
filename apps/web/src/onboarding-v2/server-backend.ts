@@ -7,9 +7,15 @@
  * never has two clocks disagreeing about the same moment.
  */
 
-import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type {
+  AgentRuntimeProvider,
+  FeishuBrand,
+  ImBindingHandoffStatus,
+  WorkspaceComputerSummary,
+} from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
+import { defaultFeishuBrand } from "../im/brand.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { COPY } from "./copy.js";
@@ -149,6 +155,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const attempt = useRef(0);
   const creationRef = useRef<CreationState>("idle");
   const feishuTimer = useRef(0);
+  /** The attempt a code on screen belongs to, so switching brand can release it before minting. */
+  const feishuAttemptId = useRef<string | undefined>(undefined);
+  /** Bumped whenever a code is superseded, so the poll watching the old one stops on its own. */
+  const feishuGeneration = useRef(0);
   /** The connection as it stands, readable from a callback without making an updater impure. */
   /**
    * The Computer this run is repairing, when it is repairing one. A code issued against it names
@@ -473,42 +483,75 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   /** Feishu issues a QR the user scans; Slack has nothing to show until its install is started. */
   const startMessaging = useCallback(
-    (provider: "feishu" | "slack") => {
+    (provider: "feishu" | "slack", brand: FeishuBrand = defaultFeishuBrand()) => {
       if (provider !== "feishu" || !agent) return;
       setMessaging((current) => {
-        // A refused attempt is retried only when the reader asks for it, never on sight.
-        if (current.kind !== "idle" && current.kind !== "failed") return current;
+        /*
+         * A refused attempt is retried only when the reader asks for it, never on sight — and a
+         * code already on screen is left alone, unless the ask is for the other brand. That is the
+         * switch: the domain is fixed when the code is minted, so the only way to show a Lark code
+         * is to stop waiting on the Feishu one and issue another.
+         */
+        const switching = current.kind === "waiting" && current.brand !== brand;
+        if (!switching && current.kind !== "idle" && current.kind !== "failed") return current;
+        /*
+         * Superseding one code has its own generation. The flow-wide `attempt` counter also gates
+         * the Computer readiness poll, so bumping that to retire a QR would quietly stop the page
+         * noticing the machine it is waiting on.
+         */
+        feishuGeneration.current += 1;
+        window.clearInterval(feishuTimer.current);
+        const superseded = switching ? feishuAttemptId.current : undefined;
         const mine = attempt.current;
+        const mineFeishu = feishuGeneration.current;
+        const live = () => mounted.current && attempt.current === mine && feishuGeneration.current === mineFeishu;
         queueMicrotask(() => {
-          void browserApi.createFeishuSetupAttempt(agent.id).then(
-            (created) => {
-              if (!mounted.current || attempt.current !== mine) return;
-              setMessaging(created.qrUrl ? { kind: "waiting", qrValue: created.qrUrl } : { kind: "issuing" });
-              pollFeishu(created.id, mine);
-            },
-            (cause: unknown) => {
-              if (!mounted.current || attempt.current !== mine) return;
-              setMessaging({ kind: "failed" });
-              setActionError(errorMessage(cause, COPY.errors.messaging));
-            },
-          );
+          /*
+           * The cancel is awaited rather than fired alongside: `createOrReuse` hands back the
+           * attempt that is still awaiting a scan, so creating before the old one is released
+           * returns the very code the reader asked to leave. Its failure is not fatal — the old
+           * attempt expires on its own — but the create must not race it.
+           */
+          const released = superseded
+            ? browserApi.cancelFeishuSetupAttempt(superseded).catch(() => undefined)
+            : Promise.resolve();
+          void released
+            .then(() => (live() ? browserApi.createFeishuSetupAttempt(agent.id, "create", brand) : undefined))
+            .then(
+              (created) => {
+                if (!live() || !created) return;
+                feishuAttemptId.current = created.id;
+                setMessaging(
+                  created.qrUrl
+                    ? { kind: "waiting", qrValue: created.qrUrl, brand: created.brand }
+                    : { kind: "issuing" },
+                );
+                pollFeishu(created.id, live);
+              },
+              (cause: unknown) => {
+                if (!live()) return;
+                setMessaging({ kind: "failed" });
+                setActionError(errorMessage(cause, COPY.errors.messaging));
+              },
+            );
         });
         return { kind: "issuing" };
       });
 
-      function pollFeishu(attemptId: string, mine: number) {
+      function pollFeishu(attemptId: string, live: () => boolean) {
         // The handle is held so `reset()` can end a poll the reader walked away from. Without it a
         // Start over left the previous attempt running, and its eventual success connected the
-        // messaging app of a flow that no longer existed.
+        // messaging app of a flow that no longer existed. A brand switch retires a poll the same
+        // way: the code it watches is one the reader has already left.
         window.clearInterval(feishuTimer.current);
         feishuTimer.current = window.setInterval(() => {
-          if (!mounted.current || attempt.current !== mine) {
+          if (!live()) {
             window.clearInterval(feishuTimer.current);
             return;
           }
           void browserApi.feishuSetupAttempt(attemptId).then(
             (current) => {
-              if (!mounted.current || attempt.current !== mine) {
+              if (!live()) {
                 window.clearInterval(feishuTimer.current);
                 return;
               }
@@ -523,7 +566,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
                 setActionError(COPY.errors.feishuAttempt);
                 return;
               }
-              if (current.qrUrl) setMessaging({ kind: "waiting", qrValue: current.qrUrl });
+              if (current.qrUrl) setMessaging({ kind: "waiting", qrValue: current.qrUrl, brand: current.brand });
             },
             () => undefined,
           );
@@ -556,6 +599,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const reset = useCallback(() => {
     attempt.current += 1;
     window.clearInterval(feishuTimer.current);
+    feishuAttemptId.current = undefined;
+    feishuGeneration.current += 1;
     computerId.current = undefined;
     baseline.current = new Map();
     expiresAt.current = 0;

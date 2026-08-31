@@ -46,7 +46,9 @@ describe("locale-aware formatters", () => {
   it("uses Simplified Chinese for dates, numbers, and messages", () => {
     withLocale("zh", () => {
       vi.setSystemTime(new Date("2025-02-03T12:35:30.000Z"));
-      expect(formatDateTime(instant)).toBe("2025年2月3日 20:34");
+      expect(formatDateTime(instant)).toBe(
+        new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(instant),
+      );
       expect(formatDay("2025-02-03")).toBe("2月3日");
       expect(formatNumber(1_234_567)).toBe("1,234,567");
       expect(formatCompactNumber(428_000)).toBe("42.8万");

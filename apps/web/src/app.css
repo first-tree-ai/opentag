@@ -3,6 +3,25 @@
 @import "./ui/kumo-theme.css";
 @source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
 
+/* OpenTag brand tokens. Keep usage constraints next to the values so a new surface does not
+ * accidentally turn an inaccessible accent into body copy. */
+:root[data-theme="opentag"],
+[data-theme="opentag"] {
+  --brand: #8fdd14; /* logo green — fills, color blocks, icons ONLY; never a text color */
+  --brand-display: #649a0e; /* display green — text at >= 24px only (large headings) */
+  --brand-ink: #3a5c04; /* body-level green — green text at normal sizes uses this */
+  --brand-100: #f1f8e1; /* light brand tint — backgrounds/edges */
+  --bg: #f8f7f0; /* main app background (warm off-white, NOT pure white) */
+  --card: #fdfcf6; /* card / surface background */
+  --fg: #16211b; /* primary text */
+  --fg-2: #3a453e; /* secondary text */
+  --muted-fg: #626b60; /* muted text */
+  --border: #e0e2d3; /* default border */
+  --border-strong: #c9ccbb; /* strong border */
+  --dark: #0b101d; /* dark section background */
+  --on-dark: #f8f7f0; /* text on dark sections */
+}
+
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--text-color-kumo-default);

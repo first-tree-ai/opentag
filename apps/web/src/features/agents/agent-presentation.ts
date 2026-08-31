@@ -198,9 +198,17 @@ export function sharedConversationLabel(provider: ImBindingSummary["provider"]):
   return provider === "feishu" ? "Group chats" : "Channels";
 }
 
+/**
+ * The brand comes from `messagingProviderLabel`; only the noun is chosen here. Writing "Feishu" and
+ * "Slack" out by hand read as harmless -- the words were correct -- but it made this a second place
+ * a channel gets named, which is the thing this file stopped doing everywhere else. A brand spelled
+ * at the call site cannot follow a rename, and it is invisible to a search for a provider id
+ * reaching a reader, because no id is ever converted: the literal was simply chosen by a branch.
+ */
 export function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
-  if (provider === "feishu") return plural ? "connected Feishu group chats" : "a Feishu group chat";
-  return plural ? "connected Slack channels" : "a Slack channel";
+  const brand = messagingProviderLabel(provider);
+  const noun = provider === "feishu" ? "group chat" : "channel";
+  return plural ? `connected ${brand} ${noun}s` : `a ${brand} ${noun}`;
 }
 
 /**

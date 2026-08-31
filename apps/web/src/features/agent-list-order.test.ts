@@ -310,8 +310,17 @@ describe("Agent availability model and presentation", () => {
     expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");
-    expect(sharedConversationDestination("feishu")).toContain("Feishu");
-    expect(sharedConversationDestination("slack", true)).toContain("Slack");
+    /*
+     * Exact, and both branches in both numbers. `toContain("Feishu")` passed for any string that
+     * merely mentioned the brand, which is what let the hardcoded literals sit here unnoticed: the
+     * assertion could not tell a sentence sourced from `messagingProviderLabel` from one that spelled
+     * the brand out beside it. These pin the whole sentence, so a brand that stops following the
+     * helper changes one of them.
+     */
+    expect(sharedConversationDestination("feishu")).toBe("a Feishu group chat");
+    expect(sharedConversationDestination("feishu", true)).toBe("connected Feishu group chats");
+    expect(sharedConversationDestination("slack")).toBe("a Slack channel");
+    expect(sharedConversationDestination("slack", true)).toBe("connected Slack channels");
     expect(agentAvailabilitySummary(base)).toBe("Available in Feishu");
     expect(
       agentAvailabilitySummary({
@@ -337,7 +346,9 @@ describe("Agent availability model and presentation", () => {
     expect(
       agentRecoveryMessage({ ...base, availability: { ...base.availability, reason: null, state: "ready" } }),
     ).toContain("Available");
-    expect(agentUseInstruction(base, "feishu")).toContain("mention it in a Feishu group chat");
+    expect(agentUseInstruction(base, "feishu")).toBe(
+      "Send @reviewer a direct message, or mention it in a Feishu group chat.",
+    );
     expect(agentUseInstruction({ ...base, receiveMode: "all_message" }, "slack")).toContain(
       "every message in connected Slack channels",
     );

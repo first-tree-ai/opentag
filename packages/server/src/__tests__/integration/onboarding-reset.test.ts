@@ -70,6 +70,9 @@ async function fixture(
   } = {},
 ) {
   const client = createDatabaseClient(databaseUrl);
+  // Registered before the seeding below can throw, so a fixture that fails part-way still
+  // gives its pool back instead of leaking the exact way this teardown exists to prevent.
+  openPools.push(client.sql);
   const registry = new ConnectionRegistry();
   const closeEnrollment = vi.fn(
     options.closeEnrollment ?? ((enrollmentId: string) => registry.closeEnrollment(enrollmentId)),
@@ -101,7 +104,6 @@ async function fixture(
     environment: "staging",
     registry: { closeEnrollment },
   });
-  openPools.push(client.sql);
   return { ...client, agentService, closeEnrollment, tester, machineAuth, registry, reset };
 }
 

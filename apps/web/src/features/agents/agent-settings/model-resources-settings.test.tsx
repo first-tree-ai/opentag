@@ -284,7 +284,7 @@ describe("AgentModelSettings", () => {
 });
 
 describe("AgentResourcesSettings", () => {
-  it("summarizes and saves instructions while keeping future resources honest", async () => {
+  it("summarizes and saves instructions", async () => {
     const onAgentChanged = vi.fn();
     const updatedInstructions = "Be concise and cite evidence.";
     const updated: AgentAdminConfig = {
@@ -297,11 +297,8 @@ describe("AgentResourcesSettings", () => {
 
     expect(screen.getByRole("heading", { name: "Resources" })).toBeTruthy();
     expect(screen.getByText("Custom · 17 characters")).toBeTruthy();
-    expect(screen.getAllByText("Coming soon")).toHaveLength(2);
-    expect(
-      screen.getByText("Coming soon. For now, chat with your agent to set up skills and integrations."),
-    ).toBeTruthy();
-    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByText("Skills")).toBeNull();
+    expect(screen.queryByText("Integrations")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit instructions" });

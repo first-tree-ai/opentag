@@ -98,16 +98,7 @@ export function AgentResourcesSettings({
             Edit
           </Button>
         </SettingsRow>
-        <SettingsRow label="Skills">
-          <span className="text-sm text-kumo-subtle">Coming soon</span>
-        </SettingsRow>
-        <SettingsRow label="Integrations">
-          <span className="text-sm text-kumo-subtle">Coming soon</span>
-        </SettingsRow>
       </SettingsList>
-      <p className="text-sm text-kumo-subtle">
-        Coming soon. For now, chat with your agent to set up skills and integrations.
-      </p>
       {message ? <p role="status">{message}</p> : null}
       {editing ? (
         <Dialog

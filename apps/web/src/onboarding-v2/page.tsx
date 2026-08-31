@@ -191,9 +191,9 @@ function OnboardingV2Flow({
   // unseen code would spend its validity in the background. A Computer that is already connected
   // needs none, and `issueConnectCode` only acts on an idle connection.
   //
-  // A run that has chosen a Computer the Account already has needs none either, and issuing one
-  // anyway would do more than waste it: the code enrolls a *new* machine, so the reader who came
-  // here to reuse one could end up with a second.
+  // A run whose Account already has a Computer needs none either, and issuing one anyway would do
+  // more than waste it: the code enrols a *new* machine, so an Account meant to have one could end
+  // up with two.
   const connectingNewComputer = backend.selectedComputerId === undefined;
   useEffect(() => {
     if (flow.page === "computer" && connectingNewComputer) backend.issueConnectCode();

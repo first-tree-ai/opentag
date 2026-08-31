@@ -292,14 +292,14 @@ export function useMockBackend(
   }, [connect]);
 
   /**
-   * The Computer this run is preparing: the chosen one once it is reachable, or the one that just
-   * arrived. An unreachable choice prepares nothing, which is why the step can say so instead of
+   * The Computer this run is preparing: the Account's own once it is reachable, or the one that just
+   * arrived. An unreachable machine prepares nothing, which is why the step can say so instead of
    * pretending to check it.
    */
   const preparedComputerId = useMemo(() => {
     if (selectedComputerId !== undefined) {
-      const chosen = knownComputers.find((computer) => computer.id === selectedComputerId);
-      return chosen?.online ? chosen.id : undefined;
+      const owned = knownComputers.find((computer) => computer.id === selectedComputerId);
+      return owned?.online ? owned.id : undefined;
     }
     return connect.kind === "connected" ? NEW_ARRIVAL : undefined;
   }, [connect.kind, knownComputers, selectedComputerId]);
@@ -315,8 +315,8 @@ export function useMockBackend(
    * not a change of machine. Keying it to the subject alone left `reset` (Start over) holding a
    * preselected machine whose verdict it had just cleared and would never ask about again: same
    * subject, no re-run, "Waiting for the computer check…" for ever, with nothing left to press.
-   * Anything that takes the answer away — Start over, choosing another machine, asking the lab for
-   * a different outcome — now gets a new one asked for.
+   * Anything that takes the answer away — Start over, a different Account in the lab, asking the lab
+   * for a different outcome — now gets a new one asked for.
    */
   useEffect(() => {
     if (preparedComputerId === undefined) return;
@@ -398,7 +398,7 @@ export function useMockBackend(
       // already-owned machine counts, which is the whole point of offering it.
       //
       // The cloud route names one too, it just does not come from this step: OpenTag allocates the
-      // machine, so there is neither an arrival nor a choice here to point at.
+      // machine, so there is neither an arrival nor an Account's own here to point at.
       if (draft.destination !== "cloud" && preparedComputerId === undefined) return;
       setCreation((current) => {
         if (current !== "idle") return current;
@@ -428,7 +428,7 @@ export function useMockBackend(
   }, [clearTimers, inventory]);
 
   const pending = useMemo<PendingEvent | undefined>(() => {
-    // Reconnecting the chosen machine comes first: while it is asleep, nothing else on this step is
+    // Reconnecting the Account's machine comes first: while it is asleep, nothing else on this step is
     // waiting on the outside world, and enrolling a second Computer is not the move being offered.
     const asleep = knownComputers.find((computer) => computer.id === selectedComputerId && !computer.online);
     if (asleep) return { label: `Reconnect ${asleep.displayName}`, run: () => bringOnline(asleep.id) };

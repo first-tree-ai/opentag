@@ -189,6 +189,24 @@ describe("the Computer the Account already has", () => {
     expect(machineLine()).toContain("Online");
   });
 
+  it("drops a verdict when the lab switches to another Account, and asks again", async () => {
+    render(<OnboardingV2MockPage />);
+    chooseInventory("One, online");
+    await reachComputerStep();
+    await advanceMock("Return check result");
+    expect(outcome()).toContain("Everything your agent needs is ready.");
+
+    chooseInventory("Several");
+
+    // A different Account is a different world, so an answer about the last one's machine cannot
+    // stay on screen — the same machine id appears in more than one inventory, so nothing
+    // downstream would notice on its own.
+    expect(outcome()).not.toContain("Everything your agent needs is ready.");
+    // Clearing it is only half of the job. A verdict taken away and never asked for again is what
+    // left Start over waiting for an answer nobody was going to give.
+    expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
+  });
+
   it("still checks the Account's Computer after Start over", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");

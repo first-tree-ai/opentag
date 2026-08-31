@@ -7,8 +7,6 @@ import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import {
   Banner,
   Button,
-  ClipboardText,
-  Collapsible,
   Empty,
   Icon,
   Input,
@@ -20,6 +18,7 @@ import {
   Table,
   Text,
 } from "../ui/design-system.js";
+import { TaskMessageBody } from "./task-message-body.js";
 
 type TaskFilter = "all" | TaskStatus;
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -135,15 +134,7 @@ export function TasksPage() {
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
-      <PageHeader
-        description="Inspect stored bot Sessions, inbound messages, and runtime Turn results."
-        title="Tasks"
-        titleId="tasks-page-title"
-      >
-        <Text as="span" data-ui="tasks-debug-note" variant="secondary">
-          Read-only debug view
-        </Text>
-      </PageHeader>
+      <PageHeader description="Review Agent work, progress, and results." title="Tasks" titleId="tasks-page-title" />
 
       <form
         className="grid gap-3 @min-[36rem]/workspace:grid-cols-[minmax(14rem,1fr)_12rem_12rem_auto] @min-[36rem]/workspace:items-end"
@@ -247,7 +238,9 @@ export function TasksPage() {
               </Button>
             ) : null
           }
-          description={hasActiveFilters ? "Try a different search or filter." : "Stored Sessions will appear here."}
+          description={
+            hasActiveFilters ? "Try a different search or filter." : "Tasks will appear here as Agents receive work."
+          }
           icon={<Icon name="message" />}
           title="No Tasks found"
         />
@@ -329,18 +322,15 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
     );
   }
 
-  const { task, turns, internalSessions, collaborationMessages } = state.value;
+  const { task, turns } = state.value;
   const status = statusPresentation[task.status];
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
-      <nav className="flex items-center gap-3" aria-label="Breadcrumb">
+      <nav aria-label="Breadcrumb">
         <Link className="inline-flex items-center gap-1" to="/tasks">
           <Icon name="arrow-left" />
           Tasks
         </Link>
-        <span className="text-sm text-kumo-subtle" data-ui="tasks-debug-note">
-          Read-only debug view
-        </span>
       </nav>
 
       <header className="grid gap-3" data-ui="task-conversation-header">
@@ -349,37 +339,42 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
             {task.title}
           </Text>
         </div>
-        <section
-          className="flex flex-wrap items-center gap-3"
-          aria-label="Task source"
-          data-ui="task-conversation-context"
-        >
-          <SourceIdentity task={task} />
+        <section className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" aria-label="Task details">
+          <span className="inline-flex items-center gap-2">
+            <span
+              className="grid size-7 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+              aria-hidden="true"
+            >
+              {task.agent.displayName.charAt(0)}
+            </span>
+            <strong>{task.agent.displayName}</strong>
+          </span>
+          <span className="inline-flex items-center gap-1.5 text-kumo-subtle">
+            <ProviderIcon provider={task.source.provider} compact />
+            {humanizeEnum(task.source.provider)}
+          </span>
+          <span className="text-kumo-subtle">Started {formatDate(task.createdAt)}</span>
+          <span className="text-kumo-subtle">Updated {formatRelativeTime(task.lastActivityAt)}</span>
           <StatusIndicator
             aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
-            detail={`Updated ${formatRelativeTime(task.lastActivityAt)}`}
             label={status.label}
             tone={status.tone}
           />
         </section>
       </header>
 
-      <Banner
-        data-ui="task-capture-boundary"
-        description="Provider outbound messages and detailed tool traces are not captured. Agent output below is the stored runtime final output."
-        size="sm"
-        variant="secondary"
-      />
-
-      <section className="grid gap-4" aria-label="Task conversation" data-ui="task-thread">
+      <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
+        <Text as="h2" id="task-activity-title" variant="heading">
+          Activity
+        </Text>
         {turns.length > 0 ? (
           turns.map((turn) => <TaskTurnView key={turn.deliveryId} task={task} turn={turn} />)
         ) : (
           <Empty
-            description="This Session has no stored IM deliveries."
+            description="Messages and Agent results will appear here."
             icon={<Icon name="message" />}
             size="sm"
-            title="No Turns recorded"
+            title="No activity recorded"
           />
         )}
       </section>
@@ -391,61 +386,17 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
           disabled={loadingMore}
           onClick={() => void loadMoreTurns()}
         >
-          Load more Turns
+          Load earlier activity
         </Button>
       ) : null}
       {loadMoreError ? (
         <Banner
-          data-ui="task-runtime-error"
+          data-ui="task-activity-error"
           description={loadMoreError.message}
           role="alert"
           size="sm"
           variant="error"
         />
-      ) : null}
-
-      <Collapsible.Root data-ui="task-debug-facts">
-        <Collapsible.DefaultTrigger>Technical details</Collapsible.DefaultTrigger>
-        <Collapsible.DefaultPanel keepMounted>
-          <LayerCard className="grid gap-4 p-4">
-            <Text as="p" variant="secondary">
-              Stable identifiers for support and runtime diagnostics.
-            </Text>
-            <section className="grid gap-3 @min-[36rem]/workspace:grid-cols-2" aria-label="Task debug identifiers">
-              <DebugValue label="Session" value={task.id} />
-              <DebugValue label="Channel" value={task.source.channelId} />
-              {task.source.threadKey ? <DebugValue label="Thread" value={task.source.threadKey} /> : null}
-              <DebugValue label="Agent" value={task.agent.id} />
-            </section>
-          </LayerCard>
-        </Collapsible.DefaultPanel>
-      </Collapsible.Root>
-
-      {internalSessions.length > 0 || collaborationMessages.length > 0 ? (
-        <Collapsible.Root data-ui="task-related-sessions">
-          <Collapsible.DefaultTrigger>
-            Internal collaboration · {internalSessions.length} Sessions · {collaborationMessages.length} messages
-          </Collapsible.DefaultTrigger>
-          <Collapsible.DefaultPanel keepMounted>
-            <section className="grid gap-3">
-              {internalSessions.map((session) => (
-                <p key={session.id}>
-                  <strong>{session.endedAt ? "Ended" : "Active"}</strong> · <code>{session.id}</code>
-                  {session.runtimeModel ? ` · ${session.runtimeModel}` : ""}
-                </p>
-              ))}
-              {collaborationMessages.map((message) => (
-                <article className="rounded-md bg-kumo-recessed p-3" key={message.id}>
-                  <p>{message.content}</p>
-                  <small>
-                    {message.outcome} · {formatTimestamp(message.createdAt)} · {message.sourceSessionId} →{" "}
-                    {message.targetSessionId}
-                  </small>
-                </article>
-              ))}
-            </section>
-          </Collapsible.DefaultPanel>
-        </Collapsible.Root>
       ) : null}
     </article>
   );
@@ -454,111 +405,74 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
 function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   const report = turn.report;
   const absorbedBy = turn.absorbedBy;
-  const usage = report?.usage;
-  const tokenTotal = usage
-    ? (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0) + (usage.outputTokens ?? 0)
-    : null;
   return (
     <section
-      className="grid gap-3"
+      className="grid gap-4"
       aria-label={`Message sent at ${formatTimestamp(turn.message.occurredAt)}`}
       data-ui="task-exchange"
     >
-      <article className="rounded-lg bg-kumo-recessed p-4" data-ui="task-message-request">
-        <header className="flex items-center gap-2" data-ui="task-message-author">
-          <span
-            className="grid size-7 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
-            aria-hidden="true"
-          >
-            {getInitials(turn.message.authorDisplayName ?? turn.message.authorKind)}
-          </span>
-          <span className="grid min-w-0 gap-0.5">
+      <article className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3" data-ui="task-message-request">
+        <span className="grid size-8 place-items-center rounded-md bg-kumo-tint text-xs font-medium" aria-hidden="true">
+          {getInitials(turn.message.authorDisplayName ?? turn.message.authorKind)}
+        </span>
+        <div className="grid min-w-0 gap-2">
+          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
             <strong className="break-words">
               {turn.message.authorDisplayName ?? humanizeEnum(turn.message.authorKind)}
             </strong>
             <small className="text-kumo-subtle">
               {attentionLabel(turn.attention)} · {formatTimestamp(turn.message.occurredAt)}
             </small>
-          </span>
-        </header>
-        <div className="mt-2 whitespace-pre-wrap">
-          <p>{turn.message.fallbackText || "No text content"}</p>
+          </header>
+          <div className="max-w-[48rem] rounded-lg bg-kumo-recessed p-4">
+            <TaskMessageBody format="plain_text" text={turn.message.fallbackText} />
+          </div>
         </div>
       </article>
 
-      <article className="rounded-lg bg-kumo-base p-4 ring ring-kumo-line" data-ui="task-message-agent">
-        <header className="flex items-center gap-2" data-ui="task-message-author-agent">
-          <span
-            className="grid size-7 place-items-center rounded-full bg-kumo-brand text-kumo-inverse"
-            aria-hidden="true"
-          >
-            {task.agent.displayName.charAt(0)}
-          </span>
-          <span className="grid min-w-0 gap-0.5">
+      <article className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3" data-ui="task-message-agent">
+        <span
+          className="grid size-8 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+          aria-hidden="true"
+        >
+          {task.agent.displayName.charAt(0)}
+        </span>
+        <div className="grid min-w-0 gap-2">
+          <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author-agent">
             <strong>{task.agent.displayName}</strong>
             <small className="text-kumo-subtle">
               {absorbedBy
-                ? "Steered into active Turn"
+                ? "Added to active work"
                 : report
                   ? `${humanizeEnum(report.outcome)} · ${formatTimestamp(report.reportedAt)}`
                   : deliveryStateLabel(turn.delivery.state)}
             </small>
-          </span>
-        </header>
-        {absorbedBy ? (
-          <p className="text-sm text-kumo-subtle" data-ui="task-progress-summary">
-            This input was steered into the active Turn.
-          </p>
-        ) : report?.finalText ? (
-          <section aria-label="Stored runtime final output" data-ui="task-agent-response">
-            <p className="whitespace-pre-wrap">{report.finalText}</p>
-          </section>
-        ) : (
-          <p
-            className="text-sm text-kumo-subtle"
-            data-state={turn.delivery.state === "accepted" ? "progress" : "attention"}
+          </header>
+          <section
+            className="max-w-[48rem] rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+            aria-label="Agent response"
+            data-ui="task-agent-response"
           >
-            {turn.delivery.state === "accepted"
-              ? "The Turn is running or its report has not arrived."
-              : `Delivery ${deliveryStateLabel(turn.delivery.state).toLocaleLowerCase()}.`}
-          </p>
-        )}
-        <Collapsible.Root data-ui="task-agent-process">
-          <Collapsible.DefaultTrigger>
-            <span>Runtime details</span>
-          </Collapsible.DefaultTrigger>
-          <Collapsible.DefaultPanel keepMounted>
-            <LayerCard className="grid gap-4 p-4" data-ui="task-agent-events">
-              <p className="text-sm text-kumo-subtle" data-ui="task-process-metadata">
-                {[
-                  `${turn.delivery.attemptCount} ${turn.delivery.attemptCount === 1 ? "attempt" : "attempts"}`,
-                  report ? `Outcome: ${humanizeEnum(report.outcome)}` : null,
-                  report ? `Effects: ${humanizeEnum(report.executionEffects)}` : null,
-                  tokenTotal === null ? null : `${tokenTotal.toLocaleString()} tokens`,
-                  report ? `${report.traceSummary.lastSequence} trace events` : null,
-                  report?.traceSummary.droppedEvents ? `${report.traceSummary.droppedEvents} dropped` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
+            {absorbedBy ? (
+              <p className="text-sm text-kumo-subtle" data-ui="task-progress-summary">
+                This message was included in the Agent's active work.
               </p>
-              <section className="grid gap-3 @min-[36rem]/workspace:grid-cols-2" aria-label="Runtime identifiers">
-                <DebugValue label="Delivery" value={turn.deliveryId} />
-                <DebugValue label="Message" value={turn.message.externalMessageId} />
-                {absorbedBy ? <DebugValue label="Absorbed by delivery" value={absorbedBy.deliveryId} /> : null}
-                {absorbedBy ? <DebugValue label="Target Turn" value={absorbedBy.turnId} /> : null}
-                {report ? <DebugValue label="Turn" value={report.turnId} /> : null}
-              </section>
-              {report?.errorReason || turn.delivery.lastErrorCode || turn.delivery.reason ? (
-                <Banner
-                  data-ui="task-runtime-error"
-                  description={report?.errorReason ?? turn.delivery.lastErrorCode ?? turn.delivery.reason}
-                  size="sm"
-                  variant="error"
-                />
-              ) : null}
-            </LayerCard>
-          </Collapsible.DefaultPanel>
-        </Collapsible.Root>
+            ) : report?.finalText ? (
+              <TaskMessageBody format="markdown" text={report.finalText} />
+            ) : report?.errorReason ? (
+              <p className="text-sm text-kumo-danger">{report.errorReason}</p>
+            ) : (
+              <p
+                className="text-sm text-kumo-subtle"
+                data-state={turn.delivery.state === "accepted" ? "progress" : "attention"}
+              >
+                {turn.delivery.state === "accepted"
+                  ? "Work is in progress."
+                  : `Message ${deliveryStateLabel(turn.delivery.state).toLocaleLowerCase()}.`}
+              </p>
+            )}
+          </section>
+        </div>
       </article>
     </section>
   );
@@ -608,20 +522,6 @@ function TaskRow({ task }: { task: TaskSummary }) {
   );
 }
 
-function SourceIdentity({ task }: { task: TaskSummary }) {
-  return (
-    <span className="inline-flex min-w-0 items-center gap-2" data-ui="task-source-identity">
-      <ProviderIcon provider={task.source.provider} />
-      <span className="grid min-w-0 gap-0.5">
-        <strong className="break-words">{task.agent.displayName}</strong>
-        <small className="break-words text-kumo-subtle">
-          {task.source.provider} · {task.sessionKind} · {shortId(task.source.threadKey ?? task.source.channelId)}
-        </small>
-      </span>
-    </span>
-  );
-}
-
 function ProviderIcon({
   provider,
   compact = false,
@@ -636,20 +536,6 @@ function ProviderIcon({
       </span>
     );
   return <img alt="" aria-hidden="true" className={compact ? "size-5" : "size-7"} src={feishuIconUrl} />;
-}
-
-function DebugValue({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="grid min-w-0 gap-1" data-ui="task-debug-value">
-      <strong className="text-sm">{label}</strong>
-      <ClipboardText
-        labels={{ copyAction: `Copy ${label}` }}
-        size="sm"
-        text={value}
-        tooltip={{ copiedText: "Copied!", side: "top", text: `Copy ${label}` }}
-      />
-    </span>
-  );
 }
 
 function TaskLoading({ heading }: { heading: string }) {
@@ -669,6 +555,10 @@ function TaskLoading({ heading }: { heading: string }) {
 
 function formatTimestamp(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
 }
 
 function formatRelativeTime(value: string): string {

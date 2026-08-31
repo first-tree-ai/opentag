@@ -46,12 +46,12 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
 
   it("survives a second database client and returns one idempotent receipt", async () => {
     const record = sessionRecord();
-    const first = new PostgresRuntimeDurableWorkStore(database.database);
+    const first = new PostgresRuntimeDurableWorkStore(database.database, { now: () => 1 });
     await first.write(workspaceComputerId, record);
 
     const secondClient = createDatabaseClient(testDatabase.databaseUrl);
     try {
-      const second = new PostgresRuntimeDurableWorkStore(secondClient.database);
+      const second = new PostgresRuntimeDurableWorkStore(secondClient.database, { now: () => 1 });
       await expect(second.list(workspaceComputerId, "session-message")).resolves.toEqual([record]);
       await second.write(workspaceComputerId, record);
       await expect(second.list(workspaceComputerId, "session-message")).resolves.toHaveLength(1);

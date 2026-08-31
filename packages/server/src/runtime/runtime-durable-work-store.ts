@@ -109,7 +109,6 @@ export class PostgresRuntimeDurableWorkStore {
         and(
           eq(runtimeDurableWork.workspaceComputerId, workspaceComputerId),
           eq(runtimeDurableWork.kind, kind),
-          inArray(runtimeDurableWork.status, ["succeeded", "failed", "dead-letter"]),
           lt(runtimeDurableWork.updatedAt, cutoff),
         ),
       );

@@ -156,5 +156,5 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   }
 
   const percent = (covered / total) * 100;
-  return { covered, passed: uncovered.length === 0 && percent >= threshold, percent, total, uncovered };
+  return { covered, passed: percent >= threshold, percent, total, uncovered };
 }

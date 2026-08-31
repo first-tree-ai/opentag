@@ -7,6 +7,7 @@ import type {
 import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import { resolveAccountComputer } from "../features/agents/account-computer.js";
 import { ComputerSetup } from "../features/agents/computer-setup.js";
 import { compareText } from "../i18n/format.js";
 import {
@@ -150,12 +151,9 @@ export function AgentCreationFlow({
   const readyRoutes = useMemo(() => resolveReadyRoutes(facts), [facts]);
   const defaultReadyRoute = readyRoutes[0];
   // The Account has one Computer, so this resolves which machine the form is talking about rather
-  // than honouring a choice: the route that is ready, else the one that is online, else the one
-  // that is there. An Account still holding several from before the rule sees the same single row.
-  const displayedComputer =
-    defaultReadyRoute?.computer ??
-    facts.computers.find((computer) => computer.connectionStatus === "online") ??
-    facts.computers[0];
+  // than honouring a choice. The route that is ready is the form's ready Computer, which is what
+  // keeps this dialog and the Computer page naming the same machine.
+  const displayedComputer = resolveAccountComputer(facts.computers, defaultReadyRoute?.computer);
   const displayedProvider =
     facts.providers.find(
       (provider) => provider.computerId === displayedComputer?.id && provider.provider === selectedProvider,
@@ -554,7 +552,7 @@ function RuntimeRouteSection({
             </div>
           ) : displayedComputer.connectionStatus === "offline" ? (
             <RuntimeAttention
-              detail={`Reconnect ${displayedComputer.displayName} to continue.`}
+              detail={`Reconnect ${displayedComputer.displayName} from the Computer page to continue.`}
               label="Computer offline"
               refreshing={refreshing}
               tone="warning"

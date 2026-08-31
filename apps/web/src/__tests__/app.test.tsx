@@ -896,6 +896,52 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).getByRole("button", { name: "Change Runtime" })).toBeTruthy();
   });
 
+  it("names the Computer that can run an Agent when an Account holds several enrollments", async () => {
+    // Enrollments from before the one-Computer rule, ordered so that every shortcut names a
+    // different machine: the first entry is unreachable, the first reachable one has no Runtime,
+    // and only the last is a route an Agent could actually run on.
+    installApi({
+      computers: [
+        {
+          id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          displayName: "Ada's Retired Mac",
+          platform: "darwin",
+          connectionStatus: "offline",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+          connectedAt: "2026-08-20T00:00:00.000Z",
+          lastSeenAt: "2026-08-20T00:00:00.000Z",
+        },
+        {
+          id: "a5fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          displayName: "Ada's Spare",
+          platform: "linux",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "install", observedAt: "2026-08-20T00:00:01.000Z" }],
+          connectedAt: "2026-08-20T00:00:01.000Z",
+          lastSeenAt: "2026-08-20T00:00:01.000Z",
+        },
+        {
+          id: computerId,
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:02.000Z" }],
+          connectedAt: "2026-08-20T00:00:02.000Z",
+          lastSeenAt: "2026-08-20T00:00:02.000Z",
+        },
+      ],
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+    expect(within(dialog).getByText("Ready to run")).toBeTruthy();
+    // One Computer is named, not chosen between, so the others are absent rather than unselected.
+    expect(within(dialog).queryByText("Ada's Retired Mac")).toBeNull();
+    expect(within(dialog).queryByText("Ada's Spare")).toBeNull();
+  });
+
   it("adopts the Computer that connects while New Agent is open and keeps the form", async () => {
     const connectedComputer = {
       id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
@@ -923,6 +969,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    // Enrolment is offered here, and only here: the Account has no Computer, so this is the one
+    // state where the command that creates one cannot produce a duplicate. It stays inside the
+    // dialog rather than sending the reader to a separate setup destination.
+    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
     fireEvent.change(within(dialog).getByLabelText("Display name"), {
       target: { value: "Research Assistant" },
     });
@@ -1029,75 +1080,13 @@ describe("OpenTag Web App Shell", () => {
 
     expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
     expect(within(dialog).getByText("Computer offline")).toBeTruthy();
-    expect(within(dialog).getByText("Reconnect Ada's Mac to continue.")).toBeTruthy();
+    expect(within(dialog).getByText("Reconnect Ada's Mac from the Computer page to continue.")).toBeTruthy();
 
     // The machine that stopped answering is repaired in place. Offering the enrolment command here
     // is what would leave the Account with a second Computer to explain.
     expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "Generate connection command" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "Change Computer" })).toBeNull();
-  });
-
-  it("keeps Computer connection inside the New Agent dialog when no runtime is available", async () => {
-    const connectedComputer = {
-      id: computerId,
-      displayName: "Ada's Mac",
-      platform: "darwin",
-      arch: "arm64",
-      clientVersion: "0.0.1",
-      connectionStatus: "online",
-      providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:02.000Z" }],
-      connectedAt: "2026-08-20T00:00:02.000Z",
-      lastSeenAt: "2026-08-20T00:00:02.000Z",
-    };
-    let finishRefresh: (() => void) | undefined;
-    const refreshPending = new Promise<void>((resolve) => {
-      finishRefresh = resolve;
-    });
-    installApi({
-      computers: async (connected) => {
-        if (connected) await refreshPending;
-        return connected ? [connectedComputer] : [];
-      },
-    });
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
-
-    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
-    const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
-    expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
-
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    vi.useFakeTimers();
-    vi.setSystemTime("2026-08-20T00:00:00.000Z");
-    try {
-      generateButton.focus();
-      await act(async () => {
-        fireEvent.click(generateButton);
-      });
-      await act(async () => {
-        vi.advanceTimersByTime(1_500);
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(dialog.contains(document.activeElement)).toBe(true);
-      await act(async () => {
-        finishRefresh?.();
-        // The refresh now invalidates a cache entry rather than swapping a key, so the refetch it
-        // starts settles across several microtask turns; drain them rather than counting them.
-        await vi.advanceTimersByTimeAsync(0);
-      });
-
-      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
-      expect(within(dialog).getByText("Codex")).toBeTruthy();
-      expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("creates an Agent from the dialog without a second creation screen", async () => {
@@ -3131,6 +3120,87 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
     expect(window.location.pathname).toBe("/agents/computers");
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+  });
+
+  it("repairs an unreachable Computer from the Computer page before any Agent exists", async () => {
+    // The Account has one Computer and it has stopped answering, with no Agent to reach a recovery
+    // from. This page is the only Computer surface that needs no Agent, so it has to be the way
+    // back — and the way back is a repair of this machine, never a second enrolment beside it.
+    installApi({
+      emptyAgents: true,
+      computers: (connected) => [
+        {
+          id: computerId,
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: connected ? "online" : "offline",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+          connectedAt: connected ? "2026-08-20T00:00:02.000Z" : "2026-08-20T00:00:00.000Z",
+          lastSeenAt: connected ? "2026-08-20T00:00:02.000Z" : "2026-08-20T00:00:00.000Z",
+        },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
+    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-08-20T00:00:00.000Z");
+    try {
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Generate connection command" }));
+      });
+
+      const issued = vi
+        .mocked(fetch)
+        .mock.calls.find(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");
+      // A create code would be refused on this machine as an identity conflict, and would enroll a
+      // second Computer on a replacement one. The code names the Computer it restores instead.
+      expect(JSON.parse(String(issued?.[1]?.body))).toEqual({ mode: "repair", targetComputerId: computerId });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      expect(screen.getByRole("status").textContent).toBe("Ada's Mac is connected.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows one Computer on the Computer page when the Account holds several enrollments", async () => {
+    installApi({
+      computers: [
+        {
+          id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          displayName: "Ada's Retired Mac",
+          platform: "darwin",
+          connectionStatus: "offline",
+          connectedAt: "2026-08-20T00:00:00.000Z",
+          lastSeenAt: "2026-08-20T00:00:00.000Z",
+        },
+        {
+          id: computerId,
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: "online",
+          connectedAt: "2026-08-20T00:00:02.000Z",
+          lastSeenAt: "2026-08-20T00:00:02.000Z",
+        },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    // Singular copy over a list of machines would be the page contradicting itself. The Account is
+    // told about its Computer, resolved the same way every other surface resolves it.
+    expect(within(screen.getByRole("region", { name: "Your Computer" })).getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.queryByText("Ada's Retired Mac")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^Reconnect / })).toBeNull();
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {

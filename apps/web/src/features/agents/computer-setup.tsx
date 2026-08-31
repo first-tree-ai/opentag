@@ -103,7 +103,13 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
         (await browserApi.computers()).computers.map((computer) => [computer.computerId, computer.connectedAt]),
       );
       if (!mounted.current || connectAttempt.current !== attempt) return;
-      const issued = await browserApi.issueComputerConnectCode();
+      // A panel scoped to one enrollment is restoring that machine, not adding one, so the code has
+      // to name it: a create code would enroll a second Computer beside the one it was meant to
+      // repair, and on the same machine it cannot even do that — the installation is already
+      // enrolled, so the Server refuses it as an identity conflict.
+      const issued = await browserApi.issueComputerConnectCode(
+        targetComputerId ? { mode: "repair", targetComputerId } : undefined,
+      );
       if (!mounted.current || connectAttempt.current !== attempt) return;
       const cycle = activePollCycle.current + 1;
       activePollCycle.current = cycle;

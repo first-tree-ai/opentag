@@ -427,6 +427,42 @@ describe("ComputerSetup", () => {
     expect(screen.getByRole("status").textContent).toBe("Waiting for Ada's Mac to connect…");
   });
 
+  it("issues a repair of the target Computer rather than a second enrolment", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [existingComputer] });
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(
+      <ComputerSetup target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }} />,
+    );
+    await clickGenerate();
+
+    // The panel names one machine, so it is restoring that machine. A create code would add a
+    // Computer beside it — and on the machine itself the Server refuses one as an identity
+    // conflict, leaving this panel waiting for a connection that cannot arrive.
+    expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: existingComputer.computerId });
+  });
+
+  it("issues an enrolment when no Computer is named", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(<ComputerSetup />);
+    await clickGenerate();
+
+    // Naming no Computer is what makes this an enrolment, so the code must carry no target — an
+    // argument of any kind here would repair a machine the panel was never scoped to.
+    expect(issue).toHaveBeenCalledTimes(1);
+    expect(issue.mock.calls[0]?.[0]).toBeUndefined();
+  });
+
   it("confirms the target Computer by name once it reconnects", async () => {
     const onConnected = vi.fn();
     vi.spyOn(browserApi, "computers")

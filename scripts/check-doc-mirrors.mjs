@@ -169,10 +169,12 @@ export function checkDocMirrors({ repositoryRoot = process.cwd(), base, head = "
   const changedFiles = parseDiff(gitDiff(root, base, head));
   const pairs = discoverMirrorPairs(root);
   const candidates = mirrorCandidates(changedFiles, pairs);
-  const missing = [
-    ...findChangedCanonicalWithoutMirror(root, changedFiles, candidates),
-    ...findOrphanMirrors(root, pairs),
-  ];
+  const changedMissing = findChangedCanonicalWithoutMirror(root, changedFiles, candidates);
+  const changedKeys = new Set(changedMissing.map((item) => `${item.canonical}\0${item.mirror}`));
+  const orphanMissing = findOrphanMirrors(root, pairs).filter(
+    (item) => !changedKeys.has(`${item.canonical}\0${item.mirror}`),
+  );
+  const missing = [...changedMissing, ...orphanMissing];
   return { checked: changedFiles.size, missing, pairs: pairs.size };
 }
 
@@ -215,7 +217,15 @@ function parseArguments(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     index = parseArgumentAt(argv, index, options, positional);
   }
-  if (!options.base && positional[0]) options.base = positional[0];
+  if (!options.base && positional[0]) {
+    const range = /^(.*?)\.\.\.(.*)$/.exec(positional[0]);
+    if (range) {
+      options.base = range[1];
+      options.head = range[2];
+    } else {
+      options.base = positional[0];
+    }
+  }
   if (positional[1]) options.head = positional[1];
   return options;
 }

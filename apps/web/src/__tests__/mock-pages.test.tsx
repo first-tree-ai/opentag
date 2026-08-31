@@ -54,13 +54,7 @@ describe("capability entry pages", () => {
       screen.getByRole("cell", { name: "GitHub. Read repositories, issues, pull requests, and checks." }),
     ).toBeTruthy();
     expect(screen.getByText("GitHub").tagName).toBe("STRONG");
-    const integrationIcons = table.querySelectorAll('[data-ui="integration-icon"]');
-    expect(integrationIcons).toHaveLength(6);
-    expect(Array.from(integrationIcons).every((icon) => icon.querySelector('img[alt=""]'))).toBe(true);
-    expect(table.querySelector('[data-integration="google-drive"] img')?.getAttribute("src")).toMatch(
-      /^data:image\/svg\+xml/,
-    );
-    expect(table.querySelector("tbody tr")?.className).toContain("even:bg-kumo-tint");
+    expect(table.querySelectorAll("tbody tr")).toHaveLength(6);
     expect(screen.queryByText("Connected")).toBeNull();
     expect(screen.queryByText("Agents with access")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();

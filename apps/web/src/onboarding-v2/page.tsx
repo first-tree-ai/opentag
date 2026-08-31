@@ -170,6 +170,7 @@ function OnboardingV2Flow({
     destinationConfirmed: destinationConfirmed || resumed,
     draftConfirmed: draftConfirmed || resumed,
     connect: backend.connect,
+    selectedComputerId: backend.selectedComputerId,
     readiness: backend.readiness,
     cloudComputer,
     creation: backend.creation,
@@ -181,9 +182,14 @@ function OnboardingV2Flow({
   // The connect code is issued when the page that shows it is first reached, not before: an
   // unseen code would spend its validity in the background. A Computer that is already connected
   // needs none, and `issueConnectCode` only acts on an idle connection.
+  //
+  // A run that has chosen a Computer the Account already has needs none either, and issuing one
+  // anyway would do more than waste it: the code enrolls a *new* machine, so the reader who came
+  // here to reuse one could end up with a second.
+  const connectingNewComputer = backend.selectedComputerId === undefined;
   useEffect(() => {
-    if (flow.page === "computer") backend.issueConnectCode();
-  }, [backend.issueConnectCode, flow.page]);
+    if (flow.page === "computer" && connectingNewComputer) backend.issueConnectCode();
+  }, [backend.issueConnectCode, connectingNewComputer, flow.page]);
 
   // Which step the reader is on is the page's to know. The connection is watched while they are on
   // the one that can act on it, and left alone once they are past it.

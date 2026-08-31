@@ -51,11 +51,14 @@ function chooseInventory(title: string) {
 }
 
 /** Walks to the Computer step. Nothing is typed: the draft's default name is already valid. */
-function reachComputerStep() {
+async function reachComputerStep() {
   fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  // The step's own effects — issuing a code, or probing the machine that was chosen — settle here
+  // rather than inside the assertions that read what they produced.
+  await act(async () => undefined);
 }
 
 function computerControl(): HTMLElement {
@@ -95,7 +98,7 @@ describe("a Computer the Account already has", () => {
 
   it("asks nothing about which Computer when the Account has none", async () => {
     render(<OnboardingV2MockPage />);
-    reachComputerStep();
+    await reachComputerStep();
     await advance(ISSUE_MS);
 
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
@@ -107,7 +110,7 @@ describe("a Computer the Account already has", () => {
   it("checks the chosen Computer rather than waiting for one to arrive", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");
-    reachComputerStep();
+    await reachComputerStep();
 
     expect(screen.getByRole("heading", { name: "Choose a computer" })).toBeTruthy();
     // The probe is running for the machine that was chosen, not stalled waiting for an arrival.
@@ -122,7 +125,7 @@ describe("a Computer the Account already has", () => {
   it("leaves the step on a Computer that was already in the Account", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");
-    reachComputerStep();
+    await reachComputerStep();
     await advanceMock("Return check result");
 
     fireEvent.click(continueButton());
@@ -136,7 +139,7 @@ describe("a Computer the Account already has", () => {
   it("spends no connect code on a run that is reusing a Computer", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");
-    reachComputerStep();
+    await reachComputerStep();
     await advance(ISSUE_MS);
 
     // A code enrolls a *new* machine. Issuing one here would quietly offer a second Computer to a
@@ -148,7 +151,7 @@ describe("a Computer the Account already has", () => {
   it("takes the previous machine's verdict off the screen when the choice changes", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("Several");
-    reachComputerStep();
+    await reachComputerStep();
     await advanceMock("Return check result");
     expect(outcome()).toContain("Everything your agent needs is ready.");
 
@@ -166,7 +169,7 @@ describe("a Computer the Account already has", () => {
   it("repairs the asleep Computer instead of offering another one", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, offline");
-    reachComputerStep();
+    await reachComputerStep();
     await advance(ISSUE_MS);
 
     // Preselected even though it cannot be reached: the alternative nudges someone whose only
@@ -188,10 +191,10 @@ describe("a Computer the Account already has", () => {
     expect(chosenComputer()).toContain(ONLINE_MAC);
   });
 
-  it("preselects a reachable Computer over an unreachable one", () => {
+  it("preselects a reachable Computer over an unreachable one", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("Several");
-    reachComputerStep();
+    await reachComputerStep();
 
     expect(chosenComputer()).toContain(ONLINE_MAC);
 

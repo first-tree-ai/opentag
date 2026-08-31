@@ -687,8 +687,18 @@ export function ComputerStep({
    */
   const choosing = knownComputers.length > 0;
   const selected = knownComputers.find((computer) => computer.id === selectedComputerId);
-  // A computer this step can actually check: a chosen one that is reachable, or a new arrival.
+  /*
+   * The Computer this step is preparing, and so the one the check below answers for: the chosen
+   * machine once it is reachable, or a new arrival. The backend probes this same subject, so what
+   * is on screen is never a verdict about some other machine.
+   */
   const ready = selected ? selected.online : connected;
+  /*
+   * The command enrolls a machine, so it belongs to a run that is connecting one. Beside a chosen
+   * Computer — an offline one most of all — it would offer a second Computer as the way to repair
+   * the first, which is the duplicate this step exists to avoid.
+   */
+  const connectingNew = selected === undefined;
   const checks = deriveChecks(readiness?.runtime);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
@@ -725,7 +735,7 @@ export function ComputerStep({
         </p>
       ) : null}
 
-      {ready ? null : (
+      {connectingNew && !connected ? (
         <div className="flex flex-col gap-3">
           {/*
             The instruction and the validity read as one line: the command is what the reader is
@@ -742,7 +752,7 @@ export function ComputerStep({
           </div>
           <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
         </div>
-      )}
+      ) : null}
 
       {/* A chosen machine reports through the check below; the arrival line is for a new one. */}
       {selected ? null : <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />}

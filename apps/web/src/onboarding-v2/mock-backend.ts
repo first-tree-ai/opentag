@@ -62,6 +62,12 @@ function preselected(computers: readonly KnownComputer[]): string | undefined {
   return (computers.find((computer) => computer.online) ?? computers[0])?.id;
 }
 
+/**
+ * Stands for the Computer that arrives from a connect command, which has no id here until the
+ * Server gives it one. It only has to be distinguishable from every id in the inventory.
+ */
+const NEW_ARRIVAL = "new-arrival";
+
 export const SCENARIOS: readonly MockScenario[] = [
   {
     id: "all-ready",
@@ -208,13 +214,22 @@ export function useMockBackend(
   const [planSignIn, setPlanSignIn] = useState<PlanSignIn>("idle");
   const [creation, setCreation] = useState<CreationState>("idle");
   const [agent, setAgent] = useState<CreatedAgent>();
-  const knownComputers = useMemo(() => inventoryOf(inventory), [inventory]);
+  /*
+   * The rows are state rather than a list derived from the inventory, because a Computer can come
+   * back: the offline machine the reader reconnects is the same machine, and this page is supposed
+   * to notice. A list that could never change could only ever offer them a second one.
+   */
+  const [knownComputers, setKnownComputers] = useState<readonly KnownComputer[]>(() => inventoryOf(inventory));
   const [selectedComputerId, setSelectedComputerId] = useState<string | undefined>(() =>
     preselected(inventoryOf(inventory)),
   );
-  // Switching inventory in the lab is a different Account, not a change of mind, so the selection
-  // is taken again rather than carried across.
-  useEffect(() => setSelectedComputerId(preselected(knownComputers)), [knownComputers]);
+  // Switching inventory in the lab is a different Account, not a change of mind, so the rows and
+  // the selection are both taken again rather than carried across.
+  useEffect(() => {
+    const rows = inventoryOf(inventory);
+    setKnownComputers(rows);
+    setSelectedComputerId(preselected(rows));
+  }, [inventory]);
 
   const timers = useRef<number[]>([]);
   const clearTimers = useCallback(() => {
@@ -273,15 +288,53 @@ export function useMockBackend(
     return () => window.clearTimeout(id);
   }, [connect]);
 
-  // The check runs when the Computer arrives, exactly like the daemon's eager first probe.
+  /**
+   * The Computer this run is preparing: the chosen one once it is reachable, or the one that just
+   * arrived. An unreachable choice prepares nothing, which is why the step can say so instead of
+   * pretending to check it.
+   */
+  const preparedComputerId = useMemo(() => {
+    if (selectedComputerId !== undefined) {
+      const chosen = knownComputers.find((computer) => computer.id === selectedComputerId);
+      return chosen?.online ? chosen.id : undefined;
+    }
+    return connect.kind === "connected" ? NEW_ARRIVAL : undefined;
+  }, [connect.kind, knownComputers, selectedComputerId]);
+
+  // The check runs against whichever Computer is being prepared, exactly like the daemon's eager
+  // first probe. A machine the Account already had is checked no less than one that just arrived,
+  // and a reader who changes their mind gets a check for the machine they changed it to.
   useEffect(() => {
-    if (connect.kind !== "connected") return;
+    if (preparedComputerId === undefined) return;
     setReadiness({ runtime: "checking", messagingCli: { feishu: "checking", slack: "checking" } });
     setCheckResult({
       runtime: scenario.runtime,
       messagingCli: { feishu: scenario.messagingCli, slack: scenario.messagingCli },
     });
-  }, [connect.kind, scenario.messagingCli, scenario.runtime]);
+  }, [preparedComputerId, scenario.messagingCli, scenario.runtime]);
+
+  /**
+   * Choosing a different Computer takes the previous one's verdict off the screen. A result that
+   * stayed would be read as this machine's answer, and it is not: it is the answer for a machine
+   * the Agent is no longer going to run on.
+   */
+  const selectComputer = useCallback((computerId: string | undefined) => {
+    setSelectedComputerId(computerId);
+    setReadiness(undefined);
+    setCheckResult(undefined);
+  }, []);
+
+  /**
+   * The offline machine coming back — what reconnecting it in its own terminal would do. It is the
+   * same Computer, so the Account gains nothing, and the check starts on its own from there.
+   */
+  const bringOnline = useCallback((computerId: string) => {
+    setKnownComputers((current) =>
+      current.map((computer) =>
+        computer.id === computerId ? { id: computer.id, displayName: computer.displayName, online: true } : computer,
+      ),
+    );
+  }, []);
 
   const settleCheck = useCallback(() => {
     setCheckResult((target) => {
@@ -334,6 +387,10 @@ export function useMockBackend(
   /** The Agent the real backend would have created, on the same seam and the same states. */
   const createAgent = useCallback(
     (draft: AgentDraft) => {
+      // The Server creates on a Computer it can name, and refuses when it cannot. The mock holds
+      // itself to the same rule so this step cannot produce an Agent that runs nowhere — the
+      // already-owned machine counts, which is the whole point of offering it.
+      if (preparedComputerId === undefined) return;
       setCreation((current) => {
         if (current !== "idle") return current;
         later(() => {
@@ -343,7 +400,7 @@ export function useMockBackend(
         return "creating";
       });
     },
-    [later],
+    [later, preparedComputerId],
   );
 
   const reset = useCallback(() => {
@@ -355,9 +412,17 @@ export function useMockBackend(
     setReadiness(undefined);
     setCheckResult(undefined);
     setMessaging({ kind: "idle" });
-  }, [clearTimers]);
+    // Starting over returns the Account to what it owned, including the machine that was asleep.
+    const rows = inventoryOf(inventory);
+    setKnownComputers(rows);
+    setSelectedComputerId(preselected(rows));
+  }, [clearTimers, inventory]);
 
   const pending = useMemo<PendingEvent | undefined>(() => {
+    // Reconnecting the chosen machine comes first: while it is asleep, nothing else on this step is
+    // waiting on the outside world, and enrolling a second Computer is not the move being offered.
+    const asleep = knownComputers.find((computer) => computer.id === selectedComputerId && !computer.online);
+    if (asleep) return { label: `Reconnect ${asleep.displayName}`, run: () => bringOnline(asleep.id) };
     if (connect.kind === "issued") return { label: "Connect computer", run: arrive };
     if (checkResult) return { label: "Return check result", run: settleCheck };
     if (planSignIn === "pending") return { label: "Approve sign-in", run: () => setPlanSignIn("signed-in") };
@@ -368,7 +433,17 @@ export function useMockBackend(
     if (messaging.kind === "waiting-handoff")
       return { label: "Confirm reachable", run: () => setMessaging({ kind: "connected" }) };
     return undefined;
-  }, [arrive, checkResult, connect.kind, messaging.kind, planSignIn, settleCheck]);
+  }, [
+    arrive,
+    bringOnline,
+    checkResult,
+    connect.kind,
+    knownComputers,
+    messaging.kind,
+    planSignIn,
+    selectedComputerId,
+    settleCheck,
+  ]);
 
   return useMemo(
     () => ({
@@ -384,7 +459,7 @@ export function useMockBackend(
       messaging,
       messagingProvider: undefined,
       planSignIn,
-      selectComputer: setSelectedComputerId,
+      selectComputer,
       selectedComputerId,
       // The mock has nothing to read back; it is the flow as it runs the first time.
       resuming: false,
@@ -416,6 +491,7 @@ export function useMockBackend(
       readiness,
       repairNow,
       reset,
+      selectComputer,
       selectedComputerId,
       startMessaging,
       startPlanSignIn,

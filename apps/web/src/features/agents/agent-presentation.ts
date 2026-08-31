@@ -1,4 +1,5 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import * as m from "../../paraglide/messages.js";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -63,7 +64,7 @@ export function agentCardStatus(agent: AgentListItem): {
  */
 export function computerRecoveryMessage(agent: AgentDetailView): string {
   if (!agent.computer) {
-    return "This Agent is not connected to a Computer yet. Connect one to give it somewhere to run.";
+    return m.agents_computer_not_bound_recovery();
   }
   const computerName = agent.computer.displayName;
   if (agent.availability.reason === "runtime_unavailable") {
@@ -154,7 +155,9 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
     return { label: "Status unknown", tone: "neutral" };
   }
 
-  if (availability.reason === "computer_not_bound") return { label: "No Computer", tone: "warning" };
+  if (availability.reason === "computer_not_bound") {
+    return { label: m.agents_computer_not_bound_label(), tone: "warning" };
+  }
   if (availability.reason === "computer_offline") return { label: "Computer offline", tone: "warning" };
   if (availability.reason === "runtime_unavailable") {
     // The Provider-specific wording tells a viewer what to do; a single "runtime not available" does not.
@@ -263,7 +266,7 @@ export function agentAvailabilityRecovery(
   if (agent.availability.state === "unconfirmed") return undefined;
   // Naming the action for the state it exits: there is no Computer here to view.
   if (agent.availability.reason === "computer_not_bound") {
-    return { label: "Connect a Computer", link: agentSettingsSectionLink(agent.id, "computer") };
+    return { label: m.agents_computer_not_bound_action(), link: agentSettingsSectionLink(agent.id, "computer") };
   }
   return { label: "View Computer", link: agentSettingsSectionLink(agent.id, "computer") };
 }
@@ -275,7 +278,7 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     handoff_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
     computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
-    computer_not_bound: "This Agent has no Computer. Connect one to give it somewhere to run.",
+    computer_not_bound: m.agents_computer_not_bound_detail(),
     computer_offline: "This agent's computer is offline. Retrying automatically.",
     runtime_unavailable: runtimeRecoveryMessage(agent),
     im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
@@ -336,9 +339,9 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
    */
   if (computer.state === "not_bound") {
     return {
-      action: { label: "Connect a Computer", section: "computer" as const },
-      detail: "This Agent has no Computer. Connect one to give it somewhere to run.",
-      label: "No Computer",
+      action: { label: m.agents_computer_not_bound_action(), section: "computer" as const },
+      detail: m.agents_computer_not_bound_detail(),
+      label: m.agents_computer_not_bound_label(),
       tone: "warning",
     };
   }

@@ -1,11 +1,12 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import * as m from "../paraglide/messages.js";
 import { Banner } from "../ui/design-system.js";
 
 type SlackOAuthIntent = "create" | "reauthorize";
 
 const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
-  AGENT_COMPUTER_NOT_BOUND: "Connect a Computer to this Agent before connecting Slack.",
+  AGENT_COMPUTER_NOT_BOUND: m.im_slack_agent_computer_not_bound(),
   AUTH_INVALID_TOKEN: "Sign in again, then retry adding OpenTag to Slack.",
   IM_BINDING_FORBIDDEN: "Only the Account owner can manage this Slack configuration.",
   IM_BINDING_PROVIDER_IMMUTABLE:

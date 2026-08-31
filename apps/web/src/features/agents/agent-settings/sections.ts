@@ -1,4 +1,5 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
+import * as m from "../../../paraglide/messages.js";
 import type { IconName } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { messagingChannelLabel, messagingConnectionLabel, platformLabel, titleCase } from "../agent-presentation.js";
@@ -87,7 +88,7 @@ export function agentSettingsSummary(
   if (section === "identity") return config.displayName;
   if (section === "computer") {
     const computer = agent.computer;
-    if (!computer) return "No Computer connected";
+    if (!computer) return m.agent_settings_computer_none_summary();
     const state = agent.availability.dependencies.computer.state;
     const status = state === "ready" ? "Online" : state === "action_required" ? "Offline" : "Unconfirmed";
     return `${computer.displayName} · ${platformLabel(computer.platform)} · ${status}`;

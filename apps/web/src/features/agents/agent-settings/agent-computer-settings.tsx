@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
+import * as m from "../../../paraglide/messages.js";
 import { Button, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
@@ -21,9 +22,9 @@ function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailVie
       >
         <header className="flex flex-wrap items-start justify-between gap-3">
           <Text as="h1" id="computer-heading" size="lg" variant="heading">
-            No Computer connected
+            {m.agent_settings_computer_none_heading()}
           </Text>
-          <StatusIndicator label="Not connected" tone="warning" />
+          <StatusIndicator label={m.agent_settings_computer_none_status()} tone="warning" />
         </header>
         <div className="grid gap-4 rounded-md bg-kumo-recessed p-4">
           <p>{computerRecoveryMessage(agent)}</p>

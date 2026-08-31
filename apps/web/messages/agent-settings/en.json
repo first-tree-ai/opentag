@@ -1,3 +1,6 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agent_settings_computer_none_heading": "No Computer connected",
+  "agent_settings_computer_none_status": "Not connected",
+  "agent_settings_computer_none_summary": "No Computer connected"
 }

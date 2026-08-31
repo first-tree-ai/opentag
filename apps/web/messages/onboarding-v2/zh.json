@@ -1,3 +1,5 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_v2_resume_blocked_detail": "选择它运行在哪台计算机上，设置就会从那里继续。我们无法替你选：连接这一步只能看出有计算机接入了，看不出它就是运行了你那条命令的那一台。",
+  "onboarding_v2_resume_blocked_title": "{agentName} 还没有计算机。"
 }

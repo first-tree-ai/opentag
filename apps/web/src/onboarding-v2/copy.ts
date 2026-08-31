@@ -6,6 +6,7 @@
  * setup copy, so the same work says the same thing on both surfaces.
  */
 
+import * as m from "../paraglide/messages.js";
 import { SETUP_COPY } from "../setup/copy.js";
 import type { CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
@@ -52,9 +53,8 @@ export const COPY = {
    * reader's, on the page built for it.
    */
   resumeBlocked: {
-    title: (agentName: string) => `${agentName} has no computer yet.`,
-    detail:
-      "Choose which computer it runs on, and setup carries on from there. We can't pick for you: the connect step can tell a computer arrived, not that it is the one that ran your command.",
+    title: (agentName: string) => m.onboarding_v2_resume_blocked_title({ agentName }),
+    detail: m.onboarding_v2_resume_blocked_detail(),
   },
   brand: "OpenTag",
 

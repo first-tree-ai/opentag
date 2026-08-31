@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { browserApi } from "../../api.js";
+import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Text } from "../../ui/design-system.js";
 import { platformLabel } from "./agent-presentation.js";
 import { useComputersQuery } from "./agent-queries.js";
@@ -41,7 +42,7 @@ export function AgentComputerChoice({
       await browserApi.rebindAgentComputer(agentId, computerId);
       onBound();
     } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : "Unable to connect this Computer");
+      setError(cause instanceof Error && cause.message ? cause.message : m.agents_computer_choice_bind_failed());
     } finally {
       setBinding(false);
     }
@@ -57,19 +58,19 @@ export function AgentComputerChoice({
        */}
       {enrolled !== undefined && enrolled.length === 0 ? null : (
         <div className="grid gap-2">
-          <Text variant="heading">Use a Computer you already connected</Text>
+          <Text variant="heading">{m.agents_computer_choice_existing_heading()}</Text>
           {enrolled === undefined ? (
             computersQuery.isError ? (
               <>
-                <p>We couldn't read the Computers on this Account, so we can't offer the ones it already has.</p>
+                <p>{m.agents_computer_choice_read_failed()}</p>
                 <div>
                   <Button size="compact" variant="secondary" onClick={() => void computersQuery.refetch()}>
-                    Try again
+                    {m.common_try_again()}
                   </Button>
                 </div>
               </>
             ) : (
-              <p>Checking which Computers this Account already has…</p>
+              <p>{m.agents_computer_choice_loading()}</p>
             )
           ) : (
             <ul className="grid gap-2">
@@ -77,7 +78,9 @@ export function AgentComputerChoice({
                 <li className="flex flex-wrap items-center justify-between gap-3" key={computer.computerId}>
                   <span>
                     {computer.displayName} · {platformLabel(computer.platform)} ·{" "}
-                    {computer.connectionStatus === "online" ? "Online" : "Offline"}
+                    {computer.connectionStatus === "online"
+                      ? m.agents_computer_choice_online()
+                      : m.agents_computer_choice_offline()}
                   </span>
                   <Button
                     disabled={binding}
@@ -85,7 +88,7 @@ export function AgentComputerChoice({
                     variant="secondary"
                     onClick={() => void bind(computer.computerId)}
                   >
-                    Use {computer.displayName}
+                    {m.agents_computer_choice_use({ name: computer.displayName })}
                   </Button>
                 </li>
               ))}
@@ -94,7 +97,7 @@ export function AgentComputerChoice({
         </div>
       )}
       <div className="grid gap-2">
-        <Text variant="heading">Connect a new Computer</Text>
+        <Text variant="heading">{m.agents_computer_choice_connect_new()}</Text>
         {/*
          * Connecting adds the machine to the list above; it does not bind it. What this step
          * observes is an arrival -- a Computer that appeared or reconnected since it started -- and

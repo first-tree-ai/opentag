@@ -1,3 +1,15 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agents_computer_choice_bind_failed": "Unable to connect this Computer",
+  "agents_computer_choice_connect_new": "Connect a new Computer",
+  "agents_computer_choice_existing_heading": "Use a Computer you already connected",
+  "agents_computer_choice_loading": "Checking which Computers this Account already has…",
+  "agents_computer_choice_offline": "Offline",
+  "agents_computer_choice_online": "Online",
+  "agents_computer_choice_read_failed": "We couldn't read the Computers on this Account, so we can't offer the ones it already has.",
+  "agents_computer_choice_use": "Use {name}",
+  "agents_computer_not_bound_action": "Connect a Computer",
+  "agents_computer_not_bound_detail": "This Agent has no Computer. Connect one to give it somewhere to run.",
+  "agents_computer_not_bound_label": "No Computer",
+  "agents_computer_not_bound_recovery": "This Agent is not connected to a Computer yet. Connect one to give it somewhere to run."
 }

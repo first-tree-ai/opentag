@@ -1,3 +1,15 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agents_computer_choice_bind_failed": "无法连接该计算机",
+  "agents_computer_choice_connect_new": "连接一台新的计算机",
+  "agents_computer_choice_existing_heading": "使用已连接的计算机",
+  "agents_computer_choice_loading": "正在查看该账户已有哪些计算机…",
+  "agents_computer_choice_offline": "离线",
+  "agents_computer_choice_online": "在线",
+  "agents_computer_choice_read_failed": "无法读取该账户的计算机，因此无法列出它已有的那些。",
+  "agents_computer_choice_use": "使用 {name}",
+  "agents_computer_not_bound_action": "连接计算机",
+  "agents_computer_not_bound_detail": "该智能体还没有计算机。连接一台，它才有地方运行。",
+  "agents_computer_not_bound_label": "没有计算机",
+  "agents_computer_not_bound_recovery": "该智能体尚未连接到任何计算机。连接一台，它才有地方运行。"
 }

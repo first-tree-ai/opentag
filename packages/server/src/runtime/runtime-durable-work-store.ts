@@ -60,6 +60,24 @@ export class PostgresRuntimeDurableWorkStore {
     validatePayload(record);
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
+      const values = {
+        workspaceComputerId,
+        kind: record.kind,
+        recordKey: record.key,
+        payload: record.payload,
+        status: RuntimeDurableWorkStatusSchema.parse(record.status),
+        attempts: record.attempts,
+        acceptedAt: record.acceptedAt,
+        nextAttemptAt: record.nextAttemptAt ?? null,
+        lastError: record.lastError ?? null,
+        updatedAt: record.updatedAt,
+      } as const;
+      await transaction
+        .insert(runtimeDurableWork)
+        .values(values)
+        .onConflictDoNothing({
+          target: [runtimeDurableWork.workspaceComputerId, runtimeDurableWork.kind, runtimeDurableWork.recordKey],
+        });
       const [existing] = await transaction
         .select()
         .from(runtimeDurableWork)
@@ -75,23 +93,8 @@ export class PostgresRuntimeDurableWorkStore {
       if (existing && stableJson(existing.payload) !== stableJson(record.payload)) {
         throw new RuntimeDurableWorkConflictError();
       }
-      const values = {
-        workspaceComputerId,
-        kind: record.kind,
-        recordKey: record.key,
-        payload: record.payload,
-        status: RuntimeDurableWorkStatusSchema.parse(record.status),
-        attempts: record.attempts,
-        acceptedAt: record.acceptedAt,
-        nextAttemptAt: record.nextAttemptAt ?? null,
-        lastError: record.lastError ?? null,
-        updatedAt: record.updatedAt,
-      } as const;
-      if (existing) {
+      if (existing)
         await transaction.update(runtimeDurableWork).set(values).where(eq(runtimeDurableWork.id, existing.id));
-      } else {
-        await transaction.insert(runtimeDurableWork).values(values);
-      }
       await this.#prune(transaction, workspaceComputerId, record.kind, now);
     });
   }

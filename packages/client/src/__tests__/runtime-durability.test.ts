@@ -1,7 +1,12 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RUNTIME_RETRY_POLICY,
+  FileRuntimeDurabilityStore,
   MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityFailure,
   RuntimeDurabilityMetrics,
   retryDelay,
   retryExhausted,
@@ -64,5 +69,58 @@ describe("runtime durability primitives", () => {
       updatedAt: 1,
     });
     await expect(store.list("turn-report")).resolves.toMatchObject([{ key: "turn-1", status: "accepted" }]);
+  });
+
+  it("persists records on disk and ignores malformed or foreign entries", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-durability-"));
+    try {
+      const store = new FileRuntimeDurabilityStore(home);
+      const record = {
+        acceptedAt: 1,
+        attempts: 0,
+        key: "turn-1",
+        kind: "turn-report" as const,
+        payload: { value: "opaque" },
+        status: "accepted" as const,
+        updatedAt: 1,
+      };
+      await store.write(record);
+      await store.write({ ...record, status: "running" });
+      const path = resolve(home, "data/runtime/durability/turn-report.json");
+      await writeFile(
+        path,
+        JSON.stringify([
+          record,
+          null,
+          "invalid",
+          { ...record, kind: "session-message" },
+          { ...record, payload: "invalid" },
+        ]),
+      );
+      await expect(store.list("turn-report")).resolves.toMatchObject([{ key: "turn-1", status: "accepted" }]);
+      await writeFile(path, JSON.stringify({ invalid: true }));
+      await expect(store.list("turn-report")).rejects.toThrow("Runtime storage contains invalid JSON");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes structured durable failures", () => {
+    const failure = new RuntimeDurabilityFailure({
+      category: "transport",
+      code: "transport_unavailable",
+      message: "socket closed",
+      phase: "transport",
+      requestId: "request-1",
+      retryability: "retryable",
+    });
+    expect(failure).toMatchObject({
+      category: "transport",
+      code: "transport_unavailable",
+      phase: "transport",
+      requestId: "request-1",
+      retryability: "retryable",
+    });
+    expect(failure.message).toBe("socket closed");
   });
 });

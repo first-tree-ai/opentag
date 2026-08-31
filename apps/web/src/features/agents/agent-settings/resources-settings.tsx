@@ -1,6 +1,8 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import { formatNumber } from "../../../i18n/format.js";
+import * as m from "../../../paraglide/messages.js";
 import {
   Button,
   Dialog,
@@ -73,13 +75,13 @@ export function AgentResourcesSettings({
       const resolvedConfig = pendingConfig ? newerConfig(updated, pendingConfig) : updated;
       setConfig(resolvedConfig);
       setInstructionsDraft(resolvedConfig.runtimeConfig.instructions);
-      setMessage("Instructions saved.");
+      setMessage(m.agent_settings_instructions_saved());
       editingRef.current = false;
       pendingConfigRef.current = undefined;
       setEditing(false);
       onAgentChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to save instructions");
+      setError(cause instanceof Error ? cause.message : m.agent_settings_save_instructions_failed());
     } finally {
       setSaving(false);
     }
@@ -92,12 +94,15 @@ export function AgentResourcesSettings({
       data-agent-id={agent.id}
     >
       <Text as="h2" id={`resources-settings-heading-${config.id}`} variant="heading">
-        Resources
+        {m.agent_settings_resources_title()}
       </Text>
       <SettingsList>
-        <SettingsRow description={instructionsSummary(config.runtimeConfig.instructions)} label="Instructions">
+        <SettingsRow
+          description={instructionsSummary(config.runtimeConfig.instructions)}
+          label={m.agent_settings_instructions_label()}
+        >
           <Button ref={editButtonRef} size="compact" variant="secondary" onClick={openEditor}>
-            Edit
+            {m.agent_settings_edit_action()}
           </Button>
         </SettingsRow>
       </SettingsList>
@@ -105,13 +110,13 @@ export function AgentResourcesSettings({
       {editing ? (
         <Dialog
           busy={saving}
-          description="These instructions guide this Agent in addition to OpenTag's platform guidance."
+          description={m.agent_settings_instructions_dialog_description()}
           returnFocusRef={editButtonRef}
-          title="Edit instructions"
+          title={m.agent_settings_edit_instructions_title()}
           onClose={closeEditor}
         >
           <form className="grid gap-4" onSubmit={save}>
-            <Field htmlFor={instructionsId} label="Instructions">
+            <Field htmlFor={instructionsId} label={m.agent_settings_instructions_label()}>
               <KumoInputAreaControl
                 id={instructionsId}
                 name="instructions"
@@ -130,10 +135,10 @@ export function AgentResourcesSettings({
             ) : null}
             <div className="flex flex-wrap justify-end gap-2 border-t border-kumo-line pt-4">
               <Button disabled={saving} variant="ghost" onClick={closeEditor}>
-                Cancel
+                {m.agent_settings_cancel_action()}
               </Button>
               <Button disabled={!dirty || saving} type="submit">
-                {saving ? "Saving…" : "Save changes"}
+                {saving ? m.agent_settings_saving_action() : m.agent_settings_save_changes_action()}
               </Button>
             </div>
           </form>
@@ -144,9 +149,11 @@ export function AgentResourcesSettings({
 }
 
 function instructionsSummary(instructions: string): string {
-  if (instructions.length === 0) return "Not customized · 0 characters";
+  if (instructions.length === 0) return m.agent_settings_not_customized_characters({ count: formatNumber(0) });
   const length = Array.from(instructions).length;
-  return `Custom · ${length} ${length === 1 ? "character" : "characters"}`;
+  return length === 1
+    ? m.agent_settings_custom_character({ count: formatNumber(length) })
+    : m.agent_settings_custom_characters({ count: formatNumber(length) });
 }
 
 function newerConfig(current: AgentAdminConfig | undefined, candidate: AgentAdminConfig): AgentAdminConfig {

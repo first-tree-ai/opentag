@@ -409,31 +409,38 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       "feishu.connection.connect",
       imAttrs({ provider: "feishu", bindingId: imBindingId }),
       async () => {
+        let adapter: FeishuAdapter | undefined;
         try {
           const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId);
           if (!material) throw new FeishuOperationError("FEISHU_BINDING_NOT_ACTIVE");
-          const adapter = this.#createAdapter({
+          const createdAdapter = this.#createAdapter({
             appId: material.appId,
             appSecret: material.appSecret,
             teamId: material.teamId,
             teamBrand: material.teamBrand,
           });
-          const identity = await this.#policy.run("feishu.connection.validate", () => adapter.validateBinding(), {
-            maxAttempts: 1,
-            signal,
-            circuitKey: `feishu:binding:${imBindingId}`,
-          });
+          adapter = createdAdapter;
+          const identity = await this.#policy.run(
+            "feishu.connection.validate",
+            () => createdAdapter.validateBinding(),
+            {
+              maxAttempts: 1,
+              signal,
+              circuitKey: `feishu:binding:${imBindingId}`,
+            },
+          );
           if (identity.externalBotId !== material.botOpenId) {
             throw new FeishuOperationError("FEISHU_BOT_IDENTITY_MISMATCH");
           }
           await this.#replaceOwned(imBindingId, {
-            adapter,
+            adapter: createdAdapter,
             epoch,
             generation: material.generation,
             appId: material.appId,
           });
           setActiveSpanAttributes(outcomeAttrs("connected"));
         } catch (error) {
+          await adapter?.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
           const code = diagnosticCode(error);
           setActiveSpanAttributes(outcomeAttrs(connectionOutcome(code), code));
           throw error;

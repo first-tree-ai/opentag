@@ -13,6 +13,7 @@ export { SlackOAuthStateService } from "./oauth-state.js";
 export { preparseSlackRoute, verifySlackSignature } from "./signature.js";
 export {
   type SlackWebhookReceiptClaim,
+  SlackWebhookReceiptError,
   type SlackWebhookReceiptMetric,
   SlackWebhookReceiptStore,
 } from "./webhook-receipt-store.js";

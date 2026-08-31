@@ -1,6 +1,23 @@
+import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { slackWebhookReceipts } from "../../../db/schema/index.js";
+import type { PolicyErrorCategory, PolicyPhase, PolicyRetryability } from "../../im/external-call-policy.js";
+
+export class SlackWebhookReceiptError extends Error {
+  readonly code: string;
+  readonly category: PolicyErrorCategory = "validation";
+  readonly retryability: PolicyRetryability = "not_retryable";
+  readonly phase: PolicyPhase = "request";
+  readonly requestId: string;
+
+  constructor(code: string, requestId = randomUUID()) {
+    super(code);
+    this.name = "SlackWebhookReceiptError";
+    this.code = code;
+    this.requestId = requestId;
+  }
+}
 
 export interface SlackWebhookReceiptMetric {
   type: "receipt" | "duplicate";
@@ -44,7 +61,7 @@ export class SlackWebhookReceiptStore {
         return code < 0x21 || code > 0x7e;
       })
     ) {
-      throw new Error("SLACK_RECEIPT_EVENT_ID_INVALID");
+      throw new SlackWebhookReceiptError("SLACK_RECEIPT_EVENT_ID_INVALID");
     }
     return this.#database.transaction(async (transaction) => {
       const [created] = await transaction

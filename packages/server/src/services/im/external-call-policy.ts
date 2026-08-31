@@ -156,8 +156,10 @@ export class ExternalCallPolicy {
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         try {
           const result = await this.#withDeadline(operation, requestId, action, options);
+          const wasOpen = circuit.state !== "closed";
           circuit.failures = 0;
           circuit.state = "closed";
+          if (wasOpen) this.#onMetric({ type: "circuit", operation, requestId, state: "closed" });
           this.#onMetric({
             type: "call",
             operation,
@@ -208,7 +210,7 @@ export class ExternalCallPolicy {
       `http:${url.hostname}`,
       async (signal) => {
         const response = await this.#transport(url.toString(), { ...init, redirect: "error", signal });
-        if (response.status >= 300 && response.status < 400) {
+        if (response.redirected || (response.status >= 300 && response.status < 400)) {
           throw new ExternalCallPolicyError("IM_PROVIDER_REDIRECT_REJECTED", "Provider redirects are not allowed", {
             category: "security",
             retryability: "not_retryable",
@@ -269,9 +271,10 @@ export class ExternalCallPolicy {
         reject(error);
       }, timeoutMs);
     });
+    let rejectCancelledListener: (() => void) | undefined;
     const cancelled = options.signal
       ? new Promise<never>((_, reject) => {
-          const rejectCancelled = () =>
+          rejectCancelledListener = () =>
             reject(
               new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
                 category: "availability",
@@ -281,11 +284,11 @@ export class ExternalCallPolicy {
                 cause: options.signal?.reason,
               }),
             );
-          if (options.signal?.aborted) rejectCancelled();
-          else options.signal?.addEventListener("abort", rejectCancelled, { once: true });
+          if (options.signal?.aborted) rejectCancelledListener?.();
+          else options.signal?.addEventListener("abort", rejectCancelledListener, { once: true });
         })
       : undefined;
-    const actionPromise = action(controller.signal, requestId);
+    const actionPromise = Promise.resolve().then(() => action(controller.signal, requestId));
     actionPromise.catch(() => undefined);
     try {
       return await Promise.race(cancelled ? [actionPromise, timeout, cancelled] : [actionPromise, timeout]);
@@ -303,6 +306,7 @@ export class ExternalCallPolicy {
     } finally {
       if (timer) clearTimeout(timer);
       options.signal?.removeEventListener("abort", onAbort);
+      if (rejectCancelledListener) options.signal?.removeEventListener("abort", rejectCancelledListener);
     }
   }
 

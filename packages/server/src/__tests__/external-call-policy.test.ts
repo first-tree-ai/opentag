@@ -113,4 +113,26 @@ describe("ExternalCallPolicy", () => {
       requestId: "req-1",
     });
   });
+
+  it("exposes provider duration, failure, and circuit metrics without call payloads", async () => {
+    const metrics: Array<{ type: string; operation: string; success?: boolean; state?: string }> = [];
+    const policy = new ExternalCallPolicy({
+      maxAttempts: 1,
+      circuitFailureThreshold: 1,
+      onMetric: (metric) => metrics.push(metric),
+    });
+    await expect(policy.run("metrics.operation", async () => "ok")).resolves.toBe("ok");
+    await expect(
+      policy.run("metrics.operation", async () => {
+        throw new Error("no-details");
+      }),
+    ).rejects.toThrow();
+    expect(metrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "call", operation: "metrics.operation", success: true }),
+        expect.objectContaining({ type: "call", operation: "metrics.operation", success: false }),
+        expect.objectContaining({ type: "circuit", operation: "metrics.operation", state: "open" }),
+      ]),
+    );
+  });
 });

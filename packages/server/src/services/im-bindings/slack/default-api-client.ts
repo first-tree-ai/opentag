@@ -28,7 +28,10 @@ export class DefaultSlackApiClient implements SlackApiClient {
   }
 
   async authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }> {
-    const result = await this.#createClient(token).auth.test();
+    const result = await this.#policy.run("slack.auth.test", () => this.#createClient(token).auth.test(), {
+      circuitKey: "slack:auth.test",
+      maxAttempts: 1,
+    });
     if (typeof result.team_id !== "string" || typeof result.user_id !== "string" || typeof result.bot_id !== "string") {
       throw new Error("SLACK_AUTH_IDENTITY_INCOMPLETE");
     }
@@ -48,18 +51,21 @@ export class DefaultSlackApiClient implements SlackApiClient {
   }): Promise<SlackOAuthAccessResult> {
     let response: Response;
     try {
-      response = await this.#fetch("https://slack.com/api/oauth.v2.access", {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          client_id: input.clientId,
-          client_secret: input.clientSecret,
-          code: input.code,
-          redirect_uri: input.redirectUri,
-        }).toString(),
-        redirect: "error",
-        signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
-      });
+      response = await this.#policy.fetch(
+        "https://slack.com/api/oauth.v2.access",
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: input.clientId,
+            client_secret: input.clientSecret,
+            code: input.code,
+            redirect_uri: input.redirectUri,
+          }).toString(),
+          signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
+        },
+        { circuitKey: "slack:oauth.access", maxAttempts: 1 },
+      );
     } catch {
       throw new Error("SLACK_AUTH_UPSTREAM_UNAVAILABLE");
     }
@@ -104,16 +110,19 @@ export class DefaultSlackApiClient implements SlackApiClient {
   async inspectInstallation(token: string): Promise<SlackInstallationInspection> {
     let response: Response;
     try {
-      response = await this.#fetch("https://slack.com/api/auth.test", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "content-type": "application/x-www-form-urlencoded",
+      response = await this.#policy.fetch(
+        "https://slack.com/api/auth.test",
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: "",
+          signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
         },
-        body: "",
-        redirect: "error",
-        signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
-      });
+        { circuitKey: "slack:auth.test.http", maxAttempts: 1 },
+      );
     } catch {
       // Network failures and timeouts carry no credential detail worth surfacing.
       throw new Error("SLACK_AUTH_UPSTREAM_UNAVAILABLE");

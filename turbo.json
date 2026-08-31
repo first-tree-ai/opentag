@@ -1,5 +1,25 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [
+    "pnpm-lock.yaml",
+    "biome.json",
+    ".node-version",
+    "tsconfig*.json",
+    "vitest*.config.{js,ts,mjs,mts}",
+    "packages/*/vitest*.config.{js,ts,mjs,mts}"
+  ],
+  "globalEnv": [
+    "CI",
+    "NODE_ENV",
+    "DATABASE_URL",
+    "OPENTAG_DATABASE_URL",
+    "OPENTAG_E2E_*",
+    "OPENTAG_SERVICE_MODE",
+    "OPENTAG_SERVER_URL",
+    "OPENTAG_PORT",
+    "PORT",
+    "VITEST"
+  ],
   "globalPassThroughEnv": [
     "GITHUB_OUTPUT",
     "GITHUB_TOKEN",
@@ -30,6 +50,21 @@
     },
     "test": {
       "dependsOn": ["^build"]
+    },
+    "test:integration": {
+      "cache": false
+    },
+    "e2e": {
+      "cache": false
+    },
+    "test:e2e:claude-code-agent-runtime": {
+      "cache": false
+    },
+    "test:e2e:codex-agent-runtime": {
+      "cache": false
+    },
+    "test:e2e:pi-agent-runtime": {
+      "cache": false
     },
     "paraglide": {
       "inputs": ["package.json", "messages/**", "project.inlang/settings.json"],

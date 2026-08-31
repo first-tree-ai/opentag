@@ -79,7 +79,7 @@ jobs:
             .join("\n");
           appendFileSync(
             summaryPath,
-            `\n### Coverage provenance\n\nCoverage measurement: **fresh execution** (`node scripts/unit-coverage.mjs`).\n\n` +
+            `\n### Coverage provenance\n\nCoverage measurement: **fresh execution** (\`node scripts/unit-coverage.mjs\`).\n\n` +
               `Turbo build identity (from the run summary):\n\n| Task | Result |\n| --- | --- |\n${table || "| (summary unavailable) | executed |"}\n`,
           );
           NODE

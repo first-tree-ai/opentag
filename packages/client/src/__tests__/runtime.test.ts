@@ -7,6 +7,7 @@ import {
   PROVIDER_READINESS_V1_HEADER,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
@@ -14,7 +15,8 @@ import {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
-import { RuntimeConnection } from "../runtime/runtime-connection.js";
+import { OpenTagApiError } from "../api.js";
+import { type RuntimeBusinessFrame, RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
@@ -22,6 +24,493 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
 
 describe("RuntimeConnection", () => {
+  it("validates queue limits, readiness leases, capability expiry, and registration waiters", async () => {
+    const baseOptions = {
+      arch: "x64",
+      clientVersion: "0.0.1",
+      computer: { version: 2 as const, computerId: randomUUID(), serverUrl: "http://127.0.0.1:8000" },
+      displayName: "workstation",
+      instanceId: randomUUID(),
+      machineToken: "machine-token",
+      platform: "linux" as const,
+    };
+    for (const priority of ["control", "result", "report", "trace"] as const) {
+      expect(() => new RuntimeConnection({ ...baseOptions, queueLimits: { [priority]: 0 } })).toThrow(
+        `Runtime ${priority} queue limit must be a positive safe integer`,
+      );
+    }
+    let currentTime = 10_000;
+    const connection = new RuntimeConnection({ ...baseOptions, queueLimits: { trace: 1 }, now: () => currentTime });
+    expect(connection.state).toBe("stopped");
+    expect(connection.computerId).toBe(baseOptions.computer.computerId);
+    expect(connection.instanceId).toBe(baseOptions.instanceId);
+    expect(connection.supportsCapability("runtime.imDelivery")).toBe(false);
+    expect(connection.capabilityVersion("runtime.imDelivery")).toBeUndefined();
+    for (const setter of [
+      () => connection.setVerifiedCapabilities({ imCredentialGrant: 1 }, 0),
+      () => connection.setVerifiedCapabilities({ imCredentialGrant: 1 }, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1),
+      () => connection.setProviderReadiness({ provider: "codex", status: "ready" }, 0),
+      () => connection.setImCliReadiness({ provider: "feishu", status: "ready" }, 0),
+    ]) {
+      expect(setter).toThrow(/validity is invalid/);
+    }
+    connection.setVerifiedCapabilities({ imCredentialGrant: 1 }, 1);
+    connection.setProviderReadiness({ provider: "codex", status: "ready" }, 1);
+    connection.setImCliReadiness({ provider: "feishu", status: "ready" }, 1);
+    currentTime = 10_002;
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(connection.whenRegistered(aborted.signal)).rejects.toMatchObject({ code: "aborted" });
+    connection.stop();
+    await expect(connection.whenRegistered()).rejects.toMatchObject({ code: "unavailable" });
+  });
+
+  it("covers registration state capabilities and waiter cancellation with a controlled socket", async () => {
+    const socket = new ControlledWebSocket();
+    let currentTime = Date.now();
+    const connection = new RuntimeConnection({ ...controlledOptions(socket), now: () => currentTime });
+    connection.setVerifiedCapabilities({ imCredentialGrant: 1 }, 1);
+    currentTime += 2;
+    const stateListener = vi.fn((state: string) => {
+      if (state === "registered") throw new Error("listener failure");
+    });
+    const unsubscribe = connection.subscribeState(stateListener);
+    const waiterController = new AbortController();
+    const waiter = connection.whenRegistered(waiterController.signal);
+    waiterController.abort();
+    await expect(waiter).rejects.toMatchObject({ code: "aborted" });
+    const registeredWaiter = connection.whenRegistered();
+    const running = connection.run();
+    await registerControlled(connection, socket);
+    await registeredWaiter;
+    expect(socket.frame("computer:register")).toMatchObject({ capabilities: { imCredentialGrant: 0 } });
+    expect(connection.supportsCapability("runtime.imDelivery")).toBe(true);
+    expect(connection.capabilityVersion("runtime.imDelivery")).toBe(2);
+    expect(await connection.whenRegistered()).toBeUndefined();
+    expect(stateListener).toHaveBeenCalledWith("registered");
+    expect(unsubscribe()).toBe(true);
+    connection.stop();
+    await running;
+  });
+
+  it("handles unavailable, aborted, malformed, and fenced outbound sends", async () => {
+    const stopped = controlledConnection(new ControlledWebSocket(), { trace: 2 });
+    await expect(stopped.send({ type: "before" })).rejects.toMatchObject({ code: "unavailable" });
+    const socket = new ControlledWebSocket();
+    const connection = controlledConnection(socket, { trace: 2 });
+    const running = connection.run();
+    await registerControlled(connection, socket);
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(connection.send({ type: "aborted" }, { signal: aborted.signal })).rejects.toMatchObject({
+      code: "aborted",
+    });
+    await expect(connection.send(null)).rejects.toMatchObject({ code: "unavailable" });
+    await expect(connection.send(["invalid"])).rejects.toMatchObject({ code: "unavailable" });
+    await expect(connection.send({ type: "stale", connectionId: randomUUID() })).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    const cyclic: Record<string, unknown> = { type: "cyclic" };
+    cyclic.self = cyclic;
+    await expect(connection.send(cyclic)).rejects.toMatchObject({ code: "frame_too_large" });
+    await expect(connection.send({ type: "expired" }, { deadline: Date.now() - 1 })).rejects.toMatchObject({
+      code: "deadline",
+    });
+    await expect(connection.send({ type: "priority" }, { priority: "bad" as never })).rejects.toMatchObject({
+      code: "overflow",
+    });
+    connection.stop();
+    await running;
+  });
+
+  it("rejects invalid handshakes, authentication, registration, and capability requirements", async () => {
+    const scenarios: Array<{ name: string; respond: (socket: WebSocket, frame: Record<string, unknown>) => void }> = [
+      {
+        name: "unmatched auth",
+        respond: (socket, _frame) =>
+          socket.send(
+            JSON.stringify({
+              type: "auth:result",
+              requestId: randomUUID(),
+              ok: true,
+              workspaceComputerId: randomUUID(),
+              workspaceId: randomUUID(),
+              computerId: randomUUID(),
+            }),
+          ),
+      },
+      {
+        name: "auth rejected",
+        respond: (socket, frame) =>
+          socket.send(
+            JSON.stringify({
+              type: "auth:result",
+              requestId: frame.requestId,
+              ok: false,
+              errorCode: "AUTH_INVALID_TOKEN",
+            }),
+          ),
+      },
+      {
+        name: "missing capability",
+        respond: (socket, frame) => {
+          const { "runtime.imDelivery": _omitted, ...supportedCapabilities } = RUNTIME_SERVER_CAPABILITY_OFFERS;
+          completeAuth(socket, frame, {
+            ...welcome(),
+            requiredClientCapabilities: ["runtime.imDelivery"],
+            supportedCapabilities,
+          });
+        },
+      },
+    ];
+    for (const scenario of scenarios) {
+      const server = await runtimeServer();
+      cleanup.push(server.close);
+      server.wss.on("connection", (socket) => {
+        socket.on("message", (data) => {
+          const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+          if (frame.type === "auth") scenario.respond(socket, frame);
+        });
+      });
+      const connection = new RuntimeConnection({
+        arch: "x64",
+        clientVersion: "0.0.1",
+        computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
+        displayName: "workstation",
+        instanceId: randomUUID(),
+        platform: "linux",
+        machineToken: "machine-token",
+      });
+      await expect(connection.run()).rejects.toThrow(
+        scenario.name === "unmatched auth"
+          ? "unmatched auth result"
+          : scenario.name === "auth rejected"
+            ? "AUTH_INVALID_TOKEN"
+            : "Required runtime capabilities are unavailable",
+      );
+    }
+  });
+
+  it("rejects malformed and oversized inbound frames and stale business fences", async () => {
+    const cases: Array<{ label: string; receive: (socket: ControlledWebSocket) => void; parser?: boolean }> = [
+      { label: "invalid JSON", receive: (socket) => socket.receiveData("not-json") },
+      { label: "oversized", receive: (socket) => socket.receiveData(Buffer.alloc(RUNTIME_MAX_FRAME_BYTES + 1)) },
+      { label: "invalid envelope", receive: (socket) => socket.receiveData("{}") },
+    ];
+    for (const current of cases) {
+      const socket = new ControlledWebSocket();
+      const connection = controlledConnection(socket, { trace: 2 });
+      const running = connection.run();
+      await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
+      socket.open();
+      await vi.waitFor(() => expect(socket.frame("auth")).toBeDefined());
+      current.receive(socket);
+      await expect(running).rejects.toThrow(
+        current.label === "invalid JSON"
+          ? "invalid runtime frame"
+          : current.label === "oversized"
+            ? "oversized runtime frame"
+            : "invalid runtime frame",
+      );
+    }
+
+    const socket = new ControlledWebSocket();
+    const connection = new RuntimeConnection({
+      ...controlledOptions(socket),
+      parseBusinessFrame: (value) =>
+        (value as { type: string }).type === "test:event" ? (value as RuntimeBusinessFrame) : undefined,
+    });
+    const running = connection.run();
+    await registerControlled(connection, socket);
+    socket.receive({ type: "test:event", connectionId: randomUUID() });
+    await expect(running).rejects.toThrow("stale runtime connection fence");
+  });
+
+  it("maps API and credential failures to actionable fatal connection errors", async () => {
+    const apiConnection = new RuntimeConnection({
+      ...controlledOptions(new ControlledWebSocket()),
+      webSocketFactory: () => {
+        throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "access token was revoked");
+      },
+    });
+    await expect(apiConnection.run()).rejects.toThrow("access token was revoked; run computer connect again");
+
+    const credentialConnection = new RuntimeConnection({
+      ...controlledOptions(new ControlledWebSocket()),
+      webSocketFactory: () => {
+        throw new Error("The runtime CLI is not logged in");
+      },
+    });
+    await expect(credentialConnection.run()).rejects.toThrow(
+      "The runtime CLI is not logged in; run computer connect first",
+    );
+  });
+
+  it("uses the default retry timer after a transient factory failure", async () => {
+    const socket = new ControlledWebSocket();
+    let attempts = 0;
+    const factory = () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("temporary factory failure");
+      return socket as unknown as WebSocket;
+    };
+    const connection = new RuntimeConnection({
+      ...controlledOptions(socket),
+      jitter: () => 0,
+      webSocketFactory: factory,
+    });
+    const running = connection.run();
+    await vi.waitFor(() => expect(attempts).toBe(2));
+    await registerControlled(connection, socket);
+    connection.stop();
+    await running;
+    expect(attempts).toBe(2);
+  });
+
+  it("covers failed queued sends, expiry, abort, and socket-wide rejection", async () => {
+    const socket = new ControlledWebSocket();
+    const connection = controlledConnection(socket, { trace: 2 });
+    const running = connection.run();
+    await registerControlled(connection, socket);
+    socket.autoFlush = false;
+    const first = connection.send({ type: "test:first" }, { priority: "result" });
+    const abortController = new AbortController();
+    const aborted = connection.send({ type: "test:aborted" }, { priority: "result", signal: abortController.signal });
+    abortController.abort();
+    await expect(aborted).rejects.toMatchObject({ code: "aborted" });
+    socket.releaseNextSend();
+    await first;
+
+    const expiring = connection.send({ type: "test:expiring" }, { priority: "result", deadline: Date.now() + 1 });
+    await expect(expiring).rejects.toMatchObject({ code: "deadline" });
+    expect(socket.readyState).toBe(WebSocket.CLOSED);
+    connection.stop();
+    await running;
+
+    const socketForReject = new ControlledWebSocket();
+    const rejectConnection = controlledConnection(socketForReject, { trace: 2 });
+    const rejectRunning = rejectConnection.run();
+    await registerControlled(rejectConnection, socketForReject);
+    socketForReject.autoFlush = false;
+    const inFlight = rejectConnection.send({ type: "test:inflight" });
+    const queued = rejectConnection.send({ type: "test:queued" });
+    socketForReject.close(1006);
+    await expect(inFlight).rejects.toMatchObject({ code: "unavailable" });
+    await expect(queued).rejects.toMatchObject({ code: "unavailable" });
+    rejectConnection.stop();
+    await rejectRunning;
+  });
+
+  it("covers direct-send failures, default business parsing, and raw data variants", async () => {
+    const hugeSocket = new ControlledWebSocket();
+    let hugeConnection!: RuntimeConnection;
+    hugeSocket.on("open", () => undefined);
+    hugeConnection = new RuntimeConnection({
+      ...controlledOptions(hugeSocket),
+      machineToken: "x".repeat(RUNTIME_MAX_FRAME_BYTES),
+      waitForRetry: async (_delay) => hugeConnection.stop(),
+    });
+    const hugeRunning = hugeConnection.run();
+    await vi.waitFor(() => expect(hugeSocket.listenerCount("open")).toBeGreaterThan(0));
+    hugeSocket.open();
+    await hugeRunning;
+
+    const unavailableSocket = new ControlledWebSocket();
+    let unavailableConnection!: RuntimeConnection;
+    unavailableSocket.on("open", () => {
+      unavailableSocket.readyState = WebSocket.CLOSED;
+    });
+    unavailableConnection = new RuntimeConnection({
+      ...controlledOptions(unavailableSocket),
+      waitForRetry: async (_delay) => unavailableConnection.stop(),
+    });
+    const unavailableRunning = unavailableConnection.run();
+    await vi.waitFor(() => expect(unavailableSocket.listenerCount("open")).toBeGreaterThan(0));
+    unavailableSocket.open();
+    await unavailableRunning;
+
+    const socket = new ControlledWebSocket();
+    const connection = new RuntimeConnection({ ...controlledOptions(socket) });
+    const running = connection.run();
+    const connectionId = await registerControlled(connection, socket);
+    const business = {
+      type: "turn:report:result",
+      requestId: randomUUID(),
+      turnId: "turn-1",
+      status: "recorded",
+      resultHash: "a".repeat(64),
+      connectionId,
+    };
+    const received: RuntimeBusinessFrame[] = [];
+    connection.subscribeBusinessFrames((frame) => {
+      received.push(frame);
+    });
+    const encoded = new TextEncoder().encode(JSON.stringify(business));
+    socket.receiveData(encoded.buffer);
+    socket.receiveData([Buffer.from(JSON.stringify(business))]);
+    socket.receiveData(JSON.stringify(business));
+    await vi.waitFor(() => expect(received).toHaveLength(3));
+    connection.stop();
+    await running;
+  });
+
+  it("rejects a retry wait failure instead of looping forever", async () => {
+    const connection = new RuntimeConnection({
+      ...controlledOptions(new ControlledWebSocket()),
+      webSocketFactory: () => {
+        throw new Error("transport setup failed");
+      },
+      waitForRetry: async () => {
+        throw new Error("retry scheduler failed");
+      },
+    });
+    await expect(connection.run()).rejects.toThrow("retry scheduler failed");
+  });
+
+  it("covers parser failures and out-of-order protocol frames after registration", async () => {
+    const parserSocket = new ControlledWebSocket();
+    const parserConnection = new RuntimeConnection({
+      ...controlledOptions(parserSocket),
+      parseBusinessFrame: () => {
+        throw new Error("parser failed");
+      },
+    });
+    const parserRunning = parserConnection.run();
+    const parserConnectionId = await registerControlled(parserConnection, parserSocket);
+    parserSocket.receive({ type: "unknown:business", connectionId: parserConnectionId });
+    await expect(parserRunning).rejects.toThrow("invalid runtime frame");
+
+    const orderedSocket = new ControlledWebSocket();
+    const orderedConnection = controlledConnection(orderedSocket, { trace: 2 });
+    const orderedRunning = orderedConnection.run();
+    await vi.waitFor(() => expect(orderedSocket.listenerCount("open")).toBeGreaterThan(0));
+    orderedSocket.open();
+    await vi.waitFor(() => expect(orderedSocket.frame("auth")).toBeDefined());
+    const auth = orderedSocket.frame("auth");
+    orderedSocket.receive({
+      type: "auth:result",
+      requestId: auth?.requestId,
+      ok: true,
+      workspaceComputerId: randomUUID(),
+      workspaceId: randomUUID(),
+      computerId: randomUUID(),
+    });
+    orderedSocket.receive(welcome(1_000, 2_000));
+    await vi.waitFor(() => expect(orderedSocket.frame("computer:register")).toBeDefined());
+    orderedSocket.receive({ type: "auth:result", requestId: randomUUID(), ok: false, errorCode: "INTERNAL_ERROR" });
+    await expect(orderedRunning).rejects.toThrow("out of order");
+  });
+
+  it("rejects unmatched, failed, and legacy-mismatched registration results", async () => {
+    for (const scenario of [
+      {
+        build: (frame: Record<string, unknown>) => ({ ...registrationResult(frame), requestId: randomUUID() }),
+        message: "unmatched registration result",
+      },
+      {
+        build: (frame: Record<string, unknown>) => ({
+          type: "computer:register:result",
+          requestId: frame.requestId,
+          ok: false,
+          errorCode: "INTERNAL_ERROR",
+          protocolVersion: RUNTIME_PROTOCOL_V2,
+        }),
+        message: "registration failed",
+      },
+    ]) {
+      const socket = new ControlledWebSocket();
+      const connection = controlledConnection(socket, { trace: 2 });
+      const running = connection.run();
+      await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
+      socket.open();
+      await vi.waitFor(() => expect(socket.frame("auth")).toBeDefined());
+      const auth = socket.frame("auth");
+      socket.receive({
+        type: "auth:result",
+        requestId: auth?.requestId,
+        ok: true,
+        workspaceComputerId: randomUUID(),
+        workspaceId: randomUUID(),
+        computerId: randomUUID(),
+      });
+      socket.receive(welcome(1_000, 2_000));
+      await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());
+      socket.receive(scenario.build(socket.frame("computer:register") ?? {}));
+      await expect(running).rejects.toThrow(scenario.message);
+    }
+
+    const firstSocket = new ControlledWebSocket();
+    const secondSocket = new ControlledWebSocket();
+    let connection!: RuntimeConnection;
+    let attempts = 0;
+    connection = new RuntimeConnection({
+      ...controlledOptions(firstSocket),
+      webSocketFactory: () => {
+        attempts += 1;
+        return (attempts === 1 ? firstSocket : secondSocket) as unknown as WebSocket;
+      },
+      waitForRetry: async () => connection.stop(),
+    });
+    const running = connection.run();
+    await vi.waitFor(() => expect(firstSocket.listenerCount("open")).toBeGreaterThan(0));
+    firstSocket.open();
+    await vi.waitFor(() => expect(firstSocket.frame("auth")).toBeDefined());
+    const auth = firstSocket.frame("auth");
+    firstSocket.receive({
+      type: "error",
+      requestId: auth?.requestId,
+      code: "PROTOCOL_VERSION_UNSUPPORTED",
+      message: "v1 fallback",
+    });
+    await vi.waitFor(() => expect(secondSocket.listenerCount("open")).toBeGreaterThan(0));
+    secondSocket.open();
+    await vi.waitFor(() => expect(secondSocket.frame("auth")).toBeDefined());
+    const legacyAuth = secondSocket.frame("auth");
+    secondSocket.receive({
+      type: "auth:result",
+      requestId: legacyAuth?.requestId,
+      ok: true,
+      workspaceComputerId: randomUUID(),
+      workspaceId: randomUUID(),
+      computerId: randomUUID(),
+    });
+    secondSocket.receive(welcome(1_000, 2_000, RUNTIME_PROTOCOL_V1));
+    await vi.waitFor(() => expect(secondSocket.frame("computer:register")).toBeDefined());
+    secondSocket.receive({
+      type: "computer:register:result",
+      requestId: secondSocket.frame("computer:register")?.requestId,
+      ok: true,
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      connectionId: randomUUID(),
+      negotiatedCapabilities: negotiateRuntimeCapabilities(
+        RUNTIME_CLIENT_CAPABILITY_OFFERS,
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    });
+    await expect(running).rejects.toThrow("legacy registration");
+    expect(attempts).toBe(2);
+  });
+
+  it("rejects stale and failed heartbeat results", async () => {
+    for (const scenario of ["stale", "failed"] as const) {
+      const socket = new ControlledWebSocket();
+      const connection = controlledConnection(socket, { trace: 2 });
+      const running = connection.run();
+      await registerControlled(connection, socket, welcome(10, 1_000));
+      await vi.waitFor(() => expect(socket.frame("heartbeat")).toBeDefined());
+      const heartbeat = socket.frame("heartbeat") ?? {};
+      socket.receive({
+        type: "heartbeat:result",
+        requestId: heartbeat.requestId,
+        ok: scenario !== "failed",
+        serverTime: new Date().toISOString(),
+        ...(scenario === "failed" ? { errorCode: "INTERNAL_ERROR" } : {}),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        connectionId: scenario === "failed" ? heartbeat.connectionId : randomUUID(),
+      });
+      await expect(running).rejects.toThrow(scenario === "failed" ? "heartbeat failed" : "stale heartbeat fence");
+    }
+  });
   it("authenticates, registers a fresh instance, heartbeats, and stops without reconnecting", async () => {
     const server = await runtimeServer();
     cleanup.push(server.close);
@@ -855,8 +1344,8 @@ async function runtimeServer(): Promise<{ close(): Promise<void>; url: string; w
   };
 }
 
-function controlledConnection(socket: ControlledWebSocket, queueLimits: { trace: number }): RuntimeConnection {
-  return new RuntimeConnection({
+function controlledOptions(socket: ControlledWebSocket): ConstructorParameters<typeof RuntimeConnection>[0] {
+  return {
     arch: "x64",
     clientVersion: "0.0.1",
     computer: {
@@ -867,13 +1356,21 @@ function controlledConnection(socket: ControlledWebSocket, queueLimits: { trace:
     displayName: "workstation",
     instanceId: randomUUID(),
     platform: "linux",
-    queueLimits,
+    queueLimits: { trace: 2 },
     machineToken: "machine-token",
     webSocketFactory: () => socket as unknown as WebSocket,
-  });
+  };
 }
 
-async function registerControlled(connection: RuntimeConnection, socket: ControlledWebSocket): Promise<void> {
+function controlledConnection(socket: ControlledWebSocket, queueLimits: { trace: number }): RuntimeConnection {
+  return new RuntimeConnection({ ...controlledOptions(socket), queueLimits });
+}
+
+async function registerControlled(
+  connection: RuntimeConnection,
+  socket: ControlledWebSocket,
+  serverWelcome: ReturnType<typeof welcome> = welcome(1_000, 2_000),
+): Promise<string> {
   await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
   socket.open();
   await vi.waitFor(() => expect(socket.frame("auth")).toBeDefined());
@@ -886,11 +1383,13 @@ async function registerControlled(connection: RuntimeConnection, socket: Control
     workspaceId: randomUUID(),
     computerId: randomUUID(),
   });
-  socket.receive(welcome(1_000, 2_000));
+  socket.receive(serverWelcome);
   await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());
   const register = socket.frame("computer:register");
-  socket.receive(registrationResult(register ?? {}));
+  const result = registrationResult(register ?? {});
+  socket.receive(result);
   await connection.whenRegistered();
+  return String(result.connectionId);
 }
 
 class ControlledWebSocket extends EventEmitter {
@@ -915,6 +1414,10 @@ class ControlledWebSocket extends EventEmitter {
     this.emit("message", Buffer.from(JSON.stringify(frame)), false);
   }
 
+  receiveData(data: string | Buffer | ArrayBuffer | readonly Buffer[], isBinary = false): void {
+    this.emit("message", data, isBinary);
+  }
+
   frame(type: string): Record<string, unknown> | undefined {
     return this.#frames.find((frame) => frame.type === type);
   }
@@ -934,7 +1437,7 @@ class ControlledWebSocket extends EventEmitter {
   close(code = 1000): void {
     if (this.readyState === WebSocket.CLOSED) return;
     this.readyState = WebSocket.CLOSED;
-    this.emit("close", code);
+    queueMicrotask(() => this.emit("close", code));
   }
 
   terminate(): void {

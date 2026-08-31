@@ -31,6 +31,7 @@ import {
   resolvedCodexFactory,
   resolveExecutable,
 } from "../runtime/client-runtime-composition.js";
+import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 
@@ -402,6 +403,44 @@ describe("createClientRuntime production composition", () => {
     });
     runtime.stop();
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("enables login-shell discovery after pre-connect readiness", async () => {
+    const home = await temporaryDirectory("opentag-client-post-connect-shell-");
+    const empty = resolve(home, "empty-bin");
+    await mkdir(empty);
+    const marker = resolve(home, "login-shell-invoked");
+    const fakeShell = resolve(home, "fake-shell");
+    await writeFile(
+      fakeShell,
+      `#!/bin/sh
+printf invoked > ${JSON.stringify(marker)}
+printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
+`,
+      "utf8",
+    );
+    await chmod(fakeShell, 0o755);
+    resetLoginShellPathDirsCache();
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      claudeCodeCommand: "opentag-missing-claude-post-connect",
+      clientVersion: "0.0.1",
+      codexCommand: "opentag-missing-codex-post-connect",
+      environment: { HOME: home, PATH: empty, SHELL: fakeShell },
+      home,
+      larkCliCommand: resolve(empty, "missing-lark"),
+      slackCliCommand: resolve(empty, "missing-slack"),
+    });
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot())),
+    ).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal)).rejects.toThrow();
+    expect(await readFile(marker, "utf8")).toBe("invoked");
+    runtime.stop();
+    resetLoginShellPathDirsCache();
   });
 
   it("resolves the production Claude Code factory and enforces its reviewed runtime policy", async () => {

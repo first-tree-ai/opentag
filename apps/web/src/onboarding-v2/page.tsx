@@ -89,7 +89,7 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
         <p className="text-sm text-kumo-strong m-0" role="status">
           {COPY.resumeBlocked.title(backend.resumeBlocked.agentName)}
         </p>
-        <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">{COPY.resumeBlocked.detail}</p>
+        <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">{COPY.resumeBlocked.detail()}</p>
         <div className="w-full max-w-2xl rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
           <AgentComputerChoice agentId={backend.resumeBlocked.agentId} onBound={backend.retryResume} />
         </div>

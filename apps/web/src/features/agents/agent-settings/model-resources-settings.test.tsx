@@ -7,6 +7,9 @@ import { AgentModelSettings } from "./model-settings.js";
 import { AgentResourcesSettings } from "./resources-settings.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+// Named, because `AgentDetailView.computer` is nullable now: this fixture is a bound Agent, and the
+// config below states the same Computer rather than re-deriving it through an optional field.
+const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 
 const agent: AgentDetailView = {
   id: agentId,
@@ -14,7 +17,7 @@ const agent: AgentDetailView = {
   displayName: "Reviewer",
   createdBy: { userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", displayName: "Ada" },
   computer: {
-    computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+    computerId,
     displayName: "Ada's Mac",
     platform: "darwin",
   },
@@ -41,7 +44,7 @@ const agent: AgentDetailView = {
 const config: AgentAdminConfig = {
   id: agentId,
   createdByUserId: agent.createdBy.userId,
-  computerId: agent.computer.computerId,
+  computerId,
   name: agent.name,
   displayName: agent.displayName,
   runtimeProvider: "codex",

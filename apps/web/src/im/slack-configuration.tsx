@@ -6,7 +6,6 @@ import { Banner } from "../ui/design-system.js";
 type SlackOAuthIntent = "create" | "reauthorize";
 
 const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
-  AGENT_COMPUTER_NOT_BOUND: m.im_slack_agent_computer_not_bound(),
   AUTH_INVALID_TOKEN: "Sign in again, then retry adding OpenTag to Slack.",
   IM_BINDING_FORBIDDEN: "Only the Account owner can manage this Slack configuration.",
   IM_BINDING_PROVIDER_IMMUTABLE:
@@ -24,6 +23,20 @@ const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
   SLACK_TOKEN_REVOKED: "Slack revoked the Bot Token. Reauthorize to install fresh credentials.",
   SLACK_UPSTREAM_UNAVAILABLE: "Slack did not return installation details. Check Slack availability and retry.",
 };
+
+/**
+ * The message for a Slack failure code, resolved when the failure is handled.
+ *
+ * The migrated entry is looked up here rather than placed in the table above, because a table entry
+ * is evaluated at import — before `configureLocaleRuntime()` replaces Paraglide's resolver, which
+ * would persist a locale the reader never chose — and would also freeze the text in whichever
+ * language was active when the module loaded. The rest of this table is still English literals; when
+ * the `im` lane migrates them, the whole table becomes thunks and this seam goes away.
+ */
+function slackConfigurationMessage(code: string): string | undefined {
+  if (code === "AGENT_COMPUTER_NOT_BOUND") return m.im_slack_agent_computer_not_bound();
+  return SLACK_CONFIGURATION_MESSAGES[code];
+}
 
 export interface SlackConfigurationControl {
   /** Starts the first-party OpenTag Slack OAuth install when the server has configured it. */
@@ -54,7 +67,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     if (oauthError) {
       setError(
-        SLACK_CONFIGURATION_MESSAGES[oauthError] ??
+        slackConfigurationMessage(oauthError) ??
           "The Slack authorization flow is invalid or expired. Start it again from this Agent.",
       );
       return;
@@ -100,6 +113,9 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
 
 function normalizeSlackConfigurationError(cause: unknown, fallback: string): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
-  if (code && SLACK_CONFIGURATION_MESSAGES[code]) return SLACK_CONFIGURATION_MESSAGES[code];
+  if (code) {
+    const message = slackConfigurationMessage(code);
+    if (message) return message;
+  }
   return cause instanceof Error ? cause.message : fallback;
 }

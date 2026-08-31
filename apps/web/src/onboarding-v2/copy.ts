@@ -53,8 +53,13 @@ export const COPY = {
    * reader's, on the page built for it.
    */
   resumeBlocked: {
+    /*
+     * Both are functions, including the one that takes no argument. A message resolved here would
+     * run at import, before `configureLocaleRuntime()` replaces Paraglide's persisting resolver —
+     * which would write a locale preference the reader never chose.
+     */
     title: (agentName: string) => m.onboarding_v2_resume_blocked_title({ agentName }),
-    detail: m.onboarding_v2_resume_blocked_detail(),
+    detail: () => m.onboarding_v2_resume_blocked_detail(),
   },
   brand: "OpenTag",
 

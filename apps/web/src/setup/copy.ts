@@ -112,7 +112,7 @@ export const SETUP_COPY = {
     qrAlt: (brand: string) => `Scan this QR code in ${brand}`,
     /** Says nothing about which brand, so it needs nothing from one. */
     generating: "Generating QR code…",
-    /** The way through for a reader whose client cannot scan, said in terms of what it does. */
+    /** The second route to the same code, for a reader the first one did not work for. */
     feishuOpenLink: (brand: string) => `Open the ${brand} authorization page`,
     /**
      * A code is minted against one of the two domains and cannot be authorized from the other, so

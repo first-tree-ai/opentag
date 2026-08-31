@@ -9,6 +9,7 @@ import {
   acquireProcessFileLease,
   inspectDarwinProcessIdentity,
   inspectProcessFileLease,
+  inspectProcessIdentity,
   ProcessLeaseMalformedError,
   ProcessLeaseUnverifiableError,
 } from "../core/daemon/process-lease.js";
@@ -520,44 +521,66 @@ describe("daemon service primitives", () => {
   });
 
   it("covers platform-specific process identity fallbacks", async () => {
-    const originalPlatform = process.platform;
-    try {
-      Object.defineProperty(process, "platform", { configurable: true, value: "linux" });
-      const linuxHome = await temporaryDirectory("opentag-lease-linux-");
-      await expect(
-        acquireProcessFileLease(linuxHome, {
-          createRecord: (processStartId) => ({
-            leaseId: "linux",
-            pid: process.pid,
-            processStartId,
-            startedAt: new Date().toISOString(),
-          }),
-          fileName: "lease.json",
-          getId: (value: TestLeaseRecord) => value.leaseId,
-          parseRecord: parseTestLease,
-        }),
-      ).rejects.toBeInstanceOf(ProcessLeaseUnverifiableError);
+    const linuxReads: string[] = [];
+    const linuxStat = `4242 (opentag test) S ${Array.from({ length: 18 }, () => "0").join(" ")} 36178`;
+    await expect(
+      inspectProcessIdentity(4242, {
+        isProcessAlive: () => true,
+        platform: "linux",
+        readLinuxProcessFile: async (path) => {
+          linuxReads.push(path);
+          return path.endsWith("/stat") ? linuxStat : "test-boot-id\n";
+        },
+      }),
+    ).resolves.toEqual({ id: "linux:test-boot-id:36178", state: "identified" });
+    expect(linuxReads).toEqual(["/proc/4242/stat", "/proc/sys/kernel/random/boot_id"]);
 
-      Object.defineProperty(process, "platform", { configurable: true, value: "freebsd" });
-      const otherHome = await temporaryDirectory("opentag-lease-other-platform-");
-      const lease = await acquireProcessFileLease(otherHome, {
+    const linuxHome = await temporaryDirectory("opentag-lease-linux-");
+    await expect(
+      acquireProcessFileLease(linuxHome, {
         createRecord: (processStartId) => ({
-          leaseId: "other",
+          leaseId: "linux",
           pid: process.pid,
           processStartId,
           startedAt: new Date().toISOString(),
         }),
         fileName: "lease.json",
         getId: (value: TestLeaseRecord) => value.leaseId,
+        getProcessIdentity: (pid) =>
+          inspectProcessIdentity(pid, {
+            isProcessAlive: () => true,
+            platform: "linux",
+            readLinuxProcessFile: async () => {
+              throw new Error("injected procfs read failure");
+            },
+          }),
         parseRecord: parseTestLease,
-      });
-      await lease.release();
-    } finally {
-      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
-    }
+      }),
+    ).rejects.toBeInstanceOf(ProcessLeaseUnverifiableError);
+
+    const otherHome = await temporaryDirectory("opentag-lease-other-platform-");
+    const lease = await acquireProcessFileLease(otherHome, {
+      createRecord: (processStartId) => ({
+        leaseId: "other",
+        pid: process.pid,
+        processStartId,
+        startedAt: new Date().toISOString(),
+      }),
+      fileName: "lease.json",
+      getId: (value: TestLeaseRecord) => value.leaseId,
+      getProcessIdentity: (pid) => inspectProcessIdentity(pid, { isProcessAlive: () => true, platform: "freebsd" }),
+      parseRecord: parseTestLease,
+    });
+    expect(lease.record.processStartId).toMatch(/^self:/u);
+    await lease.release();
   });
 
   it("keeps Darwin process identity stable across parent locale and timezone changes", async () => {
+    const childEnvironments: NodeJS.ProcessEnv[] = [];
+    const readProcessStart = async (_pid: number, environment: NodeJS.ProcessEnv) => {
+      childEnvironments.push(environment);
+      return "Mon Jan  1 00:00:00 2024";
+    };
     const original = {
       LANG: process.env.LANG,
       LC_ALL: process.env.LC_ALL,
@@ -567,15 +590,31 @@ describe("daemon service primitives", () => {
       process.env.LANG = "fr_FR.UTF-8";
       process.env.LC_ALL = "fr_FR.UTF-8";
       process.env.TZ = "Pacific/Honolulu";
-      const first = await inspectDarwinProcessIdentity(process.pid);
+      const first = await inspectDarwinProcessIdentity(4242, { isProcessAlive: () => true, readProcessStart });
 
       process.env.LANG = "ja_JP.UTF-8";
       process.env.LC_ALL = "ja_JP.UTF-8";
       process.env.TZ = "Asia/Tokyo";
-      const second = await inspectDarwinProcessIdentity(process.pid);
+      const second = await inspectDarwinProcessIdentity(4242, { isProcessAlive: () => true, readProcessStart });
 
       expect(first).toMatchObject({ state: "identified" });
       expect(second).toEqual(first);
+      expect(childEnvironments).toHaveLength(2);
+      for (const environment of childEnvironments) {
+        expect(environment).toMatchObject({ LANG: "C", LC_ALL: "C", TZ: "UTC" });
+      }
+      await expect(
+        inspectDarwinProcessIdentity(4242, {
+          isProcessAlive: () => true,
+          readProcessStart: async () => undefined,
+        }),
+      ).resolves.toEqual({ state: "unverifiable" });
+      await expect(
+        inspectDarwinProcessIdentity(4242, {
+          isProcessAlive: () => false,
+          readProcessStart: async () => undefined,
+        }),
+      ).resolves.toEqual({ state: "gone" });
     } finally {
       restoreEnvironment("LANG", original.LANG);
       restoreEnvironment("LC_ALL", original.LC_ALL);

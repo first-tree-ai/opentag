@@ -1,5 +1,5 @@
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCredentials, writeMachineCredentialsAtomically } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
@@ -923,31 +923,23 @@ describe("launchd service backend", () => {
     await expect(unknownLoaded.start()).rejects.toThrow("start state check failed");
   });
 
-  it("uninstalls a loaded launchd service and uses account defaults when options are omitted", async () => {
+  it("uninstalls a loaded launchd service without touching the host account", async () => {
     const userHome = await temporaryDirectory("opentag-launchd-uninstall-");
     const home = join(userHome, "home");
     const invocation = { args: [], program: "/usr/local/bin/opentag" };
     await writeLaunchdDefinitions({ home, invocation, userHome });
     const runner = fakeRunner((_, args) => {
-      if (args[0] === "print" && args[1] === `gui/${userInfo().uid}`) return result(0, "domain", "");
+      if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
       if (args[0] === "print") return result(1, "", "Could not find service");
       return result(0, "", "");
     });
-    const defaults = createLaunchdBackend({
-      home,
-      invocation,
-      runner,
-      serviceId: "opentag",
-      sleep: async () => undefined,
-    });
-    await expect(defaults.status()).resolves.toMatchObject({ state: "not-installed" });
     const backend = createLaunchdBackend({
       home,
       invocation,
       runner,
       serviceId: "opentag",
       sleep: async () => undefined,
-      uid: userInfo().uid,
+      uid: 501,
       userHome,
     });
     await expect(backend.uninstall()).resolves.toMatchObject({ state: "not-installed" });
@@ -959,6 +951,7 @@ describe("launchd service backend", () => {
 
   it("ignores the invoking shell HOME when locating the account LaunchAgent definition", async () => {
     const shellHome = await temporaryDirectory("opentag-launchd-shell-home-");
+    const userHome = await temporaryDirectory("opentag-launchd-user-home-");
     const home = await temporaryDirectory("opentag-launchd-home-");
     vi.stubEnv("HOME", shellHome);
     const manager = await createDaemonServiceManager({
@@ -966,10 +959,13 @@ describe("launchd service backend", () => {
       invocation: { args: [], program: "/usr/local/bin/opentag" },
       platform: "darwin",
       runner: fakeRunner(() => result(113, "", "Could not find service")),
+      uid: 501,
+      userHome,
+      username: "test",
     });
 
     await expect(manager.status()).resolves.toMatchObject({
-      definitionPath: join(userInfo().homedir, "Library", "LaunchAgents", `${channelConfig.serviceId}.plist`),
+      definitionPath: join(userHome, "Library", "LaunchAgents", `${channelConfig.serviceId}.plist`),
     });
   });
 

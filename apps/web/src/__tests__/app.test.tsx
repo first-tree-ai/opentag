@@ -1078,6 +1078,75 @@ describe("OpenTag Web App Shell", () => {
     expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Zulu Agent");
   });
 
+  it("does not resume a stored creation intent onto a Runtime the form is not offering", async () => {
+    // The other half of the same rule. The Computer matches, so only the Provider makes this intent
+    // a different route from the one on screen — and creating on a Runtime the reader is not being
+    // shown is the same hidden action as creating on a hidden machine.
+    const record = {
+      version: 3,
+      accountId: userId,
+      creationIntentId: "0a2f7d19-8b44-4d2e-8c31-5f6a7b8c9d01",
+      request: {
+        name: "claude-agent",
+        displayName: "Claude Agent",
+        runtimeProvider: "claude-code",
+        computerId,
+      },
+    };
+    window.localStorage.setItem(
+      `opentag.agent-creation.intent:${userId}`,
+      JSON.stringify({ version: 3, accountId: userId, records: [record] }),
+    );
+    // Only Codex is ready here, so the form resolves the Computer the intent names but a Runtime it
+    // does not.
+    installApi({ computerProviderReadiness: [{ provider: "codex", status: "ready", observedAt: null }] });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("Codex")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
+    ).toHaveLength(0);
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Claude Agent");
+  });
+
+  it("resumes a stored creation intent that names the route on screen", async () => {
+    // The control for the two cases above: the gate has to refuse a hidden route without disabling
+    // resume, which is the whole reason a creation intent is persisted.
+    const record = {
+      version: 3,
+      accountId: userId,
+      creationIntentId: "4d3c2b1a-9e8f-4a7b-8c6d-5e4f3a2b1c00",
+      request: { name: "resumed-agent", displayName: "Resumed Agent", runtimeProvider: "codex", computerId },
+    };
+    window.localStorage.setItem(
+      `opentag.agent-creation.intent:${userId}`,
+      JSON.stringify({ version: 3, accountId: userId, records: [record] }),
+    );
+    installApi();
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
+      ).toHaveLength(1),
+    );
+    const created = vi
+      .mocked(fetch)
+      .mock.calls.find(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
+    expect(JSON.parse(String(created?.[1]?.body))).toMatchObject({
+      computerId,
+      creationIntentId: record.creationIntentId,
+      runtimeProvider: "codex",
+    });
+  });
+
   it("adopts the Computer that connects while New Agent is open and keeps the form", async () => {
     const connectedComputer = {
       id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",

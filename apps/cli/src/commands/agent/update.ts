@@ -1,6 +1,7 @@
 import { type Command, Option } from "commander";
 import { formatAgent } from "../../core/agent/formatting.js";
 import { runAgentUpdate } from "../../core/agent/mutations.js";
+import { executeCommand } from "../../core/command/policy.js";
 
 export function registerAgentUpdateCommand(agent: Command): void {
   agent
@@ -29,10 +30,11 @@ export function registerAgentUpdateCommand(agent: Command): void {
       ),
     )
     .addOption(new Option("--clear-max-duration", "use the OpenTag default Turn duration").conflicts("maxDurationMs"))
+    .option("--json", "print JSON")
     .action(async (agentId, options) => {
-      process.stdout.write(
-        `${formatAgent(
-          await runAgentUpdate(agentId, {
+      process.exitCode = await executeCommand(
+        () =>
+          runAgentUpdate(agentId, {
             displayName: options.displayName,
             model: options.model,
             clearModel: options.clearModel,
@@ -43,7 +45,7 @@ export function registerAgentUpdateCommand(agent: Command): void {
             maxDurationMs: options.maxDurationMs,
             clearMaxDuration: options.clearMaxDuration,
           }),
-        )}\n`,
+        { json: options.json === true, formatValue: formatAgent, phase: "request" },
       );
     });
 }

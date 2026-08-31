@@ -5,7 +5,10 @@ export function registerDaemonStatusCommand(daemon: Command): void {
   daemon
     .command("status")
     .description("Show daemon service status")
-    .action(async () => {
-      process.exitCode = await executeDaemonServiceCommand("status");
+    .option("--json", "print JSON")
+    .action(async (options: { json?: boolean }) => {
+      process.exitCode = options.json
+        ? await executeDaemonServiceCommand("status", { json: true })
+        : await executeDaemonServiceCommand("status");
     });
 }

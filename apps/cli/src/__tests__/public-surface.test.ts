@@ -2,11 +2,16 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const EXPECTED_ROOT_EXPORTS = [
+  "CommandError",
   "CHANNEL",
   "CLI_PACKAGE_NAME",
   "CLI_VERSION",
+  "EXIT_CODES",
+  "buildChildEnvironment",
   "channelConfig",
+  "commandExitCode",
   "createProgram",
+  "executeCommand",
   "formatAgent",
   "formatAgentCreated",
   "formatAgentList",
@@ -26,7 +31,11 @@ const EXPECTED_ROOT_EXPORTS = [
   "runSessionCreate",
   "runSessionList",
   "runSessionSend",
+  "presentCommand",
+  "resolveCommandContext",
   "selectComputer",
+  "toCommandError",
+  "type CommandResult",
   "type DoctorOptions",
   "type DoctorResult",
   "type LoginOptions",

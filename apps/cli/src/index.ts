@@ -10,6 +10,17 @@ export {
 export { runAgentList, runAgentShow } from "./core/agent/queries.js";
 export { type LoginOptions, type LoginResult, runLogin } from "./core/auth/login.js";
 export { channelConfig } from "./core/channel/config.js";
+export { resolveCommandContext } from "./core/command/context.js";
+export { buildChildEnvironment } from "./core/command/environment.js";
+export {
+  CommandError,
+  type CommandResult,
+  commandExitCode,
+  EXIT_CODES,
+  executeCommand,
+  presentCommand,
+  toCommandError,
+} from "./core/command/policy.js";
 export { formatComputerList } from "./core/computer/formatting.js";
 export { listComputers } from "./core/computer/queries.js";
 export {

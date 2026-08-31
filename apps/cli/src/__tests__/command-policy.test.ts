@@ -37,7 +37,11 @@ describe("CLI command result policy", () => {
     const result: CommandResult<string> =
       expectedExitCode === 0
         ? { ok: true, value: "ready", exitCode: 0 }
-        : { ok: false, error: new CommandError(errorFields, "operation failed"), exitCode: expectedExitCode };
+        : {
+            ok: false,
+            error: new CommandError(errorFields, "operation failed"),
+            exitCode: expectedExitCode as 1 | 2 | 3 | 130,
+          };
 
     const exitCode = presentCommand(result, {
       json: false,

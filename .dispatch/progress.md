@@ -7,7 +7,7 @@
 - [x] 3. Implement shared structured-error schemas and safe serialization; refresh exports snapshot.
 - [x] 4. Implement and test the server background-failure supervisor.
 - [x] 5. Write `docs/error-taxonomy.md`.
-- [ ] 6. Run `pnpm check`, `pnpm typecheck`, and `pnpm test`; clean the tree.
+- [x] 6. Run `pnpm check`, `pnpm typecheck`, and `pnpm test`; clean the tree.
 
 ## Completed item
 
@@ -18,17 +18,17 @@ Item 1 found these current shapes and gaps:
 - Supervision is missing or narrow at detached boundaries: `ImDeliveryWorker.#schedule()` catches only to a code callback; `KeyedTaskScheduler` swallows task failures; runtime socket business tasks catch and return failure frames; Feishu connection/setup timers and lifecycle callbacks classify failures locally. These paths do not share a structured event, cause chain, redaction, or counter seam.
 - The task checklist explicitly assigns `packages/shared/**` and `packages/server/src/observability/**`; the environment note saying not to touch shared is stale relative to that ownership and objective, so this lane follows the checklist.
 
-## Next
+## Completed implementation
 
-The new `structured-errors.test.ts` covers taxonomy parsing, diagnostic-event envelopes, sensitive key/header/body/message redaction, cycles, and byte bounds. It was run first and failed at collection because `structured-errors.ts` did not exist, confirming the tests are red before implementation. The shared implementation now provides strict Zod schemas, recursive causes, key-pattern and string redaction, cycle/depth/collection bounds, and UTF-8 bounded JSON serialization. The public barrel and sorted export snapshot were refreshed. Shared typecheck and the full shared test command pass (18 files, 112 tests).
+The new `structured-errors.test.ts` covers taxonomy parsing, diagnostic-event envelopes, sensitive key/header/body/message redaction, cycles, and byte bounds. It was run first and failed at collection because `structured-errors.ts` did not exist, confirming the tests were red before implementation. The shared implementation now provides strict Zod schemas, recursive causes, key-pattern and string redaction, cycle/depth/collection bounds, and UTF-8 bounded JSON serialization. The public barrel and sorted export snapshot were refreshed. Shared typecheck and the full shared test command pass (18 files, 112 tests).
 
 The server supervisor now exposes `supervise` for awaited operations and `track` for detached promises. It classifies thrown values into the shared taxonomy, captures bounded/redacted causes, emits one `DiagnosticEvent`, invokes a counter seam (`opentag.background_failures.total`), and sends only redacted payloads to the logger. Observer failures and invalid timestamps are isolated. Failure-injection tests pass (2 tests), and server typecheck passes.
 
-Next write the canonical English taxonomy and adoption guide, then run the repository verification commands.
+The canonical English guide documents the structured event shape, all category and retryability semantics, supported phases, redaction/16 KiB serialization rules, runtime/IO/CLI adoption patterns, and the surveyed integration points. No runtime or service call sites were changed in this definition lane.
 
-The canonical English guide now documents the structured event shape, all category and retryability semantics, supported phases, redaction/16 KiB serialization rules, runtime/IO/CLI adoption patterns, and the surveyed integration points. No runtime or service call sites were changed in this definition lane.
+Verification completed with Node 24.19.0: `pnpm check` passed (Biome emitted only pre-existing complexity warnings, and workspace/notice/migration checks passed), `pnpm typecheck` passed (8 tasks), and `pnpm test` passed (109 script tests; 18 shared files/112 tests; 51 server files/489 tests; 54 client files/687 tests; 48 web files/542 tests; 17 CLI files/220 tests).
 
-Next run `pnpm check`, `pnpm typecheck`, and `pnpm test`, resolve any failures, and confirm a clean tree.
+The working tree is ready for the final clean-tree check and `.dispatch/DONE` marker.
 
 ## Integration notes
 

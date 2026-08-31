@@ -1,6 +1,40 @@
+import figmaIcon from "../assets/integrations/figma.svg";
+import githubIcon from "../assets/integrations/github.svg";
+import googleDriveIcon from "../assets/integrations/google-drive.svg";
+import linearIcon from "../assets/integrations/linear.svg";
+import notionIcon from "../assets/integrations/notion.svg";
+import sentryIcon from "../assets/integrations/sentry.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { integrationPreviews } from "../mock/capability-data.js";
 import { Badge, LayerCard, Table, Text } from "../ui/design-system.js";
+
+const integrationIcons: Readonly<Record<string, string>> = {
+  figma: figmaIcon,
+  github: githubIcon,
+  "google-drive": googleDriveIcon,
+  linear: linearIcon,
+  notion: notionIcon,
+  sentry: sentryIcon,
+};
+
+function IntegrationIcon({ id, abbreviation }: { id: string; abbreviation: string }) {
+  const icon = integrationIcons[id];
+
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-grid size-8 shrink-0 place-items-center rounded-lg border border-kumo-line bg-white"
+      data-integration={id}
+      data-ui="integration-icon"
+    >
+      {icon ? (
+        <img alt="" className="size-5 object-contain" height="20" src={icon} width="20" />
+      ) : (
+        <span className="text-xs font-medium text-kumo-default">{abbreviation}</span>
+      )}
+    </span>
+  );
+}
 
 export function IntegrationsPage() {
   return (
@@ -47,12 +81,7 @@ export function IntegrationsPage() {
                   <Table.Row key={integration.id}>
                     <Table.Cell aria-label={`${integration.name}. ${integration.description}`} data-label="Name">
                       <span className="flex min-w-0 items-start gap-3">
-                        <span
-                          className="inline-grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-medium"
-                          aria-hidden="true"
-                        >
-                          {integration.abbreviation}
-                        </span>
+                        <IntegrationIcon abbreviation={integration.abbreviation} id={integration.id} />
                         <span className="grid min-w-0 gap-0.5">
                           <Text as="strong" variant="heading">
                             {integration.name}

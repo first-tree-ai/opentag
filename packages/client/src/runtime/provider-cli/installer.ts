@@ -63,6 +63,92 @@ export function resolveProviderCliArtifactUrl(current: string, location?: string
   return next.toString();
 }
 
+async function requestProviderCliArtifact(
+  fetchImpl: typeof fetch,
+  url: string,
+  signal: AbortSignal,
+): Promise<Response> {
+  try {
+    return await fetchImpl(url, { redirect: "manual", signal });
+  } catch (error) {
+    throw new ProviderCliInstallError(
+      "install_incomplete",
+      `Artifact download failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function cancelProviderCliRedirectBody(response: Response): Promise<void> {
+  if (!response.body) return;
+  try {
+    await response.body.cancel();
+  } catch (error) {
+    throw new ProviderCliInstallError(
+      "install_incomplete",
+      `Artifact redirect cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+async function fetchProviderCliArtifactResponse(
+  fetchImpl: typeof fetch,
+  url: string,
+  timeoutMs: number,
+): Promise<Response> {
+  let current = resolveProviderCliArtifactUrl(url);
+  const signal = AbortSignal.timeout(timeoutMs);
+  for (let redirects = 0; ; redirects += 1) {
+    const response = await requestProviderCliArtifact(fetchImpl, current, signal);
+    if (!REDIRECT_STATUSES.has(response.status)) return response;
+
+    const location = response.headers.get("location");
+    await cancelProviderCliRedirectBody(response);
+    if (location === null) {
+      throw new ProviderCliInstallError("integrity_failed", "Artifact redirect has no Location header");
+    }
+    if (redirects >= MAX_REDIRECT_HOPS) {
+      throw new ProviderCliInstallError("install_incomplete", "Artifact download exceeded the redirect bound");
+    }
+    current = resolveProviderCliArtifactUrl(current, location);
+  }
+}
+
+function concatenateProviderCliArtifactChunks(chunks: readonly Uint8Array[], received: number): Uint8Array {
+  const body = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+async function readProviderCliArtifactBody(response: Response, maxBytes: number): Promise<Uint8Array> {
+  if (!response.ok) {
+    throw new ProviderCliInstallError("install_incomplete", `Artifact download failed with HTTP ${response.status}`);
+  }
+  const length = response.headers.get("content-length");
+  if (length !== null && Number.parseInt(length, 10) > maxBytes) {
+    throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
+  }
+  if (!response.body) return new Uint8Array(await response.arrayBuffer());
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel();
+      throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
+    }
+    chunks.push(value);
+  }
+  return concatenateProviderCliArtifactChunks(chunks, received);
+}
+
 /**
  * Create the bounded artifact fetcher. `fetchImpl` exists so tests can exercise the
  * full redirect and size-bound policy without network or TLS; production always uses
@@ -70,74 +156,8 @@ export function resolveProviderCliArtifactUrl(current: string, location?: string
  */
 export function createProviderCliFetcher(fetchImpl: typeof fetch = fetch): ProviderCliFetcher {
   return async ({ url, maxBytes, timeoutMs }) => {
-    let current = resolveProviderCliArtifactUrl(url);
-    let response: Response | undefined;
-    for (let hops = 0; ; hops += 1) {
-      try {
-        response = await fetchImpl(current, {
-          redirect: "manual",
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-      } catch (error) {
-        throw new ProviderCliInstallError(
-          "install_incomplete",
-          `Artifact download failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-      if (REDIRECT_STATUSES.has(response.status)) {
-        const location = response.headers.get("location");
-        if (response.body) {
-          try {
-            await response.body.cancel();
-          } catch (error) {
-            throw new ProviderCliInstallError(
-              "install_incomplete",
-              `Artifact redirect cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-        }
-        if (location === null) {
-          throw new ProviderCliInstallError("integrity_failed", "Artifact redirect has no Location header");
-        }
-        if (hops + 1 >= MAX_REDIRECT_HOPS) {
-          throw new ProviderCliInstallError("install_incomplete", "Artifact download exceeded the redirect bound");
-        }
-        current = resolveProviderCliArtifactUrl(current, location);
-        continue;
-      }
-      break;
-    }
-    if (!response.ok) {
-      throw new ProviderCliInstallError("install_incomplete", `Artifact download failed with HTTP ${response.status}`);
-    }
-    const length = response.headers.get("content-length");
-    if (length !== null && Number.parseInt(length, 10) > maxBytes) {
-      throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
-    }
-    if (!response.body) {
-      const buffer = await response.arrayBuffer();
-      return new Uint8Array(buffer);
-    }
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let received = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      received += value.byteLength;
-      if (received > maxBytes) {
-        await reader.cancel();
-        throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
-      }
-      chunks.push(value);
-    }
-    const body = new Uint8Array(received);
-    let offset = 0;
-    for (const chunk of chunks) {
-      body.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return body;
+    const response = await fetchProviderCliArtifactResponse(fetchImpl, url, timeoutMs);
+    return readProviderCliArtifactBody(response, maxBytes);
   };
 }
 

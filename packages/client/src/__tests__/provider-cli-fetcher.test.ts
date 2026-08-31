@@ -131,7 +131,7 @@ describe("createProviderCliFetcher", () => {
       () => new Response(null, { status: 302, headers: { location: "https://releases.example.test/next" } }),
     );
     await expect(createProviderCliFetcher(fetchImpl)(OPTIONS)).rejects.toMatchObject({ code: "install_incomplete" });
-    expect(calls.length).toBeLessThanOrEqual(8);
+    expect(calls).toHaveLength(9); // initial request plus the eight allowed redirect hops
   });
 
   it("maps non-OK responses to install_incomplete", async () => {

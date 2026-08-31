@@ -190,11 +190,14 @@ export class ImDeliveryWorker {
       return;
     }
     let resolve: () => void = () => undefined;
-    const complete = new Promise<void>((done) => {
+    let reject: (error: unknown) => void = () => undefined;
+    const complete = new Promise<void>((done, fail) => {
       resolve = done;
+      reject = fail;
     });
     const run = async () => {
       this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
+      let failed = false;
       try {
         await this.#withOperationDeadline(claimed, async () => {
           await traceDeliveryClaim(claimed, async (claim) => {
@@ -203,9 +206,13 @@ export class ImDeliveryWorker {
             else await this.#recover(claim.id);
           });
         });
+      } catch (error) {
+        failed = true;
+        reject(error);
+        throw error;
       } finally {
         this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
-        resolve();
+        if (!failed) resolve();
       }
     };
     const enqueued = this.#scheduler.enqueue(`agent:${claimed.agentId}`, run, () => {
@@ -214,7 +221,9 @@ export class ImDeliveryWorker {
         claimed.id,
         "IM_DELIVERY_WORKER_SATURATED",
         "claimToken" in claimed ? claimed.claimToken : undefined,
-      ).finally(resolve);
+      )
+        .catch(() => undefined)
+        .finally(resolve);
     });
     if (!enqueued) {
       this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });

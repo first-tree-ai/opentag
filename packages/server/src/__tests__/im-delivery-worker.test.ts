@@ -297,7 +297,7 @@ describe("ImDeliveryWorker database workflow", () => {
     const worker = new ImDeliveryWorker({
       database: unit.database,
       domain: domain as never,
-      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixtures[0].runtime) },
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixtures[0]?.runtime) },
       registry,
       maxConcurrent: 1,
       maxQueuedPerAgent: 1,

@@ -9,11 +9,12 @@ export function GeneralConfigForm({
 }: {
   config: AgentAdminConfig;
   /**
-   * Publishes the record the write produced. This block renders from the shared reading rather than
-   * from a copy of its own, so the field shows the saved name only once the caller has published
-   * it -- which is the same condition under which the blocks beside it stop being a revision behind.
+   * Publishes the record the write produced, or asks for a re-read when there is no record because
+   * the write was refused. This block renders from the shared reading rather than from a copy of its
+   * own, so the field shows the saved name only once the caller has published it -- which is the
+   * same condition under which the blocks beside it stop being a revision behind.
    */
-  onAgentChanged: (saved: AgentAdminConfig) => void;
+  onAgentChanged: (saved?: AgentAdminConfig) => void;
 }) {
   /*
    * The field follows the record until someone types in it, and the typing is held apart from the
@@ -45,6 +46,13 @@ export function GeneralConfigForm({
       // the same Agent, so a revision conflict here is an ordinary outcome rather than a rarity, and
       // it has to interrupt the way the same refusal already does inside the Model dialog.
       setMessage({ kind: "error", text: cause instanceof Error ? cause.message : "Unable to save name" });
+      /*
+       * A refusal is usually the Agent having moved on somewhere else, and the answer to that is to
+       * go and read where it moved to. Without this the same revision is re-sent on every retry and
+       * the field is stuck until the page is reloaded -- on a screen whose own back link is already
+       * showing the new name. The draft is untouched, so the retry carries what was typed.
+       */
+      onAgentChanged();
     } finally {
       setSaving(false);
     }

@@ -530,6 +530,14 @@ function installApi(
     }
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
+  // Moves the Agent on the way another tab, another admin or the CLI would: the screen learns about
+  // it only by reading again, which is the condition a refused write has to recover from.
+  return {
+    changeAgentElsewhere(displayName: string) {
+      configDisplayName = displayName;
+      revision += 1;
+    },
+  };
 }
 
 /**
@@ -1909,6 +1917,32 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
     expect(await screen.findByRole("dialog", { name: "Delete Research Reviewer?" })).toBeTruthy();
+  });
+
+  it("recovers a refused Name save by re-reading, rather than re-sending the refused revision", async () => {
+    const api = installApi();
+    window.history.replaceState({}, "", `/agents/${agentId}/settings`);
+    render(<App />);
+
+    const identity = within(await screen.findByRole("form", { name: "Name" }));
+    api.changeAgentElsewhere("Reviewer External");
+    fireEvent.change(identity.getByLabelText("Display name"), { target: { value: "Research Reviewer" } });
+    fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
+    expect((await identity.findByRole("alert")).textContent).toContain("Expected revision 1");
+
+    // The draft survives the refusal, and the retry carries the revision the Agent actually has --
+    // otherwise the field is stuck on a screen whose own back link already shows the newer name.
+    expect((identity.getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Reviewer");
+    await waitFor(() => expect(identity.queryByRole("alert")).not.toBeNull());
+    fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
+    expect((await identity.findByRole("status")).textContent).toBe("Name saved.");
+    expect((identity.getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Reviewer");
+
+    const revisions = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input, init]) => String(input) === `/api/v1/agents/${agentId}` && init?.method === "PATCH")
+      .map(([, init]) => JSON.parse(String(init?.body)).expectedRevision);
+    expect(revisions).toEqual([1, 2]);
   });
 
   it("refuses a settings segment that anchors nothing", async () => {

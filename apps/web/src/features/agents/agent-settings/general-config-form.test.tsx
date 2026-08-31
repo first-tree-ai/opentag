@@ -31,8 +31,8 @@ describe("GeneralConfigForm", () => {
     const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
     // The caller publishes the record a write produced, which is how the field -- and every block
     // beside it on the settings screen -- comes to be looking at the revision the Server now holds.
-    const onAgentChanged = vi.fn((saved: AgentAdminConfig) => {
-      view.rerender(<GeneralConfigForm config={saved} onAgentChanged={onAgentChanged} />);
+    const onAgentChanged = vi.fn((saved?: AgentAdminConfig) => {
+      view.rerender(<GeneralConfigForm config={saved ?? config} onAgentChanged={onAgentChanged} />);
     });
     const view = render(<GeneralConfigForm config={config} onAgentChanged={onAgentChanged} />);
 

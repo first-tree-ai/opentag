@@ -155,15 +155,22 @@ function classifyGenericError(error: unknown, phase: CommandPhase): CommandError
 }
 
 function isAuth(code: string, message: string, category: unknown): boolean {
-  return category === "auth" || /^AUTH_/u.test(code) || /not logged in|authentication/iu.test(message);
+  return (
+    category === "auth" ||
+    category === "authentication" ||
+    /^AUTH_/u.test(code) ||
+    /not logged in|authentication/iu.test(message)
+  );
 }
 
 function isUnavailable(code: string, message: string, category: unknown): boolean {
   return (
     category === "unavailable" ||
+    category === "service-unavailable" ||
+    category === "transient" ||
     code === "SERVICE_UNAVAILABLE" ||
     /(?:_UPSTREAM_)?UNAVAILABLE$/u.test(code) ||
-    /service unavailable|timed out|connection refused/iu.test(message)
+    /unavailable|timed out|connection refused/iu.test(message)
   );
 }
 

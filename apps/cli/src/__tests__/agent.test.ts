@@ -4,9 +4,10 @@ import { resolve } from "node:path";
 import type { AgentAdminConfig, ImBindingDiagnostics } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
-import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
+import { formatAgent, formatAgentBound, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
 import { formatImBindingDiagnostics } from "../core/agent/im.js";
 import {
+  runAgentBind,
   runAgentCreate,
   runAgentDelete,
   runAgentReactivate,
@@ -89,6 +90,7 @@ function api() {
     updateAgent: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     suspendAgent: vi.fn().mockResolvedValue({ ...agent, status: "suspended", revision: 2 }),
     reactivateAgent: vi.fn().mockResolvedValue({ ...agent, revision: 3 }),
+    rebindAgentComputer: vi.fn().mockResolvedValue(agent),
     deleteAgent: vi.fn().mockResolvedValue(undefined),
     getAgentImBinding: vi.fn().mockResolvedValue(undefined),
     getAgentImBindingConfig: vi.fn().mockResolvedValue(undefined),
@@ -160,7 +162,8 @@ describe("Agent CLI core", () => {
 
   it("resolves an enrolled Computer and rejects ambiguous or unknown choices", () => {
     expect(selectComputer({ computers: [computer] })).toEqual(computer);
-    expect(() => selectComputer({ computers: [] })).toThrow("start the daemon first");
+    // Nothing enrolled is an answer, not a failure: the Agent is created and bound later.
+    expect(selectComputer({ computers: [] })).toBeUndefined();
     expect(() =>
       selectComputer({
         computers: [{ ...computer }, { ...computer, computerId: crypto.randomUUID() }],
@@ -194,6 +197,40 @@ describe("Agent CLI core", () => {
     });
     expect(result.warning).toContain("is offline");
     expect(formatAgentCreated(result)).toContain(agentId);
+  });
+
+  it("creates an Agent with no Computer and names the command that binds one", async () => {
+    const client = api();
+    client.listAccountComputers.mockResolvedValue({ computers: [] });
+    client.createAgent.mockResolvedValue({ ...agent, computerId: null });
+    const result = await runAgentCreate({
+      accessToken: "access",
+      api: client,
+      name: "code-reviewer",
+      displayName: "Code Reviewer",
+      runtimeProvider: "codex",
+    });
+    expect(client.createAgent).toHaveBeenCalledWith("access", {
+      displayName: "Code Reviewer",
+      name: "code-reviewer",
+      runtimeProvider: "codex",
+    });
+    expect(result.warning).toContain("opentag agent bind");
+    expect(formatAgentCreated(result)).toContain("without a Computer");
+  });
+
+  it("binds an Agent to a Computer after creation", async () => {
+    const client = api();
+    const result = await runAgentBind(agentId, { accessToken: "access", api: client });
+    expect(client.rebindAgentComputer).toHaveBeenCalledWith("access", agentId, computerId);
+    expect(formatAgentBound(result)).toContain(computerId);
+    expect(result.warning).toBeUndefined();
+
+    const empty = api();
+    empty.listAccountComputers.mockResolvedValue({ computers: [] });
+    await expect(runAgentBind(agentId, { accessToken: "access", api: empty })).rejects.toThrow(
+      "start the daemon first",
+    );
   });
 
   it("creates runtime settings and preserves UTF-8 instruction file contents", async () => {

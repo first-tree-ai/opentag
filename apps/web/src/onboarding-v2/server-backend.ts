@@ -213,14 +213,16 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         );
         // Where the Account has more than one, the Agent whose Computer is actually there is the one
         // this run can finish. Otherwise the first, which is the Server's own order.
-        const existing = active.find((candidate) => online.has(candidate.computer.computerId)) ?? active[0];
+        const existing =
+          active.find((candidate) => candidate.computer && online.has(candidate.computer.computerId)) ?? active[0];
         if (!existing) return;
         setAgent({ id: existing.id, name: existing.name, runtimeProvider: existing.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
-        const enrolled = online.get(existing.computer.computerId);
-        // Offline or gone: the step issues a code that repairs this exact Computer.
-        repairTarget.current = enrolled ? undefined : existing.computer.computerId;
+        const enrolled = existing.computer ? online.get(existing.computer.computerId) : undefined;
+        // Offline or gone: the step issues a code that repairs this exact Computer. An Agent with no
+        // Computer at all has none to repair, so the step issues a code any machine can answer.
+        repairTarget.current = enrolled ? undefined : (existing.computer?.computerId ?? undefined);
         if (enrolled) {
           computerId.current = enrolled.computerId;
           setComputer(enrolled);

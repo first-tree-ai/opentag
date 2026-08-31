@@ -30,10 +30,9 @@ export const agents = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     creationIntentId: uuid("creation_intent_id"),
     creationIntentFingerprint: text("creation_intent_fingerprint"),
-    workspaceComputerId: uuid("workspace_computer_id").notNull(),
-    computerId: uuid("computer_id")
-      .notNull()
-      .references(() => accountComputers.id, { onDelete: "restrict" }),
+    /** Null until a Computer is bound. Both Computer columns are set and cleared together. */
+    workspaceComputerId: uuid("workspace_computer_id"),
+    computerId: uuid("computer_id").references(() => accountComputers.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
@@ -65,6 +64,7 @@ export const agents = pgTable(
     ),
     check("agents_revision_positive", sql`${table.revision} >= 1`),
     check("agents_computer_matches_enrollment", sql`${table.computerId} = ${table.workspaceComputerId}`),
+    check("agents_computer_pair", sql`(${table.computerId} is null) = (${table.workspaceComputerId} is null)`),
   ],
 );
 

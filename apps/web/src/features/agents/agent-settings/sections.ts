@@ -86,9 +86,11 @@ export function agentSettingsSummary(
   }
   if (section === "identity") return config.displayName;
   if (section === "computer") {
+    const computer = agent.computer;
+    if (!computer) return "No Computer connected";
     const state = agent.availability.dependencies.computer.state;
     const status = state === "ready" ? "Online" : state === "action_required" ? "Offline" : "Unconfirmed";
-    return `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${status}`;
+    return `${computer.displayName} · ${platformLabel(computer.platform)} · ${status}`;
   }
   return config.status === "active" ? "Active" : "Paused";
 }

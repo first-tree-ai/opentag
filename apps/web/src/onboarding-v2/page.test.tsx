@@ -157,14 +157,21 @@ describe("OnboardingV2Page", () => {
     }
   });
 
-  it("uses OpenAI's published Blossom art for Codex instead of a letter stand-in", () => {
+  it("uses contained, app-theme-aware OpenAI Blossom art for Codex", () => {
     render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    const codexMark = document.querySelector('[data-brand="codex"]');
-    expect(codexMark?.querySelector('source[media="(prefers-color-scheme: dark)"]')).toBeTruthy();
-    expect(codexMark?.querySelector("img")).toBeTruthy();
+    const codexMark = document.querySelector('[data-brand="codex"]') as HTMLElement;
+    expect(codexMark.classList).toContain("size-10");
+    expect(codexMark.classList).toContain("bg-kumo-recessed");
+    expect(codexMark.classList).toContain("overflow-hidden");
+    expect(codexMark.querySelector("picture, source")).toBeNull();
+    const variants = [...codexMark.querySelectorAll("img")];
+    expect(variants).toHaveLength(2);
+    expect(variants.every((variant) => variant.classList.contains("size-8"))).toBe(true);
+    expect(variants[0]?.classList).toContain("otv2-codex-mark--light");
+    expect(variants[1]?.classList).toContain("otv2-codex-mark--dark");
     expect(codexMark?.textContent).toBe("");
   });
 

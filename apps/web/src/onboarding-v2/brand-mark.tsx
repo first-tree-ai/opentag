@@ -54,11 +54,13 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
 
   if (brand === "codex") {
     return (
-      <span aria-hidden="true" className="otv2-mark otv2-mark--art" data-brand={brand}>
-        <picture className="otv2-mark__picture">
-          <source media="(prefers-color-scheme: dark)" srcSet={openAIBlossomWhite} />
-          <img alt="" className="otv2-mark__svg" src={openAIBlossomBlack} />
-        </picture>
+      <span
+        aria-hidden="true"
+        className="inline-flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-sm font-medium text-kumo-subtle overflow-hidden"
+        data-brand={brand}
+      >
+        <img alt="" className="otv2-codex-mark--light size-8" src={openAIBlossomBlack} />
+        <img alt="" className="otv2-codex-mark--dark size-8" src={openAIBlossomWhite} />
       </span>
     );
   }

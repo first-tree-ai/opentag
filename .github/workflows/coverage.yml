@@ -103,7 +103,7 @@ jobs:
 
           const diff = spawnSync(
             "git",
-            ["diff", "--unified=0", "--no-color", "--find-renames", `${baseSha}...HEAD"],
+            ["diff", "--unified=0", "--no-color", "--find-renames", `${baseSha}...HEAD`],
             { encoding: "utf8" },
           );
           if (diff.error || diff.status !== 0) {

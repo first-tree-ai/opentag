@@ -90,4 +90,18 @@ describe("SlackConfiguration", () => {
     expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(window.location.search).not.toContain("slack_oauth");
   });
+
+  it("maps known and unknown OAuth callback errors to safe feedback", async () => {
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging?slack_oauth_error=SLACK_AUTH_INVALID`);
+    render(<Harness />);
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Slack rejected this authorization. Start OpenTag Slack again from this Agent.",
+    );
+
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging?slack_oauth_error=other`);
+    const { unmount } = render(<Harness />);
+    expect(await screen.findAllByRole("alert")).toHaveLength(2);
+    unmount();
+  });
 });

@@ -4,6 +4,7 @@ import {
   ComputerConnectCodeExchangeRequestSchema,
   ComputerConnectCodeExchangeResponseSchema,
   ComputerConnectCodeIssueResponseSchema,
+  ComputerImCliReadinessCollectionSchema,
   ComputerProviderReadinessCollectionSchema,
 } from "../computer.js";
 
@@ -72,5 +73,29 @@ describe("computer contracts", () => {
         { provider: "codex", status: "ready", observedAt: null },
       ]),
     ).toThrow();
+    expect(() =>
+      ComputerProviderReadinessCollectionSchema.parse([
+        { provider: "codex", status: "ready", observedAt: null },
+        { provider: "codex", status: "checking", observedAt: null },
+      ]),
+    ).toThrow("Provider readiness must be unique");
+  });
+
+  it("enforces unique canonical order for IM CLI readiness", () => {
+    expect(
+      ComputerImCliReadinessCollectionSchema.parse([{ provider: "feishu", status: "ready", observedAt: null }]),
+    ).toEqual([{ provider: "feishu", status: "ready", observedAt: null }]);
+    expect(() =>
+      ComputerImCliReadinessCollectionSchema.parse([
+        { provider: "slack", status: "ready", observedAt: null },
+        { provider: "slack", status: "checking", observedAt: null },
+      ]),
+    ).toThrow("IM CLI readiness must be unique");
+    expect(() =>
+      ComputerImCliReadinessCollectionSchema.parse([
+        { provider: "slack", status: "ready", observedAt: null },
+        { provider: "feishu", status: "checking", observedAt: null },
+      ]),
+    ).toThrow("IM CLI readiness must use canonical Provider order");
   });
 });

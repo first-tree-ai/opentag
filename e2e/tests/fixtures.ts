@@ -41,6 +41,7 @@ export interface E2ERuntime {
 }
 
 interface RuntimeFile {
+  accountComputerId: string;
   adminDatabaseURL: string;
   baseURL: string;
   databaseURL: string;

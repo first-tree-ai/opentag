@@ -23,7 +23,7 @@ const draft: AgentDraft = {
 /** The facts of a user who has confirmed both of the steps they drive themselves. */
 const confirmed = { draft, destinationConfirmed: true, draftConfirmed: true } as const;
 const connected: ConnectState = { kind: "connected", command: "npm i -g open-tag", computerName: "MacBook Pro" };
-const ready: ReadinessFacts = { runtime: "ready", messagingCli: "ready" };
+const ready: ReadinessFacts = { runtime: "ready", messagingCli: { feishu: "ready", slack: "ready" } };
 
 function facts(overrides: Partial<FlowFacts> = {}): FlowFacts {
   return { ...initialFacts(), ...overrides };
@@ -112,24 +112,27 @@ describe("deriveChecks", () => {
   it("leaves the messaging CLI out: its provider is not chosen yet", () => {
     // A missing lark-cli used to block a user who was going to pick Slack.
     expect(deriveChecks(ready).map((check) => check.id)).toEqual(["runtime-cli", "runtime-auth"]);
-    expect(readinessPassed({ runtime: "ready", messagingCli: "install" })).toBe(true);
+    expect(readinessPassed({ runtime: "ready", messagingCli: { feishu: "install", slack: "install" } })).toBe(true);
   });
 
   it("treats a sign-in failure as proof the CLI runs", () => {
-    const checks = deriveChecks({ runtime: "sign-in", messagingCli: "ready" });
+    const checks = deriveChecks({ runtime: "sign-in", messagingCli: { feishu: "ready", slack: "ready" } });
     expect(checks[0]).toEqual({ id: "runtime-cli", state: "passed" });
     expect(checks[1]).toEqual({ id: "runtime-auth", state: "failed" });
   });
 
   it("blocks the sign-in row when the CLI is missing, rather than guessing", () => {
-    const checks = deriveChecks({ runtime: "install", messagingCli: "ready" });
+    const checks = deriveChecks({ runtime: "install", messagingCli: { feishu: "ready", slack: "ready" } });
     expect(checks[0]).toEqual({ id: "runtime-cli", state: "failed" });
     expect(checks[1]).toEqual({ id: "runtime-auth", state: "blocked" });
   });
 
   it("reports the chosen provider's CLI separately, at handoff", () => {
-    expect(messagingCliCheck({ runtime: "ready", messagingCli: "install" })).toBe("failed");
-    expect(messagingCliCheck({ runtime: "ready", messagingCli: "ready" })).toBe("passed");
+    const facts = { runtime: "ready", messagingCli: { feishu: "install", slack: "ready" } } as const;
+    expect(messagingCliCheck(facts, "feishu")).toBe("failed");
+    expect(messagingCliCheck(facts, "slack")).toBe("passed");
+    // A CLI the Server has not reported on is still being checked, not failing.
+    expect(messagingCliCheck({ runtime: "ready", messagingCli: {} }, "slack")).toBe("pending");
   });
 });
 

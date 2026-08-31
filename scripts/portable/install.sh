@@ -318,6 +318,8 @@ rewrite_path_block() {
   {
     cat "$tmp"
     printf '\n%s\n' "$START_MARKER"
+    # The profile must receive a literal $PATH for expansion by the future shell.
+    # shellcheck disable=SC2016
     printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
     printf '%s\n' "$END_MARKER"
   } >"${tmp}.new"
@@ -343,7 +345,7 @@ maybe_edit_path() {
       return 0
     fi
     printf 'Add %s to PATH in %s? [Y/n] ' "$BIN_DIR" "$profile"
-    read answer || answer="n"
+    read -r answer || answer="n"
     case "$answer" in
       ""|y|Y|yes|YES) ;;
       *)
@@ -426,10 +428,10 @@ BIN_NAME="$(json_string "$MANIFEST_FILE" binName)"
 # drops trailing slashes and dot segments without resolving a caller-selected symlink prefix, which
 # matches the lexical absolute paths recorded in the shims.
 if [ -d "$PREFIX" ]; then
-  PREFIX="$(CDPATH= cd -L "$PREFIX" && pwd -L)"
+  PREFIX="$(CDPATH="" cd -L "$PREFIX" && pwd -L)"
 fi
 if [ -d "$BIN_DIR" ]; then
-  BIN_DIR="$(CDPATH= cd -L "$BIN_DIR" && pwd -L)"
+  BIN_DIR="$(CDPATH="" cd -L "$BIN_DIR" && pwd -L)"
 fi
 
 if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; then
@@ -453,8 +455,8 @@ ASSET_SIZE="$(json_number "$ASSET_FILE" size)"
 [ -n "$ASSET_SIZE" ] || die "asset missing size"
 
 mkdir -p "$PREFIX/versions" "$PREFIX/.tmp" "$BIN_DIR"
-PREFIX="$(CDPATH= cd -L "$PREFIX" && pwd -L)"
-BIN_DIR="$(CDPATH= cd -L "$BIN_DIR" && pwd -L)"
+PREFIX="$(CDPATH="" cd -L "$PREFIX" && pwd -L)"
+BIN_DIR="$(CDPATH="" cd -L "$BIN_DIR" && pwd -L)"
 TARBALL="$WORK_DIR/payload.tar.gz"
 log "Downloading OpenTag ${VERSION} for ${PLATFORM}"
 download_to "$ASSET_URL" "$TARBALL"

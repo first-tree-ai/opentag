@@ -240,7 +240,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected async steerProvider(request: AgentSteerRequest): Promise<void> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
     /* v8 ignore next -- BaseAgentRuntime admits steer only while executeRun owns an active prompt. */
     if (!this.#promptAccepted) throw new AgentRuntimeError("run_mismatch", "there is no active Pi prompt");
     await this.#promptAccepted.promise;
@@ -250,7 +250,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     await client.request({ type: "steer", message: piItems(request.input.items) });
   }
 
-  protected async abortProvider(_request: AgentAbortRequest): Promise<void> {
+  protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
     if (this.#terminalClaimed) return;
     await this.#client?.request({ type: "abort" }, AbortSignal.timeout(2_000));
   }

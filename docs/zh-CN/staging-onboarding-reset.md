@@ -1,18 +1,21 @@
-# Staging Onboarding Lab
+# Staging onboarding reset
 
-[English](../staging-onboarding-lab.md)
+[English](../staging-onboarding-reset.md)
 
-Onboarding Lab 是仅限 staging 的页面，用于迭代首次使用体验。它为每一个已登录的 staging Account 提供两件事：用于快速设计评审的
-固定 onboarding 界面状态，以及可重复的 reset——把**该 Account 自己**恢复到真实的首次使用状态，从而可以从头再走一遍完整路径。
+onboarding 是为从未跑过它的 Account 写的，因此一个 staging Account 天然只能免费走一遍。staging onboarding reset 提供了回头路：
+它把**已认证的那个 Account** 恢复到真实的首次使用状态，从而可以从头再走一遍完整路径。
 
 之所以需要它，是因为仅清除 setup 完成时间戳并不够。已有的 Computer enrollment、Agent、runtime readiness 和 IM binding 会立即
 推进由事实推导出的 onboarding 流程，因此一个已完成的 Account 无法自行回到首次使用状态。
 
-Lab 在 production 不可用，reset 也永远不会触及已认证 Account 之外的任何 Account。
+reset 在 production 不可用，也永远不会触及已认证 Account 之外的任何 Account。
+
+只做界面层面的设计评审——文案、层级、状态表达——请用 `/internal/onboarding-v2`：它用 mock 后端渲染真实的 onboarding 页面，
+既不需要 Account 也不需要 reset。
 
 ## 每个测试者使用自己的 Account
 
-用你自己的身份登录 staging。新建的 Account 本身就处于首次使用状态，所以第一次完整体验不需要任何额外东西；Lab 解决的是第二次。
+用你自己的身份登录 staging。新建的 Account 本身就处于首次使用状态，所以第一次完整体验不需要任何额外东西；reset 解决的是第二次。
 
 不存在需要轮流使用的共享测试 Account，也没有任何配置。两个人可以同时跑 onboarding：各自只 reset 自己的 Account，各自注册自己的
 Computer，而每一次飞书授权都会在测试租户中创建属于自己的应用，因此绑定之间不会冲突。
@@ -22,12 +25,12 @@ Computer，而每一次飞书授权都会在测试租户中创建属于自己的
 
 ## 配置
 
-无需配置。任何以 `OPENTAG_ENV=staging` 运行的部署都提供 Lab，其他环境一律拒绝。
+无需配置。任何以 `OPENTAG_ENV=staging` 运行的部署都提供 reset，其他环境一律拒绝。
 
 Server 强制执行的规则：
 
 - 每个请求都必须完成认证；
-- staging 之外的任何部署，对两种请求的响应都与页面不存在完全一致，且环境会在每个请求上重新确认，而不是信任路由注册这一事实；
+- staging 之外的任何部署，响应都与路径不存在完全一致，且环境会在每个请求上重新确认，而不是信任路由注册这一事实；
 - reset 始终作用于已认证 Account，不接受客户端选择的 Account；
 - 除非该 Account 恰好独占一个活跃资源域，否则 reset 拒绝执行，因此它只可能作用于调用者自己的资源；
 - reset 需要常规的浏览器 CSRF 保护。
@@ -35,34 +38,40 @@ Server 强制执行的规则：
 `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` 过去用于指定唯一允许 reset 的 Account，现已废弃：仍然设置它的部署可以正常启动，该值被
 忽略。
 
-## 使用 Lab
+## 如何发起 reset
 
-直接打开该路由并加入书签；它刻意不出现在产品导航中：
-
-```text
-https://<staging-host>/internal/onboarding-lab
-```
-
-该路由位于已认证路由之内、setup 完成 gate 之外，因此在 reset 后真实 onboarding 卡住时仍然可以打开。
-
-### Scenario Preview
-
-Preview 使用固定事实渲染生产 onboarding 页面，复用与生产相同的状态推导与呈现。被选中的 fixture 是唯一保留的状态，且保存在 URL 中：
+用你已经登录的浏览器会话发一个已认证请求即可：
 
 ```text
-/internal/onboarding-lab?scenario=computer-offline
+POST /api/v1/me/setup/reset
+{ "mode": "all" | "reboard" }
 ```
 
-场景覆盖：全新 Account、Computer 离线、Provider 不可用、可创建 Agent 的可运行路由、Agent runtime 路由丢失、等待 Feishu、
-Feishu 授权进行中、setup 完成，以及加载失败。
+在 staging 标签页的控制台里执行（会话 cookie 与 CSRF cookie 都已存在）：
 
-Preview 不发出任何请求，也不产生任何持久状态。它用于界面层级、文案与状态表达，而不是交互。它不会模拟 Computer daemon、
-Feishu 协议或伪造 Server，因此需要点击验证时请使用下面的真实 reset。
+```js
+await fetch("/api/v1/me/setup/reset", {
+  method: "POST",
+  credentials: "same-origin",
+  headers: {
+    "content-type": "application/json",
+    "X-OpenTag-CSRF": decodeURIComponent(document.cookie.match(/opentag_csrf=([^;]+)/)[1]),
+  },
+  body: JSON.stringify({ mode: "all" }),
+});
+```
 
-### 真实 reset
+返回 `204` 表示该 Account 已回到 setup gate 之外；刷新页面就会自动进入 `/onboarding`。
 
-`Reset my account and start onboarding` 会要求一次确认，然后 reset 你自己的 Account 并进入常规 `/onboarding` 路由。
-reset 分阶段执行且幂等：
+### `mode: "reboard"`
+
+只清除 setup 标记，其他什么都不动。Account 已有的 Agent、Computer 与消息连接全部保留，因此下一次运行是「继续」而不是「首次」。
+适合在不重建 Agent、不重新注册机器的前提下再看一遍 onboarding；不适合验证首次运行的行为，因为幸存的事实会把流程直接推过那些
+本应创建它们的步骤。
+
+### `mode: "all"`
+
+把 Account 恢复到真实的首次使用状态。reset 分阶段执行且幂等：
 
 1. 通过既有 Agent 生命周期挂起并删除每个未删除的 Agent，这会禁用 IM binding、清除加密的 IM 与 setup 凭据、结束活跃 Session
    并移除 runtime 配置；
@@ -72,15 +81,15 @@ reset 分阶段执行且幂等：
 5. 重新读取权威事实并校验；
 6. 只有在校验通过后才清除 setup 完成时间戳。
 
-由于该时间戳是最终提交标记，在校验之前失败的 reset 会让 Account 停留在 onboarding 之外，可以直接重跑——页面会停留在 Lab 并提供
-重试。两名测试者同时 reset 作用于不同 Account、锁的是不同资源域，因此互不阻塞。
+由于该时间戳是最终提交标记，在校验之前失败的 reset 会让 Account 停留在应用内部，可以直接重跑。两名测试者同时 reset 作用于不同
+Account、锁的是不同资源域，因此互不阻塞。
 
 历史与身份数据会被保留：Account 及其 Google identity、已删除的 Agent 行、已禁用的 IM binding、已结束的 Session 与消息、
 稳定的 Computer 身份，以及外部 Feishu Bot。这些数据之后都不会满足 onboarding 的活跃事实。
 
 ## 两次运行之间的本地 Computer
 
-重复测试不需要删除或重建 `OPENTAG_HOME`。reset 之后：
+重复测试不需要删除或重建 `OPENTAG_HOME`。执行 `mode: "all"` 的 reset 之后：
 
 1. 之前的 enrollment 与 machine token 失效；
 2. Web 生成新的 Computer connect 命令；
@@ -102,7 +111,7 @@ App，因为目前没有可靠的 provider 删除接口。
 ## 人工 staging 验收
 
 ```text
-reset 你自己的 Account
+用 mode "all" reset 你自己的 Account
 → 进入常规 onboarding
 → 使用既有本地 home 执行生成的 Computer connect 命令
 → 观察 Computer readiness

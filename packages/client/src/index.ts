@@ -331,6 +331,24 @@ export {
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export {
+  type DurableFailure,
+  type DurableRetryability,
+  type DurableWorkKind,
+  type DurableWorkRecord,
+  type DurableWorkStatus,
+  defaultRuntimeRetryScheduler,
+  FileRuntimeDurabilityStore,
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityFailure,
+  RuntimeDurabilityMetrics,
+  type RuntimeDurabilityMetricsSnapshot,
+  type RuntimeDurabilityStore,
+  type RuntimeRetryPolicy,
+  type RuntimeRetryScheduler,
+  retryDelay,
+  retryExhausted,
+} from "./runtime/runtime-durability.js";
+export {
   type AgentRuntimePaths,
   agentRuntimePaths,
   deriveRuntimeKey,

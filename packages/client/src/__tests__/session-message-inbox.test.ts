@@ -2,10 +2,116 @@ import { randomUUID } from "node:crypto";
 import type { InputRejectReason, SessionMessageDeliveryRequest, SessionReconcileRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import {
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityMetrics,
+  type RuntimeRetryScheduler,
+} from "../runtime/runtime-durability.js";
 import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 
 describe("SessionMessageInbox", () => {
+  it("persists running work, retries with an injected scheduler, and dead-letters after bounded attempts", async () => {
+    let now = 1_000;
+    const scheduled: Array<() => void> = [];
+    const scheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        scheduled.push(task);
+        return { cancel: () => undefined };
+      },
+    };
+    const store = new MemoryRuntimeDurabilityStore();
+    const metrics = new RuntimeDurabilityMetrics();
+    const request = delivery({ text: "retry me" });
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        throw new Error("provider unavailable");
+      }),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      maxRememberedMessages: 10,
+      metrics,
+      now: () => now,
+      persistence: store,
+      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 100 },
+      scheduler,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.status).toBe("retryable");
+    expect(scheduled).toHaveLength(1);
+    scheduled.shift()?.();
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(inbox.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 1 });
+    now += 1_000;
+    inbox.stop();
+  });
+
+  it("reconciles a running message after restart without reporting success from queue admission", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const request = delivery({ text: "resume me" });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const firstRuntime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        await gate;
+        return { runId: "first", status: "completed", output: [] };
+      }),
+    };
+    const first = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => firstRuntime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await expect(first.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await vi.waitFor(() => expect(firstRuntime.prompt).toHaveBeenCalledOnce());
+    expect(first.getState(request.messageId)?.status).toBe("running");
+    first.stop();
+    release();
+    await first.settled();
+
+    const resumedRuntime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] })),
+    };
+    const second = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => resumedRuntime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await second.ready();
+    await second.settled();
+    expect(resumedRuntime.prompt).toHaveBeenCalledOnce();
+    expect(second.getState(request.messageId)?.status).toBe("succeeded");
+    second.stop();
+  });
+
   it("accepts immediately, waits for shared admission, and drains one Session in FIFO order", async () => {
     const admission = new AdmissionController();
     const targetSessionId = randomUUID();

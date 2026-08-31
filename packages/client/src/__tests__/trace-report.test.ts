@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import type { AgentTraceBatch, TurnReportHashInput, TurnReportRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import {
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityMetrics,
+  type RuntimeRetryScheduler,
+} from "../runtime/runtime-durability.js";
 import { TurnTraceBuffer } from "../runtime/trace-buffer.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
 
@@ -58,6 +63,76 @@ describe("TurnTraceBuffer", () => {
 });
 
 describe("TurnReportOwner", () => {
+  it("bounds confirmation retries and records a dead-letter state with injected time", async () => {
+    const scheduled: Array<() => void> = [];
+    const scheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        scheduled.push(task);
+        return { cancel: () => undefined };
+      },
+    };
+    const store = new MemoryRuntimeDurabilityStore();
+    const metrics = new RuntimeDurabilityMetrics();
+    const connection = new FakeConnection("registered");
+    const owner = new TurnReportOwner({
+      connection,
+      metrics,
+      persistence: store,
+      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 100 },
+      scheduler,
+    });
+    const report = owner.create(reportInput());
+    const submitted = owner.submit(report, vi.fn().mockRejectedValue(new Error("fsync failed")));
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(1));
+    const result = {
+      type: "turn:report:result" as const,
+      requestId: report.requestId,
+      turnId: report.turnId,
+      status: "recorded" as const,
+      resultHash: report.resultHash,
+    };
+    await owner.handleResult(result);
+    scheduled.shift()?.();
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(2));
+    await owner.handleResult(result);
+    await expect(submitted).rejects.toMatchObject({ name: "RuntimeDurabilityFailure" });
+    expect(owner.getState(report.turnId)?.status).toBe("dead-letter");
+    expect(owner.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 1 });
+    owner.stop();
+  });
+
+  it("resumes persisted Reports after restart and confirms exactly once", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const firstConnection = new FakeConnection("registered");
+    const first = new TurnReportOwner({ connection: firstConnection, persistence: store });
+    const report = first.create(reportInput());
+    const pending = first.submit(
+      report,
+      vi.fn(async () => undefined),
+    );
+    await vi.waitFor(() => expect(firstConnection.sent).toHaveLength(1));
+    first.stop();
+    await expect(pending).rejects.toThrow("stopped");
+
+    const resumedConnection = new FakeConnection("registered");
+    const resumed = new TurnReportOwner({ connection: resumedConnection, persistence: store });
+    await resumed.ready();
+    const confirm = vi.fn(async () => undefined);
+    const recovered = resumed.submit(report, confirm);
+    await vi.waitFor(() => expect(resumedConnection.sent.length).toBeGreaterThanOrEqual(1));
+    await resumed.handleResult({
+      type: "turn:report:result",
+      requestId: report.requestId,
+      turnId: report.turnId,
+      status: "already_recorded",
+      resultHash: report.resultHash,
+    });
+    await recovered;
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(resumed.getState(report.turnId)?.status).toBe("succeeded");
+    resumed.stop();
+  });
+
   it("D-17/D-19 resends one immutable Report after registration and reconciliation wake-up", async () => {
     const connection = new FakeConnection("stopped");
     const owner = new TurnReportOwner({ connection, id: () => REPORT_REQUEST_ID });

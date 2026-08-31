@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { BackgroundFailureSupervisor } from "../background-failure-supervisor.js";
+import {
+  BACKGROUND_FAILURE_COUNTER_NAME,
+  BackgroundFailureSupervisor,
+  createBackgroundFailureSupervisor,
+} from "../background-failure-supervisor.js";
 
 describe("BackgroundFailureSupervisor", () => {
   it("emits one redacted event and counter while preserving an awaited failure", async () => {
@@ -75,5 +79,106 @@ describe("BackgroundFailureSupervisor", () => {
     expect(onCounter).toHaveBeenCalledTimes(1);
     expect(logger).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(onEvent.mock.calls)).not.toContain("detached-secret");
+  });
+
+  it("classifies promise values, primitive throws, metadata, and bounded causes", async () => {
+    const events: unknown[] = [];
+    const supervisor = createBackgroundFailureSupervisor({
+      now: () => new Date("2026-08-31T00:00:00.000Z"),
+      onEvent: (event) => events.push(event),
+    });
+    const cause: Record<string, unknown> = {
+      code: "UPSTREAM_TIMEOUT",
+      category: "timeout",
+      retryability: "backoff",
+      phase: "transport",
+      message: "upstream password=hidden",
+    };
+    let current: Error = Object.assign(new Error(cause.message), cause);
+    for (let index = 0; index < 10; index += 1) current = new Error("nested", { cause: current });
+
+    await expect(
+      supervisor.supervise(Promise.reject("request body password=primitive-secret"), {
+        operation: "provider-call",
+        requestId: "r".repeat(300),
+        cause: current,
+      }),
+    ).rejects.toBe("request body password=primitive-secret");
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      error: {
+        code: "BACKGROUND_FAILURE",
+        category: "internal",
+        retryability: "never",
+        phase: "unknown",
+        requestId: `${"r".repeat(242)}...[TRUNCATED]`,
+        message: "request body password=[REDACTED]",
+        cause: { message: "nested" },
+      },
+    });
+
+    const objectFailure: Record<string, unknown> = {
+      code: "OBJECT_FAILURE",
+      category: "unavailable",
+      retryability: "after_auth",
+      phase: "provider",
+      message: "provider failed",
+      cause: { category: "not-a-category", message: "invalid metadata" },
+    };
+    await expect(supervisor.supervise(Promise.reject(objectFailure))).rejects.toBe(objectFailure);
+    expect(events[1]).toMatchObject({
+      error: {
+        code: "OBJECT_FAILURE",
+        category: "internal",
+        retryability: "never",
+        phase: "unknown",
+        cause: { message: '{"category":"not-a-category","message":"invalid metadata"}' },
+      },
+    });
+  });
+
+  it("uses safe fallback diagnostics when classification or timestamp observation fails", async () => {
+    const events: unknown[] = [];
+    const supervisor = new BackgroundFailureSupervisor({
+      now: () => {
+        throw new Error("clock unavailable");
+      },
+      onEvent: (event) => events.push(event),
+    });
+
+    await expect(
+      supervisor.supervise(
+        () => {
+          throw new Error("classification failure");
+        },
+        { category: "invalid-category" as never },
+      ),
+    ).rejects.toThrow("classification failure");
+
+    expect(events[0]).toMatchObject({
+      type: "diagnostic.error",
+      error: {
+        code: "BACKGROUND_FAILURE",
+        category: "internal",
+        retryability: "never",
+        phase: "unknown",
+        message: "Background failure could not be classified",
+      },
+    });
+  });
+
+  it("uses the invalid-date fallback and exposes the stable counter name", async () => {
+    const events: unknown[] = [];
+    const supervisor = new BackgroundFailureSupervisor({
+      now: () => new Date("invalid"),
+      onEvent: (event) => events.push(event),
+    });
+    const failure = new Error("invalid timestamp");
+
+    await expect(supervisor.supervise(() => Promise.reject(failure))).rejects.toBe(failure);
+    expect(events[0]).toMatchObject({ type: "diagnostic.error", error: { message: "invalid timestamp" } });
+    expect((events[0] as { occurredAt: string }).occurredAt).toMatch(/Z$/u);
+    expect(BACKGROUND_FAILURE_COUNTER_NAME).toBe("opentag.background_failures.total");
   });
 });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
 import test from "node:test";
 import { evaluatePatchCoverage, isSupportedSourcePath, SUPPORTED_SOURCE_EXTENSIONS } from "../unit-coverage-gate.mjs";
 
@@ -31,6 +32,76 @@ test("an added executable line with zero hits fails the patch gate", () => {
   assert.equal(result.covered, 0);
   assert.equal(result.passed, false);
   assert.deepEqual(result.uncovered, ["src/example.ts:2"]);
+});
+
+test("multiline import and export specifiers are not treated as executable lines", () => {
+  const diff = [
+    "diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts",
+    "--- a/packages/shared/src/index.ts",
+    "+++ b/packages/shared/src/index.ts",
+    "@@ -1,0 +1,8 @@",
+    "+export {",
+    "+  firstBinding,",
+    "+  type SecondBinding,",
+    "+  thirdBinding,",
+    '+} from "./module.js";',
+    "+import {",
+    "+  fourthBinding,",
+    '+} from "./other.js";',
+  ].join("\n");
+  const result = evaluatePatchCoverage({
+    coverage: {
+      [resolve("packages/shared/src/index.ts")]: {
+        statementMap: { first: { start: { line: 1 } } },
+        s: { first: 1 },
+      },
+    },
+    diff,
+    repositoryRoot: process.cwd(),
+  });
+
+  assert.equal(result.total, 2);
+  assert.equal(result.covered, 1);
+  assert.equal(result.uncovered.length, 1);
+  assert.match(result.uncovered[0], /:6(?:\s|$)/u);
+});
+
+test("type-literal property signatures are not treated as executable lines", () => {
+  const diff = [
+    "--- a/packages/shared/src/structured-errors.ts",
+    "+++ b/packages/shared/src/structured-errors.ts",
+    "@@ -1,0 +1,5 @@",
+    "+type Example = {",
+    "+  code?: string;",
+    "+  message: string;",
+    "+};",
+    "+const executable = true;",
+  ].join("\n");
+  const result = evaluatePatchCoverage({
+    coverage: { "packages/shared/src/structured-errors.ts": statementCoverage("", 5, 1) },
+    diff,
+    repositoryRoot: process.cwd(),
+  });
+
+  assert.equal(result.total, 1);
+  assert.equal(result.covered, 1);
+  assert.deepEqual(result.uncovered, []);
+});
+
+test("function-valued type-literal signatures are not treated as executable lines", () => {
+  const diff = [
+    "--- a/packages/server/src/observability/background-failure-supervisor.ts",
+    "+++ b/packages/server/src/observability/background-failure-supervisor.ts",
+    "@@ -1,0 +1,4 @@",
+    "+interface Hooks {",
+    "+  onEvent?: (event: unknown) => void;",
+    "+  now?: () => Date;",
+    "+}",
+  ].join("\n");
+  const result = evaluatePatchCoverage({ diff, coverage: {}, repositoryRoot: process.cwd() });
+
+  assert.equal(result.total, 0);
+  assert.equal(result.passed, true);
 });
 
 test("renamed files use the new path and brand-new files use absolute coverage paths", () => {

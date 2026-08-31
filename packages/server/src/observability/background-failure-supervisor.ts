@@ -239,4 +239,4 @@ export function createBackgroundFailureSupervisor(
   return new BackgroundFailureSupervisor(options);
 }
 
-export { COUNTER_NAME as BACKGROUND_FAILURE_COUNTER_NAME };
+export const BACKGROUND_FAILURE_COUNTER_NAME = COUNTER_NAME;

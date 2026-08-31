@@ -215,6 +215,14 @@ function truncateUtf8(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return "";
   if (utf8ByteLength(value) <= maxBytes) return value;
   const suffix = `...${TRUNCATED}`;
+  if (maxBytes <= utf8ByteLength(suffix)) {
+    let output = "";
+    for (const character of value) {
+      if (utf8ByteLength(output + character) > maxBytes) break;
+      output += character;
+    }
+    return output;
+  }
   const available = Math.max(0, maxBytes - utf8ByteLength(suffix));
   let output = "";
   for (const character of value) {

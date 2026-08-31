@@ -103,4 +103,76 @@ describe("structured error redaction", () => {
     expect(serialized).not.toContain("secret");
     expect(() => redactSensitive(cyclic)).not.toThrow();
   });
+
+  it("redacts Error causes and preserves safe primitive representations", () => {
+    const nested = new Error("nested password=nested-secret");
+    Object.assign(nested, { code: "NESTED_FAILURE" });
+    const error = new Error("provider Authorization: Bearer error-secret", { cause: nested });
+    Object.assign(error, { code: "PROVIDER_FAILURE" });
+
+    const redacted = redactSensitive({
+      error,
+      nullValue: null,
+      undefinedValue: undefined,
+      booleanValue: true,
+      numberValue: 42,
+      bigintValue: 42n,
+      functionValue: () => "ignored",
+      symbolValue: Symbol("ignored"),
+    }) as Record<string, unknown>;
+
+    expect(redacted.error).toMatchObject({
+      name: "Error",
+      message: "provider Authorization: [REDACTED]",
+      code: "PROVIDER_FAILURE",
+      cause: {
+        name: "Error",
+        message: "nested password=[REDACTED]",
+        code: "NESTED_FAILURE",
+      },
+    });
+    expect(redacted).toMatchObject({
+      nullValue: null,
+      booleanValue: true,
+      numberValue: 42,
+      bigintValue: "42",
+      functionValue: "[function]",
+      symbolValue: "[symbol]",
+    });
+    expect(redacted).toHaveProperty("undefinedValue", undefined);
+    expect(JSON.stringify(redacted)).not.toContain("error-secret");
+    expect(JSON.stringify(redacted)).not.toContain("nested-secret");
+  });
+
+  it("bounds nested arrays and objects and truncates deep values", () => {
+    const values = Array.from({ length: 40 }, (_, index) => index);
+    const entries = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`safe${index}`, index]));
+    let nested: Record<string, unknown> = { value: "deep" };
+    for (let depth = 0; depth < 10; depth += 1) nested = { nested };
+
+    const redacted = redactSensitive({ values, entries, nested }) as Record<string, unknown>;
+    expect(redacted.values).toHaveLength(32);
+    expect(Object.keys(redacted.entries as object)).toHaveLength(64);
+    expect(JSON.stringify(redacted)).toContain("[TRUNCATED]");
+  });
+
+  it("handles unserializable values and very small serialization budgets", () => {
+    const unserializable = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("cannot enumerate");
+        },
+      },
+    );
+    expect(boundedSerialize(unserializable)).toBe('"[UNSERIALIZABLE]"');
+    expect(boundedSerialize({ safe: "value" }, 0)).toContain("safe");
+
+    const truncated = boundedSerialize({ safe: "x".repeat(20_000) }, 128);
+    expect(JSON.parse(truncated)).toMatchObject({ truncated: true });
+    expect(new TextEncoder().encode(truncated).byteLength).toBeLessThanOrEqual(128);
+
+    const minimal = boundedSerialize("x".repeat(20_000), 1);
+    expect(new TextEncoder().encode(minimal).byteLength).toBeLessThanOrEqual(1);
+  });
 });

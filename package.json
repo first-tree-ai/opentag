@@ -13,7 +13,7 @@
     "build": "turbo run build && pnpm --silent bundle:report",
     "bundle:report": "node scripts/report-bundle-sizes.mjs",
     "dev": "turbo run dev",
-    "check": "biome check . && node scripts/third-party-notices.mjs --check",
+    "check": "biome check . && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",

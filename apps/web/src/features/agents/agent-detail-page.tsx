@@ -16,7 +16,6 @@ import {
   agentStatusPresentation,
   messagingChannelLabel,
   platformLabel,
-  runtimeProviderName,
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -110,6 +109,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const computer = agentComputerStatus(agent);
   const messaging = agentMessagingStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
+  const runtimeName = agent.runtimeProvider === "codex" ? "Codex" : "Claude Code";
   return (
     <section
       className="grid rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
@@ -119,18 +119,15 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
       <ul className="grid h-full content-start list-none">
         <AgentStatusRow
           agent={agent}
-          identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeProviderName(agent.runtimeProvider)}`}
+          identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeName}`}
           name={m.agents_status_computer()}
           status={computer}
-          uiName="computer"
         />
         <AgentStatusRow
           agent={agent}
-          divided
           identity={binding ? messagingChannelLabel(agent, binding) : undefined}
           name={m.agents_status_message_channel()}
           status={messaging}
-          uiName="message-channel"
         />
       </ul>
     </section>
@@ -139,24 +136,22 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
 
 function AgentStatusRow({
   agent,
-  divided = false,
   identity,
   name,
   status,
-  uiName,
 }: {
   agent: AgentDetailView;
-  divided?: boolean;
   identity?: string;
   name: string;
   status: AgentDependencyStatus;
-  uiName: string;
 }) {
+  const isMessageChannel = name === m.agents_status_message_channel();
+  const rowClassName = isMessageChannel
+    ? "grid content-start border-t border-kumo-line pt-4"
+    : "grid content-start pb-4";
+  const dataUi = isMessageChannel ? "agent-status-message-channel" : "agent-status-computer";
   return (
-    <li
-      className={`grid content-start ${divided ? "border-t border-kumo-line pt-4" : "pb-4"}`}
-      data-ui={`agent-status-${uiName}`}
-    >
+    <li className={rowClassName} data-ui={dataUi}>
       <div className="grid gap-1">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <strong className="text-sm font-semibold text-kumo-strong">{name}</strong>

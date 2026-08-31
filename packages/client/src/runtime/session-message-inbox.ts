@@ -255,8 +255,8 @@ export class SessionMessageInbox {
   ): Promise<void> {
     const runId = `session-message-${next.request.messageId}`;
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
-    const current = this.#records.get(key);
-    if (current) await this.#transition(current, "running");
+    let current = this.#records.get(key);
+    if (current) current = await this.#transition(current, "running");
     await this.#reconciler.withAgentLock(next.request.agentId, async () => {
       this.#reconciler.setActivity(sessionId, { phase: "running", deliveryId: next.request.messageId, turnId: runId });
     });

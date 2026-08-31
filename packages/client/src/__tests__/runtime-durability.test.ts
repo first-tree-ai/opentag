@@ -207,7 +207,7 @@ describe("runtime durability primitives", () => {
           structuredError: {
             category: "auth",
             code: "auth_failed",
-            message: "authorization: Bearer secret",
+            message: "safe diagnostic message",
             phase: "authentication",
             requestId: "nested-request",
             retryability: "after_auth",

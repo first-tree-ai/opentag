@@ -405,6 +405,40 @@ describe("runtime domain contract", () => {
       }),
     ).toThrow();
   });
+
+  it("validates Agent Runtime test frames without a result or diagnostic payload", () => {
+    const requestId = randomUUID();
+    const computerId = randomUUID();
+    const request = {
+      type: "agent-runtime:test" as const,
+      requestId,
+      computerId,
+      provider: "claude-code" as const,
+    };
+    expect(ServerRuntimeBusinessFrameSchema.parse(request)).toEqual(request);
+    expect(
+      ServerRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test:cancel",
+        requestId,
+      }),
+    ).toEqual({ type: "agent-runtime:test:cancel", requestId });
+    expect(() =>
+      ServerRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test",
+        requestId,
+        computerId,
+        provider: "codex",
+        prompt: "override",
+      }),
+    ).toThrow();
+    expect(() =>
+      ClientRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+      }),
+    ).toThrow();
+  });
 });
 
 function snapshot(): EffectiveRuntimeSnapshot {

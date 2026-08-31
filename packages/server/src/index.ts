@@ -11,12 +11,13 @@ import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { accountComputers, agents } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
+import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
-import { AgentService } from "./services/agents/index.js";
+import { AgentRuntimeTestService, AgentService } from "./services/agents/index.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -182,6 +183,7 @@ export async function startServer(): Promise<void> {
       prepareReconcile: (workspaceComputerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
     });
+    const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
       domain: domainOwner,
@@ -198,6 +200,7 @@ export async function startServer(): Promise<void> {
             domainOwner.requestReconcile(workspaceComputerId, instanceId, request, onDispatched),
         }),
     });
+    const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner);
     const feishuConnections = new FeishuConnectionManager({
       database,
       inbox: imMessageInbox,
@@ -251,6 +254,7 @@ export async function startServer(): Promise<void> {
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,
+      agentRuntimeTestService,
       authService,
       browserAuth: {
         devSignIn: Boolean(dev),
@@ -286,7 +290,7 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
-      runtime: { registry, domainOwner },
+      runtime: { registry, domainOwner, agentRuntimeTestOwner },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,

@@ -236,6 +236,34 @@ describe("ClientRuntime domain dispatch", () => {
       }),
     ]);
   });
+
+  it("dispatches Agent Runtime test results without Session reconcile", async () => {
+    const requestId = randomUUID();
+    const availabilityTester = {
+      run: vi.fn(async () => ({
+        type: "agent-runtime:test:result" as const,
+        requestId,
+        status: "passed" as const,
+      })),
+    };
+    const connection = new FrameConnection([
+      {
+        type: "agent-runtime:test",
+        requestId,
+        computerId: randomUUID(),
+        provider: "codex",
+      },
+    ]);
+    await new ClientRuntime(connection as unknown as RuntimeConnection, { availabilityTester }).run();
+    expect(availabilityTester.run).toHaveBeenCalledOnce();
+    expect(connection.sent).toEqual([
+      {
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+      },
+    ]);
+  });
 });
 
 class FrameConnection {

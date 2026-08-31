@@ -4,6 +4,8 @@ import {
   AgentDetailSchema,
   AgentNameSchema,
   AgentRuntimeConfigSchema,
+  AgentRuntimeTestRequestSchema,
+  AgentRuntimeTestResponseSchema,
   AgentSummarySchema,
   AgentUsageDetailSchema,
   AgentUsageWindowDaysSchema,
@@ -27,6 +29,7 @@ import {
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
+  AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
@@ -39,6 +42,7 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
@@ -373,6 +377,25 @@ describe("Agent contracts", () => {
         workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
       }),
     ).toThrow();
+    expect(AgentRuntimeTestRequestSchema.parse({ expectedRevision: 1, expectedRuntimeConfigRevision: 2 })).toEqual({
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 2,
+    });
+    expect(() =>
+      AgentRuntimeTestRequestSchema.parse({
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 2,
+        prompt: "nope",
+      }),
+    ).toThrow();
+    expect(AgentRuntimeTestResponseSchema.parse({ status: "passed" })).toEqual({ status: "passed" });
+    expect(AgentRuntimeTestResponseSchema.parse({ status: "failed", code: "busy" })).toEqual({
+      status: "failed",
+      code: "busy",
+    });
+    expect(() =>
+      AgentRuntimeTestResponseSchema.parse({ status: "failed", code: "ENOENT", detail: "secret" }),
+    ).toThrow();
     expect(BrowserAgentNameSchema.parse("browser-barrel")).toBe("browser-barrel");
   });
 
@@ -385,6 +408,8 @@ describe("Agent contracts", () => {
     expect(HTTP_PATHS.agentById).toBe(AGENT_BY_ID_TEMPLATE);
     expect(AGENT_CONFIG_TEMPLATE).toBe("/api/v1/agents/:agentId/config");
     expect(agentConfigPath("a/b")).toBe("/api/v1/agents/a%2Fb/config");
+    expect(AGENT_RUNTIME_TEST_TEMPLATE).toBe("/api/v1/agents/:agentId/runtime-test");
+    expect(agentRuntimeTestPath("a/b")).toBe("/api/v1/agents/a%2Fb/runtime-test");
     expect(agentImBindingPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding");
     expect(AGENT_IM_BINDING_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding");
     expect(agentImBindingHandoffPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/handoff");

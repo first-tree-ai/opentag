@@ -371,8 +371,11 @@ function TriggerModeOption({
 
 function messagingAppDetail(agent: AgentDetailView, binding: ImBindingSummary): string {
   return binding.provider === "feishu"
-    ? m.agent_settings_channel_detail_with_name({ provider: titleCase(binding.provider), name: agent.name })
-    : m.agent_settings_channel_detail({ provider: titleCase(binding.provider) });
+    ? m.agent_settings_channel_detail_with_name({
+        provider: messagingProviderLabel(binding.provider),
+        name: agent.name,
+      })
+    : m.agent_settings_channel_detail({ provider: messagingProviderLabel(binding.provider) });
 }
 
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {

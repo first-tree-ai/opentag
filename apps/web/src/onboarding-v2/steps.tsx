@@ -5,6 +5,7 @@ import {
   type ComputerConnectLifecycle,
   ComputerConnectLifecycleRoot,
 } from "../features/computer-connect/computer-connect.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import {
   CheckLine,
@@ -350,25 +351,14 @@ function MessagingPicker({
             onClick={() => onChoose(candidate)}
             variant="ghost"
           >
-            <BrandMark
-              brand={candidate}
-              label={
-                candidate === "feishu"
-                  ? m.onboarding_v2_messaging_lark_title()
-                  : m.onboarding_v2_messaging_slack_title()
-              }
-            />
+            <BrandMark brand={candidate} label={messagingProviderLabel(candidate)} />
             <CardCopy
               description={
                 candidate === "feishu"
                   ? m.onboarding_v2_messaging_lark_description()
                   : m.onboarding_v2_messaging_slack_description()
               }
-              title={
-                candidate === "feishu"
-                  ? m.onboarding_v2_messaging_lark_title()
-                  : m.onboarding_v2_messaging_slack_title()
-              }
+              title={messagingProviderLabel(candidate)}
             />
           </Button>
         </li>
@@ -412,8 +402,7 @@ function MessagingConnection({
       ? m.onboarding_v2_messaging_computer_offline()
       : cliState === "failed" && provider
         ? m.onboarding_v2_messaging_cli_missing({
-            provider:
-              provider === "feishu" ? m.onboarding_v2_messaging_lark_title() : m.onboarding_v2_messaging_slack_title(),
+            provider: messagingProviderLabel(provider),
           })
         : undefined;
   return (
@@ -427,10 +416,7 @@ function MessagingConnection({
           <Icon className="shrink-0 mt-1" name="close" />
           <span>
             {m.onboarding_v2_messaging_cli_missing({
-              provider:
-                provider === "feishu"
-                  ? m.onboarding_v2_messaging_lark_title()
-                  : m.onboarding_v2_messaging_slack_title(),
+              provider: messagingProviderLabel(provider),
             })}
           </span>
         </p>
@@ -439,8 +425,8 @@ function MessagingConnection({
         <div className={PANEL}>
           <p className="text-kumo-subtle m-0">
             {messaging.kind === "waiting"
-              ? m.onboarding_v2_messaging_lark_intro()
-              : m.onboarding_v2_messaging_feishu_preparing()}
+              ? m.onboarding_v2_messaging_lark_intro({ provider: messagingProviderLabel("feishu") })
+              : m.onboarding_v2_messaging_feishu_preparing({ provider: messagingProviderLabel("feishu") })}
           </p>
           <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
@@ -1136,11 +1122,14 @@ export function DoneStep({
           {m.onboarding_v2_done_title({ name })}
         </Text>
         <p className="text-kumo-subtle m-0">
-          {m.onboarding_v2_done_description({
-            name,
-            provider:
-              provider === "slack" ? m.onboarding_v2_messaging_slack_title() : m.onboarding_v2_messaging_lark_title(),
-          })}
+          {/*
+            The channel has to be the one the reader actually connected. When it is somehow unknown
+            the sentence stays vague rather than guessing: a confidently wrong channel sent Slack
+            installers to an app their Agent is not in.
+          */}
+          {provider
+            ? m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) })
+            : m.onboarding_v2_done_description_any_app({ name })}
         </p>
       </header>
       {completion ? (

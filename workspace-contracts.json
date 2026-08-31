@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "workspaces": {
+    "apps/cli": {
+      "name": "open-tag",
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/client", "@opentag/shared"]
+    },
+    "apps/web": {
+      "name": "@opentag/web",
+      "requiresRootExport": false,
+      "requiresFiles": false,
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
+    },
+    "packages/client": {
+      "name": "@opentag/client",
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
+    },
+    "packages/server": {
+      "name": "@opentag/server",
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
+    },
+    "packages/shared": {
+      "name": "@opentag/shared",
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": []
+    },
+    "e2e": {
+      "name": "@opentag/e2e",
+      "requiresRootExport": false,
+      "requiresFiles": false,
+      "allowedWorkspaceDependencies": []
+    }
+  }
+}

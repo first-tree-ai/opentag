@@ -21,6 +21,13 @@ import {
 } from "../ui/design-system.js";
 
 const CREATE_INTENT_VERSION = 3;
+/**
+ * How long a claim speaks for a form that never came back. A page closed mid-request leaves its
+ * claim behind, and nothing can release it; past this the record is treated as abandoned so it can
+ * be retired rather than resuming forever. It is far longer than a creation request takes and far
+ * shorter than a person's next visit.
+ */
+const CREATION_CLAIM_TTL_MS = 5 * 60_000;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
 
 export interface AgentCreationComputer {
@@ -76,6 +83,12 @@ interface CreationIntentRecord {
   readonly accountId: string;
   readonly creationIntentId: string;
   readonly request: Omit<CreateAgentRequest, "creationIntentId">;
+  /**
+   * When a form last had a request in flight for this record. A record is only safe for another
+   * form to retire once nobody is waiting on it: while it is claimed it is a live idempotency key,
+   * and erasing it would let a lost response retry as a fresh creation.
+   */
+  readonly claimedAt?: string;
 }
 
 interface CreationIntentStore {
@@ -146,7 +159,9 @@ export function AgentCreationFlow({
    * creation and produce a duplicate Agent.
    */
   const ownedIntentIds = useRef<Set<string> | undefined>(undefined);
-  ownedIntentIds.current ??= new Set(pendingIntent ? [pendingIntent.creationIntentId] : []);
+  ownedIntentIds.current ??= new Set(
+    pendingIntent && !isClaimed(pendingIntent) ? [pendingIntent.creationIntentId] : [],
+  );
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
   const restoreComputerSetupFocusRef = useRef(false);
   const computerRefreshStartedRef = useRef(false);
@@ -243,6 +258,9 @@ export function AgentCreationFlow({
       try {
         record ??= await getOrCreateCreationIntent(accountId, request);
         ownedIntentIds.current?.add(record.creationIntentId);
+        // Announce the wait before it starts, so a form mounting mid-flight can see this key is
+        // still owned rather than reading it as an abandoned record it may retire.
+        await claimCreationIntent(accountId, record.creationIntentId);
         const created = await createAgentOnce(record);
         await clearCreationIntents(accountId, [...(ownedIntentIds.current ?? [])]);
         onCreated(created);
@@ -934,6 +952,27 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
  * key, so erasing one would let a response lost after the Server committed retry as a fresh
  * creation and produce the duplicate the key exists to prevent.
  */
+/** Whether some form is still waiting on this record, and it is therefore not ours to retire. */
+function isClaimed(record: CreationIntentRecord, now = Date.now()): boolean {
+  if (!record.claimedAt) return false;
+  const claimedAt = Date.parse(record.claimedAt);
+  return Number.isFinite(claimedAt) && now - claimedAt < CREATION_CLAIM_TTL_MS;
+}
+
+/** Marks a record as having a request in flight, so no other form treats it as abandoned. */
+async function claimCreationIntent(accountId: string, creationIntentId: string): Promise<void> {
+  await withCreationLock(accountId, () => {
+    const records = readCreationIntents(accountId);
+    if (!records.some((record) => record.creationIntentId === creationIntentId)) return;
+    writeCreationIntents(
+      accountId,
+      records.map((record) =>
+        record.creationIntentId === creationIntentId ? { ...record, claimedAt: new Date().toISOString() } : record,
+      ),
+    );
+  });
+}
+
 async function clearCreationIntents(accountId: string, creationIntentIds: readonly string[]): Promise<void> {
   const retiring = new Set(creationIntentIds);
   await withCreationLock(accountId, () => {
@@ -976,6 +1015,7 @@ function validCreationIntentRecord(value: unknown, accountId: string): value is 
     record.version === CREATE_INTENT_VERSION &&
     record.accountId === accountId &&
     typeof record.creationIntentId === "string" &&
+    (record.claimedAt === undefined || typeof record.claimedAt === "string") &&
     record.request !== undefined &&
     typeof record.request.name === "string" &&
     typeof record.request.displayName === "string" &&

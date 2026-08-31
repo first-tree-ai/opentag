@@ -65,7 +65,8 @@ observations. Scheduler age calculations use an injected clock.
 - `pnpm typecheck` passed across all six workspaces.
 - `pnpm test` passed, including 50 server test files and 497 server unit tests.
 - `pnpm --filter @opentag/server test:integration` passed: 16 files and 293 tests with Docker-backed PostgreSQL.
-- `git status --short --branch` is clean. Branch `fix/runtime-custody-safety` is seven commits ahead of `origin/main`.
+- `git status --short --branch` is clean. Branch `fix/runtime-custody-safety` is eight commits ahead of `origin/main`,
+  including this coverage follow-up.
 - No migration or public-export snapshot changed. The shared main-checkout `.gitlock` is absent.
 
 ## Item 8 — CI patch-coverage follow-up

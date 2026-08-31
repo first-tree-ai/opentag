@@ -361,16 +361,14 @@ function FeishuSetupFeedback({
     <Banner data-ui="feishu-setup-feedback">
       {active ? (
         <span aria-hidden="true">
-          <Loader aria-label="Waiting for Feishu authorization" size="sm" />
+          <Loader aria-label={m.im_feishu_waiting_for_authorization()} size="sm" />
         </span>
       ) : null}
-      <strong>Feishu setup started</strong>
+      <strong>{m.im_feishu_setup_started()}</strong>
       <br />
-      {attempt.intent === "reauthorize"
-        ? "Confirm the updated permissions for the current Feishu Bot."
-        : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
+      {attempt.intent === "reauthorize" ? m.im_feishu_reauthorize_instructions() : m.im_feishu_create_instructions()}
       <br />
-      State: {attempt.state}. Expires {formatDateTime(attempt.expiresAt)}.
+      {m.im_feishu_state_expires({ state: attempt.state, expires: formatDateTime(attempt.expiresAt) })}
       {recovery ? (
         <>
           <br />
@@ -382,14 +380,14 @@ function FeishuSetupFeedback({
           <br />
           <FeishuQrCode value={attempt.qrUrl} />
           <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-            Open Feishu authorization
+            {m.im_feishu_open_authorization()}
           </a>
         </>
       ) : null}
       {RETRYABLE_STATES.includes(attempt.state) ? (
         <>
           <br />
-          <Button onClick={() => void onRetry(attempt.intent)}>Retry Feishu setup</Button>
+          <Button onClick={() => void onRetry(attempt.intent)}>{m.im_feishu_retry_setup()}</Button>
         </>
       ) : null}
     </Banner>

@@ -85,6 +85,7 @@ import {
   useId,
   useRef,
 } from "react";
+import * as m from "../paraglide/messages.js";
 
 export {
   Banner,
@@ -531,7 +532,9 @@ export function Dialog({
             </KumoDialog.Title>
           </div>
           <Button
-            aria-label={closeLabel ?? `Close ${typeof title === "string" ? title : "dialog"}`}
+            aria-label={
+              closeLabel ?? (typeof title === "string" ? m.common_close_title({ title }) : m.common_close_dialog())
+            }
             className="shrink-0"
             disabled={busy}
             ref={closeRef}

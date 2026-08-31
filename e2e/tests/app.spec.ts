@@ -1,4 +1,4 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expect, test } from "./fixtures.js";
@@ -17,6 +17,8 @@ test("onboarding renders the v2 destination step", async ({ page, e2eRuntime }) 
   const cloudComputer = page.getByRole("button", { name: /^Cloud computer Coming soon / });
   await expect(cloudComputer).toBeVisible();
   await expect(cloudComputer).toBeDisabled();
+  await rm(join(repositoryRoot, "e2e/screenshots"), { recursive: true, force: true });
+  await mkdir(join(repositoryRoot, "e2e/screenshots"), { recursive: true });
   await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/onboarding.png"), fullPage: true });
 });
 
@@ -143,7 +145,6 @@ test("the screenshot pass captures every addressable page and writes a contact s
     { file: "resources", route: "/resources", heading: "Skills" },
     { file: "integrations", route: "/integrations", heading: "Integrations" },
     { file: "account", route: "/account", heading: "Account" },
-    { file: "internal-onboarding-lab", route: "/internal/onboarding-lab", heading: "Page not found" },
     { file: "internal-onboarding-v2", route: "/internal/onboarding-v2", heading: ONBOARDING_HEADING },
   ];
   const entries: Array<{ file: string; route: string; heading: string }> = [
@@ -192,5 +193,5 @@ test("the screenshot pass captures every addressable page and writes a contact s
 <body><h1>OpenTag E2E page screenshots</h1><main>${entries.map((entry) => `<figure><img src="${htmlEscape(`${entry.file}.png`)}" alt="${htmlEscape(entry.route)}"><figcaption>${htmlEscape(entry.route)}</figcaption></figure>`).join("")}</main></body></html>
 `;
   await writeFile(join(screenshots, "index.html"), html);
-  expect(entries).toHaveLength(19);
+  expect(entries).toHaveLength(18);
 });

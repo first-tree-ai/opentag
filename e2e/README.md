@@ -22,4 +22,5 @@ Run only this package after a build with `pnpm --filter @opentag/e2e e2e`. Set `
 specific Chromium executable is required. The default uses the Chromium binary managed by Playwright.
 
 The generated screenshots, Playwright report, test results, authentication state, and runtime metadata are ignored by
-Git. The suite does not perform visual-regression pixel comparisons and does not commit baseline images.
+Git. The suite captures 18 addressable pages after the retired Onboarding Lab route was removed. It does not perform
+visual-regression pixel comparisons and does not commit baseline images.

@@ -22,11 +22,13 @@ const facts = factsFor(computerId, "Ada's Mac");
 const otherFacts = factsFor(secondComputerId, "Zulu Tower");
 
 function storedIntentIds(): string[] {
+  return storedRecords().map((record) => record.creationIntentId);
+}
+
+function storedRecords(): { creationIntentId: string; supersededAt?: string }[] {
   const raw = window.localStorage.getItem(intentKey);
   if (!raw) return [];
-  return (JSON.parse(raw) as { records: { creationIntentId: string }[] }).records.map(
-    (record) => record.creationIntentId,
-  );
+  return (JSON.parse(raw) as { records: { creationIntentId: string; supersededAt?: string }[] }).records;
 }
 
 /** Fills one mounted form and submits it, without touching the other. */
@@ -43,40 +45,87 @@ describe("creation intents across concurrent forms", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
-  it("publishes a record already claimed, never briefly unclaimed", async () => {
-    // Ownership at mount is decided by the claim, so a record must never be readable in storage
-    // without one. Appending first and claiming afterwards left a window — measured at 0.2 ms in a
-    // real browser — where a form mounting inside it would take ownership of a live key.
-    const writes: { id: string; claimed: boolean }[][] = [];
-    const realSetItem = window.localStorage.setItem.bind(window.localStorage);
-    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation((key, value) => {
-      if (key === intentKey) {
-        writes.push(
-          (JSON.parse(value) as { records: { creationIntentId: string; claimedAt?: string }[] }).records.map(
-            (record) => ({ id: record.creationIntentId, claimed: record.claimedAt !== undefined }),
-          ),
-        );
-      }
-      realSetItem(key, value);
-    });
+  it("removes no record when a creation succeeds, whoever wrote it", async () => {
+    // The invariant both concurrency reports come down to: a success may mark records spent, but it
+    // may not take one away. Whether the other record belongs to another tab, to a request still in
+    // flight, or to a page that has been waiting for an hour, it is somebody's idempotency key.
+    //
+    // Two real tabs cannot be reproduced here — `createAgentOnce` memoises per key within one
+    // module, so a second form in this process joins the first request instead of making its own.
+    // Asserting the invariant covers those cases without pretending to stage them.
+    window.localStorage.setItem(
+      intentKey,
+      JSON.stringify({
+        version: 3,
+        accountId,
+        records: [
+          {
+            version: 3,
+            accountId,
+            creationIntentId: "7982bd97-1b0a-4c6f-8d2e-3f4a5b6c7d80",
+            request: { name: "other-tab", displayName: "Other Tab", runtimeProvider: "codex", computerId },
+          },
+        ],
+      }),
+    );
     vi.spyOn(browserApi, "createAgent").mockResolvedValue({ id: computerId } as never);
 
     const form = render(
+      <AgentCreationFlow accountId={accountId} facts={otherFacts} onCreated={() => {}} onRefresh={() => {}} />,
+    );
+    await act(async () => {
+      submit(form.container, "Mine");
+    });
+
+    await waitFor(() => expect(storedRecords().every((record) => record.supersededAt !== undefined)).toBe(true));
+    expect(storedIntentIds()).toContain("7982bd97-1b0a-4c6f-8d2e-3f4a5b6c7d80");
+  });
+
+  it("keeps a key whose request is still in flight however long it has been waiting", async () => {
+    // Elapsed time never proves a page stopped waiting, so nothing about this record's age may
+    // remove it. Only a mark that is a day old is collected, and this one was marked just now.
+    const requests: (string | undefined)[] = [];
+    let releaseFirst: ((reason: unknown) => void) | undefined;
+    const firstSettled = new Promise<never>((_, reject) => {
+      releaseFirst = reject;
+    });
+    vi.spyOn(browserApi, "createAgent").mockImplementation(async (request) => {
+      requests.push(request.creationIntentId);
+      if (requests.length === 1) await firstSettled;
+      return { id: computerId } as never;
+    });
+
+    const first = render(
       <AgentCreationFlow accountId={accountId} facts={facts} onCreated={() => {}} onRefresh={() => {}} />,
     );
     await act(async () => {
-      submit(form.container, "First Agent");
+      submit(first.container, "Patient Agent");
     });
+    await waitFor(() => expect(requests).toHaveLength(1));
+    const key = requests[0];
 
-    const appearances = writes.filter((records) => records.length > 0);
-    expect(appearances.length).toBeGreaterThan(0);
-    // Every write that carries the record carries its claim; there is no unclaimed publication.
-    for (const records of appearances) {
-      expect(records.every((record) => record.claimed)).toBe(true);
-    }
-    setItem.mockRestore();
+    // Six minutes pass with the request still outstanding — long past any deadline a claim on
+    // elapsed time would have set.
+    vi.setSystemTime(new Date(Date.now() + 6 * 60_000));
+    const second = render(
+      <AgentCreationFlow accountId={accountId} facts={otherFacts} onCreated={() => {}} onRefresh={() => {}} />,
+    );
+    await act(async () => {
+      submit(second.container, "Other Agent");
+    });
+    await waitFor(() => expect(requests).toHaveLength(2));
+
+    expect(storedIntentIds()).toContain(key);
+    releaseFirst?.(new Error("Connection lost after creation"));
+    await waitFor(() => expect(within(first.container).queryByRole("button", { name: "Create Agent" })).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(within(first.container).getByRole("button", { name: "Create Agent" }));
+    });
+    await waitFor(() => expect(requests).toHaveLength(3));
+    expect(requests[2]).toBe(key);
   });
 
   it("keeps an earlier page's in-flight intent when a later page mounts on top of it", async () => {
@@ -120,8 +169,9 @@ describe("creation intents across concurrent forms", () => {
     });
     await waitFor(() => expect(requests).toHaveLength(2));
 
-    // B succeeded and retired its own record. A is still waiting, and its key is still there.
-    await waitFor(() => expect(storedIntentIds()).toEqual([firstIntentId]));
+    // B succeeded, so the records are marked spent. A is still waiting, and its key is still there.
+    await waitFor(() => expect(storedRecords().every((record) => record.supersededAt !== undefined)).toBe(true));
+    expect(storedIntentIds()).toContain(firstIntentId);
 
     // A's response was lost after the Server committed it; the retry must carry the original key.
     failFirst = false;
@@ -167,8 +217,10 @@ describe("creation intents across concurrent forms", () => {
     const secondIntentId = requests.find((request) => request.displayName === "Second Agent")?.creationIntentId;
     expect(secondIntentId).toBeTruthy();
 
-    // The first form succeeded and retired its own record. The other form's key is not its to erase.
-    await waitFor(() => expect(storedIntentIds()).toEqual([secondIntentId]));
+    // The first form succeeded, so every record is spent — but spent is marked, not deleted. The
+    // other form is still waiting on its own key, and that key has to still be there.
+    await waitFor(() => expect(storedRecords().every((record) => record.supersededAt !== undefined)).toBe(true));
+    expect(storedIntentIds()).toContain(secondIntentId);
 
     // So the lost response retries under the original key rather than as a fresh creation.
     failSecond = false;
@@ -177,7 +229,6 @@ describe("creation intents across concurrent forms", () => {
     });
     await waitFor(() => expect(requests).toHaveLength(3));
     expect(requests[2]?.creationIntentId).toBe(secondIntentId);
-    await waitFor(() => expect(window.localStorage.getItem(intentKey)).toBeNull());
     expect(screen.queryAllByRole("alert")).toHaveLength(0);
   });
 });

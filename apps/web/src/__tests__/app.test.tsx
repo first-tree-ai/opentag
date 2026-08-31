@@ -1130,7 +1130,15 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Visible Agent" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
-    await waitFor(() => expect(window.localStorage.getItem(creationIntentKey)).toBeNull());
+    // The act these records exist to survive is over, so they are marked spent — not deleted, since
+    // a page still waiting on one needs its key to retry under. Marking is what stops the resume
+    // effect sending it once its machine becomes the selected one again.
+    await waitFor(() => {
+      const stored = window.localStorage.getItem(creationIntentKey);
+      const records = stored ? (JSON.parse(stored) as { records: { supersededAt?: string }[] }).records : [];
+      expect(records.length).toBeGreaterThan(0);
+      expect(records.every((record) => record.supersededAt !== undefined)).toBe(true);
+    });
 
     // Prove it rather than infer it from an empty store: come back with that machine online, which
     // is exactly the state that would have resumed the abandoned record. `installApi` swaps the

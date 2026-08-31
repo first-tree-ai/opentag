@@ -22,12 +22,11 @@ import {
 
 const CREATE_INTENT_VERSION = 3;
 /**
- * How long a claim speaks for a form that never came back. A page closed mid-request leaves its
- * claim behind, and nothing can release it; past this the record is treated as abandoned so it can
- * be retired rather than resuming forever. It is far longer than a creation request takes and far
- * shorter than a person's next visit.
+ * How long a superseded record is still worth keeping. Nothing reads it but a retry from the page
+ * that sent it, and no request outlives a day, so this only bounds storage growth. Being wrong
+ * about it costs a stale key, never a live one — unlike a deadline on a request still in flight.
  */
-const CREATION_CLAIM_TTL_MS = 5 * 60_000;
+const SUPERSEDED_RECORD_TTL_MS = 24 * 60 * 60_000;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
 
 export interface AgentCreationComputer {
@@ -84,11 +83,11 @@ interface CreationIntentRecord {
   readonly creationIntentId: string;
   readonly request: Omit<CreateAgentRequest, "creationIntentId">;
   /**
-   * When a form last had a request in flight for this record. A record is only safe for another
-   * form to retire once nobody is waiting on it: while it is claimed it is a live idempotency key,
-   * and erasing it would let a lost response retry as a fresh creation.
+   * When a creation succeeded that this record is no longer part of. A superseded record is never
+   * resumed, but it is never destroyed either: it stays readable so that whoever sent it can still
+   * retry under the same key if their response was lost.
    */
-  readonly claimedAt?: string;
+  readonly supersededAt?: string;
 }
 
 interface CreationIntentStore {
@@ -152,16 +151,6 @@ export function AgentCreationFlow({
   const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
   const resumeAttemptedRef = useRef(false);
-  /**
-   * The creation intents this form is responsible for: the one it loaded, and any it appended by
-   * editing the request. Another page of this Account may be mid-flight with its own record, and
-   * that record is its idempotency key — erasing it would let a lost response retry as a fresh
-   * creation and produce a duplicate Agent.
-   */
-  const ownedIntentIds = useRef<Set<string> | undefined>(undefined);
-  ownedIntentIds.current ??= new Set(
-    pendingIntent && !isClaimed(pendingIntent) ? [pendingIntent.creationIntentId] : [],
-  );
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
   const restoreComputerSetupFocusRef = useRef(false);
   const computerRefreshStartedRef = useRef(false);
@@ -256,14 +245,13 @@ export function AgentCreationFlow({
       setSubmitting(true);
       onSubmittingChange?.(true);
       try {
-        // A record this form is about to send is claimed as it is written, so a form mounting
-        // mid-flight can see the key is still owned rather than reading it as abandoned. A resumed
-        // record already exists, so it is claimed here instead.
-        if (record) await claimCreationIntent(accountId, record.creationIntentId);
         record ??= await getOrCreateCreationIntent(accountId, request);
-        ownedIntentIds.current?.add(record.creationIntentId);
         const created = await createAgentOnce(record);
-        await clearCreationIntents(accountId, [...(ownedIntentIds.current ?? [])]);
+        // The Agent exists, so every record this Account holds is spent: this one, and any the
+        // reader abandoned along the way by changing the name or the route. Marking them stops
+        // them resuming later, and marking rather than deleting means a page still waiting on one
+        // keeps the key its retry needs.
+        await supersedeCreationIntents(accountId, new Date().toISOString());
         onCreated(created);
       } catch (cause) {
         if (cause instanceof ApiError) {
@@ -879,11 +867,7 @@ async function withCreationLock<T>(accountId: string, task: () => Promise<T> | T
   }
 }
 
-/**
- * The record for a request about to be sent, claimed in the same lock that writes it. Appending
- * first and claiming afterwards would publish a live record that briefly reads as unclaimed, and a
- * form mounting in that window would take ownership of a key someone is waiting on.
- */
+/** The record for a request about to be sent, reused whenever this exact request already has one. */
 async function getOrCreateCreationIntent(
   accountId: string,
   request: Omit<CreateAgentRequest, "creationIntentId">,
@@ -891,21 +875,30 @@ async function getOrCreateCreationIntent(
   return withCreationLock(accountId, () => {
     const records = readCreationIntents(accountId);
     const fingerprint = JSON.stringify(request);
-    const claimedAt = new Date().toISOString();
+    // A superseded record is still the right key for this exact request: replaying it returns the
+    // Agent it already created rather than making a second one. Only unprompted resume is withheld.
     const existing = records.find((record) => JSON.stringify(record.request) === fingerprint);
-    const claimed: CreationIntentRecord = existing
-      ? { ...existing, claimedAt }
-      : { version: CREATE_INTENT_VERSION, accountId, creationIntentId: crypto.randomUUID(), request, claimedAt };
-    writeCreationIntents(accountId, [
-      ...records.filter((record) => record.creationIntentId !== claimed.creationIntentId),
-      claimed,
-    ]);
-    return claimed;
+    if (existing) return existing;
+    const next: CreationIntentRecord = {
+      version: CREATE_INTENT_VERSION,
+      accountId,
+      creationIntentId: crypto.randomUUID(),
+      request,
+    };
+    writeCreationIntents(accountId, [...records, next]);
+    return next;
   });
 }
 
+/**
+ * The record a form may act on unprompted. A superseded record is skipped: a creation it is no
+ * longer part of has already happened, so resuming it would create an Agent nobody asked for on
+ * this visit. It stays in storage for the page that sent it to retry under.
+ */
 function readCreationIntent(accountId: string): CreationIntentRecord | undefined {
-  return readCreationIntents(accountId).at(-1);
+  return readCreationIntents(accountId)
+    .filter((record) => record.supersededAt === undefined)
+    .at(-1);
 }
 
 function readCreationIntents(accountId: string): readonly CreationIntentRecord[] {
@@ -958,31 +951,22 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
  * key, so erasing one would let a response lost after the Server committed retry as a fresh
  * creation and produce the duplicate the key exists to prevent.
  */
-/** Whether some form is still waiting on this record, and it is therefore not ours to retire. */
-function isClaimed(record: CreationIntentRecord, now = Date.now()): boolean {
-  if (!record.claimedAt) return false;
-  const claimedAt = Date.parse(record.claimedAt);
-  return Number.isFinite(claimedAt) && now - claimedAt < CREATION_CLAIM_TTL_MS;
-}
-
-/** Marks a record as having a request in flight, so no other form treats it as abandoned. */
-async function claimCreationIntent(accountId: string, creationIntentId: string): Promise<void> {
+/**
+ * Marks every record this Account holds as spent by a creation that has happened, and drops the
+ * ones marked long enough ago that nothing can still be waiting on them.
+ *
+ * Nothing is destroyed at the moment of marking. A record may belong to a page that is still
+ * waiting on its own response, and that record is its idempotency key: deleting it would let the
+ * retry mint a new key and create the duplicate the key exists to prevent. Marking answers the
+ * only question resume asks — may this be sent unprompted? — and leaves the answer to every other
+ * question intact.
+ */
+async function supersedeCreationIntents(accountId: string, supersededAt: string): Promise<void> {
+  const collectBefore = Date.parse(supersededAt) - SUPERSEDED_RECORD_TTL_MS;
   await withCreationLock(accountId, () => {
-    const records = readCreationIntents(accountId);
-    if (!records.some((record) => record.creationIntentId === creationIntentId)) return;
-    writeCreationIntents(
-      accountId,
-      records.map((record) =>
-        record.creationIntentId === creationIntentId ? { ...record, claimedAt: new Date().toISOString() } : record,
-      ),
-    );
-  });
-}
-
-async function clearCreationIntents(accountId: string, creationIntentIds: readonly string[]): Promise<void> {
-  const retiring = new Set(creationIntentIds);
-  await withCreationLock(accountId, () => {
-    const records = readCreationIntents(accountId).filter((record) => !retiring.has(record.creationIntentId));
+    const records = readCreationIntents(accountId)
+      .filter((record) => !isCollectable(record, collectBefore))
+      .map((record) => (record.supersededAt ? record : { ...record, supersededAt }));
     if (records.length > 0) {
       writeCreationIntents(accountId, records);
       return;
@@ -995,6 +979,13 @@ async function clearCreationIntents(accountId: string, creationIntentIds: readon
       // No durable record is available to clear.
     }
   });
+}
+
+/** Whether a superseded record is old enough that no page can still be waiting on its response. */
+function isCollectable(record: CreationIntentRecord, collectBefore: number): boolean {
+  if (!record.supersededAt) return false;
+  const supersededAt = Date.parse(record.supersededAt);
+  return Number.isFinite(supersededAt) && supersededAt <= collectBefore;
 }
 
 async function clearCreationIntent(accountId: string, creationIntentId: string): Promise<void> {
@@ -1021,7 +1012,7 @@ function validCreationIntentRecord(value: unknown, accountId: string): value is 
     record.version === CREATE_INTENT_VERSION &&
     record.accountId === accountId &&
     typeof record.creationIntentId === "string" &&
-    (record.claimedAt === undefined || typeof record.claimedAt === "string") &&
+    (record.supersededAt === undefined || typeof record.supersededAt === "string") &&
     record.request !== undefined &&
     typeof record.request.name === "string" &&
     typeof record.request.displayName === "string" &&

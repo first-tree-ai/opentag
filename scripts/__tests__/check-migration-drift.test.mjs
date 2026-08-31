@@ -90,13 +90,13 @@ test("fails when journal indexes are reordered or non-contiguous", () => {
   }
 });
 
-test("fails when historical migration content changes", () => {
+test("fails when historical migration content changes, even with --update", () => {
   const paths = fixture([{ idx: 0, version: "7", when: 1, tag: "0000_first", breakpoints: true }], {
     "0000_first": "original;",
   });
   try {
     writeFileSync(join(paths.migrations, "0000_first.sql"), "edited history;");
-    const result = run(paths);
+    const result = run(paths, "--update");
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}${result.stderr}`, /hash|content|0000_first/i);
   } finally {

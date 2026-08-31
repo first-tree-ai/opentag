@@ -1,0 +1,50 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "format_daily_tokens": "{date}: {tokens} Tokens",
+  "format_days_ago": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} day ago",
+        "countPlural=other": "{count} days ago"
+      }
+    }
+  ],
+  "format_elapsed_days": "{count}d",
+  "format_elapsed_hours": "{count}h",
+  "format_elapsed_minutes": "{count}m",
+  "format_hours_ago": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} hour ago",
+        "countPlural=other": "{count} hours ago"
+      }
+    }
+  ],
+  "format_just_now": "just now",
+  "format_minutes_ago": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} minute ago",
+        "countPlural=other": "{count} minutes ago"
+      }
+    }
+  ],
+  "format_tasks_token_data_available": "Token data is available for {measuredTasks} of {tasks} tasks. {affectedContent} are partial.",
+  "format_tasks_token_data_none": "None of the {tasks} tasks reported token usage. {affectedContent} may be empty.",
+  "format_tokens": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} token",
+        "countPlural=other": "{count} tokens"
+      }
+    }
+  ]
+}

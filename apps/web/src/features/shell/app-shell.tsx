@@ -1,6 +1,7 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
+import { initials } from "../../i18n/format.js";
 import {
   DropdownMenu,
   Icon,
@@ -11,7 +12,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "../../ui/design-system.js";
-import { initials } from "../agents/agent-presentation.js";
 import { useAccount } from "../session/session-context.js";
 
 export function AppShell() {

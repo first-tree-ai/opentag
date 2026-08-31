@@ -8,6 +8,7 @@ import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { ComputerSetup } from "../features/agents/computer-setup.js";
+import { compareText } from "../i18n/format.js";
 import {
   Banner,
   Button,
@@ -495,7 +496,7 @@ function RuntimeRouteSection({
   const providerOptions = [...facts.providers]
     .filter((provider) => provider.computerId === displayedComputer?.id)
     .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
-  const computerOptions = [...facts.computers].sort((left, right) => left.displayName.localeCompare(right.displayName));
+  const computerOptions = [...facts.computers].sort((left, right) => compareText(left.displayName, right.displayName));
   // The heading names the section and everything under it answers it: the route rows label
   // themselves Computer and Runtime, and where there is no Computer yet the setup panel names the
   // task. A sentence here would only say those labels again, which is one more line between the
@@ -798,7 +799,7 @@ function resolveReadyRoutes(facts: AgentCreationFacts): ReadyRoute[] {
     .map((provider) => ({ computer: computers.get(provider.computerId), provider: provider.provider }))
     .filter((route): route is ReadyRoute => route.computer !== undefined)
     .sort((left, right) => {
-      const computerOrder = left.computer.displayName.localeCompare(right.computer.displayName);
+      const computerOrder = compareText(left.computer.displayName, right.computer.displayName);
       return computerOrder !== 0 ? computerOrder : providerRank(left.provider) - providerRank(right.provider);
     });
 }

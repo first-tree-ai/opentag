@@ -56,21 +56,6 @@ export function agentCardStatus(agent: AgentListItem): {
   return { label: status.label, priority: 3, tone: status.tone };
 }
 
-export function formatElapsedCompact(value: string): string {
-  const elapsedMinutes = Math.max(1, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
-  if (elapsedMinutes < 60) return `${elapsedMinutes}m`;
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 24) return `${elapsedHours}h`;
-  return `${Math.floor(elapsedHours / 24)}d`;
-}
-
-export function formatUsageNumber(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: value >= 1_000 ? 1 : 0,
-    notation: value >= 1_000 ? "compact" : "standard",
-  }).format(value);
-}
-
 /**
  * Names the machine-level action that resolves the failure. Recovery is stated against the Computer
  * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
@@ -305,31 +290,6 @@ function runtimeRecoveryMessage(agent: AgentDetailView): string {
   if (status === "sign-in") return `Sign in to ${providerName} on this agent's computer.`;
   return `${providerName} is not available on this agent's computer.`;
 }
-
-export function initials(value: string): string {
-  const parts = value.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "OT";
-  return parts
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join("");
-}
-
-export function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-export function formatRelativeTime(value: string): string {
-  const elapsedSeconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1_000));
-  if (elapsedSeconds < 60) return "just now";
-  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-  if (elapsedMinutes < 60) return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
-  const elapsedHours = Math.floor(elapsedMinutes / 60);
-  if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
-  const elapsedDays = Math.floor(elapsedHours / 24);
-  return `${elapsedDays} ${elapsedDays === 1 ? "day" : "days"} ago`;
-}
-
 /**
  * The two dependencies an Agent needs to do any work, each presented on its own terms. They are
  * deliberately not collapsed into one verdict: a connected channel can coexist with an offline

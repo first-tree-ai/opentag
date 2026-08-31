@@ -1,3 +1,4 @@
+import { paraglideVitePlugin } from "@inlang/paraglide-js";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
@@ -48,6 +49,13 @@ export default defineConfig({
   base: "/",
   // The route generator must run before the React plugin so the generated tree is transformed too.
   plugins: [
+    // Paraglide fills a gitignored directory and must run in Vitest; pin the structure because its development default differs.
+    paraglideVitePlugin({
+      project: "./project.inlang",
+      outdir: "./src/paraglide",
+      outputStructure: "message-modules",
+      strategy: ["localStorage", "preferredLanguage", "baseLocale"],
+    }),
     ...(generateRoutes ? [tanstackRouter({ autoCodeSplitting: true, target: "react" })] : []),
     tailwindcss(),
     react(),

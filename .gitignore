@@ -23,6 +23,10 @@ yarn-debug.log*
 yarn-error.log*
 /run_*.sh
 
+# Generated Web i18n output
+apps/web/src/paraglide/
+apps/web/project.inlang/cache/
+
 # Playwright E2E output and temporary runtime metadata
 e2e/screenshots/
 e2e/.auth/

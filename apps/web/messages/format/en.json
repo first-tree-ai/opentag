@@ -36,15 +36,5 @@
     }
   ],
   "format_tasks_token_data_available": "Token data is available for {measuredTasks} of {tasks} tasks. {affectedContent} are partial.",
-  "format_tasks_token_data_none": "None of the {tasks} tasks reported token usage. {affectedContent} may be empty.",
-  "format_tokens": [
-    {
-      "declarations": ["input count", "local countPlural = count: plural"],
-      "selectors": ["countPlural"],
-      "match": {
-        "countPlural=one": "{count} token",
-        "countPlural=other": "{count} tokens"
-      }
-    }
-  ]
+  "format_tasks_token_data_none": "None of the {tasks} tasks reported token usage. {affectedContent} may be empty."
 }

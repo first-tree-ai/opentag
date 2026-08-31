@@ -9,6 +9,5 @@
   "format_just_now": "刚刚",
   "format_minutes_ago": "{count}分钟前",
   "format_tasks_token_data_available": "有 {measuredTasks} 个任务可用 Token 数据，共 {tasks} 个任务。{affectedContent} 不完整。",
-  "format_tasks_token_data_none": "没有任务报告 Token 使用情况，{tasks} 个任务的 {affectedContent} 可能为空。",
-  "format_tokens": "{count} 个 Token"
+  "format_tasks_token_data_none": "没有任务报告 Token 使用情况，{tasks} 个任务的 {affectedContent} 可能为空。"
 }

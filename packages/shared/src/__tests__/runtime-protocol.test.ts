@@ -168,6 +168,8 @@ describe("runtime protocol", () => {
     expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(2);
     expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(2);
     expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(2);
+    expect(negotiated[RUNTIME_CAPABILITY.agentRuntimeTest]).toBe(1);
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.agentRuntimeTest]).toEqual({ min: 1, max: 1 });
     expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
     expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
   });

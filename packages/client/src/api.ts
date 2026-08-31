@@ -3,6 +3,9 @@ import {
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentRuntimeTestRequest,
+  type AgentRuntimeTestResponse,
+  AgentRuntimeTestResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -13,6 +16,7 @@ import {
   agentImBindingConfigPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -287,6 +291,24 @@ export class OpenTagApi {
       AgentAdminConfigSchema,
       {
         headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
+  }
+
+  testAgentRuntime(
+    accessToken: string,
+    agentId: string,
+    input: AgentRuntimeTestRequest,
+    options?: RequestOptions,
+  ): Promise<AgentRuntimeTestResponse> {
+    return this.#request(
+      agentRuntimeTestPath(agentId),
+      AgentRuntimeTestResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
       },
       options,
     );

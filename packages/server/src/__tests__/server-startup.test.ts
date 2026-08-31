@@ -89,6 +89,7 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
     }
   },
 }));
+vi.mock("../runtime/agent-runtime-test-owner.js", () => ({ AgentRuntimeTestOwner: class {} }));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
 vi.mock("../runtime/runtime-domain-owner.js", () => ({
   RuntimeDomainConflictError: class extends Error {},
@@ -99,7 +100,11 @@ vi.mock("../runtime/runtime-domain-owner.js", () => ({
   },
   RuntimeDomainRequestError: class extends Error {},
 }));
-vi.mock("../services/agents/index.js", () => ({ AgentService: class {}, AgentServiceError: class extends Error {} }));
+vi.mock("../services/agents/index.js", () => ({
+  AgentRuntimeTestService: class {},
+  AgentService: class {},
+  AgentServiceError: class extends Error {},
+}));
 vi.mock("../services/auth/index.js", () => ({
   AuthService: class {},
   AuthServiceError: class extends Error {},

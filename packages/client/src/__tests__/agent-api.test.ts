@@ -222,6 +222,7 @@ describe("OpenTagApi Agent methods", () => {
       .mockResolvedValueOnce(jsonResponse({ ...agent, displayName: "Reviewer", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, status: "suspended", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, revision: 3 }))
+      .mockResolvedValueOnce(jsonResponse({ status: "passed" }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
@@ -244,6 +245,10 @@ describe("OpenTagApi Agent methods", () => {
     });
     await api.suspendAgent("access", agentId);
     await api.reactivateAgent("access", agentId);
+    await api.testAgentRuntime("access", agentId, {
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 1,
+    });
     await api.deleteAgent("access", agentId);
 
     expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
@@ -255,6 +260,7 @@ describe("OpenTagApi Agent methods", () => {
       [`https://opentag.example/api/v1/agents/${agentId}`, "PATCH"],
       [`https://opentag.example/api/v1/agents/${agentId}/suspend`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}/reactivate`, "POST"],
+      [`https://opentag.example/api/v1/agents/${agentId}/runtime-test`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "DELETE"],
     ]);
     for (const [, init] of fetchImpl.mock.calls) {

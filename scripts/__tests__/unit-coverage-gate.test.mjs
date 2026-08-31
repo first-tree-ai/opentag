@@ -1,7 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { evaluatePatchCoverage, isSupportedSourcePath, SUPPORTED_SOURCE_EXTENSIONS } from "../unit-coverage-gate.mjs";
 
@@ -13,40 +10,6 @@ function statementCoverage(file, line, hits) {
       0: { start: { line, column: 0 }, end: { line, column: 20 } },
     },
   };
-}
-
-async function evaluateTypeScriptSource(source, lineHits = {}) {
-  const repositoryRoot = await mkdtemp(join(tmpdir(), "opentag-coverage-gate-"));
-  const file = "example.ts";
-  try {
-    await writeFile(join(repositoryRoot, file), `${source}\n`);
-    const sourceLines = source.split("\n");
-    const diff = [
-      `--- a/${file}`,
-      `+++ b/${file}`,
-      `@@ -0,0 +1,${sourceLines.length} @@`,
-      ...sourceLines.map((line) => `+${line}`),
-      "",
-    ].join("\n");
-    const entries = Object.entries(lineHits);
-    const statementMap = Object.fromEntries(
-      entries.map(([line], index) => [
-        String(index),
-        { start: { line: Number(line), column: 0 }, end: { line: Number(line) } },
-      ]),
-    );
-    const coverage = entries.length
-      ? {
-          [file]: {
-            s: Object.fromEntries(entries.map(([_line, hits], index) => [String(index), hits])),
-            statementMap,
-          },
-        }
-      : {};
-    return evaluatePatchCoverage({ coverage, diff, repositoryRoot, threshold: 80 });
-  } finally {
-    await rm(repositoryRoot, { force: true, recursive: true });
-  }
 }
 
 test("an added executable line with zero hits fails the patch gate", () => {
@@ -142,6 +105,37 @@ test("a changed executable line missing from coverage-final.json fails closed", 
   assert.deepEqual(result.uncovered, ["src/missing.ts:7 (missing coverage entry)"]);
 });
 
+test("an uncovered changed line counts against the threshold without imposing 100 percent", () => {
+  // The threshold is a threshold: a line the provider measured and found unrun is reported and
+  // counted, and the patch still passes while enough of it is covered.
+  const diff = [
+    "--- a/src/threshold.ts",
+    "+++ b/src/threshold.ts",
+    "@@ -0,0 +1,5 @@",
+    "+export const one = 1;",
+    "+export const two = 2;",
+    "+export const three = 3;",
+    "+export const four = 4;",
+    "+export const unrun = 5;",
+    "",
+  ].join("\n");
+  const coverage = {
+    "src/threshold.ts": {
+      path: "src/threshold.ts",
+      s: { 0: 1, 1: 1, 2: 1, 3: 1, 4: 0 },
+      statementMap: Object.fromEntries(
+        [1, 2, 3, 4, 5].map((line, index) => [index, { start: { line, column: 0 }, end: { line, column: 21 } }]),
+      ),
+    },
+  };
+  const result = evaluatePatchCoverage({ diff, coverage, repositoryRoot: "/repo", threshold: 80 });
+  assert.equal(result.covered, 4);
+  assert.equal(result.total, 5);
+  assert.equal(result.percent, 80);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.uncovered, ["src/threshold.ts:5"]);
+});
+
 test("a diff with no executable changes passes explicitly", () => {
   const result = evaluatePatchCoverage({
     diff: [
@@ -162,63 +156,6 @@ test("a diff with no executable changes passes explicitly", () => {
   assert.equal(result.reason, "no executable changed lines");
 });
 
-test("TypeScript multiline imports, exports, and type declarations are not treated as executable", async () => {
-  const result = await evaluateTypeScriptSource(
-    [
-      "import {",
-      "  dependency,",
-      '} from "./dependency.js";',
-      "export {",
-      "  dependency,",
-      "  type Dependency,",
-      '} from "./dependency.js";',
-      "type Options = {",
-      "  dependency: string;",
-      "};",
-      "export interface Marker {",
-      "  dependency: string;",
-      "}",
-      "export const executable = dependency;",
-    ].join("\n"),
-    { 14: 1 },
-  );
-  assert.equal(result.total, 1);
-  assert.equal(result.covered, 1);
-  assert.equal(result.passed, true);
-  assert.deepEqual(result.uncovered, []);
-});
-
-test("type-literal property signatures are not treated as executable lines", async () => {
-  const result = await evaluateTypeScriptSource(
-    ["type Example = {", "  code?: string;", "  message: string;", "};", "const executable = true;"].join("\n"),
-    { 5: 1 },
-  );
-  assert.equal(result.total, 1);
-  assert.equal(result.covered, 1);
-  assert.deepEqual(result.uncovered, []);
-});
-
-test("function-valued type-literal signatures are not treated as executable lines", async () => {
-  const result = await evaluateTypeScriptSource(
-    ["export interface Hooks {", "  onEvent?: (event: unknown) => void;", "  now?: () => Date;", "}"].join("\n"),
-  );
-  assert.equal(result.total, 0);
-  assert.equal(result.passed, true);
-});
-
-test("bare expressions in multiline arrays remain executable lines", async () => {
-  const result = await evaluateTypeScriptSource(
-    ["const values = [", "  firstValue,", "  secondValue,", "];"].join("\n"),
-    { 1: 1 },
-  );
-  assert.equal(result.total, 3);
-  assert.equal(result.covered, 1);
-  assert.deepEqual(result.uncovered, [
-    "example.ts:2 (missing coverage entry)",
-    "example.ts:3 (missing coverage entry)",
-  ]);
-});
-
 test("supported script extensions are included while coverage artifacts remain excluded", () => {
   for (const extension of [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]) {
     assert.equal(SUPPORTED_SOURCE_EXTENSIONS.has(extension), true, extension);
@@ -228,5 +165,79 @@ test("supported script extensions are included while coverage artifacts remain e
   assert.equal(isSupportedSourcePath("scripts/toolchain-check.mjs"), false);
   assert.equal(isSupportedSourcePath("src/example.test.ts"), false);
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
-  assert.equal(isSupportedSourcePath("packages/client/vitest.agent-runtime.config.ts"), false);
+});
+
+test("a declaration the provider emits no statement for is not blamed for being uncoverable", () => {
+  // A TypeScript interface member and a bare JSX text child both vanish at compile time, so the
+  // instrumented file carries no statement for either line. Counting them would fail a pull request
+  // for adding a type or changing a string, with nothing its author could write to satisfy the gate.
+  const diff = [
+    "diff --git a/src/example.tsx b/src/example.tsx",
+    "--- a/src/example.tsx",
+    "+++ b/src/example.tsx",
+    "@@ -1,0 +2,3 @@",
+    "+  readonly agentCount: number;",
+    "+      Your Computer",
+    "+export const rendered = true;",
+    "",
+  ].join("\n");
+  const result = evaluatePatchCoverage({
+    diff,
+    coverage: { "src/example.tsx": statementCoverage("src/example.tsx", 4, 1) },
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.total, 1);
+  assert.equal(result.covered, 1);
+  assert.deepEqual(result.uncovered, []);
+  assert.equal(result.passed, true);
+});
+
+test("an instrumented line with zero hits is still uncovered, whatever it contains", () => {
+  // Skipping lines the provider omitted must not become a way to skip lines it measured as unrun.
+  const diff = [
+    "diff --git a/src/example.tsx b/src/example.tsx",
+    "--- a/src/example.tsx",
+    "+++ b/src/example.tsx",
+    "@@ -1,0 +2 @@",
+    "+  return renderNothing();",
+    "",
+  ].join("\n");
+  const result = evaluatePatchCoverage({
+    diff,
+    coverage: { "src/example.tsx": statementCoverage("src/example.tsx", 2, 0) },
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.total, 1);
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.uncovered, ["src/example.tsx:2"]);
+});
+
+test("a changed line inside an unrun multi-line statement is judged by that statement", () => {
+  // The current provider emits single-line statements, so this case is theoretical today. Recording
+  // the span keeps the skip rule meaning "no statement covers this line": a provider that reported
+  // ranges would otherwise let an unrun statement's inner lines pass as uncoverable.
+  const diff = [
+    "diff --git a/src/example.ts b/src/example.ts",
+    "--- a/src/example.ts",
+    "+++ b/src/example.ts",
+    "@@ -1,0 +12 @@",
+    "+    unreachableArgument,",
+    "",
+  ].join("\n");
+  const spanning = {
+    path: "src/example.ts",
+    s: { 0: 0 },
+    statementMap: { 0: { start: { line: 10, column: 0 }, end: { line: 14, column: 3 } } },
+  };
+  const result = evaluatePatchCoverage({
+    diff,
+    coverage: { "src/example.ts": spanning },
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.total, 1);
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.uncovered, ["src/example.ts:12"]);
 });

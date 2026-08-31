@@ -1,7 +1,7 @@
 import { type Command, Option } from "commander";
 import { formatAgentCreated } from "../../core/agent/formatting.js";
 import { runAgentCreate } from "../../core/agent/mutations.js";
-import { executeCommand } from "../../core/command/policy.js";
+import { executeCommand, redactSecrets } from "../../core/command/policy.js";
 
 export function registerAgentCreateCommand(agent: Command): void {
   agent
@@ -35,7 +35,7 @@ export function registerAgentCreateCommand(agent: Command): void {
             instructionsFile: options.instructionsFile,
             maxDurationMs: options.maxDurationMs,
           });
-          if (result.warning) process.stderr.write(`${result.warning}\n`);
+          if (result.warning) process.stderr.write(`${redactSecrets(result.warning)}\n`);
           return result;
         },
         { json: options.json === true, formatValue: formatAgentCreated, phase: "request" },

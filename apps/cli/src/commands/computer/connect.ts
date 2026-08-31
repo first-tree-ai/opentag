@@ -3,7 +3,13 @@ import { resolveOpenTagHome } from "@opentag/client";
 import type { Command } from "commander";
 import { channelConfig } from "../../core/channel/config.js";
 import { resolveChannelEnvironment } from "../../core/channel/environment.js";
-import { type CommandResult, commandExitCode, presentCommand, toCommandError } from "../../core/command/policy.js";
+import {
+  type CommandResult,
+  commandExitCode,
+  presentCommand,
+  redactSecrets,
+  toCommandError,
+} from "../../core/command/policy.js";
 import { ComputerConnectServiceInstallError, runComputerConnect } from "../../core/computer/connect.js";
 
 interface ComputerConnectCommandOptions {
@@ -43,9 +49,11 @@ export function registerComputerConnectCommand(computer: Command): void {
         }
       } catch (error) {
         if (error instanceof ComputerConnectServiceInstallError) {
-          process.stdout.write(`${error.connectResult.message}\n`);
+          process.stdout.write(`${redactSecrets(error.connectResult.message)}\n`);
           process.stderr.write(
-            `Daemon service reload failed; machine credentials were preserved. Run ${channelConfig.binName} daemon restart to retry.\n`,
+            `${redactSecrets(
+              `Daemon service reload failed; machine credentials were preserved. Run ${channelConfig.binName} daemon restart to retry.`,
+            )}\n`,
           );
           process.exitCode = 1;
           return;

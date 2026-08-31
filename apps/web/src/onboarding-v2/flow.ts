@@ -112,6 +112,11 @@ export interface FlowFacts {
   readonly destinationConfirmed: boolean;
   readonly draftConfirmed: boolean;
   readonly connect: ConnectState;
+  /**
+   * The Computer this run is preparing, when the Account already had it. A run that is connecting a
+   * new one has none until it arrives, which is what `connect` reports.
+   */
+  readonly selectedComputerId?: string | undefined;
   readonly readiness: ReadinessFacts | undefined;
   readonly cloudComputer: CloudComputerState;
   readonly creation: CreationState;
@@ -200,6 +205,16 @@ export function computerIsConnected(connect: ConnectState): boolean {
 }
 
 /**
+ * Whether this run has a Computer to create the Agent on. One the Account already had counts
+ * exactly as much as one that just arrived: the step asks which Computer the Agent runs on, not how
+ * it came to be in the Account. Passing the check stays a separate gate, so a machine that was
+ * merely chosen still cannot open this door.
+ */
+export function computerIsPrepared(connect: ConnectState, selectedComputerId?: string): boolean {
+  return selectedComputerId !== undefined || computerIsConnected(connect);
+}
+
+/**
  * A cloud Agent runs on a Computer too — OpenTag allocates one instead of the user connecting
  * theirs. The Server requires a `computerId` either way, so the cloud route allocates before it
  * creates rather than modelling an Agent with no Computer at all.
@@ -230,7 +245,7 @@ export function readinessIsResolving(readiness: ReadinessFacts | undefined): boo
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
   const { draft, destinationConfirmed, draftConfirmed, connect, readiness, creation, planSignedIn, messaging } = facts;
-  const { cloudComputer } = facts;
+  const { cloudComputer, selectedComputerId } = facts;
   const destination = draft.destination;
   if (!destination || !destinationConfirmed) {
     return { page: "destination", steps: [], complete: false };
@@ -257,7 +272,11 @@ export function deriveFlowState(facts: FlowFacts): FlowState {
 
   const done: Record<StepId, boolean> = { agent: false, computer: false, messaging: false };
   done.agent = draftIsSubmittable(draft) && draftConfirmed;
-  done.computer = done.agent && computerIsConnected(connect) && readinessPassed(readiness) && creation === "created";
+  done.computer =
+    done.agent &&
+    computerIsPrepared(connect, selectedComputerId) &&
+    readinessPassed(readiness) &&
+    creation === "created";
   done.messaging = done.computer && messaging.kind === "connected";
 
   const currentIndex = STEP_IDS.findIndex((id) => !done[id]);

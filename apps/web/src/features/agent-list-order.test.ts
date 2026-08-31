@@ -6,6 +6,7 @@ import type {
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
+import { formatCompactNumber, formatElapsedCompact, formatRelativeTime, initials } from "../i18n/format.js";
 import { orderAgentIds } from "./agent-list-order.js";
 import {
   type AgentAvailability,
@@ -23,10 +24,6 @@ import {
   agentStatusPresentation,
   agentUseInstruction,
   computerRecoveryMessage,
-  formatElapsedCompact,
-  formatRelativeTime,
-  formatUsageNumber,
-  initials,
   messagingAgentStatusDescription,
   messagingChannelLabel,
   messagingConnectionLabel,
@@ -452,8 +449,8 @@ describe("Agent availability model and presentation", () => {
     expect(runtimeProviderName("claude-code")).toBe("Claude Code");
     expect(initials("Ada Lovelace")).toBe("AL");
     expect(initials(" ")).toBe("OT");
-    expect(formatUsageNumber(1_500)).toContain("1.5");
-    expect(formatUsageNumber(12)).toBe("12");
+    expect(formatCompactNumber(1_500)).toContain("1.5");
+    expect(formatCompactNumber(12)).toBe("12");
     expect(formatElapsedCompact(new Date(Date.now() - 2 * 60_000).toISOString())).toBe("2m");
     expect(formatElapsedCompact(new Date(Date.now() - 2 * 60 * 60_000).toISOString())).toBe("2h");
     expect(formatElapsedCompact(new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString())).toBe("2d");

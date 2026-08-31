@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import { formatDateTime } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
 import { messagingProviderLabel } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
@@ -12,7 +13,6 @@ import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
 import {
-  formatDate,
   messagingConnectionLabel,
   messagingConnectionTone,
   runtimeProviderName,
@@ -141,9 +141,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               <StatusIndicator
                                 detail={
                                   binding.lastRuntimeObservationAt
-                                    ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
+                                    ? `Last observed ${formatDateTime(binding.lastRuntimeObservationAt)}`
                                     : binding.lastValidatedAt
-                                      ? `Validated ${formatDate(binding.lastValidatedAt)}`
+                                      ? `Validated ${formatDateTime(binding.lastValidatedAt)}`
                                       : "Not yet observed"
                                 }
                                 label={messagingConnectionLabel(binding)}

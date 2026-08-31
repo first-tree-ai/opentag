@@ -8,6 +8,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ComponentProps, lazy, Suspense, useCallback, useState } from "react";
 import { browserApi } from "../api.js";
+import { formatCompactNumber, formatDay, formatNumber } from "../i18n/format.js";
+import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import { Button, ChartPalette, KumoSelectControl, Loader, Meter, Text, TimeseriesChart } from "../ui/design-system.js";
 import type { AgentDetailView } from "./agents/agent-model.js";
@@ -186,8 +188,8 @@ function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
       aria-label={`Agent usage · ${usageWindowLabel(usage.windowDays)}`}
       data-ui="usage-metrics"
     >
-      <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
-      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
+      <Metric label="Tasks" value={formatCompactNumber(usage.tasks)} />
+      <Metric label="Tokens" value={formatCompactNumber(usage.tokens)} primary />
     </dl>
   );
 }
@@ -199,8 +201,12 @@ function UsageCoverage({ usage, includesCharts = false }: { usage: AgentUsageDet
     <p className="text-sm text-kumo-subtle" data-ui="usage-coverage" role="status">
       <strong>{usage.measuredTasks === 0 ? "Token data unavailable." : "Partial data."}</strong>{" "}
       {usage.measuredTasks === 0
-        ? `None of the ${usage.tasks.toLocaleString()} tasks reported token usage. ${affectedContent} may be empty.`
-        : `Token data is available for ${usage.measuredTasks.toLocaleString()} of ${usage.tasks.toLocaleString()} tasks. ${affectedContent} are partial.`}
+        ? m.format_tasks_token_data_none({ tasks: formatNumber(usage.tasks), affectedContent })
+        : m.format_tasks_token_data_available({
+            measuredTasks: formatNumber(usage.measuredTasks),
+            tasks: formatNumber(usage.tasks),
+            affectedContent,
+          })}
     </p>
   );
 }
@@ -252,7 +258,7 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   }
   const chart = (
     <LazyTimeseriesChart
-      ariaDescription={`${formatUsageNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
+      ariaDescription={`${formatCompactNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
       data={[
         {
           color: ChartPalette.categorical(0),
@@ -261,16 +267,16 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
         },
       ]}
       height={240}
-      tooltipValueFormat={(value) => `${formatUsageNumber(value)} Tokens`}
-      xAxisTickFormat={(value) => formatUsageDate(new Date(value).toISOString())}
-      yAxisTickFormat={(value) => formatUsageNumber(value)}
+      tooltipValueFormat={(value) => `${formatCompactNumber(value)} Tokens`}
+      xAxisTickFormat={(value) => formatDay(new Date(value).toISOString())}
+      yAxisTickFormat={(value) => formatCompactNumber(value)}
     />
   );
   return (
     <div className="grid gap-2" data-ui="usage-chart">
       {import.meta.env.MODE === "test" ? (
         <div
-          aria-label={`${formatUsageNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
+          aria-label={`${formatCompactNumber(usage.tokens)} Tokens used · ${usageWindowLabel(usage.windowDays)}`}
           className="h-60 rounded bg-kumo-recessed"
           role="img"
         />
@@ -293,7 +299,9 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
       )}
       <ol className="sr-only">
         {usage.daily.map((point) => (
-          <li key={point.date}>{`${formatUsageDate(point.date)}: ${point.tokens.toLocaleString()} Tokens`}</li>
+          <li key={point.date}>
+            {m.format_daily_tokens({ date: formatDay(point.date), tokens: formatNumber(point.tokens) })}
+          </li>
         ))}
       </ol>
     </div>
@@ -307,13 +315,13 @@ function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
   return (
     <div className="grid gap-4">
       <Meter
-        customValue={formatUsageNumber(usage.inputTokens)}
+        customValue={formatCompactNumber(usage.inputTokens)}
         indicatorClassName="bg-kumo-info"
         label="Input Tokens"
         value={inputShare}
       />
       <Meter
-        customValue={formatUsageNumber(usage.outputTokens)}
+        customValue={formatCompactNumber(usage.outputTokens)}
         indicatorClassName="bg-kumo-brand"
         label="Output Tokens"
         value={outputShare}
@@ -338,20 +346,7 @@ function BreakdownRow({ label, tone, value }: { label: string; tone: "cached" | 
         />
         {label}
       </dt>
-      <dd>{formatUsageNumber(value)}</dd>
+      <dd>{formatCompactNumber(value)}</dd>
     </div>
-  );
-}
-
-function formatUsageNumber(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: value >= 1_000 ? 1 : 0,
-    notation: value >= 1_000 ? "compact" : "standard",
-  }).format(value);
-}
-
-function formatUsageDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" }).format(
-    new Date(value.length === 10 ? `${value}T00:00:00.000Z` : value),
   );
 }

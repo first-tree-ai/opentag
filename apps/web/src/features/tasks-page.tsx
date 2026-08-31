@@ -141,7 +141,7 @@ export function TasksPage({ agentId }: { agentId?: string } = {}) {
             onChange={(event) => setStatus(event.target.value as TaskFilter)}
           >
             <option value="all">{m.tasks_all_statuses()}</option>
-            {Object.entries(statusPresentation).map(([value, presentation]) => (
+            {Object.keys(statusPresentation).map((value) => (
               <option key={value} value={value}>
                 {taskStatusLabel(value as TaskStatus)}
               </option>

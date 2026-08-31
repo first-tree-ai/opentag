@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_RUNTIME_RETRY_POLICY,
+  durableFailureFromUnknown,
   FileRuntimeDurabilityStore,
   MemoryRuntimeDurabilityStore,
   RuntimeDurabilityFailure,
@@ -122,5 +123,124 @@ describe("runtime durability primitives", () => {
       retryability: "backoff",
     });
     expect(failure.message).toBe("socket closed");
+  });
+
+  it("normalizes legacy and malformed failures into the shared taxonomy", () => {
+    const nested = {
+      category: "dependency" as const,
+      code: "upstream_timeout",
+      message: "upstream failed",
+      phase: "provider" as const,
+      retryability: "backoff" as const,
+    };
+    const rich = new RuntimeDurabilityFailure({
+      category: "unavailable",
+      code: "transport_closed",
+      message: "socket closed",
+      phase: "transport",
+      retryability: "backoff",
+      cause: nested,
+    });
+    expect(rich.requestId).toBe("unknown");
+    expect(durableFailureFromUnknown("request-1", "request", rich, "fallback_code")).toMatchObject({
+      category: "unavailable",
+      code: "transport_closed",
+      phase: "transport",
+      retryability: "backoff",
+      requestId: "request-1",
+      cause: nested,
+    });
+
+    const aliases = [
+      ["credential", "authentication"],
+      ["confirmation", "request"],
+      ["persist", "persistence"],
+      ["prompt", "provider"],
+      ["runtime", "transport"],
+      ["server", "transport"],
+      ["unrecognized", "unknown"],
+    ] as const;
+    for (const [phase, expectedPhase] of aliases) {
+      expect(durableFailureFromUnknown("", phase, { message: "" }, "fallback_code")).toMatchObject({
+        phase: expectedPhase,
+        requestId: "unknown",
+        message: "Runtime operation failed",
+      });
+    }
+
+    const retryabilityCases = [
+      ["immediate", "immediate"],
+      ["terminal", "never"],
+      ["invalid", "backoff"],
+    ] as const;
+    for (const [retryability, expectedRetryability] of retryabilityCases) {
+      expect(
+        durableFailureFromUnknown("request-2", "request", { retryability, message: "failed" }, "fallback_code"),
+      ).toMatchObject({ retryability: expectedRetryability });
+    }
+
+    const categoryCases = [
+      ["validation", "validation", "request"],
+      ["credential", "auth", "request"],
+      ["provider", "dependency", "request"],
+      ["server", "dependency", "request"],
+      ["transport", "unavailable", "request"],
+      ["runtime", "unavailable", "request"],
+      ["invalid", "internal", "validation"],
+      ["invalid", "auth", "authentication"],
+      ["invalid", "dependency", "provider"],
+      ["invalid", "unavailable", "transport"],
+      ["invalid", "dependency", "persistence"],
+      ["invalid", "internal", "request"],
+    ] as const;
+    for (const [category, expectedCategory, phase] of categoryCases) {
+      expect(
+        durableFailureFromUnknown("request-3", phase, { category, message: "failed" }, "fallback_code"),
+      ).toMatchObject({ category: expectedCategory });
+    }
+
+    expect(
+      durableFailureFromUnknown(
+        "request-4",
+        "request",
+        {
+          structuredError: {
+            category: "auth",
+            code: "auth_failed",
+            message: "authorization: Bearer secret",
+            phase: "authentication",
+            requestId: "nested-request",
+            retryability: "after_auth",
+          },
+        },
+        "fallback_code",
+      ),
+    ).toMatchObject({ category: "auth", code: "auth_failed", requestId: "nested-request" });
+    expect(durableFailureFromUnknown("request-5", "request", "plain failure", "fallback_code")).toMatchObject({
+      message: "Runtime operation failed",
+      code: "fallback_code",
+    });
+    expect(
+      durableFailureFromUnknown("request-error", "request", new Error("error message"), "fallback_code"),
+    ).toMatchObject({
+      message: "error message",
+      code: "fallback_code",
+    });
+    const errorWithoutMessage = new Error("unused");
+    Object.defineProperty(errorWithoutMessage, "message", { value: undefined });
+    expect(durableFailureFromUnknown("request-error-2", "request", errorWithoutMessage, "fallback_code")).toMatchObject(
+      {
+        message: "Runtime operation failed",
+        code: "fallback_code",
+      },
+    );
+    expect(
+      durableFailureFromUnknown(
+        "request-6",
+        "request",
+        { cause: { invalid: true }, message: "failed" },
+        "fallback_code",
+      ),
+    ).toMatchObject({ code: "fallback_code", category: "internal", phase: "unknown" });
   });
 });

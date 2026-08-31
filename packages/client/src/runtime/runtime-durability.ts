@@ -118,7 +118,6 @@ function normalizeCategory(value: unknown, phase: StructuredError["phase"]): Str
   if (value === "credential") return "auth";
   if (value === "provider" || value === "server") return "dependency";
   if (value === "transport" || value === "runtime") return "unavailable";
-  if (value === "validation") return "validation";
   if (phase === "authentication") return "auth";
   if (phase === "provider") return "dependency";
   if (phase === "transport") return "unavailable";
@@ -130,7 +129,7 @@ function boundedRequestId(value: string): string {
   return value.slice(0, 256) || "unknown";
 }
 
-function boundedFailureMessage(value: string): string {
+function boundedFailureMessage(value: unknown): string {
   const redacted = redactSensitive(value);
   return (
     (typeof redacted === "string" ? redacted : "Runtime operation failed").slice(0, 256) || "Runtime operation failed"

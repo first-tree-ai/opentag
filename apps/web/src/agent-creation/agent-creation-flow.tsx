@@ -28,6 +28,8 @@ export interface AgentCreationComputer {
   readonly id: string;
   readonly displayName: string;
   readonly connectionStatus: "online" | "offline";
+  /** Agents already bound to this Computer, which is what identifies it when none is reachable. */
+  readonly agentCount: number;
 }
 
 export interface AgentCreationProvider {
@@ -151,9 +153,18 @@ export function AgentCreationFlow({
   const readyRoutes = useMemo(() => resolveReadyRoutes(facts), [facts]);
   const defaultReadyRoute = readyRoutes[0];
   // The Account has one Computer, so this resolves which machine the form is talking about rather
-  // than honouring a choice. The route that is ready is the form's ready Computer, which is what
-  // keeps this dialog and the Computer page naming the same machine.
-  const displayedComputer = resolveAccountComputer(facts.computers, defaultReadyRoute?.computer);
+  // than honouring a choice — through the same policy the Computer page uses, so the machine an
+  // Agent is created on is the machine the Account manages and repairs.
+  const displayedComputer = useMemo(
+    () =>
+      resolveAccountComputer(facts.computers, (computer) => ({
+        connectionStatus: computer.connectionStatus,
+        runtimeReady: facts.providers.some((provider) => provider.computerId === computer.id && provider.runtimeReady),
+        agentCount: computer.agentCount,
+        displayName: computer.displayName,
+      })),
+    [facts.computers, facts.providers],
+  );
   const displayedProvider =
     facts.providers.find(
       (provider) => provider.computerId === displayedComputer?.id && provider.provider === selectedProvider,
@@ -257,15 +268,22 @@ export function AgentCreationFlow({
 
   useEffect(() => {
     if (!pendingIntent || resumeAttemptedRef.current) return;
-    const routeStillReady = readyRoutes.some(
-      (route) =>
-        route.computer.id === pendingIntent.request.computerId &&
-        route.provider === pendingIntent.request.runtimeProvider,
-    );
-    if (!routeStillReady) return;
+    /*
+     * A resume finishes what the reader started, so it may only send what the reader is looking at.
+     * An intent stored by an older build can name a Computer this form no longer displays — one of
+     * several enrollments, resolved away — and sending it then creates the Agent on a machine that
+     * is nowhere on screen. Requiring the stored route to be the displayed route keeps the target
+     * visible; a stored intent that names another machine is simply not resumed, leaving its fields
+     * on the form for the reader to submit against the Computer they can see.
+     */
+    const resumesTheDisplayedRoute =
+      selectedRoute !== undefined &&
+      selectedRoute.computer.id === pendingIntent.request.computerId &&
+      selectedRoute.provider === pendingIntent.request.runtimeProvider;
+    if (!resumesTheDisplayedRoute) return;
     resumeAttemptedRef.current = true;
     void create(pendingIntent.request, pendingIntent);
-  }, [create, pendingIntent, readyRoutes]);
+  }, [create, pendingIntent, selectedRoute]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -472,6 +490,7 @@ function RuntimeRouteSection({
                 id: computer.computerId,
                 displayName: computer.displayName,
                 connectionStatus: computer.connectionStatus,
+                agentCount: computer.agentIds.length,
               })
             }
           />

@@ -26,7 +26,12 @@ export function ComputersPage() {
     <Page title="Computer" description="The Computer your Agents run on.">
       <AsyncState state={state}>
         {(value) => {
-          const computer = resolveAccountComputer(value.computers);
+          const computer = resolveAccountComputer(value.computers, (candidate) => ({
+            connectionStatus: candidate.connectionStatus,
+            runtimeReady: (candidate.providerReadiness ?? []).some((provider) => provider.status === "ready"),
+            agentCount: candidate.agentIds.length,
+            displayName: candidate.displayName,
+          }));
           return (
             <div className="grid gap-6">
               <ComputerList computers={computer ? [computer] : []} />

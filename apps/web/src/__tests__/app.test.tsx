@@ -922,7 +922,7 @@ describe("OpenTag Web App Shell", () => {
         },
         {
           id: computerId,
-          displayName: "Ada's Mac",
+          displayName: "Zed Tower",
           platform: "darwin",
           connectionStatus: "online",
           providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:02.000Z" }],
@@ -935,11 +935,118 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
 
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+    expect(within(dialog).getByText("Zed Tower")).toBeTruthy();
     expect(within(dialog).getByText("Ready to run")).toBeTruthy();
     // One Computer is named, not chosen between, so the others are absent rather than unselected.
     expect(within(dialog).queryByText("Ada's Retired Mac")).toBeNull();
     expect(within(dialog).queryByText("Ada's Spare")).toBeNull();
+
+    // The Computer page has to reach the same machine from the same rows: it repairs what it names,
+    // and New Agent creates on what it names. Naming different rows would leave the Account
+    // managing one machine and running on another.
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await act(async () => {
+      window.history.pushState({}, "", "/agents/computers");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    const listed = await screen.findByRole("region", { name: "Your Computer" });
+    expect(within(listed).getByText("Zed Tower")).toBeTruthy();
+    expect(within(listed).queryByText("Ada's Retired Mac")).toBeNull();
+    expect(within(listed).queryByText("Ada's Spare")).toBeNull();
+  });
+
+  it("names the Computer carrying the Agents when an Account's enrollments are all unreachable", async () => {
+    // All offline is exactly when repair matters, and the page acts on this answer: an alphabetical
+    // tiebreak would name an idle spare, hide the machine the Account's Agent runs on, and point
+    // the one repair action on the page at the wrong enrollment.
+    installApi({
+      computers: [
+        {
+          id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          displayName: "AAA Spare Box",
+          platform: "linux",
+          connectionStatus: "offline",
+          agentIds: [],
+          connectedAt: "2026-08-20T00:00:00.000Z",
+          lastSeenAt: "2026-08-20T00:00:00.000Z",
+        },
+        {
+          id: computerId,
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: "offline",
+          agentIds: [agentId],
+          connectedAt: "2026-08-20T00:00:01.000Z",
+          lastSeenAt: "2026-08-20T00:00:01.000Z",
+        },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    const listed = await screen.findByRole("region", { name: "Your Computer" });
+    expect(within(listed).getByText("Ada's Mac")).toBeTruthy();
+    expect(within(listed).queryByText("AAA Spare Box")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
+  });
+
+  it("does not resume a stored creation intent onto a Computer the form no longer shows", async () => {
+    const hiddenComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const record = {
+      version: 3,
+      accountId: userId,
+      creationIntentId: "6c1b0f52-2a3f-4a3a-9a1a-2f0b6a1c4d55",
+      request: {
+        name: "zulu-agent",
+        displayName: "Zulu Agent",
+        runtimeProvider: "codex",
+        computerId: hiddenComputerId,
+      },
+    };
+    // An intent written by a build that let the reader pick a Computer. Its machine is still a
+    // ready route, so it is not stale in the sense the old resume test asked about — it is simply
+    // not the machine this form now shows.
+    window.localStorage.setItem(
+      `opentag.agent-creation.intent:${userId}`,
+      JSON.stringify({ version: 3, accountId: userId, records: [record] }),
+    );
+    installApi({
+      computers: [
+        {
+          id: computerId,
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+          connectedAt: "2026-08-20T00:00:00.000Z",
+          lastSeenAt: "2026-08-20T00:00:00.000Z",
+        },
+        {
+          id: hiddenComputerId,
+          displayName: "Zulu Tower",
+          platform: "linux",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:01.000Z" }],
+          connectedAt: "2026-08-20T00:00:01.000Z",
+          lastSeenAt: "2026-08-20T00:00:01.000Z",
+        },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    expect(screen.queryByText("Zulu Tower")).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    // Creating an Agent on a machine that is nowhere on screen is the harm; the fields the reader
+    // typed survive, so the intent is available to submit against the Computer they can see.
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
+    ).toHaveLength(0);
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Zulu Agent");
   });
 
   it("adopts the Computer that connects while New Agent is open and keeps the form", async () => {

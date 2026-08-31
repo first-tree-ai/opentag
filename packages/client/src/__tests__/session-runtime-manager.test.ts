@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import {
   computeRuntimeSnapshotHashes,
   type EffectiveRuntimeSnapshot,
@@ -188,6 +188,105 @@ describe("SessionRuntimeManager", () => {
     await manager.close();
     await internalManager.close();
     await feishuManager.close();
+  });
+
+  it("prepends the visible launch bin ahead of ambient PATH and never does so for internal Sessions", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-launch-path-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const launchDir = resolve(home, "plans", "session-1");
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
+      providers: await providerRegistry(factory),
+      providerCliLaunchPath: (sessionId) => resolve(home, "plans", sessionId),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    await expect(
+      new SessionReconciler({ computerId, preparation: manager, localPolicy: manager }).reconcile(
+        reconcile(computerId, snapshot(1)),
+      ),
+    ).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime("session-1");
+    const created = factory.created[0];
+    if (!created) throw new Error("visible runtime was not created");
+    const path = created.workspace.environment?.PATH ?? "";
+    expect(path.startsWith(`${launchDir}${delimiter}`)).toBe(true);
+    expect(path).toContain("/tmp/ambient-slack");
+    expect(path.indexOf(launchDir)).toBeLessThan(path.indexOf("/tmp/ambient-slack"));
+
+    const internalFactory = new FakeFactory();
+    const internalManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
+      providers: await providerRegistry(internalFactory),
+      providerCliLaunchPath: () => launchDir,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    await expect(
+      new SessionReconciler({
+        computerId,
+        preparation: internalManager,
+        localPolicy: internalManager,
+      }).reconcile({
+        ...reconcile(computerId, snapshot(1)),
+        sessionId: "session-internal",
+        sessionKind: "internal",
+        creatorSessionId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    await internalManager.ensureRuntime("session-internal");
+    expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("PATH");
+
+    const exactFactory = new FakeFactory();
+    const exactManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: launchDir,
+      providers: await providerRegistry(exactFactory),
+      providerCliLaunchPath: () => launchDir,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const exactRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-exact-path" };
+    await expect(
+      new SessionReconciler({ computerId, preparation: exactManager, localPolicy: exactManager }).reconcile(
+        exactRequest,
+      ),
+    ).resolves.toMatchObject({ status: "ready" });
+    await exactManager.ensureRuntime(exactRequest.sessionId);
+    expect(exactFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
+
+    const isolatedFactory = new FakeFactory();
+    const isolatedManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: "",
+      providers: await providerRegistry(isolatedFactory),
+      providerCliLaunchPath: () => launchDir,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const isolatedRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-isolated-path" };
+    await expect(
+      new SessionReconciler({ computerId, preparation: isolatedManager, localPolicy: isolatedManager }).reconcile(
+        isolatedRequest,
+      ),
+    ).resolves.toMatchObject({ status: "ready" });
+    await isolatedManager.ensureRuntime(isolatedRequest.sessionId);
+    expect(isolatedFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
+
+    await manager.close();
+    await internalManager.close();
+    await exactManager.close();
+    await isolatedManager.close();
   });
 
   it("fails closed when a reconcile carries a proof but no proof manager is configured", async () => {

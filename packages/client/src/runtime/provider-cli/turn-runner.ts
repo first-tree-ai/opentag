@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { validatePrivateDirectory } from "../../storage/durable-file.js";
 import { resolveAccountHome, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { PROVIDER_CLI_CATALOG, type ProviderCliCatalogEntry, requireProviderCliCatalogEntry } from "./catalog.js";
@@ -179,6 +179,10 @@ async function validateTurnPlanLocation(
     }
   }
   return { homeNamespace, sessionKey };
+}
+
+export function resolveProviderCliTurnRunnerInvocation(): readonly string[] {
+  return [process.execPath, fileURLToPath(import.meta.url)];
 }
 
 export function isProviderCliTurnRunnerMain(metaUrl: string, argv1 = process.argv[1]): boolean {

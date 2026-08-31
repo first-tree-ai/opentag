@@ -349,6 +349,24 @@ export class ProviderCliReconcileOwner {
         },
         this.#now(),
       );
+      if (frame.status !== "ready") {
+        // Credential execution readiness is evidence about one exact accepted
+        // artifact selection. Any new check or artifact failure invalidates it
+        // until a fresh validation grant succeeds.
+        this.#registry.setProviderCliCredentialObservation(
+          context.workspaceComputerId,
+          context.instanceId,
+          {
+            agentId: frame.agentId,
+            integrationId: frame.integrationId,
+            provider: frame.provider,
+            credentialGeneration: frame.credentialGeneration,
+            requestId: frame.requestId,
+            status: "unconfirmed",
+          },
+          this.#now(),
+        );
+      }
       if (frame.status === "ready") {
         await this.#issueGrant(current);
       } else if (frame.status === "unavailable") {

@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -97,6 +97,7 @@ async function externalReadyFixture() {
       },
     }),
     layout,
+    selection,
   };
 }
 
@@ -155,6 +156,62 @@ describe("provider CLI reconciler", () => {
       expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready", requestId }),
       expect.anything(),
     );
+    await reconciler.close();
+  });
+
+  it("revalidates drift but refuses the Run that discovered it", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    const stable = await reconciler.readySelectionForRun("slack");
+    expect(stable).toMatchObject({ generation: fixture.selection.generation, path: fixture.inspection.selection.path });
+    expect(runtime.send.mock.calls.filter((call) => call[0].status === "checking")).toHaveLength(1);
+
+    const replacement = join(dirname(fixture.inspection.selection.path), "slack-next");
+    await writeFile(replacement, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const identity = await computeFileIdentity(replacement);
+    const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+    const selection = await writeProviderCliSelection(
+      fixture.layout,
+      "slack",
+      {
+        kind: "external",
+        executablePath: identity.path,
+        fingerprint,
+        trust: "catalog-verified",
+        version: "4.7.0",
+      },
+      fixture.selection,
+    );
+    inspect.mockResolvedValue(
+      readyInspect({
+        fingerprint,
+        selection: {
+          kind: "external",
+          path: identity.path,
+          version: "4.7.0",
+          generation: selection.generation,
+          trust: "catalog-verified",
+        },
+      }),
+    );
+
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
+    expect(runtime.send.mock.calls.filter((call) => call[0].status === "checking")).toHaveLength(2);
+    expect(runtime.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
+      expect.anything(),
+    );
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toMatchObject({
+      generation: selection.generation,
+      path: identity.path,
+    });
     await reconciler.close();
   });
 

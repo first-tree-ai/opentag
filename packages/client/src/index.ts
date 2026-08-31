@@ -334,6 +334,7 @@ export {
   type ExecuteProviderCliTurnPlanOptions,
   executeProviderCliTurnPlan,
   parseProviderCliTurnRunnerArgv,
+  resolveProviderCliTurnRunnerInvocation,
   runProviderCliTurnRunner,
 } from "./runtime/provider-cli/turn-runner.js";
 export {

@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   computeFileIdentity,
   computeTargetFingerprint,
+  type ProviderCliSelectionRecord,
   ProviderCliTurnPlanManager,
   type ProviderCliTurnPlanManagerDeps,
   resolveProviderCliAccountLayout,
@@ -51,9 +52,9 @@ export async function writeExternalTurnSelection(
   provider: "feishu" | "slack",
   targetPath: string,
   version = "1.0.92",
-): Promise<void> {
+): Promise<ProviderCliSelectionRecord> {
   const identity = await computeFileIdentity(targetPath);
-  await writeProviderCliSelection(
+  return writeProviderCliSelection(
     layout,
     provider,
     {

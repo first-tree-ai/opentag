@@ -18,7 +18,7 @@ import {
   readProviderCliSelection,
 } from "./selection-store.js";
 import { managedArtifactDigest } from "./turn-plan.js";
-import type { ProviderCliInspection, ProviderCliProvider } from "./types.js";
+import type { ProviderCliInspection, ProviderCliProvider, ProviderCliReadySelection } from "./types.js";
 import type { ProviderCliValidationRequest, ProviderCliValidationRunner } from "./validation-runner.js";
 
 const UNREPAIRABLE = new Set(["unsupported_platform", "global_bin_unavailable"]);
@@ -41,14 +41,6 @@ interface TrackedRequirement {
   readonly requestId: string;
 }
 
-interface ReadySelection {
-  readonly fingerprint: string;
-  readonly generation: number;
-  readonly managedDigest?: string;
-  readonly path: string;
-  readonly version: string;
-}
-
 interface GrantState {
   readonly abort: AbortController;
   consumed: boolean;
@@ -64,7 +56,7 @@ export class ProviderCliReconciler {
   readonly #manager: ProviderCliReconcilerOptions["manager"];
   readonly #now: () => number;
   readonly #providerJobs = new Map<ProviderCliProvider, Promise<ProviderCliArtifactStatusFrame["status"]>>();
-  readonly #readySelection = new Map<ProviderCliProvider, ReadySelection>();
+  readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
   readonly #unsubscribe: () => void;
   readonly #validation: ProviderCliReconcilerOptions["validation"];
@@ -85,6 +77,27 @@ export class ProviderCliReconciler {
     this.#unsubscribe();
     this.#abortAll();
     await this.#validation.cleanupAll();
+  }
+
+  /**
+   * Return the exact selection already accepted by daemon readiness. A local
+   * selection drift first republishes artifact checking, repairs if possible,
+   * and only then exposes the new selection to a visible Run.
+   */
+  async readySelectionForRun(provider: ProviderCliProvider): Promise<ProviderCliReadySelection | undefined> {
+    if (this.#closed || this.#signal?.aborted) return undefined;
+    const inspection = await this.#manager.inspect(provider).catch(() => undefined);
+    const live = inspection ? await readySelectionFromInspect(this.#manager.layout, provider, inspection) : undefined;
+    const accepted = this.#readySelection.get(provider);
+    if (accepted && live && selectionsMatch(accepted, live)) return { ...live };
+
+    await this.#publishCurrentProvider(provider, "checking");
+    const status = await this.#reconcileProvider(provider);
+    await this.#publishCurrentProvider(provider, status);
+    // Do not admit the Run that discovered drift. The Server must first consume
+    // the checking/ready transition and complete a fresh credential validation;
+    // a normal delivery retry can then obtain a grant and use the new selection.
+    return undefined;
   }
 
   async #handleFrame(frame: RuntimeBusinessFrame): Promise<void> {
@@ -167,8 +180,10 @@ export class ProviderCliReconciler {
         this.#readySelection.set(provider, ready);
         return "ready";
       }
+      this.#readySelection.delete(provider);
       return "unavailable";
     } catch {
+      this.#readySelection.delete(provider);
       return "unavailable";
     }
   }
@@ -326,7 +341,7 @@ async function readySelectionFromInspect(
   layout: ProviderCliManager["layout"],
   provider: ProviderCliProvider,
   inspection: ProviderCliInspection,
-): Promise<ReadySelection | undefined> {
+): Promise<ProviderCliReadySelection | undefined> {
   if (inspection.readiness !== "ready" || !inspection.selection || !inspection.fingerprint) return undefined;
   let record: ProviderCliSelectionRecord | undefined;
   try {
@@ -356,7 +371,7 @@ async function readySelectionFromInspect(
   };
 }
 
-function selectionsMatch(left: ReadySelection, right: ReadySelection): boolean {
+function selectionsMatch(left: ProviderCliReadySelection, right: ProviderCliReadySelection): boolean {
   return (
     left.fingerprint === right.fingerprint &&
     left.generation === right.generation &&

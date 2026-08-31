@@ -144,6 +144,23 @@ describe("createClientRuntime production composition", () => {
     abortDuringProbe.abort(new Error("stop during IM probe"));
     await inFlight;
     expect(inFlightUpdates).toHaveBeenCalledTimes(1);
+
+    let abortedReads = 0;
+    const abortAfterProbe = {
+      get aborted() {
+        abortedReads += 1;
+        return abortedReads >= 3;
+      },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as AbortSignal;
+    const postProbeUpdates = vi.fn();
+    await refreshImCliReadiness({ setImCliReadiness: postProbeUpdates } as never, "feishu", lark, {}, abortAfterProbe);
+    expect(postProbeUpdates.mock.calls.map(([observation]) => observation)).toEqual([
+      { provider: "feishu", status: "checking" },
+    ]);
+    expect(abortAfterProbe.addEventListener).toHaveBeenCalledOnce();
+    expect(abortAfterProbe.removeEventListener).toHaveBeenCalledOnce();
   });
 
   it("does not publish ambient PATH IM CLI readiness from production composition", async () => {

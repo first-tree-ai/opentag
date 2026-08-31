@@ -60,6 +60,8 @@ import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
 import { ProviderCliManager } from "./provider-cli/manager.js";
 import { ProviderCliReconciler } from "./provider-cli/reconciler.js";
+import { ProviderCliTurnPlanManager } from "./provider-cli/turn-plan-manager.js";
+import { resolveProviderCliTurnRunnerInvocation } from "./provider-cli/turn-runner.js";
 import { ProviderCliValidationRunner } from "./provider-cli/validation-runner.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import {
@@ -256,6 +258,7 @@ export class ComposedClientRuntime {
   readonly runtimeManager: SessionRuntimeManager;
   readonly workspace: AgentWorkspaceManager;
   readonly #providerCliReconciler?: { close(): Promise<void> };
+  readonly #providerCliTurnPlans?: { recover(): Promise<void> };
   readonly #runtime: ClientRuntime;
   readonly #refreshCapability: () => Promise<void>;
   readonly #capabilityRefreshIntervalMs: number;
@@ -281,10 +284,12 @@ export class ComposedClientRuntime {
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
       providerCliReconciler?: { close(): Promise<void> };
+      providerCliTurnPlans?: { recover(): Promise<void> };
     },
   ) {
     this.#runtime = runtime;
     this.#providerCliReconciler = components.providerCliReconciler;
+    this.#providerCliTurnPlans = components.providerCliTurnPlans;
     this.bindingStore = components.bindingStore;
     this.custody = components.custody;
     this.credentialEnvironment = components.credentialEnvironment;
@@ -317,6 +322,7 @@ export class ComposedClientRuntime {
       } finally {
         this.reportOwner.stop();
         await this.credentialEnvironment.close();
+        await this.#providerCliTurnPlans?.recover();
         await this.#providerCliReconciler?.close();
       }
     }
@@ -329,12 +335,17 @@ export class ComposedClientRuntime {
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
     this.runner.stop();
-    void Promise.allSettled([
-      this.runtimeManager.close(),
-      this.credentialEnvironment.close(),
-      this.#providerCliReconciler?.close() ?? Promise.resolve(),
-    ]);
     this.#runtime.stop();
+    // Recovery may remove PATH sentinels, so it must run only after all Runs and
+    // Agent Runtime processes have stopped using their per-Session launch bin.
+    void Promise.allSettled([this.runner.settled(), this.sessionMessageInbox.settled()])
+      .then(async () => {
+        await this.runtimeManager.close();
+        await this.credentialEnvironment.close();
+        await this.#providerCliTurnPlans?.recover();
+        await this.#providerCliReconciler?.close();
+      })
+      .catch(() => undefined);
   }
 
   #startCapabilityMonitor(): void {
@@ -507,6 +518,14 @@ export async function createClientRuntime(
     signal: readinessSignal,
     validation: new ProviderCliValidationRunner({ home: options.home }),
   });
+  await mkdir(options.home, { recursive: true, mode: 0o700 });
+  const providerCliTurnPlans = new ProviderCliTurnPlanManager({
+    accountHome: resolveAccountHome(),
+    openTagHome: options.home,
+    readySelection: providerCliReconciler.readySelectionForRun.bind(providerCliReconciler),
+    runnerInvocation: resolveProviderCliTurnRunnerInvocation(),
+  });
+  await providerCliTurnPlans.recover();
   const proofManager = new SessionCliProofManager(options.home);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
@@ -516,6 +535,9 @@ export async function createClientRuntime(
     home: options.home,
     providers,
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
+    providerCliLaunchPath: (sessionId) => providerCliTurnPlans.sessionDir(sessionId),
+    inheritedPath: sourceEnvironment.PATH,
+    slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
     workspace,
   });
@@ -534,6 +556,7 @@ export async function createClientRuntime(
     persistence: durabilityStore,
     reconciler,
     runtimeManager,
+    turnPlan: providerCliTurnPlans,
   });
   await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
   const resourceFetcher = new ImResourceFetcher({
@@ -573,6 +596,7 @@ export async function createClientRuntime(
     resourceFetcher,
     runtimeManager,
     credentialEnvironment,
+    turnPlan: providerCliTurnPlans,
   });
   const availabilityTester = new AgentRuntimeAvailabilityTester({
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
@@ -597,6 +621,7 @@ export async function createClientRuntime(
     workspace,
     refreshCapability,
     providerCliReconciler,
+    providerCliTurnPlans,
     capabilityAbort,
     capabilityRefreshIntervalMs: Math.max(
       10,

@@ -242,6 +242,28 @@ describe("ProviderCliTurnPlanManager prepare", () => {
     expect(accountHome).toBeTruthy();
   });
 
+  it("refuses to publish a Run plan when daemon readiness accepted a different selection", async () => {
+    const base = await makeTurnPlanHarness();
+    tempDirs.push(base.accountHome, base.openTagHome);
+    const target = await installTurnTarget(join(base.accountHome, "bin"));
+    const record = await writeExternalTurnSelection(base.layout, "feishu", target);
+    const manager = new ProviderCliTurnPlanManager({
+      accountHome: base.accountHome,
+      openTagHome: base.openTagHome,
+      readySelection: async () => ({
+        fingerprint: record.selection.fingerprint,
+        generation: record.generation + 1,
+        path: target,
+        version: record.selection.version,
+      }),
+      runnerInvocation: providerCliTurnRunnerInvocation(),
+    });
+
+    await expect(manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" })).rejects.toMatchObject({
+      code: "selection_invalid",
+    });
+  });
+
   it("rejects empty, oversized, or control-character identities", async () => {
     const { manager } = await trackedHarness();
     await expect(manager.prepare({ provider: "feishu", sessionId: "", runId: "run-1" })).rejects.toMatchObject({
@@ -334,13 +356,14 @@ describe("ProviderCliTurnPlanManager isolation and cleanup", () => {
     expect(next.plan.runId).toBe("run-2");
   });
 
-  it("cleanup after abort is the same matching-Run removal", async () => {
+  it("cleanup after abort removes the plan but keeps a fail-closed PATH sentinel", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
     const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-abort", runId: "run-abort" });
     await manager.cleanup({ provider: "feishu", sessionId: "s-abort", runId: "run-abort" });
-    await expect(stat(prepared.launcherPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(prepared.launcherPath)).isFile()).toBe(true);
+    await expect(readProviderCliTurnPlan(prepared.planPath)).resolves.toBeUndefined();
   });
 
   it("crash recovery clears this Home namespace only", async () => {

@@ -18,6 +18,8 @@ import {
   type ImCredentialEnvironmentManager,
 } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
+import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
+import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
@@ -37,6 +39,10 @@ export interface AgentTurnRunnerOptions {
   readonly resourceFetcher?: ImResourceFetcher;
   readonly runtimeManager: SessionRuntimeManager;
   readonly credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
+  readonly turnPlan?: {
+    cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
+    prepare(input: ProviderCliTurnPlanPrepareInput): Promise<unknown>;
+  };
 }
 
 interface RunningTurn {
@@ -66,6 +72,7 @@ export class AgentTurnRunner {
   readonly #resourceFetcher?: ImResourceFetcher;
   readonly #runtimeManager: SessionRuntimeManager;
   readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
+  readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
 
@@ -80,6 +87,7 @@ export class AgentTurnRunner {
     this.#resourceFetcher = options.resourceFetcher;
     this.#runtimeManager = options.runtimeManager;
     this.#credentialEnvironment = options.credentialEnvironment;
+    this.#turnPlan = options.turnPlan;
   }
 
   get activeCount(): number {
@@ -193,6 +201,7 @@ export class AgentTurnRunner {
     let completion: TurnCompletion;
     let terminalObserved = false;
     let releaseObserver: () => void = () => undefined;
+    let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     try {
       await this.#bindingStore.updateUnresolved(
         owner.request.agentId,
@@ -200,7 +209,16 @@ export class AgentTurnRunner {
         owner.turnId,
         "starting",
       );
-      await this.#credentialEnvironment.prepare(owner.request, signal);
+      const credentials = await this.#credentialEnvironment.prepare(owner.request, signal);
+      if (this.#turnPlan && this.#runtimeManager.sessionKind(owner.request.sessionId) === "visible") {
+        turnPlanInput = {
+          provider: credentials.provider,
+          sessionId: owner.request.sessionId,
+          runId: owner.turnId,
+          ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
+        };
+        await this.#turnPlan.prepare(turnPlanInput);
+      }
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
       turn.runtime = runtime;
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
@@ -248,6 +266,9 @@ export class AgentTurnRunner {
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
       releaseObserver();
+      if (turnPlanInput) {
+        await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
+      }
       await this.#credentialEnvironment.cleanup(owner.request.sessionId).catch(() => undefined);
       clearTimeout(timer);
     }
@@ -401,7 +422,7 @@ export function completionForError(error: unknown, abortReason: unknown): TurnCo
   if (abortReason === "turn_timeout") {
     return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
   }
-  if (error instanceof ImCredentialEnvironmentError) {
+  if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
     return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
   }
   if (error instanceof AgentRuntimeProviderUnavailableError) {

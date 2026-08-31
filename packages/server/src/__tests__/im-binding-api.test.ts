@@ -695,6 +695,14 @@ describe("ImBindingService persistence", () => {
       status: "succeeded",
       outboxContext: { provider: "slack", sessionKind: "channel", channelId: "C-credential" },
     });
+    const providerCliUnready = new RealImBindingService(unitDatabase.database, value.cipher, {
+      now: () => fixedNow,
+      imCliReadiness: () => "checking",
+      credentialExecutionReadiness: () => ({ status: "ready" }),
+    });
+    await expect(
+      providerCliUnready.issueRuntimeCredentialGrant({ ...request, requestId: crypto.randomUUID() }, auth),
+    ).resolves.toMatchObject({ status: "rejected", code: "provider_cli_unready" });
     await expect(
       value.service.issueRuntimeCredentialGrant({ ...request, placementGeneration: 2 }, auth),
     ).resolves.toMatchObject({ status: "rejected", code: "placement_stale" });

@@ -146,6 +146,21 @@ describe("ProviderCliReconcileOwner", () => {
     );
     await owner.businessOptions().handle(
       {
+        type: "provider-cli:artifact:status",
+        requestId,
+        provider: "slack",
+        agentId,
+        integrationId,
+        credentialGeneration: 3,
+        status: "checking",
+      },
+      contextOf(connection),
+    );
+    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
+      "unconfirmed",
+    );
+    await owner.businessOptions().handle(
+      {
         type: "provider-cli:validation:result",
         requestId: grantId,
         provider: "slack",

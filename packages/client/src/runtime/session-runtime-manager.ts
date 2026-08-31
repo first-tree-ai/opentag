@@ -1,3 +1,4 @@
+import { delimiter } from "node:path";
 import type {
   EffectiveRuntimeSnapshot,
   InputRejectReason,
@@ -54,6 +55,10 @@ export interface SessionRuntimeManagerOptions {
    * writable root. Internal Sessions and Feishu must return undefined. Leave unset when unused.
    */
   readonly slackConfigWritableRoot?: (sessionId: string) => string | undefined;
+  /** Absolute Session launch-bin directory prepended to the Agent Runtime PATH. Visible only. */
+  readonly providerCliLaunchPath?: (sessionId: string) => string | undefined;
+  /** Inherited PATH after the launch bin. Tests may override; production uses process.env.PATH. */
+  readonly inheritedPath?: string;
   readonly workspace: AgentWorkspaceManager;
 }
 
@@ -67,6 +72,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
+  readonly #providerCliLaunchPath?: SessionRuntimeManagerOptions["providerCliLaunchPath"];
+  readonly #inheritedPath: string | undefined;
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -84,6 +91,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#home = options.home ?? "";
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
+    this.#providerCliLaunchPath = options.providerCliLaunchPath;
+    this.#inheritedPath = options.inheritedPath ?? process.env.PATH;
     this.#proofManager =
       options.proofManager ??
       ({
@@ -245,7 +254,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           ...(this.#home ? { OPENTAG_HOME: this.#home } : {}),
           ...(managed.proofPath ? { OPENTAG_SESSION_PROOF_FILE: managed.proofPath } : {}),
           ...(managed.sessionKind === "visible"
-            ? { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) }
+            ? {
+                OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId),
+                ...visibleProviderCliPath(managed.binding.sessionId, this.#providerCliLaunchPath, this.#inheritedPath),
+              }
             : {}),
         },
         writableRoots: visibleSlackWritableRoots(
@@ -389,6 +401,21 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   #assertOpen(): void {
     if (this.#closing) throw new Error("The Session Runtime manager is closing");
   }
+}
+
+function visibleProviderCliPath(
+  sessionId: string,
+  resolveLaunchPath: ((sessionId: string) => string | undefined) | undefined,
+  inheritedPath: string | undefined,
+  pathDelimiter = delimiter,
+): { PATH: string } | Record<string, never> {
+  const launchPath = resolveLaunchPath?.(sessionId);
+  if (!launchPath) return {};
+  if (!inheritedPath) return { PATH: launchPath };
+  if (inheritedPath === launchPath || inheritedPath.startsWith(`${launchPath}${pathDelimiter}`)) {
+    return { PATH: inheritedPath };
+  }
+  return { PATH: `${launchPath}${pathDelimiter}${inheritedPath}` };
 }
 
 function visibleSlackWritableRoots(

@@ -739,6 +739,81 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("prepares a visible collaboration Turn plan before Provider start and skips it for internal Sessions", async () => {
+    const order: string[] = [];
+    const turnPlan = {
+      prepare: vi.fn(async () => {
+        order.push("plan");
+        return { sessionDir: "/tmp/plans" };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("plan-cleanup");
+      }),
+    };
+    const credentials = {
+      prepare: vi.fn(async () => {
+        order.push("prepare");
+        return {
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: {
+            provider: "feishu" as const,
+            sessionKind: "channel" as const,
+            chatId: "oc-visible",
+          },
+        };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("cleanup");
+      }),
+    };
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        order.push("prompt");
+        return { runId: "run", status: "completed", output: [] };
+      }),
+    };
+    const visible = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => {
+          order.push("runtime");
+          return runtime as never;
+        }),
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      turnPlan,
+    });
+    expect((await visible.accept(delivery())).status).toBe("accepted");
+    await visible.settled();
+    expect(order).toEqual(["prepare", "plan", "runtime", "prompt", "plan-cleanup", "cleanup"]);
+    expect(turnPlan.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "feishu", runId: expect.stringMatching(/^session-message-/) }),
+    );
+    visible.stop();
+
+    const internalPlan = { prepare: vi.fn(), cleanup: vi.fn() };
+    const internal = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      turnPlan: internalPlan,
+    });
+    expect((await internal.accept(delivery({ text: "internal" }))).status).toBe("accepted");
+    await internal.settled();
+    expect(internalPlan.prepare).not.toHaveBeenCalled();
+    internal.stop();
+  });
+
   it("rejects a visible callback before ACK under grant v1 and accepts the same message after v2 is restored", async () => {
     let grantVersion = 1;
     const credentials = {

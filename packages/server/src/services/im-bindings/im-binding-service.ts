@@ -538,7 +538,7 @@ export class ImBindingService {
       .where(eq(sessions.id, request.sessionId))
       .limit(1);
     const rejected = (
-      code: "binding_inactive" | "credential_stale" | "placement_stale" | "agent_mismatch",
+      code: "binding_inactive" | "credential_stale" | "provider_cli_unready" | "placement_stale" | "agent_mismatch",
     ): RuntimeImCredentialGrantResult => ({
       type: "im:credential:result",
       requestId: request.requestId,
@@ -570,6 +570,16 @@ export class ImBindingService {
     if (binding.provider === "feishu") {
       const credential = this.#decodeFeishuCredential(binding.encryptedCredential);
       if (!credential || credential.appId !== binding.externalAppId) return rejected("credential_stale");
+      if (
+        !(await this.#runtimeProviderCliReady(
+          binding.agentId,
+          binding.provider,
+          binding.id,
+          binding.credentialGeneration,
+        ))
+      ) {
+        return rejected("provider_cli_unready");
+      }
       return {
         type: "im:credential:result",
         requestId: request.requestId,
@@ -607,6 +617,16 @@ export class ImBindingService {
     }
     const credential = this.#decodeSlackCredential(installation.encryptedCredential);
     if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
+    if (
+      !(await this.#runtimeProviderCliReady(
+        binding.agentId,
+        binding.provider,
+        binding.id,
+        installation.credentialGeneration,
+      ))
+    ) {
+      return rejected("provider_cli_unready");
+    }
     return {
       type: "im:credential:result",
       requestId: request.requestId,
@@ -1352,6 +1372,19 @@ export class ImBindingService {
       reauthorizationRequired,
       connection,
     };
+  }
+
+  async #runtimeProviderCliReady(
+    agentId: string,
+    provider: "feishu" | "slack",
+    integrationId: string,
+    credentialGeneration: number,
+  ): Promise<boolean> {
+    const [artifact, credential] = await Promise.all([
+      this.#imCliReadiness(agentId, provider, integrationId, credentialGeneration),
+      this.#credentialExecutionReadiness(agentId, provider, integrationId, credentialGeneration),
+    ]);
+    return artifact === "ready" && credential.status === "ready";
   }
 
   #withCredentialStatus<

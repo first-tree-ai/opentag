@@ -34,7 +34,7 @@ import {
   publishProviderCliTurnPlanExclusive,
   readProviderCliTurnPlan,
 } from "./turn-plan.js";
-import type { ProviderCliProvider } from "./types.js";
+import type { ProviderCliProvider, ProviderCliReadySelection } from "./types.js";
 
 export interface ProviderCliTurnPlanManagerDeps {
   /** OS account home (from the account record), never caller $HOME. */
@@ -43,6 +43,8 @@ export interface ProviderCliTurnPlanManagerDeps {
   readonly openTagHome: string;
   /** Absolute argv that starts the current daemon Node and loads the runner module. */
   readonly runnerInvocation: readonly string[];
+  /** Production readiness fence. Omit only in isolated storage tests. */
+  readonly readySelection?: (provider: ProviderCliProvider) => Promise<ProviderCliReadySelection | undefined>;
   readonly platform?: NodeJS.Platform;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -119,7 +121,11 @@ export class ProviderCliTurnPlanManager {
     return await this.#withSessionLock(sessionDir, () => this.#prepareLocked(input, sessionId, runId, sessionDir));
   }
 
-  /** Remove the matching Run's plan and launcher. Other Runs and Home namespaces are left untouched. */
+  /**
+   * Remove the matching Run's plan. The launcher deliberately remains as a
+   * fail-closed PATH sentinel: without its plan it exits non-zero instead of
+   * allowing a shell to fall through to an ambient provider CLI.
+   */
   async cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void> {
     const sessionId = assertIdentity("sessionId", input.sessionId);
     const runId = assertIdentity("runId", input.runId);
@@ -145,7 +151,6 @@ export class ProviderCliTurnPlanManager {
         throw new ProviderCliTurnPlanError("provider_mismatch", "Provider CLI Turn cleanup provider does not match");
       }
       await rm(providerCliTurnPlanPath(sessionDir), { force: true });
-      await rm(providerCliTurnLauncherPath(sessionDir, existing.command), { force: true });
     });
     // Keep the private Session directory. Removing it after releasing the lock can
     // race with a new Run that has just acquired the same lock and published a plan.
@@ -227,8 +232,15 @@ export class ProviderCliTurnPlanManager {
     runId: string,
     sessionDir: string,
   ): Promise<ProviderCliPreparedTurnPlan> {
+    const expected = await this.#deps.readySelection?.(input.provider);
+    if (this.#deps.readySelection && !expected) {
+      throw new ProviderCliTurnPlanError(
+        "selection_invalid",
+        "Provider CLI selection has not completed daemon readiness",
+      );
+    }
     const record = await this.#readSelection(input.provider);
-    const plan = await this.#planFromSelection(input, sessionId, runId, record);
+    const plan = await this.#planFromSelection(input, sessionId, runId, record, expected);
     await this.#writeLauncher(sessionDir, plan);
     const published = await publishProviderCliTurnPlanExclusive(providerCliTurnPlanPath(sessionDir), plan);
     if (published === "created") return this.#prepared(plan, sessionDir);
@@ -262,6 +274,7 @@ export class ProviderCliTurnPlanManager {
     sessionId: string,
     runId: string,
     record: ProviderCliSelectionRecord,
+    expected?: ProviderCliReadySelection,
   ): Promise<ProviderCliTurnPlan> {
     const selection = record.selection;
     const storedPath = providerCliSelectionTargetPath(selection);
@@ -275,6 +288,19 @@ export class ProviderCliTurnPlanManager {
     const fingerprint = computeTargetFingerprint(identity, selection.version, managedDigest);
     if (fingerprint !== selection.fingerprint) {
       throw new ProviderCliTurnPlanError("artifact_drifted", "Provider CLI selection fingerprint drifted");
+    }
+    if (
+      expected &&
+      (expected.generation !== record.generation ||
+        expected.path !== identity.path ||
+        expected.version !== selection.version ||
+        expected.fingerprint !== fingerprint ||
+        expected.managedDigest !== managedDigest)
+    ) {
+      throw new ProviderCliTurnPlanError(
+        "selection_invalid",
+        "Provider CLI selection no longer matches daemon readiness",
+      );
     }
     const shared = {
       schemaVersion: 1 as const,

@@ -186,6 +186,7 @@
   "resolveOpenTagHomeLayout",
   "resolveProviderCliAccountLayout",
   "resolveProviderCliArtifactUrl",
+  "resolveProviderCliTurnRunnerInvocation",
   "resolvedClaudeCodeFactory",
   "retryDelay",
   "retryExhausted",

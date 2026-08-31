@@ -491,7 +491,13 @@ export const RuntimeImCredentialGrantResultSchema = z
         type: z.literal("im:credential:result"),
         requestId: RuntimeRequestIdSchema,
         status: z.literal("rejected"),
-        code: z.enum(["binding_inactive", "credential_stale", "placement_stale", "agent_mismatch"]),
+        code: z.enum([
+          "binding_inactive",
+          "credential_stale",
+          "provider_cli_unready",
+          "placement_stale",
+          "agent_mismatch",
+        ]),
       })
       .strict(),
   ])

@@ -85,6 +85,7 @@ export class SessionMessageInbox {
         }
       }
       if (this.#abort.signal.aborted) return deliveryResult(request, "rejected", "client_busy");
+      if (this.#admission.paused) return deliveryResult(request, "rejected", "client_busy");
       const reason = this.#reconciler.checkSessionMessageDelivery(request);
       if (reason) {
         this.#remember(
@@ -120,6 +121,11 @@ export class SessionMessageInbox {
     this.#queuedTotal = 0;
   }
 
+  /** Accepted Session messages still waiting for their drain to deliver them to an Agent Runtime. */
+  get queuedCount(): number {
+    return this.#queuedTotal;
+  }
+
   async settled(): Promise<void> {
     await Promise.allSettled([...this.#drains.values()]);
   }
@@ -142,10 +148,10 @@ export class SessionMessageInbox {
         this.#queues.delete(sessionId);
         return;
       }
-      let reservation = this.#admission.reserve(sessionId, next.request.agentId);
+      let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       while (!reservation.accepted) {
         await this.#admission.waitForRelease(this.#abort.signal);
-        reservation = this.#admission.reserve(sessionId, next.request.agentId);
+        reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       }
       queue?.shift();
       this.#queuedTotal -= 1;

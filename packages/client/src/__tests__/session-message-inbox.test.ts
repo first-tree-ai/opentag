@@ -6,6 +6,38 @@ import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/sessio
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 
 describe("SessionMessageInbox", () => {
+  it("rejects new messages while quiesced but drains messages accepted before the pause", async () => {
+    const admission = new AdmissionController();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "accepted before pause" }))).status).toBe(
+      "accepted",
+    );
+
+    admission.pause();
+    await expect(inbox.accept(delivery({ text: "new during pause" }))).resolves.toMatchObject({
+      status: "rejected",
+      reason: "client_busy",
+    });
+    held.reservation.release();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    await inbox.settled();
+    inbox.stop();
+  });
+
   it("accepts immediately, waits for shared admission, and drains one Session in FIFO order", async () => {
     const admission = new AdmissionController();
     const targetSessionId = randomUUID();

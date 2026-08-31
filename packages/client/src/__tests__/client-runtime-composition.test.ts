@@ -673,6 +673,42 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     expect(credentialClose).toHaveBeenCalledOnce();
   });
 
+  it("aggregates protected work from every authoritative owner", () => {
+    const admission = { pause: vi.fn(), resume: vi.fn() };
+    const runtime = new ComposedClientRuntime(
+      {} as never,
+      {
+        admission,
+        bindingStore: {},
+        custody: { liveTurnCount: 1 },
+        credentialEnvironment: {},
+        reconciler: { protectedWorkSnapshot: () => ({ activities: [{}], recoveries: [{}, {}] }) },
+        sessionMessageInbox: { queuedCount: 2 },
+        reportOwner: { pendingCount: 3 },
+        runner: { activeCount: 4 },
+        runtimeManager: {},
+        workspace: {},
+        refreshCapability: async () => undefined,
+        capabilityRefreshIntervalMs: 10,
+        capabilityAbort: new AbortController(),
+      } as never,
+    );
+    expect(runtime.protectedWork()).toEqual({
+      sessionActivities: 1,
+      pendingRecoveries: 2,
+      custodyTurns: 1,
+      activeTurns: 4,
+      pendingReports: 3,
+      queuedSessionMessages: 2,
+      total: 13,
+    });
+    const resume = runtime.quiesceForUpdate();
+    expect(admission.pause).toHaveBeenCalledOnce();
+    resume();
+    resume();
+    expect(admission.resume).toHaveBeenCalledOnce();
+  });
+
   it("keeps the credential-grant capability while refreshing Provider readiness", async () => {
     const home = await temporaryDirectory("opentag-client-capability-");
     const server = await runtimeServer();

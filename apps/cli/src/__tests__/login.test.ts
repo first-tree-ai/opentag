@@ -186,6 +186,7 @@ function fakeManager(order: string[] = []): DaemonServiceManager {
       order.push("install");
       return info;
     }),
+    refreshDefinition: vi.fn(async () => info),
     restart: vi.fn(async () => info),
     start: vi.fn(async () => info),
     status: vi.fn(async () => info),

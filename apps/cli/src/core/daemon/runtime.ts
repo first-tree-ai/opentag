@@ -12,18 +12,46 @@ import {
   resolveBoundAccountComputer,
   resolveComputerIdentity,
   resolveOpenTagHome,
+  type UpdateManager,
+  type UpdaterStateSnapshot,
 } from "@opentag/client";
-import { CLI_VERSION } from "../../build-info.js";
+import type { RuntimeChannelTarget } from "@opentag/shared";
+import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
+import { createPortableAutoUpdater } from "../update/auto-update.js";
+import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
 import { applyDaemonEnvironment } from "./environment.js";
+import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
+
+export interface DaemonAutoUpdateOverrides {
+  /** Force attaching or skipping the updater; defaults to portable installs on non-dev channels. */
+  attach?: boolean;
+  installMode?: InstallMode;
+  installTarget?: (target: string) => Promise<void>;
+  refreshService?: () => Promise<void>;
+  stateStore?: {
+    loadState(): Promise<UpdaterStateSnapshot | undefined>;
+    saveState(state: UpdaterStateSnapshot): Promise<void>;
+  };
+  checkIntervalMs?: number;
+  /** Observe a target immediately after startup (deterministic tests). */
+  initialTarget?: RuntimeChannelTarget;
+}
+
+export interface DaemonServiceRunResult {
+  /** True when the daemon stopped to let the supervisor restart it onto a newly installed version. */
+  supervisorRestartRequested: boolean;
+}
 
 export interface DaemonRuntimeOptions {
   home?: string;
   logger?: ClientLogger;
   signals?: NodeJS.Process;
+  /** Automatic-upgrade control: `false` disables it; overrides exist for deterministic tests. */
+  autoUpdate?: false | DaemonAutoUpdateOverrides;
 }
 
 interface DaemonRuntime {
@@ -74,7 +102,7 @@ export class DaemonRuntimeConfigurationError extends Error {
   override readonly name = "DaemonRuntimeConfigurationError";
 }
 
-export async function runDaemonService(options: DaemonRuntimeOptions = {}): Promise<void> {
+export async function runDaemonService(options: DaemonRuntimeOptions = {}): Promise<DaemonServiceRunResult> {
   const home = options.home ?? resolveOpenTagHome();
   const paths = resolveDaemonPaths(home);
   const signals = options.signals ?? process;
@@ -97,6 +125,9 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   let lifecycleLogger: ClientLogger | undefined;
   let terminalLogger: ClientLogger | undefined;
   let runtimeLoggerGate: ClientLoggerGate | undefined;
+  let updater: UpdateManager | undefined;
+  let handoffRequested = false;
+  let channelTargetObserver: ((target: RuntimeChannelTarget) => void) | undefined;
   let failure: unknown;
   let failed = false;
   try {
@@ -161,6 +192,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         instanceId: connectionInstanceId,
         logger: runtimeLogger.child({ module: "connection" }),
         machineToken: credential.machineToken,
+        onChannelTarget: (target) => channelTargetObserver?.(target),
         platform: currentPlatform,
       });
       const runtime = await createClientRuntime(connection, {
@@ -172,6 +204,31 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         api,
         machineToken: credential.machineToken,
       });
+      const autoUpdate = options.autoUpdate === false ? undefined : (options.autoUpdate ?? {});
+      const installMode = autoUpdate?.installMode ?? detectInstallMode(process.env);
+      const attachUpdater =
+        autoUpdate !== undefined && installMode.mode === "portable" && (autoUpdate.attach ?? CHANNEL !== "dev");
+      if (attachUpdater && installMode.mode === "portable") {
+        updater = createPortableAutoUpdater({
+          home,
+          installMode,
+          protectedWork: () => runtime.protectedWork(),
+          quiesce: () => runtime.quiesceForUpdate(),
+          onHandoff: () => {
+            handoffRequested = true;
+            runtime.stop();
+          },
+          logger: runtimeLogger.child({ module: "updater" }),
+          ...(autoUpdate?.installTarget ? { installTarget: autoUpdate.installTarget } : {}),
+          ...(autoUpdate?.refreshService ? { refreshService: autoUpdate.refreshService } : {}),
+          ...(autoUpdate?.stateStore ? { stateStore: autoUpdate.stateStore } : {}),
+          ...(autoUpdate?.checkIntervalMs ? { checkIntervalMs: autoUpdate.checkIntervalMs } : {}),
+        });
+        await updater.syncRunningVersion();
+        const attached = updater;
+        channelTargetObserver = (target) => attached.observe(target);
+        if (autoUpdate?.initialTarget) attached.observe(autoUpdate.initialTarget);
+      }
       void connection.whenRegistered(signal).then(
         () => runtimeLogger.info({}, "Computer runtime is ready"),
         () => undefined,
@@ -190,6 +247,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   }
 
   lifecycleLogger?.info({}, "Daemon stopping");
+  updater?.stop();
   lifecycleLogger?.info({}, "Daemon runtime stopped");
   runtimeLoggerGate?.disable();
   try {
@@ -204,12 +262,13 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     }
   }
   if (failed) throw failure;
+  return { supervisorRestartRequested: handoffRequested };
 }
 
-export async function runDaemonServiceEntry(options: DaemonRuntimeOptions = {}): Promise<0 | 1> {
+export async function runDaemonServiceEntry(options: DaemonRuntimeOptions = {}): Promise<0 | 1 | 75> {
   try {
-    await runDaemonService(options);
-    return 0;
+    const result = await runDaemonService(options);
+    return result.supervisorRestartRequested ? SUPERVISOR_RESTART_EXIT_CODE : 0;
   } catch (error) {
     return isExpectedDaemonStop(error) ? 0 : 1;
   }

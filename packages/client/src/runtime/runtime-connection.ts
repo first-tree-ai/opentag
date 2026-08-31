@@ -5,6 +5,7 @@ import {
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -13,6 +14,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
   type RuntimeImCliReadinessCollection,
@@ -114,6 +116,12 @@ export interface RuntimeConnectionOptions {
   logger?: ClientLogger;
   machineToken: string;
   now?: () => number;
+  /**
+   * Invoked with the Server-advertised exact channel latest target whenever a v2 heartbeat result
+   * carries one (the `runtime.channelTarget` capability must have been negotiated). Listener
+   * failures are logged and never affect the heartbeat.
+   */
+  onChannelTarget?: (target: RuntimeChannelTarget) => void;
   parseBusinessFrame?: (value: unknown) => RuntimeBusinessFrame | undefined;
   platform: "darwin" | "linux" | "win32";
   queueLimits?: Partial<RuntimeQueueLimits>;
@@ -743,6 +751,18 @@ export class RuntimeConnection {
           }
           pendingHeartbeatRequestId = undefined;
           if (heartbeatResultTimer) this.#scheduler.clearTimeout(heartbeatResultTimer);
+          if (
+            protocolVersion === RUNTIME_PROTOCOL_V2 &&
+            this.#negotiatedCapabilities[RUNTIME_CAPABILITY.channelTarget] !== undefined &&
+            "channelTarget" in frame &&
+            frame.channelTarget
+          ) {
+            try {
+              this.#options.onChannelTarget?.(frame.channelTarget);
+            } catch {
+              this.#logger.warn({ category: "listener" }, "Runtime channel target listener failed");
+            }
+          }
           scheduleHeartbeat();
           return;
         }

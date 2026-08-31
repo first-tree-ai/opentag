@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { SUPERVISOR_RESTART_EXIT_CODE } from "../handoff.js";
 import { resolveDaemonPaths } from "../paths.js";
 import {
   buildServicePath,
@@ -44,9 +45,12 @@ StartLimitBurst=10
 [Service]
 Type=simple
 ExecStart=${command}
+# Exit code ${SUPERVISOR_RESTART_EXIT_CODE} is the reserved supervisor-restart handoff: a clean exit
+# that still forces a restart, used by the portable upgrade after the new version is live on disk.
 Restart=on-failure
 RestartSec=10
-SuccessExitStatus=0
+SuccessExitStatus=0 ${SUPERVISOR_RESTART_EXIT_CODE}
+RestartForceExitStatus=${SUPERVISOR_RESTART_EXIT_CODE}
 KillSignal=SIGTERM
 KillMode=mixed
 TimeoutStopSec=30
@@ -234,6 +238,18 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
       const current = await status();
       if (current.state !== "active") {
         await runRequired(options.runner, systemctl, ["--user", "start", identity.systemdUnitName], "systemd start");
+      }
+      return status();
+    },
+    async refreshDefinition() {
+      await preflight();
+      const current = await readRegularFile(unitPath);
+      if (current === undefined) {
+        throw new DaemonServiceError("NOT_INSTALLED", "The daemon service is not installed; run daemon install");
+      }
+      if (current !== expected) {
+        await writeFileAtomically(unitPath, expected, 0o644, 0o700);
+        await runRequired(options.runner, systemctl, ["--user", "daemon-reload"], "systemd daemon-reload");
       }
       return status();
     },

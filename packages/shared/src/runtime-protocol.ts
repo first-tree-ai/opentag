@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js";
+import { ChannelNameSchema } from "./channel-name.js";
 import {
   ComputerPlatformSchema,
   IM_CLI_PROVIDERS,
@@ -8,6 +9,7 @@ import {
   ProviderReadinessStatusSchema,
 } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
+import { SemVerStringSchema } from "./semver.js";
 
 export const RUNTIME_PROTOCOL_V1 = 1 as const;
 export const RUNTIME_PROTOCOL_V2 = 2 as const;
@@ -25,6 +27,7 @@ export const RUNTIME_V0_CAPABILITIES = {
 export const RUNTIME_CAPABILITY = {
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
+  channelTarget: "runtime.channelTarget",
   imDelivery: "runtime.imDelivery",
   imSteer: "runtime.imSteer",
   imCredentialGrant: "runtime.imCredentialGrant",
@@ -36,6 +39,7 @@ export const RUNTIME_CAPABILITY = {
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 2 },
@@ -376,12 +380,26 @@ const heartbeatResultShape = {
   serverTime: z.string().datetime(),
   errorCode: ErrorCodeSchema.optional(),
 };
+
+/**
+ * The exact channel latest target the Server currently advertises. Sent only on v2 heartbeat results
+ * when the `runtime.channelTarget` capability was negotiated, so older Clients never see a field
+ * their strict schemas would reject.
+ */
+export const RuntimeChannelTargetSchema = z
+  .object({
+    channel: ChannelNameSchema,
+    version: SemVerStringSchema,
+  })
+  .strict();
+
 export const HeartbeatResultV1FrameSchema = z.object(heartbeatResultShape).strict().superRefine(validateFailedResult);
 export const HeartbeatResultV2FrameSchema = z
   .object({
     ...heartbeatResultShape,
     protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
     connectionId: RuntimeConnectionIdSchema,
+    channelTarget: RuntimeChannelTargetSchema.optional(),
   })
   .strict()
   .superRefine(validateFailedResult);
@@ -432,6 +450,7 @@ export type ComputerRegisterFrame = z.infer<typeof ComputerRegisterFrameSchema>;
 export type ComputerRegisterResultFrame = z.infer<typeof ComputerRegisterResultFrameSchema>;
 export type HeartbeatFrame = z.infer<typeof HeartbeatFrameSchema>;
 export type HeartbeatResultFrame = z.infer<typeof HeartbeatResultFrameSchema>;
+export type RuntimeChannelTarget = z.infer<typeof RuntimeChannelTargetSchema>;
 export type RuntimeErrorFrame = z.infer<typeof RuntimeErrorFrameSchema>;
 export type ClientRuntimeFrame = z.infer<typeof ClientRuntimeFrameSchema>;
 export type ServerRuntimeFrame = z.infer<typeof ServerRuntimeFrameSchema>;

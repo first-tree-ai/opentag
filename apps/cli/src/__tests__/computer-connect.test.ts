@@ -304,6 +304,7 @@ function managerFixture(): DaemonServiceManager {
   return {
     preflight: vi.fn(),
     installAndStart: vi.fn(async () => info),
+    refreshDefinition: vi.fn(async () => info),
     restart: vi.fn(async () => info),
     start: vi.fn(async () => info),
     status: vi.fn(async () => info),

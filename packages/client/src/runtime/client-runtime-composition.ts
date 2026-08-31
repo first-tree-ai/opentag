@@ -82,6 +82,29 @@ export interface LoginShellDiscovery {
   enable(): void;
 }
 
+/**
+ * Every local state whose interruption could lose or duplicate an accepted Turn, pending Turn
+ * completion/report custody, or an accepted IM delivery — aggregated from the authoritative owners
+ * (Session reconciler activity and recoveries, Turn custody, Turn runner, Turn reports, and the
+ * Session message inbox) rather than from any heuristic. `total === 0` is the only upgrade gate.
+ */
+export interface ProtectedWorkSnapshot {
+  /** Live per-Session Turn activity recorded by the Session reconciler. */
+  sessionActivities: number;
+  /** Unresolved Turns recovered from durable state that still owe a completion report. */
+  pendingRecoveries: number;
+  /** Accepted Turns still under local custody (not yet recorded as reported). */
+  custodyTurns: number;
+  /** Turns the runner is currently executing or reporting. */
+  activeTurns: number;
+  /** Turn Reports awaiting Server confirmation. */
+  pendingReports: number;
+  /** Accepted Session messages still queued for delivery to an Agent Runtime. */
+  queuedSessionMessages: number;
+  /** Total protected items; zero means no protected work remains. */
+  total: number;
+}
+
 export function createLoginShellDiscovery(): LoginShellDiscovery {
   let enabled = false;
   function includeLoginShell(): boolean {
@@ -228,6 +251,7 @@ export interface CreateClientRuntimeOptions {
 }
 
 export class ComposedClientRuntime {
+  readonly #admission: AdmissionController;
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: ImCredentialEnvironmentManager;
@@ -248,6 +272,7 @@ export class ComposedClientRuntime {
   constructor(
     runtime: ClientRuntime,
     components: {
+      admission: AdmissionController;
       bindingStore: SessionBindingStore;
       custody: TurnCustodyOwner;
       credentialEnvironment: ImCredentialEnvironmentManager;
@@ -263,6 +288,7 @@ export class ComposedClientRuntime {
     },
   ) {
     this.#runtime = runtime;
+    this.#admission = components.admission;
     this.bindingStore = components.bindingStore;
     this.custody = components.custody;
     this.credentialEnvironment = components.credentialEnvironment;
@@ -296,6 +322,49 @@ export class ComposedClientRuntime {
         await this.credentialEnvironment.close();
       }
     }
+  }
+
+  /**
+   * Authoritative protected-work snapshot for the automatic-upgrade gate. The Session module owns
+   * the bounded lifetime of every counted unit (Turn budgets, delivery deadlines, report retries
+   * with terminal outcomes), so a caller may wait on `total === 0` indefinitely without adding a
+   * force timeout of its own.
+   */
+  protectedWork(): ProtectedWorkSnapshot {
+    const reconcilerWork = this.reconciler.protectedWorkSnapshot();
+    const snapshot = {
+      sessionActivities: reconcilerWork.activities.length,
+      pendingRecoveries: reconcilerWork.recoveries.length,
+      custodyTurns: this.custody.liveTurnCount,
+      activeTurns: this.runner.activeCount,
+      pendingReports: this.reportOwner.pendingCount,
+      queuedSessionMessages: this.sessionMessageInbox.queuedCount,
+      total: 0,
+    };
+    snapshot.total =
+      snapshot.sessionActivities +
+      snapshot.pendingRecoveries +
+      snapshot.custodyTurns +
+      snapshot.activeTurns +
+      snapshot.pendingReports +
+      snapshot.queuedSessionMessages;
+    return snapshot;
+  }
+
+  /**
+   * Close admission before the updater reads its zero-work snapshot. Already accepted Session
+   * messages may still reserve capacity and drain; every new direct or Session delivery receives a
+   * retryable `client_busy` result. The returned release function is used only when the attempt is
+   * abandoned or fails — a successful install stays quiesced until supervisor handoff.
+   */
+  quiesceForUpdate(): () => void {
+    this.#admission.pause();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#admission.resume();
+    };
   }
 
   stop(): void {
@@ -552,6 +621,7 @@ export async function createClientRuntime(
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {
+    admission,
     bindingStore,
     custody,
     credentialEnvironment,

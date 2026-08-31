@@ -28,6 +28,7 @@ import { DaemonServiceError } from "./types.js";
 export interface DaemonServiceManager {
   installAndStart(): Promise<DaemonServiceInfo>;
   preflight(): Promise<void>;
+  refreshDefinition(): Promise<DaemonServiceInfo>;
   restart(): Promise<DaemonServiceInfo>;
   start(): Promise<DaemonServiceInfo>;
   status(): Promise<DaemonServiceInfo>;
@@ -46,7 +47,7 @@ export interface CreateDaemonServiceManagerOptions {
   username?: string;
 }
 
-type DaemonServiceMutation = "install" | "restart" | "start" | "stop" | "uninstall";
+type DaemonServiceMutation = "install" | "refresh" | "restart" | "start" | "stop" | "uninstall";
 
 export async function createDaemonServiceManager(
   options: CreateDaemonServiceManagerOptions = {},
@@ -126,6 +127,7 @@ export async function createDaemonServiceManager(
     },
     start: () => mutate("start", () => backend.start()),
     stop: () => mutate("stop", () => backend.stop()),
+    refreshDefinition: () => mutate("refresh", () => backend.refreshDefinition()),
     restart: () => mutate("restart", () => backend.restart()),
     status,
     uninstall: () => mutate("uninstall", () => backend.uninstall()),
@@ -222,6 +224,7 @@ function unsupportedBackend(platform: NodeJS.Platform, home: string, serviceId: 
     platform: "unsupported",
     preflight: unsupported,
     installAndStart: unsupported,
+    refreshDefinition: unsupported,
     start: unsupported,
     stop: unsupported,
     restart: unsupported,

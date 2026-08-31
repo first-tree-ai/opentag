@@ -53,6 +53,10 @@ Roll out Server v2 before Client v2. A v2 Client never falls back after a timeou
 - `instanceId` fences a daemon process lifetime; `connectionId` fences one registered socket; placement generation continues to fence Session placement. The Server registry still verifies the exact current socket before and after sends.
 - Transport queues are never replayed across sockets. Domain retries reuse their stable `requestId` and semantic payload hash under the existing domain policy.
 
+## Channel target advertisement
+
+The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client compares targets monotonically — a target that is not newer than the running version is ignored, and a target for another channel is rejected before any upgrade decision.
+
 ## Adversarial checks
 
 The implementation and tests cover downgrade attempts with unmatched errors, missing required capabilities, unknown optional capabilities, invalid ranges, unacknowledged or unadmitted Provider readiness, out-of-order control frames, stale connection IDs, replacement sockets, frame-size limits, and mismatched negotiated maps. Authentication happens before capability use; capability negotiation cannot grant authorization or readiness.

@@ -53,10 +53,10 @@ function inventoryOf(inventory: MockInventory): readonly KnownComputer[] {
 }
 
 /**
- * The one that costs the reader least. A reachable computer first, since it can be checked right
- * away; otherwise the most recently seen one, because a machine they already have is almost always
- * what they mean. Defaulting to "connect a new computer" instead would push someone whose only
- * machine is asleep toward enrolling a second one.
+ * The machine this run prepares. An Account is meant to have one, so this is normally that one; for
+ * an Account that predates the rule and still holds several, a reachable one comes first because it
+ * can be checked right away. It is never a question put to the reader — being asked which Computer,
+ * or being offered another, is how an Account ends up with a duplicate it then has to repair.
  */
 function preselected(computers: readonly KnownComputer[]): string | undefined {
   return (computers.find((computer) => computer.online) ?? computers[0])?.id;
@@ -328,17 +328,6 @@ export function useMockBackend(
   }, [answering, checkResult, preparedComputerId, readiness, scenario.messagingCli, scenario.runtime]);
 
   /**
-   * Choosing a different Computer takes the previous one's verdict off the screen. A result that
-   * stayed would be read as this machine's answer, and it is not: it is the answer for a machine
-   * the Agent is no longer going to run on.
-   */
-  const selectComputer = useCallback((computerId: string | undefined) => {
-    setSelectedComputerId(computerId);
-    setReadiness(undefined);
-    setCheckResult(undefined);
-  }, []);
-
-  /**
    * The offline machine coming back — what reconnecting it in its own terminal would do. It is the
    * same Computer, so the Account gains nothing, and the check starts on its own from there.
    */
@@ -476,7 +465,6 @@ export function useMockBackend(
       messaging,
       messagingProvider: undefined,
       planSignIn,
-      selectComputer,
       selectedComputerId,
       // The mock has nothing to read back; it is the flow as it runs the first time.
       resuming: false,
@@ -508,7 +496,6 @@ export function useMockBackend(
       readiness,
       repairNow,
       reset,
-      selectComputer,
       selectedComputerId,
       startMessaging,
       startPlanSignIn,

@@ -51,16 +51,17 @@ export interface OnboardingBackend {
    */
   readonly messagingProvider: MessagingProvider | undefined;
   /**
-   * Computers the Account already has, so this step can offer one instead of asking for a command.
+   * The Computers this Account already has, so the step can prepare one instead of asking for a
+   * command. An Account is meant to have exactly one; the shape stays a list because Accounts that
+   * predate that rule can still hold more, and the step has to pick without asking the reader.
    *
    * Optional because only the mock answers it today: the Server implementation still treats every
    * run as a first connection, and a page that required the list would break that flow before the
    * real read exists. An implementation that omits it gets the behaviour it has now.
    */
   readonly knownComputers?: readonly KnownComputer[];
-  /** Which one this run is preparing, or `undefined` while a new one is being connected. */
+  /** The one this run is preparing, or `undefined` when there is none and one must be connected. */
   readonly selectedComputerId?: string | undefined;
-  readonly selectComputer?: (computerId: string | undefined) => void;
   readonly planSignIn: PlanSignIn;
   /**
    * Creating the Agent belongs here rather than to the page: it is the one step that writes to the

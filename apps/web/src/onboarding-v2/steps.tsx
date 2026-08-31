@@ -9,7 +9,7 @@ import {
   QrCode,
   WAITING_LINE,
 } from "../setup/index.js";
-import { Button, Icon, KumoInputControl, KumoSelectControl, StatusIndicator, Text } from "../ui/design-system.js";
+import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
 import type { KnownComputer, PlanSignIn } from "./backend.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
 import {
@@ -657,48 +657,38 @@ function PlanSignInPanel({
  * front of a result that is already there.
  */
 export function ComputerStep({
+  computer,
   connect,
   creation,
   draft,
-  knownComputers = [],
   onBack,
   onCreate,
   onRefreshCommand,
-  onSelectComputer,
   readiness,
-  selectedComputerId,
 }: {
+  /** The Computer the Account has, when it has one. An Account has one machine, never a list. */
+  computer?: KnownComputer | undefined;
   connect: ConnectState;
   creation: CreationState;
   draft: AgentDraft;
-  knownComputers?: readonly KnownComputer[];
   onBack?: () => void;
   onCreate: () => void;
   onRefreshCommand: () => void;
-  onSelectComputer?: (computerId: string | undefined) => void;
   readiness: ReadinessFacts | undefined;
-  selectedComputerId?: string | undefined;
 }) {
   const connected = connect.kind === "connected";
   /*
-   * An Account with no computers is never asked to choose one: the option would be an empty list
-   * next to the only thing that can actually be done. So the whole selector is absent rather than
-   * disabled, and the step reads exactly as it did before this existed.
+   * The Computer this step is preparing, and so the one the check below answers for: the machine
+   * the Account already has once it is reachable, or a new arrival. The backend probes this same
+   * subject, so what is on screen is never a verdict about some other machine.
    */
-  const choosing = knownComputers.length > 0;
-  const selected = knownComputers.find((computer) => computer.id === selectedComputerId);
+  const ready = computer ? computer.online : connected;
   /*
-   * The Computer this step is preparing, and so the one the check below answers for: the chosen
-   * machine once it is reachable, or a new arrival. The backend probes this same subject, so what
-   * is on screen is never a verdict about some other machine.
+   * The command enrols a machine, so it belongs to a run that has none. Beside a machine the
+   * Account already has — an offline one most of all — it would offer a second Computer as the way
+   * to repair the first, which is the duplicate this step exists to avoid.
    */
-  const ready = selected ? selected.online : connected;
-  /*
-   * The command enrolls a machine, so it belongs to a run that is connecting one. Beside a chosen
-   * Computer — an offline one most of all — it would offer a second Computer as the way to repair
-   * the first, which is the duplicate this step exists to avoid.
-   */
-  const connectingNew = selected === undefined;
+  const connectingNew = computer === undefined;
   const checks = deriveChecks(readiness?.runtime);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
@@ -711,24 +701,25 @@ export function ComputerStep({
     <section className={STEP} data-ui="onboarding-v2-step-computer">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {choosing ? COPY.connect.chooseTitle : COPY.connect.title}
+          {computer ? COPY.connect.yoursTitle : COPY.connect.title}
         </Text>
-        <p className="text-kumo-subtle m-0">{choosing ? COPY.connect.chooseLead : COPY.connect.lead}</p>
+        <p className="text-kumo-subtle m-0">{computer ? COPY.connect.yoursLead : COPY.connect.lead}</p>
         <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
           <Icon className="shrink-0 mt-1 text-kumo-brand" name="shield" />
           {COPY.connect.privacy}
         </p>
       </header>
 
-      {choosing ? (
-        <ComputerChoice
-          computers={knownComputers}
-          onSelect={onSelectComputer}
-          selectedComputerId={selectedComputerId}
-        />
+      {/* Which machine this is, said once. There is nothing here to operate: it is not a choice. */}
+      {computer ? (
+        <p className="flex items-center gap-2 m-0" data-ui="onboarding-v2-computer">
+          <Icon className="shrink-0 text-kumo-brand" name="laptop" />
+          <span className="font-medium text-kumo-strong">{computer.displayName}</span>
+          <span className="text-sm text-kumo-subtle">{computerStatus(computer)}</span>
+        </p>
       ) : null}
 
-      {selected && !selected.online ? (
+      {computer && !computer.online ? (
         <p className="flex items-start gap-2 text-sm text-kumo-strong m-0" role="status">
           <Icon className="shrink-0 mt-1 text-kumo-warning" name="laptop" />
           {COPY.connect.offlineLead}
@@ -754,8 +745,8 @@ export function ComputerStep({
         </div>
       ) : null}
 
-      {/* A chosen machine reports through the check below; the arrival line is for a new one. */}
-      {selected ? null : <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />}
+      {/* The Account's machine reports through the check below; the arrival line is for a new one. */}
+      {computer ? null : <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />}
 
       {ready ? (
         <>
@@ -794,51 +785,11 @@ export function ComputerStep({
   );
 }
 
-/**
- * The computers this Account already has, with connecting a new one as the last option rather than
- * a second control beside it. One question, one place to answer it.
- *
- * A machine that is offline stays selectable: it is usually the one the reader means, and telling
- * them it cannot be used would be less useful than showing them how to bring it back.
- */
-function ComputerChoice({
-  computers,
-  onSelect,
-  selectedComputerId,
-}: {
-  computers: readonly KnownComputer[];
-  onSelect?: (computerId: string | undefined) => void;
-  selectedComputerId: string | undefined;
-}) {
-  const selectId = useId();
-  return (
-    <div className={FIELDSET} data-ui="onboarding-v2-computer-choice">
-      <label className="font-medium text-kumo-strong" htmlFor={selectId} id={`${selectId}-label`}>
-        {COPY.connect.selectLabel}
-      </label>
-      <KumoSelectControl
-        aria-labelledby={`${selectId}-label`}
-        id={selectId}
-        onChange={(event) => onSelect?.(event.target.value === NEW_COMPUTER_VALUE ? undefined : event.target.value)}
-        value={selectedComputerId ?? NEW_COMPUTER_VALUE}
-      >
-        {computers.map((computer) => (
-          <option key={computer.id} value={computer.id}>
-            {computerLabel(computer)}
-          </option>
-        ))}
-        <option value={NEW_COMPUTER_VALUE}>{COPY.connect.newOption}</option>
-      </KumoSelectControl>
-    </div>
-  );
-}
-
-const NEW_COMPUTER_VALUE = "__new__";
-
-function computerLabel(computer: KnownComputer): string {
-  if (computer.online) return `${computer.displayName} · ${COPY.connect.online}`;
+/** Whether the Account's machine can be reached, and when it was last seen if it cannot. */
+function computerStatus(computer: KnownComputer): string {
+  if (computer.online) return COPY.connect.online;
   const seen = computer.lastSeen ? ` · ${COPY.connect.lastSeen(computer.lastSeen)}` : "";
-  return `${computer.displayName} · ${COPY.connect.offline}${seen}`;
+  return `${COPY.connect.offline}${seen}`;
 }
 
 function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {

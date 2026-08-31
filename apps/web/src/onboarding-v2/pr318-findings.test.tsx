@@ -1,12 +1,15 @@
 /**
- * Probe for the review of `40e082c`, which found that offering a Computer the Account already has
- * had changed what the step *says* without changing what it can *do*: the check only ever ran for a
- * machine that had just arrived, a verdict outlived the machine it answered for, the asleep machine
- * could only be "repaired" by enrolling a second one, and the flow could not be left on a Computer
- * that was not freshly connected.
+ * Probe for the reviews of `40e082c` and `8df0d51`, and for the product rule this step now follows:
+ * an Account has one Computer. It is never asked which one, and never offered another — being
+ * nudged into enrolling a second machine is what leaves an Account with a duplicate to repair.
  *
- * Every test here drives the four inventories through the page, so each one fails if the step goes
- * back to knowing only a new arrival.
+ * The first review found that offering the Account's machine had changed what the step *said*
+ * without changing what it could *do*: the check only ran for a machine that had just arrived, a
+ * verdict outlived the machine it answered for, and the step could not be left. Independent QA then
+ * found the same dead end behind Start over.
+ *
+ * Every test drives the page, so each fails if the step goes back to knowing only a new arrival, or
+ * starts asking which Computer to use.
  */
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
@@ -16,11 +19,6 @@ import { OnboardingV2MockPage } from "./page.js";
 /** Issuing a connect code is the only thing still on a clock before the Computer step. */
 const ISSUE_MS = 300;
 const CREATE_MS = 900;
-
-const ONLINE_MAC = "MacBook Pro · Online";
-const OFFLINE_MAC = "MacBook Pro · Offline · last seen 3 days ago";
-const OFFLINE_IMAC = "Work iMac · Offline · last seen 3 days ago";
-const NEW_COMPUTER = "Connect a new computer…";
 
 async function advance(ms: number) {
   await act(async () => {
@@ -56,22 +54,14 @@ async function reachComputerStep() {
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-  // The step's own effects — issuing a code, or probing the machine that was chosen — settle here
+  // The step's own effects — issuing a code, or probing the machine it prepares — settle here
   // rather than inside the assertions that read what they produced.
   await act(async () => undefined);
 }
 
-function computerControl(): HTMLElement {
-  return screen.getByLabelText("Computer");
-}
-
-function chooseComputer(optionName: string) {
-  chooseOption(computerControl(), optionName);
-}
-
-/** What the control says it is set to — the Kumo select shows the chosen row's own label. */
-function chosenComputer(): string {
-  return computerControl().textContent ?? "";
+/** The line naming the Account's machine. Not a control: there is nothing here to operate. */
+function machineLine(): string {
+  return document.querySelector('[data-ui="onboarding-v2-computer"]')?.textContent ?? "";
 }
 
 function outcome(): string {
@@ -87,7 +77,16 @@ function enrollCommandShown(): boolean {
   return screen.queryByText(/opentag computer connect/) !== null;
 }
 
-describe("a Computer the Account already has", () => {
+/** Anything that would ask the reader which Computer, or offer them another one. */
+function asksWhichComputer(): boolean {
+  return (
+    screen.queryByRole("combobox") !== null ||
+    screen.queryByText(/Connect a new computer/) !== null ||
+    screen.queryByText(/Choose a computer/) !== null
+  );
+}
+
+describe("the Computer the Account already has", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -96,24 +95,25 @@ describe("a Computer the Account already has", () => {
     vi.useRealTimers();
   });
 
-  it("asks nothing about which Computer when the Account has none", async () => {
+  it("asks for a computer when the Account has none", async () => {
     render(<OnboardingV2MockPage />);
     await reachComputerStep();
     await advance(ISSUE_MS);
 
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.queryByLabelText("Computer")).toBeNull();
-    // The first run is the one that has to enroll, so this is where the command belongs.
+    // The first run is the one that has to enrol, so this is where the command belongs.
     expect(enrollCommandShown()).toBe(true);
+    expect(asksWhichComputer()).toBe(false);
   });
 
-  it("checks the chosen Computer rather than waiting for one to arrive", async () => {
+  it("checks the machine the Account has rather than waiting for one to arrive", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");
     await reachComputerStep();
 
-    expect(screen.getByRole("heading", { name: "Choose a computer" })).toBeTruthy();
-    // The probe is running for the machine that was chosen, not stalled waiting for an arrival.
+    expect(screen.getByRole("heading", { name: "Your computer" })).toBeTruthy();
+    expect(machineLine()).toContain("MacBook Pro");
+    // The probe is running for the machine the Account has, not stalled waiting for an arrival.
     expect(outcome()).toContain("Waiting for the computer check…");
     expect(continueButton().disabled).toBe(true);
 
@@ -131,39 +131,37 @@ describe("a Computer the Account already has", () => {
     fireEvent.click(continueButton());
     await advance(CREATE_MS);
 
-    // Creating on an already-owned Computer is what lets the flow move on; before this it stayed
+    // Creating on the Account's own Computer is what lets the flow move on; before this it stayed
     // here forever, because leaving required a connection that was never going to happen.
-    expect(screen.queryByRole("heading", { name: "Choose a computer" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Your computer" })).toBeNull();
   });
 
-  it("spends no connect code on a run that is reusing a Computer", async () => {
+  it("spends no connect code on a run that already has a Computer", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");
     await reachComputerStep();
     await advance(ISSUE_MS);
 
-    // A code enrolls a *new* machine. Issuing one here would quietly offer a second Computer to a
-    // reader who came to reuse the one they have.
+    // A code enrols a *new* machine. Issuing one here would quietly hand a second Computer to an
+    // Account that is meant to have one.
     expect(enrollCommandShown()).toBe(false);
     expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
   });
 
-  it("takes the previous machine's verdict off the screen when the choice changes", async () => {
+  it("never asks which Computer, even for an Account that holds more than one", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("Several");
     await reachComputerStep();
+
+    // An Account is meant to have one machine. One that predates that rule still gets no question
+    // and no second enrolment — the reachable machine is prepared and named, and that is all.
+    expect(asksWhichComputer()).toBe(false);
+    expect(machineLine()).toContain("MacBook Pro");
+    expect(machineLine()).not.toContain("Work iMac");
+    expect(enrollCommandShown()).toBe(false);
+
     await advanceMock("Return check result");
-    expect(outcome()).toContain("Everything your agent needs is ready.");
-
-    chooseComputer(OFFLINE_IMAC);
-
-    // The verdict answered for the MacBook. Left on screen it would read as the iMac's.
-    expect(outcome()).not.toContain("Everything your agent needs is ready.");
-    expect(continueButton().disabled).toBe(true);
-
-    chooseComputer(ONLINE_MAC);
-    expect(outcome()).toContain("Waiting for the computer check…");
-    expect(continueButton().disabled).toBe(true);
+    expect(continueButton().disabled).toBe(false);
   });
 
   it("repairs the asleep Computer instead of offering another one", async () => {
@@ -172,13 +170,14 @@ describe("a Computer the Account already has", () => {
     await reachComputerStep();
     await advance(ISSUE_MS);
 
-    // Preselected even though it cannot be reached: the alternative nudges someone whose only
-    // machine is asleep into enrolling a second one.
-    expect(chosenComputer()).toContain(OFFLINE_MAC);
+    expect(machineLine()).toContain("Offline");
+    expect(machineLine()).toContain("last seen 3 days ago");
     expect(
       screen.getByText("This computer is offline. Reconnect it and this page will continue on its own."),
     ).toBeTruthy();
+    // Enrolling a second machine is not the way to repair the first.
     expect(enrollCommandShown()).toBe(false);
+    expect(asksWhichComputer()).toBe(false);
 
     await advanceMock("Reconnect MacBook Pro");
 
@@ -187,11 +186,10 @@ describe("a Computer the Account already has", () => {
     expect(outcome()).toContain("Waiting for the computer check…");
     await advanceMock("Return check result");
     expect(continueButton().disabled).toBe(false);
-    // The same machine, now reachable — not a second one added beside it.
-    expect(chosenComputer()).toContain(ONLINE_MAC);
+    expect(machineLine()).toContain("Online");
   });
 
-  it("still checks the preselected Computer after Start over", async () => {
+  it("still checks the Account's Computer after Start over", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");
     await reachComputerStep();
@@ -200,26 +198,12 @@ describe("a Computer the Account already has", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start over" }));
     await reachComputerStep();
 
-    // Start over takes the verdict away without changing which machine is preselected. If the check
-    // is only asked for when the machine changes, the step waits for an answer nobody will give:
-    // Continue disabled, nothing for the outside world to do, no way out but reselecting.
+    // Start over takes the verdict away without changing which machine is prepared. If the check is
+    // only asked for when the machine changes, the step waits for an answer nobody will give:
+    // Continue disabled, and nothing left for the outside world to do.
     expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
     await advanceMock("Return check result");
     expect(continueButton().disabled).toBe(false);
-  });
-
-  it("preselects a reachable Computer over an unreachable one", async () => {
-    render(<OnboardingV2MockPage />);
-    chooseInventory("Several");
-    await reachComputerStep();
-
-    expect(chosenComputer()).toContain(ONLINE_MAC);
-
-    // The unreachable machine is still offered, and connecting a new one is the last item of the
-    // same control rather than a second thing to answer.
-    fireEvent.click(computerControl());
-    expect(screen.getByRole("option", { name: OFFLINE_IMAC })).toBeTruthy();
-    expect(screen.getByRole("option", { name: NEW_COMPUTER })).toBeTruthy();
   });
 });
 
@@ -234,7 +218,7 @@ describe("the cloud route, which has no Computer of its own to point at", () => 
 
   it("still creates the Agent when OpenTag allocates the machine", async () => {
     // The guard that stops a local run creating an Agent with no Computer must not stop a cloud
-    // run, where the machine is allocated rather than connected or chosen.
+    // run, where the machine is allocated rather than connected or already owned.
     render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
     fireEvent.click(screen.getByRole("button", { name: "Offer the cloud computer" }));

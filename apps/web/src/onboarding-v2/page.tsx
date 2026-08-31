@@ -165,6 +165,14 @@ function OnboardingV2Flow({
   const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
 
+  /*
+   * The Computer this Account has, if it has one. An Account has a single machine, so this is a
+   * fact about the Account rather than a choice the reader makes: the step names it, checks it, and
+   * repairs it. The backend picks a reachable one first for Accounts that predate that rule and
+   * still hold more than one.
+   */
+  const accountComputer = backend.knownComputers?.find((candidate) => candidate.id === backend.selectedComputerId);
+
   const facts: FlowFacts = {
     draft,
     destinationConfirmed: destinationConfirmed || resumed,
@@ -325,16 +333,14 @@ function OnboardingV2Flow({
             />
           ) : flow.page === "computer" ? (
             <ComputerStep
+              computer={accountComputer}
               connect={backend.connect}
               creation={backend.creation}
               draft={draft}
-              knownComputers={backend.knownComputers}
               onBack={resumed ? undefined : backToAgent}
               onCreate={() => backend.createAgent(draft)}
               onRefreshCommand={backend.refreshConnectCode}
-              onSelectComputer={backend.selectComputer}
               readiness={backend.readiness}
-              selectedComputerId={backend.selectedComputerId}
             />
           ) : (
             <MessagingStep

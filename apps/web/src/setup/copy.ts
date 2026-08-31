@@ -66,21 +66,17 @@ export const SETUP_COPY = {
     connected: "Your computer is connected.",
 
     /*
-     * The same step, once the Account already has a computer. The title changes because the
-     * question does: connecting one is now a choice rather than the only way through.
-     *
-     * The lead says what the step is for and stops. What the control offers — an existing machine
-     * or a new one — is visible in the control itself, so narrating it here would only add a
-     * sentence to the step that needs one least.
+     * The same step, once the Account has its computer. An Account has one, so there is nothing to
+     * choose and nothing to add: the step says which machine the Agent will run on and whether it
+     * can be reached. Asking "which one" would surface a concept the reader should never meet, and
+     * offering another is how an Account ends up with a duplicate it then has to repair.
      */
-    chooseTitle: "Choose a computer",
-    chooseLead: "Your AI worker runs on your own computer.",
-    selectLabel: "Computer",
-    newOption: "Connect a new computer…",
+    yoursTitle: "Your computer",
+    yoursLead: "Your AI worker runs on your own computer.",
     online: "Online",
     offline: "Offline",
     lastSeen: (when: string) => `last seen ${when}`,
-    /** Reconnecting repairs this exact machine, so the Account does not collect a second one. */
+    /** Reconnecting repairs this exact machine, rather than replacing it with a second one. */
     offlineLead: "This computer is offline. Reconnect it and this page will continue on its own.",
   },
 

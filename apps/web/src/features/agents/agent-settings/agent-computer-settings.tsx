@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
+import { Button, Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import { ComputerConnect } from "../../computer-connect/computer-connect.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
@@ -20,26 +20,36 @@ export function AgentComputerSettings({
   const ready = computerState.state === "ready" && !runtimeUnavailable;
   const blocked = computerState.state === "action_required" || runtimeUnavailable;
   const computerStatus = ready
-    ? "Online"
+    ? m.agent_settings_computer_online()
     : blocked
       ? runtimeUnavailable
         ? "Not ready"
-        : "Offline"
+        : m.agent_settings_computer_offline()
       : "Unable to confirm";
   const computerTone: StatusTone = ready ? "success" : blocked ? "warning" : "neutral";
   return (
     <div className="grid gap-6">
+      <Text as="h1" id="computer-heading" size="lg" variant="heading">
+        {m.agents_status_computer()}
+      </Text>
       <section
-        aria-labelledby="computer-heading"
+        aria-labelledby="computer-device-heading"
         className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
       >
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <Text as="h1" id="computer-heading" size="lg" variant="heading">
-              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+        <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3" data-ui="computer-identity">
+          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
+            <Icon name="laptop" />
+          </span>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+            <Text as="h2" id="computer-device-heading" variant="heading">
+              {agent.computer.displayName}
             </Text>
+            <span aria-hidden="true" className="text-sm text-kumo-subtle">
+              ·
+            </span>
+            <span className="text-sm text-kumo-subtle">{platformLabel(agent.computer.platform)}</span>
           </div>
-          <StatusIndicator label={computerStatus} tone={computerTone} />
+          <StatusIndicator className="justify-self-end" label={computerStatus} tone={computerTone} />
         </header>
         {ready ? null : (
           <div className="rounded-md bg-kumo-recessed p-4">
@@ -58,7 +68,6 @@ export function AgentComputerSettings({
                   <Button
                     aria-controls="agent-computer-reconnect"
                     aria-expanded={reconnecting}
-                    size="compact"
                     variant={reconnecting ? "inline" : "secondary"}
                     onClick={() => setReconnecting((value) => !value)}
                   >

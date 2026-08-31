@@ -193,6 +193,7 @@ export {
   agentSuspendPath,
   agentUsagePath,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   IM_BINDING_BY_ID_TEMPLATE,

@@ -22,6 +22,7 @@ import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
+import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
 import { AgentRuntimeTestService, AgentService } from "./services/agents/index.js";
 import {
   AuthService,
@@ -87,6 +88,13 @@ export {
   type RuntimeDomainOwnerOptions,
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
+export {
+  DEFAULT_RUNTIME_DURABLE_WORK_RETENTION_MS,
+  DEFAULT_RUNTIME_DURABLE_WORK_TERMINAL_LIMIT,
+  PostgresRuntimeDurableWorkStore,
+  RuntimeDurableWorkConflictError,
+  type RuntimeDurableWorkStoreOptions,
+} from "./runtime/runtime-durable-work-store.js";
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
@@ -200,6 +208,7 @@ export async function startServer(): Promise<void> {
       prepareReconcile: (workspaceComputerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
     });
+    const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -315,6 +324,7 @@ export async function startServer(): Promise<void> {
       imResourceService,
       readiness,
       runtime: { registry, domainOwner, agentRuntimeTestOwner },
+      runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,

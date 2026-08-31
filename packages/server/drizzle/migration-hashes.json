@@ -160,6 +160,11 @@
       "idx": 31,
       "tag": "0031_majestic_shiva",
       "sha256": "ed5c92f7986df61efaeea738fcc9f1afde0cd448819182598ddb235172db7dd1"
+    },
+    {
+      "idx": 32,
+      "tag": "0032_durable_turn_storage",
+      "sha256": "eb10fc2b0e8a85bc159cc9ad2b72e07c9b12b4224859ce5ec4e2a7870cf9370f"
     }
   ]
 }

@@ -54,6 +54,10 @@ import {
   PROVIDER_READINESS_V1_HEADER,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  type RuntimeDurableWorkKind,
+  RuntimeDurableWorkListResponseSchema,
+  type RuntimeDurableWorkRecord,
+  runtimeDurableWorkPath,
   runtimeImResourcePath,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCommandResponse,
@@ -533,6 +537,36 @@ export class OpenTagApi {
       this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
     }
     return response;
+  }
+
+  listRuntimeDurableWork(
+    machineToken: string,
+    kind: RuntimeDurableWorkKind,
+    options?: RequestOptions,
+  ): Promise<RuntimeDurableWorkRecord[]> {
+    const query = new URLSearchParams({ kind });
+    return this.#request(
+      `${HTTP_PATHS.runtimeDurableWork}?${query.toString()}`,
+      RuntimeDurableWorkListResponseSchema,
+      { headers: { authorization: `Bearer ${machineToken}` } },
+      options,
+    ).then((response) => response.items);
+  }
+
+  writeRuntimeDurableWork(
+    machineToken: string,
+    record: RuntimeDurableWorkRecord,
+    options?: RequestOptions,
+  ): Promise<void> {
+    return this.#requestNoContent(
+      runtimeDurableWorkPath(record.kind, record.key),
+      {
+        method: "PUT",
+        body: JSON.stringify(record),
+        headers: { authorization: `Bearer ${machineToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
   createInternalSession(

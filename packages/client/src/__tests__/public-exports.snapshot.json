@@ -76,6 +76,7 @@
   "ServerHealthNetworkError",
   "ServerHealthResponseError",
   "ServerHealthTimeoutError",
+  "ServerRuntimeDurabilityStore",
   "SessionBindingConflictError",
   "SessionBindingStore",
   "SessionCliProofManager",

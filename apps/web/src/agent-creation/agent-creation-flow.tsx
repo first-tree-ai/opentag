@@ -22,7 +22,6 @@ import {
 
 const CREATE_INTENT_VERSION = 3;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
-const CREATION_CONTEXT_KEY = "opentag.agent-creation.context";
 
 export interface AgentCreationComputer {
   readonly id: string;
@@ -77,18 +76,6 @@ interface CreationIntentRecord {
   readonly accountId: string;
   readonly creationIntentId: string;
   readonly request: Omit<CreateAgentRequest, "creationIntentId">;
-  /**
-   * The browsing context that wrote this record. It is the only thing that says whose record this
-   * is: a page can decide about its own past requests and knows nothing about anyone else's, so
-   * this is what keeps one tab from judging another's.
-   */
-  readonly contextId?: string;
-  /**
-   * When a creation succeeded that this record is no longer part of. A superseded record is never
-   * resumed, but it is never destroyed either: it stays readable so that whoever sent it can still
-   * retry under the same key if their response was lost.
-   */
-  readonly supersededAt?: string;
 }
 
 interface CreationIntentStore {
@@ -101,7 +88,6 @@ const memoryIntentRecords = new Map<string, readonly CreationIntentRecord[]>();
 const memoryIntentFallbackAccounts = new Set<string>();
 const fallbackCreationLocks = new Map<string, Promise<void>>();
 const creationRequests = new Map<string, Promise<AgentAdminConfig>>();
-let memoryContextId: string | undefined;
 
 export function deriveAgentName(displayName: string): string {
   return displayName
@@ -152,11 +138,6 @@ export function AgentCreationFlow({
   const nameFieldRef = useRef<HTMLInputElement>(null);
   const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
-  /**
-   * The record this form last sent and has not seen succeed. A retry has to reuse it — that is the
-   * key the Server deduplicates against — and nothing else may be reused in its place.
-   */
-  const outstandingRecordRef = useRef<CreationIntentRecord | undefined>(undefined);
   const resumeAttemptedRef = useRef(false);
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
   const restoreComputerSetupFocusRef = useRef(false);
@@ -252,23 +233,9 @@ export function AgentCreationFlow({
       setSubmitting(true);
       onSubmittingChange?.(true);
       try {
-        /*
-         * A retry of the request still in flight reuses the record this form sent, because that is
-         * the key the Server will recognise. It is identified by being *this form's outstanding
-         * request*, never by looking the same: a later submission can carry an identical name,
-         * Computer and Runtime, and replaying a spent key for it would hand the reader the Agent
-         * that key already created while reporting a new one.
-         */
-        record ??= sameRequest(outstandingRecordRef.current, request)
-          ? outstandingRecordRef.current
-          : await getOrCreateCreationIntent(accountId, request);
-        outstandingRecordRef.current = record;
+        record ??= await getOrCreateCreationIntent(accountId, request);
         const created = await createAgentOnce(record);
-        // The Agent exists, so this page's own records are spent: the one it sent, and any it
-        // abandoned by changing the name or the route. Marking stops them resuming later; marking
-        // only its own leaves every other page's key exactly as that page left it.
-        await supersedeOwnCreationIntents(accountId, new Date().toISOString());
-        outstandingRecordRef.current = undefined;
+        await clearCreationIntent(accountId, record.creationIntentId);
         onCreated(created);
       } catch (cause) {
         if (cause instanceof ApiError) {
@@ -297,12 +264,12 @@ export function AgentCreationFlow({
     if (!pendingIntent || resumeAttemptedRef.current) return;
     /*
      * A resume finishes what the reader started, so it may only send what the reader is looking at.
-     * "Is that route still ready" is a weaker question than "is that the route on screen": with
-     * several Computers to choose between, a stored intent can name a machine or a Runtime this
-     * form is not currently showing, and sending it then creates the Agent somewhere the reader
-     * never saw. Requiring the stored route to be the selected route keeps the target visible; an
-     * intent naming another route is not resumed, and its fields stay on the form for the reader to
-     * submit against what they can see.
+     * "Is that route still ready" is a weaker question: the reader moves the selection by choosing
+     * another Computer, and a newly connected one is adopted the same way, while the stored intent
+     * still names the original. When that machine comes back the weaker question turns true again
+     * and the Agent is created somewhere nobody is looking. Requiring the stored route to be the
+     * selected route keeps the target visible; an intent naming another route is not resumed, and
+     * its fields stay on the form for the reader to submit against what they can see.
      */
     const resumesTheSelectedRoute =
       selectedRoute !== undefined &&
@@ -884,15 +851,6 @@ async function withCreationLock<T>(accountId: string, task: () => Promise<T> | T
   }
 }
 
-/** Whether a record answers for exactly this request, and is therefore the key a retry must carry. */
-function sameRequest(
-  record: CreationIntentRecord | undefined,
-  request: Omit<CreateAgentRequest, "creationIntentId">,
-): record is CreationIntentRecord {
-  return record !== undefined && JSON.stringify(record.request) === JSON.stringify(request);
-}
-
-/** The record for a request about to be sent, reused whenever this exact request already has a live one. */
 async function getOrCreateCreationIntent(
   accountId: string,
   request: Omit<CreateAgentRequest, "creationIntentId">,
@@ -900,21 +858,11 @@ async function getOrCreateCreationIntent(
   return withCreationLock(accountId, () => {
     const records = readCreationIntents(accountId);
     const fingerprint = JSON.stringify(request);
-    // Only a record still in play can answer for this request. A spent one belongs to a creation
-    // that already happened, and replaying its key would return that Agent instead of making the
-    // one being asked for now.
-    const contextId = creationContextId();
-    const existing = records.find(
-      (record) =>
-        record.contextId === contextId &&
-        record.supersededAt === undefined &&
-        JSON.stringify(record.request) === fingerprint,
-    );
+    const existing = records.find((record) => JSON.stringify(record.request) === fingerprint);
     if (existing) return existing;
     const next: CreationIntentRecord = {
       version: CREATE_INTENT_VERSION,
       accountId,
-      contextId: creationContextId(),
       creationIntentId: crypto.randomUUID(),
       request,
     };
@@ -923,38 +871,8 @@ async function getOrCreateCreationIntent(
   });
 }
 
-/**
- * The record a form may act on unprompted: one this browsing context wrote itself and has not
- * marked spent. Resuming is the page finishing its own interrupted request — a reload of this tab
- * still finds it, because the context outlives the page — and another tab's request is never that,
- * however ready its route looks.
- */
 function readCreationIntent(accountId: string): CreationIntentRecord | undefined {
-  const contextId = creationContextId();
-  return readCreationIntents(accountId)
-    .filter((record) => record.contextId === contextId && record.supersededAt === undefined)
-    .at(-1);
-}
-
-/**
- * This browsing context's identity, kept in session storage so it survives a reload of this tab
- * and is never shared with another. Where session storage is unavailable the context is unnamed
- * for the life of the page: it can still finish its own in-memory request, and it neither resumes
- * nor marks anything written before it.
- */
-function creationContextId(): string {
-  try {
-    const stored = window.sessionStorage.getItem(CREATION_CONTEXT_KEY);
-    if (stored) return stored;
-    const created = crypto.randomUUID();
-    window.sessionStorage.setItem(CREATION_CONTEXT_KEY, created);
-    return created;
-  } catch {
-    // Session storage is unavailable, so the context cannot outlive this page. It is still stable
-    // for the page's own life, which is what lets an in-flight request be retried here.
-    memoryContextId ??= crypto.randomUUID();
-    return memoryContextId;
-  }
+  return readCreationIntents(accountId).at(-1);
 }
 
 function readCreationIntents(accountId: string): readonly CreationIntentRecord[] {
@@ -995,27 +913,6 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
   }
 }
 
-/**
- * Marks this browsing context's own records spent, which is what a successful creation makes of
- * them: the request it sent, and any it abandoned along the way by changing the name or the route.
- *
- * It marks nothing else. Another tab's record may belong to a request still in flight, and no
- * amount of reading storage can tell that from an abandoned one — so this page does not guess. It
- * decides only about requests it made itself, which it does know the fate of.
- *
- * Nothing is destroyed, either. Marking answers the only question resume asks — may this be sent
- * unprompted? — and leaves the key readable for the page that sent it to retry under.
- */
-async function supersedeOwnCreationIntents(accountId: string, supersededAt: string): Promise<void> {
-  const contextId = creationContextId();
-  await withCreationLock(accountId, () => {
-    const records = readCreationIntents(accountId).map((record) =>
-      record.contextId === contextId && record.supersededAt === undefined ? { ...record, supersededAt } : record,
-    );
-    writeCreationIntents(accountId, records);
-  });
-}
-
 async function clearCreationIntent(accountId: string, creationIntentId: string): Promise<void> {
   await withCreationLock(accountId, () => {
     const records = readCreationIntents(accountId).filter((record) => record.creationIntentId !== creationIntentId);
@@ -1040,8 +937,6 @@ function validCreationIntentRecord(value: unknown, accountId: string): value is 
     record.version === CREATE_INTENT_VERSION &&
     record.accountId === accountId &&
     typeof record.creationIntentId === "string" &&
-    (record.contextId === undefined || typeof record.contextId === "string") &&
-    (record.supersededAt === undefined || typeof record.supersededAt === "string") &&
     record.request !== undefined &&
     typeof record.request.name === "string" &&
     typeof record.request.displayName === "string" &&

@@ -11,7 +11,6 @@ const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const taskSessionId = "11111111-1111-4111-8111-111111111111";
 const secondComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const creationIntentKey = `opentag.agent-creation.intent:${userId}`;
-const creationContextId = "3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b00";
 
 /** Two Computers an Agent could run on, so a reader has something to choose between. */
 const twoReadyComputers = [
@@ -35,14 +34,9 @@ const twoReadyComputers = [
   },
 ];
 
-/**
- * Writes one version-3 creation intent, the shape an earlier page load of this same tab would have
- * left behind — including the browsing context it was written in, since only that context resumes
- * it.
- */
+/** Writes one version-3 creation intent, the shape a previous visit would have left behind. */
 function storeCreationIntent(record: { creationIntentId: string; request: Record<string, unknown> }) {
-  window.sessionStorage.setItem("opentag.agent-creation.context", creationContextId);
-  const stored = { version: 3, accountId: userId, contextId: creationContextId, ...record };
+  const stored = { version: 3, accountId: userId, ...record };
   window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 3, accountId: userId, records: [stored] }));
   return stored;
 }
@@ -1103,63 +1097,6 @@ describe("OpenTag Web App Shell", () => {
       creationIntentId: record.creationIntentId,
       runtimeProvider: "codex",
     });
-  });
-
-  it("retires an abandoned intent once an explicit creation supersedes it", async () => {
-    // The abandoned intent names a Computer that is not a route today, so it does not resume and
-    // the reader carries on against a machine that is. Its record has to go with the creation:
-    // left behind, it resumes the moment its machine is a ready route again.
-    storeCreationIntent({
-      creationIntentId: "8f1e2d3c-4b5a-4c6d-9e8f-1a2b3c4d5e66",
-      request: {
-        name: "zulu-agent",
-        displayName: "Zulu Agent",
-        runtimeProvider: "codex",
-        computerId: secondComputerId,
-      },
-    });
-    const offlineSecond = { ...(twoReadyComputers[1] as Record<string, unknown>), connectionStatus: "offline" };
-    installApi({ computers: [twoReadyComputers[0] as Record<string, unknown>, offlineSecond] });
-    window.history.replaceState({}, "", "/agents/new");
-    const first = render(<App />);
-
-    // The stored intent selects its own machine, and that machine cannot run an Agent, so nothing
-    // is sent and the reader is left to choose another.
-    expect(await screen.findByText("Zulu Tower")).toBeTruthy();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(agentCreationPosts()).toHaveLength(0);
-
-    fireEvent.click(screen.getByRole("button", { name: "Change Computer" }));
-    fireEvent.click(screen.getByRole("button", { name: /Ada's Mac/ }));
-    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Visible Agent" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
-    await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
-    // The act these records exist to survive is over, so they are marked spent — not deleted, since
-    // a page still waiting on one needs its key to retry under. Marking is what stops the resume
-    // effect sending it once its machine becomes the selected one again.
-    await waitFor(() => {
-      const stored = window.localStorage.getItem(creationIntentKey);
-      const records = stored ? (JSON.parse(stored) as { records: { supersededAt?: string }[] }).records : [];
-      expect(records.length).toBeGreaterThan(0);
-      expect(records.every((record) => record.supersededAt !== undefined)).toBe(true);
-    });
-
-    // Prove it rather than infer it from an empty store: come back with that machine online, which
-    // is exactly the state that would have resumed the abandoned record. `installApi` swaps the
-    // implementation and keeps the call history, so this is measured as growth.
-    const postsBeforeReturning = agentCreationPosts().length;
-    first.unmount();
-    installApi({ computers: [twoReadyComputers[1] as Record<string, unknown>] });
-    window.history.replaceState({}, "", "/agents/new");
-    render(<App />);
-
-    expect(await screen.findByText("Zulu Tower")).toBeTruthy();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(agentCreationPosts()).toHaveLength(postsBeforeReturning);
   });
 
   it("refreshes and selects a newly connected Computer in New Agent", async () => {

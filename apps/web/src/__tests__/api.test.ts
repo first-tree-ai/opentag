@@ -64,6 +64,7 @@ describe("BrowserApi", () => {
     const api = new BrowserApi(fetchImpl);
     await expect(api.suspendAgent(agentId)).resolves.toMatchObject({ status: "suspended" });
     await expect(api.reactivateAgent(agentId)).resolves.toMatchObject({ id: agentId });
+    await expect(api.rebindAgentComputer(agentId, config.computerId)).resolves.toMatchObject({ id: agentId });
     await expect(api.deleteAgent(agentId)).resolves.toBeUndefined();
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });

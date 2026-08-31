@@ -399,21 +399,31 @@ describe("Agent availability model and presentation", () => {
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "not_connected" },
       } as never),
-    ).toMatchObject({ action: { label: "Connect messaging" } });
+    ).toEqual({
+      detail: "Cannot receive new work",
+      label: "Messaging disconnected",
+      priority: 2,
+      tone: "neutral",
+    });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "action_required", reason: "runtime_unavailable" },
       } as never),
-    ).toMatchObject({ action: { section: "computer" } });
+    ).toMatchObject({ detail: "Cannot receive new work", priority: 0, tone: "warning" });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "action_required", reason: "im_error" },
       } as never),
-    ).toMatchObject({ action: { section: "messaging" } });
+    ).toEqual({
+      detail: "Cannot receive new work",
+      label: "Messaging disconnected",
+      priority: 0,
+      tone: "warning",
+    });
     expect(
       agentCardStatus({
         ...base,

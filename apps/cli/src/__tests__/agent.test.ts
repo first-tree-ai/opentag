@@ -375,6 +375,7 @@ describe("Agent CLI core", () => {
     const program = createProgram();
     const agentCommand = program.commands.find((command) => command.name() === "agent");
     const computerCommand = program.commands.find((command) => command.name() === "computer");
+    const bind = agentCommand?.commands.find((command) => command.name() === "bind");
     const create = agentCommand?.commands.find((command) => command.name() === "create");
     const update = agentCommand?.commands.find((command) => command.name() === "update");
     const list = agentCommand?.commands.find((command) => command.name() === "list");
@@ -382,6 +383,8 @@ describe("Agent CLI core", () => {
     expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
     expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
     expect(connect?.description()).toBe("Enroll this Computer with a one-time code");
+    expect(bind?.description()).toBe("Bind an Agent to a Computer enrolled by this Account");
+    expect(bind?.options.map((option) => option.long)).toEqual(expect.arrayContaining(["--computer"]));
     expect(create?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining([
         "--model",

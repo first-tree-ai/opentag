@@ -101,8 +101,11 @@ export function checkMigrationDrift({ journalPath, migrationsDir, manifestPath, 
   validateCorrespondence(entries, sqlTags);
 
   const manifestExists = existsSync(manifestPath);
-  const recorded = manifestExists ? validateManifest(readJson(manifestPath, "hash manifest"), manifestPath) : [];
-  if (!manifestExists && !update) fail(`hash manifest does not exist: ${manifestPath}; run with --update to create it`);
+  if (!manifestExists) fail(`hash manifest does not exist: ${manifestPath}`);
+  const recorded = validateManifest(readJson(manifestPath, "hash manifest"), manifestPath);
+  if (entries.length > 0 && recorded.length === 0) {
+    fail(`hash manifest has no historical entries for ${entries.length} migrations`);
+  }
   if (recorded.length > entries.length)
     fail(`manifest contains removed historical migration ${recorded[entries.length].tag}`);
 

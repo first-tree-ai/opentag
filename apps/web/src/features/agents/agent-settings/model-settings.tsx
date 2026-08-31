@@ -5,6 +5,7 @@ import {
 } from "@opentag/shared/browser";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import * as m from "../../../paraglide/messages.js";
 import {
   Button,
   Dialog,
@@ -97,13 +98,13 @@ export function AgentModelSettings({
       setModelDraft(resolvedConfig.runtimeConfig.model ?? "");
       setModelSelection(modelSelectionFor(resolvedConfig));
       setReasoningDraft(resolvedConfig.runtimeConfig.reasoningEffort ?? "");
-      setMessage("Model settings saved.");
+      setMessage(m.agent_settings_model_settings_saved());
       editingRef.current = false;
       pendingConfigRef.current = undefined;
       setEditing(false);
       onAgentChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to save model settings");
+      setError(cause instanceof Error ? cause.message : m.agent_settings_save_model_settings_failed());
     } finally {
       setSaving(false);
     }
@@ -112,23 +113,26 @@ export function AgentModelSettings({
   return (
     <section aria-labelledby={`model-settings-heading-${config.id}`} className="grid gap-4" data-agent-id={agent.id}>
       <Text as="h2" id={`model-settings-heading-${config.id}`} variant="heading">
-        Model
+        {m.agent_settings_model_title()}
       </Text>
       <SettingsList>
-        <SettingsRow description="Fixed after creation." label="Runtime">
+        <SettingsRow
+          description={m.agent_settings_runtime_fixed_description()}
+          label={m.agent_settings_runtime_label()}
+        >
           <p className="text-sm text-kumo-default">{runtimeProviderName(config.runtimeProvider)}</p>
         </SettingsRow>
-        <SettingsRow label="Model">
+        <SettingsRow label={m.agent_settings_model_label()}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="min-w-0 break-words text-sm text-kumo-default">
-              {config.runtimeConfig.model ?? "Provider default"}
+              {config.runtimeConfig.model ?? m.agent_settings_provider_default()}
             </p>
             <Button ref={changeButtonRef} size="compact" variant="secondary" onClick={openEditor}>
-              Change
+              {m.agent_settings_change_action()}
             </Button>
           </div>
         </SettingsRow>
-        <SettingsRow label="Reasoning">
+        <SettingsRow label={m.agent_settings_reasoning_label()}>
           <p className="text-sm text-kumo-default">{reasoningLabel(config.runtimeConfig.reasoningEffort)}</p>
         </SettingsRow>
       </SettingsList>
@@ -136,13 +140,13 @@ export function AgentModelSettings({
       {editing ? (
         <Dialog
           busy={saving}
-          description="Choose the model and reasoning level this Agent uses."
+          description={m.agent_settings_model_dialog_description()}
           returnFocusRef={changeButtonRef}
-          title="Change model"
+          title={m.agent_settings_change_model_title()}
           onClose={closeEditor}
         >
           <form className="grid gap-4" onSubmit={save}>
-            <Field htmlFor={fieldId("model")} label="Model">
+            <Field htmlFor={fieldId("model")} label={m.agent_settings_model_label()}>
               <KumoSelectControl
                 id={fieldId("model")}
                 value={modelSelection}
@@ -157,17 +161,17 @@ export function AgentModelSettings({
                   setError(undefined);
                 }}
               >
-                <option value="">Provider default</option>
+                <option value="">{m.agent_settings_provider_default()}</option>
                 {runtimeOptions.modelSuggestions.map((model) => (
                   <option value={model} key={model}>
                     {model}
                   </option>
                 ))}
-                <option value={CUSTOM_MODEL_OPTION}>Custom model ID…</option>
+                <option value={CUSTOM_MODEL_OPTION}>{m.agent_settings_custom_model_id_option()}</option>
               </KumoSelectControl>
             </Field>
             {modelSelection === CUSTOM_MODEL_OPTION ? (
-              <Field htmlFor={fieldId("custom-model")} label="Custom model ID">
+              <Field htmlFor={fieldId("custom-model")} label={m.agent_settings_custom_model_id_label()}>
                 <KumoInputControl
                   autoComplete="off"
                   id={fieldId("custom-model")}
@@ -180,7 +184,7 @@ export function AgentModelSettings({
                 />
               </Field>
             ) : null}
-            <Field htmlFor={fieldId("reasoning-effort")} label="Reasoning level">
+            <Field htmlFor={fieldId("reasoning-effort")} label={m.agent_settings_reasoning_level_label()}>
               <KumoSelectControl
                 id={fieldId("reasoning-effort")}
                 value={reasoningDraft}
@@ -189,9 +193,9 @@ export function AgentModelSettings({
                   setError(undefined);
                 }}
               >
-                <option value="">Provider default</option>
+                <option value="">{m.agent_settings_provider_default()}</option>
                 {hasHistoricalReasoningDraft ? (
-                  <option value={reasoningDraft}>{reasoningDraft} (saved value)</option>
+                  <option value={reasoningDraft}>{m.agent_settings_saved_value({ value: reasoningDraft })}</option>
                 ) : null}
                 {runtimeOptions.reasoningEffortAllowedValues.map((effort) => (
                   <option value={effort} key={effort}>
@@ -207,10 +211,10 @@ export function AgentModelSettings({
             ) : null}
             <div className="flex flex-wrap justify-end gap-2 border-t border-kumo-line pt-4">
               <Button disabled={saving} variant="ghost" onClick={closeEditor}>
-                Cancel
+                {m.agent_settings_cancel_action()}
               </Button>
               <Button disabled={!dirty || saving || customModelInvalid} type="submit">
-                {saving ? "Saving…" : "Save changes"}
+                {saving ? m.agent_settings_saving_action() : m.agent_settings_save_changes_action()}
               </Button>
             </div>
           </form>
@@ -233,18 +237,18 @@ function newerConfig(current: AgentAdminConfig | undefined, candidate: AgentAdmi
 }
 
 function runtimeProviderName(provider: AgentAdminConfig["runtimeProvider"]): string {
-  return provider === "codex" ? "Codex" : "Claude Code";
+  return provider === "codex" ? m.agent_settings_codex() : m.agent_settings_claude_code();
 }
 
 function reasoningLabel(value: string | null): string {
-  if (!value) return "Provider default";
+  if (!value) return m.agent_settings_provider_default();
   const labels: Record<string, string> = {
-    minimal: "Minimal",
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    xhigh: "XHigh",
-    max: "Max",
+    minimal: m.agent_settings_reasoning_minimal(),
+    low: m.agent_settings_reasoning_low(),
+    medium: m.agent_settings_reasoning_medium(),
+    high: m.agent_settings_reasoning_high(),
+    xhigh: m.agent_settings_reasoning_xhigh(),
+    max: m.agent_settings_reasoning_max(),
   };
   return labels[value] ?? value;
 }

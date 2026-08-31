@@ -268,7 +268,12 @@ describe("RuntimeConnection", () => {
 
   it("covers failed queued sends, expiry, abort, and socket-wide rejection", async () => {
     const socket = new ControlledWebSocket();
-    const connection = controlledConnection(socket, { trace: 2 });
+    const now = Date.now();
+    const connection = new RuntimeConnection({
+      ...controlledOptions(socket),
+      now: () => now,
+      queueLimits: { trace: 2 },
+    });
     const running = connection.run();
     await registerControlled(connection, socket);
     socket.autoFlush = false;
@@ -280,7 +285,7 @@ describe("RuntimeConnection", () => {
     socket.releaseNextSend();
     await first;
 
-    const expiring = connection.send({ type: "test:expiring" }, { priority: "result", deadline: Date.now() + 1 });
+    const expiring = connection.send({ type: "test:expiring" }, { priority: "result", deadline: now + 1 });
     await expect(expiring).rejects.toMatchObject({ code: "deadline" });
     expect(socket.readyState).toBe(WebSocket.CLOSED);
     connection.stop();

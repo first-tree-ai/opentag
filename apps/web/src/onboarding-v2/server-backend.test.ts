@@ -250,9 +250,9 @@ describe("useServerBackend", () => {
       expect(view.result.current.error).toBe("network down");
     });
 
-    it("issues one code per visit even where React double-invokes state updaters", async () => {
-      // The request is started from inside a `setConnect` updater, and updaters must be pure.
-      // StrictMode is the cheapest place a second invocation would show up as a second POST.
+    it("issues one code per visit even where React double-invokes the step effect", async () => {
+      // The issue request starts from a plain call that marks the connection ref synchronously.
+      // StrictMode is the cheapest place a second run would show up as a second POST.
       computersReturning([]);
       const issue = issuing();
 
@@ -395,18 +395,44 @@ describe("useServerBackend", () => {
       expect(view.result.current.connect.kind).toBe("expired");
     });
 
-    it("stops waiting on a code the Server no longer knows", async () => {
-      computersReturning([]);
-      issuing();
+    it("expires recoverably, command and Refresh intact, when the Server disowns the code", async () => {
+      computersReturning([computer(ready())]);
+      const issue = issuing();
       vi.spyOn(browserApi, "computerConnectCodeStatus").mockRejectedValue(
         new ApiError(404, "The requested resource was not found", "RESOURCE_NOT_FOUND", "deterministic"),
       );
 
       const view = mount();
-      await connected(view);
+      act(() => view.result.current.issueConnectCode());
+      await settle();
+      await tick(POLL_MS);
 
-      expect(view.result.current.connect.kind).toBe("idle");
-      expect(view.result.current.error).toBe("The requested resource was not found");
+      // The raw 404 is never shown, no Computer is adopted, and the dead command keeps its Refresh.
+      expect(view.result.current.connect).toEqual({
+        kind: "expired",
+        command: "sh -c 'curl -fsSL https://example.test/install.sh' -- connect ABC",
+      });
+      expect(view.result.current.error).toBeUndefined();
+      expect(view.result.current.readiness).toBeUndefined();
+
+      const second = deferred<ComputerConnectCodeStatus>();
+      vi.mocked(browserApi.computerConnectCodeStatus).mockImplementation(() => second.promise);
+      issue.mockResolvedValue({
+        connectCodeId: REPLACEMENT_CODE_ID,
+        bootstrapCommand: "sh install-2",
+        expiresIn: EXPIRES_IN_S,
+        issuedAt: new Date(Date.now()).toISOString(),
+      });
+      act(() => view.result.current.refreshConnectCode());
+      await settle();
+
+      // Refresh reissues and waits on the new code; nothing from the disowned one carries over.
+      expect(issue).toHaveBeenCalledTimes(2);
+      expect(view.result.current.connect).toMatchObject({ kind: "issued", command: "sh install-2" });
+      await tick(POLL_MS);
+      expect(browserApi.computerConnectCodeStatus).toHaveBeenCalledWith(REPLACEMENT_CODE_ID);
+      expect(view.result.current.connect.kind).toBe("issued");
+      expect(view.result.current.readiness).toBeUndefined();
     });
 
     it("keeps waiting when the status read fails, and says so", async () => {

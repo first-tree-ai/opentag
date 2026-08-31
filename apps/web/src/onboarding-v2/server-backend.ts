@@ -16,6 +16,7 @@ import type {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
+import { readConnectCodeVerdict } from "../setup/connect-code-verdict.js";
 import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { COPY } from "./copy.js";
 import type {
@@ -54,22 +55,6 @@ async function findRedeemedComputer(
   const computer = computers.find((candidate) => candidate.computerId === computerId);
   if (computer?.connectionStatus !== "online" || computer.connectedAt === null) return undefined;
   return Date.parse(computer.connectedAt) >= Date.parse(redeemedAt) ? computer : undefined;
-}
-
-type ConnectCodeVerdict =
-  | { readonly action: "wait" }
-  | { readonly action: "expire" }
-  | { readonly action: "adopt"; readonly computerId: string; readonly redeemedAt: string };
-
-/**
- * The verdict's reading. Pending keeps the wait; redeemed names the machine to adopt. Expired and
- * revoked fail closed through the same terminal the local expiry uses — neither ever names a
- * Computer — and a malformed redemption is refused rather than believed.
- */
-function readConnectCodeVerdict(status: ComputerConnectCodeStatus): ConnectCodeVerdict {
-  if (status.state === "pending") return { action: "wait" };
-  if (status.state !== "redeemed" || !status.computerId || !status.redeemedAt) return { action: "expire" };
-  return { action: "adopt", computerId: status.computerId, redeemedAt: status.redeemedAt };
 }
 
 /** The connection being waited on, unless the wait has moved on since the poll left. */
@@ -153,12 +138,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const connectCodeId = useRef<string | undefined>(undefined);
   const redeemed = useRef<{ computerId: string; redeemedAt: string } | undefined>(undefined);
   const expiresAt = useRef(0);
-  /**
-   * True while the issue request is in flight. A StrictMode double-invocation of the updater
-   * schedules `issue` twice in the same flush, and the second run is the same request — not a
-   * reason to mint a second code.
-   */
-  const issuingFlight = useRef(false);
   /** Bumped by every reissue and by unmount, so a reply from a superseded attempt is discarded. */
   const attempt = useRef(0);
   const creationRef = useRef<CreationState>("idle");
@@ -294,8 +273,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, [readAccount]);
 
   const issue = useCallback(async () => {
-    if (issuingFlight.current) return;
-    issuingFlight.current = true;
     const mine = attempt.current + 1;
     attempt.current = mine;
     // Everything keyed to the run just superseded is released with it — what the reader can see as
@@ -326,30 +303,40 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       if (!mounted.current || attempt.current !== mine) return;
       setConnect({ kind: "idle" });
       setConnectionError(errorMessage(cause, COPY.errors.connectCode));
-    } finally {
-      // A reset may allow a successor issue while this request is still in flight. The older
-      // request must not clear the successor's guard when it eventually settles.
-      if (attempt.current === mine) issuingFlight.current = false;
     }
   }, []);
 
   const issueConnectCode = useCallback(() => {
-    setConnect((current) => {
-      if (current.kind !== "idle") return current;
-      queueMicrotask(() => void issue());
-      return { kind: "issuing" };
-    });
+    // Decide outside a state updater and update the ref before starting work. A same-flush repeat,
+    // including StrictMode's second effect run, sees `issuing` and cannot mint another code.
+    if (connectRef.current.kind !== "idle") return;
+    connectRef.current = { kind: "issuing" };
+    void issue();
   }, [issue]);
 
-  const refreshConnectCode = useCallback(() => void issue(), [issue]);
+  const refreshConnectCode = useCallback(() => {
+    if (connectRef.current.kind === "issuing") return;
+    connectRef.current = { kind: "issuing" };
+    void issue();
+  }, [issue]);
 
-  /** A failed read of the verdict: report it, and close the wait on a code the Server disowns. */
+  /** A failed read of the verdict: reported unless the Server has disowned the code entirely. */
   const failIssuedCodePoll = useCallback((cause: unknown) => {
-    const gone = cause instanceof ApiError && cause.status === 404;
-    // A code the Server no longer acknowledges can never be redeemed: stop waiting on it rather
-    // than poll a dead handle until the local clock runs out.
-    if (gone) setConnect({ kind: "idle" });
-    setConnectionError(errorMessage(cause, gone ? COPY.errors.connectCode : COPY.errors.computers));
+    if (!(cause instanceof ApiError && cause.status === 404)) {
+      setConnectionError(errorMessage(cause, COPY.errors.computers));
+      return;
+    }
+    /*
+     * A code the Server no longer acknowledges can never be redeemed, and a raw 404 is no answer
+     * to give a reader holding a command. The code fails closed through the same recoverable
+     * terminal as an expiry: the dead command stays on screen, Refresh reissues, and no Computer
+     * is adopted.
+     */
+    const waiting = issuedConnection(connectRef.current);
+    if (waiting) {
+      setConnectionError(undefined);
+      setConnect({ kind: "expired", command: waiting.command });
+    }
   }, []);
 
   /** Adopts the redeemed Computer once it is verifiably online; otherwise the wait continues. */
@@ -388,12 +375,12 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       const waiting = issuedConnection(connectRef.current);
       if (!waiting) return;
       const verdict = readConnectCodeVerdict(status);
-      if (verdict.action === "wait") {
+      if (verdict.kind === "wait") {
         // A poll that succeeds retires whatever the last failed one put on screen.
         setConnectionError(undefined);
         return;
       }
-      if (verdict.action === "expire") {
+      if (verdict.kind === "expire") {
         // The Server has closed the code and nothing can redeem it now, so the wait ends the way
         // a local expiry ends it — the dead command stays on screen with its refresh offered.
         setConnect({ kind: "expired", command: waiting.command });
@@ -617,13 +604,13 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   const reset = useCallback(() => {
     attempt.current += 1;
-    issuingFlight.current = false;
     window.clearInterval(feishuTimer.current);
     computerId.current = undefined;
     connectCodeId.current = undefined;
     redeemed.current = undefined;
     expiresAt.current = 0;
     creationRef.current = "idle";
+    connectRef.current = { kind: "idle" };
     setConnect({ kind: "idle" });
     setComputer(undefined);
     setMessaging({ kind: "idle" });

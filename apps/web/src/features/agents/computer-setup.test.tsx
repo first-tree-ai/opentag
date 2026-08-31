@@ -82,16 +82,17 @@ describe("ComputerSetup", () => {
     Reflect.deleteProperty(navigator, "clipboard");
   });
 
-  it("captures the owned-Computer baseline before issuing a targeted recovery code", async () => {
+  it("issues a repair code against the target Computer, without a Computers read", async () => {
     const calls: string[] = [];
     vi.spyOn(browserApi, "computers").mockImplementation(async () => {
-      calls.push("baseline");
+      calls.push("computers");
       return { computers: [existingComputer] };
     });
-    vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(async () => {
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(async () => {
       calls.push("issue");
       return { connectCodeId: CONNECT_CODE_ID, bootstrapCommand, expiresIn: 900, issuedAt: connectedAt };
     });
+    verdictsReturning();
 
     render(
       <ComputerSetup target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }} />,
@@ -99,8 +100,9 @@ describe("ComputerSetup", () => {
     expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
     await clickGenerate();
 
-    // The targeted wait reads the list against this baseline, so the baseline must precede the code.
-    expect(calls).toEqual(["baseline", "issue"]);
+    // The recovery is a repair of that exact Computer, and no list read precedes or informs it.
+    expect(calls).toEqual(["issue"]);
+    expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: existingComputer.computerId });
     expect(screen.getByText(bootstrapCommand)).toBeTruthy();
     expect(screen.getByRole("status").textContent).toBe("Waiting for Ada's Mac to connect…");
   });
@@ -554,13 +556,36 @@ describe("ComputerSetup", () => {
       expiresIn: 900,
       issuedAt: connectedAt,
     });
-    // The status read is the open wait's only poll; a transient failure is reported and retired.
+    // The status read is the wait's only poll; a transient failure is reported and retired.
     let statusCall = 0;
     vi.spyOn(browserApi, "computerConnectCodeStatus").mockImplementation(async () => {
       statusCall += 1;
       if (statusCall === 1) return Promise.reject("offline");
       return verdict();
     });
+
+    render(<ComputerSetup />);
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe("Unable to refresh the connection command status");
+    expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
+    expect(vi.getTimerCount()).toBe(2);
+  });
+
+  it("reports a failed Computers read after redemption with its own wording, and keeps waiting", async () => {
+    // The Computers read only happens once a verdict names a Computer, so its failure wording is
+    // about the list, not the command status.
+    vi.spyOn(browserApi, "computers").mockRejectedValue("offline");
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+    verdictsReturning(redeemedVerdict(newComputer.computerId));
 
     render(<ComputerSetup />);
     await clickGenerate();
@@ -591,17 +616,18 @@ describe("ComputerSetup", () => {
     expect(screen.getByRole("status").textContent).toBe("Waiting for Ada's Mac to connect…");
   });
 
-  it("confirms the target Computer by name once it reconnects", async () => {
+  it("adopts the target Computer once the Server reports the repair code redeemed", async () => {
     const onConnected = vi.fn();
-    vi.spyOn(browserApi, "computers")
-      .mockResolvedValueOnce({ computers: [existingComputer] })
-      .mockResolvedValue({ computers: [{ ...existingComputer, connectedAt: "2026-08-20T00:00:02.000Z" }] });
+    vi.spyOn(browserApi, "computers").mockResolvedValue({
+      computers: [{ ...existingComputer, connectedAt: "2026-08-20T00:00:02.000Z" }],
+    });
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
+    verdictsReturning(redeemedVerdict(existingComputer.computerId));
 
     render(
       <ComputerSetup
@@ -616,19 +642,19 @@ describe("ComputerSetup", () => {
 
     expect(screen.getByRole("status").textContent).toBe("Ada's Mac is connected.");
     expect(onConnected).toHaveBeenCalledTimes(1);
+    expect(onConnected.mock.calls[0]?.[0].computerId).toBe(existingComputer.computerId);
   });
 
-  it("keeps waiting for the target when an unrelated Computer reconnects", async () => {
+  it("keeps waiting for the target while the repair code is pending, whatever else reconnects", async () => {
     const onConnected = vi.fn();
-    vi.spyOn(browserApi, "computers")
-      .mockResolvedValueOnce({ computers: [existingComputer] })
-      .mockResolvedValue({ computers: [existingComputer, newComputer] });
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [existingComputer, newComputer] });
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
+    verdictsReturning();
 
     render(
       <ComputerSetup
@@ -646,6 +672,101 @@ describe("ComputerSetup", () => {
     expect(onConnected).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(2);
   });
+
+  it("refuses a redemption verdict that names a different Computer than the target", async () => {
+    // A repair verdict can only ever name the target; anything else is not this command's answer,
+    // and adopting it would drift the recovery onto a Computer it was never meant for.
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [existingComputer, newComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+    verdictsReturning(redeemedVerdict(newComputer.computerId));
+
+    render(
+      <ComputerSetup
+        onConnected={onConnected}
+        target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
+      />,
+    );
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Waiting for Ada's Mac to connect…");
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(browserApi.computers).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(2);
+  });
+
+  it.each([
+    ["offline", { ...existingComputer, connectionStatus: "offline" as const, connectedAt: null }],
+    ["on a connection predating redemption", { ...existingComputer, connectedAt: "2026-08-19T23:59:58.000Z" }],
+  ])("keeps waiting for the repaired target while it is %s", async (_state, targetComputer) => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [targetComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+    verdictsReturning(redeemedVerdict(existingComputer.computerId));
+
+    render(
+      <ComputerSetup
+        onConnected={onConnected}
+        target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
+      />,
+    );
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Waiting for Ada's Mac to connect…");
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(2);
+  });
+
+  it.each(["expired", "revoked"] as const)(
+    "ends a targeted wait on the Server's %s verdict without adopting anything",
+    async (state) => {
+      const onConnected = vi.fn();
+      vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [existingComputer, newComputer] });
+      vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+        connectCodeId: CONNECT_CODE_ID,
+        bootstrapCommand,
+        expiresIn: 900,
+        issuedAt: connectedAt,
+      });
+      verdictsReturning(verdict({ state }));
+
+      render(
+        <ComputerSetup
+          onConnected={onConnected}
+          target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
+        />,
+      );
+      await clickGenerate();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+
+      expect(screen.getByRole("alert").textContent).toBe(
+        "This Computer connection command expired. Generate a new one to continue.",
+      );
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(onConnected).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
 
   it("answers the primary action in preview without issuing a code or polling", async () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode");

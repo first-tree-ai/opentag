@@ -3,21 +3,24 @@ import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Text } from "../../ui/design-system.js";
 import { ComputerConnect } from "../computer-connect/computer-connect.js";
+import { platformLabel } from "./agent-presentation.js";
 import { useComputersQuery } from "./agent-queries.js";
 
+/** What a bind is aimed at, named so a failure can be reported and retried against it. */
+type BindTarget = { computerId: string; displayName: string };
+
 /**
- * Giving an Agent the Computer its Account has.
+ * Giving an Agent a Computer to run on.
  *
- * There is nothing here for a reader to decide. An Account has one Computer, so an Agent without one
- * has exactly one place it can run, and this surface's whole job is to put it there. It is shared
- * because the two places an Agent can be found without a Computer -- its Settings, and an onboarding
- * run that resumed into it -- must resolve it the same way; the second copy is how the onboarding
- * recovery once ended up pointing at a route the setup gate refuses.
+ * An Account may hold no Computers, one, or several, and the surface answers each honestly. With
+ * several, which one an Agent runs on is the reader's to say and nothing here decides it for them:
+ * binding on list order would hand an Agent a durable home on the strength of an array index. With
+ * exactly one there is nothing to disambiguate, so the read is the decision and no click is asked
+ * for. With none, connecting is the answer, and the connect step names the machine it enrolled.
  *
- * An Account with no Computer is the only case where connecting is the answer, and the machine that
- * arrives is by then the Account's only one. Several Computers is not a richer case to choose from
- * but a record that contradicts the product model, so this stops rather than guessing which one the
- * Agent was meant to run on.
+ * It is shared because the two places an Agent can be found without a Computer -- its Settings, and
+ * an onboarding run that resumed into it -- must resolve it the same way; the second copy is how the
+ * onboarding recovery once ended up pointing at a route the setup gate refuses.
  */
 export function AgentComputerChoice({
   agentId,
@@ -39,26 +42,21 @@ export function AgentComputerChoice({
    * through its own adapter and does not refill this cache -- so deriving the bind target from the
    * inventory would leave a failed bind for a brand new Computer invisible and unretryable.
    */
-  const [pending, setPending] = useState<{ computerId: string; displayName: string }>();
+  const [pending, setPending] = useState<BindTarget>();
   /** Retires the writes of a bind that a later one, or a different Agent, has superseded. */
   const generation = useRef(0);
-  // A bind is attempted once per Agent-and-Computer pair. Without this a failure would be retried by
-  // every render the failure itself causes, and the reader would watch an error flicker instead of
-  // reading it. The Agent belongs in the key because this surface outlives any one of them: reused
-  // for a second unbound Agent on the same Account, a Computer-only key would report the first
-  // Agent's bind as this one's and leave the second waiting on a bind that never ran.
+  // A bind is attempted once per Agent-and-Computer pair, so a failure is not restarted by every
+  // render it causes. The Agent belongs in the key because this surface outlives any one of them.
   const attempted = useRef<string | undefined>(undefined);
   // Only a successful read speaks for the Account. Answering a failed one with "connect a Computer"
   // would send someone to enrol a machine they already own -- the same conflation the Agent's
   // availability refuses to make one layer up.
   const enrolled = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
-  const computer = enrolled?.length === 1 ? enrolled[0] : undefined;
-  const target = computer ? `${agentId}:${computer.computerId}` : undefined;
+  const sole = enrolled?.length === 1 ? enrolled[0] : undefined;
+  const soleTarget = sole ? `${agentId}:${sole.computerId}` : undefined;
 
   const bind = useCallback(
-    async (goal: { computerId: string; displayName: string }) => {
-      // Recorded before the call starts, so a bind begun outside the effect -- a retry, or a
-      // Computer that just enrolled -- cannot then be started a second time by the effect itself.
+    async (goal: BindTarget) => {
       const mine = generation.current + 1;
       generation.current = mine;
       attempted.current = `${agentId}:${goal.computerId}`;
@@ -74,6 +72,12 @@ export function AgentComputerChoice({
          * a `binding` that is still true, which is an invitation to start a second bind for it.
          */
         if (generation.current !== mine) return;
+        /*
+         * Reading again is also how an automatic bind is revalidated. If the Account gained a second
+         * Computer while this was in flight, the placement is still whatever the Server now records,
+         * and asking the surface around this to re-read reports that rather than asserting a choice
+         * from an inventory that has since changed.
+         */
         onBound();
       } catch (cause) {
         if (generation.current !== mine) return;
@@ -88,7 +92,6 @@ export function AgentComputerChoice({
   // A different Agent answers for itself: the previous one's target and failure are not its result,
   // and any bind still in flight for it must not write over this one.
   useEffect(() => {
-    // Nothing to retire while the attempt on record is this Agent's own.
     if (attempted.current?.startsWith(`${agentId}:`)) return;
     generation.current += 1;
     setPending(undefined);
@@ -96,25 +99,12 @@ export function AgentComputerChoice({
     setBinding(false);
   }, [agentId]);
 
+  // Only the unambiguous case binds itself. Several Computers is a question for the reader, and an
+  // automatic bind must never start from one.
   useEffect(() => {
-    if (!computer || !target || attempted.current === target) return;
-    void bind(computer);
-  }, [computer, target, bind]);
-
-  // Keyed on what was actually being bound, not on the inventory, so a Computer the connect step
-  // just produced can still report its failure and be retried -- without issuing a second code.
-  if (error && pending) {
-    return (
-      <div className="grid gap-4">
-        <Banner variant="error" role="alert" description={error} />
-        <div>
-          <Button disabled={binding} size="compact" variant="secondary" onClick={() => void bind(pending)}>
-            {m.common_try_again()}
-          </Button>
-        </div>
-      </div>
-    );
-  }
+    if (!sole || !soleTarget || attempted.current === soleTarget) return;
+    void bind(sole);
+  }, [sole, soleTarget, bind]);
 
   if (enrolled === undefined) {
     return (
@@ -135,55 +125,86 @@ export function AgentComputerChoice({
     );
   }
 
-  /*
-   * Enrolments made before the one-Computer rule can still reach this client. Picking one of them
-   * would hand the Agent a durable home on the strength of list order, so this refuses -- but a
-   * refusal inside the setup gate is a room with no doors, and the reader cannot remove a Computer
-   * from here or anywhere else in the product. So it names the one route that does work today
-   * rather than asking for something that cannot be done.
-   */
-  if (enrolled.length > 1) {
+  // Keyed on what was actually being bound, not on the inventory, so a Computer the connect step
+  // just produced can still report its failure and be retried -- without issuing a second code.
+  if (error && pending && !sole && enrolled.length <= 1) {
     return (
       <div className="grid gap-4">
-        <Banner variant="error" role="alert" description={m.agents_computer_choice_multiple({ agentId })} />
+        <Banner variant="error" role="alert" description={error} />
         <div>
-          {/*
-           * The way out is taken elsewhere, so this reads again rather than acting: the reader who
-           * binds from the CLI, or leaves the Account with one Computer, comes back here and is let
-           * through. Without it the refusal would be terminal inside the setup gate.
-           */}
-          <Button
-            size="compact"
-            variant="secondary"
-            onClick={() => {
-              void computersQuery.refetch();
-              onBound();
-            }}
-          >
-            {m.agents_computer_choice_recheck()}
+          <Button disabled={binding} size="compact" variant="secondary" onClick={() => void bind(pending)}>
+            {m.common_try_again()}
           </Button>
         </div>
       </div>
     );
   }
 
-  // `pending` covers the moment after a Computer enrols: it is the Account's only machine, but this
-  // query has not been told about it, and offering to connect another one there would be wrong.
-  const binding_target = computer ?? pending;
-  if (binding_target) return <p>{m.agents_computer_choice_binding({ name: binding_target.displayName })}</p>;
+  if (sole) {
+    if (error) {
+      return (
+        <div className="grid gap-4">
+          <Banner variant="error" role="alert" description={error} />
+          <div>
+            <Button disabled={binding} size="compact" variant="secondary" onClick={() => void bind(sole)}>
+              {m.common_try_again()}
+            </Button>
+          </div>
+        </div>
+      );
+    }
+    return <p>{m.agents_computer_choice_binding({ name: sole.displayName })}</p>;
+  }
+
+  // `pending` covers the moment after a Computer enrols: it is on the Account, but this query has
+  // not been told about it, and offering to connect another one there would be wrong.
+  if (enrolled.length === 0 && pending) {
+    return <p>{m.agents_computer_choice_binding({ name: pending.displayName })}</p>;
+  }
 
   return (
-    <div className="grid gap-2">
-      <Text variant="heading">{m.agents_computer_choice_connect_new()}</Text>
-      {/*
-       * Connecting is offered only to an Account that has none, so the machine that arrives is the
-       * Computer this Account has -- and the connect step now hands it back, so the Agent is bound
-       * to the machine that actually enrolled rather than to whatever a re-read happens to find.
-       */}
-      <ComputerConnect
-        intent={{ mode: "create" }}
-        onConnected={(connected) => void bind({ computerId: connected.computerId, displayName: connected.displayName })}
-      />
+    <div className="grid gap-4">
+      {error ? <Banner variant="error" role="alert" description={error} /> : null}
+      {enrolled.length > 0 ? (
+        <div className="grid gap-2">
+          <Text variant="heading">{m.agents_computer_choice_existing_heading()}</Text>
+          <ul className="grid gap-2">
+            {enrolled.map((computer) => (
+              <li className="flex flex-wrap items-center justify-between gap-3" key={computer.computerId}>
+                <span>
+                  {computer.displayName} · {platformLabel(computer.platform)} ·{" "}
+                  {computer.connectionStatus === "online"
+                    ? m.agents_computer_choice_online()
+                    : m.agents_computer_choice_offline()}
+                </span>
+                <Button
+                  disabled={binding}
+                  size="compact"
+                  variant="secondary"
+                  onClick={() => void bind({ computerId: computer.computerId, displayName: computer.displayName })}
+                >
+                  {m.agents_computer_choice_use({ name: computer.displayName })}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <div className="grid gap-2">
+        <Text variant="heading">
+          {enrolled.length > 0 ? m.agents_computer_choice_connect_new() : m.agents_computer_choice_connect_first()}
+        </Text>
+        {/*
+         * The connect step reports the machine it enrolled, so what gets bound is the Computer that
+         * answered this command rather than whatever a re-read of the inventory happens to find.
+         */}
+        <ComputerConnect
+          intent={{ mode: "create" }}
+          onConnected={(connected) =>
+            void bind({ computerId: connected.computerId, displayName: connected.displayName })
+          }
+        />
+      </div>
     </div>
   );
 }

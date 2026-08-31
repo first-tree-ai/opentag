@@ -194,6 +194,7 @@ describe("An Agent with no Computer", () => {
     expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
     expect(screen.getByText(/couldn't read this Account's Computer/)).toBeTruthy();
     expect(screen.queryByText("Connect a Computer")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Use / })).toBeNull();
   });
 
   it("offers enrolment only when the Account genuinely has none", async () => {
@@ -204,11 +205,34 @@ describe("An Agent with no Computer", () => {
 
     expect(await screen.findByText("Connect a Computer")).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
+    // Nothing to choose between, so no list is offered either.
+    expect(screen.queryByRole("button", { name: /Use / })).toBeNull();
   });
 
-  it("refuses to pick when an Account still holds more than one Computer", async () => {
-    // Enrolments made before the one-Computer rule can still reach this client. Binding the first
-    // of them would hand the Agent a durable home on the strength of list order.
+  it("asks which Computer when the Account has several, and binds exactly the one chosen", async () => {
+    // Which machine an Agent runs on is the reader's to say when there is more than one. Binding the
+    // first would hand it a durable home on the strength of an array index.
+    vi.spyOn(browserApi, "computers").mockResolvedValue({
+      computers: [accountComputer, { ...accountComputer, computerId: OTHER_COMPUTER_ID, displayName: "Spare" }],
+    });
+    const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
+    const onAgentChanged = vi.fn();
+
+    await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={onAgentChanged} />);
+
+    expect(await screen.findByText("Choose the Computer this Agent should run on")).toBeTruthy();
+    // Nothing is decided for the reader while the question is open.
+    expect(rebind).not.toHaveBeenCalled();
+
+    // The second row, so a pass cannot come from binding whatever happens to be first.
+    fireEvent.click(screen.getByRole("button", { name: "Use Spare" }));
+
+    await waitFor(() => expect(rebind).toHaveBeenCalledWith(UNBOUND_AGENT_ID, OTHER_COMPUTER_ID));
+    await waitFor(() => expect(onAgentChanged).toHaveBeenCalled());
+  });
+
+  it("does not bind by itself while several Computers are enrolled", async () => {
+    // The automatic bind belongs to the unambiguous case only.
     vi.spyOn(browserApi, "computers").mockResolvedValue({
       computers: [accountComputer, { ...accountComputer, computerId: OTHER_COMPUTER_ID, displayName: "Spare" }],
     });
@@ -216,11 +240,8 @@ describe("An Agent with no Computer", () => {
 
     await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={() => undefined} />);
 
-    expect(await screen.findByText(/more than one Computer/)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Use Ada's Mac" })).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
-    // Refusing is right, but this branch sits inside the setup gate and the product has no way to
-    // remove a Computer, so a refusal that named no route out would be a screen with no exit.
-    expect(screen.getByText(new RegExp(`opentag agent bind ${UNBOUND_AGENT_ID} --computer`))).toBeTruthy();
   });
 
   it("binds a second unbound Agent when the same surface is reused for one", async () => {

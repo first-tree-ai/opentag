@@ -23,6 +23,13 @@ yarn-debug.log*
 yarn-error.log*
 /run_*.sh
 
+# Playwright E2E output and temporary runtime metadata
+e2e/screenshots/
+e2e/.auth/
+e2e/.runtime.json
+e2e/playwright-report/
+e2e/test-results/
+
 # OS and editor files
 .DS_Store
 Thumbs.db

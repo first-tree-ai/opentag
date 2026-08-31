@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { normalizeSlackEnvelope, SlackAdapter } from "../services/im-bindings/slack/adapter.js";
@@ -34,6 +35,110 @@ describe("Slack installed-binding adapter", () => {
       "https://slack.com/api/auth.test",
       expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer xoxb-secret" }) }),
     );
+  });
+
+  it("validates auth.test identities and classifies rejected OAuth responses", async () => {
+    const authTest = vi.fn().mockResolvedValue({ app_id: "A1", team_id: "T1", user_id: "U1", bot_id: "B1" });
+    const client = { auth: { test: authTest }, files: { info: vi.fn() } };
+    const api = new DefaultSlackApiClient(() => client as never);
+    await expect(api.authTest("xoxb-token")).resolves.toEqual({
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      botId: "B1",
+    });
+    authTest.mockResolvedValueOnce({ team_id: "T1", user_id: "U1" });
+    await expect(api.authTest("xoxb-token")).rejects.toThrow("SLACK_AUTH_IDENTITY_INCOMPLETE");
+
+    const invalid = new DefaultSlackApiClient(
+      undefined,
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: "invalid_code" }), { status: 200 })),
+    );
+    await expect(
+      invalid.oauthAccess({
+        clientId: "client",
+        clientSecret: "secret",
+        code: "code",
+        redirectUri: "https://example.com",
+      }),
+    ).rejects.toThrow("SLACK_AUTH_INVALID");
+    const rejected = new DefaultSlackApiClient(
+      undefined,
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: "other_error" }), { status: 200 })),
+    );
+    await expect(
+      rejected.oauthAccess({
+        clientId: "client",
+        clientSecret: "secret",
+        code: "code",
+        redirectUri: "https://example.com",
+      }),
+    ).rejects.toThrow("SLACK_AUTH_REJECTED");
+  });
+
+  it("downloads Slack resources and rejects unavailable or oversized responses", async () => {
+    const info = vi.fn().mockResolvedValue({
+      file: { url_private_download: "https://files.example/download", name: "file.txt", mimetype: "text/plain" },
+    });
+    const client = { auth: { test: vi.fn() }, files: { info } };
+    const api = new DefaultSlackApiClient(() => client as never);
+    const fetchGlobal = vi
+      .fn()
+      .mockResolvedValue(new Response("contents", { status: 200, headers: { "content-length": "8" } }));
+    vi.stubGlobal("fetch", fetchGlobal);
+    try {
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "file",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).resolves.toMatchObject({
+        filename: "file.txt",
+        mediaType: "text/plain",
+        sizeBytes: 8,
+        stream: expect.any(Readable),
+      });
+      expect(info).toHaveBeenCalledWith({ file: "file" });
+      expect(fetchGlobal).toHaveBeenCalledWith(
+        "https://files.example/download",
+        expect.objectContaining({ redirect: "error" }),
+      );
+
+      info.mockResolvedValueOnce({ file: {} });
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "missing",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).rejects.toThrow("SLACK_RESOURCE_UNAVAILABLE");
+      info.mockResolvedValueOnce({ file: { url_private: "https://files.example/private" } });
+      fetchGlobal.mockResolvedValueOnce(new Response(null, { status: 403 }));
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "private",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).rejects.toThrow("SLACK_RESOURCE_HTTP_403");
+      fetchGlobal.mockResolvedValueOnce(
+        new Response("too large", { status: 200, headers: { "content-length": "26214401" } }),
+      );
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "large",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).rejects.toThrow("SLACK_RESOURCE_TOO_LARGE");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("accepts Slack's documented bot-token identity when auth.test omits app_id", async () => {
@@ -159,6 +264,43 @@ describe("Slack installed-binding adapter", () => {
     });
   });
 
+  it("rejects runtime identity drift and forwards adapter capabilities", async () => {
+    const fetchResource = vi.fn().mockResolvedValue({ stream: Readable.from("ok") });
+    const api = {
+      authTest: vi.fn().mockResolvedValue({ appId: "A_OTHER", teamId: "T1", botUserId: "U1", botId: "B1" }),
+      fetchResource,
+    };
+    const adapter = new SlackAdapter({
+      api: api as never,
+      token: "xoxb-secret",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      botId: "B1",
+    });
+    await expect(adapter.validateBinding()).rejects.toThrow("SLACK_BINDING_IDENTITY_MISMATCH");
+    api.authTest.mockResolvedValueOnce({ appId: null, teamId: "T1", botUserId: "U1", botId: "B1" });
+    await expect(adapter.validateBinding()).resolves.toMatchObject({ externalAppId: "A1" });
+    const normalized = adapter.normalizeInbound({
+      eventId: "Ev-forward",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      botId: "B1",
+      event: { type: "message", channel: "C1", ts: "1", text: "hello" },
+    });
+    expect(normalized).toHaveLength(1);
+    await expect(
+      adapter.fetchResource({ messageExternalId: "1", providerResourceKey: "F1", kind: "file" }),
+    ).resolves.toMatchObject({ stream: expect.any(Readable) });
+    expect(fetchResource).toHaveBeenCalledWith({
+      messageExternalId: "1",
+      providerResourceKey: "F1",
+      kind: "file",
+      token: "xoxb-secret",
+    });
+  });
+
   it("verifies the raw body and rejects replayed timestamps", () => {
     const now = new Date("2026-08-19T00:00:00.000Z");
     const timestamp = String(Math.floor(now.getTime() / 1000));
@@ -170,6 +312,24 @@ describe("Slack installed-binding adapter", () => {
       verifySlackSignature({
         rawBody,
         timestamp: String(Number(timestamp) - 301),
+        signature,
+        signingSecret: "secret",
+        now,
+      }),
+    ).toBe(false);
+    expect(preparseSlackRoute(Buffer.from("not-json"))).toBeUndefined();
+    expect(preparseSlackRoute(Buffer.from(JSON.stringify({ api_app_id: "A1" })))).toBeUndefined();
+    expect(
+      preparseSlackRoute(Buffer.from(JSON.stringify({ api_app_id: "A".repeat(256), team_id: "T1" }))),
+    ).toBeUndefined();
+    expect(verifySlackSignature({ rawBody, timestamp: undefined, signature, signingSecret: "secret", now })).toBe(
+      false,
+    );
+    expect(verifySlackSignature({ rawBody, timestamp, signature: "v0=bad", signingSecret: "secret", now })).toBe(false);
+    expect(
+      verifySlackSignature({
+        rawBody: Buffer.alloc(1024 * 1024 + 1),
+        timestamp,
         signature,
         signingSecret: "secret",
         now,
@@ -296,6 +456,38 @@ describe("Slack installed-binding adapter", () => {
         author: { externalId: "B1", kind: "bot", isSelf: true },
       },
     });
+
+    const [dm] = normalizeSlackEnvelope({
+      eventId: "Ev-dm",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      botId: "B1",
+      event: { type: "message", channel: "D1", channel_type: "im", ts: "bad", text: "direct" },
+    });
+    expect(dm).toMatchObject({
+      conversation: { kind: "dm" },
+      message: { occurredAt: new Date("1970-01-01T00:00:00.000Z") },
+    });
+    const [groupDm] = normalizeSlackEnvelope({
+      eventId: "Ev-mpim",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      botId: "B1",
+      event: { type: "message", channel: "G1", channel_type: "mpim", ts: "2", text: "group" },
+    });
+    expect(groupDm?.conversation.kind).toBe("group_dm");
+    const large = "x".repeat(24 * 1024 + 32);
+    const [bounded] = normalizeSlackEnvelope({
+      eventId: "Ev-large",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      botId: "B1",
+      event: { type: "message", channel: "C1", ts: "3", text: large },
+    });
+    expect(bounded?.message.content).toMatchObject({ truncated: true });
   });
 
   it("registers the raw-body route without breaking adjacent JSON parsing", async () => {

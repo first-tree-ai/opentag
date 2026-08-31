@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { setImmediate as waitImmediate } from "node:timers/promises";
 import {
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
+  RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V2,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   RuntimeCapabilitiesSchema,
@@ -16,6 +18,7 @@ import WebSocket from "ws";
 import { z } from "zod";
 import { createApp } from "../app.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { type RuntimeBusinessOptions, RuntimeSession } from "../runtime/runtime-session.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService } from "../services/computers/index.js";
@@ -811,6 +814,463 @@ describe("Computer runtime WebSocket", () => {
     socket.close();
   });
 });
+
+describe("RuntimeSession direct protocol coverage", () => {
+  it("rejects malformed, binary, and oversized frames before authentication", async () => {
+    for (const [data, binary, expected] of [
+      ["not-json", false, "PROTOCOL_ERROR"],
+      [Buffer.from(JSON.stringify({ type: "auth" })), true, "PROTOCOL_ERROR"],
+      [Buffer.alloc(RUNTIME_MAX_FRAME_BYTES + 1), false, "PROTOCOL_ERROR"],
+    ] as const) {
+      const runtime = directRuntimeSession();
+      runtime.session.start();
+      runtime.socket.emit("message", data, binary);
+      await vi.waitFor(() => expect(runtime.frames()).toContainEqual(expect.objectContaining({ code: expected })));
+      expect(runtime.socket.closeCode).toBe(4400);
+    }
+  });
+
+  it("enforces handshake order, protocol negotiation, identity, and readiness", async () => {
+    const beforeAuth = directRuntimeSession();
+    beforeAuth.session.start();
+    beforeAuth.socket.emit(
+      "message",
+      JSON.stringify(registerFrame(beforeAuth.context.computerId, randomUUID())),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(beforeAuth.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+
+    const v2 = directRuntimeSession();
+    v2.session.start();
+    v2.socket.emit("message", JSON.stringify(authFrame(2)), false);
+    await vi.waitFor(() => expect(v2.frames()).toContainEqual(expect.objectContaining({ type: "server:welcome" })));
+    v2.socket.emit(
+      "message",
+      JSON.stringify({ ...registerFrame(v2.context.computerId, randomUUID()), protocolVersion: 1 }),
+      false,
+    );
+    await vi.waitFor(() => expect(v2.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })));
+
+    const identity = directRuntimeSession();
+    identity.session.start();
+    identity.socket.emit("message", JSON.stringify(authFrame(1)), false);
+    await vi.waitFor(() => expect(identity.frames()).toContainEqual(expect.objectContaining({ type: "auth:result" })));
+    identity.socket.emit("message", JSON.stringify(registerFrame(randomUUID(), randomUUID())), false);
+    await vi.waitFor(() =>
+      expect(identity.frames()).toContainEqual(expect.objectContaining({ code: "COMPUTER_IDENTITY_CONFLICT" })),
+    );
+
+    const readiness = directRuntimeSession({ providerReadiness: ["codex"] });
+    readiness.session.start();
+    readiness.socket.emit("message", JSON.stringify(authFrame(1)), false);
+    await vi.waitFor(() => expect(readiness.frames()).toContainEqual(expect.objectContaining({ type: "auth:result" })));
+    readiness.socket.emit(
+      "message",
+      JSON.stringify({
+        ...registerFrame(readiness.context.computerId, randomUUID()),
+        providerReadiness: [{ provider: "claude-code", status: "ready" }],
+      }),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(readiness.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+  });
+
+  it("covers registration guards, control frames, and business admission failures", async () => {
+    const protocolMismatch = directRuntimeSession();
+    await authenticateDirect(protocolMismatch);
+    protocolMismatch.socket.emit(
+      "message",
+      JSON.stringify({
+        ...registerFrame(protocolMismatch.context.computerId, protocolMismatch.instanceId),
+        protocolVersion: 2,
+      }),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(protocolMismatch.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+
+    const invalidHeartbeat = directRuntimeSession();
+    await registerDirect(invalidHeartbeat);
+    invalidHeartbeat.socket.emit("message", JSON.stringify({ type: "heartbeat", requestId: randomUUID() }), false);
+    await vi.waitFor(() =>
+      expect(invalidHeartbeat.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+
+    const control = directRuntimeSession();
+    await registerDirect(control);
+    control.socket.emit("message", JSON.stringify({ type: "auth", requestId: randomUUID() }), false);
+    await vi.waitFor(() =>
+      expect(control.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+
+    const noBusiness = directRuntimeSession();
+    await registerDirect(noBusiness);
+    noBusiness.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID() }), false);
+    await vi.waitFor(() =>
+      expect(noBusiness.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+
+    const parseThrows = directRuntimeSession({
+      business: {
+        parse: () => {
+          throw new Error("parse");
+        },
+        laneKey: () => "work",
+        handle: () => undefined,
+        failureResult: () => undefined,
+        overloadResult: () => undefined,
+      },
+    });
+    await registerDirect(parseThrows);
+    parseThrows.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID() }), false);
+    await vi.waitFor(() =>
+      expect(parseThrows.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+
+    const credentialRevoked = directRuntimeSession({
+      computers: { assertActiveCredential: vi.fn().mockRejectedValue(new Error("revoked")) },
+      business: {
+        parse: (value) => value as never,
+        laneKey: () => "work",
+        handle: () => undefined,
+        failureResult: () => undefined,
+        overloadResult: () => undefined,
+      },
+    });
+    await registerDirect(credentialRevoked);
+    credentialRevoked.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID() }), false);
+    await vi.waitFor(() =>
+      expect(credentialRevoked.frames()).toContainEqual(expect.objectContaining({ code: "AUTH_INVALID_TOKEN" })),
+    );
+
+    const staleBusiness = directRuntimeSession({
+      business: {
+        parse: (value) => value as never,
+        laneKey: () => "work",
+        handle: vi.fn(),
+        failureResult: () => undefined,
+        overloadResult: () => undefined,
+      },
+    });
+    await registerDirect(staleBusiness);
+    staleBusiness.registry.isCurrent = vi.fn().mockReturnValue(false) as never;
+    staleBusiness.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID() }), false);
+    await waitImmediate();
+  });
+
+  it("covers registration persistence failure, activation fencing, and v2 response fences", async () => {
+    const failed = directRuntimeSession({ computers: { register: vi.fn().mockRejectedValue(new Error("database")) } });
+    await authenticateDirect(failed);
+    failed.socket.emit("message", JSON.stringify(registerFrame(failed.context.computerId, failed.instanceId)), false);
+    await vi.waitFor(() => expect(failed.frames()).toContainEqual(expect.objectContaining({ code: "INTERNAL_ERROR" })));
+
+    const activation = directRuntimeSession();
+    activation.registry.activate = vi.fn().mockReturnValue(false) as never;
+    await registerDirect(activation);
+    await vi.waitFor(() =>
+      expect(activation.frames()).toContainEqual(expect.objectContaining({ code: "COMPUTER_NOT_REGISTERED" })),
+    );
+
+    const v2 = directRuntimeSession({
+      business: {
+        parse: (value) => value as never,
+        laneKey: () => "v2",
+        handle: () => ({ type: "result", connectionId: "stale" }),
+        failureResult: () => undefined,
+        overloadResult: () => undefined,
+      },
+    });
+    await registerDirectV2(v2);
+    const registration = v2
+      .frames()
+      .find((frame) => (frame as { type?: string }).type === "computer:register:result") as {
+      connectionId: string;
+    };
+    v2.socket.emit(
+      "message",
+      JSON.stringify({ type: "work", requestId: randomUUID(), connectionId: registration.connectionId }),
+      false,
+    );
+    await vi.waitFor(() => expect(v2.socket.closeCode).toBe(1011));
+  });
+
+  it("handles heartbeat fences, duplicate heartbeats, and replacement races", async () => {
+    const mismatch = directRuntimeSession();
+    await registerDirect(mismatch);
+    mismatch.socket.emit(
+      "message",
+      JSON.stringify({ ...heartbeatFrame(mismatch.context.computerId, mismatch.instanceId), computerId: randomUUID() }),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(mismatch.frames()).toContainEqual(expect.objectContaining({ code: "COMPUTER_NOT_REGISTERED" })),
+    );
+
+    let releaseHeartbeat: (() => void) | undefined;
+    const heartbeatBlocked = new Promise<void>((resolve) => {
+      releaseHeartbeat = resolve;
+    });
+    const runtime = directRuntimeSession({
+      computers: {
+        heartbeat: vi.fn(async () => {
+          await heartbeatBlocked;
+          return true;
+        }),
+      },
+    });
+    await registerDirect(runtime);
+    const heartbeat = heartbeatFrame(runtime.context.computerId, runtime.instanceId);
+    runtime.socket.emit("message", JSON.stringify(heartbeat), false);
+    await vi.waitFor(() => expect(runtime.computers.heartbeat).toHaveBeenCalledTimes(1));
+    runtime.socket.emit("message", JSON.stringify({ ...heartbeat, requestId: randomUUID() }), false);
+    await vi.waitFor(() =>
+      expect(runtime.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+    releaseHeartbeat?.();
+
+    const rejected = directRuntimeSession({ computers: { heartbeat: vi.fn().mockResolvedValue(false) } });
+    await registerDirect(rejected);
+    rejected.socket.emit(
+      "message",
+      JSON.stringify(heartbeatFrame(rejected.context.computerId, rejected.instanceId)),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(rejected.frames()).toContainEqual(expect.objectContaining({ code: "COMPUTER_NOT_REGISTERED" })),
+    );
+
+    const replaced = directRuntimeSession();
+    await registerDirect(replaced);
+    replaced.registry.isCurrent = vi.fn().mockReturnValue(false) as never;
+    replaced.socket.emit(
+      "message",
+      JSON.stringify(heartbeatFrame(replaced.context.computerId, replaced.instanceId)),
+      false,
+    );
+    await vi.waitFor(() =>
+      expect(replaced.frames()).toContainEqual(expect.objectContaining({ code: "COMPUTER_NOT_REGISTERED" })),
+    );
+  });
+
+  it("validates business frames, handles failures, overloads, and stale connections", async () => {
+    const invalid = directRuntimeSession({
+      business: {
+        parse: () => undefined,
+        laneKey: () => "invalid",
+        handle: () => undefined,
+        failureResult: () => undefined,
+        overloadResult: () => undefined,
+      },
+    });
+    await registerDirect(invalid);
+    invalid.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID(), key: "invalid" }), false);
+    await vi.waitFor(() =>
+      expect(invalid.frames()).toContainEqual(expect.objectContaining({ code: "PROTOCOL_ERROR" })),
+    );
+
+    let slowStarted: (() => void) | undefined;
+    const slowReady = new Promise<void>((resolve) => {
+      slowStarted = resolve;
+    });
+    let releaseSlow: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const runtime = directRuntimeSession({
+      business: {
+        parse: (value) => ((value as { type?: string }).type === "work" ? (value as never) : undefined),
+        laneKey: (frame) => String(frame.key),
+        handle: async (frame) => {
+          if (frame.key === "slow") {
+            slowStarted?.();
+            await slow;
+          }
+          if (frame.key === "throw") throw new Error("handler");
+          if (frame.key === "array")
+            return [
+              { type: "result", requestId: frame.requestId },
+              { type: "result", requestId: frame.requestId },
+            ];
+          if (frame.key === "circular") {
+            const circular: Record<string, unknown> = {};
+            circular.self = circular;
+            return circular;
+          }
+          if (frame.key === "large") return { type: "result", text: "x".repeat(RUNTIME_MAX_FRAME_BYTES * 2) };
+          if (frame.key === "stale") {
+            runtime.registry.isCurrent = vi.fn().mockReturnValue(false) as never;
+          }
+          return { type: "result", requestId: frame.requestId };
+        },
+        failureResult: (frame) => ({ type: "failure", requestId: frame.requestId }),
+        overloadResult: (frame) => ({ type: "overload", requestId: frame.requestId }),
+        maxConcurrent: 1,
+        maxQueuedPerKey: 1,
+        maxQueuedTotal: 1,
+      },
+    });
+    await registerDirect(runtime);
+    const slowId = randomUUID();
+    runtime.socket.emit("message", JSON.stringify({ type: "work", requestId: slowId, key: "slow" }), false);
+    await slowReady;
+    runtime.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID(), key: "throw" }), false);
+    runtime.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID(), key: "array" }), false);
+    releaseSlow?.();
+    await vi.waitFor(() =>
+      expect(runtime.frames()).toEqual(expect.arrayContaining([expect.objectContaining({ type: "failure" })])),
+    );
+    runtime.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID(), key: "circular" }), false);
+    await vi.waitFor(() => expect(runtime.socket.closeCode).toBe(1011));
+
+    const outbound = directRuntimeSession({
+      business: {
+        parse: (value) => value as never,
+        laneKey: () => "outbound",
+        handle: (frame) =>
+          frame.key === "large"
+            ? { type: "result", text: "x".repeat(RUNTIME_MAX_FRAME_BYTES * 2) }
+            : { type: "result", connectionId: "old" },
+        failureResult: () => undefined,
+        overloadResult: () => undefined,
+      },
+    });
+    await registerDirect(outbound);
+    outbound.socket.emit("message", JSON.stringify({ type: "work", requestId: randomUUID(), key: "large" }), false);
+    await vi.waitFor(() => expect(outbound.socket.closeCode).toBe(1011));
+  });
+
+  it("cleans up on close and supports all raw data representations", async () => {
+    for (const data of [
+      JSON.stringify(authFrame(1)),
+      Buffer.from(JSON.stringify(authFrame(1))),
+      new Uint8Array(Buffer.from(JSON.stringify(authFrame(1)))).buffer,
+      [Buffer.from(JSON.stringify(authFrame(1)))],
+    ]) {
+      const runtime = directRuntimeSession();
+      runtime.session.start();
+      runtime.socket.emit("message", data, false);
+      await vi.waitFor(() => expect(runtime.frames()).toContainEqual(expect.objectContaining({ type: "auth:result" })));
+      await vi.waitFor(() =>
+        expect(runtime.frames()).toContainEqual(expect.objectContaining({ type: "server:welcome" })),
+      );
+      runtime.socket.emit("close", 1000);
+    }
+  });
+});
+
+function directRuntimeSession(
+  input: {
+    providerReadiness?: readonly ("codex" | "claude-code")[];
+    business?: RuntimeBusinessOptions;
+    computers?: Partial<{
+      assertActiveCredential: ReturnType<typeof vi.fn>;
+      register: ReturnType<typeof vi.fn>;
+      heartbeat: ReturnType<typeof vi.fn>;
+      disconnect: ReturnType<typeof vi.fn>;
+    }>;
+  } = {},
+) {
+  const socket = new RuntimeTestSocket();
+  const instanceId = randomUUID();
+  const context = {
+    credentialId: randomUUID(),
+    workspaceComputerId: randomUUID(),
+    workspaceId: randomUUID(),
+    computerId: randomUUID(),
+  };
+  const auth = { verifyMachineToken: vi.fn().mockResolvedValue(context) } as never;
+  const computers = {
+    assertActiveCredential: input.computers?.assertActiveCredential ?? vi.fn().mockResolvedValue(undefined),
+    register: input.computers?.register ?? vi.fn().mockResolvedValue(undefined),
+    heartbeat: input.computers?.heartbeat ?? vi.fn().mockResolvedValue(true),
+    disconnect: input.computers?.disconnect ?? vi.fn().mockResolvedValue(true),
+  };
+  const registry = new ConnectionRegistry();
+  const session = new RuntimeSession(socket as never, auth, computers as never, registry, {
+    business: input.business,
+    providerReadiness: input.providerReadiness,
+    authTimeoutMs: 5_000,
+    registerTimeoutMs: 5_000,
+  });
+  return { auth, computers, context, frames: () => socket.frames, instanceId, registry, session, socket };
+}
+
+async function registerDirect(runtime: ReturnType<typeof directRuntimeSession>): Promise<void> {
+  await authenticateDirect(runtime);
+  runtime.socket.emit("message", JSON.stringify(registerFrame(runtime.context.computerId, runtime.instanceId)), false);
+  await vi.waitFor(() =>
+    expect(runtime.frames()).toContainEqual(expect.objectContaining({ type: "computer:register:result" })),
+  );
+}
+
+async function authenticateDirect(
+  runtime: ReturnType<typeof directRuntimeSession>,
+  protocolVersion: 1 | 2 = 1,
+): Promise<void> {
+  runtime.session.start();
+  runtime.socket.emit("message", JSON.stringify(authFrame(protocolVersion)), false);
+  await vi.waitFor(() => expect(runtime.frames()).toContainEqual(expect.objectContaining({ type: "auth:result" })));
+  await vi.waitFor(() => expect(runtime.frames()).toContainEqual(expect.objectContaining({ type: "server:welcome" })));
+  await waitImmediate();
+}
+
+async function registerDirectV2(runtime: ReturnType<typeof directRuntimeSession>): Promise<void> {
+  await authenticateDirect(runtime, 2);
+  runtime.socket.emit(
+    "message",
+    JSON.stringify({
+      ...registerFrame(runtime.context.computerId, runtime.instanceId),
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      capabilities: { imCredentialGrant: 1 },
+      supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+      requiredServerCapabilities: [],
+    }),
+    false,
+  );
+  await vi.waitFor(() =>
+    expect(runtime.frames()).toContainEqual(expect.objectContaining({ type: "computer:register:result" })),
+  );
+  await waitImmediate();
+}
+
+function authFrame(protocolVersion: 1 | 2) {
+  return {
+    type: "auth",
+    requestId: randomUUID(),
+    protocolVersion,
+    ...(protocolVersion === 2
+      ? {
+          supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        }
+      : {}),
+    machineToken: "machine",
+  };
+}
+
+function heartbeatFrame(computerId: string, instanceId: string) {
+  return { type: "heartbeat", requestId: randomUUID(), computerId, instanceId };
+}
+
+class RuntimeTestSocket extends EventEmitter {
+  readyState: number = WebSocket.OPEN;
+  readonly frames: unknown[] = [];
+  closeCode?: number;
+
+  send(serialized: string): void {
+    this.frames.push(JSON.parse(serialized));
+  }
+
+  close(code?: number): void {
+    this.closeCode = code;
+    this.readyState = WebSocket.CLOSED;
+    this.emit("close", code);
+  }
+}
 
 async function authenticate(socket: WebSocket, frames = frameQueue(socket)): Promise<void> {
   await opened(socket);

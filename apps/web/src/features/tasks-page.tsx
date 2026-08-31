@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import { queryKeys } from "../query/keys.js";
 import {
   Button,
@@ -607,7 +608,7 @@ function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSu
             </>
           ) : null}
           <TaskProviderIcon provider={task.source.provider} compact />
-          <span>{task.source.provider}</span>
+          <span>{messagingProviderLabel(task.source.provider)}</span>
           <span aria-hidden="true"> · </span>
           <span>{task.sessionKind}</span>
           <span aria-hidden="true"> · </span>
@@ -633,7 +634,8 @@ function SourceIdentity({ task }: { task: TaskSummary }) {
       <span>
         <strong>{task.agent.displayName}</strong>
         <small>
-          {task.source.provider} · {task.sessionKind} · {shortId(task.source.threadKey ?? task.source.channelId)}
+          {messagingProviderLabel(task.source.provider)} · {task.sessionKind} ·{" "}
+          {shortId(task.source.threadKey ?? task.source.channelId)}
         </small>
       </span>
     </span>

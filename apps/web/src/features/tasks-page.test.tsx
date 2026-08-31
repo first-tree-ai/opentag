@@ -667,4 +667,29 @@ describe("Tasks debug view", () => {
     expect(screen.getByText("Ended")).toBeTruthy();
     expect(screen.getByText("Please verify the deployment state.")).toBeTruthy();
   });
+
+  // The provider identifier is the Server's vocabulary, not a name anybody chose for a reader. These
+  // two surfaces used to print it straight, which reads as the lowercase `feishu` today and would
+  // silently name any future channel after whatever casing its id happened to carry.
+  it("names the channel of a listed Task instead of printing its provider id", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    const { container } = await renderInRouter(<TasksPage />);
+    await screen.findByText("Investigate the failed deployment");
+
+    const metadata = container.querySelector('[data-ui="task-list-metadata"]');
+    expect(metadata?.textContent).toContain("Feishu");
+    expect(metadata?.textContent).not.toMatch(/feishu/);
+  });
+
+  it("names the channel of a Task's source instead of printing its provider id", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    await screen.findByLabelText("Task conversation");
+
+    const identity = container.querySelector('[data-ui="task-source-identity"]');
+    expect(identity?.textContent).toContain("Feishu");
+    expect(identity?.textContent).not.toMatch(/feishu/);
+  });
 });

@@ -5,9 +5,14 @@ type MessagingProvider = ImBindingSummary["provider"];
 /**
  * What a messaging provider is called in the product.
  *
- * Feishu and Lark are two separate channels, not one product under two names, and what OpenTag
- * supports today is Feishu. A Lark channel would arrive as its own provider beside `feishu` and
- * `slack` rather than as a second name for this one, so no label here carries an apposition.
+ * Feishu and Lark are one channel behind a regional switch, not two providers: the same `feishu`
+ * binding is delivered to either the Feishu or the Lark domain according to the team's brand. That
+ * brand is currently only learned *from the authorization result*, so a first connect has none and
+ * always mints against Feishu — which is why this label says Feishu alone and carries no "also
+ * called" apposition. Naming both would invite a Lark tenant into a flow that hands them a QR code
+ * their account cannot authorize. When the brand is chosen up front, from the user's country rather
+ * than discovered afterwards, this is the one place the reader-facing name has to learn to follow
+ * it.
  *
  * Labels used to be derived with `titleCase(provider)`, which turns the identifier straight into
  * reader-facing text. That happens to read correctly for `feishu`, which is why nothing looked

@@ -244,7 +244,7 @@ describe("OnboardingV2Page", () => {
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
     // The messaging CLI is not checked here: no provider has been chosen yet.
-    expect(screen.queryByText("Feishu CLI is installed")).toBeNull();
+    expect(screen.queryByText("lark-cli is installed")).toBeNull();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 

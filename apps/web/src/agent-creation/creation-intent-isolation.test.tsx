@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
 import { type AgentCreationFacts, AgentCreationFlow } from "./agent-creation-flow.js";
 
 const accountId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -46,6 +46,51 @@ describe("creation intents across concurrent forms", () => {
     cleanup();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("does not replay a spent key for a later request that merely looks the same", async () => {
+    // A reader who creates an Agent and later submits the same display name, Computer and Runtime
+    // produces an identical fingerprint. Matching a spent record by shape would replay its key, and
+    // the Server would hand back the Agent that key already created while the form reported a new
+    // one — a success the reader never got. The honest answer is the name conflict.
+    const keys: (string | undefined)[] = [];
+    const created: string[] = [];
+    vi.spyOn(browserApi, "createAgent").mockImplementation(async (request) => {
+      keys.push(request.creationIntentId);
+      if (created.includes(request.displayName)) {
+        throw new ApiError(
+          409,
+          "An active Agent with this name already exists for this Account",
+          "AGENT_NAME_CONFLICT",
+        );
+      }
+      created.push(request.displayName);
+      return { id: computerId } as never;
+    });
+
+    const first = render(
+      <AgentCreationFlow accountId={accountId} facts={facts} onCreated={() => {}} onRefresh={() => {}} />,
+    );
+    await act(async () => {
+      submit(first.container, "Same Name");
+    });
+    await waitFor(() => expect(keys).toHaveLength(1));
+    cleanup();
+
+    const onCreated = vi.fn();
+    const second = render(
+      <AgentCreationFlow accountId={accountId} facts={facts} onCreated={onCreated} onRefresh={() => {}} />,
+    );
+    await act(async () => {
+      submit(second.container, "Same Name");
+    });
+
+    await waitFor(() => expect(keys).toHaveLength(2));
+    // A fresh key, so the Server judges the request rather than recognising a spent one.
+    expect(keys[1]).not.toBe(keys[0]);
+    // And the reader is not told an Agent was created when none was.
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(created).toEqual(["Same Name"]);
   });
 
   it("removes no record when a creation succeeds, whoever wrote it", async () => {

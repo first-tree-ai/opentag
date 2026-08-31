@@ -150,6 +150,11 @@ export function AgentCreationFlow({
   const nameFieldRef = useRef<HTMLInputElement>(null);
   const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
+  /**
+   * The record this form last sent and has not seen succeed. A retry has to reuse it — that is the
+   * key the Server deduplicates against — and nothing else may be reused in its place.
+   */
+  const outstandingRecordRef = useRef<CreationIntentRecord | undefined>(undefined);
   const resumeAttemptedRef = useRef(false);
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
   const restoreComputerSetupFocusRef = useRef(false);
@@ -245,13 +250,24 @@ export function AgentCreationFlow({
       setSubmitting(true);
       onSubmittingChange?.(true);
       try {
-        record ??= await getOrCreateCreationIntent(accountId, request);
+        /*
+         * A retry of the request still in flight reuses the record this form sent, because that is
+         * the key the Server will recognise. It is identified by being *this form's outstanding
+         * request*, never by looking the same: a later submission can carry an identical name,
+         * Computer and Runtime, and replaying a spent key for it would hand the reader the Agent
+         * that key already created while reporting a new one.
+         */
+        record ??= sameRequest(outstandingRecordRef.current, request)
+          ? outstandingRecordRef.current
+          : await getOrCreateCreationIntent(accountId, request);
+        outstandingRecordRef.current = record;
         const created = await createAgentOnce(record);
         // The Agent exists, so every record this Account holds is spent: this one, and any the
         // reader abandoned along the way by changing the name or the route. Marking them stops
         // them resuming later, and marking rather than deleting means a page still waiting on one
         // keeps the key its retry needs.
         await supersedeCreationIntents(accountId, new Date().toISOString());
+        outstandingRecordRef.current = undefined;
         onCreated(created);
       } catch (cause) {
         if (cause instanceof ApiError) {
@@ -867,7 +883,15 @@ async function withCreationLock<T>(accountId: string, task: () => Promise<T> | T
   }
 }
 
-/** The record for a request about to be sent, reused whenever this exact request already has one. */
+/** Whether a record answers for exactly this request, and is therefore the key a retry must carry. */
+function sameRequest(
+  record: CreationIntentRecord | undefined,
+  request: Omit<CreateAgentRequest, "creationIntentId">,
+): record is CreationIntentRecord {
+  return record !== undefined && JSON.stringify(record.request) === JSON.stringify(request);
+}
+
+/** The record for a request about to be sent, reused whenever this exact request already has a live one. */
 async function getOrCreateCreationIntent(
   accountId: string,
   request: Omit<CreateAgentRequest, "creationIntentId">,
@@ -875,9 +899,12 @@ async function getOrCreateCreationIntent(
   return withCreationLock(accountId, () => {
     const records = readCreationIntents(accountId);
     const fingerprint = JSON.stringify(request);
-    // A superseded record is still the right key for this exact request: replaying it returns the
-    // Agent it already created rather than making a second one. Only unprompted resume is withheld.
-    const existing = records.find((record) => JSON.stringify(record.request) === fingerprint);
+    // Only a record still in play can answer for this request. A spent one belongs to a creation
+    // that already happened, and replaying its key would return that Agent instead of making the
+    // one being asked for now.
+    const existing = records.find(
+      (record) => record.supersededAt === undefined && JSON.stringify(record.request) === fingerprint,
+    );
     if (existing) return existing;
     const next: CreationIntentRecord = {
       version: CREATE_INTENT_VERSION,
@@ -939,18 +966,6 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
   }
 }
 
-/**
- * Retires the creation intents one form is responsible for, which is what a successful creation
- * makes of them: they exist to survive one act of creating one Agent, and the reader may have
- * abandoned several along the way by changing the name or the route. A record left behind is not
- * inert — the resume effect will send it the moment its route is the selected one again, creating
- * a second Agent nobody asked for. Refusing to resume an unselected route only defers that;
- * retiring the record ends it.
- *
- * Records belonging to another page mid-flight are left alone. Each is that request's idempotency
- * key, so erasing one would let a response lost after the Server committed retry as a fresh
- * creation and produce the duplicate the key exists to prevent.
- */
 /**
  * Marks every record this Account holds as spent by a creation that has happened, and drops the
  * ones marked long enough ago that nothing can still be waiting on them.

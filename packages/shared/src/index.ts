@@ -112,6 +112,10 @@ export {
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeMode,
   ComputerConnectCodeModeSchema,
+  type ComputerConnectCodeState,
+  ComputerConnectCodeStateSchema,
+  type ComputerConnectCodeStatus,
+  ComputerConnectCodeStatusSchema,
   type ComputerConnectionStatus,
   ComputerConnectionStatusSchema,
   type ComputerImCliReadiness,
@@ -148,6 +152,7 @@ export {
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENTS_PATH,
+  ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   ACCOUNT_COMPUTERS_PATH,
   ACCOUNT_SETUP_COMPLETE_PATH,
@@ -165,6 +170,7 @@ export {
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   API_V1_PREFIX,
+  accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,

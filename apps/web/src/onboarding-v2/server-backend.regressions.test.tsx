@@ -8,7 +8,12 @@
  * are guarded here rather than left to a live run to catch.
  */
 
-import type { AgentAdminConfig, FeishuSetupAttempt, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type {
+  AgentAdminConfig,
+  ComputerConnectCodeStatus,
+  FeishuSetupAttempt,
+  WorkspaceComputerSummary,
+} from "@opentag/shared/browser";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -23,6 +28,8 @@ const COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const USER_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const ATTEMPT_ID = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
+const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+const REDEEMED_AT = "2026-08-29T00:00:05.000Z";
 const POLL_MS = 1_500;
 const FEISHU_POLL_MS = 2_000;
 
@@ -86,13 +93,25 @@ function computersReturning(...pages: readonly (readonly WorkspaceComputerSummar
   });
 }
 
-function issuing(overrides: Partial<{ bootstrapCommand: string; expiresIn: number; issuedAt: string }> = {}) {
+function issuing(
+  overrides: Partial<{ connectCodeId: string; bootstrapCommand: string; expiresIn: number; issuedAt: string }> = {},
+) {
   return vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+    connectCodeId: CONNECT_CODE_ID,
     bootstrapCommand: "sh -c 'curl -fsSL https://example.test/install.sh | sh' -- connect ABC",
     expiresIn: 900,
     issuedAt: NOW,
     ...overrides,
   });
+}
+
+/** The Server's verdict on the issued code: the exact Computer redeemed it. */
+function redeemedVerdict(): ComputerConnectCodeStatus {
+  return { connectCodeId: CONNECT_CODE_ID, state: "redeemed", computerId: COMPUTER_ID, redeemedAt: REDEEMED_AT };
+}
+
+function pendingVerdict(): ComputerConnectCodeStatus {
+  return { connectCodeId: CONNECT_CODE_ID, state: "pending", computerId: null, redeemedAt: null };
 }
 
 function deferred<T>() {
@@ -134,6 +153,8 @@ describe("Server-backed onboarding: the defects it had", () => {
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+    // A code the test says nothing about stays pending: the wait never concludes without a verdict.
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockImplementation(async () => pendingVerdict());
   });
 
   afterEach(() => {
@@ -142,30 +163,27 @@ describe("Server-backed onboarding: the defects it had", () => {
   });
 
   it("does not adopt a Computer from a poll that returns after the code expired", async () => {
-    // The expiry check runs at the top of the interval, but a request already in flight when the
-    // code expires still lands. Its handler adopts the Computer and publishes readiness before it
-    // looks at whether the connection is still the one being waited on.
-    const late = deferred<{ computers: WorkspaceComputerSummary[] }>();
+    // The expiry check runs at the top of the interval, but a status read already in flight when
+    // the code expires still lands — and a redemption verdict for a dead code must not be adopted.
+    const late = deferred<ComputerConnectCodeStatus>();
     let call = 0;
-    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockImplementation(() => {
       call += 1;
-      if (call === 2) return late.promise;
-      return { computers: [] };
+      return call === 1 ? late.promise : Promise.resolve(pendingVerdict());
     });
+    computersReturning([computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })]);
     issuing({ expiresIn: 2 });
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
 
     const view = mount();
     act(() => view.result.current.issueConnectCode());
     await settle();
-    await tick(POLL_MS); // the poll leaves; the code has 500ms left
+    await tick(POLL_MS); // the status read leaves; the code has 500ms left
     await tick(POLL_MS); // the next tick finds it expired
     expect(view.result.current.connect.kind).toBe("expired");
 
     await act(async () => {
-      late.resolve({
-        computers: [computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })],
-      });
+      late.resolve(redeemedVerdict());
       await Promise.resolve();
     });
 
@@ -197,18 +215,16 @@ describe("Server-backed onboarding: the defects it had", () => {
     // Readiness is stored as one flat fact with no record of which runtime produced it, so
     // changing the runtime leaves the previous runtime's verdict on screen — and the footer
     // enabled — until the next poll lands, up to a full interval later.
-    computersReturning(
-      [],
-      [
-        computer({
-          providerReadiness: [
-            { provider: "codex", status: "ready", observedAt: NOW },
-            { provider: "claude-code", status: "install", observedAt: NOW },
-          ],
-        }),
-      ],
-    );
+    computersReturning([
+      computer({
+        providerReadiness: [
+          { provider: "codex", status: "ready", observedAt: NOW },
+          { provider: "claude-code", status: "install", observedAt: NOW },
+        ],
+      }),
+    ]);
     issuing();
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemedVerdict());
 
     const view = mount(draft("codex"));
     await connected(view);
@@ -223,16 +239,14 @@ describe("Server-backed onboarding: the defects it had", () => {
     // `imCliReadiness[0]` is whichever CLI the Server happened to observe first, in its own
     // canonical order. Here only Slack has been probed, so a reader who picks Lark is told
     // Lark's CLI is present on the strength of Slack's result.
-    computersReturning(
-      [],
-      [
-        computer({
-          providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }],
-          imCliReadiness: [{ provider: "slack", status: "ready", observedAt: NOW }],
-        }),
-      ],
-    );
+    computersReturning([
+      computer({
+        providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }],
+        imCliReadiness: [{ provider: "slack", status: "ready", observedAt: NOW }],
+      }),
+    ]);
     issuing();
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemedVerdict());
 
     const view = mount();
     await connected(view);
@@ -244,11 +258,9 @@ describe("Server-backed onboarding: the defects it had", () => {
   });
 
   it("stops polling a Lark attempt that Start over abandoned", async () => {
-    computersReturning(
-      [],
-      [computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })],
-    );
+    computersReturning([computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })]);
     issuing();
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemedVerdict());
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
     const poll = vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt());
@@ -274,11 +286,9 @@ describe("Server-backed onboarding: the defects it had", () => {
     // The messaging step starts an attempt whenever the state is idle, and a refused attempt is
     // returned to idle, so the effect starts another one immediately. Nothing paces the two, and
     // nothing bounds them: the mock below has to stop refusing in order for the test to end.
-    computersReturning(
-      [],
-      [computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })],
-    );
+    computersReturning([computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })]);
     issuing();
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemedVerdict());
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     let calls = 0;
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockImplementation(async () => {
@@ -306,19 +316,15 @@ describe("Server-backed onboarding: the defects it had", () => {
   });
 
   it("clears a transient polling error once the Computer it was waiting for arrives", async () => {
-    // `error` is only cleared by issuing a code or creating an Agent, so a poll that failed once
-    // leaves its line above a step that has since succeeded.
+    // A poll that failed once leaves its line on screen; the verdict that lands after it retires
+    // the error as the connection settles.
     let call = 0;
-    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockImplementation(async () => {
       call += 1;
-      if (call === 2) throw new Error("We lost contact");
-      if (call >= 3) {
-        return {
-          computers: [computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })],
-        };
-      }
-      return { computers: [] };
+      if (call === 1) throw new Error("We lost contact");
+      return redeemedVerdict();
     });
+    computersReturning([computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })]);
     issuing();
 
     const view = mount();

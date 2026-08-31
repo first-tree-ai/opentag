@@ -101,7 +101,7 @@ function RefreshTasksButton() {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("Tasks debug view", () => {
+describe("Tasks view", () => {
   it("loads stored Tasks and filters them locally", async () => {
     const second = {
       ...task,
@@ -117,7 +117,7 @@ describe("Tasks debug view", () => {
     expect(await screen.findByRole("table", { name: "Tasks" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Tasks table" }).tabIndex).toBe(0);
     expect(screen.getAllByRole("row")).toHaveLength(3);
-    expect(screen.getByText("Read-only debug view")).toBeTruthy();
+    expect(screen.queryByText("Read-only debug view")).toBeNull();
     expect(screen.queryByText("Demo data")).toBeNull();
 
     fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
@@ -260,23 +260,18 @@ describe("Tasks debug view", () => {
     },
   );
 
-  it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {
+  it("renders a read-only activity record without exposing diagnostics", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detail);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
-    const conversation = await screen.findByLabelText("Task conversation");
-    expect(within(conversation).getByText("Please investigate the failed deployment.")).toBeTruthy();
-    expect(
-      within(conversation).getByText("The runtime finished and the provider reply was sent separately."),
-    ).toBeTruthy();
-    expect(screen.getByText(/Provider outbound messages and detailed tool traces are not captured/)).toBeTruthy();
-    expect(screen.getByText(/Internal collaboration · 1 Sessions/)).toBeTruthy();
-
-    fireEvent.click(within(conversation).getByText("Runtime details"));
-    expect(
-      within(conversation).getByText("1 attempt · Outcome completed · Effects completed · 150 tokens · 4 trace events"),
-    ).toBeTruthy();
-    expect(screen.getByLabelText("Copy Session")).toBeTruthy();
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Please investigate the failed deployment.")).toBeTruthy();
+    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
+    expect(screen.queryByText(/Provider outbound messages and detailed tool traces/)).toBeNull();
+    expect(screen.queryByText(/Internal collaboration/)).toBeNull();
+    expect(screen.queryByText("Runtime details")).toBeNull();
+    expect(screen.queryByText(/150 tokens/)).toBeNull();
   });
 
   it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
@@ -324,10 +319,10 @@ describe("Tasks debug view", () => {
     vi.spyOn(browserApi, "task").mockResolvedValue({ ...detail, turns: [steered, root] });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
-    const conversation = await screen.findByLabelText("Task conversation");
-    expect(within(conversation).getByText("This input was steered into the active Turn.")).toBeTruthy();
-    expect(within(conversation).getByText("absorbed into running Turn")).toBeTruthy();
-    expect(within(conversation).getAllByText(/150 tokens/)).toHaveLength(1);
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("This message was included in the Agent's active work.")).toBeTruthy();
+    expect(within(activity).getByText("Added to active work")).toBeTruthy();
+    expect(within(activity).queryByText(/150 tokens/)).toBeNull();
   });
 
   it("loads older Turns from the detail cursor", async () => {
@@ -350,10 +345,10 @@ describe("Tasks debug view", () => {
       .mockResolvedValueOnce({ ...detail, turns: [olderTurn], nextCursor: null });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
     expect(await screen.findByText("This is an older inbound message.")).toBeTruthy();
     expect(taskRequest).toHaveBeenLastCalledWith(sessionId, "older-turns");
-    expect(screen.queryByRole("button", { name: "Load more Turns" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
   });
 
   it("does not let a late page for one Agent land on another Agent's Tasks", async () => {
@@ -458,11 +453,11 @@ describe("Tasks debug view", () => {
       });
 
       const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
-      fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
 
       view.rerender(<TaskDetailPage taskId={secondTaskId} />);
       expect(await screen.findByRole("heading", { name: "Task B" })).toBeTruthy();
-      expect((screen.getByRole("button", { name: "Load more Turns" }) as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByRole("button", { name: "Load earlier activity" }) as HTMLButtonElement).disabled).toBe(false);
 
       await act(async () => {
         if (outcome === "success") {
@@ -485,15 +480,15 @@ describe("Tasks debug view", () => {
       .mockRejectedValueOnce(new ApiError(status, `Task refused (${status})`));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
-    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
 
     // The Server resolves the Task before it parses a cursor, so a terminal status on an append is
     // about the Task itself. The stored output must not stay on screen behind an inline note.
     expect(
       await screen.findByRole("heading", { name: status === 404 ? "Task not found" : "Task unavailable" }),
     ).toBeTruthy();
-    expect(screen.queryByRole("region", { name: "Stored runtime final output" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Load more Turns" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Agent response" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
   });
 
   it("clears a Task append error when taskId changes", async () => {
@@ -510,7 +505,7 @@ describe("Tasks debug view", () => {
       .mockResolvedValueOnce(secondDetail);
 
     const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
-    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
     expect(await screen.findByText("Task A pagination failure")).toBeTruthy();
 
     view.rerender(<TaskDetailPage taskId={secondTaskId} />);
@@ -596,10 +591,10 @@ describe("Tasks debug view", () => {
       collaborationMessages: [],
     });
     view.rerender(<TaskDetailPage taskId="77777777-7777-4777-8777-777777777777" />);
-    expect(await screen.findByRole("heading", { name: "No Turns recorded" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "No activity recorded" })).toBeTruthy();
   });
 
-  it("shows pending and terminal Turn details, errors, and collaboration messages", async () => {
+  it("shows concise pending and failed states without internal collaboration details", async () => {
     const root = detail.turns[0];
     if (!root) throw new Error("Expected the Task fixture to include a root Turn");
     const pending = {
@@ -654,17 +649,12 @@ describe("Tasks debug view", () => {
       collaborationMessages: [collaboration],
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
-    const conversation = await screen.findByLabelText("Task conversation");
-    expect(within(conversation).getByText("The Turn is running or its report has not arrived.")).toBeTruthy();
-    expect(within(conversation).getByText("No text content")).toBeTruthy();
-    expect(within(conversation).getByText("Delivery terminal_rejected.")).toBeTruthy();
-    const runtimeDetails = within(conversation).getAllByText("Runtime details")[0];
-    if (!runtimeDetails) throw new Error("Runtime details toggle is missing");
-    fireEvent.click(runtimeDetails);
-    expect(within(conversation).getByText(/2 attempts/)).toBeTruthy();
-    expect(within(conversation).getByText("Provider failed")).toBeTruthy();
-    fireEvent.click(screen.getByText(/Internal collaboration · 1 Sessions · 1 messages/));
-    expect(screen.getByText("Ended")).toBeTruthy();
-    expect(screen.getByText("Please verify the deployment state.")).toBeTruthy();
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Work is in progress.")).toBeTruthy();
+    expect(within(activity).getByText("No text content")).toBeTruthy();
+    expect(within(activity).getByText("Provider failed")).toBeTruthy();
+    expect(within(activity).queryByText(/attempts/)).toBeNull();
+    expect(screen.queryByText(/Internal collaboration/)).toBeNull();
+    expect(screen.queryByText("Please verify the deployment state.")).toBeNull();
   });
 });

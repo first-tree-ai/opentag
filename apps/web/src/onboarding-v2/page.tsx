@@ -12,7 +12,7 @@ import {
   type MessagingProvider,
 } from "./flow.js";
 import { LabControls } from "./lab-controls.js";
-import { type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
+import { type MockInventory, type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
 import { useServerBackend } from "./server-backend.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
@@ -105,13 +105,15 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
 export function OnboardingV2MockPage() {
   const [scenario, setScenario] = useState<MockScenario>(SCENARIOS[0] as MockScenario);
   const [speed, setSpeed] = useState<MockSpeed>("manual");
+  /** What the Account already owns. Orthogonal to the check outcome, so the lab picks it apart. */
+  const [inventory, setInventory] = useState<MockInventory>("none");
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   /**
    * Cloud is not shipped: the Server cannot allocate a cloud Computer yet, so the route is
    * Coming soon in production. The panel can still offer it so its pages stay reviewable.
    */
   const [cloudAvailable, setCloudAvailable] = useState(false);
-  const backend = useMockBackend(scenario, speed);
+  const backend = useMockBackend(scenario, speed, inventory);
 
   return (
     <OnboardingV2Flow
@@ -122,7 +124,9 @@ export function OnboardingV2MockPage() {
         <LabControls
           backend={backend}
           cloudAvailable={cloudAvailable}
+          inventory={inventory}
           onCloudAvailableChange={setCloudAvailable}
+          onInventoryChange={setInventory}
           onScenarioChange={setScenario}
           onSpeedChange={setSpeed}
           scenario={scenario}
@@ -161,11 +165,20 @@ function OnboardingV2Flow({
   const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
 
+  /*
+   * The Computer this Account has, if it has one. An Account has a single machine, so this is a
+   * fact about the Account rather than a choice the reader makes: the step names it, checks it, and
+   * repairs it. The backend picks a reachable one first for Accounts that predate that rule and
+   * still hold more than one.
+   */
+  const accountComputer = backend.knownComputers?.find((candidate) => candidate.id === backend.selectedComputerId);
+
   const facts: FlowFacts = {
     draft,
     destinationConfirmed: destinationConfirmed || resumed,
     draftConfirmed: draftConfirmed || resumed,
     connect: backend.connect,
+    selectedComputerId: backend.selectedComputerId,
     readiness: backend.readiness,
     cloudComputer,
     creation: backend.creation,
@@ -177,9 +190,14 @@ function OnboardingV2Flow({
   // The connect code is issued when the page that shows it is first reached, not before: an
   // unseen code would spend its validity in the background. A Computer that is already connected
   // needs none, and `issueConnectCode` only acts on an idle connection.
+  //
+  // A run whose Account already has a Computer needs none either, and issuing one anyway would do
+  // more than waste it: the code enrols a *new* machine, so an Account meant to have one could end
+  // up with two.
+  const connectingNewComputer = backend.selectedComputerId === undefined;
   useEffect(() => {
-    if (flow.page === "computer") backend.issueConnectCode();
-  }, [backend.issueConnectCode, flow.page]);
+    if (flow.page === "computer" && connectingNewComputer) backend.issueConnectCode();
+  }, [backend.issueConnectCode, connectingNewComputer, flow.page]);
 
   // Which step the reader is on is the page's to know. The connection is watched while they are on
   // the one that can act on it, and left alone once they are past it.
@@ -315,6 +333,7 @@ function OnboardingV2Flow({
             />
           ) : flow.page === "computer" ? (
             <ComputerStep
+              computer={accountComputer}
               connect={backend.connect}
               creation={backend.creation}
               draft={draft}

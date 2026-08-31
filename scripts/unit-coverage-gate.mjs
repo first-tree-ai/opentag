@@ -112,20 +112,23 @@ export function normalizeCoveragePath(rawPath, repositoryRoot) {
  * gate asks "does any statement cover this line", which is the question it means to ask, rather
  * than depending on a provider property nothing enforces.
  */
+function recordStatementHits(lineHits, statement, rawHits) {
+  const start = statement?.start?.line;
+  if (!Number.isInteger(start)) return;
+  const end = Number.isInteger(statement?.end?.line) ? Math.max(statement.end.line, start) : start;
+  const hits = Number.isFinite(rawHits) ? rawHits : 0;
+  for (let line = start; line <= end; line += 1) {
+    lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hits));
+  }
+}
+
 export function buildLineHitsByFile(coverage, repositoryRoot) {
   const lineHitsByFile = new Map();
   for (const [rawFile, fileCoverage] of Object.entries(coverage ?? {})) {
     const file = normalizeCoveragePath(rawFile, repositoryRoot);
     const lineHits = lineHitsByFile.get(file) ?? new Map();
     for (const [statementId, statement] of Object.entries(fileCoverage?.statementMap ?? {})) {
-      const start = statement?.start?.line;
-      if (!Number.isInteger(start)) continue;
-      const end = Number.isInteger(statement?.end?.line) ? Math.max(statement.end.line, start) : start;
-      const rawHits = Number(fileCoverage?.s?.[statementId] ?? 0);
-      const hits = Number.isFinite(rawHits) ? rawHits : 0;
-      for (let line = start; line <= end; line += 1) {
-        lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hits));
-      }
+      recordStatementHits(lineHits, statement, Number(fileCoverage?.s?.[statementId] ?? 0));
     }
     lineHitsByFile.set(file, lineHits);
   }

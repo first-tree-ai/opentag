@@ -68,7 +68,7 @@ describe("internal tools page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reset and start onboarding" }));
     const resetting = await screen.findByRole("dialog");
-    expect(within(resetting).getByText(/disables your current Agents/)).toBeTruthy();
+    expect(within(resetting).getByText(/deletes your current Agents/)).toBeTruthy();
     fireEvent.click(within(resetting).getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 

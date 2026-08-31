@@ -57,6 +57,9 @@ POST /api/v1/me/setup/reset
 { "mode": "all" | "reboard" }
 ```
 
+同一个路径对 `GET` 的应答是：提供 reset 的部署返回 `204`，不提供的返回 `404`，除此之外什么都不做。页面靠它决定自己要不要显示、
+菜单入口要不要出现，而且它是唯一一种「不真的执行一次 reset 就能问出可用性」的方式。
+
 在 staging 标签页的控制台里执行（会话 cookie 与 CSRF cookie 都已存在）：
 
 ```js

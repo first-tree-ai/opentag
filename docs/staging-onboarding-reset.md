@@ -65,6 +65,10 @@ POST /api/v1/me/setup/reset
 { "mode": "all" | "reboard" }
 ```
 
+The same path answers `GET` with `204` where the reset is offered and `404` where it is not, and nothing else.
+That is how the page decides whether to show itself and whether to offer the menu entry, and it is the only way to
+ask without performing a reset.
+
 From the staging tab's console, where the session cookie and the CSRF cookie are both already present:
 
 ```js

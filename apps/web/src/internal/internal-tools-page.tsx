@@ -43,7 +43,7 @@ const RESET_OPERATIONS: readonly ResetOperation[] = [
   {
     action: "Reset and start onboarding",
     confirmDescription:
-      "This disables your current Agents, Computer enrollments and messaging connections on staging. Nobody else's Account is touched.",
+      "This deletes your current Agents and revokes your Computer enrollments and messaging connections on staging. Nobody else's Account is touched.",
     confirmTitle: "Reset your staging Account?",
     description:
       "Returns this Account to a genuine first-run state: its Agents are deleted and its Computer access revoked. Use it to test the create path — the next run needs a fresh Computer connect command.",

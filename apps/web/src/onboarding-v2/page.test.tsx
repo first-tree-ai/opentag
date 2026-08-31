@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandBlock } from "./command-block.js";
+import { CHECK_COPY, COPY } from "./copy.js";
 import { SCENARIOS } from "./mock-backend.js";
 import { OnboardingV2MockPage } from "./page.js";
 
@@ -69,6 +70,11 @@ describe("OnboardingV2Page", () => {
   afterEach(() => {
     vi.useRealTimers();
     Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("uses plural repair copy when multiple checks fail", () => {
+    expect(CHECK_COPY["runtime-cli"].detail.failed("Codex")).toBe("We can't find the Codex command on this computer.");
+    expect(COPY.check.failedIntro(2)).toBe("2 things need fixing before your agent can run.");
   });
 
   it("marks the cloud computer as coming soon, because the Server cannot allocate one yet", () => {

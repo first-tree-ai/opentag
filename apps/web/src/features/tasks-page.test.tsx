@@ -567,6 +567,14 @@ describe("Tasks debug view", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
+  it("reports when an Agent's Tasks cannot be loaded", async () => {
+    vi.spyOn(browserApi, "tasks").mockRejectedValueOnce(new ApiError(503, "Tasks unavailable"));
+
+    await renderInRouter(<AgentTasksSection agentId={agentId} />);
+
+    expect(await screen.findByText("Tasks are temporarily unavailable.")).toBeTruthy();
+  });
+
   it("renders missing, unavailable, and empty Task detail states", async () => {
     const view = await renderInRouter(<TaskDetailPage />, { path: "/tasks/missing" });
     expect(await screen.findByRole("heading", { name: "Task not found" })).toBeTruthy();

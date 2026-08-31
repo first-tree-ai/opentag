@@ -6,6 +6,7 @@ import {
 } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { Button, Field, KumoInputAreaControl, KumoInputControl, KumoSelectControl } from "../../../ui/design-system.js";
+import { RuntimeTestAction } from "./runtime-test-action.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 
@@ -207,6 +208,11 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
             ) : null}
           </form>
           {message?.section === "runtime" ? <SaveMessage message={message} /> : null}
+          <RuntimeTestAction
+            agentId={config.id}
+            expectedRevision={config.revision}
+            expectedRuntimeConfigRevision={config.runtimeConfig.revision}
+          />
         </section>
       ) : null}
 

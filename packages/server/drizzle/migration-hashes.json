@@ -175,6 +175,11 @@
       "idx": 34,
       "tag": "0034_legal_kat_farrell",
       "sha256": "872e2b49d4597ebdc3fce4f1e83af4d682f6ea476e2d1991ff05c5d354c3803a"
+    },
+    {
+      "idx": 35,
+      "tag": "0035_dark_devos",
+      "sha256": "9c74656526572bc97d52a77261fe2d4ae6817585821d5141871a501c5c23b9cf"
     }
   ]
 }

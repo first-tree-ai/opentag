@@ -205,3 +205,29 @@ describe("a Computer the Account already has", () => {
     expect(screen.getByRole("option", { name: NEW_COMPUTER })).toBeTruthy();
   });
 });
+
+describe("the cloud route, which has no Computer of its own to point at", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("still creates the Agent when OpenTag allocates the machine", async () => {
+    // The guard that stops a local run creating an Agent with no Computer must not stop a cloud
+    // run, where the machine is allocated rather than connected or chosen.
+    render(<OnboardingV2MockPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
+    fireEvent.click(screen.getByRole("button", { name: "Offer the cloud computer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
+    fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /OpenTag agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await advance(4_000);
+
+    expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+  });
+});

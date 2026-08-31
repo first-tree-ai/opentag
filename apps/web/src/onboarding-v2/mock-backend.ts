@@ -390,7 +390,10 @@ export function useMockBackend(
       // The Server creates on a Computer it can name, and refuses when it cannot. The mock holds
       // itself to the same rule so this step cannot produce an Agent that runs nowhere — the
       // already-owned machine counts, which is the whole point of offering it.
-      if (preparedComputerId === undefined) return;
+      //
+      // The cloud route names one too, it just does not come from this step: OpenTag allocates the
+      // machine, so there is neither an arrival nor a choice here to point at.
+      if (draft.destination !== "cloud" && preparedComputerId === undefined) return;
       setCreation((current) => {
         if (current !== "idle") return current;
         later(() => {

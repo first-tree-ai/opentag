@@ -6,7 +6,7 @@
 - [x] 2. Add failing shared taxonomy and redaction tests first.
 - [x] 3. Implement shared structured-error schemas and safe serialization; refresh exports snapshot.
 - [x] 4. Implement and test the server background-failure supervisor.
-- [ ] 5. Write `docs/error-taxonomy.md`.
+- [x] 5. Write `docs/error-taxonomy.md`.
 - [ ] 6. Run `pnpm check`, `pnpm typecheck`, and `pnpm test`; clean the tree.
 
 ## Completed item
@@ -25,6 +25,10 @@ The new `structured-errors.test.ts` covers taxonomy parsing, diagnostic-event en
 The server supervisor now exposes `supervise` for awaited operations and `track` for detached promises. It classifies thrown values into the shared taxonomy, captures bounded/redacted causes, emits one `DiagnosticEvent`, invokes a counter seam (`opentag.background_failures.total`), and sends only redacted payloads to the logger. Observer failures and invalid timestamps are isolated. Failure-injection tests pass (2 tests), and server typecheck passes.
 
 Next write the canonical English taxonomy and adoption guide, then run the repository verification commands.
+
+The canonical English guide now documents the structured event shape, all category and retryability semantics, supported phases, redaction/16 KiB serialization rules, runtime/IO/CLI adoption patterns, and the surveyed integration points. No runtime or service call sites were changed in this definition lane.
+
+Next run `pnpm check`, `pnpm typecheck`, and `pnpm test`, resolve any failures, and confirm a clean tree.
 
 ## Integration notes
 

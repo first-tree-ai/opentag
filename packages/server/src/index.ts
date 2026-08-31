@@ -26,7 +26,8 @@ import {
 } from "./services/auth/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
-import { ExternalCallPolicy, ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
+import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import {
   DefaultFeishuRegistrationGateway,
   FeishuConnectionManager,
@@ -39,8 +40,8 @@ import {
   SlackConfigurationService,
   SlackOAuthService,
   SlackOAuthStateService,
-  SlackWebhookReceiptStore,
 } from "./services/im-bindings/slack/index.js";
+import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";

@@ -4,7 +4,6 @@ import type { ImMessageInbox } from "../services/im/index.js";
 import type { ImBindingService, SlackInstallationIngress } from "../services/im-bindings/index.js";
 import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
-import type { SlackWebhookReceiptStore } from "../services/im-bindings/slack/webhook-receipt-store.js";
 
 interface SlackEnvelopeBase {
   type?: string;
@@ -46,7 +45,17 @@ export interface SlackEventsRouteOptions {
   createAdapter(installation: SlackInstallationIngress): SlackAdapter;
   firstPartySigningSecret?: string;
   now?: () => Date;
-  receipts?: SlackWebhookReceiptStore;
+  receipts?: SlackWebhookReceiptStoreLike;
+}
+
+export interface SlackWebhookReceiptStoreLike {
+  claim(input: {
+    installationId: string;
+    credentialGeneration: number;
+    eventId: string;
+  }): Promise<{ accepted: boolean; duplicate: boolean; receiptId?: string }>;
+  markProcessed(receiptId: string): Promise<void>;
+  markFailed(receiptId: string, errorCode: string): Promise<void>;
 }
 
 export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEventsRouteOptions): void {
@@ -146,7 +155,7 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     envelope: SlackEnvelopeBase,
     reply: FastifyReply,
   ) => {
-    if (!options.receipts || envelope.type !== "event_callback" || !envelope.event_id) {
+    if (!options.receipts || envelope.type !== "event_callback" || !envelope.event_id || !envelope.event) {
       return processEnvelope(installation, envelope, reply);
     }
     const claim = await options.receipts.claim({

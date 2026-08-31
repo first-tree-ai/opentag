@@ -11,6 +11,7 @@ import {
   type AgentUsageWindowDays,
   accountComputerConnectCodePath,
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
@@ -52,6 +53,7 @@ import {
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
+  type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
   type RuntimeDurableWorkKind,
@@ -344,6 +346,14 @@ export class OpenTagApi {
       },
       options,
     );
+  }
+
+  rebindAgentComputer(accessToken: string, agentId: string, computerId: string): Promise<AgentAdminConfig> {
+    return this.#request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      body: JSON.stringify({ computerId } satisfies RebindAgentComputerRequest),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
   }
 
   updateAgent(

@@ -6,29 +6,59 @@ import {
 } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Field, KumoInputAreaControl, KumoInputControl, KumoSelectControl } from "../../../ui/design-system.js";
+import {
+  Banner,
+  Button,
+  InputArea,
+  KumoInputControl,
+  Select,
+  SettingsList,
+  SettingsRow,
+  Text,
+} from "../../../ui/design-system.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
+const PROVIDER_DEFAULT_OPTION = "__provider_default__";
 
 export interface RuntimeConfigurationFormProps {
+  readonly computerOnline?: boolean;
   readonly initialConfig: AgentAdminConfig;
   readonly save: (input: UpdateAgentRequest) => Promise<AgentAdminConfig>;
   readonly section?: "all" | "execution" | "instructions";
 }
 
-export function RuntimeConfigurationForm({ initialConfig, save, section = "all" }: RuntimeConfigurationFormProps) {
-  return <RuntimeConfigurationEditor initialConfig={initialConfig} save={save} section={section} />;
+export function RuntimeConfigurationForm({
+  computerOnline = true,
+  initialConfig,
+  save,
+  section = "all",
+}: RuntimeConfigurationFormProps) {
+  return (
+    <RuntimeConfigurationEditor
+      computerOnline={computerOnline}
+      initialConfig={initialConfig}
+      save={save}
+      section={section}
+    />
+  );
 }
 
-function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: RuntimeConfigurationFormProps) {
+function RuntimeConfigurationEditor({
+  computerOnline = true,
+  initialConfig,
+  save,
+  section = "all",
+}: RuntimeConfigurationFormProps) {
   const initialOptions = getRuntimeConfigurationOptions(initialConfig.runtimeProvider);
   const [config, setConfig] = useState(initialConfig);
   const [modelDraft, setModelDraft] = useState(initialConfig.runtimeConfig.model ?? "");
   const [modelSelection, setModelSelection] = useState(() =>
     modelSelectionFor(initialConfig.runtimeConfig.model, initialOptions.modelSuggestions),
   );
-  const [reasoningDraft, setReasoningDraft] = useState(initialConfig.runtimeConfig.reasoningEffort ?? "");
+  const [reasoningSelection, setReasoningSelection] = useState(
+    initialConfig.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION,
+  );
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
@@ -37,12 +67,15 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
   }>();
   const [saving, setSaving] = useState<"runtime" | "instructions">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
-  const providerName = config.runtimeProvider === "codex" ? m.agent_settings_codex() : m.agent_settings_claude_code();
+  const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
   const ExecutionHeading = section === "execution" ? "h1" : "h3";
   const InstructionsHeading = section === "instructions" ? "h1" : "h3";
+  const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
   const hasHistoricalReasoningDraft =
-    reasoningDraft !== "" && !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningDraft);
+    reasoningSelection !== PROVIDER_DEFAULT_OPTION &&
+    !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningSelection);
+  const reasoningDraft = reasoningSelection === PROVIDER_DEFAULT_OPTION ? "" : reasoningSelection;
   const runtimeDirty =
     modelDraft !== (config.runtimeConfig.model ?? "") ||
     reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
@@ -60,22 +93,14 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
         reasoningEffort: nullableText(reasoningDraft),
       };
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
+      const updatedOptions = getRuntimeConfigurationOptions(updated.runtimeProvider);
       setConfig(updated);
       setModelDraft(updated.runtimeConfig.model ?? "");
-      setModelSelection(
-        modelSelectionFor(
-          updated.runtimeConfig.model,
-          getRuntimeConfigurationOptions(updated.runtimeProvider).modelSuggestions,
-        ),
-      );
-      setReasoningDraft(updated.runtimeConfig.reasoningEffort ?? "");
-      setMessage({ kind: "success", section: "runtime", text: m.agent_settings_execution_settings_saved() });
-    } catch (cause) {
-      setMessage({
-        kind: "error",
-        section: "runtime",
-        text: cause instanceof Error ? cause.message : m.agent_settings_save_execution_settings_failed(),
-      });
+      setModelSelection(modelSelectionFor(updated.runtimeConfig.model, updatedOptions.modelSuggestions));
+      setReasoningSelection(updated.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
+      setMessage({ kind: "success", section: "runtime", text: m.agent_settings_model_saved() });
+    } catch {
+      setMessage({ kind: "error", section: "runtime", text: m.agent_settings_execution_save_failed() });
     } finally {
       setSaving(undefined);
     }
@@ -93,67 +118,63 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
       });
       setConfig(updated);
       setInstructionsDraft(updated.runtimeConfig.instructions);
-      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_agent_instructions_saved() });
-    } catch (cause) {
-      setMessage({
-        kind: "error",
-        section: "instructions",
-        text: cause instanceof Error ? cause.message : m.agent_settings_save_agent_instructions_failed(),
-      });
+      setMessage({ kind: "success", section: "instructions", text: m.agent_settings_instructions_saved() });
+    } catch {
+      setMessage({ kind: "error", section: "instructions", text: m.agent_settings_instructions_save_failed() });
     } finally {
       setSaving(undefined);
     }
   }
 
+  function discardRuntimeChanges() {
+    setModelDraft(config.runtimeConfig.model ?? "");
+    setModelSelection(modelSelectionFor(config.runtimeConfig.model, runtimeOptions.modelSuggestions));
+    setReasoningSelection(config.runtimeConfig.reasoningEffort ?? PROVIDER_DEFAULT_OPTION);
+    setMessage(undefined);
+  }
+
   return (
     <div className="grid gap-6" data-ui={section === "all" ? "runtime-settings" : "settings-section"}>
       {section !== "instructions" ? (
-        <section
-          aria-labelledby="execution-heading"
-          className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-        >
-          <header className="flex items-start justify-between gap-3">
-            <div>
-              <ExecutionHeading id="execution-heading">
-                {section === "execution"
-                  ? m.agent_settings_model_reasoning_title()
-                  : m.agent_settings_execution_title()}
-              </ExecutionHeading>
-            </div>
-          </header>
-          {section !== "execution" ? (
-            <p className="text-sm text-kumo-subtle">{m.agent_settings_provider_name({ provider: providerName })}</p>
-          ) : null}
+        <section aria-labelledby="execution-heading" className="grid gap-4">
+          <ExecutionHeading id="execution-heading">{m.agent_settings_model()}</ExecutionHeading>
           <form className="grid gap-4" onSubmit={saveRuntime}>
-            <div className="grid gap-4 @min-[36rem]/workspace:grid-cols-2">
-              <Field htmlFor={fieldId("model")} label={m.agent_settings_model_label()}>
-                <KumoSelectControl
-                  id={fieldId("model")}
-                  aria-label={m.agent_settings_model_label()}
-                  value={modelSelection}
-                  onChange={(event) => {
-                    const selection = event.currentTarget.value;
-                    setModelSelection(selection);
-                    if (selection === CUSTOM_MODEL_OPTION) {
-                      if (modelSelection !== CUSTOM_MODEL_OPTION) setModelDraft("");
-                    } else {
-                      setModelDraft(selection);
-                    }
-                    setMessage(undefined);
-                  }}
-                >
-                  <option value="">{m.agent_settings_provider_default()}</option>
-                  {runtimeOptions.modelSuggestions.map((model) => (
-                    <option value={model} key={model}>
-                      {model}
-                    </option>
-                  ))}
-                  <option value={CUSTOM_MODEL_OPTION}>{m.agent_settings_custom_model_id_option()}</option>
-                </KumoSelectControl>
-                {modelSelection === CUSTOM_MODEL_OPTION ? (
-                  <div className="mt-2">
+            <SettingsList>
+              <SettingsRow description={m.agent_settings_runtime_fixed()} label={m.agent_settings_runtime()}>
+                <div className="flex justify-start @min-[44rem]/workspace:justify-end">
+                  <span className="text-sm text-kumo-default">{providerName}</span>
+                </div>
+              </SettingsRow>
+              <SettingsRow label={m.agent_settings_model()}>
+                <div className="grid w-full gap-2 @min-[44rem]/workspace:ml-auto @min-[44rem]/workspace:max-w-80">
+                  <Select
+                    aria-label={m.agent_settings_model()}
+                    className="w-full"
+                    id={fieldId("model")}
+                    itemToStringLabel={(value) => modelOptionLabel(String(value))}
+                    value={modelSelection}
+                    onValueChange={(nextValue) => {
+                      const selection = String(nextValue);
+                      setModelSelection(selection);
+                      if (selection === CUSTOM_MODEL_OPTION) {
+                        if (modelSelection !== CUSTOM_MODEL_OPTION) setModelDraft("");
+                      } else {
+                        setModelDraft(selection === PROVIDER_DEFAULT_OPTION ? "" : selection);
+                      }
+                      setMessage(undefined);
+                    }}
+                  >
+                    <Select.Option value={PROVIDER_DEFAULT_OPTION}>{m.agent_settings_provider_default()}</Select.Option>
+                    {runtimeOptions.modelSuggestions.map((model) => (
+                      <Select.Option value={model} key={model}>
+                        {model}
+                      </Select.Option>
+                    ))}
+                    <Select.Option value={CUSTOM_MODEL_OPTION}>{m.agent_settings_model_custom()}</Select.Option>
+                  </Select>
+                  {modelSelection === CUSTOM_MODEL_OPTION ? (
                     <KumoInputControl
-                      aria-label={m.agent_settings_custom_model_id_label()}
+                      aria-label={m.agent_settings_model_custom_label()}
                       autoComplete="off"
                       id={fieldId("custom-model")}
                       required
@@ -163,91 +184,102 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                         setMessage(undefined);
                       }}
                     />
-                  </div>
-                ) : null}
-              </Field>
-              <Field htmlFor={fieldId("reasoning-effort")} label={m.agent_settings_reasoning_level_label()}>
-                <KumoSelectControl
-                  id={fieldId("reasoning-effort")}
-                  aria-label={m.agent_settings_reasoning_level_label()}
-                  name="reasoningEffort"
-                  value={reasoningDraft}
-                  onChange={(event) => {
-                    setReasoningDraft(event.currentTarget.value);
-                    setMessage(undefined);
-                  }}
-                >
-                  <option value="">{m.agent_settings_provider_default()}</option>
-                  {hasHistoricalReasoningDraft ? (
-                    <option value={reasoningDraft}>{m.agent_settings_saved_value({ value: reasoningDraft })}</option>
                   ) : null}
-                  {runtimeOptions.reasoningEffortAllowedValues.map((effort) => (
-                    <option value={effort} key={effort}>
-                      {effort}
-                    </option>
-                  ))}
-                </KumoSelectControl>
-              </Field>
-            </div>
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                description={m.agent_settings_reasoning_effort_description()}
+                label={m.agent_settings_reasoning_effort()}
+              >
+                <div className="w-full @min-[44rem]/workspace:ml-auto @min-[44rem]/workspace:max-w-80">
+                  <Select
+                    aria-label={m.agent_settings_reasoning_effort()}
+                    className="w-full"
+                    id={fieldId("reasoning-effort")}
+                    itemToStringLabel={(value) => reasoningOptionLabel(String(value))}
+                    name="reasoningEffort"
+                    value={reasoningSelection}
+                    onValueChange={(nextValue) => {
+                      setReasoningSelection(String(nextValue));
+                      setMessage(undefined);
+                    }}
+                  >
+                    <Select.Option value={PROVIDER_DEFAULT_OPTION}>{m.agent_settings_provider_default()}</Select.Option>
+                    {hasHistoricalReasoningDraft ? (
+                      <Select.Option value={reasoningSelection}>
+                        {m.agent_settings_reasoning_saved_value({ value: reasoningSelection })}
+                      </Select.Option>
+                    ) : null}
+                    {runtimeOptions.reasoningEffortAllowedValues.map((effort) => (
+                      <Select.Option value={effort} key={effort}>
+                        {reasoningOptionLabel(effort)}
+                      </Select.Option>
+                    ))}
+                  </Select>
+                </div>
+              </SettingsRow>
+            </SettingsList>
             {runtimeDirty ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
                 <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
                 <div className="flex flex-wrap justify-end gap-2">
-                  <Button
-                    disabled={Boolean(saving)}
-                    variant="ghost"
-                    onClick={() => {
-                      setModelDraft(config.runtimeConfig.model ?? "");
-                      setModelSelection(modelSelectionFor(config.runtimeConfig.model, runtimeOptions.modelSuggestions));
-                      setReasoningDraft(config.runtimeConfig.reasoningEffort ?? "");
-                      setMessage(undefined);
-                    }}
-                  >
-                    {m.agent_settings_discard_action()}
+                  <Button disabled={Boolean(saving)} variant="ghost" onClick={discardRuntimeChanges}>
+                    {m.agent_settings_discard()}
                   </Button>
                   <Button disabled={Boolean(saving) || customModelInvalid} type="submit">
-                    {saving === "runtime" ? m.agent_settings_saving_action() : m.agent_settings_save_changes_action()}
+                    {saving === "runtime" ? m.agent_settings_saving() : m.agent_settings_save_changes()}
                   </Button>
                 </div>
               </div>
             ) : null}
           </form>
           {message?.section === "runtime" ? <SaveMessage message={message} /> : null}
-          <RuntimeTestAction
-            agentId={config.id}
-            expectedRevision={config.revision}
-            expectedRuntimeConfigRevision={config.runtimeConfig.revision}
-          />
+          <section aria-labelledby="runtime-test-heading" className="mt-2 grid gap-3">
+            <Text as={TroubleshootingHeading} id="runtime-test-heading" variant="heading">
+              {m.agent_settings_troubleshooting()}
+            </Text>
+            <SettingsList>
+              <RuntimeTestAction
+                agentId={config.id}
+                disabledReason={
+                  runtimeDirty
+                    ? m.agent_settings_runtime_test_disabled_unsaved()
+                    : computerOnline
+                      ? undefined
+                      : m.agent_settings_runtime_test_disabled_computer()
+                }
+                expectedRevision={config.revision}
+                expectedRuntimeConfigRevision={config.runtimeConfig.revision}
+                providerName={providerName}
+              />
+            </SettingsList>
+          </section>
         </section>
       ) : null}
 
       {section !== "execution" ? (
-        <section
-          aria-labelledby="agent-instructions-heading"
-          className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-        >
-          <header className="flex items-start justify-between gap-3">
-            <div>
-              <InstructionsHeading id="agent-instructions-heading">
-                {section === "instructions"
-                  ? m.agent_settings_instructions_title()
-                  : m.agent_settings_agent_instructions_title()}
-              </InstructionsHeading>
-            </div>
+        <section aria-labelledby="agent-instructions-heading" className="grid gap-4">
+          <header className="grid gap-2">
+            <InstructionsHeading id="agent-instructions-heading">
+              {m.agent_settings_instructions_title()}
+            </InstructionsHeading>
+            <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
           </header>
           <form className="grid gap-4" onSubmit={saveInstructions}>
-            <Field htmlFor={fieldId("instructions")} label={m.agent_settings_instructions_label()}>
-              <KumoInputAreaControl
-                id={fieldId("instructions")}
-                name="instructions"
-                rows={8}
-                value={instructionsDraft}
-                onChange={(event) => {
-                  setInstructionsDraft(event.currentTarget.value);
-                  setMessage(undefined);
-                }}
-              />
-            </Field>
+            <InputArea
+              aria-label={m.agent_settings_instructions_title()}
+              autoResize
+              id={fieldId("instructions")}
+              maxRows={16}
+              minRows={8}
+              name="instructions"
+              placeholder={m.agent_settings_instructions_placeholder()}
+              value={instructionsDraft}
+              onValueChange={(value) => {
+                setInstructionsDraft(value);
+                setMessage(undefined);
+              }}
+            />
             {instructionsDirty ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
                 <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
@@ -260,12 +292,10 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                       setMessage(undefined);
                     }}
                   >
-                    {m.agent_settings_discard_action()}
+                    {m.agent_settings_discard()}
                   </Button>
                   <Button disabled={Boolean(saving)} type="submit">
-                    {saving === "instructions"
-                      ? m.agent_settings_saving_action()
-                      : m.agent_settings_save_changes_action()}
+                    {saving === "instructions" ? m.agent_settings_saving() : m.agent_settings_save_changes()}
                   </Button>
                 </div>
               </div>
@@ -279,18 +309,37 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
 }
 
 function modelSelectionFor(model: string | null, suggestions: readonly string[]): string {
-  if (model === null) return "";
+  if (model === null) return PROVIDER_DEFAULT_OPTION;
   return suggestions.includes(model) ? model : CUSTOM_MODEL_OPTION;
+}
+
+function modelOptionLabel(value: string): string {
+  if (value === PROVIDER_DEFAULT_OPTION) return m.agent_settings_provider_default();
+  if (value === CUSTOM_MODEL_OPTION) return m.agent_settings_model_custom();
+  return value;
+}
+
+function reasoningOptionLabel(value: string): string {
+  if (value === PROVIDER_DEFAULT_OPTION) return m.agent_settings_provider_default();
+  return (
+    {
+      minimal: m.agent_settings_reasoning_minimal(),
+      low: m.agent_settings_reasoning_low(),
+      medium: m.agent_settings_reasoning_medium(),
+      high: m.agent_settings_reasoning_high(),
+      xhigh: m.agent_settings_reasoning_extra_high(),
+      max: m.agent_settings_reasoning_max(),
+    }[value] ?? value
+  );
 }
 
 function SaveMessage({ message }: { message: { kind: "error" | "success"; text: string } }) {
   return (
-    <p
-      className={message.kind === "error" ? "text-sm text-kumo-danger" : "text-sm text-kumo-success"}
+    <Banner
+      description={message.text}
       role={message.kind === "error" ? "alert" : "status"}
-    >
-      {message.text}
-    </p>
+      variant={message.kind === "error" ? "error" : "secondary"}
+    />
   );
 }
 

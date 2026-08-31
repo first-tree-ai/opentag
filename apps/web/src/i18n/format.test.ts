@@ -8,6 +8,7 @@ import {
   formatDay,
   formatElapsedCompact,
   formatNumber,
+  formatPercent,
   formatRelativeTime,
   initials,
 } from "./format.js";
@@ -38,6 +39,7 @@ describe("locale-aware formatters", () => {
       expect(formatDay("2025-02-03")).toBe("Feb 3");
       expect(formatNumber(1_234_567)).toBe("1,234,567");
       expect(formatCompactNumber(428_000)).toBe("428K");
+      expect(formatPercent(0.935)).toBe("93.5%");
       expect(formatRelativeTime(instant)).toBe("1 minute ago");
       expect(formatElapsedCompact("2025-02-03T12:30:00.000Z")).toBe("5m");
     });
@@ -52,6 +54,7 @@ describe("locale-aware formatters", () => {
       expect(formatDay("2025-02-03")).toBe("2月3日");
       expect(formatNumber(1_234_567)).toBe("1,234,567");
       expect(formatCompactNumber(428_000)).toBe("42.8万");
+      expect(formatPercent(0.935)).toBe("93.5%");
       expect(formatRelativeTime(instant)).toBe("1分钟前");
       expect(formatElapsedCompact("2025-02-03T12:30:00.000Z")).toBe("5分钟");
     });

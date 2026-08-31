@@ -10,7 +10,7 @@ import { useAccount } from "../session/session-context.js";
 export function AccountPage() {
   const { me, refreshMe } = useAccount();
   return (
-    <Page title="Account" description="Manage your personal account details.">
+    <Page title={m.account_page_title()} description={m.account_page_description()}>
       <AccountSettings refreshMe={refreshMe} user={me.user} />
     </Page>
   );
@@ -63,7 +63,7 @@ export function AccountSettings({
       // Only the write can fail here; syncAccount reports its own failure. Fall back to the last
       // confirmed value, which is the saved one when an earlier save is still unsynchronized.
       setDisplayName(confirmedDisplayName);
-      setError(cause instanceof Error ? cause.message : "Unable to save the account profile");
+      setError(cause instanceof Error ? cause.message : m.account_error_profile_save_failed());
     } finally {
       saveInFlight.current = false;
       setSaving(false);
@@ -82,13 +82,11 @@ export function AccountSettings({
       await refreshMe();
       setUnsyncedDisplayName(undefined);
       setError(undefined);
-      setMessage("Account profile saved.");
+      setMessage(m.account_profile_saved());
     } catch {
       setUnsyncedDisplayName(savedDisplayName);
       setMessage(undefined);
-      setError(
-        "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
-      );
+      setError(m.account_error_refresh_failed());
     } finally {
       syncInFlight.current = false;
       setSyncing(false);
@@ -103,11 +101,16 @@ export function AccountSettings({
   return (
     <form className="grid gap-4" onSubmit={submit}>
       <Text as="h2" variant="heading">
-        Account profile
+        {m.account_profile_title()}
       </Text>
       <SettingsList>
-        <SettingsRow label="Email" description="Your sign-in email cannot be changed here.">
-          <Field hint="Read only" hintId="account-email-hint" htmlFor="account-email" label="Email">
+        <SettingsRow label={m.account_email()} description={m.account_email_description()}>
+          <Field
+            hint={m.account_hint_read_only()}
+            hintId="account-email-hint"
+            htmlFor="account-email"
+            label={m.account_email()}
+          >
             <KumoInputControl
               aria-describedby="account-email-hint"
               id="account-email"
@@ -118,8 +121,8 @@ export function AccountSettings({
             />
           </Field>
         </SettingsRow>
-        <SettingsRow label="Display name" description="This identity is used throughout OpenTag.">
-          <Field htmlFor="account-display-name" label="Display name">
+        <SettingsRow label={m.account_display_name()} description={m.account_display_name_description()}>
+          <Field htmlFor="account-display-name" label={m.account_display_name()}>
             <KumoInputControl
               autoComplete="name"
               // Editing during a refresh-only retry could open a save that races it.
@@ -160,7 +163,7 @@ export function AccountSettings({
       </SettingsList>
       {dirty ? (
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-          <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+          <span className="text-sm text-kumo-subtle">{m.account_unsaved_changes()}</span>
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               disabled={saving}
@@ -171,10 +174,10 @@ export function AccountSettings({
                 setError(undefined);
               }}
             >
-              Discard
+              {m.account_discard()}
             </Button>
             <Button disabled={saving} type="submit">
-              {saving ? "Saving…" : "Save account profile"}
+              {saving ? m.account_saving() : m.account_save_profile()}
             </Button>
           </div>
         </div>
@@ -183,10 +186,10 @@ export function AccountSettings({
         // The value is saved, so this offers only the step that failed: no Save that would repeat
         // the write, and no Discard that would replace the saved name with the stale projection.
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-          <span className="text-sm text-kumo-subtle">Account not refreshed</span>
+          <span className="text-sm text-kumo-subtle">{m.account_account_not_refreshed()}</span>
           <div className="flex flex-wrap justify-end gap-2">
             <Button disabled={syncing} onClick={() => void retrySync()}>
-              {syncing ? "Refreshing…" : "Retry refresh"}
+              {syncing ? m.account_refreshing() : m.account_retry_refresh()}
             </Button>
           </div>
         </div>

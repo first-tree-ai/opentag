@@ -64,6 +64,7 @@ describe("BrowserApi", () => {
     const api = new BrowserApi(fetchImpl);
     await expect(api.suspendAgent(agentId)).resolves.toMatchObject({ status: "suspended" });
     await expect(api.reactivateAgent(agentId)).resolves.toMatchObject({ id: agentId });
+    await expect(api.rebindAgentComputer(agentId, config.computerId)).resolves.toMatchObject({ id: agentId });
     await expect(api.deleteAgent(agentId)).resolves.toBeUndefined();
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
@@ -288,6 +289,7 @@ describe("BrowserApi", () => {
       api.imBindingConfig(userId),
       api.createFeishuSetupAttempt(userId, "reauthorize"),
       api.feishuSetupAttempt(userId),
+      api.cancelFeishuSetupAttempt(userId),
       api.startSlackOAuth(userId, { intent: "create" }),
       api.imBindingDiagnostics(userId),
       api.computers(),
@@ -305,6 +307,7 @@ describe("BrowserApi", () => {
         { path: `/api/v1/sessions/${userId}?cursor=older`, method: undefined },
         { path: `/api/v1/agents/${userId}/config`, method: undefined },
         { path: `/api/v1/agents/${userId}`, method: "DELETE" },
+        { path: `/api/v1/im-bindings/feishu/setup-attempts/${userId}/cancel`, method: "POST" },
         { path: "/api/v1/auth/email/sign-up", method: "POST" },
         { path: "/api/v1/auth/browser/logout", method: "POST" },
       ]),

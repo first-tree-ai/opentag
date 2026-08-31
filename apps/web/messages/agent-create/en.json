@@ -4,6 +4,7 @@
   "agent_create_at_name": "@{name}",
   "agent_create_cancel_action": "Cancel",
   "agent_create_cancel_computer_connection": "Cancel Computer connection",
+  "agent_create_change_action": "Change",
   "agent_create_change_computer_label": "Change Computer",
   "agent_create_change_runtime_label": "Change Runtime",
   "agent_create_check_again_action": "Check again",

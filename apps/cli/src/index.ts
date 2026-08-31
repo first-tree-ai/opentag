@@ -2,8 +2,9 @@ import * as commandPolicy from "./core/command/policy.js";
 
 export { CHANNEL, CLI_PACKAGE_NAME, CLI_VERSION } from "./build-info.js";
 export { createProgram } from "./cli/program.js";
-export { formatAgent, formatAgentCreated, formatAgentList } from "./core/agent/formatting.js";
+export { formatAgent, formatAgentBound, formatAgentCreated, formatAgentList } from "./core/agent/formatting.js";
 export {
+  runAgentBind,
   runAgentCreate,
   runAgentDelete,
   runAgentUpdate,

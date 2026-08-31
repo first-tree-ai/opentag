@@ -126,15 +126,24 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
       aria-label={m.agents_status_region()}
       data-ui="agent-status-overview"
     >
-      <ul className="grid h-full content-start list-none">
+      <ul className="grid h-full list-none grid-rows-2">
         <AgentStatusRow
           agent={agent}
-          identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeName}`}
+          dependency="computer"
+          // No Computer, no identity line -- the row already says so in its status, and naming
+          // nothing would leave a bare separator where a machine should be. `identity` is
+          // optional for exactly this: the messaging row below omits it the same way.
+          identity={
+            agent.computer
+              ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeName}`
+              : undefined
+          }
           name={m.agents_status_computer()}
           status={computer}
         />
         <AgentStatusRow
           agent={agent}
+          dependency="messaging"
           identity={binding ? messagingChannelLabel(agent, binding) : undefined}
           name={m.agents_status_message_channel()}
           status={messaging}
@@ -146,38 +155,51 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
 
 function AgentStatusRow({
   agent,
+  dependency,
   identity,
   name,
   status,
 }: {
   agent: AgentDetailView;
+  dependency: "computer" | "messaging";
   identity?: string;
   name: string;
   status: AgentDependencyStatus;
 }) {
-  const isMessageChannel = name === m.agents_status_message_channel();
-  const rowClassName = isMessageChannel
-    ? "grid content-start border-t border-kumo-line pt-4"
-    : "grid content-start pb-4";
-  const dataUi = isMessageChannel ? "agent-status-message-channel" : "agent-status-computer";
+  const isMessaging = dependency === "messaging";
+  const rowClassName = isMessaging
+    ? "grid content-center gap-2 border-t border-kumo-line pt-4"
+    : "grid content-center gap-2 pb-4";
+  const dataUi = isMessaging ? "agent-status-message-channel" : "agent-status-computer";
   return (
     <li className={rowClassName} data-ui={dataUi}>
-      <div className="grid gap-1">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <strong className="text-sm font-semibold text-kumo-strong">{name}</strong>
-          <span className={`text-sm font-medium ${dependencyStatusClassName(status.tone)}`}>{status.label}</span>
-        </div>
-        {identity ? <span className="min-w-0 truncate text-sm text-kumo-subtle">{identity}</span> : null}
-      </div>
-      {status.action ? (
-        <Link
-          className="mt-3 inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
-          state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
-          {...agentSettingsSectionLink(agent.id, status.action.section)}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <strong className="text-sm font-semibold text-kumo-strong">{name}</strong>
+        <span
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-kumo-default"
+          data-state={status.tone}
         >
-          {status.action.label}
-          <Icon className="size-3.5" name="chevron-right" />
-        </Link>
+          <span
+            aria-hidden="true"
+            className={`size-1.5 shrink-0 rounded-full bg-current ${dependencyStatusClassName(status.tone)}`}
+          />
+          {status.label}
+        </span>
+      </div>
+      {identity || status.action ? (
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          {identity ? <span className="min-w-0 flex-1 truncate text-sm text-kumo-subtle">{identity}</span> : null}
+          {status.action ? (
+            <Link
+              className="ml-auto inline-flex w-fit shrink-0 items-center gap-1 text-sm text-kumo-link"
+              state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
+              {...agentSettingsSectionLink(agent.id, status.action.section)}
+            >
+              {status.action.label}
+              <Icon className="size-3.5" name="chevron-right" />
+            </Link>
+          ) : null}
+        </div>
       ) : null}
     </li>
   );

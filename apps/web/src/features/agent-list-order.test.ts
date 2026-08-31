@@ -61,6 +61,7 @@ describe("Agent list order", () => {
 });
 
 describe("Agent availability model and presentation", () => {
+  const boundComputerId = "22222222-2222-4222-8222-222222222222";
   const agent = {
     id: "11111111-1111-4111-8111-111111111111",
     name: "reviewer",
@@ -69,10 +70,10 @@ describe("Agent availability model and presentation", () => {
     status: "active",
     updatedAt: "2026-08-20T00:00:00.000Z",
     activity: { state: "idle" },
-    computer: { computerId: "22222222-2222-4222-8222-222222222222", displayName: "Desk Mac", platform: "darwin" },
+    computer: { computerId: boundComputerId, displayName: "Desk Mac", platform: "darwin" },
   } as unknown as AgentSummary;
   const computer = {
-    computerId: agent.computer.computerId,
+    computerId: boundComputerId,
     connectionStatus: "online",
     lastSeenAt: "2026-08-20T00:00:00.000Z",
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
@@ -303,7 +304,7 @@ describe("Agent availability model and presentation", () => {
     expect(messagingChannelLabel(base, binding("active", "feishu"))).toContain("@reviewer");
     expect(messagingChannelLabel(base, binding("active", "slack", "Team Bot"))).toContain("Team Bot");
     expect(messagingChannelLabel(base, binding("active", "slack", null))).toBe("Slack");
-    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe("Permissions need updating");
+    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe("Permissions required");
     expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");
@@ -370,7 +371,7 @@ describe("Agent availability model and presentation", () => {
         ...base,
         availability: { ...base.availability, reason: "agent_suspended", state: "suspended" },
       }),
-    ).toMatchObject({ label: "Manage Agent" });
+    ).toMatchObject({ label: "Pause or delete Agent" });
     expect(
       agentAvailabilityRecovery({
         ...base,
@@ -455,7 +456,7 @@ describe("Agent availability model and presentation", () => {
     const config = {
       id: agent.id,
       createdByUserId: "user",
-      computerId: agent.computer.computerId,
+      computerId: boundComputerId,
       name: agent.name,
       displayName: agent.displayName,
       runtimeProvider: agent.runtimeProvider,
@@ -473,7 +474,7 @@ describe("Agent availability model and presentation", () => {
         { ...config, runtimeConfig: { ...config.runtimeConfig, instructions: " " } },
         "instructions",
       ),
-    ).toBe("Not configured");
+    ).toBe("No custom instructions");
     expect(agentSettingsSummary(detail(base.availability), config, "execution")).toContain("Provider defaults");
     expect(
       agentSettingsSummary(
@@ -481,14 +482,14 @@ describe("Agent availability model and presentation", () => {
         { ...config, runtimeConfig: { ...config.runtimeConfig, model: null, reasoningEffort: "high" } },
         "execution",
       ),
-    ).toContain("Default model · High");
+    ).toContain("Provider default · High");
     expect(
       agentSettingsSummary(
         detail(base.availability),
         { ...config, runtimeConfig: { ...config.runtimeConfig, model: "custom", reasoningEffort: null } },
         "execution",
       ),
-    ).toContain("Default reasoning");
+    ).toContain("Provider default");
     expect(
       agentSettingsSummary({ ...detail(base.availability), messaging: { kind: "unconfirmed" } }, config, "messaging"),
     ).toBe("Messaging status is temporarily unavailable");
@@ -498,9 +499,9 @@ describe("Agent availability model and presentation", () => {
         config,
         "messaging",
       ),
-    ).toBe("No messaging channel connected");
+    ).toBe("No messaging app connected");
     expect(agentSettingsSummary(detail(base.availability), config, "identity")).toBe(agent.displayName);
     expect(agentSettingsSummary(detail(base.availability), config, "computer")).toContain("macOS");
-    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Active");
+    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Active · Accepting requests");
   });
 });

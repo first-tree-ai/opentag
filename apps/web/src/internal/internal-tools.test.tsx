@@ -42,7 +42,7 @@ describe("internal tools page", () => {
 
     await confirm("Re-board", "Re-board");
 
-    await waitFor(() => expect(onResetSucceeded).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onResetSucceeded).toHaveBeenCalledExactlyOnceWith("reboard"));
     expect(reset).toHaveBeenCalledExactlyOnceWith("reboard");
   });
 
@@ -52,7 +52,7 @@ describe("internal tools page", () => {
 
     await confirm("Reset and start onboarding", "Reset and start onboarding");
 
-    await waitFor(() => expect(onResetSucceeded).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onResetSucceeded).toHaveBeenCalledExactlyOnceWith("all"));
     expect(reset).toHaveBeenCalledExactlyOnceWith("all");
   });
 

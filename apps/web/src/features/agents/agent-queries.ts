@@ -123,7 +123,9 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
         ...agent,
         availability: projectAgentAvailability(
           agent,
-          evidenceOffered ? computers.find((computer) => computer.computerId === agent.computer.computerId) : undefined,
+          evidenceOffered
+            ? computers.find((computer) => computer.computerId === agent.computer?.computerId)
+            : undefined,
           binding?.isSuccess ? (binding.data ?? undefined) : undefined,
           handoff?.isSuccess ? (handoff.data ?? undefined) : undefined,
           binding?.isSuccess ?? false,
@@ -200,7 +202,7 @@ export function useAgentDetailView(
       // Evidence counts only while the read that carries it is confirmed, as it does on the list. A
       // Computer the cache still holds after a failed re-read is not evidence of anything.
       computersQuery.isSuccess
-        ? computersQuery.data.computers.find((computer) => computer.computerId === agent.computer.computerId)
+        ? computersQuery.data.computers.find((computer) => computer.computerId === agent.computer?.computerId)
         : undefined,
       binding,
       handoffQuery.isSuccess ? (handoffQuery.data ?? undefined) : undefined,

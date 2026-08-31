@@ -106,10 +106,10 @@ describe("rebind at ff218a7", () => {
 
     render(<OnboardingV2Page />);
     await settle();
-    expect(screen.queryByText("Your computer is connected.")).not.toBeNull();
+    expect(screen.queryByText("Online")).not.toBeNull();
     await tick(POLL_MS * 4);
 
-    expect(screen.queryByText("Your computer is connected.")).toBeNull();
+    expect(screen.queryByText(/Offline/)).not.toBeNull();
   });
 
   it("stops saying so on a first run too, not only on a resumed one", async () => {
@@ -138,11 +138,10 @@ describe("rebind at ff218a7", () => {
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await settle();
-    await tick(POLL_MS);
-    expect(screen.queryByText("Your computer is connected.")).not.toBeNull();
+    expect(screen.queryByText("Online")).not.toBeNull();
 
-    await tick(POLL_MS * 4);
+    await tick(POLL_MS * 5);
 
-    expect(screen.queryByText("Your computer is connected.")).toBeNull();
+    expect(screen.queryByText(/Offline/)).not.toBeNull();
   });
 });

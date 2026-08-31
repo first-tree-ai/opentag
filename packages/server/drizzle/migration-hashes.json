@@ -165,6 +165,16 @@
       "idx": 32,
       "tag": "0032_durable_turn_storage",
       "sha256": "eb10fc2b0e8a85bc159cc9ad2b72e07c9b12b4224859ce5ec4e2a7870cf9370f"
+    },
+    {
+      "idx": 33,
+      "tag": "0033_clear_default_agent_instructions",
+      "sha256": "a2faec6f804db936c9ad0cb2b62088285bc69d9ff36356746d15d434b85a124b"
+    },
+    {
+      "idx": 34,
+      "tag": "0034_legal_kat_farrell",
+      "sha256": "872e2b49d4597ebdc3fce4f1e83af4d682f6ea476e2d1991ff05c5d354c3803a"
     }
   ]
 }

@@ -49,9 +49,11 @@ export interface SessionMessageInboxOptions {
   maxRememberedMessages?: number;
   metrics?: RuntimeDurabilityMetrics;
   now?: () => number;
+  onFailure?(failure: DurableFailure): void;
   persistence?: RuntimeDurabilityStore;
   retryPolicy?: Partial<RuntimeRetryPolicy>;
   scheduler?: RuntimeRetryScheduler;
+  timeoutScheduler?: RuntimeRetryScheduler;
   reconciler: Pick<
     SessionReconciler,
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
@@ -70,9 +72,11 @@ export class SessionMessageInbox {
   readonly #maxRememberedMessages: number;
   readonly #metrics?: RuntimeDurabilityMetrics;
   readonly #now: () => number;
+  readonly #onFailure?: SessionMessageInboxOptions["onFailure"];
   readonly #persistence?: RuntimeDurabilityStore;
   readonly #retryPolicy: RuntimeRetryPolicy;
   readonly #scheduler: RuntimeRetryScheduler;
+  readonly #timeoutScheduler: RuntimeRetryScheduler;
   readonly #reconciler: SessionMessageInboxOptions["reconciler"];
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
   readonly #queues = new Map<string, QueuedMessage[]>();
@@ -95,9 +99,11 @@ export class SessionMessageInbox {
     this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 512, "maxRememberedMessages");
     this.#metrics = options.metrics;
     this.#now = options.now ?? Date.now;
+    this.#onFailure = options.onFailure;
     this.#persistence = options.persistence;
     this.#retryPolicy = normalizeRetryPolicy(options.retryPolicy);
     this.#scheduler = options.scheduler ?? defaultRuntimeRetryScheduler;
+    this.#timeoutScheduler = options.timeoutScheduler ?? defaultRuntimeRetryScheduler;
     this.#reconciler = options.reconciler;
     this.#runtimeManager = options.runtimeManager;
     this.#readyPromise = this.#hydrate();
@@ -256,13 +262,17 @@ export class SessionMessageInbox {
     const runId = `session-message-${next.request.messageId}`;
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
-    if (current) current = await this.#transition(current, "running");
-    await this.#reconciler.withAgentLock(next.request.agentId, async () => {
-      this.#reconciler.setActivity(sessionId, { phase: "running", deliveryId: next.request.messageId, turnId: runId });
-    });
     let credentialPrepared = false;
     let phase = "runtime";
     try {
+      if (current) current = await this.#transition(current, "running");
+      await this.#reconciler.withAgentLock(next.request.agentId, async () => {
+        this.#reconciler.setActivity(sessionId, {
+          phase: "running",
+          deliveryId: next.request.messageId,
+          turnId: runId,
+        });
+      });
       const sessionKind = this.#runtimeManager.sessionKind(sessionId);
       let outboxContext: RuntimeImOutboxContext | undefined;
       if (sessionKind === "visible") {
@@ -283,13 +293,12 @@ export class SessionMessageInbox {
       await runtime.waitForIdle();
       phase = "prompt";
       const timeout = new AbortController();
-      const timer = setTimeout(
-        () => timeout.abort(new Error("Session message Run timed out")),
+      const timer = this.#timeoutScheduler.schedule(
         next.request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS,
+        () => timeout.abort(new Error("Session message Run timed out")),
       );
-      timer.unref();
       try {
-        await runtime.prompt({
+        const result = await runtime.prompt({
           runId,
           input: buildSessionMessageInput(
             next.request,
@@ -300,8 +309,11 @@ export class SessionMessageInbox {
           ),
           signal: AbortSignal.any([this.#abort.signal, timeout.signal]),
         });
+        if (result.status !== "completed") {
+          throw new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
+        }
       } finally {
-        clearTimeout(timer);
+        timer.cancel();
       }
       if (current && !this.#abort.signal.aborted) {
         await this.#transition(current, "succeeded");
@@ -410,11 +422,12 @@ export class SessionMessageInbox {
     error: unknown,
   ): Promise<void> {
     const failure = toFailure(record.payload.requestId, phase, error);
+    this.#emitFailure(failure);
     const attempts = record.attempts + 1;
     const now = this.#now();
     const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
     if (failure.retryability === "terminal") {
-      await this.#transition(candidate, "failed", { nextAttemptAt: undefined });
+      await this.#transition(candidate, "failed", { nextAttemptAt: undefined }).catch(() => undefined);
       this.#remember(record.key, { hash, status: "failed", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: failure.code, messageId: record.payload.messageId, phase, status: "failed" },
@@ -423,7 +436,7 @@ export class SessionMessageInbox {
       return;
     }
     if (retryExhausted(this.#retryPolicy, candidate, now)) {
-      await this.#transition(candidate, "dead-letter", { nextAttemptAt: undefined });
+      await this.#transition(candidate, "dead-letter", { nextAttemptAt: undefined }).catch(() => undefined);
       this.#remember(record.key, { hash, status: "dead-letter", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: failure.code, messageId: record.payload.messageId, phase, status: "dead-letter" },
@@ -432,9 +445,26 @@ export class SessionMessageInbox {
       return;
     }
     const nextAttemptAt = now + retryDelay(this.#retryPolicy, attempts);
-    const retryable = await this.#transition(candidate, "retryable", { nextAttemptAt });
+    let retryable: DurableWorkRecord<SessionMessageDeliveryRequest>;
+    try {
+      retryable = await this.#transition(candidate, "retryable", { nextAttemptAt });
+    } catch {
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "retryable" },
+        "Session message retry state could not be persisted",
+      );
+      return;
+    }
     this.#remember(record.key, { hash, status: "retryable" });
     this.#scheduleRetry(retryable, hash);
+  }
+
+  #emitFailure(failure: DurableFailure): void {
+    try {
+      this.#onFailure?.(failure);
+    } catch {
+      // Observers cannot alter the durable inbox state machine.
+    }
   }
 
   #scheduleRetry(record: DurableWorkRecord<SessionMessageDeliveryRequest>, hash: string): void {

@@ -28,6 +28,7 @@ export interface TurnReportOwnerOptions {
   maxPending?: number;
   metrics?: RuntimeDurabilityMetrics;
   now?: () => number;
+  onFailure?(failure: DurableFailure): void;
   persistence?: RuntimeDurabilityStore;
   retryPolicy?: Partial<RuntimeRetryPolicy>;
   retryDelayMs?: number;
@@ -73,6 +74,7 @@ export class TurnReportOwner {
   readonly #retryDelayMs: number;
   readonly #metrics?: RuntimeDurabilityMetrics;
   readonly #now: () => number;
+  readonly #onFailure?: TurnReportOwnerOptions["onFailure"];
   readonly #persistence?: RuntimeDurabilityStore;
   readonly #retryPolicy: RuntimeRetryPolicy;
   readonly #scheduler: RuntimeRetryScheduler;
@@ -90,6 +92,7 @@ export class TurnReportOwner {
     this.#retryDelayMs = options.retryDelayMs ?? 5_000;
     this.#metrics = options.metrics;
     this.#now = options.now ?? Date.now;
+    this.#onFailure = options.onFailure;
     this.#persistence = options.persistence;
     this.#retryPolicy = normalizeRetryPolicy({
       ...options.retryPolicy,
@@ -221,15 +224,17 @@ export class TurnReportOwner {
     if (result.status === "conflict" || result.status === "stale_generation") {
       pending.serverStatus = result.status;
       this.#clearRetry(pending);
+      const failure: DurableFailure = {
+        category: "server",
+        code: result.status,
+        message: `Server rejected the Turn Report: ${result.status}`,
+        phase: "confirmation",
+        requestId: pending.report.requestId,
+        retryability: "terminal",
+      };
+      this.#emitFailure(failure);
       await this.#transition(pending, "failed", {
-        lastError: {
-          category: "server",
-          code: result.status,
-          message: `Server rejected the Turn Report: ${result.status}`,
-          phase: "confirmation",
-          requestId: pending.report.requestId,
-          retryability: "terminal",
-        },
+        lastError: failure,
       });
       const listeners = [...pending.terminalListeners];
       pending.terminalListeners.clear();
@@ -414,25 +419,39 @@ export class TurnReportOwner {
     if (this.#stopped || pending.serverStatus) return;
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     const failure = toFailure(pending.report.requestId, phase, error);
+    this.#emitFailure(failure);
     const attempts = record.attempts + 1;
     const now = this.#now();
     const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
     if (failure.retryability === "terminal" || retryExhausted(this.#retryPolicy, candidate, now)) {
-      await this.#transition(pending, "dead-letter", { ...candidate, nextAttemptAt: undefined });
+      await this.#transition(pending, "dead-letter", { ...candidate, nextAttemptAt: undefined }).catch(() => undefined);
       pending.reject(new RuntimeDurabilityFailure(failure));
       this.#pending.delete(pending.report.turnId);
       return;
     }
-    const retryable = await this.#transition(pending, "retryable", {
-      ...candidate,
-      nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
-    });
+    let retryable: DurableWorkRecord<TurnReportRequest>;
+    try {
+      retryable = await this.#transition(pending, "retryable", {
+        ...candidate,
+        nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
+      });
+    } catch {
+      return;
+    }
     this.#scheduleRetry(pending, retryable);
   }
 
   async #persist(record: DurableWorkRecord<TurnReportRequest>): Promise<void> {
     this.#records.set(record.key, record);
     await this.#persistence?.write(record);
+  }
+
+  #emitFailure(failure: DurableFailure): void {
+    try {
+      this.#onFailure?.(failure);
+    } catch {
+      // Observers cannot alter the durable Report state machine.
+    }
   }
 
   #notifyTerminal(

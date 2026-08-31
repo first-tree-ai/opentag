@@ -73,6 +73,12 @@ root `scripts/`, Server PostgreSQL integration tests, and Provider end-to-end te
 prioritizing gaps, not a required pull request check, and does not yet enforce repository-wide or per-workspace coverage
 thresholds. Add regression thresholds only after the measurement is stable across repeated runs.
 
+`pnpm test:coverage` measures one Vitest project at a time and concatenates the per-workspace summaries into
+`coverage/unit/coverage-summary.json` and the detailed Istanbul maps into `coverage/unit/coverage-final.json`. A single
+merged Vitest pass under-reports, so those aggregates must not be produced by the coverage provider's merge. Pull
+requests run a separate `Patch Coverage` check that reads the detailed map and fails when fewer than 80% of the
+executable TypeScript lines the pull request added or changed were hit.
+
 Required pull request CI still runs all offline unit tests. Agent Runtime keeps its separate 100% gate in
 `packages/client/vitest.agent-runtime.config.ts`, enforced by
 `pnpm --filter @opentag/client test:agent-runtime:coverage`.

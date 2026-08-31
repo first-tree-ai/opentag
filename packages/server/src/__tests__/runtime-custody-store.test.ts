@@ -125,6 +125,24 @@ describe("PostgresRuntimeCustodyStore", () => {
     await expect(store.acceptDelivery(request, hash, "turn-3", fixture.context)).resolves.toBe("conflict");
   });
 
+  it("fences and releases direct dispatch markers with explicit retry disposition", async () => {
+    const fixture = await createFixture(unit);
+    const store = new PostgresRuntimeCustodyStore(unit.database, { now: () => fixture.now });
+    const request = fixture.direct;
+    const hash = computeDirectInputHash(request);
+    await expect(store.beginDeliveryDispatch(request, hash, fixture.dispatchContext)).resolves.toBe("dispatched");
+    await expect(store.releaseDeliveryDispatch(request, hash, "deferred")).resolves.toBe("released");
+    await expect(store.beginDeliveryDispatch(request, hash, fixture.dispatchContext)).resolves.toBe(
+      "already_dispatched",
+    );
+    await expect(store.releaseDeliveryDispatch({ ...request, requestId: randomUUID() }, hash, "retry")).resolves.toBe(
+      "conflict",
+    );
+    await expect(store.releaseDeliveryDispatch(request, hash, "retry")).resolves.toBe("released");
+    await expect(store.releaseDeliveryDispatch(request, hash, "retry")).resolves.toBe("already_released");
+    await expect(store.beginDeliveryDispatch(request, hash, fixture.dispatchContext)).resolves.toBe("dispatched");
+  });
+
   it("covers steer dispatch, steering, absorption, and release", async () => {
     const fixture = await createFixture(unit, { withRoot: true });
     const store = new PostgresRuntimeCustodyStore(unit.database, { now: () => fixture.now });

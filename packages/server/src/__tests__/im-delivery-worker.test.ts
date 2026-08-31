@@ -317,6 +317,7 @@ describe("ImDeliveryWorker database workflow", () => {
     const third = worker.runOnce();
     for (let attempt = 0; attempt < 20; attempt += 1) await Promise.resolve();
     await expect(third).resolves.toBeUndefined();
+    worker.stop();
     releaseAdmission?.();
     await Promise.all([first, second]);
 
@@ -325,7 +326,7 @@ describe("ImDeliveryWorker database workflow", () => {
       .select({ code: imMessageDeliveries.lastErrorCode })
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.lastErrorCode, "IM_DELIVERY_WORKER_SATURATED"));
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
   });
 
   it("handles runtime absence, stale correlations, malformed payloads, and terminal rejection", async () => {

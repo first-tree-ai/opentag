@@ -5,8 +5,39 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import type { ProviderCliCatalogArtifact, ProviderCliCatalogEntry, ProviderCliProvider } from "../../index.js";
-import { PROVIDER_CLI_CATALOG } from "../../index.js";
+import type {
+  ProviderCliCatalogArtifact,
+  ProviderCliCatalogEntry,
+  ProviderCliFetcher,
+  ProviderCliProvider,
+} from "../../index.js";
+import { PROVIDER_CLI_CATALOG, ProviderCliInstallError } from "../../index.js";
+
+/**
+ * Test-only fetcher for loopback fixture servers. Production artifact downloads go
+ * through `createProviderCliFetcher`, which rejects every non-HTTPS hop; this fetcher
+ * exists solely so fixture catalogs can serve bytes from `http://127.0.0.1`.
+ */
+export const loopbackFetcher: ProviderCliFetcher = async ({ url, maxBytes, timeoutMs }) => {
+  if (!url.startsWith("http://127.0.0.1:")) {
+    throw new Error(`loopbackFetcher only serves loopback fixture URLs, got: ${url}`);
+  }
+  let response: Response;
+  try {
+    response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    throw new ProviderCliInstallError(
+      "install_incomplete",
+      `fixture download failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!response.ok) {
+    throw new ProviderCliInstallError("install_incomplete", `fixture download failed with HTTP ${response.status}`);
+  }
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.byteLength > maxBytes) throw new Error("fixture body exceeds maxBytes");
+  return body;
+};
 
 /**
  * Deterministic Provider CLI fixtures: shell-script stand-ins for the official CLIs,

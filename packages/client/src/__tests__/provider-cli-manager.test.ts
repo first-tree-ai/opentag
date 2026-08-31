@@ -14,6 +14,7 @@ import {
 } from "../index.js";
 import {
   fakeCliScript,
+  loopbackFetcher,
   makeFixtureCatalog,
   makeTempDir,
   sha256Hex,
@@ -44,6 +45,7 @@ async function makeManager(options: {
   const env = options.env ?? { PATH: pathDirs.join(delimiter) };
   const manager = new ProviderCliManager({
     accountHome,
+    fetcher: loopbackFetcher,
     env,
     ...(options.catalog ? { catalog: options.catalog } : {}),
     ...(options.beforeWinnerReverify ? { beforeWinnerReverify: options.beforeWinnerReverify } : {}),
@@ -70,7 +72,7 @@ describe("ProviderCliManager inspect", () => {
 
   it("fails closed on an unsupported platform", async () => {
     const accountHome = await makeTempDir("opentag-manager-");
-    const manager = new ProviderCliManager({ accountHome, platform: "win32" });
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, platform: "win32" });
     const inspection = await manager.inspect("feishu");
     expect(inspection.state).toBe("unavailable");
     expect(inspection.diagnostic?.code).toBe("unsupported_platform");
@@ -122,10 +124,20 @@ describe("ProviderCliManager ensure", () => {
     const newer = await makeManagedCatalog("feishu", "1.0.92");
     try {
       const { accountHome, layout } = await makeManager({});
-      const oldManager = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog: older.catalog });
+      const oldManager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: "" },
+        catalog: older.catalog,
+      });
       expect((await oldManager.ensure("feishu")).ok).toBe(true);
 
-      const newManager = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog: newer.catalog });
+      const newManager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: "" },
+        catalog: newer.catalog,
+      });
       const result = await newManager.ensure("feishu");
       expect(result).toMatchObject({ ok: true, action: "installed-managed" });
       expect(result.selected?.version).toBe("1.0.92");
@@ -145,7 +157,7 @@ describe("ProviderCliManager ensure", () => {
     const { accountHome, manager } = await makeManager({});
     const bin = join(accountHome, "tools");
     await writeFakeCli(bin, "feishu", { version: "1.0.92" });
-    const withPath = new ProviderCliManager({ accountHome, env: { PATH: bin } });
+    const withPath = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: bin } });
 
     const result = await withPath.ensure("feishu", {});
     expect(result.ok).toBe(true);
@@ -169,6 +181,7 @@ describe("ProviderCliManager ensure", () => {
     await writeFakeCli(oldest, "feishu", { version: "1.0.89" });
     const manager = new ProviderCliManager({
       accountHome,
+      fetcher: loopbackFetcher,
       env: { PATH: [older, newer, oldest].join(delimiter) },
     });
     const result = await manager.ensure("feishu", {});
@@ -195,6 +208,7 @@ describe("ProviderCliManager ensure", () => {
     };
     const manager = new ProviderCliManager({
       accountHome,
+      fetcher: loopbackFetcher,
       env: { PATH: [plainDir, verifiedDir].join(delimiter) },
       catalog: [catalogEntry],
     });
@@ -211,13 +225,17 @@ describe("ProviderCliManager ensure", () => {
     const first = join(accountHome, "first");
     const second = join(accountHome, "second");
     await writeFakeCli(first, "feishu", { version: "1.0.92" });
-    const manager = new ProviderCliManager({ accountHome, env: { PATH: first } });
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: first } });
     const initial = await manager.ensure("feishu", {});
     expect(initial.action).toBe("selected-existing");
 
     // A same-version candidate earlier in PATH does not displace the incumbent.
     await writeFakeCli(second, "feishu", { version: "1.0.92" });
-    const withBoth = new ProviderCliManager({ accountHome, env: { PATH: [second, first].join(delimiter) } });
+    const withBoth = new ProviderCliManager({
+      accountHome,
+      fetcher: loopbackFetcher,
+      env: { PATH: [second, first].join(delimiter) },
+    });
     const rerun = await withBoth.ensure("feishu", {});
     expect(rerun.ok).toBe(true);
     expect(rerun.action).toBe("noop");
@@ -228,13 +246,23 @@ describe("ProviderCliManager ensure", () => {
     const { server, catalog } = await makeManagedCatalog("feishu", "1.0.92");
     try {
       const { accountHome } = await makeManager({});
-      const managedManager = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog });
+      const managedManager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: "" },
+        catalog,
+      });
       const installed = await managedManager.ensure("feishu", {});
       expect(installed.action).toBe("installed-managed");
 
       const newer = join(accountHome, "newer");
       await writeFakeCli(newer, "feishu", { version: "1.0.93" });
-      const withExternal = new ProviderCliManager({ accountHome, env: { PATH: newer }, catalog });
+      const withExternal = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: newer },
+        catalog,
+      });
       const switched = await withExternal.ensure("feishu", {});
       expect(switched.action).toBe("selected-existing");
       expect(switched.selected?.version).toBe("1.0.93");
@@ -250,7 +278,12 @@ describe("ProviderCliManager ensure", () => {
       const { accountHome } = await makeManager({});
       const external = join(accountHome, "external");
       await writeFakeCli(external, "feishu", { version: "1.0.80" }); // older than the catalog version
-      const manager = new ProviderCliManager({ accountHome, env: { PATH: external }, catalog });
+      const manager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: external },
+        catalog,
+      });
       const result = await manager.ensure("feishu", {});
       expect(result.action).toBe("selected-existing");
       expect(result.selected?.version).toBe("1.0.80");
@@ -266,7 +299,12 @@ describe("ProviderCliManager ensure", () => {
       const { accountHome } = await makeManager({});
       const external = join(accountHome, "external");
       await writeFakeCli(external, "feishu", { version: "1.0.99" });
-      const manager = new ProviderCliManager({ accountHome, env: { PATH: external }, catalog });
+      const manager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: external },
+        catalog,
+      });
       const result = await manager.ensure("feishu", { mode: "managed-only" });
       expect(result.action).toBe("installed-managed");
       expect(result.selected?.version).toBe("1.0.92");
@@ -283,13 +321,18 @@ describe("ProviderCliManager ensure", () => {
       const external = join(accountHome, "external");
       await writeFakeCli(external, "feishu", { version: "1.0.90" });
 
-      const withExternal = new ProviderCliManager({ accountHome, env: { PATH: external }, catalog });
+      const withExternal = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: external },
+        catalog,
+      });
       const dryExternal = await withExternal.ensure("feishu", { dryRun: true });
       expect(dryExternal.ok).toBe(true);
       expect(dryExternal.action).toBe("selected-existing");
       expect(dryExternal.dryRun).toBe(true);
 
-      const empty = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog });
+      const empty = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" }, catalog });
       const dryManaged = await empty.ensure("feishu", { dryRun: true });
       expect(dryManaged.action).toBe("installed-managed");
 
@@ -313,6 +356,7 @@ describe("ProviderCliManager ensure", () => {
     let swaps = 0;
     const manager = new ProviderCliManager({
       accountHome,
+      fetcher: loopbackFetcher,
       env: { PATH: [first, second].join(delimiter) },
       beforeWinnerReverify: async (winner) => {
         if (swaps === 0) {
@@ -345,7 +389,7 @@ describe("ProviderCliManager ensure", () => {
     const { accountHome, layout } = await makeManager({});
     const external = join(accountHome, "external");
     await writeFakeCli(external, "feishu", { version: "1.0.90" });
-    const externalManager = new ProviderCliManager({ accountHome, env: { PATH: external } });
+    const externalManager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
     const selected = await externalManager.ensure("feishu", {});
     expect(selected.action).toBe("selected-existing");
     const before = await readProviderCliSelection(layout, "feishu");
@@ -359,7 +403,12 @@ describe("ProviderCliManager ensure", () => {
     try {
       const fixture = makeFixtureCatalog({ provider: "feishu", version: "1.0.92", baseUrl: server.baseUrl });
       routes.set(fixture.routePath, null); // HTTP 500
-      const broken = new ProviderCliManager({ accountHome, env: { PATH: external }, catalog: [fixture.entry] });
+      const broken = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: external },
+        catalog: [fixture.entry],
+      });
       const result = await broken.ensure("feishu", {});
       expect(result.ok).toBe(false);
       expect(result.diagnostic?.code).toBe("install_incomplete");
@@ -390,6 +439,7 @@ describe("ProviderCliManager ensure", () => {
       await chmod(join(foreign, "lark-cli"), 0o755);
       const manager = new ProviderCliManager({
         accountHome,
+        fetcher: loopbackFetcher,
         env: { PATH: [foreign, layout.publicBinDir].join(delimiter) },
         catalog,
       });
@@ -415,7 +465,12 @@ describe("ProviderCliManager ensure", () => {
       const occupied = join(layout.publicBinDir, "lark-cli");
       await writeFile(occupied, "#!/bin/sh\necho user-owned\n", { mode: 0o755 });
       await chmod(occupied, 0o755);
-      const manager = new ProviderCliManager({ accountHome, env: { PATH: layout.publicBinDir }, catalog });
+      const manager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: layout.publicBinDir },
+        catalog,
+      });
       const result = await manager.ensure("feishu", {});
       expect(result.ok).toBe(true);
       // The unmanaged file is untouched.
@@ -432,6 +487,7 @@ describe("ProviderCliManager ensure", () => {
       const { accountHome, layout } = await makeManager({});
       const manager = new ProviderCliManager({
         accountHome,
+        fetcher: loopbackFetcher,
         env: { PATH: layout.publicBinDir },
         catalog,
       });
@@ -453,7 +509,7 @@ describe("ProviderCliManager ensure", () => {
     const { server, catalog } = await makeManagedCatalog("feishu", "1.0.92");
     try {
       const { accountHome, layout } = await makeManager({});
-      const manager = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog });
+      const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" }, catalog });
       const result = await manager.ensure("feishu", { pathUpdate: false });
       expect(result.ok).toBe(true);
       expect(result.globalCommand.active).toBe(false);
@@ -467,7 +523,7 @@ describe("ProviderCliManager ensure", () => {
     const { server, catalog } = await makeManagedCatalog("feishu", "1.0.92");
     try {
       const { accountHome, layout } = await makeManager({});
-      const manager = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog });
+      const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" }, catalog });
       await manager.ensure("feishu", {});
 
       // The catalog narrows so the installed managed version is no longer compatible.
@@ -477,7 +533,12 @@ describe("ProviderCliManager ensure", () => {
         ...(base as ProviderCliCatalogEntry),
         compatibility: ">=1.1.0 <2.0.0",
       };
-      const olderManager = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog: [narrowed] });
+      const olderManager = new ProviderCliManager({
+        accountHome,
+        fetcher: loopbackFetcher,
+        env: { PATH: "" },
+        catalog: [narrowed],
+      });
       const result = await olderManager.ensure("feishu", {});
       expect(result.ok).toBe(false);
       expect(result.diagnostic?.code).toBe("version_incompatible");
@@ -497,7 +558,7 @@ describe("ProviderCliManager ensure", () => {
       const stale = join(layout.staging, "feishu", "5f3a2b9c-1111-4000-8000-000000000000");
       await mkdir(stale, { recursive: true });
       await writeFile(join(stale, "leftover"), "partial");
-      const manager = new ProviderCliManager({ accountHome, env: { PATH: "" }, catalog });
+      const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: "" }, catalog });
       const result = await manager.ensure("feishu", {});
       expect(result.ok).toBe(true);
       await expect(readdir(layout.staging)).resolves.toEqual([]);
@@ -511,7 +572,12 @@ describe("ProviderCliManager ensure", () => {
     await mkdir(layout.state, { recursive: true });
     // A live lock holder: this process itself owns the pid.
     await writeFile(join(layout.state, "feishu.lock"), JSON.stringify({ pid: process.pid, token: "other-token" }));
-    const manager = new ProviderCliManager({ accountHome, env: { PATH: "" }, sleep: async () => {} });
+    const manager = new ProviderCliManager({
+      accountHome,
+      fetcher: loopbackFetcher,
+      env: { PATH: "" },
+      sleep: async () => {},
+    });
     const result = await manager.ensure("feishu", {});
     expect(result.ok).toBe(false);
     expect(result.diagnostic?.code).toBe("operation_in_progress");
@@ -523,7 +589,7 @@ describe("ProviderCliManager drift and repair", () => {
     const { accountHome } = await makeManager({});
     const external = join(accountHome, "external");
     const target = await writeFakeCli(external, "feishu", { version: "1.0.92" });
-    const manager = new ProviderCliManager({ accountHome, env: { PATH: external } });
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
     await manager.ensure("feishu", {});
 
     await writeFile(target, fakeCliScript("feishu", { version: "1.0.92", versionOutput: "lark-cli version 9.9.9" }), {
@@ -539,7 +605,7 @@ describe("ProviderCliManager drift and repair", () => {
     const { accountHome, layout } = await makeManager({});
     const external = join(accountHome, "external");
     await writeFakeCli(external, "feishu", { version: "1.0.92" });
-    const manager = new ProviderCliManager({ accountHome, env: { PATH: external } });
+    const manager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
     await manager.ensure("feishu", {});
 
     await writeFile(join(layout.bin, "lark-cli"), "#!/bin/sh\necho forged\n", { mode: 0o755 });

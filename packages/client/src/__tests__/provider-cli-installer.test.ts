@@ -10,6 +10,7 @@ import {
 } from "../index.js";
 import {
   buildTarGz,
+  loopbackFetcher,
   makeFixtureCatalog,
   makeTempDir,
   sha256Hex,
@@ -45,7 +46,7 @@ describe("ProviderCliInstaller", () => {
     try {
       const fixture = makeFixtureCatalog({ provider: "feishu", version: "1.0.92", baseUrl: server.baseUrl });
       routes.set(fixture.routePath, fixture.archive);
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       const installed = await installer.install(fixture.entry, "feishu");
       expect(installed.reused).toBe(false);
       expect(installed.artifactId).toBe(`1.0.92/${PLATFORM}-${ARCH}/${fixture.artifact.sha256}`);
@@ -67,7 +68,7 @@ describe("ProviderCliInstaller", () => {
     const layout = await makeLayout();
     const { server, fixture } = await serveFixture({ provider: "feishu", version: "1.0.92" });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await installer.install(fixture.entry, "feishu");
       const again = await installer.install(fixture.entry, "feishu");
       expect(again.reused).toBe(true);
@@ -82,7 +83,7 @@ describe("ProviderCliInstaller", () => {
     const tampered = buildTarGz([{ name: "lark-cli", content: "#!/bin/sh\necho pwned\n", mode: 0o755 }]);
     const { server, fixture } = await serveFixture({ provider: "feishu", version: "1.0.92", route: tampered });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await expect(installer.install(fixture.entry, "feishu")).rejects.toMatchObject({
         name: "ProviderCliInstallError",
         code: "integrity_failed",
@@ -101,7 +102,7 @@ describe("ProviderCliInstaller", () => {
     const fixture = makeFixtureCatalog({ provider: "feishu", version: "1.0.92", baseUrl: server.baseUrl });
     routes.set(fixture.routePath, { body: fixture.archive, truncateTo: Math.floor(fixture.archive.byteLength / 2) });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await expect(installer.install(fixture.entry, "feishu")).rejects.toMatchObject({ code: "integrity_failed" });
       await expect(readdir(layout.versions).catch(() => [])).resolves.toEqual([]);
     } finally {
@@ -121,7 +122,7 @@ describe("ProviderCliInstaller", () => {
       archiveBody: malicious,
     });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await expect(installer.install(fixture.entry, "feishu")).rejects.toMatchObject({ code: "integrity_failed" });
       // Nothing escaped the staging root.
       await expect(readdir(layout.staging)).resolves.toEqual([]);
@@ -147,7 +148,7 @@ describe("ProviderCliInstaller", () => {
       executableContent: String.fromCharCode(...blob),
     });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await expect(installer.install(fixture.entry, "feishu")).rejects.toMatchObject({ code: "probe_failed" });
     } finally {
       await server.close();
@@ -162,7 +163,7 @@ describe("ProviderCliInstaller", () => {
       executableContent: "#!/bin/sh\nexit 1\n",
     });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await expect(installer.install(failing.entry, "feishu")).rejects.toMatchObject({ code: "probe_failed" });
       // The version dir exists (published before probing) but no selection points at it.
       await expect(readProviderCliSelection(layout, "feishu")).resolves.toBeUndefined();
@@ -187,7 +188,7 @@ describe("ProviderCliInstaller", () => {
 
     const { server, fixture } = await serveFixture({ provider: "feishu", version: "1.0.92" });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await installer.install(fixture.entry, "feishu");
       await expect(stat(stale)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(stat(keep)).resolves.toBeTruthy();
@@ -202,7 +203,7 @@ describe("ProviderCliInstaller", () => {
     // No server is needed: the platform mismatch is detected before any download.
     const fixture = makeFixtureCatalog({ provider: "feishu", version: "1.0.92", baseUrl: "http://127.0.0.1:9" });
     const other = PLATFORM === "darwin" ? "linux" : "darwin";
-    const installer = new ProviderCliInstaller({ layout, platform: other, arch: ARCH });
+    const installer = new ProviderCliInstaller({ layout, platform: other, arch: ARCH, fetcher: loopbackFetcher });
     await expect(installer.install(fixture.entry, "feishu")).rejects.toMatchObject({ code: "unsupported_platform" });
   });
 
@@ -210,7 +211,7 @@ describe("ProviderCliInstaller", () => {
     const layout = await makeLayout();
     const { server, fixture } = await serveFixture({ provider: "feishu", version: "1.0.92", route: null });
     try {
-      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH });
+      const installer = new ProviderCliInstaller({ layout, platform: PLATFORM, arch: ARCH, fetcher: loopbackFetcher });
       await expect(installer.install(fixture.entry, "feishu")).rejects.toMatchObject({ code: "install_incomplete" });
     } finally {
       await server.close();

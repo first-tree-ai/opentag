@@ -1,13 +1,8 @@
+import type { ProviderCliInspection } from "@opentag/client";
 import {
-  type ProviderCliInspection,
-  ProviderCliManager,
-  type ProviderCliProvider,
-  resolveAccountHome,
-} from "@opentag/client";
-import {
+  createProviderCliManager,
   type ProviderCliCommandDeps,
-  ProviderCliUsageError,
-  parseProviderCliProviderFlag,
+  parseProviderCliProvidersOrReport,
   providerCliLabel,
   renderProviderCliHumanValue,
   writeStderr,
@@ -66,26 +61,9 @@ function renderInspectionLines(inspection: ProviderCliInspection): string[] {
 export async function runProviderCliInspect(
   options: ProviderCliInspectCommandOptions,
 ): Promise<ProviderCliInspectCommandResult> {
-  let providers: ProviderCliProvider[];
-  try {
-    providers = parseProviderCliProviderFlag(options.provider);
-  } catch (error) {
-    if (error instanceof ProviderCliUsageError) {
-      writeStderr(options, `${error.message}\n`);
-      return { exitCode: 2, results: [] };
-    }
-    throw error;
-  }
-
-  const accountHome = options.accountHome ?? resolveAccountHome();
-  const manager = new ProviderCliManager({
-    accountHome,
-    ...(options.env ? { env: options.env } : {}),
-    ...(options.platform ? { platform: options.platform } : {}),
-    ...(options.arch ? { arch: options.arch } : {}),
-    ...(options.catalog ? { catalog: options.catalog } : {}),
-    ...(options.execFile ? { execFile: options.execFile } : {}),
-  });
+  const providers = parseProviderCliProvidersOrReport(options.provider, (chunk) => writeStderr(options, chunk));
+  if (!providers) return { exitCode: 2, results: [] };
+  const manager = createProviderCliManager(options);
 
   const results: ProviderCliInspection[] = [];
   for (const provider of providers) {

@@ -122,6 +122,7 @@ describe("runProviderCliEnsure", () => {
       accountHome,
       env: { PATH: bin },
       catalog: feishuEntry ? [feishuEntry, ...slackFixture.catalog] : slackFixture.catalog,
+      fetcher: slackFixture.fetcher,
       stdout: (chunk) => stdout.push(chunk),
       stderr: () => undefined,
     });
@@ -146,6 +147,7 @@ describe("runProviderCliEnsure", () => {
         accountHome,
         env: { PATH: "" },
         catalog: fixture.catalog,
+        fetcher: fixture.fetcher,
         stdout: (chunk) => stdout.push(chunk),
         stderr: () => undefined,
       });

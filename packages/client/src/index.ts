@@ -255,12 +255,14 @@ export {
   type ProviderCliFileIdentity,
 } from "./runtime/provider-cli/fingerprint.js";
 export {
+  createProviderCliFetcher,
   defaultProviderCliFetcher,
   type ProviderCliFetcher,
   ProviderCliInstallError,
   ProviderCliInstaller,
   type ProviderCliInstallerOptions,
   type ProviderCliManagedInstall,
+  resolveProviderCliArtifactUrl,
 } from "./runtime/provider-cli/installer.js";
 export {
   inspectGlobalCommand,

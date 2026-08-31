@@ -3,9 +3,9 @@
 [简体中文](./zh-CN/direct-provider-cli.md)
 
 The local package, path, execution-identity, and credential handoff foundation is
-defined in [Provider CLI management architecture](./design/provider-cli-management.md).
-OpenTag-managed Provider CLIs are account-global commands that the user may also
-invoke directly; only an authorized Turn receives OpenTag-projected credentials.
+defined by the shipped Provider CLI management foundation. OpenTag-managed Provider
+CLIs are account-global commands that the user may also invoke directly; only an
+authorized Turn receives OpenTag-projected credentials.
 
 OpenTag owns inbound IM routing, Integration credentials, temporary Client credential projection, and provider-native inbound references. It does not expose a message send, reply, Reaction, or upload API.
 

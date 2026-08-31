@@ -1,9 +1,11 @@
-import type {
-  ProviderCliCandidate,
-  ProviderCliCatalogEntry,
-  ProviderCliExecFile,
-  ProviderCliFetcher,
-  ProviderCliProvider,
+import {
+  type ProviderCliCandidate,
+  type ProviderCliCatalogEntry,
+  type ProviderCliExecFile,
+  type ProviderCliFetcher,
+  ProviderCliManager,
+  type ProviderCliProvider,
+  resolveAccountHome,
 } from "@opentag/client";
 
 /**
@@ -77,4 +79,34 @@ export function renderProviderCliHumanValue(value: string, maxLength = 1024): st
     escaped += code <= 0x1f || (code >= 0x7f && code <= 0x9f) ? `\\u${code.toString(16).padStart(4, "0")}` : character;
   }
   return escaped.length <= maxLength ? escaped : `${escaped.slice(0, maxLength)}…`;
+}
+
+/** Parse the `--provider` flag; on a usage error, report to stderr and return undefined. */
+export function parseProviderCliProvidersOrReport(
+  value: string,
+  stderr: (chunk: string) => void,
+): ProviderCliProvider[] | undefined {
+  try {
+    return parseProviderCliProviderFlag(value);
+  } catch (error) {
+    if (error instanceof ProviderCliUsageError) {
+      stderr(`${error.message}\n`);
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+/** Build the manager with the command's injectable dependencies. */
+export function createProviderCliManager(options: ProviderCliCommandDeps): ProviderCliManager {
+  return new ProviderCliManager({
+    accountHome: options.accountHome ?? resolveAccountHome(),
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+    ...(options.arch ? { arch: options.arch } : {}),
+    ...(options.catalog ? { catalog: options.catalog } : {}),
+    ...(options.fetcher ? { fetcher: options.fetcher } : {}),
+    ...(options.execFile ? { execFile: options.execFile } : {}),
+    ...(options.beforeWinnerReverify ? { beforeWinnerReverify: options.beforeWinnerReverify } : {}),
+  });
 }

@@ -1,14 +1,8 @@
+import type { ProviderCliEnsureResult, ProviderCliManager, ProviderCliPhaseEvent } from "@opentag/client";
 import {
-  type ProviderCliEnsureResult,
-  ProviderCliManager,
-  type ProviderCliPhaseEvent,
-  type ProviderCliProvider,
-  resolveAccountHome,
-} from "@opentag/client";
-import {
+  createProviderCliManager,
   type ProviderCliCommandDeps,
-  ProviderCliUsageError,
-  parseProviderCliProviderFlag,
+  parseProviderCliProvidersOrReport,
   providerCliLabel,
   renderProviderCliHumanValue,
   writeStderr,
@@ -83,45 +77,34 @@ function renderResultLines(result: ProviderCliEnsureResult): string[] {
   return lines;
 }
 
+function ensureOneProvider(
+  manager: ProviderCliManager,
+  provider: ProviderCliEnsureResult["provider"],
+  options: ProviderCliEnsureCommandOptions,
+): Promise<ProviderCliEnsureResult> {
+  return manager.ensure(provider, {
+    mode: options.managedOnly ? "managed-only" : "auto",
+    pathUpdate: options.pathUpdate ?? true,
+    dryRun: options.dryRun ?? false,
+    onPhase: options.json
+      ? undefined
+      : (event) => {
+          const line = renderPhaseLine(event);
+          if (line !== undefined) writeStdout(options, `${line}\n`);
+        },
+  });
+}
+
 export async function runProviderCliEnsure(
   options: ProviderCliEnsureCommandOptions,
 ): Promise<ProviderCliEnsureCommandResult> {
-  let providers: ProviderCliProvider[];
-  try {
-    providers = parseProviderCliProviderFlag(options.provider);
-  } catch (error) {
-    if (error instanceof ProviderCliUsageError) {
-      writeStderr(options, `${error.message}\n`);
-      return { exitCode: 2, results: [] };
-    }
-    throw error;
-  }
-
-  const accountHome = options.accountHome ?? resolveAccountHome();
-  const manager = new ProviderCliManager({
-    accountHome,
-    ...(options.env ? { env: options.env } : {}),
-    ...(options.platform ? { platform: options.platform } : {}),
-    ...(options.arch ? { arch: options.arch } : {}),
-    ...(options.catalog ? { catalog: options.catalog } : {}),
-    ...(options.fetcher ? { fetcher: options.fetcher } : {}),
-    ...(options.execFile ? { execFile: options.execFile } : {}),
-    ...(options.beforeWinnerReverify ? { beforeWinnerReverify: options.beforeWinnerReverify } : {}),
-  });
+  const providers = parseProviderCliProvidersOrReport(options.provider, (chunk) => writeStderr(options, chunk));
+  if (!providers) return { exitCode: 2, results: [] };
+  const manager = createProviderCliManager(options);
 
   const results: ProviderCliEnsureResult[] = [];
   for (const provider of providers) {
-    const result = await manager.ensure(provider, {
-      mode: options.managedOnly ? "managed-only" : "auto",
-      pathUpdate: options.pathUpdate ?? true,
-      dryRun: options.dryRun ?? false,
-      onPhase: options.json
-        ? undefined
-        : (event) => {
-            const line = renderPhaseLine(event);
-            if (line !== undefined) writeStdout(options, `${line}\n`);
-          },
-    });
+    const result = await ensureOneProvider(manager, provider, options);
     results.push(result);
     if (!options.json) {
       for (const line of renderResultLines(result)) {

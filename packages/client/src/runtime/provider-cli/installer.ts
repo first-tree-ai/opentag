@@ -42,52 +42,106 @@ export class ProviderCliInstallError extends Error {
 export type ProviderCliFetcher = (options: { url: string; maxBytes: number; timeoutMs: number }) => Promise<Uint8Array>;
 
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+const MAX_REDIRECT_HOPS = 8;
+const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
 
-export const defaultProviderCliFetcher: ProviderCliFetcher = async ({ url, maxBytes, timeoutMs }) => {
-  let response: Response;
+/**
+ * Resolve one request or redirect hop to the next URL. Every hop — the reviewed catalog
+ * URL itself and every redirect target — must be HTTPS; a plaintext hop is a downgrade
+ * attack on the artifact channel and fails closed as an integrity failure.
+ */
+export function resolveProviderCliArtifactUrl(current: string, location?: string): string {
+  let next: URL;
   try {
-    response = await fetch(url, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (error) {
-    throw new ProviderCliInstallError(
-      "install_incomplete",
-      `Artifact download failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    next = location === undefined ? new URL(current) : new URL(location, current);
+  } catch {
+    throw new ProviderCliInstallError("integrity_failed", "Artifact URL or redirect target is not a valid URL");
   }
-  if (!response.ok) {
-    throw new ProviderCliInstallError("install_incomplete", `Artifact download failed with HTTP ${response.status}`);
+  if (next.protocol !== "https:") {
+    throw new ProviderCliInstallError("integrity_failed", "Artifact URL and every redirect hop must use HTTPS");
   }
-  const length = response.headers.get("content-length");
-  if (length !== null && Number.parseInt(length, 10) > maxBytes) {
-    throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
-  }
-  if (!response.body) {
-    const buffer = await response.arrayBuffer();
-    return new Uint8Array(buffer);
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    received += value.byteLength;
-    if (received > maxBytes) {
-      await reader.cancel();
+  return next.toString();
+}
+
+/**
+ * Create the bounded artifact fetcher. `fetchImpl` exists so tests can exercise the
+ * full redirect and size-bound policy without network or TLS; production always uses
+ * the global fetch with manual redirect handling.
+ */
+export function createProviderCliFetcher(fetchImpl: typeof fetch = fetch): ProviderCliFetcher {
+  return async ({ url, maxBytes, timeoutMs }) => {
+    let current = resolveProviderCliArtifactUrl(url);
+    let response: Response | undefined;
+    for (let hops = 0; ; hops += 1) {
+      try {
+        response = await fetchImpl(current, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (error) {
+        throw new ProviderCliInstallError(
+          "install_incomplete",
+          `Artifact download failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (REDIRECT_STATUSES.has(response.status)) {
+        const location = response.headers.get("location");
+        if (response.body) {
+          try {
+            await response.body.cancel();
+          } catch (error) {
+            throw new ProviderCliInstallError(
+              "install_incomplete",
+              `Artifact redirect cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+        if (location === null) {
+          throw new ProviderCliInstallError("integrity_failed", "Artifact redirect has no Location header");
+        }
+        if (hops + 1 >= MAX_REDIRECT_HOPS) {
+          throw new ProviderCliInstallError("install_incomplete", "Artifact download exceeded the redirect bound");
+        }
+        current = resolveProviderCliArtifactUrl(current, location);
+        continue;
+      }
+      break;
+    }
+    if (!response.ok) {
+      throw new ProviderCliInstallError("install_incomplete", `Artifact download failed with HTTP ${response.status}`);
+    }
+    const length = response.headers.get("content-length");
+    if (length !== null && Number.parseInt(length, 10) > maxBytes) {
       throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
     }
-    chunks.push(value);
-  }
-  const body = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
-};
+    if (!response.body) {
+      const buffer = await response.arrayBuffer();
+      return new Uint8Array(buffer);
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        await reader.cancel();
+        throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
+      }
+      chunks.push(value);
+    }
+    const body = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return body;
+  };
+}
+
+export const defaultProviderCliFetcher: ProviderCliFetcher = createProviderCliFetcher();
 
 export interface ProviderCliInstallerOptions {
   readonly layout: ProviderCliAccountLayout;

@@ -89,7 +89,11 @@ describe("provider-cli local E2E", () => {
     const fixture = await makeManagedFixture("feishu", "1.0.92");
     try {
       const accountHome = await makeTempDir("opentag-e2e-");
-      const harness = makeHarness(accountHome, { env: { PATH: "" }, catalog: fixture.catalog });
+      const harness = makeHarness(accountHome, {
+        env: { PATH: "" },
+        catalog: fixture.catalog,
+        fetcher: fixture.fetcher,
+      });
 
       await harness.run(["provider-cli", "ensure", "--provider", "lark", "--json"]);
       expect(harness.exitCode()).toBe(0);
@@ -122,7 +126,7 @@ describe("provider-cli local E2E", () => {
       await writeFakeCli(foreign, "feishu", "1.0.92");
       const publicBin = join(accountHome, ".local", "bin");
       const env = { PATH: [foreign, publicBin].join(delimiter) };
-      const harness = makeHarness(accountHome, { env, catalog: fixture.catalog });
+      const harness = makeHarness(accountHome, { env, catalog: fixture.catalog, fetcher: fixture.fetcher });
 
       // The foreign CLI is a perfectly good candidate; it wins detection outright.
       await harness.run(["provider-cli", "ensure", "--provider", "lark", "--json"]);
@@ -150,7 +154,11 @@ describe("provider-cli local E2E", () => {
     const fixture = await makeManagedFixture("feishu", "1.0.92");
     try {
       const accountHome = await makeTempDir("opentag-e2e-");
-      const harness = makeHarness(accountHome, { env: { PATH: "" }, catalog: fixture.catalog });
+      const harness = makeHarness(accountHome, {
+        env: { PATH: "" },
+        catalog: fixture.catalog,
+        fetcher: fixture.fetcher,
+      });
       await harness.run(["provider-cli", "ensure", "--provider", "lark", "--dry-run", "--json"]);
       expect(harness.exitCode()).toBe(0);
       const result = JSON.parse(harness.stdout.join("")) as Record<string, unknown>;
@@ -166,7 +174,11 @@ describe("provider-cli local E2E", () => {
     const fixture = await makeManagedFixture("slack", "4.7.0");
     try {
       const accountHome = await makeTempDir("opentag-e2e-");
-      const harness = makeHarness(accountHome, { env: { PATH: "" }, catalog: fixture.catalog });
+      const harness = makeHarness(accountHome, {
+        env: { PATH: "" },
+        catalog: fixture.catalog,
+        fetcher: fixture.fetcher,
+      });
       await harness.run(["provider-cli", "ensure", "--provider", "slack", "--json"]);
       expect(harness.exitCode()).toBe(0);
       expect(harness.stdout).toHaveLength(1);

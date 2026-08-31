@@ -5,7 +5,12 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import type { ProviderCliCatalogArtifact, ProviderCliCatalogEntry, ProviderCliProvider } from "@opentag/client";
+import type {
+  ProviderCliCatalogArtifact,
+  ProviderCliCatalogEntry,
+  ProviderCliFetcher,
+  ProviderCliProvider,
+} from "@opentag/client";
 import { PROVIDER_CLI_CATALOG } from "@opentag/client";
 
 /**
@@ -137,8 +142,22 @@ export async function startFixtureHttpServer(routes: Map<string, Uint8Array>): P
 
 export interface ManagedFixture {
   readonly catalog: readonly ProviderCliCatalogEntry[];
+  /** Test-only fetcher for the loopback fixture server; production rejects non-HTTPS. */
+  readonly fetcher: ProviderCliFetcher;
   readonly close: () => Promise<void>;
 }
+
+/** Test-only fetcher for loopback fixture servers; the production fetcher requires HTTPS. */
+export const loopbackFetcher: ProviderCliFetcher = async ({ url, maxBytes, timeoutMs }) => {
+  if (!url.startsWith("http://127.0.0.1:")) {
+    throw new Error(`loopbackFetcher only serves loopback fixture URLs, got: ${url}`);
+  }
+  const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`fixture download failed with HTTP ${response.status}`);
+  const body = new Uint8Array(await response.arrayBuffer());
+  if (body.byteLength > maxBytes) throw new Error("fixture body exceeds maxBytes");
+  return body;
+};
 
 /** A fixture catalog + loopback server serving one managed artifact for this host. */
 export async function makeManagedFixture(provider: ProviderCliProvider, version: string): Promise<ManagedFixture> {
@@ -166,6 +185,7 @@ export async function makeManagedFixture(provider: ProviderCliProvider, version:
     executableBytes: new TextEncoder().encode(executableContent).byteLength,
   };
   return {
+    fetcher: loopbackFetcher,
     catalog: [
       {
         provider,

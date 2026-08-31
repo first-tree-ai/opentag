@@ -2,8 +2,7 @@
 
 [English](../direct-provider-cli.md)
 
-本地第三方包、路径、执行身份与凭证交接的基础设计见
-[Provider CLI 管理基础架构](./design/provider-cli-management.md)。
+本地第三方包、路径、执行身份与凭证交接由已随产品发布的 Provider CLI 管理基础能力定义。
 OpenTag-managed Provider CLI 是当前操作系统账户可直接使用的全局命令；只有被授权的
 Turn 才会取得 OpenTag 投影的临时凭证。
 

@@ -11,9 +11,9 @@ import { messagingProviderLabel } from "../im/provider-label.js";
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
- * Every check carries a line of detail in every state, not only when it fails. The list is the
- * page's spine while the user works in their terminal, so its rows must not change height as
- * results land — a list that reflows under someone is worse than one that says "checking".
+ * Copy for the numbered computer-check rows. Every row carries a line of detail in every state,
+ * not only when it fails, so the list does not reflow as results land. A missing messaging CLI is
+ * named later, as a sentence (`SETUP_COPY.messaging.cliMissing`) rather than a third check line.
  */
 export const CHECK_COPY: Record<
   CheckRow["id"],
@@ -35,22 +35,6 @@ export const CHECK_COPY: Record<
       passed: () => "Signed in and ready.",
       failed: (runtime) => `${runtime} is installed but not signed in.`,
       blocked: () => "We'll know once the CLI is installed.",
-    },
-  },
-  /*
-   * The title names the job rather than the tool. The binary really is called `lark-cli` and there
-   * is no "Feishu CLI" to go and install, so the two honest options were to print a product that
-   * does not exist or to put "lark" on a screen that is about Feishu. Neither belongs in a heading
-   * whose only job is to say which check this is: the real command stays in the detail line, where
-   * it is a command rather than a channel name, and where it can be copied.
-   */
-  "messaging-cli": {
-    title: () => "Messaging CLI is installed",
-    detail: {
-      pending: () => "Looking for lark-cli.",
-      passed: () => "Found on this computer.",
-      failed: () => "We need lark-cli to send Feishu messages.",
-      blocked: () => "",
     },
   },
 };

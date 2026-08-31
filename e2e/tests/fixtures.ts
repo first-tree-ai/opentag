@@ -310,7 +310,7 @@ export const test = browserTest.extend<Record<never, never>, { e2eRuntime: E2ERu
  */
 export const smokeTest = browserTest.extend<{ smokeAccountReady: undefined }>({
   smokeAccountReady: [
-    async (_fixtures, use) => {
+    async ({ browser: _browser }, use) => {
       const runtime = JSON.parse(await readFile(join(repositoryRoot, "e2e/.runtime.json"), "utf8")) as RuntimeFile;
       await psql(
         runtime.databaseURL,

@@ -223,12 +223,15 @@ export function useMockBackend(
   const [selectedComputerId, setSelectedComputerId] = useState<string | undefined>(() =>
     preselected(inventoryOf(inventory)),
   );
-  // Switching inventory in the lab is a different Account, not a change of mind, so the rows and
-  // the selection are both taken again rather than carried across.
+  // Switching inventory in the lab is a different Account, not a change of mind, so the rows, the
+  // selection and the verdict are all taken again rather than carried across. Without the last one,
+  // an answer about one Account's machine could stay on screen beside another Account's.
   useEffect(() => {
     const rows = inventoryOf(inventory);
     setKnownComputers(rows);
     setSelectedComputerId(preselected(rows));
+    setReadiness(undefined);
+    setCheckResult(undefined);
   }, [inventory]);
 
   const timers = useRef<number[]>([]);

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type Readable, Transform } from "node:stream";
+import { redactSensitive, type StructuredError, StructuredErrorSchema } from "@opentag/shared";
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
 export type PolicyRetryability = "retryable" | "not_retryable";
@@ -25,6 +26,7 @@ export class ExternalCallPolicyError extends Error {
   readonly retryability: PolicyRetryability;
   readonly phase: PolicyPhase;
   readonly requestId: string;
+  readonly structuredError: StructuredError;
 
   constructor(code: string, message: string, options: ExternalCallPolicyErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -34,7 +36,31 @@ export class ExternalCallPolicyError extends Error {
     this.retryability = options.retryability ?? "retryable";
     this.phase = options.phase ?? "request";
     this.requestId = options.requestId ?? randomUUID();
+    this.structuredError = StructuredErrorSchema.parse({
+      code: this.code,
+      category: structuredCategory(this.category),
+      retryability: this.retryability === "retryable" ? "backoff" : "never",
+      phase: structuredPhase(this.phase),
+      requestId: this.requestId,
+      message: redactSensitive(message).slice(0, 2_048),
+    });
   }
+
+  toStructuredError(): StructuredError {
+    return this.structuredError;
+  }
+}
+
+function structuredCategory(category: PolicyErrorCategory): StructuredError["category"] {
+  if (category === "security") return "authorization";
+  if (category === "validation") return "validation";
+  return "unavailable";
+}
+
+function structuredPhase(phase: PolicyPhase): StructuredError["phase"] {
+  if (phase === "stream") return "transport";
+  if (phase === "response" || phase === "circuit") return "provider";
+  return "request";
 }
 
 type ExternalCallMetricCore = { type: "call" | "circuit"; operation: string; requestId: string };

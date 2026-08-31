@@ -32,22 +32,17 @@ export function classifySlackAuthTest(
   expected: Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
 ): ProviderCliValidationClassification {
   if (!isRecord(payload) || typeof payload.ok !== "boolean") return { status: "needs_attention" };
-  if (hasMissingScopes(payload.missing_scopes) || payload.error === "missing_scope") {
-    return { status: "needs_attention", reason: "scope_missing" };
-  }
   const error = typeof payload.error === "string" ? payload.error : undefined;
-  if (isRateLimited(error)) return { status: "retrying", reason: "rate_limited" };
-  if (isProviderUnreachable(error)) return { status: "retrying", reason: "provider_unreachable" };
-  if (payload.ok !== true) {
-    return isCredentialRejected(error)
-      ? { status: "needs_attention", reason: "credential_rejected" }
-      : { status: "needs_attention" };
-  }
-  const teamId = typeof payload.team_id === "string" ? payload.team_id : undefined;
-  const userId = typeof payload.user_id === "string" ? payload.user_id : undefined;
-  const botId = typeof payload.bot_id === "string" ? payload.bot_id : undefined;
-  if (!teamId || !userId || !botId) return { status: "needs_attention" };
-  if (teamId !== expected.teamId || userId !== expected.botUserId || botId !== expected.botId) {
+  const failure = classifyProviderFailure([error], payload.missing_scopes, error === "missing_scope");
+  if (failure) return failure;
+  if (payload.ok !== true) return { status: "needs_attention" };
+  const identity = slackIdentity(payload);
+  if (!identity) return { status: "needs_attention" };
+  if (
+    identity.teamId !== expected.teamId ||
+    identity.userId !== expected.botUserId ||
+    identity.botId !== expected.botId
+  ) {
     return { status: "needs_attention", reason: "identity_mismatch" };
   }
   return { status: "ready" };
@@ -58,31 +53,63 @@ export function classifyLarkAuthStatus(
   expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
 ): ProviderCliValidationClassification {
   if (!isRecord(payload)) return { status: "needs_attention" };
-  if (hasMissingScopes(payload.missing_scopes)) return { status: "needs_attention", reason: "scope_missing" };
-  if (isRateLimited(stringifyUnknown(payload.error)) || isRateLimited(stringifyUnknown(payload.code))) {
-    return { status: "retrying", reason: "rate_limited" };
-  }
-  if (isProviderUnreachable(stringifyUnknown(payload.error)) || isProviderUnreachable(stringifyUnknown(payload.code))) {
-    return { status: "retrying", reason: "provider_unreachable" };
-  }
-  if (isCredentialRejected(stringifyUnknown(payload.error))) {
-    return { status: "needs_attention", reason: "credential_rejected" };
-  }
+  const failure = classifyProviderFailure(
+    [stringifyUnknown(payload.error), stringifyUnknown(payload.code)],
+    payload.missing_scopes,
+  );
+  if (failure) return failure;
   if (!isRecord(payload.identity) || !isRecord(payload.identities)) return { status: "needs_attention" };
   if (!isRecord(payload.identities.bot)) return { status: "needs_attention" };
   const bot = payload.identities.bot;
   if (typeof bot.available !== "boolean" || typeof bot.verified !== "boolean") return { status: "needs_attention" };
   if (!bot.available || !bot.verified) return { status: "needs_attention", reason: "credential_rejected" };
-  const appId = stringField(payload.identity, ["app_id", "appId"]) ?? stringField(bot, ["app_id"]);
-  const brand = stringField(payload.identity, ["brand", "team_brand", "teamBrand"]);
-  const botOpenId =
-    stringField(payload.identity, ["bot_open_id", "botOpenId", "open_id", "openId"]) ??
-    stringField(bot, ["bot_open_id", "open_id", "openId"]);
-  if (!appId || !botOpenId || (brand !== "lark" && brand !== "feishu")) return { status: "needs_attention" };
-  if (appId !== expected.appId || botOpenId !== expected.botOpenId || brand !== expected.teamBrand) {
+  const identity = larkIdentity(payload.identity, bot);
+  if (!identity) return { status: "needs_attention" };
+  if (
+    identity.appId !== expected.appId ||
+    identity.botOpenId !== expected.botOpenId ||
+    identity.brand !== expected.teamBrand
+  ) {
     return { status: "needs_attention", reason: "identity_mismatch" };
   }
   return { status: "ready" };
+}
+
+function classifyProviderFailure(
+  errors: readonly (string | undefined)[],
+  missingScopes: unknown,
+  explicitMissingScope = false,
+): ProviderCliValidationClassification | undefined {
+  if (explicitMissingScope || hasMissingScopes(missingScopes)) {
+    return { status: "needs_attention", reason: "scope_missing" };
+  }
+  if (errors.some(isRateLimited)) return { status: "retrying", reason: "rate_limited" };
+  if (errors.some(isProviderUnreachable)) return { status: "retrying", reason: "provider_unreachable" };
+  if (errors.some(isCredentialRejected)) return { status: "needs_attention", reason: "credential_rejected" };
+  return undefined;
+}
+
+function slackIdentity(
+  payload: Record<string, unknown>,
+): { readonly botId: string; readonly teamId: string; readonly userId: string } | undefined {
+  if (typeof payload.team_id !== "string") return undefined;
+  if (typeof payload.user_id !== "string") return undefined;
+  if (typeof payload.bot_id !== "string") return undefined;
+  return { botId: payload.bot_id, teamId: payload.team_id, userId: payload.user_id };
+}
+
+function larkIdentity(
+  identity: Record<string, unknown>,
+  bot: Record<string, unknown>,
+): { readonly appId: string; readonly botOpenId: string; readonly brand: "feishu" | "lark" } | undefined {
+  const appId = stringField(identity, ["app_id", "appId"]) ?? stringField(bot, ["app_id"]);
+  const brand = stringField(identity, ["brand", "team_brand", "teamBrand"]);
+  const botOpenId =
+    stringField(identity, ["bot_open_id", "botOpenId", "open_id", "openId"]) ??
+    stringField(bot, ["bot_open_id", "open_id", "openId"]);
+  if (!appId || !botOpenId) return undefined;
+  if (brand !== "lark" && brand !== "feishu") return undefined;
+  return { appId, botOpenId, brand };
 }
 
 export function classifySpawnFailure(error: unknown): ProviderCliValidationClassification {

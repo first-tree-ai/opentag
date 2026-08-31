@@ -197,28 +197,10 @@ export class ProviderCliReconciler {
   }
 
   async #handleGrant(frame: ProviderCliValidationGrantFrame): Promise<void> {
-    if (this.#closed || this.#signal?.aborted) return;
     this.#pruneGrants();
-    const current = this.#current.get(frame.integrationId);
-    if (!current || current.requestId !== frame.requirementRequestId) return;
-    if (
-      current.agentId !== frame.agentId ||
-      current.provider !== frame.provider ||
-      current.credentialGeneration !== frame.credentialGeneration
-    ) {
-      return;
-    }
-    if (!expectedIdentitiesMatch(current.expectedIdentity, frame.expectedIdentity)) return;
-    const existing = this.#grants.get(frame.requestId);
-    if (existing?.consumed || existing?.inflight) return;
+    if (!this.#acceptsGrant(frame)) return;
     if (Date.parse(frame.expiresAt) <= this.#now()) {
-      this.#grants.set(frame.requestId, {
-        abort: new AbortController(),
-        consumed: true,
-        expiresAt: Date.parse(frame.expiresAt),
-        inflight: false,
-        requirementRequestId: frame.requirementRequestId,
-      });
+      this.#rememberGrant(frame, new AbortController(), true, false);
       await this.#publishValidation(frame, { status: "retrying", reason: "validation_expired" });
       return;
     }
@@ -226,24 +208,42 @@ export class ProviderCliReconciler {
     const ready = this.#readySelection.get(frame.provider);
     const live = await readySelectionFromInspect(this.#manager.layout, frame.provider, inspection);
     if (!ready || !live || !selectionsMatch(ready, live)) {
-      this.#grants.set(frame.requestId, {
-        abort: new AbortController(),
-        consumed: true,
-        expiresAt: Date.parse(frame.expiresAt),
-        inflight: false,
-        requirementRequestId: frame.requirementRequestId,
-      });
+      this.#rememberGrant(frame, new AbortController(), true, false);
       await this.#publishValidation(frame, { status: "retrying", reason: "artifact_changed" });
       return;
     }
-    const abort = new AbortController();
+    await this.#runValidation(frame, live);
+  }
+
+  #acceptsGrant(frame: ProviderCliValidationGrantFrame): boolean {
+    if (this.#closed || this.#signal?.aborted) return false;
+    const current = this.#current.get(frame.integrationId);
+    if (!current || current.requestId !== frame.requirementRequestId) return false;
+    if (current.agentId !== frame.agentId || current.provider !== frame.provider) return false;
+    if (current.credentialGeneration !== frame.credentialGeneration) return false;
+    if (!expectedIdentitiesMatch(current.expectedIdentity, frame.expectedIdentity)) return false;
+    const existing = this.#grants.get(frame.requestId);
+    return !existing?.consumed && !existing?.inflight;
+  }
+
+  #rememberGrant(
+    frame: ProviderCliValidationGrantFrame,
+    abort: AbortController,
+    consumed: boolean,
+    inflight: boolean,
+  ): void {
     this.#grants.set(frame.requestId, {
       abort,
-      consumed: false,
+      consumed,
       expiresAt: Date.parse(frame.expiresAt),
-      inflight: true,
+      inflight,
       requirementRequestId: frame.requirementRequestId,
     });
+  }
+
+  async #runValidation(frame: ProviderCliValidationGrantFrame, live: ProviderCliReadySelection): Promise<void> {
+    const abort = new AbortController();
+    this.#rememberGrant(frame, abort, false, true);
     const signal = this.#signal ? AbortSignal.any([this.#signal, abort.signal]) : abort.signal;
     try {
       const request: ProviderCliValidationRequest = {
@@ -267,20 +267,21 @@ export class ProviderCliReconciler {
         },
         signal,
       );
-      if (this.#closed || this.#signal?.aborted || abort.signal.aborted) return;
-      const state = this.#grants.get(frame.requestId);
-      if (!state || this.#current.get(frame.integrationId)?.requestId !== frame.requirementRequestId) return;
-      state.consumed = true;
-      state.inflight = false;
+      if (!this.#finishGrant(frame, abort)) return;
       await this.#publishValidation(frame, result);
     } catch {
-      if (this.#closed || this.#signal?.aborted || abort.signal.aborted) return;
-      const state = this.#grants.get(frame.requestId);
-      if (!state || this.#current.get(frame.integrationId)?.requestId !== frame.requirementRequestId) return;
-      state.consumed = true;
-      state.inflight = false;
+      if (!this.#finishGrant(frame, abort)) return;
       await this.#publishValidation(frame, { status: "needs_attention" });
     }
+  }
+
+  #finishGrant(frame: ProviderCliValidationGrantFrame, abort: AbortController): boolean {
+    if (this.#closed || this.#signal?.aborted || abort.signal.aborted) return false;
+    const state = this.#grants.get(frame.requestId);
+    if (!state || this.#current.get(frame.integrationId)?.requestId !== frame.requirementRequestId) return false;
+    state.consumed = true;
+    state.inflight = false;
+    return true;
   }
 
   #abortGrants(requirementRequestId: string): void {

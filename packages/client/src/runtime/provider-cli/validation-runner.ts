@@ -68,6 +68,9 @@ export interface ProviderCliValidationRequest {
   readonly version: string;
 }
 
+type ProviderCliValidationFence = Omit<ProviderCliValidationResultFrame, "status" | "reason" | "type">;
+type ProviderCliValidationResult = Omit<ProviderCliValidationResultFrame, "type">;
+
 export class FeishuTokenExchangeError extends Error {
   constructor(readonly kind: "rate_limited" | "provider_unreachable" | "credential_rejected" | "aborted" | "invalid") {
     super("Feishu tenant token exchange failed");
@@ -100,9 +103,9 @@ export class ProviderCliValidationRunner {
 
   async run(
     request: ProviderCliValidationRequest,
-    fence: Omit<ProviderCliValidationResultFrame, "status" | "reason" | "type">,
+    fence: ProviderCliValidationFence,
     signal?: AbortSignal,
-  ): Promise<Omit<ProviderCliValidationResultFrame, "type">> {
+  ): Promise<ProviderCliValidationResult> {
     await this.#startupCleanup;
     signal?.throwIfAborted();
     if (Date.parse(request.expiresAt) <= this.#now()) {
@@ -115,12 +118,7 @@ export class ProviderCliValidationRunner {
     const requestKey = deriveProviderCliValidationRequestKey(request.requestId);
     const workDir = join(this.#root, requestKey);
     try {
-      await rm(workDir, { recursive: true, force: true });
-      await ensurePrivateDirectory(this.#home, workDir);
-      await chmod(workDir, 0o700);
-      for (const child of PRIVATE_DIRS) {
-        await mkdir(join(workDir, child), { mode: 0o700 });
-      }
+      await this.#prepareWorkDirectory(workDir);
       if (!(await this.#verifyTarget(request))) {
         return { ...fence, status: "retrying", reason: "artifact_changed" };
       }
@@ -129,73 +127,10 @@ export class ProviderCliValidationRunner {
       }
       const catalog = findProviderCliCatalogEntry(fence.provider);
       const env = scrubbedEnvironment(workDir, catalog?.managedEnvironment ?? {});
-      let classification: ProviderCliValidationClassification;
-      if (request.grant.provider === "slack") {
-        env.SLACK_BOT_TOKEN = request.grant.botAccessToken;
-        classification = await this.#runProcess(
-          request.targetPath,
-          ["--skip-update", "--config-dir", join(workDir, "config"), "api", "auth.test"],
-          env,
-          workDir,
-          (payload) =>
-            classifySlackAuthTest(
-              payload,
-              request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
-            ),
-          signal,
-        );
-      } else {
-        const tenantAccessToken = await this.#exchangeFeishuToken(request.grant, signal);
-        if (Date.parse(request.expiresAt) <= this.#now()) {
-          return { ...fence, status: "retrying", reason: "validation_expired" };
-        }
-        env.LARKSUITE_CLI_APP_ID = request.grant.appId;
-        env.LARKSUITE_CLI_APP_SECRET = request.grant.appSecret;
-        env.LARKSUITE_CLI_CONFIG_DIR = join(workDir, "config");
-        env.LARKSUITE_CLI_BRAND = request.grant.teamBrand;
-        env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN = tenantAccessToken;
-        delete env.LARKSUITE_CLI_USER_ACCESS_TOKEN;
-        classification = await this.#runProcess(
-          request.targetPath,
-          ["auth", "status", "--verify", "--json"],
-          env,
-          workDir,
-          (payload) =>
-            classifyLarkAuthStatus(
-              payload,
-              request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
-            ),
-          signal,
-        );
-      }
-      return classification.status === "ready"
-        ? { ...fence, status: "ready" }
-        : {
-            ...fence,
-            status: classification.status,
-            ...(classification.reason ? { reason: classification.reason } : {}),
-          };
+      const classification = await this.#classifyRequest(request, env, workDir, signal);
+      return validationResult(fence, classification);
     } catch (error) {
-      if (isAbortError(error) || signal?.aborted) throw abortError();
-      if (error instanceof FeishuTokenExchangeError) {
-        if (error.kind === "aborted") throw abortError();
-        if (error.kind === "rate_limited") return { ...fence, status: "retrying", reason: "rate_limited" };
-        if (error.kind === "provider_unreachable") {
-          return { ...fence, status: "retrying", reason: "provider_unreachable" };
-        }
-        if (error.kind === "credential_rejected") {
-          return { ...fence, status: "needs_attention", reason: "credential_rejected" };
-        }
-        return { ...fence, status: "needs_attention" };
-      }
-      const classification = classifySpawnFailure(error);
-      return classification.status === "ready"
-        ? { ...fence, status: "ready" }
-        : {
-            ...fence,
-            status: classification.status,
-            ...(classification.reason ? { reason: classification.reason } : {}),
-          };
+      return validationFailureResult(fence, error, signal);
     } finally {
       try {
         await rm(workDir, { recursive: true, force: true });
@@ -203,6 +138,68 @@ export class ProviderCliValidationRunner {
         this.#busy = false;
       }
     }
+  }
+
+  async #prepareWorkDirectory(workDir: string): Promise<void> {
+    await rm(workDir, { recursive: true, force: true });
+    await ensurePrivateDirectory(this.#home, workDir);
+    await chmod(workDir, 0o700);
+    await Promise.all(PRIVATE_DIRS.map((child) => mkdir(join(workDir, child), { mode: 0o700 })));
+  }
+
+  async #classifyRequest(
+    request: ProviderCliValidationRequest,
+    env: NodeJS.ProcessEnv,
+    workDir: string,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliValidationClassification> {
+    if (request.grant.provider === "slack") {
+      env.SLACK_BOT_TOKEN = request.grant.botAccessToken;
+      return this.#runProcess(
+        request.targetPath,
+        ["--skip-update", "--config-dir", join(workDir, "config"), "api", "auth.test"],
+        env,
+        workDir,
+        (payload) =>
+          classifySlackAuthTest(
+            payload,
+            request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
+          ),
+        signal,
+      );
+    }
+    return this.#classifyFeishuRequest(request, env, workDir, signal);
+  }
+
+  async #classifyFeishuRequest(
+    request: ProviderCliValidationRequest,
+    env: NodeJS.ProcessEnv,
+    workDir: string,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliValidationClassification> {
+    if (request.grant.provider !== "feishu") return { status: "needs_attention" };
+    const tenantAccessToken = await this.#exchangeFeishuToken(request.grant, signal);
+    if (Date.parse(request.expiresAt) <= this.#now()) {
+      return { status: "retrying", reason: "validation_expired" };
+    }
+    env.LARKSUITE_CLI_APP_ID = request.grant.appId;
+    env.LARKSUITE_CLI_APP_SECRET = request.grant.appSecret;
+    env.LARKSUITE_CLI_CONFIG_DIR = join(workDir, "config");
+    env.LARKSUITE_CLI_BRAND = request.grant.teamBrand;
+    env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN = tenantAccessToken;
+    delete env.LARKSUITE_CLI_USER_ACCESS_TOKEN;
+    return this.#runProcess(
+      request.targetPath,
+      ["auth", "status", "--verify", "--json"],
+      env,
+      workDir,
+      (payload) =>
+        classifyLarkAuthStatus(
+          payload,
+          request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
+        ),
+      signal,
+    );
   }
 
   async cleanupAll(): Promise<void> {
@@ -240,24 +237,68 @@ export class ProviderCliValidationRunner {
         windowsHide: true,
         ...(signal ? { signal } : {}),
       });
-      if (combinedBytes(result.stdout, result.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
-        return { status: "needs_attention" };
-      }
-      const payload = extractBoundedJson(result.stdout) ?? extractBoundedJson(result.stderr);
-      if (payload === undefined) return { status: "needs_attention" };
-      return classify(payload);
+      return classifyProcessOutput(result, classify);
     } catch (error) {
-      if (isAbortError(error) || signal?.aborted) throw abortError();
-      const output = processOutput(error);
-      if (output && combinedBytes(output.stdout, output.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
-        return { status: "needs_attention" };
-      }
-      const payload = extractBoundedJson(output?.stdout ?? "") ?? extractBoundedJson(output?.stderr ?? "");
-      if (payload !== undefined) return classify(payload);
-      if (isTimeout(error)) return { status: "retrying", reason: "provider_unreachable" };
-      throw error;
+      return classifyProcessFailure(error, signal, classify);
     }
   }
+}
+
+function validationResult(
+  fence: ProviderCliValidationFence,
+  classification: ProviderCliValidationClassification,
+): ProviderCliValidationResult {
+  if (classification.status === "ready") return { ...fence, status: "ready" };
+  return {
+    ...fence,
+    status: classification.status,
+    ...(classification.reason ? { reason: classification.reason } : {}),
+  };
+}
+
+function validationFailureResult(
+  fence: ProviderCliValidationFence,
+  error: unknown,
+  signal?: AbortSignal,
+): ProviderCliValidationResult {
+  if (isAbortError(error) || signal?.aborted) throw abortError();
+  if (!(error instanceof FeishuTokenExchangeError)) return validationResult(fence, classifySpawnFailure(error));
+  if (error.kind === "aborted") throw abortError();
+  if (error.kind === "rate_limited") return { ...fence, status: "retrying", reason: "rate_limited" };
+  if (error.kind === "provider_unreachable") {
+    return { ...fence, status: "retrying", reason: "provider_unreachable" };
+  }
+  if (error.kind === "credential_rejected") {
+    return { ...fence, status: "needs_attention", reason: "credential_rejected" };
+  }
+  return { ...fence, status: "needs_attention" };
+}
+
+function classifyProcessOutput(
+  output: { readonly stderr: string; readonly stdout: string },
+  classify: (payload: unknown) => ProviderCliValidationClassification,
+): ProviderCliValidationClassification {
+  if (combinedBytes(output.stdout, output.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
+    return { status: "needs_attention" };
+  }
+  const payload = extractBoundedJson(output.stdout) ?? extractBoundedJson(output.stderr);
+  return payload === undefined ? { status: "needs_attention" } : classify(payload);
+}
+
+function classifyProcessFailure(
+  error: unknown,
+  signal: AbortSignal | undefined,
+  classify: (payload: unknown) => ProviderCliValidationClassification,
+): ProviderCliValidationClassification {
+  if (isAbortError(error) || signal?.aborted) throw abortError();
+  const output = processOutput(error);
+  if (output && combinedBytes(output.stdout, output.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
+    return { status: "needs_attention" };
+  }
+  const payload = extractBoundedJson(output?.stdout ?? "") ?? extractBoundedJson(output?.stderr ?? "");
+  if (payload !== undefined) return classify(payload);
+  if (isTimeout(error)) return { status: "retrying", reason: "provider_unreachable" };
+  throw error;
 }
 
 async function verifyTargetFingerprint(request: ProviderCliValidationRequest): Promise<boolean> {

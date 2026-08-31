@@ -45,6 +45,9 @@ export interface ProviderCliReconcileBindingSource {
   listActiveProviderCliRequirements(workspaceComputerId: string): Promise<readonly ProviderCliRequirementSnapshot[]>;
 }
 
+type ProviderCliArtifactReadiness = ReturnType<ConnectionRegistry["providerCliArtifactReadiness"]>;
+type ProviderCliCredentialReadiness = ReturnType<ConnectionRegistry["providerCliCredentialReadiness"]>;
+
 interface CurrentRequest {
   agentId: string;
   artifactRetryAttempt: number;
@@ -334,46 +337,60 @@ export class ProviderCliReconcileOwner {
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
     const current = this.#requests.get(requestKey(context.workspaceComputerId, frame.integrationId));
-    if (frame.type === "provider-cli:artifact:status") {
-      if (!this.#acceptsArtifact(current, frame, context)) return undefined;
-      this.#registry.setProviderCliArtifactObservation(
-        context.workspaceComputerId,
-        context.instanceId,
-        {
-          agentId: frame.agentId,
-          integrationId: frame.integrationId,
-          provider: frame.provider,
-          credentialGeneration: frame.credentialGeneration,
-          requestId: frame.requestId,
-          status: frame.status,
-        },
-        this.#now(),
-      );
-      if (frame.status !== "ready") {
-        // Credential execution readiness is evidence about one exact accepted
-        // artifact selection. Any new check or artifact failure invalidates it
-        // until a fresh validation grant succeeds.
-        this.#registry.setProviderCliCredentialObservation(
-          context.workspaceComputerId,
-          context.instanceId,
-          {
-            agentId: frame.agentId,
-            integrationId: frame.integrationId,
-            provider: frame.provider,
-            credentialGeneration: frame.credentialGeneration,
-            requestId: frame.requestId,
-            status: "unconfirmed",
-          },
-          this.#now(),
-        );
-      }
-      if (frame.status === "ready") {
-        await this.#issueGrant(current);
-      } else if (frame.status === "unavailable") {
-        this.#scheduleArtifactRetry(current);
-      }
-      return undefined;
-    }
+    if (frame.type === "provider-cli:artifact:status") return this.#handleArtifact(current, frame, context);
+    return this.#handleValidation(current, frame, context);
+  }
+
+  async #handleArtifact(
+    current: CurrentRequest | undefined,
+    frame: ProviderCliArtifactStatusFrame,
+    context: RuntimeBusinessContext,
+  ): Promise<undefined> {
+    if (!this.#acceptsArtifact(current, frame, context)) return undefined;
+    this.#registry.setProviderCliArtifactObservation(
+      context.workspaceComputerId,
+      context.instanceId,
+      {
+        agentId: frame.agentId,
+        integrationId: frame.integrationId,
+        provider: frame.provider,
+        credentialGeneration: frame.credentialGeneration,
+        requestId: frame.requestId,
+        status: frame.status,
+      },
+      this.#now(),
+    );
+    this.#invalidateCredentialOnArtifactFailure(frame, context);
+    if (frame.status === "ready") await this.#issueGrant(current);
+    if (frame.status === "unavailable") this.#scheduleArtifactRetry(current);
+    return undefined;
+  }
+
+  #invalidateCredentialOnArtifactFailure(frame: ProviderCliArtifactStatusFrame, context: RuntimeBusinessContext): void {
+    if (frame.status === "ready") return;
+    // Credential execution readiness is evidence about one exact accepted
+    // artifact selection. Any new check or artifact failure invalidates it
+    // until a fresh validation grant succeeds.
+    this.#registry.setProviderCliCredentialObservation(
+      context.workspaceComputerId,
+      context.instanceId,
+      {
+        agentId: frame.agentId,
+        integrationId: frame.integrationId,
+        provider: frame.provider,
+        credentialGeneration: frame.credentialGeneration,
+        requestId: frame.requestId,
+        status: "unconfirmed",
+      },
+      this.#now(),
+    );
+  }
+
+  async #handleValidation(
+    current: CurrentRequest | undefined,
+    frame: ProviderCliValidationResultFrame,
+    context: RuntimeBusinessContext,
+  ): Promise<undefined> {
     if (!this.#acceptsGrantResult(current, frame, context)) return undefined;
     if (frame.status === "retrying") {
       if (isInternalRetryReason(frame.reason)) {
@@ -668,29 +685,45 @@ export class ProviderCliReconcileOwner {
     const artifacts = this.#registry.providerCliArtifactReadiness(input.workspaceComputerId, now);
     const credentials = this.#registry.providerCliCredentialReadiness(input.workspaceComputerId, now);
     for (const requirement of requirements) {
-      const artifact = matchObservation(artifacts, requirement);
-      const credential = matchObservation(credentials, requirement);
-      if (credential?.status === "needs_attention") continue;
-      if (artifact?.status === "ready" && credential?.status === "ready") continue;
-      const current = this.#requests.get(requestKey(input.workspaceComputerId, requirement.integrationId));
-      if (
-        current &&
-        current.instanceId === instanceId &&
-        current.agentId === requirement.agentId &&
-        current.credentialGeneration === requirement.credentialGeneration
-      ) {
-        if (isReconcileInFlight(artifact, credential)) continue;
-        if (artifact?.status === "ready" && !credential) {
-          await this.#issueGrant(current);
-          continue;
-        }
-        await this.#dispatchRequirement(input.workspaceComputerId, instanceId, computerId, requirement, {
-          force: true,
-        });
-        continue;
-      }
-      await this.#dispatchRequirement(input.workspaceComputerId, instanceId, computerId, requirement);
+      await this.#refreshRequirement(
+        input.workspaceComputerId,
+        computerId,
+        instanceId,
+        requirement,
+        artifacts,
+        credentials,
+      );
     }
+  }
+
+  async #refreshRequirement(
+    workspaceComputerId: string,
+    computerId: string,
+    instanceId: string,
+    requirement: ProviderCliRequirementSnapshot,
+    artifacts: ProviderCliArtifactReadiness,
+    credentials: ProviderCliCredentialReadiness,
+  ): Promise<void> {
+    const artifact = matchObservation(artifacts, requirement);
+    const credential = matchObservation(credentials, requirement);
+    if (credential?.status === "needs_attention") return;
+    if (artifact?.status === "ready" && credential?.status === "ready") return;
+    const current = this.#requests.get(requestKey(workspaceComputerId, requirement.integrationId));
+    if (
+      !current ||
+      current.instanceId !== instanceId ||
+      current.agentId !== requirement.agentId ||
+      current.credentialGeneration !== requirement.credentialGeneration
+    ) {
+      await this.#dispatchRequirement(workspaceComputerId, instanceId, computerId, requirement);
+      return;
+    }
+    if (isReconcileInFlight(artifact, credential)) return;
+    if (artifact?.status === "ready" && !credential) {
+      await this.#issueGrant(current);
+      return;
+    }
+    await this.#dispatchRequirement(workspaceComputerId, instanceId, computerId, requirement, { force: true });
   }
 
   async #retireAgentOnComputer(agentId: string, workspaceComputerId: string): Promise<void> {

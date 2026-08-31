@@ -15,6 +15,7 @@ import {
   AuthProvidersResponseSchema,
   accountComputerConnectCodePath,
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
@@ -57,6 +58,7 @@ import {
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
+  type RebindAgentComputerRequest,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -179,6 +181,14 @@ export class BrowserApi {
     return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
+    });
+  }
+
+  rebindAgentComputer(agentId: string, computerId: string): Promise<AgentAdminConfig> {
+    return this.request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      body: JSON.stringify({ computerId } satisfies RebindAgentComputerRequest),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 

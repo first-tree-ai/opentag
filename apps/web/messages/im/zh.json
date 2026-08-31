@@ -60,7 +60,7 @@
   "im_permissions_required": "需要权限",
   "im_receive_mode_failed": "无法更新消息设置，请重试。",
   "im_reconnect": "重新连接",
-  "im_slack_agent_computer_not_bound": "连接 Slack 前，请先将电脑连接到此 Agent。",
+  "im_slack_agent_computer_not_bound": "先为该智能体连接一台计算机，再连接 Slack。",
   "im_slack_authorization_failed": "无法连接 Slack。请从此 Agent 重新开始连接。",
   "im_slack_connected": "Slack 已连接。",
   "im_slack_permissions_missing": "Slack 权限不完整。请更新权限后重试。",

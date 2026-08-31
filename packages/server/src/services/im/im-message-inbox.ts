@@ -124,12 +124,15 @@ export class ImMessageInbox {
             if (!agent) {
               throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
             }
-            const [computer] = await transaction
-              .select({ ownerAccountId: accountComputers.ownerAccountId })
-              .from(accountComputers)
-              .where(eq(accountComputers.id, agent.computerId))
-              .limit(1)
-              .for("update");
+            const agentComputerId = agent.computerId;
+            const [computer] = agentComputerId
+              ? await transaction
+                  .select({ ownerAccountId: accountComputers.ownerAccountId })
+                  .from(accountComputers)
+                  .where(eq(accountComputers.id, agentComputerId))
+                  .limit(1)
+                  .for("update")
+              : [];
             const agentCanExecute = computer?.ownerAccountId === agent.createdByUserId;
             await transaction
               .update(imBindings)
@@ -343,6 +346,11 @@ export class ImMessageInbox {
             if (agent.status !== "active") {
               return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_inactive");
             }
+            // A Session is placed on the Agent's Computer, so an Agent that has none has nowhere to
+            // run. The message is still recorded; only the delivery it cannot receive is withheld.
+            if (agentComputerId === null) {
+              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_computer_not_bound");
+            }
             if (!agentCanExecute) {
               return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_rebind_required");
             }
@@ -406,7 +414,7 @@ export class ImMessageInbox {
                       conversationKind,
                       kind: "thread",
                       threadKey,
-                      workspaceComputerId: scope.agent.computerId,
+                      workspaceComputerId: agentComputerId,
                       now,
                     }));
                   deliveries.push({
@@ -421,7 +429,7 @@ export class ImMessageInbox {
                     channelId: event.conversation.externalId,
                     conversationKind,
                     kind: "channel",
-                    workspaceComputerId: scope.agent.computerId,
+                    workspaceComputerId: agentComputerId,
                     now,
                   });
                   deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
@@ -432,7 +440,7 @@ export class ImMessageInbox {
                   channelId: event.conversation.externalId,
                   conversationKind,
                   kind: "channel",
-                  workspaceComputerId: scope.agent.computerId,
+                  workspaceComputerId: agentComputerId,
                   now,
                 });
                 deliveries.push({
@@ -513,7 +521,7 @@ export class ImMessageInbox {
                   conversationKind,
                   kind: "thread",
                   threadKey: pending.threadKey,
-                  workspaceComputerId: scope.agent.computerId,
+                  workspaceComputerId: agentComputerId,
                   now,
                 });
                 const [upgraded] = await transaction

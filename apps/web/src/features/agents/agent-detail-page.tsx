@@ -130,7 +130,14 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
         <AgentStatusRow
           agent={agent}
           dependency="computer"
-          identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeName}`}
+          // No Computer, no identity line -- the row already says so in its status, and naming
+          // nothing would leave a bare separator where a machine should be. `identity` is
+          // optional for exactly this: the messaging row below omits it the same way.
+          identity={
+            agent.computer
+              ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeName}`
+              : undefined
+          }
           name={m.agents_status_computer()}
           status={computer}
         />

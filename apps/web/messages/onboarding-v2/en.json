@@ -99,6 +99,8 @@
   "onboarding_v2_nav_back": "Go back",
   "onboarding_v2_nav_next": "Continue",
   "onboarding_v2_nav_retry": "Try again",
+  "onboarding_v2_resume_blocked_detail": "Setup carries on once it has a computer to run on.",
+  "onboarding_v2_resume_blocked_title": "{agentName} has no computer yet.",
   "onboarding_v2_runtime_claude_code_description": "Anthropic",
   "onboarding_v2_runtime_claude_code_title": "Claude Code",
   "onboarding_v2_runtime_codex_description": "OpenAI",

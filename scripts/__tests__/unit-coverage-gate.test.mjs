@@ -167,6 +167,42 @@ test("supported script extensions are included while coverage artifacts remain e
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
 });
 
+test("package test infrastructure is excluded without excluding unrelated __tests__ folders", () => {
+  assert.equal(isSupportedSourcePath("apps/web/src/__tests__/support/app-fixtures.tsx"), false);
+  assert.equal(isSupportedSourcePath("packages/server/src/services/tasks/__tests__/fixture.ts"), false);
+  assert.equal(isSupportedSourcePath("src/__tests__/production.ts"), true);
+  assert.equal(isSupportedSourcePath("tools/__tests__/production.ts"), true);
+
+  const result = evaluatePatchCoverage({
+    diff: [
+      "--- a/apps/web/src/__tests__/support/app-fixtures.tsx",
+      "+++ b/apps/web/src/__tests__/support/app-fixtures.tsx",
+      "@@ -0,0 +1 @@",
+      "+export const fixture = true;",
+      "",
+    ].join("\n"),
+    coverage: {},
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.reason, "no executable changed lines");
+  assert.equal(result.passed, true);
+});
+
+test("root and package tooling config modules are excluded without excluding source config modules", () => {
+  for (const path of [
+    "vitest.coverage.config.ts",
+    "packages/client/vitest.agent-runtime.config.ts",
+    "apps/web/vite.config.ts",
+    "packages/server/drizzle.config.ts",
+  ]) {
+    assert.equal(isSupportedSourcePath(path), false, path);
+  }
+  assert.equal(isSupportedSourcePath("apps/web/src/vite.config.ts"), true);
+  assert.equal(isSupportedSourcePath("packages/server/src/config.ts"), true);
+  assert.equal(isSupportedSourcePath("tools/vitest.config.ts"), true);
+});
+
 test("a declaration the provider emits no statement for is not blamed for being uncoverable", () => {
   // A TypeScript interface member and a bare JSX text child both vanish at compile time, so the
   // instrumented file carries no statement for either line. Counting them would fail a pull request

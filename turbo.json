@@ -59,6 +59,9 @@
     "e2e": {
       "cache": false
     },
+    "test:e2e:smoke": {
+      "cache": false
+    },
     "test:e2e:claude-code-agent-runtime": {
       "cache": false
     },

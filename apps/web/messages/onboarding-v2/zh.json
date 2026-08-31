@@ -99,6 +99,8 @@
   "onboarding_v2_nav_back": "返回",
   "onboarding_v2_nav_next": "继续",
   "onboarding_v2_nav_retry": "重试",
+  "onboarding_v2_resume_blocked_detail": "等它有计算机可以运行，设置流程就会继续。",
+  "onboarding_v2_resume_blocked_title": "{agentName} 还没有计算机。",
   "onboarding_v2_runtime_claude_code_description": "由 Anthropic 提供",
   "onboarding_v2_runtime_claude_code_title": "Claude Code",
   "onboarding_v2_runtime_codex_description": "由 OpenAI 提供",

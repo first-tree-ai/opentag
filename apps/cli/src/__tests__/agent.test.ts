@@ -5,7 +5,7 @@ import type { AgentAdminConfig, FeishuSetupAttempt, ImBindingAdminDetail, ImBind
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import { resolveAgentCommandContext } from "../core/agent/context.js";
-import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
+import { formatAgent, formatAgentBound, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
 import * as agentIm from "../core/agent/im.js";
 import {
   formatFeishuSetup,
@@ -19,6 +19,7 @@ import {
 } from "../core/agent/im.js";
 import * as agentMutations from "../core/agent/mutations.js";
 import {
+  runAgentBind,
   runAgentCreate,
   runAgentDelete,
   runAgentReactivate,
@@ -78,15 +79,17 @@ const {
   runtimeConfig: _runtimeConfig,
   revision: _revision,
   createdByUserId,
-  computerId: agentComputerId,
+  computerId: _agentComputerId,
   ...agentBase
 } = agent;
 const agentSummary = {
   ...agentBase,
   activity: { state: "idle" as const },
   createdBy: { userId: createdByUserId, displayName: "Admin" },
+  // Stated rather than re-derived from the admin projection, whose `computerId` is nullable now.
+  // This fixture is a bound Agent; the unbound one is built explicitly where it is asserted.
   computer: {
-    computerId: agentComputerId,
+    computerId,
     displayName: computer.displayName,
     platform: computer.platform,
   },
@@ -104,6 +107,7 @@ function api() {
     updateAgent: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     suspendAgent: vi.fn().mockResolvedValue({ ...agent, status: "suspended", revision: 2 }),
     reactivateAgent: vi.fn().mockResolvedValue({ ...agent, revision: 3 }),
+    rebindAgentComputer: vi.fn().mockResolvedValue(agent),
     deleteAgent: vi.fn().mockResolvedValue(undefined),
     getAgentImBinding: vi.fn().mockResolvedValue(undefined),
     getAgentImBindingConfig: vi.fn().mockResolvedValue(undefined),
@@ -293,7 +297,8 @@ describe("Agent CLI core", () => {
 
   it("resolves an enrolled Computer and rejects ambiguous or unknown choices", () => {
     expect(selectComputer({ computers: [computer] })).toEqual(computer);
-    expect(() => selectComputer({ computers: [] })).toThrow("start the daemon first");
+    // Nothing enrolled is an answer, not a failure: the Agent is created and bound later.
+    expect(selectComputer({ computers: [] })).toBeUndefined();
     expect(() =>
       selectComputer({
         computers: [{ ...computer }, { ...computer, computerId: crypto.randomUUID() }],
@@ -327,6 +332,40 @@ describe("Agent CLI core", () => {
     });
     expect(result.warning).toContain("is offline");
     expect(formatAgentCreated(result)).toContain(agentId);
+  });
+
+  it("creates an Agent with no Computer and names the command that binds one", async () => {
+    const client = api();
+    client.listAccountComputers.mockResolvedValue({ computers: [] });
+    client.createAgent.mockResolvedValue({ ...agent, computerId: null });
+    const result = await runAgentCreate({
+      accessToken: "access",
+      api: client,
+      name: "code-reviewer",
+      displayName: "Code Reviewer",
+      runtimeProvider: "codex",
+    });
+    expect(client.createAgent).toHaveBeenCalledWith("access", {
+      displayName: "Code Reviewer",
+      name: "code-reviewer",
+      runtimeProvider: "codex",
+    });
+    expect(result.warning).toContain("opentag agent bind");
+    expect(formatAgentCreated(result)).toContain("without a Computer");
+  });
+
+  it("binds an Agent to a Computer after creation", async () => {
+    const client = api();
+    const result = await runAgentBind(agentId, { accessToken: "access", api: client });
+    expect(client.rebindAgentComputer).toHaveBeenCalledWith("access", agentId, computerId);
+    expect(formatAgentBound(result)).toContain(computerId);
+    expect(result.warning).toBeUndefined();
+
+    const empty = api();
+    empty.listAccountComputers.mockResolvedValue({ computers: [] });
+    await expect(runAgentBind(agentId, { accessToken: "access", api: empty })).rejects.toThrow(
+      "start the daemon first",
+    );
   });
 
   it("creates runtime settings and preserves UTF-8 instruction file contents", async () => {
@@ -373,6 +412,12 @@ describe("Agent CLI core", () => {
     expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
     expect(formatAgentList(response)).toContain("all_message");
     expect(formatAgentList({ agents: [] })).toBe("No Agents registered");
+    // An absent Computer is stated rather than left as a gap, so neither surface reads as a field
+    // that went missing on the way out.
+    const [listed] = response.agents;
+    if (!listed) throw new Error("Agent list fixture is empty");
+    expect(formatAgentList({ agents: [{ ...listed, computer: null }] })).toContain("\tnone\t");
+    expect(formatAgent({ ...agent, computerId: null })).toContain("computerId\tnone");
     await expect(runAgentShow(agentId, { accessToken: "access", api: client })).resolves.toEqual(agent);
     expect(client.getAgentConfig).toHaveBeenCalledWith("access", agentId);
   });
@@ -465,6 +510,7 @@ describe("Agent CLI core", () => {
     const program = createProgram();
     const agentCommand = program.commands.find((command) => command.name() === "agent");
     const computerCommand = program.commands.find((command) => command.name() === "computer");
+    const bind = agentCommand?.commands.find((command) => command.name() === "bind");
     const create = agentCommand?.commands.find((command) => command.name() === "create");
     const update = agentCommand?.commands.find((command) => command.name() === "update");
     const list = agentCommand?.commands.find((command) => command.name() === "list");
@@ -472,6 +518,8 @@ describe("Agent CLI core", () => {
     expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
     expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
     expect(connect?.description()).toBe("Enroll this Computer with a one-time code");
+    expect(bind?.description()).toBe("Bind an Agent to a Computer enrolled by this Account");
+    expect(bind?.options.map((option) => option.long)).toEqual(expect.arrayContaining(["--computer"]));
     expect(create?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining([
         "--model",

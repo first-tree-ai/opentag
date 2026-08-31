@@ -26,6 +26,15 @@ export interface AgentCreateResult {
   warning?: string;
 }
 
+export interface AgentBindOptions extends AgentCommandDependencies {
+  computerId?: string;
+}
+
+export interface AgentBindResult {
+  agent: AgentAdminConfig;
+  warning?: string;
+}
+
 export interface AgentUpdateOptions extends AgentCommandDependencies {
   clearMaxDuration?: boolean;
   clearModel?: boolean;
@@ -38,22 +47,22 @@ export interface AgentUpdateOptions extends AgentCommandDependencies {
   reasoningEffort?: string;
 }
 
+/**
+ * Resolves the Computer an Agent runs on. Having none to select is no longer a failure: an Agent can
+ * exist before a Computer does and be bound afterwards. An ambiguous choice still is, because
+ * guessing which machine the Account meant would silently place the Agent on the wrong one.
+ */
 export function selectComputer(
   response: ListWorkspaceComputersResponse,
   requestedComputerId?: string,
-): WorkspaceComputerSummary {
+): WorkspaceComputerSummary | undefined {
   if (requestedComputerId) {
     const selected = response.computers.find((computer) => computer.computerId === requestedComputerId);
     if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled by this Account`);
     return selected;
   }
-  if (response.computers.length === 1) {
-    const selected = response.computers[0];
-    if (!selected) throw new Error("No Computer is registered; start the daemon first");
-    return selected;
-  }
-  if (response.computers.length === 0) throw new Error("No Computer is registered; start the daemon first");
-  throw new Error("Multiple Computers are available; use --computer <uuid>");
+  if (response.computers.length > 1) throw new Error("Multiple Computers are available; use --computer <uuid>");
+  return response.computers[0];
 }
 
 export async function runAgentCreate(options: AgentCreateOptions): Promise<AgentCreateResult> {
@@ -65,14 +74,34 @@ export async function runAgentCreate(options: AgentCreateOptions): Promise<Agent
     name: options.name,
     displayName: options.displayName,
     runtimeProvider: options.runtimeProvider,
-    computerId: computer.computerId,
+    ...(computer ? { computerId: computer.computerId } : {}),
     ...(runtimeConfig ? { runtimeConfig } : {}),
   });
   const agent = await api.createAgent(accessToken, input);
+  if (!computer) {
+    return {
+      agent,
+      warning: "No Computer is enrolled by this Account; bind one with `opentag agent bind` before the Agent can run",
+    };
+  }
   return {
     agent,
     ...(computer.connectionStatus === "offline"
       ? { warning: `Computer ${computer.computerId} is offline; the Agent configuration was created` }
+      : {}),
+  };
+}
+
+export async function runAgentBind(agentId: string, options: AgentBindOptions): Promise<AgentBindResult> {
+  const { api, accessToken } = await resolveAgentCommandContext(options);
+  const computers = await api.listAccountComputers(accessToken);
+  const computer = selectComputer(computers, options.computerId);
+  if (!computer) throw new Error("No Computer is registered; start the daemon first");
+  const agent = await api.rebindAgentComputer(accessToken, agentId, computer.computerId);
+  return {
+    agent,
+    ...(computer.connectionStatus === "offline"
+      ? { warning: `Computer ${computer.computerId} is offline; the Agent was bound to it anyway` }
       : {}),
   };
 }

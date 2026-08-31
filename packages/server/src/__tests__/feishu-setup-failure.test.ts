@@ -70,7 +70,7 @@ async function setupFixture() {
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindings = new ImBindingService(setupDatabase.database, cipher, { now: () => setupNow });
-  return { bootstrap, agent, cipher, imBindings };
+  return { bootstrap, agent, computerId: workspaceComputer.id, cipher, imBindings };
 }
 
 function registration(
@@ -379,7 +379,7 @@ describe("FeishuSetupService persistence", () => {
       name: "unbound-agent",
       displayName: "Unbound Agent",
       runtimeProvider: "codex",
-      computerId: value.agent.computerId,
+      computerId: value.computerId,
     });
     await expect(service.createOrReuse(value.bootstrap.userId, noBindingAgent.id, "reauthorize")).rejects.toThrow(
       "FEISHU_REAUTHORIZATION_REQUIRES_BINDING",

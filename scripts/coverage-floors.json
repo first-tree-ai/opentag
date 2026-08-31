@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "projects": {
+    "cli": {
+      "branches": 87.32,
+      "functions": 96.45,
+      "lines": 96.12,
+      "statements": 96.12
+    },
+    "web": {
+      "branches": 91.85,
+      "functions": 90.19,
+      "lines": 94.46,
+      "statements": 94.46
+    },
+    "shared": {
+      "branches": 85.35,
+      "functions": 92.64,
+      "lines": 95.62,
+      "statements": 95.62
+    },
+    "client": {
+      "branches": 92.75,
+      "functions": 97.9,
+      "lines": 95.98,
+      "statements": 95.98
+    },
+    "server": {
+      "branches": 87.55,
+      "functions": 88.88,
+      "lines": 97.04,
+      "statements": 97.04
+    }
+  }
+}

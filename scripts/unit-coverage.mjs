@@ -23,8 +23,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export {
@@ -48,6 +48,53 @@ const PROJECTS = [
 ];
 
 const COVERAGE_ROOT = resolve(repositoryRoot, "coverage/unit");
+export const COVERAGE_FLOORS_PATH = resolve(repositoryRoot, "scripts/coverage-floors.json");
+export const COVERAGE_METRICS = ["lines", "statements", "functions", "branches"];
+
+const ROOT_COVERAGE_INCLUDE_PATTERNS = [
+  "apps/cli/src/**/*.{ts,tsx}",
+  "apps/web/src/**/*.{ts,tsx}",
+  "packages/shared/src/**/*.{ts,tsx}",
+  "packages/client/src/**/*.{ts,tsx}",
+  "packages/server/src/**/*.{ts,tsx}",
+];
+
+const ROOT_COVERAGE_EXCLUDE_PATTERNS = ["**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"];
+
+/** The focused Agent Runtime manifest is deliberately explicit and source-tree checked. */
+export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
+  "src/agent-runtime/**/*.ts",
+  "src/providers/claude-code/agent-runtime.ts",
+  "src/providers/claude-code/hosted-tool-bridge.ts",
+  "src/providers/claude-code/process-wire.ts",
+  "src/providers/claude-code/runtime-policy.ts",
+  "src/providers/codex/agent-runtime.ts",
+  "src/providers/codex/app-server-wire.ts",
+  "src/providers/codex/runtime-policy.ts",
+  "src/providers/pi/agent-runtime.ts",
+  "src/providers/pi/rpc-wire.ts",
+  "src/providers/process-owner.ts",
+  "src/runtime/agent-runtime-availability-tester.ts",
+  "src/runtime/agent-runtime-provider-registry.ts",
+  "src/runtime/agent-turn-runner.ts",
+  "src/runtime/client-runtime-composition.ts",
+  "src/runtime/runtime-durability.ts",
+  "src/runtime/session-runtime-manager.ts",
+];
+
+const AGENT_RUNTIME_SCOPE_PREFIXES = [
+  "agent-runtime/",
+  "providers/claude-code/",
+  "providers/codex/",
+  "providers/pi/",
+  "providers/process-owner.ts",
+  "runtime/agent-runtime-availability-tester.ts",
+  "runtime/agent-runtime-provider-registry.ts",
+  "runtime/agent-turn-runner.ts",
+  "runtime/client-runtime-composition.ts",
+  "runtime/runtime-durability.ts",
+  "runtime/session-runtime-manager.ts",
+];
 
 /** CLI reporter flags. Passing any `--coverage.reporter` replaces the config list, so json must be restated. */
 export const COVERAGE_REPORTER_FLAGS = [
@@ -56,8 +103,208 @@ export const COVERAGE_REPORTER_FLAGS = [
   "--coverage.reporter=text-summary",
 ];
 
+export const TEST_REPORTER_FLAGS = (outputFile) => ["--reporter=json", `--outputFile=${outputFile}`];
+
+function floorProjects(floors) {
+  if (floors && typeof floors === "object" && floors.projects && typeof floors.projects === "object") {
+    return floors.projects;
+  }
+  return floors ?? {};
+}
+
+function summaryMetric(summary, metric) {
+  const value = summary?.total?.[metric]?.pct ?? summary?.[metric];
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
+}
+
+function roundedPercentage(value) {
+  return Number(Number(value).toFixed(2));
+}
+
+function evaluatePackageFloors(packageName, packageFloors, summary) {
+  return COVERAGE_METRICS.flatMap((metric) => {
+    const floor = Number(packageFloors?.[metric]);
+    if (!Number.isFinite(floor)) return [];
+    const current = summaryMetric(summary, metric);
+    if (current !== undefined && current >= floor) return [];
+    const delta = current === undefined ? Number.NEGATIVE_INFINITY : roundedPercentage(current - floor);
+    const observed = current === undefined ? "missing" : `${current.toFixed(2)}%`;
+    const signedDelta = current === undefined ? "-Infinity" : delta.toFixed(2);
+    return [
+      {
+        current,
+        delta,
+        floor,
+        message:
+          `Coverage floor breach for package "${packageName}": ${metric} ${observed} is ` +
+          `${signedDelta} percentage points (delta ${signedDelta}) below floor ${floor.toFixed(2)}%`,
+        metric,
+        packageName,
+      },
+    ];
+  });
+}
+
+export function evaluateCoverageFloors(summaries, floors) {
+  return Object.entries(floorProjects(floors)).flatMap(([packageName, packageFloors]) =>
+    evaluatePackageFloors(packageName, packageFloors, summaries?.[packageName]),
+  );
+}
+
+export function assertCoverageFloors(summaries, floors) {
+  const breaches = evaluateCoverageFloors(summaries, floors);
+  if (breaches.length > 0) throw new Error(breaches.map((breach) => breach.message).join("\n"));
+  return true;
+}
+
+/** Return updated floors, refusing to lower any existing floor unless explicitly allowed. */
+function ratchetPackageFloors(packageName, packageFloors, summary, allowDecrease) {
+  const updated = { ...packageFloors };
+  for (const metric of COVERAGE_METRICS) {
+    const previous = Number(packageFloors?.[metric]);
+    const current = summaryMetric(summary, metric);
+    if (!Number.isFinite(previous) || current === undefined) continue;
+    const next = roundedPercentage(current);
+    const delta = roundedPercentage(next - previous);
+    if (delta < 0 && !allowDecrease) {
+      throw new Error(
+        `Coverage floor ratchet would decrease package "${packageName}" ${metric} ` +
+          `by ${Math.abs(delta).toFixed(2)} percentage points (delta ${delta.toFixed(2)}); ` +
+          "pass --allow-floor-decrease only for an explicit decrease",
+      );
+    }
+    updated[metric] = next;
+  }
+  return updated;
+}
+
+function newPackageFloors(summary) {
+  return Object.fromEntries(
+    COVERAGE_METRICS.flatMap((metric) => {
+      const value = summaryMetric(summary, metric);
+      return value === undefined ? [] : [[metric, roundedPercentage(value)]];
+    }),
+  );
+}
+
+export function ratchetCoverageFloors({ existing, summaries, allowDecrease = false }) {
+  const currentProjects = summaries ?? {};
+  const existingProjects = floorProjects(existing);
+  const updated = Object.fromEntries(
+    Object.entries(existingProjects).map(([packageName, packageFloors]) => [
+      packageName,
+      ratchetPackageFloors(packageName, packageFloors, currentProjects[packageName], allowDecrease),
+    ]),
+  );
+  for (const [packageName, summary] of Object.entries(currentProjects)) {
+    if (!updated[packageName]) updated[packageName] = newPackageFloors(summary);
+  }
+  return updated;
+}
+
+function normalizeManifestPath(value) {
+  return String(value).replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+function globToRegExp(pattern) {
+  let source = "";
+  const normalized = normalizeManifestPath(pattern);
+  for (let index = 0; index < normalized.length; index += 1) {
+    const character = normalized[index];
+    if (character === "*" && normalized[index + 1] === "*") {
+      if (normalized[index + 2] === "/") {
+        source += "(?:.*/)?";
+        index += 2;
+      } else {
+        source += ".*";
+        index += 1;
+      }
+    } else if (character === "*") {
+      source += "[^/]*";
+    } else if (character === "{") {
+      const end = normalized.indexOf("}", index);
+      if (end === -1) source += "\\{";
+      else {
+        source += `(?:${normalized
+          .slice(index + 1, end)
+          .split(",")
+          .map((item) => item.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join("|")})`;
+        index = end;
+      }
+    } else {
+      source += character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
+export function validateCoverageManifest({ sourceFiles, includePatterns, excludePatterns = [] }) {
+  const files = [...new Set(sourceFiles.map(normalizeManifestPath))].sort();
+  const includes = includePatterns.map(globToRegExp);
+  const excludes = excludePatterns.map(globToRegExp);
+  const isExcluded = (file) => excludes.some((pattern) => pattern.test(file));
+  const missing = files.filter((file) => !isExcluded(file) && !includes.some((pattern) => pattern.test(file)));
+  const unmatchedPatterns = includePatterns.filter(
+    (pattern) => !files.some((file) => globToRegExp(pattern).test(file)),
+  );
+  return { missing, unmatchedPatterns };
+}
+
+function sourceFilesUnder(directory, relativeTo = directory) {
+  const files = [];
+  const visit = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      if (["node_modules", "dist", "coverage"].includes(entry.name)) continue;
+      const absolute = resolve(current, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (/\.(?:ts|tsx)$/.test(entry.name) && !/\.(?:test|spec)\.(?:ts|tsx)$/.test(entry.name)) {
+        files.push(normalizeManifestPath(relative(relativeTo, absolute)));
+      }
+    }
+  };
+  visit(resolve(directory));
+  return files.sort();
+}
+
+export function validateRepositoryCoverageManifest(root = repositoryRoot) {
+  const projectSources = ROOT_COVERAGE_INCLUDE_PATTERNS.flatMap((pattern) => {
+    const prefix = pattern.split("/src/")[0];
+    return sourceFilesUnder(resolve(root, `${prefix}/src`), root);
+  });
+  const rootResult = validateCoverageManifest({
+    excludePatterns: ROOT_COVERAGE_EXCLUDE_PATTERNS,
+    includePatterns: ROOT_COVERAGE_INCLUDE_PATTERNS,
+    sourceFiles: projectSources,
+  });
+  const clientRoot = resolve(root, "packages/client/src");
+  const clientFiles = sourceFilesUnder(clientRoot, clientRoot).filter((file) =>
+    AGENT_RUNTIME_SCOPE_PREFIXES.some((prefix) => file === prefix || file.startsWith(prefix)),
+  );
+  const agentResult = validateCoverageManifest({
+    includePatterns: AGENT_RUNTIME_COVERAGE_INCLUDE.map((pattern) => pattern.replace(/^src\//, "")),
+    sourceFiles: clientFiles,
+  });
+  return { agentRuntime: agentResult, root: rootResult };
+}
+
+export function assertRepositoryCoverageManifest(root = repositoryRoot) {
+  const result = validateRepositoryCoverageManifest(root);
+  const failures = [
+    ...result.root.missing.map((file) => `root manifest missing source owner: ${file}`),
+    ...result.root.unmatchedPatterns.map((pattern) => `root manifest pattern matches no source: ${pattern}`),
+    ...result.agentRuntime.missing.map((file) => `Agent Runtime manifest missing source owner: ${file}`),
+    ...result.agentRuntime.unmatchedPatterns.map(
+      (pattern) => `Agent Runtime manifest pattern matches no source: ${pattern}`,
+    ),
+  ];
+  if (failures.length > 0) throw new Error(`Coverage manifest validation failed:\n${failures.join("\n")}`);
+  return result;
+}
+
 function parseArguments(argv) {
-  const options = { project: null, scope: null };
+  const options = { allowFloorDecrease: false, project: null, scope: null, updateFloors: false };
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--project") {
       options.project = argv[index + 1];
@@ -65,6 +312,10 @@ function parseArguments(argv) {
     } else if (argv[index] === "--scope") {
       options.scope = argv[index + 1];
       index += 1;
+    } else if (argv[index] === "--update-floors") {
+      options.updateFloors = true;
+    } else if (argv[index] === "--allow-floor-decrease" || argv[index] === "--allow-decrease") {
+      options.allowFloorDecrease = true;
     }
   }
   return options;
@@ -80,6 +331,41 @@ export function assertCoverageArtifacts(reportsDirectory, projectName) {
     throw new Error(`Coverage run for project "${projectName}" produced no detailed report`);
   }
   return { detailedPath, summaryPath };
+}
+
+export function summarizeTestResults(report, elapsedMs = 0) {
+  const files = Array.isArray(report?.testResults) ? report.testResults : [];
+  const assertions = files.flatMap((file) => (Array.isArray(file?.assertionResults) ? file.assertionResults : []));
+  const retryCount = assertions.reduce((total, assertion) => total + (Number(assertion?.retryCount) || 0), 0);
+  const flakyCount = assertions.filter(
+    (assertion) =>
+      assertion?.flaky === true || ((Number(assertion?.retryCount) || 0) > 0 && assertion?.status === "passed"),
+  ).length;
+  const failedAfterRetryCount = assertions.filter(
+    (assertion) => (Number(assertion?.retryCount) || 0) > 0 && assertion?.status !== "passed",
+  ).length;
+  const starts = files.map((file) => Number(file?.startTime)).filter(Number.isFinite);
+  const ends = files
+    .map((file) => {
+      const start = Number(file?.startTime);
+      const duration = Number(file?.duration);
+      const end = Number(file?.endTime);
+      return Number.isFinite(end)
+        ? end
+        : Number.isFinite(start) && Number.isFinite(duration)
+          ? start + duration
+          : undefined;
+    })
+    .filter(Number.isFinite);
+  const reportDurationMs = starts.length > 0 && ends.length > 0 ? Math.max(...ends) - Math.min(...starts) : 0;
+  return {
+    durationMs: roundedPercentage(reportDurationMs > 0 ? reportDurationMs : elapsedMs),
+    failedAfterRetryCount,
+    flakyCount,
+    retryCount,
+    testCount: Number(report?.numTotalTests) || assertions.length,
+    testFileCount: Number(report?.numTotalTestSuites) || files.length,
+  };
 }
 
 /**
@@ -119,8 +405,10 @@ export function writeAggregateReports({ coverageRoot, detailedMaps, summary }) {
 function runProject(project, scope) {
   const reportsDirectory = resolve(COVERAGE_ROOT, project.name);
   mkdirSync(reportsDirectory, { recursive: true });
+  const testResultsPath = resolve(reportsDirectory, "test-results.json");
 
   const include = scope ?? `${project.sources}/**/*.{ts,tsx}`;
+  const startedAt = performance.now();
   const result = spawnSync(
     "pnpm",
     [
@@ -134,6 +422,7 @@ function runProject(project, scope) {
       `--coverage.include=${include}`,
       ...COVERAGE_REPORTER_FLAGS,
       `--coverage.reportsDirectory=${reportsDirectory}`,
+      ...TEST_REPORTER_FLAGS(testResultsPath),
     ],
     { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -143,7 +432,12 @@ function runProject(project, scope) {
     return {
       detailed: JSON.parse(readFileSync(detailedPath, "utf8")),
       failed: result.status !== 0,
+      testReport: existsSync(testResultsPath) ? JSON.parse(readFileSync(testResultsPath, "utf8")) : undefined,
       summary: JSON.parse(readFileSync(summaryPath, "utf8")),
+      timing: summarizeTestResults(
+        existsSync(testResultsPath) ? JSON.parse(readFileSync(testResultsPath, "utf8")) : undefined,
+        performance.now() - startedAt,
+      ),
     };
   } catch (error) {
     process.stderr.write(result.stdout ?? "");
@@ -160,16 +454,23 @@ function main() {
     throw new Error(`Unknown project "${options.project}". Known: ${PROJECTS.map((p) => p.name).join(", ")}`);
   }
 
+  assertRepositoryCoverageManifest();
+  const floorDocument = JSON.parse(readFileSync(COVERAGE_FLOORS_PATH, "utf8"));
+
   const aggregate = {};
   const detailedMaps = [];
   const perProject = [];
+  const summaries = {};
+  const timings = [];
   let anyFailed = false;
 
   for (const project of selected) {
     process.stdout.write(`\n── ${project.name} ──\n`);
-    const { detailed, failed, summary } = runProject(project, options.scope);
+    const { detailed, failed, summary, timing } = runProject(project, options.scope);
     anyFailed ||= failed;
     detailedMaps.push(detailed);
+    summaries[project.name] = summary;
+    timings.push({ ...timing, name: project.name });
 
     for (const [file, metrics] of Object.entries(summary)) {
       if (file !== "total") {
@@ -178,7 +479,25 @@ function main() {
     }
     perProject.push({ lines: summary.total.lines, name: project.name });
     const { covered, total, pct } = summary.total.lines;
-    process.stdout.write(`   lines ${pct}% (${covered}/${total})${failed ? "  [tests failed]" : ""}\n`);
+    process.stdout.write(
+      `   lines ${pct}% (${covered}/${total})${failed ? "  [tests failed]" : ""}; ` +
+        `duration ${timing.durationMs.toFixed(0)}ms; retries ${timing.retryCount} (flaky ${timing.flakyCount})\n`,
+    );
+  }
+
+  const selectedFloors = Object.fromEntries(selected.map(({ name }) => [name, floorProjects(floorDocument)[name]]));
+  assertCoverageFloors(summaries, selectedFloors);
+  if (options.updateFloors) {
+    if (options.project || options.scope) {
+      throw new Error("--update-floors requires a full coverage run without --project or --scope");
+    }
+    floorDocument.projects = ratchetCoverageFloors({
+      allowDecrease: options.allowFloorDecrease,
+      existing: floorDocument.projects,
+      summaries,
+    });
+    writeFileSync(COVERAGE_FLOORS_PATH, `${JSON.stringify(floorDocument, null, 2)}\n`);
+    process.stdout.write(`Updated coverage floors in ${COVERAGE_FLOORS_PATH}\n`);
   }
 
   const totals = Object.values(aggregate).reduce(
@@ -231,6 +550,10 @@ function main() {
       summary: aggregate,
     });
     process.stdout.write(`   detailed ${Object.keys(detailed).length} files -> coverage/unit/coverage-final.json\n`);
+    writeFileSync(
+      resolve(COVERAGE_ROOT, "coverage-run.json"),
+      `${JSON.stringify({ packages: timings, version: 1 }, null, 2)}\n`,
+    );
   }
 
   process.stdout.write("\n=== unit line coverage ===\n");

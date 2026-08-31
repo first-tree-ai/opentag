@@ -22,6 +22,39 @@ afterEach(async () => {
 });
 
 describe("AgentRuntimeAvailabilityTester", () => {
+  it("fails closed before creating a runtime when cancelled or when the provider is unknown", async () => {
+    const factories = new Map<string, AgentRuntimeFactory>();
+    const tester = new AgentRuntimeAvailabilityTester({ factories });
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await expect(tester.run(testRequest("codex"), cancelled.signal)).resolves.toMatchObject({
+      status: "failed",
+      code: "cancelled",
+    });
+    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toMatchObject({
+      status: "failed",
+      code: "provider_start_failed",
+    });
+  });
+
+  it("handles a signal that becomes aborted between the initial check and the race", async () => {
+    let reads = 0;
+    const signal = {
+      get aborted() {
+        reads += 1;
+        return reads > 1;
+      },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    } as unknown as AbortSignal;
+    const factory = scriptedFactory({ prompt: () => new Promise(() => undefined) });
+    const tester = new AgentRuntimeAvailabilityTester({ factories: new Map([["codex", factory]]), timeoutMs: 5_000 });
+    await expect(tester.run(testRequest("codex"), signal)).resolves.toMatchObject({
+      status: "failed",
+      code: "cancelled",
+    });
+  });
+
   it("uses a Codex policy the real factory accepts and rejects read-only plus network", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "opentag-runtime-test-policy-"));
     directories.push(cwd);
@@ -80,10 +113,9 @@ describe("AgentRuntimeAvailabilityTester", () => {
     const factory = scriptedFactory({
       prompt: async (_request, sink) => {
         await sink({
-          type: "tool_started",
+          type: "interaction_requested",
           runId: "run-1",
-          toolCallId: "tool-1",
-          name: "shell",
+          request: { requestId: "interaction-1", kind: "approval", title: "Approve" },
         });
         return new Promise(() => undefined);
       },
@@ -200,6 +232,61 @@ describe("AgentRuntimeAvailabilityTester", () => {
     });
   });
 
+  it("maps an AbortError and every terminal run shape without leaking provider output", async () => {
+    const abortFactory = scriptedFactory({
+      prompt: async () => {
+        const error = new Error("transport aborted");
+        error.name = "AbortError";
+        throw error;
+      },
+    });
+    const tester = new AgentRuntimeAvailabilityTester({ factories: new Map([["codex", abortFactory]]) });
+    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toMatchObject({
+      status: "failed",
+      code: "timeout",
+    });
+
+    for (const [run, expectedCode] of [
+      [
+        { runId: "run-1", status: "completed", error: { code: "provider_start_failed" }, output: [] },
+        "provider_start_failed",
+      ],
+      [{ runId: "run-1", status: "failed", output: [] }, "provider_failed"],
+      [{ runId: "run-1", status: "completed", output: [{ type: "text", text: "wrong sentinel" }] }, "provider_failed"],
+    ] as const) {
+      const factory = scriptedFactory({ prompt: async () => run as AgentRunResult });
+      const current = new AgentRuntimeAvailabilityTester({ factories: new Map([["codex", factory]]) });
+      await expect(current.run(testRequest("codex"), new AbortController().signal)).resolves.toMatchObject({
+        status: "failed",
+        code: expectedCode,
+      });
+    }
+  });
+
+  it("passes model and reasoning options through the request and handles interaction events", async () => {
+    const factory = scriptedFactory({
+      createRequest: (request) => {
+        expect(request.configuration).toEqual({ model: "test-model", reasoningEffort: "low" });
+      },
+      prompt: async (_request, sink) => {
+        await sink({
+          type: "tool_started",
+          runId: "run-1",
+          toolCallId: "tool-1",
+          name: "shell",
+        });
+        return completed("ignored");
+      },
+    });
+    const tester = new AgentRuntimeAvailabilityTester({ factories: new Map([["codex", factory]]) });
+    await expect(
+      tester.run(
+        { ...testRequest("codex"), model: "test-model", reasoningEffort: "low" },
+        new AbortController().signal,
+      ),
+    ).resolves.toMatchObject({ status: "failed", code: "interaction_or_tool" });
+  });
+
   it("maps AgentRuntimeError create failures to provider_start_failed", async () => {
     for (const code of ["create_failed", "configuration_invalid"] as const) {
       const factory = scriptedFactory({
@@ -217,6 +304,19 @@ describe("AgentRuntimeAvailabilityTester", () => {
         code: "provider_start_failed",
       });
     }
+  });
+
+  it("classifies an untyped create failure as a provider start failure", async () => {
+    const factory = scriptedFactory({
+      create: async () => {
+        throw new Error("spawn failed");
+      },
+    });
+    const tester = new AgentRuntimeAvailabilityTester({ factories: new Map([["codex", factory]]) });
+    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toMatchObject({
+      status: "failed",
+      code: "provider_start_failed",
+    });
   });
 
   it("fails start failures without leaking diagnostics and does not resume a Session binding", async () => {
@@ -281,6 +381,7 @@ function completed(text: string): AgentRunResult {
 
 function scriptedFactory(options: {
   create?: (request: CreateAgentRuntimeRequest) => Promise<AgentRuntime>;
+  createRequest?: (request: CreateAgentRuntimeRequest) => void;
   prompt?: (request: Parameters<AgentRuntime["prompt"]>[0], sink: AgentRuntimeEventSink) => Promise<AgentRunResult>;
 }) {
   const closed = { current: false };
@@ -317,6 +418,7 @@ function scriptedFactory(options: {
       created.current = true;
       policy.current = request.policy;
       sink = request.eventSink;
+      options.createRequest?.(request);
       if (options.create) return options.create(request);
       return runtime;
     },

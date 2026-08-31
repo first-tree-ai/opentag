@@ -243,8 +243,9 @@ describe("OnboardingV2Page", () => {
     await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
-    // The messaging CLI is not checked here: no provider has been chosen yet.
-    expect(screen.queryByText("Lark CLI is installed")).toBeNull();
+    // The messaging CLI is not a computer-step row: no provider has been chosen yet, and a
+    // missing one is named later as a sentence on the messaging step, not a third check line.
+    expect(screen.queryByText(/lark-cli/i)).toBeNull();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 

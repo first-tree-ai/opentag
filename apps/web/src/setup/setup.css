@@ -61,14 +61,14 @@
  */
 .ots-command__body {
   position: relative;
-  background: #0b101d;
-  border-color: var(--color-kumo-hairline);
+  background: var(--dark);
+  border-color: var(--border);
   transition: opacity 160ms ease;
 }
 
 .ots-command__code {
   margin: 0;
-  color: #e6e9e0;
+  color: var(--on-dark);
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "PingFang SC", monospace;
   font-size: 13px;
   line-height: 1.55;
@@ -111,7 +111,7 @@
   background: transparent;
 
   /* The same value the command itself is set in, so the control is as legible as what it copies. */
-  color: #e6e9e0;
+  color: var(--on-dark);
 }
 
 .ots-command__copy svg {
@@ -120,12 +120,12 @@
 }
 
 .ots-command__copy:hover:not(:disabled) {
-  background: rgb(230 233 224 / 14%);
-  color: #fff;
+  background: color-mix(in srgb, var(--on-dark) 14%, transparent);
+  color: var(--on-dark);
 }
 
 .ots-command__copy:active:not(:disabled) {
-  background: rgb(230 233 224 / 22%);
+  background: color-mix(in srgb, var(--on-dark) 22%, transparent);
 }
 
 /* The block's shape while its command is still being issued: same box, nothing legible in it. */
@@ -148,16 +148,16 @@
 .ots-command__expired {
   position: absolute;
   inset: 0;
-  background: rgb(11 16 29 / 78%);
-  color: #e6e9e0;
+  background: color-mix(in srgb, var(--dark) 78%, transparent);
+  color: var(--on-dark);
 }
 
 .ots-command__expired button {
-  color: #cfe3a6;
+  color: var(--brand-100);
 }
 
 .ots-command__expired button:hover {
-  color: #e8f5cd;
+  color: var(--on-dark);
 }
 
 /* Measurements ----------------------------------------------------------- */

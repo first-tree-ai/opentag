@@ -7,8 +7,9 @@ import type {
 import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import { ComputerSetup } from "../features/agents/computer-setup.js";
+import { ComputerConnect } from "../features/computer-connect/computer-connect.js";
 import { compareText } from "../i18n/format.js";
+import * as m from "../paraglide/messages.js";
 import {
   Banner,
   Button,
@@ -524,16 +525,26 @@ function RuntimeRouteSection({
 
       {facts.computers.length === 0 ? (
         <div className="grid gap-4">
-          <ComputerSetup
-            preview={preview}
-            onConnected={(computer) =>
-              onConnected({
-                id: computer.computerId,
-                displayName: computer.displayName,
-                connectionStatus: computer.connectionStatus,
-              })
-            }
-          />
+          <div className="grid gap-1">
+            <Text as="h4" variant="heading">
+              {m.computer_connect_agent_title()}
+            </Text>
+            <Text as="p" variant="secondary">
+              {m.computer_connect_agent_description()}
+            </Text>
+          </div>
+          {preview ? null : (
+            <ComputerConnect
+              intent={{ mode: "create" }}
+              onConnected={(computer) =>
+                onConnected({
+                  id: computer.computerId,
+                  displayName: computer.displayName,
+                  connectionStatus: computer.connectionStatus,
+                })
+              }
+            />
+          )}
         </div>
       ) : displayedComputer ? (
         <>
@@ -628,16 +639,26 @@ function RuntimeRouteSection({
               </div>
               {connectingComputer ? (
                 <div className="grid gap-4" id="new-agent-computer-setup">
-                  <ComputerSetup
-                    preview={preview}
-                    onConnected={(computer) =>
-                      onConnected({
-                        id: computer.computerId,
-                        displayName: computer.displayName,
-                        connectionStatus: computer.connectionStatus,
-                      })
-                    }
-                  />
+                  <div className="grid gap-1">
+                    <Text as="h4" variant="heading">
+                      {m.computer_connect_another_title()}
+                    </Text>
+                    <Text as="p" variant="secondary">
+                      {m.computer_connect_another_description()}
+                    </Text>
+                  </div>
+                  {preview ? null : (
+                    <ComputerConnect
+                      intent={{ mode: "create" }}
+                      onConnected={(computer) =>
+                        onConnected({
+                          id: computer.computerId,
+                          displayName: computer.displayName,
+                          connectionStatus: computer.connectionStatus,
+                        })
+                      }
+                    />
+                  )}
                 </div>
               ) : null}
             </div>

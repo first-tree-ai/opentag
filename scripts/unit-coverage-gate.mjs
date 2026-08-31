@@ -44,6 +44,31 @@ function isExecutableSourceLine(value) {
 }
 
 /** Extract added lines from a unified diff, keyed by their post-change repository path. */
+function parseDiffFileHeader(line) {
+  if (!line.startsWith("+++ b/") && line !== "+++ /dev/null") return null;
+  const path = line.slice(4);
+  return path === "/dev/null" ? undefined : path.slice(0, 2) === "b/" ? path.slice(2) : path;
+}
+
+function parseDiffHunkStart(line) {
+  if (!line.startsWith("@@")) return null;
+  const match = line.match(/^@@[^+]*\+(\d+)(?:,(\d+))?/);
+  if (!match) throw new Error(`Unable to parse diff hunk: ${line}`);
+  return Number(match[1]);
+}
+
+function consumeDiffContent({ changed, currentFile, line, nextLine }) {
+  if (!currentFile || nextLine === undefined || line.startsWith("\\")) return nextLine;
+  if (line.startsWith("+")) {
+    const normalizedFile = normalizePath(currentFile);
+    const lines = changed.get(normalizedFile) ?? [];
+    lines.push({ content: line.slice(1), line: nextLine });
+    changed.set(normalizedFile, lines);
+    return nextLine + 1;
+  }
+  return line.startsWith("-") ? nextLine : nextLine + 1;
+}
+
 export function extractChangedLines(diffText) {
   const changed = new Map();
   let currentFile;
@@ -52,28 +77,16 @@ export function extractChangedLines(diffText) {
   for (const rawLine of String(diffText ?? "").split("\n")) {
     const line = rawLine.replace(/\r$/, "");
     if (line.startsWith("+++ b/") || line === "+++ /dev/null") {
-      const path = line.slice(4);
-      currentFile = path === "/dev/null" ? undefined : path.startsWith("b/") ? path.slice(2) : path;
+      currentFile = parseDiffFileHeader(line);
       nextLine = undefined;
       continue;
     }
-    if (line.startsWith("@@")) {
-      const match = line.match(/^@@[^+]*\+(\d+)(?:,(\d+))?/);
-      if (!match) throw new Error(`Unable to parse diff hunk: ${line}`);
-      nextLine = Number(match[1]);
+    const hunkStart = parseDiffHunkStart(line);
+    if (hunkStart !== null) {
+      nextLine = hunkStart;
       continue;
     }
-    if (!currentFile || nextLine === undefined || line.startsWith("\\")) continue;
-    if (line.startsWith("+")) {
-      if (!line.startsWith("+++")) {
-        const lines = changed.get(normalizePath(currentFile)) ?? [];
-        lines.push({ content: line.slice(1), line: nextLine });
-        changed.set(normalizePath(currentFile), lines);
-        nextLine += 1;
-      }
-      continue;
-    }
-    if (!line.startsWith("-")) nextLine += 1;
+    nextLine = consumeDiffContent({ changed, currentFile, line, nextLine });
   }
 
   return changed;
@@ -101,6 +114,25 @@ export function buildLineHitsByFile(coverage, repositoryRoot) {
   return lineHitsByFile;
 }
 
+function evaluateChangedFile({ file, lines, lineHits }) {
+  if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
+  const uncovered = [];
+  let covered = 0;
+  let total = 0;
+  for (const { content, line } of lines) {
+    if (!isExecutableSourceLine(content)) continue;
+    total += 1;
+    if (!lineHits?.has(line)) {
+      uncovered.push(`${file}:${line} (missing coverage entry)`);
+    } else if (lineHits.get(line) > 0) {
+      covered += 1;
+    } else {
+      uncovered.push(`${file}:${line}`);
+    }
+  }
+  return { covered, total, uncovered };
+}
+
 export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshold = 80 }) {
   if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
     throw new Error(`Patch coverage threshold must be between 0 and 100, received ${threshold}`);
@@ -113,19 +145,10 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   let total = 0;
 
   for (const [file, lines] of changedLines) {
-    if (!isSupportedSourcePath(file)) continue;
-    const lineHits = lineHitsByFile.get(file);
-    for (const { content, line } of lines) {
-      if (!isExecutableSourceLine(content)) continue;
-      total += 1;
-      if (!lineHits?.has(line)) {
-        uncovered.push(`${file}:${line} (missing coverage entry)`);
-      } else if (lineHits.get(line) > 0) {
-        covered += 1;
-      } else {
-        uncovered.push(`${file}:${line}`);
-      }
-    }
+    const result = evaluateChangedFile({ file, lineHits: lineHitsByFile.get(file), lines });
+    covered += result.covered;
+    total += result.total;
+    uncovered.push(...result.uncovered);
   }
 
   if (total === 0) {

@@ -9,7 +9,7 @@
 import type { AgentAdminConfig, FeishuSetupAttempt, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
 import { OnboardingV2Page } from "./page.js";
 
 const NOW = "2026-08-29T00:00:00.000Z";
@@ -214,6 +214,99 @@ describe("the onboarding flow against the Server", () => {
     expect(cancel).toHaveBeenCalledWith(chosen === "lark" ? SECOND_ATTEMPT_ID : ATTEMPT_ID);
     expect(create).toHaveBeenLastCalledWith(AGENT_ID, "create", other);
     expect(screen.getByRole("img", { name: `Scan this QR code in ${otherLabel}` })).toBeTruthy();
+  });
+
+  /*
+   * A switch that cannot release its code is not a switch: the Server reuses an attempt still
+   * awaiting a scan, so minting after a failed cancel puts the same code back on screen under the
+   * other brand's name. It says so instead.
+   */
+  it("reports a switch that could not release the code it was leaving", async () => {
+    computersReturning([], [computer()]);
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    const create = vi
+      .spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockImplementation(async (_agentId, _intent, brand) => attempt({ brand: brand ?? "feishu" }));
+    vi.spyOn(browserApi, "cancelFeishuSetupAttempt").mockRejectedValue(new ApiError(403, "Request failed"));
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockImplementation(async (id) => attempt({ id }));
+
+    render(<OnboardingV2Page />);
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/^Feishu/);
+    await settle();
+
+    const chosen = create.mock.calls[0]?.[2];
+    const other = chosen === "feishu" ? "lark" : "feishu";
+    press(`Use ${other === "lark" ? "Lark" : "Feishu"} instead`);
+    await settle();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("That didn't work. Try again to get a new code.")).toBeTruthy();
+  });
+
+  /*
+   * The replacement code has to be watched. A poll that was already in flight when the reader
+   * switched resolves after the new one is installed, and retiring itself through a shared handle
+   * would stop the poll watching the code now on screen — the reader scans it and the page waits
+   * forever, with nothing left to re-arm.
+   */
+  it("keeps watching the new code when the old code's poll resolves late", async () => {
+    computersReturning([], [computer()]);
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    const create = vi
+      .spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockImplementation(async (_agentId, _intent, brand) =>
+        attempt({ id: brand === "lark" ? SECOND_ATTEMPT_ID : ATTEMPT_ID, brand: brand ?? "feishu" }),
+      );
+    vi.spyOn(browserApi, "cancelFeishuSetupAttempt").mockImplementation(async (id) =>
+      attempt({ id, state: "canceled", qrUrl: null }),
+    );
+
+    let releaseStale: (() => void) | undefined;
+    let supersededId: string | undefined;
+    let scanned = false;
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockImplementation(async (id) => {
+      if (id === supersededId) {
+        // Held across the switch: this is the response that used to clear the replacement's timer.
+        await new Promise<void>((resolve) => {
+          releaseStale = resolve;
+        });
+        return attempt({ id });
+      }
+      return attempt(scanned ? { id, state: "succeeded", completedAt: NOW } : { id });
+    });
+
+    render(<OnboardingV2Page />);
+    await settle();
+    await reachComputerStep();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/^Feishu/);
+    await settle();
+
+    const chosen = create.mock.calls[0]?.[2];
+    if (!chosen) throw new Error("The first connect did not name a brand");
+    const other = chosen === "feishu" ? "lark" : "feishu";
+    supersededId = chosen === "lark" ? SECOND_ATTEMPT_ID : ATTEMPT_ID;
+
+    // The first code's poll fires and its request hangs, still unresolved when the reader switches.
+    await tick(FEISHU_POLL_MS);
+    press(`Use ${other === "lark" ? "Lark" : "Feishu"} instead`);
+    await settle();
+    expect(create).toHaveBeenLastCalledWith(AGENT_ID, "create", other);
+
+    releaseStale?.();
+    await settle();
+
+    // The replacement is scanned. Only a live poll can notice.
+    scanned = true;
+    await tick(FEISHU_POLL_MS * 2);
+    expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
   });
 
   it("gives the agent name field an accessible name despite Kumo's own warning", async () => {

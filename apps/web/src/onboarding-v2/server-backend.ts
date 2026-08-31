@@ -507,14 +507,12 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         const live = () => mounted.current && attempt.current === mine && feishuGeneration.current === mineFeishu;
         queueMicrotask(() => {
           /*
-           * The cancel is awaited rather than fired alongside: `createOrReuse` hands back the
-           * attempt that is still awaiting a scan, so creating before the old one is released
-           * returns the very code the reader asked to leave. Its failure is not fatal — the old
-           * attempt expires on its own — but the create must not race it.
+           * The cancel is awaited rather than fired alongside, and its failure is fatal to the
+           * switch: `createOrReuse` hands back the attempt that is still awaiting a scan, so
+           * creating after a cancel that did not land returns the very code the reader asked to
+           * leave — a switch that silently does nothing. Better to say it failed.
            */
-          const released = superseded
-            ? browserApi.cancelFeishuSetupAttempt(superseded).catch(() => undefined)
-            : Promise.resolve();
+          const released = superseded ? browserApi.cancelFeishuSetupAttempt(superseded) : Promise.resolve();
           void released
             .then(() => (live() ? browserApi.createFeishuSetupAttempt(agent.id, "create", brand) : undefined))
             .then(
@@ -539,29 +537,35 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       });
 
       function pollFeishu(attemptId: string, live: () => boolean) {
-        // The handle is held so `reset()` can end a poll the reader walked away from. Without it a
-        // Start over left the previous attempt running, and its eventual success connected the
-        // messaging app of a flow that no longer existed. A brand switch retires a poll the same
-        // way: the code it watches is one the reader has already left.
+        /*
+         * Each poll clears its own handle, never the shared ref. A request that was already in
+         * flight when the reader switched brand resolves *after* the replacement poll is installed,
+         * and the ref by then names the new interval — so clearing through it would stop watching
+         * the code that is actually on screen, and nothing would ever re-arm it.
+         *
+         * The ref is still held, because `reset()` has no handle of its own: without it a Start
+         * over left the previous attempt running, and its eventual success connected the messaging
+         * app of a flow that no longer existed.
+         */
         window.clearInterval(feishuTimer.current);
-        feishuTimer.current = window.setInterval(() => {
+        const handle = window.setInterval(() => {
           if (!live()) {
-            window.clearInterval(feishuTimer.current);
+            window.clearInterval(handle);
             return;
           }
           void browserApi.feishuSetupAttempt(attemptId).then(
             (current) => {
               if (!live()) {
-                window.clearInterval(feishuTimer.current);
+                window.clearInterval(handle);
                 return;
               }
               if (current.state === "succeeded") {
-                window.clearInterval(feishuTimer.current);
+                window.clearInterval(handle);
                 setMessaging({ kind: "waiting-handoff" });
                 return;
               }
               if (current.state === "failed" || current.state === "expired" || current.state === "canceled") {
-                window.clearInterval(feishuTimer.current);
+                window.clearInterval(handle);
                 setMessaging({ kind: "failed" });
                 setActionError(COPY.errors.feishuAttempt);
                 return;
@@ -571,6 +575,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
             () => undefined,
           );
         }, FEISHU_POLL_MS);
+        feishuTimer.current = handle;
       }
     },
     [agent],

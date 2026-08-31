@@ -214,7 +214,10 @@ export class BrowserApi {
    * ended first so the next create actually mints.
    */
   cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
-    return this.request(`${feishuSetupAttemptPath(attemptId)}/cancel`, FeishuSetupAttemptSchema, { method: "POST" });
+    return this.request(`${feishuSetupAttemptPath(attemptId)}/cancel`, FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {

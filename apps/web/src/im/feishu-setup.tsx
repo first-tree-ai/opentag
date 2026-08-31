@@ -176,12 +176,19 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
       /*
        * Released before the replacement is asked for: the Server hands back an attempt that is
        * still awaiting a scan, so creating first would return the very code the reader is leaving.
+       * A release that fails therefore stops the switch — minting after it would show the same
+       * code again and call it the other brand.
        */
       if (current && ACTIVE_STATES.includes(current.state)) {
+        try {
+          await browserApi.cancelFeishuSetupAttempt(current.id);
+        } catch (cause) {
+          setError({ message: normalizeError(cause, "Unable to switch"), source: "start" });
+          return false;
+        }
         attemptRef.current = undefined;
         setAttempt(undefined);
         lifecycleRef.current += 1;
-        await browserApi.cancelFeishuSetupAttempt(current.id).catch(() => undefined);
       }
       return start(current?.intent ?? "create", brand);
     },
@@ -243,10 +250,18 @@ function FeishuSetupFeedback({
             A code is minted against one brand's domain and cannot be authorized from the other, so
             the reader whose company is on the one we did not guess needs the way out here, beside
             the code that will not work for them.
+
+            Only on a first connect. A re-authorization or a replacement belongs to a binding whose
+            brand is already settled, and the Server returns to that domain whatever is asked for —
+            so the button would cancel a working code and mint the same one again.
           */}
-          <Button onClick={() => void onSwitchBrand(otherFeishuBrand(attempt.brand))} variant="secondary">
-            {SETUP_COPY.messaging.feishuBrandSwitch(messagingProviderLabel("feishu", otherFeishuBrand(attempt.brand)))}
-          </Button>
+          {attempt.intent === "create" ? (
+            <Button onClick={() => void onSwitchBrand(otherFeishuBrand(attempt.brand))} variant="secondary">
+              {SETUP_COPY.messaging.feishuBrandSwitch(
+                messagingProviderLabel("feishu", otherFeishuBrand(attempt.brand)),
+              )}
+            </Button>
+          ) : null}
         </>
       ) : null}
       {RETRYABLE_STATES.includes(attempt.state) ? (

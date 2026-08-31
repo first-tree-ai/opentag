@@ -307,6 +307,58 @@ describe("FeishuSetup", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  /*
+   * A bound team's brand is settled, and the Server returns to the domain its App was created on
+   * whatever a caller asks for. Offering the switch there would cancel a working code and mint an
+   * identical one — an affordance that contradicts what the request can do.
+   */
+  it("offers the brand switch on a first connect and not on a re-authorization", async () => {
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockImplementation(async (_agentId, intent) =>
+      attempt({
+        id: firstAttemptId,
+        intent: intent ?? "create",
+        brand: "lark",
+        state: "awaiting_user",
+        qrUrl: "https://accounts.larksuite.com/setup",
+      }),
+    );
+    const { unmount } = render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(await screen.findByRole("button", { name: "Use Feishu instead" })).toBeTruthy();
+    unmount();
+
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
+    await screen.findByText(/State: awaiting_user/);
+    expect(screen.queryByRole("button", { name: "Use Feishu instead" })).toBeNull();
+  });
+
+  /*
+   * A release that did not land leaves the code the reader asked to leave still awaiting a scan, so
+   * the Server's next create reuses it. Minting after a failed cancel would put the same code back
+   * on screen under the other brand's name; saying so is the only honest option.
+   */
+  it("refuses to switch when the running code cannot be released", async () => {
+    const create = vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
+      attempt({
+        id: firstAttemptId,
+        intent: "create",
+        brand: "lark",
+        state: "awaiting_user",
+        qrUrl: "https://accounts.larksuite.com/setup",
+      }),
+    );
+    vi.spyOn(browserApi, "cancelFeishuSetupAttempt").mockRejectedValue(new ApiError(403, "Request failed"));
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use Feishu instead" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Request failed");
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it("directs an unexplained terminal failure to the Account owner", async () => {
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
       attempt({ id: firstAttemptId, intent: "create", state: "failed" }),

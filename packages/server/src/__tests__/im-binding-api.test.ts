@@ -13,6 +13,7 @@ import {
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
+import type { OpenTagBetterAuth } from "../auth/better-auth.js";
 import {
   accountComputers,
   computers,
@@ -197,6 +198,30 @@ function authService(): UserAuthService {
   };
 }
 
+/**
+ * A Better Auth mount that answers with one signed-in browser session and no renewed cookies.
+ *
+ * The cookie branch is a different request path from the bearer one every other test here takes:
+ * a bearer authenticates as a bearer and skips the origin and double-submit checks entirely, so a
+ * suite that only sends `Authorization` proves nothing about what a browser is actually required
+ * to send.
+ */
+function browserSession() {
+  return {
+    instance: {
+      $context: Promise.resolve({ authCookies: { sessionToken: { name: "opentag.session_token" } } }),
+      api: {
+        getSession: vi.fn().mockResolvedValue({
+          response: { user: { id: userId }, session: { expiresAt: new Date("2030-01-01T00:00:00.000Z") } },
+          headers: new Headers(),
+        }),
+      },
+      handler: vi.fn(),
+    } as unknown as OpenTagBetterAuth,
+    publicUrl: "http://localhost:8000",
+  };
+}
+
 function services() {
   const imBindings = {
     getForAgent: vi.fn().mockResolvedValue(undefined),
@@ -233,6 +258,53 @@ function services() {
 }
 
 describe("ImBinding HTTP API", () => {
+  /*
+   * Cancelling is what a brand switch does before it mints again, and a switch that cannot cancel
+   * silently returns the reader the very code they asked to leave: `createOrReuse` reuses an
+   * attempt that is still awaiting a scan. So the route is pinned from the browser's own transport,
+   * where a mutation has to carry the double-submit token, rather than from a bearer that never
+   * meets that check.
+   */
+  it("refuses a cookie-authenticated cancel without the double-submit token", async () => {
+    const service = services();
+    const betterAuth = browserSession();
+    const app = createApp({
+      authService: {
+        ...authService(),
+        getActiveUserById: vi.fn().mockResolvedValue({
+          user: { id: userId, email: "admin@example.com", displayName: "Admin" },
+          setupCompletedAt: null,
+        }),
+      },
+      betterAuth,
+      browserAuth: { publicOrigin: "http://localhost:8000", secureCookies: false, sessionTtlSeconds: 3_600 },
+      imBindingService: service.imBindings as unknown as ImBindingService,
+      feishuSetupService: service.feishu as unknown as FeishuSetupService,
+    });
+    apps.push(app);
+    const url = `${feishuSetupAttemptPath(attemptId)}/cancel`;
+
+    const rejected = await app.inject({
+      method: "POST",
+      url,
+      headers: { cookie: "opentag.session_token=session; opentag_csrf=csrf" },
+    });
+    expect(rejected.statusCode).toBe(403);
+    expect(service.feishu.cancel).not.toHaveBeenCalled();
+
+    const accepted = await app.inject({
+      method: "POST",
+      url,
+      headers: {
+        cookie: "opentag.session_token=session; opentag_csrf=csrf",
+        origin: "http://localhost:8000",
+        "x-opentag-csrf": "csrf",
+      },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(service.feishu.cancel).toHaveBeenCalledTimes(1);
+  });
+
   it("serves Feishu setup, generic diagnostics, and disable without a Slack configuration route", async () => {
     const service = services();
     service.imBindings.getConfigForAgent.mockResolvedValueOnce(undefined);

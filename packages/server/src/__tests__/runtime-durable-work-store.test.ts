@@ -63,6 +63,16 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     expect(await unit.database.select().from(runtimeDurableWork)).toHaveLength(1);
   });
 
+  it("suppresses concurrent duplicate writes through the persisted unique receipt", async () => {
+    const record = sessionRecord();
+    const first = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
+    const second = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
+    await expect(
+      Promise.all([first.write(workspaceComputerId, record), second.write(workspaceComputerId, record)]),
+    ).resolves.toEqual([undefined, undefined]);
+    expect(await unit.database.select().from(runtimeDurableWork)).toHaveLength(1);
+  });
+
   it("retains active work while pruning old terminal receipts and enforcing the terminal cap", async () => {
     let now = 10_000;
     const store = new PostgresRuntimeDurableWorkStore(unit.database, {

@@ -233,8 +233,7 @@ describe("ImDeliveryWorker database workflow", () => {
       await registry.register(
         {
           computerId: fixture.computerId,
-          workspaceComputerId: fixture.computerId,
-          workspaceId: fixture.workspaceId,
+          installationId: randomUUID(),
           instanceId: fixture.instanceId,
           lastHeartbeatAt: Date.now(),
           socket: { close: vi.fn(), terminate: vi.fn() } as never,

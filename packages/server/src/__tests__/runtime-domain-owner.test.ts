@@ -178,8 +178,7 @@ describe("RuntimeDomainOwner", () => {
     await fixture.registry.register(
       {
         computerId: fixture.computerId,
-        workspaceComputerId: fixture.computerId,
-        workspaceId: fixture.context.workspaceId,
+        installationId: fixture.context.installationId,
         instanceId: fixture.instanceId,
         lastHeartbeatAt: 1,
         socket: failingSocket,

@@ -14,7 +14,7 @@ import { SessionCliProofService, SessionService } from "../../services/sessions/
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
-const THROUGH_0030_COUNT = 31;
+const THROUGH_PREVIOUS_COUNT = 32;
 
 const ACCOUNT_A = "00000000-0000-4000-8000-0000000000a1";
 const ACCOUNT_B = "00000000-0000-4000-8000-0000000000a2";
@@ -641,11 +641,11 @@ describe("workspace ownership contract migration", () => {
     }
   });
 
-  it("migrates the immediately previous 0030 level with populated active and terminal records", async () => {
+  it("migrates the immediately previous 0031 level with populated active and terminal records", async () => {
     const journal = await readJournal();
-    const through0030 = await truncatedMigrations(30);
+    const through0031 = await truncatedMigrations(31);
     try {
-      await migrateDatabase(databaseUrl, through0030);
+      await migrateDatabase(databaseUrl, through0031);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
         await populateActive0030(sql);
@@ -657,7 +657,7 @@ describe("workspace ownership contract migration", () => {
         await sql.end();
       }
     } finally {
-      await rm(through0030, { force: true, recursive: true });
+      await rm(through0031, { force: true, recursive: true });
     }
   });
 
@@ -705,9 +705,9 @@ describe("workspace ownership contract migration", () => {
   });
 
   it.each(FAIL_CASES)("fail-closes on $name and leaves the database exactly at 0030", async ({ error, inject }) => {
-    const through0030 = await truncatedMigrations(30);
+    const through0031 = await truncatedMigrations(31);
     try {
-      await migrateDatabase(databaseUrl, through0030);
+      await migrateDatabase(databaseUrl, through0031);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
         await populateActive0030(sql);
@@ -730,20 +730,20 @@ describe("workspace ownership contract migration", () => {
                 and column_name in ('workspace_id', 'workspace_computer_id')
             ) as legacy_columns
         `;
-        expect(state).toEqual({ migrations: THROUGH_0030_COUNT, legacy_tables: 6, legacy_columns: 2 });
+        expect(state).toEqual({ migrations: THROUGH_PREVIOUS_COUNT, legacy_tables: 6, legacy_columns: 2 });
       } finally {
         await sql.end();
       }
     } finally {
-      await rm(through0030, { force: true, recursive: true });
+      await rm(through0031, { force: true, recursive: true });
     }
   });
 
   it("rolls back a failed contract migration and retries cleanly after the damage is removed", async () => {
     const journal = await readJournal();
-    const through0030 = await truncatedMigrations(30);
+    const through0031 = await truncatedMigrations(31);
     try {
-      await migrateDatabase(databaseUrl, through0030);
+      await migrateDatabase(databaseUrl, through0031);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
         await populateActive0030(sql);
@@ -756,7 +756,7 @@ describe("workspace ownership contract migration", () => {
             (select count(*)::int from drizzle.__drizzle_migrations) as migrations,
             to_regclass('public.account_computers')::text as computers
         `;
-        expect(rolledBack).toEqual({ migrations: THROUGH_0030_COUNT, computers: "account_computers" });
+        expect(rolledBack).toEqual({ migrations: THROUGH_PREVIOUS_COUNT, computers: "account_computers" });
 
         // The failing fixture row is removed by the test, then the checked-in runner converges unaided.
         await sql`delete from workspace_computer_credentials where id = ${CRED_REVOKED}`;
@@ -776,14 +776,14 @@ describe("workspace ownership contract migration", () => {
         await sql.end();
       }
     } finally {
-      await rm(through0030, { force: true, recursive: true });
+      await rm(through0031, { force: true, recursive: true });
     }
   });
 
   it("serves startup verification and canonical reads and writes after a populated upgrade", async () => {
-    const through0030 = await truncatedMigrations(30);
+    const through0031 = await truncatedMigrations(31);
     try {
-      await migrateDatabase(databaseUrl, through0030);
+      await migrateDatabase(databaseUrl, through0031);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
         await populateActive0030(sql);
@@ -876,7 +876,7 @@ describe("workspace ownership contract migration", () => {
         await client.sql.end();
       }
     } finally {
-      await rm(through0030, { force: true, recursive: true });
+      await rm(through0031, { force: true, recursive: true });
     }
   });
 });

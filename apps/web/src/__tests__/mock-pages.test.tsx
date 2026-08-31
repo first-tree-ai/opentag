@@ -39,12 +39,22 @@ describe("capability entry pages", () => {
     expect(screen.getByText("GitHub")).toBeTruthy();
     expect(screen.getByText("Google Drive")).toBeTruthy();
     expect(screen.getAllByText("Demo")).toHaveLength(6);
-    expect(screen.getByRole("region", { name: "Integrations table" }).tabIndex).toBe(0);
+    expect(screen.getByText("Scroll horizontally to see category and status.")).toBeTruthy();
+    const scrollRegion = screen.getByRole("region", { name: "Integrations table" });
+    expect(scrollRegion.tabIndex).toBe(0);
+    expect(scrollRegion.getAttribute("aria-describedby")).toBe("integrations-scroll-hint");
+    const table = screen.getByRole("table", { name: "Demo Integrations" });
+    expect(table.closest('[data-ui="integrations-card"]')).toBeTruthy();
     expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
       "Name",
       "Category",
       "Status",
     ]);
+    expect(
+      screen.getByRole("cell", { name: "GitHub. Read repositories, issues, pull requests, and checks." }),
+    ).toBeTruthy();
+    expect(screen.getByText("GitHub").tagName).toBe("STRONG");
+    expect(table.querySelector("tbody tr")?.className).toContain("even:bg-kumo-tint");
     expect(screen.queryByText("Connected")).toBeNull();
     expect(screen.queryByText("Agents with access")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();

@@ -9,6 +9,41 @@ const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const taskSessionId = "11111111-1111-4111-8111-111111111111";
+const secondComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
+const creationIntentKey = `opentag.agent-creation.intent:${userId}`;
+
+/** Two Computers an Agent could run on, so a reader has something to choose between. */
+const twoReadyComputers = [
+  {
+    id: computerId,
+    displayName: "Ada's Mac",
+    platform: "darwin",
+    connectionStatus: "online",
+    providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+    connectedAt: "2026-08-20T00:00:00.000Z",
+    lastSeenAt: "2026-08-20T00:00:00.000Z",
+  },
+  {
+    id: secondComputerId,
+    displayName: "Zulu Tower",
+    platform: "linux",
+    connectionStatus: "online",
+    providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:01.000Z" }],
+    connectedAt: "2026-08-20T00:00:01.000Z",
+    lastSeenAt: "2026-08-20T00:00:01.000Z",
+  },
+];
+
+/** Writes one version-3 creation intent, the shape a previous visit would have left behind. */
+function storeCreationIntent(record: { creationIntentId: string; request: Record<string, unknown> }) {
+  const stored = { version: 3, accountId: userId, ...record };
+  window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 3, accountId: userId, records: [stored] }));
+  return stored;
+}
+
+function agentCreationPosts() {
+  return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
+}
 
 const agentSummary = {
   id: agentId,
@@ -922,6 +957,146 @@ describe("OpenTag Web App Shell", () => {
     ).toBe("true");
     expect(within(dialog).getByRole("heading", { name: "Where it runs" })).toBeTruthy();
     expect(within(dialog).getByText("Ready to run")).toBeTruthy();
+  });
+
+  it("binds the Agent to the Computer the reader selected, not the default one", async () => {
+    installApi({ computers: twoReadyComputers });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+
+    // The Account has both; the form defaults to one and the reader picks the other. What the
+    // request binds to has to be the choice, not the default.
+    expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: /Zulu Tower/ }));
+    fireEvent.change(within(dialog).getByLabelText("Display name"), { target: { value: "Research Assistant" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create Agent" }));
+
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST"),
+      ).toHaveLength(1),
+    );
+    const created = vi
+      .mocked(fetch)
+      .mock.calls.find(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
+    expect(JSON.parse(String(created?.[1]?.body))).toMatchObject({ computerId: secondComputerId });
+  });
+
+  it("lists every Computer the Account has and still offers another", async () => {
+    installApi({
+      computers: [
+        ...twoReadyComputers,
+        {
+          id: "a5fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          displayName: "Ada's Retired Mac",
+          platform: "darwin",
+          connectionStatus: "offline",
+          connectedAt: "2026-08-20T00:00:00.000Z",
+          lastSeenAt: "2026-08-20T00:00:00.000Z",
+        },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    const listed = await screen.findByRole("region", { name: "Enrolled Computers" });
+    // An Account may hold several, so the page shows all of them and adding one stays available
+    // rather than disappearing once the first exists.
+    expect(within(listed).getAllByRole("listitem")).toHaveLength(3);
+    for (const name of ["Ada's Mac", "Zulu Tower", "Ada's Retired Mac"]) {
+      expect(within(listed).getByText(name)).toBeTruthy();
+    }
+    expect(screen.getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+  });
+
+  it("does not resume a stored creation intent onto a Computer the reader moved away from", async () => {
+    // The reader's own selection is the divergence: the intent names a machine that cannot run an
+    // Agent, so nothing is sent, the reader picks another — and then the abandoned machine comes
+    // back. "Is that route ready anywhere" is true again at that moment, and it is the wrong
+    // question, because the reader is looking at a different Computer.
+    let abandonedIsReady = false;
+    storeCreationIntent({
+      creationIntentId: "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e77",
+      request: { name: "abandoned-agent", displayName: "Abandoned Agent", runtimeProvider: "codex", computerId },
+    });
+    installApi({
+      computers: () => [
+        {
+          ...(twoReadyComputers[0] as Record<string, unknown>),
+          connectionStatus: abandonedIsReady ? "online" : "offline",
+        },
+        twoReadyComputers[1] as Record<string, unknown>,
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(agentCreationPosts()).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change Computer" }));
+    fireEvent.click(screen.getByRole("button", { name: /Zulu Tower/ }));
+    expect(screen.getByText("Zulu Tower")).toBeTruthy();
+
+    abandonedIsReady = true;
+    fireEvent(window, new Event("focus"));
+    // Wait for the refetch to actually land, so the assertion below is about the gate and not about
+    // a Computer list that never changed. The picker is where the machine's own state is legible.
+    fireEvent.click(screen.getByRole("button", { name: "Change Computer" }));
+    await waitFor(() => {
+      const option = screen.getByRole("button", { name: /Ada's Mac/ });
+      expect(option.textContent).toContain("Online");
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(agentCreationPosts()).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Zulu Tower/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("does not resume a stored creation intent onto a Runtime the form is not offering", async () => {
+    storeCreationIntent({
+      creationIntentId: "0a2f7d19-8b44-4d2e-8c31-5f6a7b8c9d01",
+      request: { name: "claude-agent", displayName: "Claude Agent", runtimeProvider: "claude-code", computerId },
+    });
+    // The Computer matches; only the Runtime makes this a different route from the one on screen.
+    installApi({ computerProviderReadiness: [{ provider: "codex", status: "ready", observedAt: null }] });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("Codex")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(agentCreationPosts()).toHaveLength(0);
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Claude Agent");
+  });
+
+  it("resumes a stored creation intent that names the selected route", async () => {
+    // The control: the gate has to refuse an unselected route without disabling resume, which is
+    // the whole reason a creation intent is persisted.
+    const record = storeCreationIntent({
+      creationIntentId: "4d3c2b1a-9e8f-4a7b-8c6d-5e4f3a2b1c00",
+      request: { name: "resumed-agent", displayName: "Resumed Agent", runtimeProvider: "codex", computerId },
+    });
+    installApi();
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+
+    await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
+    expect(JSON.parse(String(agentCreationPosts()[0]?.[1]?.body))).toMatchObject({
+      computerId,
+      creationIntentId: record.creationIntentId,
+      runtimeProvider: "codex",
+    });
   });
 
   it("refreshes and selects a newly connected Computer in New Agent", async () => {

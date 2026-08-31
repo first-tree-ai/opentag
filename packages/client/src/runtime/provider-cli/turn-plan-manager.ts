@@ -20,13 +20,13 @@ import { writeProviderCliTurnLauncher } from "./turn-launcher.js";
 import {
   assertIdentity,
   assertPlanWithinRoot,
+  assertProviderCliTurnPlanConfigDir,
   deriveProviderCliHomeNamespace,
   deriveProviderCliSessionKey,
   isProviderCliSessionKey,
   managedArtifactDigest,
   type ProviderCliTurnPlan,
   ProviderCliTurnPlanError,
-  providerCliCommandForProvider,
   providerCliPlanHomeDir,
   providerCliPlanSessionDir,
   providerCliTurnLauncherPath,
@@ -51,6 +51,8 @@ export interface ProviderCliTurnPlanPrepareInput {
   readonly provider: ProviderCliProvider;
   readonly sessionId: string;
   readonly runId: string;
+  /** Absolute Slack config leaf supplied by the trusted caller; Feishu must omit this. */
+  readonly configDir?: string;
 }
 
 export interface ProviderCliPreparedTurnPlan {
@@ -109,6 +111,7 @@ export class ProviderCliTurnPlanManager {
   async prepare(input: ProviderCliTurnPlanPrepareInput): Promise<ProviderCliPreparedTurnPlan> {
     const sessionId = assertIdentity("sessionId", input.sessionId);
     const runId = assertIdentity("runId", input.runId);
+    assertProviderCliTurnPlanConfigDir(input.provider, input.configDir);
     const sessionKey = deriveProviderCliSessionKey(sessionId);
     const sessionDir = providerCliPlanSessionDir(this.#layout, this.#homeNamespace, sessionKey);
     assertPlanWithinRoot(this.#layout.plans, sessionDir);
@@ -194,7 +197,7 @@ export class ProviderCliTurnPlanManager {
   ): Promise<ProviderCliPreparedTurnPlan> {
     const existing = await this.#readExistingPlan(sessionDir);
     if (existing) return this.#reuseExistingPlan(input, sessionId, runId, sessionDir, existing);
-    return this.#publishNewPlan(input.provider, sessionId, runId, sessionDir);
+    return this.#publishNewPlan(input, sessionId, runId, sessionDir);
   }
 
   async #reuseExistingPlan(
@@ -219,20 +222,20 @@ export class ProviderCliTurnPlanManager {
   }
 
   async #publishNewPlan(
-    provider: ProviderCliProvider,
+    input: ProviderCliTurnPlanPrepareInput,
     sessionId: string,
     runId: string,
     sessionDir: string,
   ): Promise<ProviderCliPreparedTurnPlan> {
-    const record = await this.#readSelection(provider);
-    const plan = await this.#planFromSelection(provider, sessionId, runId, record);
+    const record = await this.#readSelection(input.provider);
+    const plan = await this.#planFromSelection(input, sessionId, runId, record);
     await this.#writeLauncher(sessionDir, plan);
     const published = await publishProviderCliTurnPlanExclusive(providerCliTurnPlanPath(sessionDir), plan);
     if (published === "created") return this.#prepared(plan, sessionDir);
 
     const raced = await this.#readExistingPlan(sessionDir);
     if (!raced) throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan publish raced");
-    return this.#reuseExistingPlan({ provider, sessionId, runId }, sessionId, runId, sessionDir, raced);
+    return this.#reuseExistingPlan(input, sessionId, runId, sessionDir, raced);
   }
 
   async #readSelection(provider: ProviderCliProvider): Promise<ProviderCliSelectionRecord> {
@@ -255,7 +258,7 @@ export class ProviderCliTurnPlanManager {
   }
 
   async #planFromSelection(
-    provider: ProviderCliProvider,
+    input: ProviderCliTurnPlanPrepareInput,
     sessionId: string,
     runId: string,
     record: ProviderCliSelectionRecord,
@@ -273,11 +276,8 @@ export class ProviderCliTurnPlanManager {
     if (fingerprint !== selection.fingerprint) {
       throw new ProviderCliTurnPlanError("artifact_drifted", "Provider CLI selection fingerprint drifted");
     }
-    const command = providerCliCommandForProvider(provider);
     const shared = {
       schemaVersion: 1 as const,
-      provider,
-      command,
       selectionVersion: selection.version,
       selectionGeneration: record.generation,
       targetPath: identity.path,
@@ -286,10 +286,41 @@ export class ProviderCliTurnPlanManager {
       sessionId,
       runId,
     };
-    if (selection.kind === "managed") {
-      return { ...shared, selectionKind: "managed", artifactId: selection.artifactId };
+    if (input.provider === "slack") {
+      const configDir = assertProviderCliTurnPlanConfigDir("slack", input.configDir);
+      if (selection.kind === "managed") {
+        return {
+          ...shared,
+          provider: "slack" as const,
+          command: "slack" as const,
+          selectionKind: "managed" as const,
+          artifactId: selection.artifactId,
+          configDir,
+        };
+      }
+      return {
+        ...shared,
+        provider: "slack" as const,
+        command: "slack" as const,
+        selectionKind: "external" as const,
+        configDir,
+      };
     }
-    return { ...shared, selectionKind: "external" };
+    if (selection.kind === "managed") {
+      return {
+        ...shared,
+        provider: "feishu" as const,
+        command: "lark-cli" as const,
+        selectionKind: "managed" as const,
+        artifactId: selection.artifactId,
+      };
+    }
+    return {
+      ...shared,
+      provider: "feishu" as const,
+      command: "lark-cli" as const,
+      selectionKind: "external" as const,
+    };
   }
 
   async #writeLauncher(sessionDir: string, plan: ProviderCliTurnPlan): Promise<void> {

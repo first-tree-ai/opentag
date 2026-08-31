@@ -115,3 +115,10 @@ export function runTurnLauncher(
     child.stdin.end();
   });
 }
+
+export async function makePrivateSlackConfigDir(parent: string, name = "slack-config"): Promise<string> {
+  const directory = join(parent, name);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
+  return realpath(directory);
+}

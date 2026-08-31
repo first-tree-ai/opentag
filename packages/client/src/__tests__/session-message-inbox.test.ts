@@ -647,6 +647,43 @@ describe("SessionMessageInbox", () => {
     expect(input.items[1]?.text).toBe("Report the result");
   });
 
+  it("adds Slack native CLI guidance on the visible collaboration callback path", () => {
+    const slackInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
+      sessionKind: "visible",
+      outboxContext: {
+        provider: "slack",
+        sessionKind: "channel",
+        channelId: "C-visible",
+      },
+    });
+    const slackText = slackInput.items[0]?.text ?? "";
+    expect(slackText).toContain("OPENTAG_PROVIDER_ENV_FILE");
+    expect(slackText).toContain("slack api chat.postMessage --json");
+    expect(slackText).toContain("never key=value pairs");
+    expect(slackText).toContain("Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update");
+    expect(slackText).toContain("`text` (at most 4,000 characters)");
+    expect(slackText).toContain("`markdown_text` (at most 12,000 characters)");
+    expect(slackText).toContain("Thread placement is a Session policy decision");
+    expect(slackText).toContain("at most 1 message per second per channel");
+    expect(slackText).toContain("<@U...>");
+    expect(slackText).toContain("conversations.history and similar reads are rate-limited");
+    expect(slackText).toContain("Never print credentials, tokens, or the environment file");
+    expect(slackText).not.toContain("OPENTAG_LARK_BODY");
+    expect(slackText).not.toMatch(/xox[bpa]-/);
+    expect(Buffer.byteLength(slackText, "utf8")).toBeLessThan(16 * 1024);
+
+    const feishuInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
+      sessionKind: "visible",
+      outboxContext: {
+        provider: "feishu",
+        sessionKind: "channel",
+        chatId: "oc_visible",
+      },
+    });
+    expect(feishuInput.items[0]?.text).toContain("OPENTAG_LARK_BODY");
+    expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
+  });
+
   it("prepares visible Session outbox resources before Provider start and cleans them after the Run", async () => {
     const order: string[] = [];
     const credentials = {

@@ -49,6 +49,11 @@ export interface SessionRuntimeManagerOptions {
   readonly home?: string;
   readonly providerEnvironmentPath: (sessionId: string) => string;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
+  /**
+   * Optional. Visible Sessions may receive the currently active Slack config leaf as one extra
+   * writable root. Internal Sessions and Feishu must return undefined. Leave unset when unused.
+   */
+  readonly slackConfigWritableRoot?: (sessionId: string) => string | undefined;
   readonly workspace: AgentWorkspaceManager;
 }
 
@@ -61,6 +66,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #home: string;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
+  readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -77,6 +83,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#providers = options.providers;
     this.#home = options.home ?? "";
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
+    this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#proofManager =
       options.proofManager ??
       ({
@@ -241,7 +248,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             ? { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) }
             : {}),
         },
-        writableRoots: [managed.cwd],
+        writableRoots: visibleSlackWritableRoots(
+          managed.sessionKind,
+          managed.cwd,
+          managed.binding.sessionId,
+          this.#slackConfigWritableRoot,
+        ),
       },
       policy: provider.policy(managed.snapshot),
       configuration: {
@@ -377,6 +389,18 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   #assertOpen(): void {
     if (this.#closing) throw new Error("The Session Runtime manager is closing");
   }
+}
+
+function visibleSlackWritableRoots(
+  sessionKind: "visible" | "internal",
+  cwd: string,
+  sessionId: string,
+  resolveSlackConfig?: (sessionId: string) => string | undefined,
+): readonly string[] {
+  if (sessionKind !== "visible" || !resolveSlackConfig) return [cwd];
+  const configDir = resolveSlackConfig(sessionId);
+  if (!configDir) return [cwd];
+  return [cwd, configDir];
 }
 
 async function waitForStart(start: Promise<AgentRuntime>, signal?: AbortSignal): Promise<AgentRuntime> {

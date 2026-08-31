@@ -1,15 +1,17 @@
 import { spawn } from "node:child_process";
-import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   executeProviderCliTurnPlan,
+  PROVIDER_CLI_CATALOG,
   ProviderCliTurnPlanError,
   parseProviderCliTurnRunnerArgv,
   runProviderCliTurnRunner,
 } from "../index.js";
 import {
   installTurnTarget,
+  makePrivateSlackConfigDir,
   makeTurnPlanHarness,
   runTurnLauncher,
   writeExternalTurnSelection,
@@ -98,46 +100,166 @@ describe("executeProviderCliTurnPlan", () => {
     expect(calls[0]?.file).not.toBe(replacement);
   });
 
-  it("does not apply catalog managed arguments for an external target", async () => {
+  it("prepends exactly --skip-update --config-dir for managed and external Slack without duplicating catalog args", async () => {
+    const slackEntry = PROVIDER_CLI_CATALOG.find((entry) => entry.provider === "slack");
+    if (!slackEntry) throw new Error("Slack catalog entry is required");
+    const extraCatalog = [{ ...slackEntry, managedArguments: ["--skip-update", "--extra-managed"] }];
+    for (const kind of ["managed", "external"] as const) {
+      const { accountHome, layout, manager } = await trackedHarness();
+      const target = await installTurnTarget(join(accountHome, "bin"), "slack");
+      if (kind === "managed") await writeManagedTurnSelection(layout, "slack", target, "4.7.0");
+      else await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+      const configDir = await makePrivateSlackConfigDir(accountHome);
+      const prepared = await manager.prepare({
+        provider: "slack",
+        sessionId: "s-1",
+        runId: "run-1",
+        configDir,
+      });
+      const calls: { args: readonly string[]; env: NodeJS.ProcessEnv }[] = [];
+      await executeProviderCliTurnPlan({
+        planPath: prepared.planPath,
+        provider: "slack",
+        runId: "run-1",
+        argv: ["api", "chat.postMessage"],
+        env: { PATH: "/definitely-not-used" },
+        catalog: extraCatalog,
+        plansRoot: layout.plans,
+        spawnTarget: async (_file, args, options) => {
+          calls.push({ args, env: options.env });
+          return 0;
+        },
+      });
+      expect(calls[0]?.args).toEqual(["--skip-update", "--config-dir", configDir, "api", "chat.postMessage"]);
+      expect(calls[0]?.args.filter((arg) => arg === "--skip-update")).toEqual(["--skip-update"]);
+      expect(calls[0]?.args).not.toContain("--extra-managed");
+      expect(calls[0]?.env.PATH).toBe("/definitely-not-used");
+      expect(calls[0]?.env.LARKSUITE_CLI_NO_UPDATE_NOTIFIER).toBeUndefined();
+    }
+  });
+
+  it("rejects a Slack config dir that is world-readable, a symlink, or missing", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
     await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
-    const prepared = await manager.prepare({ provider: "slack", sessionId: "s-1", runId: "run-1" });
-    const calls: { args: readonly string[]; env: NodeJS.ProcessEnv }[] = [];
-    await executeProviderCliTurnPlan({
-      planPath: prepared.planPath,
+    const configDir = await makePrivateSlackConfigDir(accountHome);
+    const prepared = await manager.prepare({
       provider: "slack",
+      sessionId: "s-1",
       runId: "run-1",
-      argv: ["api", "chat.postMessage"],
-      env: {},
-      plansRoot: layout.plans,
-      spawnTarget: async (_file, args, options) => {
-        calls.push({ args, env: options.env });
-        return 0;
-      },
+      configDir,
     });
-    expect(calls[0]?.args).toEqual(["api", "chat.postMessage"]);
-    expect(calls[0]?.env.LARKSUITE_CLI_NO_UPDATE_NOTIFIER).toBeUndefined();
+
+    await chmod(configDir, 0o755);
+    await expect(
+      executeProviderCliTurnPlan({
+        planPath: prepared.planPath,
+        provider: "slack",
+        runId: "run-1",
+        argv: ["api", "auth.test"],
+        plansRoot: layout.plans,
+        spawnTarget: async () => 0,
+      }),
+    ).rejects.toMatchObject({ code: "unsafe" });
+    await chmod(configDir, 0o700);
+
+    await chmod(configDir, 0o500);
+    await expect(
+      executeProviderCliTurnPlan({
+        planPath: prepared.planPath,
+        provider: "slack",
+        runId: "run-1",
+        argv: ["api", "auth.test"],
+        plansRoot: layout.plans,
+        spawnTarget: async () => 0,
+      }),
+    ).rejects.toMatchObject({ code: "unsafe" });
+    await chmod(configDir, 0o700);
+
+    await rm(configDir, { recursive: true, force: true });
+    const realDir = await makePrivateSlackConfigDir(accountHome, "real-slack-config");
+    await symlink(realDir, configDir);
+    await expect(
+      executeProviderCliTurnPlan({
+        planPath: prepared.planPath,
+        provider: "slack",
+        runId: "run-1",
+        argv: ["api", "auth.test"],
+        plansRoot: layout.plans,
+        spawnTarget: async () => 0,
+      }),
+    ).rejects.toMatchObject({ code: "unsafe" });
+    await rm(configDir, { force: true });
+    await expect(
+      executeProviderCliTurnPlan({
+        planPath: prepared.planPath,
+        provider: "slack",
+        runId: "run-1",
+        argv: ["api", "auth.test"],
+        plansRoot: layout.plans,
+        spawnTarget: async () => 0,
+      }),
+    ).rejects.toMatchObject({ code: "unsafe" });
   });
 
-  it("prepends catalog managed arguments for a managed Slack target", async () => {
+  it("rejects Slack argv that tries to override OpenTag-managed authority flags", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
-    await writeManagedTurnSelection(layout, "slack", target, "4.7.0");
-    const prepared = await manager.prepare({ provider: "slack", sessionId: "s-1", runId: "run-1" });
-    const calls: { args: readonly string[] }[] = [];
-    await executeProviderCliTurnPlan({
-      planPath: prepared.planPath,
+    await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+    const configDir = await makePrivateSlackConfigDir(accountHome);
+    const prepared = await manager.prepare({
       provider: "slack",
+      sessionId: "s-1",
       runId: "run-1",
-      argv: ["api", "chat.postMessage"],
-      plansRoot: layout.plans,
-      spawnTarget: async (_file, args) => {
-        calls.push({ args });
-        return 0;
-      },
+      configDir,
     });
-    expect(calls[0]?.args).toEqual(["--skip-update", "api", "chat.postMessage"]);
+
+    for (const override of [
+      "--token",
+      "--app=x",
+      "--team",
+      "-wT123",
+      "--workspace=T123",
+      "--config-dir",
+      "--skip-update",
+    ]) {
+      await expect(
+        executeProviderCliTurnPlan({
+          planPath: prepared.planPath,
+          provider: "slack",
+          runId: "run-1",
+          argv: ["api", "auth.test", override],
+          plansRoot: layout.plans,
+          spawnTarget: async () => 0,
+        }),
+      ).rejects.toMatchObject({ code: "unsafe" });
+    }
+  });
+
+  it("honors the frozen Slack config dir when HOME is unwritable", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"), "slack");
+    await writeExternalTurnSelection(layout, "slack", target, "4.7.0");
+    const configDir = await makePrivateSlackConfigDir(accountHome);
+    const prepared = await manager.prepare({
+      provider: "slack",
+      sessionId: "s-1",
+      runId: "run-1",
+      configDir,
+    });
+    const unwritableHome = join(accountHome, "unwritable-home");
+    await mkdir(unwritableHome, { recursive: true, mode: 0o500 });
+    await chmod(unwritableHome, 0o500);
+    try {
+      const result = await runTurnLauncher(prepared.launcherPath, ["api", "chat.postMessage"], {
+        env: { ...process.env, HOME: unwritableHome },
+      });
+      expect(result.code).toBe(0);
+      const payload = JSON.parse(result.stdout) as { argv: string[] };
+      expect(payload.argv).toEqual(["--skip-update", "--config-dir", configDir, "api", "chat.postMessage"]);
+    } finally {
+      await chmod(unwritableHome, 0o700);
+    }
   });
 
   it("fails closed on provider or run fence mismatch and on target drift", async () => {

@@ -82,6 +82,7 @@ describe("SessionRuntimeManager", () => {
       OPENTAG_HOME: home,
       OPENTAG_SESSION_PROOF_FILE: "/tmp/session-proof.json",
     });
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([factory.created[0]?.workspace.cwd]);
     expect(factory.created[0]?.hostedTools).toBeUndefined();
     expect(factory.created[0]?.systemPrompt).toContain("opentag-dev session send");
     expect(factory.created[0]?.systemPrompt).toContain(
@@ -100,6 +101,93 @@ describe("SessionRuntimeManager", () => {
     expect(manager.requiresSessionPreparation(rotated)).toBe(false);
     expect(proofManager.materialize).toHaveBeenLastCalledWith(rotated.sessionId, rotated.sessionCliProof);
     await manager.close();
+  });
+
+  it("grants only the active Slack config leaf to visible Sessions and never to internal or Feishu", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-slack-writable-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const slackLeaf = resolve(home, "data/runtime/provider-credentials/session-1-slack-config");
+    const parentCredentials = resolve(home, "data/runtime/provider-credentials");
+    const factory = new FakeFactory();
+    const resolved: string[] = [];
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      slackConfigWritableRoot: (sessionId) => {
+        resolved.push(sessionId);
+        return slackLeaf;
+      },
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+
+    const visible = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(visible)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(visible.sessionId);
+    expect(resolved).toEqual([visible.sessionId]);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([factory.created[0]?.workspace.cwd, slackLeaf]);
+    expect(factory.created[0]?.workspace.writableRoots).not.toContain(parentCredentials);
+    expect(factory.created[0]?.workspace.environment).toMatchObject({
+      OPENTAG_PROVIDER_ENV_FILE: "/tmp/provider-env.sh",
+    });
+
+    const internalFactory = new FakeFactory();
+    const internalResolved: string[] = [];
+    const internalManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(internalFactory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      slackConfigWritableRoot: (sessionId) => {
+        internalResolved.push(sessionId);
+        return slackLeaf;
+      },
+      workspace,
+    });
+    const internalRequest = {
+      ...reconcile(computerId, snapshot(1)),
+      sessionId: "session-internal",
+      sessionKind: "internal" as const,
+      creatorSessionId: randomUUID(),
+    };
+    await expect(
+      new SessionReconciler({
+        computerId,
+        preparation: internalManager,
+        localPolicy: internalManager,
+      }).reconcile(internalRequest),
+    ).resolves.toMatchObject({ status: "ready" });
+    await internalManager.ensureRuntime(internalRequest.sessionId);
+    expect(internalResolved).toEqual([]);
+    expect(internalFactory.created[0]?.workspace.writableRoots).toEqual([internalFactory.created[0]?.workspace.cwd]);
+    expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("OPENTAG_PROVIDER_ENV_FILE");
+
+    const feishuFactory = new FakeFactory();
+    const feishuManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(feishuFactory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      slackConfigWritableRoot: () => undefined,
+      workspace,
+    });
+    const feishuRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-feishu" };
+    await expect(
+      new SessionReconciler({ computerId, preparation: feishuManager, localPolicy: feishuManager }).reconcile(
+        feishuRequest,
+      ),
+    ).resolves.toMatchObject({ status: "ready" });
+    await feishuManager.ensureRuntime(feishuRequest.sessionId);
+    expect(feishuFactory.created[0]?.workspace.writableRoots).toEqual([feishuFactory.created[0]?.workspace.cwd]);
+
+    await manager.close();
+    await internalManager.close();
+    await feishuManager.close();
   });
 
   it("fails closed when a reconcile carries a proof but no proof manager is configured", async () => {

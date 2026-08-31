@@ -20,7 +20,7 @@ const HOME_NAMESPACE_PATTERN = /^h-[0-9a-f]{40}$/;
 const SESSION_KEY_PATTERN = /^s-[0-9a-f]{40}$/;
 const FINGERPRINT_PATTERN = /^v1:[0-9a-f]{64}$/;
 
-const MANAGED_PLAN_KEYS = [
+const SHARED_PLAN_KEYS = [
   "schemaVersion",
   "provider",
   "command",
@@ -29,13 +29,15 @@ const MANAGED_PLAN_KEYS = [
   "selectionGeneration",
   "targetPath",
   "fingerprint",
-  "artifactId",
   "homeNamespace",
   "sessionId",
   "runId",
 ] as const;
 
-const EXTERNAL_PLAN_KEYS = MANAGED_PLAN_KEYS.filter((key) => key !== "artifactId");
+const MANAGED_PLAN_KEYS = [...SHARED_PLAN_KEYS, "artifactId"] as const;
+const EXTERNAL_PLAN_KEYS = SHARED_PLAN_KEYS;
+const MANAGED_SLACK_PLAN_KEYS = [...MANAGED_PLAN_KEYS, "configDir"] as const;
+const EXTERNAL_SLACK_PLAN_KEYS = [...EXTERNAL_PLAN_KEYS, "configDir"] as const;
 
 export type ProviderCliTurnPlanErrorCode =
   | "selection_missing"
@@ -70,34 +72,31 @@ export type ProviderCliTurnPlanCommand = "lark-cli" | "slack";
  * Immutable exact-target plan for one visible Turn Run. The on-disk document is the
  * execution authority; later selection replacements must not rewrite it.
  */
+type ProviderCliTurnPlanShared = {
+  readonly schemaVersion: typeof PROVIDER_CLI_TURN_PLAN_SCHEMA_VERSION;
+  readonly command: ProviderCliTurnPlanCommand;
+  readonly selectionVersion: string;
+  readonly selectionGeneration: number;
+  readonly targetPath: string;
+  readonly fingerprint: string;
+  readonly homeNamespace: string;
+  readonly sessionId: string;
+  readonly runId: string;
+};
+
+type ProviderCliTurnPlanSelection =
+  | { readonly selectionKind: "managed"; readonly artifactId: string }
+  | { readonly selectionKind: "external" };
+
 export type ProviderCliTurnPlan =
-  | {
-      readonly schemaVersion: typeof PROVIDER_CLI_TURN_PLAN_SCHEMA_VERSION;
-      readonly provider: ProviderCliProvider;
-      readonly command: ProviderCliTurnPlanCommand;
-      readonly selectionKind: "managed";
-      readonly selectionVersion: string;
-      readonly selectionGeneration: number;
-      readonly targetPath: string;
-      readonly fingerprint: string;
-      readonly artifactId: string;
-      readonly homeNamespace: string;
-      readonly sessionId: string;
-      readonly runId: string;
-    }
-  | {
-      readonly schemaVersion: typeof PROVIDER_CLI_TURN_PLAN_SCHEMA_VERSION;
-      readonly provider: ProviderCliProvider;
-      readonly command: ProviderCliTurnPlanCommand;
-      readonly selectionKind: "external";
-      readonly selectionVersion: string;
-      readonly selectionGeneration: number;
-      readonly targetPath: string;
-      readonly fingerprint: string;
-      readonly homeNamespace: string;
-      readonly sessionId: string;
-      readonly runId: string;
-    };
+  | (ProviderCliTurnPlanShared &
+      ProviderCliTurnPlanSelection & { readonly provider: "feishu"; readonly command: "lark-cli" })
+  | (ProviderCliTurnPlanShared &
+      ProviderCliTurnPlanSelection & {
+        readonly provider: "slack";
+        readonly command: "slack";
+        readonly configDir: string;
+      });
 
 export function providerCliCommandForProvider(provider: ProviderCliProvider): ProviderCliTurnPlanCommand {
   return provider === "feishu" ? "lark-cli" : "slack";
@@ -166,30 +165,47 @@ export function assertIdentity(name: string, value: string): string {
   return value;
 }
 
+/** Absolute canonical Slack config leaf frozen into a Turn plan. Feishu callers must not supply one. */
+export function assertProviderCliSlackConfigDir(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ProviderCliTurnPlanError(
+      "plan_invalid",
+      "Slack Provider CLI Turn plans require an absolute config directory",
+    );
+  }
+  const configDir = assertIdentity("configDir", value);
+  if (!isAbsolute(configDir) || resolve(configDir) !== configDir) {
+    throw new ProviderCliTurnPlanError("unsafe", "Slack config directory must be an absolute canonical path");
+  }
+  return configDir;
+}
+
+export function assertProviderCliTurnPlanConfigDir(provider: "slack", configDir: unknown): string;
+export function assertProviderCliTurnPlanConfigDir(provider: "feishu", configDir: unknown): undefined;
+export function assertProviderCliTurnPlanConfigDir(
+  provider: ProviderCliProvider,
+  configDir: unknown,
+): string | undefined;
+export function assertProviderCliTurnPlanConfigDir(
+  provider: ProviderCliProvider,
+  configDir: unknown,
+): string | undefined {
+  if (provider === "feishu") {
+    if (configDir !== undefined) {
+      throw new ProviderCliTurnPlanError(
+        "plan_invalid",
+        "Feishu Provider CLI Turn plans do not accept a config directory",
+      );
+    }
+    return undefined;
+  }
+  return assertProviderCliSlackConfigDir(configDir);
+}
+
 export function parseProviderCliTurnPlan(value: unknown): ProviderCliTurnPlan {
   const record = requirePlanRecord(value);
   const shared = parsePlanSharedIdentity(record);
-
-  if (record.selectionKind === "managed") {
-    if (!hasExactKeys(record, MANAGED_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
-      throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
-    }
-    return {
-      ...shared,
-      selectionKind: "managed",
-      artifactId: record.artifactId,
-    };
-  }
-  if (record.selectionKind === "external") {
-    if (!hasExactKeys(record, EXTERNAL_PLAN_KEYS)) {
-      throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
-    }
-    return {
-      ...shared,
-      selectionKind: "external",
-    };
-  }
-  throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan selection kind is unknown");
+  return shared.provider === "slack" ? parseSlackTurnPlan(record, shared) : parseFeishuTurnPlan(record, shared);
 }
 
 function requirePlanRecord(value: unknown): Record<string, unknown> {
@@ -199,9 +215,66 @@ function requirePlanRecord(value: unknown): Record<string, unknown> {
   return value;
 }
 
-function parsePlanSharedIdentity(
-  value: Record<string, unknown>,
-): Omit<ProviderCliTurnPlan, "selectionKind" | "artifactId"> {
+type ParsedTurnPlanIdentity = {
+  schemaVersion: typeof PROVIDER_CLI_TURN_PLAN_SCHEMA_VERSION;
+  provider: ProviderCliProvider;
+  command: ProviderCliTurnPlanCommand;
+  selectionVersion: string;
+  selectionGeneration: number;
+  targetPath: string;
+  fingerprint: string;
+  homeNamespace: string;
+  sessionId: string;
+  runId: string;
+};
+
+function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
+  const configDir = assertProviderCliSlackConfigDir(record.configDir);
+  if (record.selectionKind === "managed") {
+    if (!hasExactKeys(record, MANAGED_SLACK_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
+      throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
+    }
+    return {
+      ...shared,
+      provider: "slack",
+      command: "slack",
+      selectionKind: "managed",
+      artifactId: record.artifactId,
+      configDir,
+    };
+  }
+  if (record.selectionKind === "external") {
+    if (!hasExactKeys(record, EXTERNAL_SLACK_PLAN_KEYS)) {
+      throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
+    }
+    return { ...shared, provider: "slack", command: "slack", selectionKind: "external", configDir };
+  }
+  throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan selection kind is unknown");
+}
+
+function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
+  if (record.selectionKind === "managed") {
+    if (!hasExactKeys(record, MANAGED_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
+      throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
+    }
+    return {
+      ...shared,
+      provider: "feishu",
+      command: "lark-cli",
+      selectionKind: "managed",
+      artifactId: record.artifactId,
+    };
+  }
+  if (record.selectionKind === "external") {
+    if (!hasExactKeys(record, EXTERNAL_PLAN_KEYS)) {
+      throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
+    }
+    return { ...shared, provider: "feishu", command: "lark-cli", selectionKind: "external" };
+  }
+  throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan selection kind is unknown");
+}
+
+function parsePlanSharedIdentity(value: Record<string, unknown>): ParsedTurnPlanIdentity {
   if (value.provider !== "feishu" && value.provider !== "slack") {
     throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan provider is unknown");
   }

@@ -15,6 +15,7 @@ import {
 import { makeTempDir } from "./fixtures/provider-cli.js";
 import {
   installTurnTarget,
+  makePrivateSlackConfigDir,
   makeTurnPlanHarness,
   providerCliTurnRunnerInvocation,
   writeExternalTurnSelection,
@@ -73,13 +74,66 @@ describe("ProviderCliTurnPlanManager prepare", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"), "slack");
     const artifactId = await writeManagedTurnSelection(layout, "slack", target, "4.7.0");
-    const prepared = await manager.prepare({ provider: "slack", sessionId: "s-1", runId: "r-1" });
+    const configDir = await makePrivateSlackConfigDir(accountHome);
+    const prepared = await manager.prepare({
+      provider: "slack",
+      sessionId: "s-1",
+      runId: "r-1",
+      configDir,
+    });
     expect(prepared.plan.selectionKind).toBe("managed");
     expect(prepared.plan.command).toBe("slack");
+    expect(prepared.plan.provider === "slack" && prepared.plan.configDir).toBe(configDir);
     if (prepared.plan.selectionKind === "managed") {
       expect(prepared.plan.artifactId).toBe(artifactId);
     }
     expect(prepared.launcherPath.endsWith("/slack")).toBe(true);
+  });
+
+  it("freezes the caller Slack config dir and refuses a Feishu config dir", async () => {
+    const slack = await trackedHarness();
+    const slackTarget = await installTurnTarget(join(slack.accountHome, "bin"), "slack");
+    await writeExternalTurnSelection(slack.layout, "slack", slackTarget, "4.7.0");
+    const configDir = await makePrivateSlackConfigDir(slack.accountHome);
+    const prepared = await slack.manager.prepare({
+      provider: "slack",
+      sessionId: "s-1",
+      runId: "run-1",
+      configDir,
+    });
+    expect(prepared.plan.provider === "slack" && prepared.plan.configDir).toBe(configDir);
+    const replacement = await makePrivateSlackConfigDir(slack.accountHome, "other-config");
+    const again = await slack.manager.prepare({
+      provider: "slack",
+      sessionId: "s-1",
+      runId: "run-1",
+      configDir: replacement,
+    });
+    expect(again.plan.provider === "slack" && again.plan.configDir).toBe(configDir);
+
+    await expect(slack.manager.prepare({ provider: "slack", sessionId: "s-2", runId: "run-2" })).rejects.toMatchObject({
+      code: "plan_invalid",
+    });
+    await expect(
+      slack.manager.prepare({
+        provider: "slack",
+        sessionId: "s-2",
+        runId: "run-2",
+        configDir: `${configDir}/../escape`,
+      }),
+    ).rejects.toMatchObject({ code: "unsafe" });
+
+    const feishu = await trackedHarness();
+    const feishuTarget = await installTurnTarget(join(feishu.accountHome, "bin"));
+    await writeExternalTurnSelection(feishu.layout, "feishu", feishuTarget);
+    await expect(
+      feishu.manager.prepare({
+        provider: "feishu",
+        sessionId: "s-1",
+        runId: "run-1",
+        configDir,
+      }),
+    ).rejects.toMatchObject({ code: "plan_invalid" });
   });
 
   it("hashes path-traversal Session and Run identities into the session key", async () => {
@@ -357,6 +411,55 @@ describe("Provider CLI Turn plan schema", () => {
     await rm(prepared.planPath);
     await mkdir(prepared.planPath);
     await expect(readProviderCliTurnPlan(prepared.planPath)).rejects.toMatchObject({ code: "unsafe" });
+  });
+
+  it("accepts only the exact Slack and Feishu plan keys", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const configDir = await makePrivateSlackConfigDir(accountHome);
+    const feishuExternal = {
+      schemaVersion: 1 as const,
+      provider: "feishu" as const,
+      command: "lark-cli" as const,
+      selectionKind: "external" as const,
+      selectionVersion: "1.0.92",
+      selectionGeneration: 1,
+      targetPath: target,
+      fingerprint: prepared.plan.fingerprint,
+      homeNamespace: prepared.homeNamespace,
+      sessionId: "s-1",
+      runId: "run-1",
+    };
+    expect(parseProviderCliTurnPlan(feishuExternal).provider).toBe("feishu");
+    expect(() => parseProviderCliTurnPlan({ ...feishuExternal, configDir })).toThrow(ProviderCliTurnPlanError);
+    expect(() => parseProviderCliTurnPlan({ ...feishuExternal, extra: true })).toThrow(ProviderCliTurnPlanError);
+
+    const slackExternal = {
+      ...feishuExternal,
+      provider: "slack" as const,
+      command: "slack" as const,
+      selectionVersion: "4.7.0",
+      configDir,
+    };
+    expect(parseProviderCliTurnPlan(slackExternal)).toMatchObject({ provider: "slack", configDir });
+    const slackWithoutConfig = { ...feishuExternal, provider: "slack" as const, command: "slack" as const };
+    expect(() => parseProviderCliTurnPlan(slackWithoutConfig)).toThrow(ProviderCliTurnPlanError);
+    expect(() => parseProviderCliTurnPlan({ ...slackExternal, extra: true })).toThrow(ProviderCliTurnPlanError);
+    expect(() => parseProviderCliTurnPlan({ ...slackExternal, artifactId: "unexpected" })).toThrow(
+      ProviderCliTurnPlanError,
+    );
+
+    const slackManaged = {
+      ...slackExternal,
+      selectionKind: "managed" as const,
+      artifactId: "4.7.0/test-platform/aa".padEnd(64, "a"),
+    };
+    expect(parseProviderCliTurnPlan(slackManaged).selectionKind).toBe("managed");
+    expect(() => parseProviderCliTurnPlan({ ...slackExternal, selectionKind: "managed" })).toThrow(
+      ProviderCliTurnPlanError,
+    );
   });
 
   it("fails closed when the plan file is unreadable", async () => {

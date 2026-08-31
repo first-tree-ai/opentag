@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { validatePrivateDirectory } from "../../storage/durable-file.js";
@@ -8,6 +8,7 @@ import { PROVIDER_CLI_CATALOG, type ProviderCliCatalogEntry, requireProviderCliC
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
 import {
   assertPlanWithinRoot,
+  assertProviderCliSlackConfigDir,
   deriveProviderCliSessionKey,
   isProviderCliHomeNamespace,
   isProviderCliSessionKey,
@@ -114,7 +115,7 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
   const entry = requireProviderCliCatalogEntry(plan.provider, options.catalog ?? PROVIDER_CLI_CATALOG);
   const baseEnv = options.env ?? process.env;
   const env = plan.selectionKind === "managed" ? { ...baseEnv, ...entry.managedEnvironment } : { ...baseEnv };
-  const args = plan.selectionKind === "managed" ? [...entry.managedArguments, ...options.argv] : [...options.argv];
+  const args = await turnPlanArguments(plan, options.argv, entry);
   const spawnTarget = options.spawnTarget ?? spawnProviderCliTarget;
   return spawnTarget(plan.targetPath, args, { env });
 }
@@ -186,6 +187,74 @@ export function isProviderCliTurnRunnerMain(metaUrl: string, argv1 = process.arg
     return metaUrl === pathToFileURL(resolve(argv1)).href;
   } catch {
     return false;
+  }
+}
+
+async function turnPlanArguments(
+  plan: ProviderCliTurnPlan,
+  argv: readonly string[],
+  entry: ProviderCliCatalogEntry,
+): Promise<readonly string[]> {
+  if (plan.provider === "slack") {
+    assertSlackTurnArgv(argv);
+    await assertPrivateSlackConfigDirectory(plan.configDir);
+    return ["--skip-update", "--config-dir", plan.configDir, ...argv];
+  }
+  return plan.selectionKind === "managed" ? [...entry.managedArguments, ...argv] : [...argv];
+}
+
+const RESERVED_SLACK_TURN_FLAGS = [
+  "--token",
+  "--app",
+  "--team",
+  "--workspace",
+  "--config-dir",
+  "--skip-update",
+] as const;
+
+function assertSlackTurnArgv(argv: readonly string[]): void {
+  for (const argument of argv) {
+    const reserved = RESERVED_SLACK_TURN_FLAGS.some((flag) => argument === flag || argument.startsWith(`${flag}=`));
+    if (reserved || argument.startsWith("-w")) {
+      throw new ProviderCliTurnPlanError(
+        "unsafe",
+        "Slack Provider CLI Turn argv must not override OpenTag-managed authority flags",
+      );
+    }
+  }
+}
+
+async function assertPrivateSlackConfigDirectory(configDir: string): Promise<void> {
+  const frozen = assertProviderCliSlackConfigDir(configDir);
+  let status: Awaited<ReturnType<typeof lstat>>;
+  try {
+    status = await lstat(frozen);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new ProviderCliTurnPlanError("unsafe", "Slack config directory is missing");
+    }
+    throw error;
+  }
+  const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (
+    status.isSymbolicLink() ||
+    !status.isDirectory() ||
+    (currentUid !== undefined && status.uid !== currentUid) ||
+    (status.mode & 0o777) !== 0o700
+  ) {
+    throw new ProviderCliTurnPlanError(
+      "unsafe",
+      "Slack config directory must be a real private daemon-owned directory",
+    );
+  }
+  let canonical: string;
+  try {
+    canonical = await realpath(frozen);
+  } catch {
+    throw new ProviderCliTurnPlanError("unsafe", "Slack config directory cannot be canonicalized");
+  }
+  if (canonical !== frozen) {
+    throw new ProviderCliTurnPlanError("unsafe", "Slack config directory must not traverse a symlink");
   }
 }
 

@@ -93,6 +93,22 @@ describe("AgentTurnRunner", () => {
     expect(feishuInput.items[0]?.text).toContain("$OpenTagLarkBody = @'\nfirst line\n\nsecond line");
     expect(feishuInput.items[0]?.text).toContain('lark-cli ... --markdown "$OPENTAG_LARK_BODY"');
     expect(input.items[0]?.text).not.toContain("OPENTAG_LARK_BODY");
+    expect(input.items[0]?.text).toContain("slack api chat.postMessage --json");
+    expect(input.items[0]?.text).toContain("never key=value pairs");
+    expect(input.items[0]?.text).toContain(
+      "Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update",
+    );
+    expect(input.items[0]?.text).toContain("Thread placement is a Session policy decision");
+    expect(input.items[0]?.text).toContain("`text` (at most 4,000 characters)");
+    expect(input.items[0]?.text).toContain("`markdown_text` (at most 12,000 characters)");
+    expect(input.items[0]?.text).toContain("at most 1 message per second per channel");
+    expect(input.items[0]?.text).toContain("<@U...>");
+    expect(input.items[0]?.text).toContain("conversations.history and similar reads are rate-limited");
+    expect(input.items[0]?.text).toContain("Never print credentials, tokens, or the environment file");
+    expect(input.items[0]?.text).not.toMatch(/xox[bpa]-/);
+    expect(Buffer.byteLength(input.items[0]?.text ?? "", "utf8")).toBeLessThan(16 * 1024);
+    expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
+    expect(feishuInput.items[0]?.text).not.toContain("Never print credentials, tokens, or the environment file");
     expect(() => buildAgentInput(steerRequest())).toThrow("A steer input requires the root runtime snapshot");
   });
 

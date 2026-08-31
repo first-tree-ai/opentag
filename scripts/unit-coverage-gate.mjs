@@ -32,25 +32,29 @@ export function isSupportedSourcePath(value) {
   return SUPPORTED_SOURCE_EXTENSIONS.has(extname(name).toLowerCase());
 }
 
-function isExecutableSourceLine(value) {
+function isExecutableSourceLine(value, syntax = {}) {
   const trimmed = value.trim();
   if (!trimmed) return false;
   if (/^(?:\/\/|\/\*|\*|\*\/)/.test(trimmed)) return false;
+  if (syntax.declaration) {
+    if (/^\}\s*(?:from\b.*)?;?$/u.test(trimmed)) syntax.declaration = false;
+    return false;
+  }
+  if (syntax.typeLiteral) {
+    if (/^\};?$/u.test(trimmed)) syntax.typeLiteral = false;
+    return false;
+  }
+  if (/^(?:import|export)\s*\{\s*$/u.test(trimmed)) {
+    syntax.declaration = true;
+    return true;
+  }
+  if (/^(?:type|interface)\s+\w.*\{\s*$/u.test(trimmed)) {
+    syntax.typeLiteral = true;
+    return false;
+  }
   if (/^(?:import\s+type|export\s+(?:type|interface)\b|type\s+\w|interface\s+\w|declare\s+)/.test(trimmed)) {
     return false;
   }
-  // A multiline import/export lists bindings on their own lines. Those specifiers are not
-  // executable statements and V8 records coverage against the declaration's opening line only.
-  if (/^(?:[$\w][$\w]*,|}\s+from\b)/.test(trimmed)) return false;
-  // Property signatures inside a type literal are erased before runtime and have no V8 entry.
-  if (
-    /^[A-Za-z_$][\w$]*\??:\s*(?:string|number|boolean|unknown|never|[A-Za-z_$][\w$]*(?:\[\])?(?:\s*\|\s*[A-Za-z_$][\w$]*(?:\[\])?)*)\s*;$/u.test(
-      trimmed,
-    )
-  ) {
-    return false;
-  }
-  if (/^[A-Za-z_$][\w$]*\??:\s*\([^)]*\)\s*=>.+;$/u.test(trimmed)) return false;
   if (/^[{}[\]();,:]+$/.test(trimmed)) return false;
   return true;
 }
@@ -131,8 +135,9 @@ function evaluateChangedFile({ file, lines, lineHits }) {
   const uncovered = [];
   let covered = 0;
   let total = 0;
+  const syntax = {};
   for (const { content, line } of lines) {
-    if (!isExecutableSourceLine(content)) continue;
+    if (!isExecutableSourceLine(content, syntax)) continue;
     total += 1;
     if (!lineHits?.has(line)) {
       uncovered.push(`${file}:${line} (missing coverage entry)`);

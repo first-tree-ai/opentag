@@ -104,6 +104,30 @@ test("function-valued type-literal signatures are not treated as executable line
   assert.equal(result.passed, true);
 });
 
+test("bare expressions in multiline arrays remain executable lines", () => {
+  const diff = [
+    "--- a/packages/shared/src/example.ts",
+    "+++ b/packages/shared/src/example.ts",
+    "@@ -1,0 +1,4 @@",
+    "+const values = [",
+    "+  firstValue,",
+    "+  secondValue,",
+    "+];",
+  ].join("\n");
+  const result = evaluatePatchCoverage({
+    diff,
+    coverage: { "packages/shared/src/example.ts": statementCoverage("", 1, 1) },
+    repositoryRoot: process.cwd(),
+  });
+
+  assert.equal(result.total, 3);
+  assert.equal(result.covered, 1);
+  assert.deepEqual(result.uncovered, [
+    "packages/shared/src/example.ts:2 (missing coverage entry)",
+    "packages/shared/src/example.ts:3 (missing coverage entry)",
+  ]);
+});
+
 test("renamed files use the new path and brand-new files use absolute coverage paths", () => {
   const renamed = evaluatePatchCoverage({
     diff: [

@@ -179,7 +179,7 @@ export function AgentManageSettings({
           <div className="grid gap-4">
             <Field
               htmlFor="agent-delete-confirmation"
-              label={<>{m.agent_settings_type_name_to_confirm({ displayName: config.displayName })}</>}
+              label={m.agent_settings_type_name_to_confirm({ displayName: config.displayName })}
             >
               <KumoInputControl
                 autoComplete="off"

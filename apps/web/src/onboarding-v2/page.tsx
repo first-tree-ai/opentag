@@ -287,7 +287,10 @@ function OnboardingV2Flow({
             </div>
           ) : null}
           {flow.complete ? (
-            <DoneStep name={backend.agent?.name ?? draft.name} />
+            <DoneStep
+              name={backend.agent?.name ?? draft.name}
+              provider={messagingProvider ?? backend.messagingProvider}
+            />
           ) : flow.page === "destination" ? (
             <DestinationStep
               cloudAvailable={cloudAvailable}

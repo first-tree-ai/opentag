@@ -122,7 +122,17 @@ export const COPY = {
 
   done: {
     title: (name: string) => `${name} is ready.`,
-    description: (name: string) => `Tag @${name} in Feishu to put it to work.`,
+    /*
+     * The channel has to be named, because "go tag it somewhere" is not an instruction — but it has
+     * to be the channel the reader actually connected. This sentence named Feishu outright while
+     * the step above it accepts Slack too, so a Slack install ended by pointing the reader at an app
+     * their Agent is not in. When the provider is somehow unknown the sentence stays vague rather
+     * than guessing, since a confidently wrong channel is worse than an unspecific one.
+     */
+    description: (name: string, channel: string | undefined) =>
+      channel
+        ? `Tag @${name} in ${channel} to put it to work.`
+        : `Tag @${name} in your messaging app to put it to work.`,
   },
 
   /**

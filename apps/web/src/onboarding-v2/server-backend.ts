@@ -7,9 +7,14 @@
  * never has two clocks disagreeing about the same moment.
  */
 
-import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type {
+  AgentRuntimeProvider,
+  ComputerConnectCodeStatus,
+  ImBindingHandoffStatus,
+  WorkspaceComputerSummary,
+} from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { COPY } from "./copy.js";
@@ -22,7 +27,7 @@ import type {
   ReadinessFacts,
 } from "./flow.js";
 
-/** The existing onboarding polls Computers at this rate while it waits for one. */
+/** The connect step polls the issued code's status at this rate while it waits for a Computer. */
 const COMPUTER_POLL_MS = 1_500;
 /** The Feishu attempt is a QR the user scans on a phone; there is nothing to see faster than this. */
 const FEISHU_POLL_MS = 2_000;
@@ -34,24 +39,42 @@ export function errorMessage(cause: unknown, fallback: string): string {
 }
 
 /**
- * Which Computer this run is waiting for.
- *
- * The Computers response carries no link back to the code that was issued, so "a Computer appeared"
- * is not the same claim as "my Computer appeared". Every enrollment visible before the code was
- * issued is recorded, and only a Computer that is absent from that baseline — or one whose
- * `connectedAt` has moved since — counts as this run's arrival. Without that, someone else's
- * machine registering would satisfy this reader's step.
+ * Which Computer this run is waiting for is the Server's call, never an inference from the
+ * Computers list. The status read for the issued code says pending until a machine redeems it and
+ * then names the exact Computer that did, so another machine enrolling — or coming back — during
+ * the wait cannot be mistaken for this reader's. Reachability is a separate question: redemption is
+ * durable, and the exact Computer is adopted only once the Computers list shows it online on a
+ * connection that postdates the redemption.
  */
-function findArrival(
-  computers: readonly WorkspaceComputerSummary[],
-  baseline: ReadonlyMap<string, string | null>,
-): WorkspaceComputerSummary | undefined {
-  return computers.find(
-    (computer) =>
-      computer.connectionStatus === "online" &&
-      computer.connectedAt !== null &&
-      (!baseline.has(computer.computerId) || baseline.get(computer.computerId) !== computer.connectedAt),
-  );
+async function findRedeemedComputer(
+  computerId: string,
+  redeemedAt: string,
+): Promise<WorkspaceComputerSummary | undefined> {
+  const { computers } = await browserApi.computers();
+  const computer = computers.find((candidate) => candidate.computerId === computerId);
+  if (computer?.connectionStatus !== "online" || computer.connectedAt === null) return undefined;
+  return Date.parse(computer.connectedAt) >= Date.parse(redeemedAt) ? computer : undefined;
+}
+
+type ConnectCodeVerdict =
+  | { readonly action: "wait" }
+  | { readonly action: "expire" }
+  | { readonly action: "adopt"; readonly computerId: string; readonly redeemedAt: string };
+
+/**
+ * The verdict's reading. Pending keeps the wait; redeemed names the machine to adopt. Expired and
+ * revoked fail closed through the same terminal the local expiry uses — neither ever names a
+ * Computer — and a malformed redemption is refused rather than believed.
+ */
+function readConnectCodeVerdict(status: ComputerConnectCodeStatus): ConnectCodeVerdict {
+  if (status.state === "pending") return { action: "wait" };
+  if (status.state !== "redeemed" || !status.computerId || !status.redeemedAt) return { action: "expire" };
+  return { action: "adopt", computerId: status.computerId, redeemedAt: status.redeemedAt };
+}
+
+/** The connection being waited on, unless the wait has moved on since the poll left. */
+function issuedConnection(connect: ConnectState) {
+  return connect.kind === "issued" ? connect : undefined;
 }
 
 /**
@@ -66,23 +89,6 @@ function readMessaging(handoff: ImBindingHandoffStatus | undefined): MessagingSt
   if (handoff?.handoffReady) return { kind: "connected" };
   if (handoff?.bindingState === "active") return { kind: "waiting-handoff" };
   return { kind: "idle" };
-}
-
-/**
- * The Computer a repair code was issued for, once it has answered.
- *
- * Nothing is inferred here. The code named this machine, so the only question is whether it has
- * come back — which is a fresh `connectedAt` on that exact Computer, and cannot be satisfied by
- * any other machine enrolling during the wait.
- */
-function findRepaired(
-  computers: readonly WorkspaceComputerSummary[],
-  targetComputerId: string,
-  baseline: ReadonlyMap<string, string | null>,
-): WorkspaceComputerSummary | undefined {
-  const target = computers.find((computer) => computer.computerId === targetComputerId);
-  if (!target || target.connectionStatus !== "online" || target.connectedAt === null) return undefined;
-  return baseline.get(targetComputerId) === target.connectedAt ? undefined : target;
 }
 
 /**
@@ -143,8 +149,16 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   /** The Computer this run enrolled. Messaging and creation both need it after the step is left. */
   const computerId = useRef<string | undefined>(undefined);
-  const baseline = useRef<Map<string, string | null>>(new Map());
+  /** The code this run is waiting on, and the Server's redemption verdict once it lands. */
+  const connectCodeId = useRef<string | undefined>(undefined);
+  const redeemed = useRef<{ computerId: string; redeemedAt: string } | undefined>(undefined);
   const expiresAt = useRef(0);
+  /**
+   * True while the issue request is in flight. A StrictMode double-invocation of the updater
+   * schedules `issue` twice in the same flush, and the second run is the same request — not a
+   * reason to mint a second code.
+   */
+  const issuingFlight = useRef(false);
   /** Bumped by every reissue and by unmount, so a reply from a superseded attempt is discarded. */
   const attempt = useRef(0);
   const creationRef = useRef<CreationState>("idle");
@@ -228,7 +242,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           setConnect({ kind: "connected", command: "", computerName: enrolled.displayName });
         }
         // An offline or missing Computer leaves the connection idle, which is what makes the step
-        // issue a fresh code — and whatever machine answers it gets bound to this Agent.
+        // issue a fresh code — and the machine that redeems it is the one this run continues with.
 
         /*
          * Handoff readiness, not binding state. The Server refuses to complete setup unless the
@@ -280,6 +294,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, [readAccount]);
 
   const issue = useCallback(async () => {
+    if (issuingFlight.current) return;
+    issuingFlight.current = true;
     const mine = attempt.current + 1;
     attempt.current = mine;
     // Everything keyed to the run just superseded is released with it — what the reader can see as
@@ -289,11 +305,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     setConnect({ kind: "issuing" });
     setConnectionError(undefined);
     try {
-      // Baselined before the code is issued, never after: a Computer that enrolls between the two
-      // calls would otherwise be read as this run's arrival.
-      const before = await browserApi.computers();
-      if (!mounted.current || attempt.current !== mine) return;
-      baseline.current = new Map(before.computers.map((computer) => [computer.computerId, computer.connectedAt]));
       /*
        * A Computer this Account already has is repaired, not replaced. The Agent is bound to that
        * exact machine, so a code that named no target would enrol a second Computer beside it and
@@ -307,12 +318,18 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         repairing ? { mode: "repair", targetComputerId: repairing } : undefined,
       );
       if (!mounted.current || attempt.current !== mine) return;
+      connectCodeId.current = issued.connectCodeId;
+      redeemed.current = undefined;
       expiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
       setConnect({ kind: "issued", command: issued.bootstrapCommand, expiresAt: expiresAt.current });
     } catch (cause) {
       if (!mounted.current || attempt.current !== mine) return;
       setConnect({ kind: "idle" });
       setConnectionError(errorMessage(cause, COPY.errors.connectCode));
+    } finally {
+      // A reset may allow a successor issue while this request is still in flight. The older
+      // request must not clear the successor's guard when it eventually settles.
+      if (attempt.current === mine) issuingFlight.current = false;
     }
   }, []);
 
@@ -326,8 +343,78 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   const refreshConnectCode = useCallback(() => void issue(), [issue]);
 
+  /** A failed read of the verdict: report it, and close the wait on a code the Server disowns. */
+  const failIssuedCodePoll = useCallback((cause: unknown) => {
+    const gone = cause instanceof ApiError && cause.status === 404;
+    // A code the Server no longer acknowledges can never be redeemed: stop waiting on it rather
+    // than poll a dead handle until the local clock runs out.
+    if (gone) setConnect({ kind: "idle" });
+    setConnectionError(errorMessage(cause, gone ? COPY.errors.connectCode : COPY.errors.computers));
+  }, []);
+
+  /** Adopts the redeemed Computer once it is verifiably online; otherwise the wait continues. */
+  const adoptRedeemedComputer = useCallback(async (mine: number) => {
+    const verdict = redeemed.current;
+    if (!verdict) return;
+    let arrived: WorkspaceComputerSummary | undefined;
+    try {
+      arrived = await findRedeemedComputer(verdict.computerId, verdict.redeemedAt);
+    } catch (cause) {
+      if (mounted.current && attempt.current === mine) {
+        setConnectionError(errorMessage(cause, COPY.errors.computers));
+      }
+      return;
+    }
+    const stillWaiting = issuedConnection(connectRef.current);
+    if (!(mounted.current && attempt.current === mine) || !stillWaiting || !arrived) return;
+    computerId.current = arrived.computerId;
+    setComputer(arrived);
+    setConnectionError(undefined);
+    setConnect({ kind: "connected", command: stillWaiting.command, computerName: arrived.displayName });
+  }, []);
+
+  /** One read of the issued code's verdict; the interval effect only paces it. */
+  const pollIssuedCode = useCallback(
+    async (codeId: string, mine: number) => {
+      const alive = () => mounted.current && attempt.current === mine;
+      let status: ComputerConnectCodeStatus;
+      try {
+        status = await browserApi.computerConnectCodeStatus(codeId);
+      } catch (cause) {
+        if (alive()) failIssuedCodePoll(cause);
+        return;
+      }
+      if (!alive()) return;
+      const waiting = issuedConnection(connectRef.current);
+      if (!waiting) return;
+      const verdict = readConnectCodeVerdict(status);
+      if (verdict.action === "wait") {
+        // A poll that succeeds retires whatever the last failed one put on screen.
+        setConnectionError(undefined);
+        return;
+      }
+      if (verdict.action === "expire") {
+        // The Server has closed the code and nothing can redeem it now, so the wait ends the way
+        // a local expiry ends it — the dead command stays on screen with its refresh offered.
+        setConnect({ kind: "expired", command: waiting.command });
+        return;
+      }
+      /*
+       * Redeemed. The verdict is latched: which machine answered never changes, and no other
+       * machine enrolling or returning during the wait can satisfy it. The Computer is adopted
+       * once the Computers list shows that exact machine online on a connection that postdates
+       * the redemption — a machine that redeemed but has not connected yet keeps the wait
+       * open, which is the only honest reading of "your computer is connected".
+       */
+      redeemed.current ??= { computerId: verdict.computerId, redeemedAt: verdict.redeemedAt };
+      await adoptRedeemedComputer(mine);
+    },
+    [adoptRedeemedComputer, failIssuedCodePoll],
+  );
+
   // One interval for the whole wait. It expires the code on the Server's own clock rather than a
-  // local countdown, and hands over to the readiness poll below the moment a Computer arrives.
+  // local countdown, and the Server's redemption verdict — never a reading of the Computers list —
+  // decides which Computer this run's command enrolled.
   useEffect(() => {
     if (connect.kind !== "issued") return;
     const mine = attempt.current;
@@ -337,37 +424,12 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         setConnect((current) => (current.kind === "issued" ? { kind: "expired", command: current.command } : current));
         return;
       }
-      void browserApi.computers().then(
-        (value) => {
-          if (!mounted.current || attempt.current !== mine) return;
-          const arrived = repairTarget.current
-            ? findRepaired(value.computers, repairTarget.current, baseline.current)
-            : findArrival(value.computers, baseline.current);
-          // A reply can land after its code expired. Adopting outside this guard let an expired
-          // attempt claim a machine, enable Continue, and create an Agent the page could then never
-          // move past — so nothing is adopted unless the connection is still the one waiting.
-          const waiting = connectRef.current;
-          if (!arrived || waiting.kind !== "issued") return;
-          /*
-           * A machine that is not the one the Agent is bound to has to become it. An Agent's
-           * Computer can be changed after creation even though its runtime cannot, so the honest
-           * answer to "my laptop was replaced" is to move the Agent — not to insist the old machine
-           * comes back, and not to quietly finish setup with the Agent still pointing at a machine
-           * nobody checked. Until the move lands, this is not a connection worth reporting.
-           */
-          computerId.current = arrived.computerId;
-          setComputer(arrived);
-          setConnectionError(undefined);
-          setConnect({ kind: "connected", command: waiting.command, computerName: arrived.displayName });
-        },
-        (cause: unknown) => {
-          if (mounted.current && attempt.current === mine)
-            setConnectionError(errorMessage(cause, COPY.errors.computers));
-        },
-      );
+      const codeId = connectCodeId.current;
+      if (!codeId) return;
+      void pollIssuedCode(codeId, mine);
     }, COMPUTER_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [connect.kind]);
+  }, [connect.kind, pollIssuedCode]);
 
   // Once the Computer is here, the same cadence keeps reading its readiness. The daemon re-probes on
   // its own schedule, so a failure that gets repaired in a terminal turns green here with no page
@@ -555,9 +617,11 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   const reset = useCallback(() => {
     attempt.current += 1;
+    issuingFlight.current = false;
     window.clearInterval(feishuTimer.current);
     computerId.current = undefined;
-    baseline.current = new Map();
+    connectCodeId.current = undefined;
+    redeemed.current = undefined;
     expiresAt.current = 0;
     creationRef.current = "idle";
     setConnect({ kind: "idle" });

@@ -64,12 +64,49 @@ export const AccountComputerConnectCodeIssueRequestSchema = z.union([
 
 export const ComputerConnectCodeIssueResponseSchema = z
   .object({
+    /**
+     * The Server's own handle on the issued code row. Opaque and non-secret: it names the code for the
+     * pollable status read and is worthless at the exchange, which still requires the code itself.
+     */
+    connectCodeId: z.string().uuid(),
     bootstrapCommand: z.string().min(1),
     expiresIn: z.number().int().positive(),
     issuedAt: z.string().datetime(),
     mode: ComputerConnectCodeModeSchema.optional(),
   })
   .strict();
+
+/**
+ * The lifecycle of one issued connect code as the issuing Account may observe it. `pending` means
+ * nobody has redeemed it yet; `redeemed` names the exact Computer that did. `expired` and `revoked`
+ * fail closed: the read keeps answering, but it never names a Computer for them.
+ */
+export const ComputerConnectCodeStateSchema = z.enum(["pending", "redeemed", "expired", "revoked"]);
+
+/**
+ * The Server-authoritative correlation between a connect code and the Computer that redeemed it.
+ * Carries identity and timing evidence only — never the raw code, its hash, or any machine token.
+ * `computerId` and `redeemedAt` are present exactly in the `redeemed` state.
+ */
+const ComputerConnectCodeTerminalStatusFields = {
+  connectCodeId: z.string().uuid(),
+  computerId: z.null(),
+  redeemedAt: z.null(),
+};
+
+export const ComputerConnectCodeStatusSchema = z.discriminatedUnion("state", [
+  z.object({ ...ComputerConnectCodeTerminalStatusFields, state: z.literal("pending") }).strict(),
+  z.object({ ...ComputerConnectCodeTerminalStatusFields, state: z.literal("expired") }).strict(),
+  z.object({ ...ComputerConnectCodeTerminalStatusFields, state: z.literal("revoked") }).strict(),
+  z
+    .object({
+      connectCodeId: z.string().uuid(),
+      state: z.literal("redeemed"),
+      computerId: z.string().uuid(),
+      redeemedAt: z.string().datetime(),
+    })
+    .strict(),
+]);
 
 export const ComputerProviderReadinessSchema = z
   .object({
@@ -141,6 +178,8 @@ export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectC
 export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;
 export type ComputerConnectCodeIssueRequest = z.infer<typeof ComputerConnectCodeIssueRequestSchema>;
 export type ComputerConnectCodeIssueResponse = z.infer<typeof ComputerConnectCodeIssueResponseSchema>;
+export type ComputerConnectCodeState = z.infer<typeof ComputerConnectCodeStateSchema>;
+export type ComputerConnectCodeStatus = z.infer<typeof ComputerConnectCodeStatusSchema>;
 export type AccountComputerConnectCodeCreateRequest = z.infer<typeof AccountComputerConnectCodeCreateRequestSchema>;
 export type AccountComputerConnectCodeRepairRequest = z.infer<typeof AccountComputerConnectCodeRepairRequestSchema>;
 export type AccountComputerConnectCodeIssueRequest = z.infer<typeof AccountComputerConnectCodeIssueRequestSchema>;

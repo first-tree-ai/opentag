@@ -123,6 +123,7 @@ function installApi(
   let loggedOut = false;
   let meFailuresRemaining = options.meFailuresAfterProfileUpdate ?? 0;
   let computerConnectCodeIssued = false;
+  const connectCodeId = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -285,28 +286,23 @@ function installApi(
             ],
       });
     }
-    if (path === "/api/v1/computers") {
-      const failureStatus = options.computerReadStatus?.(computerConnectCodeIssued);
-      if (failureStatus) return json({ error: { message: "Computer readiness unavailable" } }, failureStatus);
-      if (options.computerEvidenceFails) return json({ error: { message: "Computer evidence unavailable" } }, 503);
+    const normalizeComputer = (computer: Record<string, unknown>) => ({
+      computerId: computer.computerId ?? computer.id,
+      displayName: computer.displayName,
+      platform: computer.platform,
+      connectionStatus: computer.connectionStatus,
+      providerReadiness: computer.providerReadiness,
+      connectedAt: computer.connectedAt ?? null,
+      lastSeenAt: computer.lastSeenAt ?? null,
+      observedAt: computer.observedAt ?? computer.lastSeenAt ?? computer.connectedAt ?? "2026-08-20T00:00:00.000Z",
+      enrolledAt: computer.enrolledAt ?? "2026-08-20T00:00:00.000Z",
+      agentIds: computer.agentIds ?? [agentId],
+    });
+    const listComputers = async (connected: boolean) => {
       const configured =
-        typeof options.computers === "function"
-          ? await options.computers(computerConnectCodeIssued)
-          : options.computers;
-      const normalizeComputer = (computer: Record<string, unknown>) => ({
-        computerId: computer.computerId ?? computer.id,
-        displayName: computer.displayName,
-        platform: computer.platform,
-        connectionStatus: computer.connectionStatus,
-        providerReadiness: computer.providerReadiness,
-        connectedAt: computer.connectedAt ?? null,
-        lastSeenAt: computer.lastSeenAt ?? null,
-        observedAt: computer.observedAt ?? computer.lastSeenAt ?? computer.connectedAt ?? "2026-08-20T00:00:00.000Z",
-        enrolledAt: computer.enrolledAt ?? "2026-08-20T00:00:00.000Z",
-        agentIds: computer.agentIds ?? [agentId],
-      });
-      return json({
-        computers: configured?.map(normalizeComputer) ?? [
+        typeof options.computers === "function" ? await options.computers(connected) : options.computers;
+      return (
+        configured?.map(normalizeComputer) ?? [
           normalizeComputer({
             id: computerId,
             displayName: "Ada's Mac",
@@ -318,19 +314,52 @@ function installApi(
             connectedAt: "2026-08-20T00:00:00.000Z",
             lastSeenAt: "2026-08-20T00:00:00.000Z",
           }),
-        ],
-      });
+        ]
+      );
+    };
+    if (path === "/api/v1/computers") {
+      const failureStatus = options.computerReadStatus?.(computerConnectCodeIssued);
+      if (failureStatus) return json({ error: { message: "Computer readiness unavailable" } }, failureStatus);
+      if (options.computerEvidenceFails) return json({ error: { message: "Computer evidence unavailable" } }, 503);
+      return json({ computers: await listComputers(computerConnectCodeIssued) });
     }
     if (path === "/api/v1/computer-connect-codes" && init?.method === "POST") {
       computerConnectCodeIssued = true;
       return json(
         {
+          connectCodeId,
           bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- example",
           expiresIn: 900,
           issuedAt: "2026-08-20T00:00:00.000Z",
         },
         201,
       );
+    }
+    if (path === `/api/v1/computer-connect-codes/${connectCodeId}`) {
+      // The mock Server's own verdict: pending until the issued code is redeemed, then the exact
+      // Computer — the one the post-issuance Computers list gained or saw reconnect. Never the raw
+      // code, and never a machine that was simply already there.
+      if (!computerConnectCodeIssued) {
+        return json({ connectCodeId, state: "pending", computerId: null, redeemedAt: null });
+      }
+      const before = await listComputers(false);
+      const after = await listComputers(true);
+      const baseline = new Map(before.map((computer) => [computer.computerId, computer.connectedAt]));
+      const arrived = after.find(
+        (computer) =>
+          computer.connectionStatus === "online" &&
+          typeof computer.computerId === "string" &&
+          (!baseline.has(computer.computerId) || baseline.get(computer.computerId) !== computer.connectedAt),
+      );
+      if (!arrived || typeof arrived.computerId !== "string") {
+        return json({ connectCodeId, state: "pending", computerId: null, redeemedAt: null });
+      }
+      return json({
+        connectCodeId,
+        state: "redeemed",
+        computerId: arrived.computerId,
+        redeemedAt: typeof arrived.connectedAt === "string" ? arrived.connectedAt : "2026-08-20T00:00:00.000Z",
+      });
     }
     if (path.startsWith(`/api/v1/agents/${agentId}/usage?`)) {
       const days = Number(new URL(path, "https://opentag.test").searchParams.get("days"));

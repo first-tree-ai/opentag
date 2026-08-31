@@ -1974,6 +1974,77 @@ describe("OpenTag Web App Shell", () => {
     expect(revisions).toEqual([1, 2]);
   });
 
+  it("keeps the screen and the draft when a save fails on the transport", async () => {
+    installApi();
+    window.history.replaceState({}, "", `/agents/${agentId}/settings`);
+    render(<App />);
+
+    const identity = within(await screen.findByRole("form", { name: "Name" }));
+    fireEvent.change(identity.getByLabelText("Display name"), { target: { value: "Draft I Typed" } });
+
+    // The request does not arrive. A re-read would not arrive either, so asking for one would turn a
+    // failed save into a failed page read and take all six blocks -- and this draft -- with it.
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    if (!baseFetch) throw new Error("Expected the test API to be installed");
+    let offline = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (offline && String(input).startsWith(`/api/v1/agents/${agentId}`)) throw new TypeError("Failed to fetch");
+      return baseFetch(input, init);
+    });
+    fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
+    expect((await identity.findByRole("alert")).textContent).toBe("Failed to fetch");
+
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "Name",
+      "Messaging",
+      "Computer",
+      "Model",
+      "Resources",
+      "Danger zone",
+    ]);
+    expect((identity.getByLabelText("Display name") as HTMLInputElement).value).toBe("Draft I Typed");
+
+    // And it recovers on its own once the request can be made again, without a reload.
+    offline = false;
+    fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
+    expect((await identity.findByRole("status")).textContent).toBe("Name saved.");
+  });
+
+  it("keeps the screen when the re-read after a successful save does not arrive", async () => {
+    installApi();
+    window.history.replaceState({}, "", `/agents/${agentId}/settings`);
+    render(<App />);
+
+    const identity = within(await screen.findByRole("form", { name: "Name" }));
+    fireEvent.change(identity.getByLabelText("Display name"), { target: { value: "Research Reviewer" } });
+
+    // The write lands; the re-read it triggers does not. A screen that treats a failed refresh as a
+    // failed read would replace six editors with a banner immediately after telling the reader their
+    // change was saved.
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    if (!baseFetch) throw new Error("Expected the test API to be installed");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === `/api/v1/agents/${agentId}/config` && init?.method !== "PATCH") {
+        throw new TypeError("Failed to fetch");
+      }
+      return baseFetch(input, init);
+    });
+    fireEvent.click(identity.getByRole("button", { name: "Save changes" }));
+    expect((await identity.findByRole("status")).textContent).toBe("Name saved.");
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+        "Name",
+        "Messaging",
+        "Computer",
+        "Model",
+        "Resources",
+        "Danger zone",
+      ]),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("refuses a settings segment that anchors nothing", async () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/runtime`);

@@ -1,6 +1,6 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
-import { browserApi } from "../../../api.js";
+import { ApiError, browserApi } from "../../../api.js";
 import { Button, Field, KumoInputControl, Text } from "../../../ui/design-system.js";
 
 export function GeneralConfigForm({
@@ -47,12 +47,15 @@ export function GeneralConfigForm({
       // it has to interrupt the way the same refusal already does inside the Model dialog.
       setMessage({ kind: "error", text: cause instanceof Error ? cause.message : "Unable to save name" });
       /*
-       * A refusal is usually the Agent having moved on somewhere else, and the answer to that is to
-       * go and read where it moved to. Without this the same revision is re-sent on every retry and
-       * the field is stuck until the page is reloaded -- on a screen whose own back link is already
-       * showing the new name. The draft is untouched, so the retry carries what was typed.
+       * Re-read only when the Server says the Agent moved on. That is the failure a retry cannot
+       * clear on its own -- the same revision would be re-sent forever, and the field stays stuck
+       * until the page is reloaded, on a screen whose own back link is already showing the new name.
+       *
+       * Every other failure is left alone on purpose. A request that did not arrive would answer a
+       * re-read no better, and asking for one turns a failed save into a failed page read: the
+       * screen's own reasons for holding a draft, an open dialog or a paused Agent all go with it.
        */
-      onAgentChanged();
+      if (movedOn(cause)) onAgentChanged();
     } finally {
       setSaving(false);
     }
@@ -103,4 +106,9 @@ export function GeneralConfigForm({
       ) : null}
     </form>
   );
+}
+
+/** The Server refusing a write because the record is no longer the one that was read. */
+function movedOn(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.code === "AGENT_REVISION_CONFLICT";
 }

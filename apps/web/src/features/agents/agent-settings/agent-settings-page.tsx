@@ -90,6 +90,17 @@ function AgentSettingsContent({
   // describe the same record, and asking per block would show them settling at different times.
   const configState = toResourceState(
     useQuery({ queryKey: queryKeys.agents.config(agent.id), queryFn: () => browserApi.agentConfig(agent.id) }),
+    /*
+     * A re-read that fails degrades to the reading already in hand rather than replacing the screen
+     * with a banner. Six editors are mounted on this record, and one of them is usually holding a
+     * draft, an open dialog or a half-finished confirmation -- unmounting all of that because a
+     * background request did not arrive costs the reader work they cannot get back.
+     *
+     * Showing the last reading is safe rather than optimistic: every write carries the revision it
+     * was read at, so a stale one is refused by the Server rather than silently applied, and that
+     * refusal is the one failure this screen knows how to recover from.
+     */
+    (config) => config,
   );
   return (
     <div className="grid gap-6">

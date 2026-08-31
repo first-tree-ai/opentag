@@ -1,5 +1,5 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
-import { messagingProviderLabel } from "../../im/provider-label.js";
+import { messagingProviderChoices, messagingProviderLabel } from "../../im/provider-label.js";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
@@ -292,11 +292,11 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
     computer_offline: "This agent's computer is offline. Retrying automatically.",
     runtime_unavailable: runtimeRecoveryMessage(agent),
-    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
+    im_not_connected: `Connect ${messagingProviderChoices()} so teammates can send this Agent work.`,
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
-    im_error: "The messaging connection failed. Reconnect Feishu or Slack to receive messages.",
-    im_disabled: "Messaging is turned off for this Agent. Reconnect Feishu or Slack to receive messages.",
+    im_error: `The messaging connection failed. Reconnect ${messagingProviderChoices()} to receive messages.`,
+    im_disabled: `Messaging is turned off for this Agent. Reconnect ${messagingProviderChoices()} to receive messages.`,
     handoff_unavailable: "Messages cannot be sent to this Agent.",
   };
   return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);

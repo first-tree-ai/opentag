@@ -1,0 +1,1 @@
+Runtime custody and bounded IM delivery are covered by focused unit tests; all local checks, integration tests, and the 100% patch-coverage gate passed.

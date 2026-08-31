@@ -368,4 +368,81 @@ describe("BrowserApi", () => {
     expect(failure).toBeInstanceOf(ApiError);
     expect(failure.status).toBe(404);
   });
+
+  it("posts a runtime test with only expected revisions, CSRF, and the caller AbortSignal", async () => {
+    setDocumentCookie("opentag_csrf=runtime-test-csrf; Path=/");
+    const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const signal = new AbortController().signal;
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/agents/${agentId}/runtime-test`);
+      expect(init?.method).toBe("POST");
+      expect(init?.signal).toBe(signal);
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("runtime-test-csrf");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        expectedRevision: 4,
+        expectedRuntimeConfigRevision: 7,
+      });
+      return jsonResponse({ status: "passed" });
+    });
+
+    await expect(
+      new BrowserApi(fetchImpl).testAgentRuntime(
+        agentId,
+        { expectedRevision: 4, expectedRuntimeConfigRevision: 7 },
+        signal,
+      ),
+    ).resolves.toEqual({ status: "passed" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
+  it("returns sanitized failed runtime-test payloads without retrying or caching", async () => {
+    const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ status: "failed", code: "provider_failed" }));
+    const api = new BrowserApi(fetchImpl);
+
+    await expect(
+      api.testAgentRuntime(agentId, { expectedRevision: 1, expectedRuntimeConfigRevision: 1 }),
+    ).resolves.toEqual({ status: "failed", code: "provider_failed" });
+    await expect(
+      api.testAgentRuntime(agentId, { expectedRevision: 1, expectedRuntimeConfigRevision: 1 }),
+    ).resolves.toEqual({ status: "failed", code: "provider_failed" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects extra runtime-test response fields and forwards abort without retry", async () => {
+    const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const extraFieldFetch = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ status: "passed", output: "secret-model-text" }),
+    );
+    await expect(
+      new BrowserApi(extraFieldFetch).testAgentRuntime(agentId, {
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 1,
+      }),
+    ).rejects.toMatchObject({ status: 503, message: "The server returned an invalid response" });
+    expect(extraFieldFetch).toHaveBeenCalledOnce();
+
+    const abortFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(init?.signal?.aborted).toBe(true);
+      throw abortError();
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      new BrowserApi(abortFetch).testAgentRuntime(
+        agentId,
+        { expectedRevision: 1, expectedRuntimeConfigRevision: 1 },
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(abortFetch).toHaveBeenCalledOnce();
+  });
 });
+
+function abortError(): Error {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
+}

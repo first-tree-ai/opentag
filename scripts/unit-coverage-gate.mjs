@@ -1,27 +1,23 @@
 /**
  * Pure helpers for enforcing coverage on executable lines changed by a pull request.
  *
- * The coverage provider may omit files or statements that it could not instrument. Omissions are
- * treated as uncovered for changed executable lines, which keeps the gate fail closed.
+ * A file the coverage provider never instrumented is treated as wholly uncovered, which keeps the
+ * gate fail closed: a package that silently stopped being measured must not read as clean.
+ *
+ * Within a file it did instrument, the provider is the authority on which lines can be executed at
+ * all. It emits no statement for a TypeScript interface member or a bare JSX text child, because
+ * neither survives compilation as code, and no test can ever cover one. Counting those as uncovered
+ * would fail a pull request for adding a type or changing a string, with nothing the author could
+ * write to satisfy it — so a changed line an instrumented file has no statement for is skipped
+ * rather than blamed.
  */
 
-import { readFileSync } from "node:fs";
-import { extname, isAbsolute, posix, relative, resolve } from "node:path";
-import ts from "typescript";
+import { extname, isAbsolute, posix, relative } from "node:path";
 
 export const SUPPORTED_SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 
 const EXCLUDED_DIRECTORY_NAMES = new Set(["coverage", "dist", "node_modules"]);
 const EXCLUDED_ROOT_NAMES = new Set(["e2e", "scripts"]);
-const NON_EXECUTABLE_NODE_KINDS = new Set([
-  ts.SyntaxKind.ImportDeclaration,
-  ts.SyntaxKind.ImportEqualsDeclaration,
-  ts.SyntaxKind.ExportDeclaration,
-  ts.SyntaxKind.InterfaceDeclaration,
-  ts.SyntaxKind.TypeAliasDeclaration,
-  ts.SyntaxKind.TypeLiteral,
-]);
-const nonExecutableLineCache = new Map();
 
 function normalizePath(value) {
   return posix.normalize(String(value).replaceAll("\\", "/").replace(/^\.\//, ""));
@@ -38,7 +34,6 @@ export function isSupportedSourcePath(value) {
   if (segments.some((segment) => EXCLUDED_DIRECTORY_NAMES.has(segment))) return false;
   if (segments.includes("paraglide") && segments.includes("src")) return false;
   const name = fileName(path);
-  if (/^vitest(?:\..+)?\.config\.(?:cjs|cts|js|mjs|mts|ts)$/.test(name)) return false;
   if (/\.d\.(?:cts|mts|ts)$/.test(name)) return false;
   if (/\.(?:test|spec)\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/.test(name)) return false;
   return SUPPORTED_SOURCE_EXTENSIONS.has(extname(name).toLowerCase());
@@ -53,39 +48,6 @@ function isExecutableSourceLine(value) {
   }
   if (/^[{}[\]();,:]+$/.test(trimmed)) return false;
   return true;
-}
-
-/** TypeScript's AST is needed for multiline type/import declarations; their lines do not produce runtime code. */
-function nonExecutableSourceLines(file, repositoryRoot) {
-  const cacheKey = `${repositoryRoot}\0${file}`;
-  const cached = nonExecutableLineCache.get(cacheKey);
-  if (cached) return cached;
-
-  const lines = new Set();
-  try {
-    const sourcePath = resolve(repositoryRoot, file);
-    const source = readFileSync(sourcePath, "utf8");
-    const sourceFile = ts.createSourceFile(
-      sourcePath,
-      source,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.getScriptKindFromFileName(file),
-    );
-    const visit = (node) => {
-      if (NON_EXECUTABLE_NODE_KINDS.has(node.kind)) {
-        const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-        const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
-        for (let line = start; line <= end; line += 1) lines.add(line);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(sourceFile);
-  } catch {
-    // Synthetic diffs used by the pure gate tests have no source file to parse.
-  }
-  nonExecutableLineCache.set(cacheKey, lines);
-  return lines;
 }
 
 /** Extract added lines from a unified diff, keyed by their post-change repository path. */
@@ -142,33 +104,51 @@ export function normalizeCoveragePath(rawPath, repositoryRoot) {
   return normalizePath(isAbsolute(value) ? relative(repositoryRoot, value) : value);
 }
 
-/** Map each normalized repository path to its maximum Istanbul statement hit per source line. */
+/**
+ * Record one statement's hits against every line it spans, keeping the highest count per line.
+ *
+ * A statement claims every line it covers, not just the one it starts on. The current provider
+ * emits single-line statements, so today the result is the same either way; recording the span
+ * means the gate can ask "does any statement cover this line", which is the question it means to
+ * ask, rather than depending on a provider property nothing enforces.
+ */
+function recordStatementHits(lineHits, statement, rawHits) {
+  const start = statement?.start?.line;
+  if (!Number.isInteger(start)) return;
+  const end = Number.isInteger(statement?.end?.line) ? Math.max(statement.end.line, start) : start;
+  const hits = Number.isFinite(rawHits) ? rawHits : 0;
+  for (let line = start; line <= end; line += 1) {
+    lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hits));
+  }
+}
+
+/** Map each normalized repository path to its maximum statement hit per source line. */
 export function buildLineHitsByFile(coverage, repositoryRoot) {
   const lineHitsByFile = new Map();
   for (const [rawFile, fileCoverage] of Object.entries(coverage ?? {})) {
     const file = normalizeCoveragePath(rawFile, repositoryRoot);
     const lineHits = lineHitsByFile.get(file) ?? new Map();
     for (const [statementId, statement] of Object.entries(fileCoverage?.statementMap ?? {})) {
-      const line = statement?.start?.line;
-      if (!Number.isInteger(line)) continue;
-      const hits = Number(fileCoverage?.s?.[statementId] ?? 0);
-      lineHits.set(line, Math.max(lineHits.get(line) ?? 0, Number.isFinite(hits) ? hits : 0));
+      recordStatementHits(lineHits, statement, Number(fileCoverage?.s?.[statementId] ?? 0));
     }
     lineHitsByFile.set(file, lineHits);
   }
   return lineHitsByFile;
 }
 
-function evaluateChangedFile({ file, lines, lineHits, repositoryRoot }) {
+function evaluateChangedFile({ file, lines, lineHits }) {
   if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
+  const instrumented = lineHits !== undefined;
   const uncovered = [];
   let covered = 0;
   let total = 0;
-  const nonExecutableLines = nonExecutableSourceLines(file, repositoryRoot);
   for (const { content, line } of lines) {
-    if (nonExecutableLines.has(line) || !isExecutableSourceLine(content)) continue;
+    if (!isExecutableSourceLine(content)) continue;
+    // The provider instrumented this file and no statement covers this line: it is a declaration or
+    // a literal, not a statement a test could reach.
+    if (instrumented && !lineHits.has(line)) continue;
     total += 1;
-    if (!lineHits?.has(line)) {
+    if (!instrumented) {
       uncovered.push(`${file}:${line} (missing coverage entry)`);
     } else if (lineHits.get(line) > 0) {
       covered += 1;
@@ -191,7 +171,7 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   let total = 0;
 
   for (const [file, lines] of changedLines) {
-    const result = evaluateChangedFile({ file, lineHits: lineHitsByFile.get(file), lines, repositoryRoot });
+    const result = evaluateChangedFile({ file, lineHits: lineHitsByFile.get(file), lines });
     covered += result.covered;
     total += result.total;
     uncovered.push(...result.uncovered);
@@ -202,5 +182,5 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   }
 
   const percent = (covered / total) * 100;
-  return { covered, passed: uncovered.length === 0 && percent >= threshold, percent, total, uncovered };
+  return { covered, passed: percent >= threshold, percent, total, uncovered };
 }

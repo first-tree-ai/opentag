@@ -30,43 +30,42 @@ export async function stopAgentSessions(
 ): Promise<void> {
   const firstTarget = targets[0];
   if (!firstTarget) return;
-  const dispatchedResults = await database.transaction(async (transaction) => {
+  const canStop = await database.transaction(async (transaction) => {
     const [agent] = await transaction
       .select({ status: agents.status })
       .from(agents)
       .where(eq(agents.id, firstTarget.agentId))
-      .limit(1)
-      .for("update");
-    if (!agent || agent.status === "active") return [];
-
-    const dispatched = targets.flatMap((target) => {
-      const currentInstanceId = dependencies.currentInstanceId(target.workspaceComputerId);
-      if (!currentInstanceId) return [];
-      let markDispatched: () => void = () => undefined;
-      const dispatch = new Promise<void>((resolve) => {
-        markDispatched = resolve;
-      });
-      const result = dependencies.requestReconcile(
-        target.workspaceComputerId,
-        currentInstanceId,
-        {
-          type: "session:reconcile",
-          requestId: randomUUID(),
-          computerId: target.computerId,
-          sessionId: target.sessionId,
-          agentId: target.agentId,
-          placementGeneration: target.placementGeneration,
-          desired: "stopped",
-        },
-        markDispatched,
-      );
-      void result.catch(() => markDispatched());
-      return [{ dispatch, result }];
-    });
-    await Promise.all(dispatched.map(({ dispatch }) => dispatch));
-    return dispatched.map(({ result }) => result);
+      .limit(1);
+    return Boolean(agent && agent.status !== "active");
   });
-  const results = await Promise.allSettled(dispatchedResults);
+  if (!canStop) return;
+
+  const dispatched = targets.flatMap((target) => {
+    const currentInstanceId = dependencies.currentInstanceId(target.workspaceComputerId);
+    if (!currentInstanceId) return [];
+    let markDispatched: () => void = () => undefined;
+    const dispatch = new Promise<void>((resolve) => {
+      markDispatched = resolve;
+    });
+    const result = dependencies.requestReconcile(
+      target.workspaceComputerId,
+      currentInstanceId,
+      {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        computerId: target.computerId,
+        sessionId: target.sessionId,
+        agentId: target.agentId,
+        placementGeneration: target.placementGeneration,
+        desired: "stopped",
+      },
+      markDispatched,
+    );
+    void result.catch(() => markDispatched());
+    return [{ dispatch, result }];
+  });
+  await Promise.all(dispatched.map(({ dispatch }) => dispatch));
+  const results = await Promise.allSettled(dispatched.map(({ result }) => result));
   assertAgentSessionsStopped(results);
 }
 

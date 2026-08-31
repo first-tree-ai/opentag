@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  AgentRuntimeTestResultFrameSchema,
   AgentTraceBatchSchema,
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
@@ -404,6 +405,55 @@ describe("runtime domain contract", () => {
         outboxContext: { provider: "feishu", sessionKind: "channel", chatId: "oc_1" },
       }),
     ).toThrow();
+  });
+
+  it("validates Agent Runtime test frames without a result or diagnostic payload", () => {
+    const requestId = randomUUID();
+    const computerId = randomUUID();
+    const request = {
+      type: "agent-runtime:test" as const,
+      requestId,
+      computerId,
+      provider: "claude-code" as const,
+    };
+    expect(ServerRuntimeBusinessFrameSchema.parse(request)).toEqual(request);
+    expect(
+      ServerRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test:cancel",
+        requestId,
+      }),
+    ).toEqual({ type: "agent-runtime:test:cancel", requestId });
+    expect(() =>
+      ServerRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test",
+        requestId,
+        computerId,
+        provider: "codex",
+        prompt: "override",
+      }),
+    ).toThrow();
+    expect(() =>
+      ClientRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+      }),
+    ).toThrow();
+    expect(() =>
+      AgentRuntimeTestResultFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+        code: "provider_failed",
+      }),
+    ).toThrow(/forbids a failure code/);
+    expect(() =>
+      AgentRuntimeTestResultFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "failed",
+      }),
+    ).toThrow(/requires a failure code/);
   });
 });
 

@@ -18,6 +18,7 @@ import {
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
   type AgentRuntimeManifest,
+  type AgentRuntimePolicy,
   type AgentRuntimeProbeRequest,
   type AgentRuntimeProbeResult,
   type CreateAgentRuntimeRequest,
@@ -59,6 +60,7 @@ interface ClaudeCodeRuntimeOptions {
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
   readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly emptyNativeToolAllowList?: boolean;
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
   readonly resume: boolean;
@@ -125,6 +127,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #sessionId: string;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly #emptyNativeToolAllowList: boolean;
   readonly #hostedTools?: AgentHostedTools;
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly #systemPrompt: string;
@@ -152,6 +155,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#sessionId = parseClaudeCodeBinding(options.binding);
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
+    this.#emptyNativeToolAllowList = options.emptyNativeToolAllowList === true;
     this.#hostedTools = options.hostedTools;
     this.#startHostedToolBridge = options.startHostedToolBridge;
     this.#systemPrompt = options.systemPrompt;
@@ -254,6 +258,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
       "bypassPermissions",
+      ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       "--append-system-prompt",
@@ -656,6 +661,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         binding,
         configuration: request.configuration,
         createProcess: (args) => this.#createProcess(request.workspace.cwd, args, request.workspace.environment),
+        emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
         hostedTools: request.hostedTools,
         resume: mode === "resume",
@@ -785,6 +791,10 @@ function hasCredentialEnvironment(environment: NodeJS.ProcessEnv): boolean {
   );
 }
 
+function isEmptyNativeToolAllowList(policy: AgentRuntimePolicy): boolean {
+  return policy.tools.mode === "allow-list" && policy.tools.names.length === 0;
+}
+
 function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   if (!request || typeof request !== "object" || typeof request.eventSink !== "function") {
     throw new AgentRuntimeError("configuration_invalid", "eventSink is required");
@@ -814,7 +824,14 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
       "Claude Code cannot guarantee disabled network because managed settings override CLI sandbox settings",
     );
   }
-  if (request.policy.tools.mode !== "provider-default") {
+  if (isEmptyNativeToolAllowList(request.policy)) {
+    if (request.hostedTools) {
+      throw new AgentRuntimeError(
+        "configuration_invalid",
+        "Claude Code does not implement the common tool allow-list contract",
+      );
+    }
+  } else if (request.policy.tools.mode !== "provider-default") {
     throw new AgentRuntimeError(
       "configuration_invalid",
       "Claude Code does not implement the common tool allow-list contract",

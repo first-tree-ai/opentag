@@ -354,6 +354,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ tools: { mode: "allow-list", names: ["Read"] } }),
         message: "does not implement the common tool allow-list contract",
       },
+      {
+        request: {
+          ...withPolicy({ tools: { mode: "allow-list", names: [] } }),
+          hostedTools: {
+            definitions: [],
+            handler: async () => ({ success: true, content: [] }),
+          },
+        },
+        message: "does not implement the common tool allow-list contract",
+      },
       { request: withConfiguration({ model: " " }), message: "model" },
       { request: withConfiguration({ reasoningEffort: "extreme" }), message: "reasoning effort" },
       { request: withConfiguration({ provider: [] }), message: "must be an object" },
@@ -436,6 +446,13 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
           expect(argumentAfter(args, "--permission-mode")).toBe("bypassPermissions");
           expect(args).not.toContain("--settings");
           expect(args).not.toContain("--tools");
+        },
+      },
+      {
+        request: withPolicy({ tools: { mode: "allow-list", names: [] } }),
+        expected: (args) => {
+          expect(argumentAfter(args, "--tools")).toBe("");
+          expect(args).not.toContain("--settings");
         },
       },
       {

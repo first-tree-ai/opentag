@@ -4,6 +4,7 @@ import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
+import { OnboardingResetError } from "../services/onboarding-reset/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 
@@ -139,9 +140,13 @@ function services() {
   };
 }
 
-function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
+function appWith(
+  overrides: Partial<ReturnType<typeof services>> = {},
+  setupReset?: { reboard: ReturnType<typeof vi.fn>; resetOnboarding: ReturnType<typeof vi.fn> },
+) {
   const service = { ...services(), ...overrides };
   const app = createApp({
+    ...(setupReset ? { setupResetService: setupReset as never } : {}),
     authService: authService(),
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
@@ -153,6 +158,107 @@ function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
   apps.push(app);
   return { app, service };
 }
+
+describe("undoing setup on the authenticated Account", () => {
+  function resetService() {
+    return { reboard: vi.fn().mockResolvedValue(undefined), resetOnboarding: vi.fn().mockResolvedValue(undefined) };
+  }
+
+  it("routes each mode to the operation it names", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const all = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "all" },
+    });
+    expect(all.statusCode).toBe(204);
+    expect(setupReset.resetOnboarding).toHaveBeenCalledWith(userId);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+
+    const reboard = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard" },
+    });
+    expect(reboard.statusCode).toBe(204);
+    expect(setupReset.reboard).toHaveBeenCalledWith(userId);
+    expect(setupReset.resetOnboarding).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the Account from the token, so no body can name another one", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard", accountId: "11111111-1111-4111-8111-111111111111" },
+    });
+
+    // Rejected outright rather than ignored: a caller who thought they were choosing an Account
+    // should be told they were not.
+    expect(response.statusCode).toBe(400);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("requires authentication", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      payload: { mode: "reboard" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused reset as the deterministic conflict the service raised", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+    setupReset.resetOnboarding.mockRejectedValueOnce(
+      new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "The Account still has active OpenTag resources"),
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "all" },
+    });
+
+    // A refusal the caller can act on, not a failure: the reset stopped before clearing setup, so
+    // the same request is worth making again once the Account is quiet.
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "ONBOARDING_RESET_UNVERIFIED",
+        category: "deterministic",
+        message: "The Account still has active OpenTag resources",
+      },
+    });
+  });
+
+  it("is not registered when the deployment does not offer it", async () => {
+    const { app } = appWith();
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard" },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
 
 describe("Account-native management collections", () => {
   it("lists and reads read-only Tasks in the authenticated Account scope", async () => {

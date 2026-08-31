@@ -7,6 +7,13 @@ import { Banner, Button, Loader } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
+/*
+ * This stays outside the query cache on purpose, for the same reason the Computer setup beside it
+ * does: it drives one authorization to completion rather than reading a resource. Nothing else reads
+ * an attempt, so there is no sharing to gain, and the lifecycle it does keep — which error came from
+ * starting versus from polling, and which attempt a late response belongs to — is the substance of
+ * the flow rather than incidental bookkeeping.
+ */
 const POLL_INTERVAL_MS = 1_500;
 const FEISHU_SETUP_MESSAGES: Record<string, string> = {
   FEISHU_APP_ALREADY_BOUND:

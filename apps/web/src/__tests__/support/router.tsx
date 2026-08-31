@@ -1,4 +1,5 @@
 import { type LinkComponentProps, LinkProvider, TooltipProvider } from "@cloudflare/kumo";
+import { QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -8,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { act, type RenderResult, render } from "@testing-library/react";
 import { createContext, forwardRef, type ReactNode, useContext } from "react";
+import { createQueryClient } from "../../query/client.js";
 
 const AppLink = forwardRef<HTMLAnchorElement, LinkComponentProps>(function AppLink({ href, ...props }, ref) {
   if (href?.startsWith("http://") || href?.startsWith("https://")) {
@@ -38,13 +40,18 @@ export async function renderInRouter(
     history: createMemoryHistory({ initialEntries: [path] }),
     routeTree: createRootRoute({ component: Subject }),
   });
+  // One cache per call, shared across that call's rerenders, so a rerender sees what the first
+  // render cached rather than refetching what a real viewer would already be looking at.
+  const queryClient = createQueryClient();
   const wrap = (node: ReactNode) => (
     <SubjectContext value={node}>
-      <LinkProvider component={AppLink}>
-        <TooltipProvider>
-          <RouterProvider router={router as never} />
-        </TooltipProvider>
-      </LinkProvider>
+      <QueryClientProvider client={queryClient}>
+        <LinkProvider component={AppLink}>
+          <TooltipProvider>
+            <RouterProvider router={router as never} />
+          </TooltipProvider>
+        </LinkProvider>
+      </QueryClientProvider>
     </SubjectContext>
   );
   // The router resolves its first match asynchronously, so the initial paint is flushed here and

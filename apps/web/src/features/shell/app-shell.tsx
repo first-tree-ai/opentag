@@ -23,7 +23,7 @@ export function AppShell() {
 }
 
 export function AppShellContent() {
-  const { me } = useAccount();
+  const { endSession, me } = useAccount();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
   const { setOpenMobile } = useSidebar();
@@ -40,6 +40,10 @@ export function AppShellContent() {
     setAccountError(undefined);
     try {
       await browserApi.logout();
+      // Everything read here belongs to the Account that is signing out. End the session before the
+      // login navigation, so a later Account cannot observe the previous one's data while its own
+      // reads are pending, and so a refresh still in flight cannot put it back afterwards.
+      endSession();
       void navigate({ replace: true, to: "/login" });
     } catch (cause) {
       setAccountError(cause instanceof Error ? cause.message : "Unable to sign out");
@@ -130,6 +134,9 @@ export function AppShellContent() {
                     }
                   />
                   <DropdownMenu.Content aria-label="Account" ref={accountMenuRef}>
+                    <DropdownMenu.Item href="/agents/computers" onClickCapture={() => setOpenMobile(false)}>
+                      Computers
+                    </DropdownMenu.Item>
                     <DropdownMenu.Item
                       onClick={() => {
                         setOpenMobile(false);

@@ -5,11 +5,11 @@ import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/
 import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
-import { loadAgentList, markAgentListUnconfirmed } from "./agent-model.js";
 import { agentAvatarTone, agentCardStatus, titleCase } from "./agent-presentation.js";
+import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsSectionLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
 
@@ -17,11 +17,7 @@ export function AgentsPage() {
   const { me } = useAccount();
   const [createOpen, setCreateOpen] = useState(false);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
-  const state = useResource(() => loadAgentList(), me.user.id, {
-    onBackgroundError: markAgentListUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  const state = useAgentListView(me.user.id);
   return (
     <>
       <Page

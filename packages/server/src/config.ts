@@ -240,10 +240,10 @@ export interface ServerConfig {
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
   /**
-   * Whether this deployment offers the staging Onboarding Lab. It takes no configuration: Scenario
-   * Preview is fixed client-side fixtures, and the reset acts only on the Account that asks for it.
+   * Whether this deployment lets an Account undo its own setup and walk onboarding again. It takes
+   * no configuration: the reset acts only on the Account that asks for it.
    */
-  stagingOnboardingLab: boolean;
+  stagingSetupReset: boolean;
 }
 
 export interface DatabaseConfig {
@@ -337,6 +337,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
-    stagingOnboardingLab: parsed.OPENTAG_ENV === "staging",
+    stagingSetupReset: parsed.OPENTAG_ENV === "staging",
   };
 }

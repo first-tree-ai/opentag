@@ -73,9 +73,9 @@ export function CommandBlock({
   }
 
   return (
-    <div className="otv2-command" data-expired={expiredNotice ? "true" : undefined}>
-      <div className="otv2-command__body">
-        <pre className="otv2-command__code">
+    <div className="otv2-command flex flex-col gap-1" data-expired={expiredNotice ? "true" : undefined}>
+      <div className="otv2-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
+        <pre className="otv2-command__code flex-1 min-w-0">
           <code ref={codeRef}>
             <span className="otv2-command__comment">{comment}</span>
             {"\n"}
@@ -97,7 +97,7 @@ export function CommandBlock({
         */}
         <Button
           aria-label={copied ? copiedLabel : copyLabel}
-          className="otv2-command__copy"
+          className="otv2-command__copy shrink-0"
           data-copied={copied ? "true" : undefined}
           disabled={inert || expiredNotice !== undefined}
           onClick={() => void copy()}
@@ -107,10 +107,14 @@ export function CommandBlock({
         >
           <Icon name={copied ? "check" : "copy"} />
         </Button>
-        {expiredNotice ? <div className="otv2-command__expired">{expiredNotice}</div> : null}
+        {expiredNotice ? (
+          <div className="otv2-command__expired flex flex-wrap items-center justify-center gap-2 rounded-lg p-4 text-sm text-center">
+            {expiredNotice}
+          </div>
+        ) : null}
       </div>
       {hint ? (
-        <p className="otv2-command__hint" role="status">
+        <p className="text-sm text-kumo-subtle m-0" role="status">
           {hint}
         </p>
       ) : null}

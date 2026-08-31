@@ -10,17 +10,16 @@
 import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
+import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { COPY } from "./copy.js";
 import type {
   AgentDraft,
   ConnectState,
   CreationState,
-  MessagingCliStatus,
   MessagingProvider,
   MessagingState,
   ReadinessFacts,
-  RuntimeStatus,
 } from "./flow.js";
 
 /** The existing onboarding polls Computers at this rate while it waits for one. */

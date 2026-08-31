@@ -1,0 +1,135 @@
+name: Patch Coverage
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    name: Enforce Patch Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Measure unit coverage
+        run: pnpm test:coverage
+
+      - name: Enforce changed-line coverage
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PATCH_COVERAGE_THRESHOLD: "80"
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import path from "node:path";
+          import { spawnSync } from "node:child_process";
+
+          const repositoryRoot = process.cwd();
+          const baseSha = process.env.BASE_SHA;
+          const threshold = Number(process.env.PATCH_COVERAGE_THRESHOLD);
+          if (!baseSha || !Number.isFinite(threshold)) {
+            throw new Error("BASE_SHA and PATCH_COVERAGE_THRESHOLD are required");
+          }
+
+          const diff = spawnSync(
+            "git",
+            ["diff", "--unified=0", "--no-color", `${baseSha}...HEAD`, "--", "*.ts", "*.tsx"],
+            { encoding: "utf8" },
+          );
+          if (diff.status !== 0) {
+            throw new Error(diff.stderr || "Unable to read the pull-request diff");
+          }
+
+          const changedLines = new Map();
+          let currentFile;
+          let nextLine;
+          for (const line of diff.stdout.split("\n")) {
+            if (line.startsWith("+++ b/")) {
+              currentFile = line.slice(6);
+              continue;
+            }
+            if (line.startsWith("@@")) {
+              const match = line.match(/\+([0-9]+)(?:,([0-9]+))?/);
+              if (!match) throw new Error(`Unable to parse diff hunk: ${line}`);
+              nextLine = Number(match[1]);
+              continue;
+            }
+            if (!currentFile || nextLine === undefined || line.startsWith("\\")) continue;
+            if (line.startsWith("+")) {
+              if (!line.startsWith("+++")) {
+                const lines = changedLines.get(currentFile) ?? [];
+                lines.push(nextLine);
+                changedLines.set(currentFile, lines);
+                nextLine += 1;
+              }
+              continue;
+            }
+            if (line.startsWith("-")) continue;
+            nextLine += 1;
+          }
+
+          const coveragePath = path.join(repositoryRoot, "coverage/unit/coverage-final.json");
+          const coverage = JSON.parse(readFileSync(coveragePath, "utf8"));
+          const lineHitsByFile = new Map();
+          for (const [rawFile, fileCoverage] of Object.entries(coverage)) {
+            const file = path.posix.normalize(
+              (path.isAbsolute(rawFile) ? path.relative(repositoryRoot, rawFile) : rawFile).replaceAll("\\", "/"),
+            );
+            const lineHits = new Map();
+            for (const [statementId, statement] of Object.entries(fileCoverage.statementMap ?? {})) {
+              const line = statement.start?.line;
+              if (!Number.isInteger(line)) continue;
+              const hits = fileCoverage.s?.[statementId] ?? 0;
+              lineHits.set(line, Math.max(lineHits.get(line) ?? 0, hits));
+            }
+            lineHitsByFile.set(file, lineHits);
+          }
+
+          let covered = 0;
+          let total = 0;
+          const uncovered = [];
+          for (const [file, lines] of changedLines) {
+            const lineHits = lineHitsByFile.get(path.posix.normalize(file));
+            if (!lineHits) continue;
+            for (const line of lines) {
+              if (!lineHits.has(line)) continue;
+              total += 1;
+              if (lineHits.get(line) > 0) covered += 1;
+              else uncovered.push(`${file}:${line}`);
+            }
+          }
+
+          if (total === 0) {
+            console.log("Patch coverage: no executable changed lines were found.");
+            process.exit(0);
+          }
+          const percent = (covered / total) * 100;
+          console.log(`Patch coverage: ${covered}/${total} lines (${percent.toFixed(2)}%), threshold ${threshold.toFixed(2)}%.`);
+          if (uncovered.length > 0) console.log(`Uncovered changed lines:\n${uncovered.join("\n")}`);
+          if (percent < threshold) process.exit(1);
+          NODE

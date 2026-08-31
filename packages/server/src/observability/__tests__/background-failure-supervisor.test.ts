@@ -94,7 +94,7 @@ describe("BackgroundFailureSupervisor", () => {
       phase: "transport",
       message: "upstream password=hidden",
     };
-    let current: Error = Object.assign(new Error(cause.message), cause);
+    let current: Error = Object.assign(new Error(String(cause.message)), cause);
     for (let index = 0; index < 10; index += 1) current = new Error("nested", { cause: current });
 
     await expect(

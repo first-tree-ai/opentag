@@ -167,6 +167,13 @@ test("supported script extensions are included while coverage artifacts remain e
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
 });
 
+test("package test infrastructure is excluded without excluding unrelated __tests__ folders", () => {
+  assert.equal(isSupportedSourcePath("apps/web/src/__tests__/support/app-fixtures.tsx"), false);
+  assert.equal(isSupportedSourcePath("packages/server/src/services/tasks/__tests__/fixture.ts"), false);
+  assert.equal(isSupportedSourcePath("src/__tests__/production.ts"), true);
+  assert.equal(isSupportedSourcePath("tools/__tests__/production.ts"), true);
+});
+
 test("a declaration the provider emits no statement for is not blamed for being uncoverable", () => {
   // A TypeScript interface member and a bare JSX text child both vanish at compile time, so the
   // instrumented file carries no statement for either line. Counting them would fail a pull request

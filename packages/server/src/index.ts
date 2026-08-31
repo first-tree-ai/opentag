@@ -26,6 +26,7 @@ import {
 } from "./services/auth/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
+import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import {
   DefaultFeishuRegistrationGateway,
@@ -40,6 +41,7 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "./services/im-bindings/slack/index.js";
+import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
@@ -120,6 +122,11 @@ export async function startServer(): Promise<void> {
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
     const postAuthentication = new PostAuthenticationService(database);
+    const imCallPolicy = new ExternalCallPolicy({
+      allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
+      maxConcurrency: 16,
+      onMetric: (metric) => app?.log.info({ metric }, "IM provider call metric"),
+    });
     const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
     const betterAuth = createBetterAuth(database, {
       onSessionCreating: async (userId) => {
@@ -205,17 +212,18 @@ export async function startServer(): Promise<void> {
       imBindings: imBindingService,
       runtimeReady: runtimeReadyForAgent,
       onDiagnostic: reportDiagnostic,
+      policy: imCallPolicy,
     });
     const feishuSetupService = new FeishuSetupService({
       database,
       cipher: applicationCipher,
       instanceId,
       imBindings: imBindingService,
-      registrations: new DefaultFeishuRegistrationGateway(),
+      registrations: new DefaultFeishuRegistrationGateway(undefined, imCallPolicy),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
     });
-    const slackApi = new DefaultSlackApiClient();
+    const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
       database,
@@ -231,7 +239,10 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
-    const imResourceService = new ImResourceService(database, resolveImAdapter);
+    const imResourceService = new ImResourceService(database, resolveImAdapter, imCallPolicy);
+    const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
+    });
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
@@ -295,6 +306,7 @@ export async function startServer(): Promise<void> {
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
+        receipts: slackWebhookReceipts,
         ...(config.slackOAuth ? { firstPartySigningSecret: config.slackOAuth.signingSecret } : {}),
         createAdapter: (binding) =>
           new SlackAdapter({

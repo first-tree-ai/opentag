@@ -155,6 +155,11 @@
       "idx": 30,
       "tag": "0030_low_ulik",
       "sha256": "c8b021fc3a7f7796113d4c3c14ac999495f4a894a03b2b3245b71af4d31c3be8"
+    },
+    {
+      "idx": 31,
+      "tag": "0031_majestic_shiva",
+      "sha256": "ed5c92f7986df61efaeea738fcc9f1afde0cd448819182598ddb235172db7dd1"
     }
   ]
 }

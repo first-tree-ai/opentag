@@ -1,0 +1,17 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agent_settings_runtime_test_action": "测试运行时",
+  "agent_settings_runtime_test_failed_busy": "此计算机上已有运行时测试正在进行。",
+  "agent_settings_runtime_test_failed_cancelled": "运行时测试已取消。",
+  "agent_settings_runtime_test_failed_capability_missing": "所选计算机无法运行此运行时测试。",
+  "agent_settings_runtime_test_failed_computer_unavailable": "所选计算机不可用。",
+  "agent_settings_runtime_test_failed_interaction_or_tool": "运行时测试失败，因为 Provider 使用了工具或请求了交互。",
+  "agent_settings_runtime_test_failed_provider_failed": "Provider 请求失败。",
+  "agent_settings_runtime_test_failed_provider_start_failed": "无法启动 Provider。",
+  "agent_settings_runtime_test_failed_request": "运行时测试失败。",
+  "agent_settings_runtime_test_failed_stale_configuration": "已保存的智能体运行时配置已更改。请重新测试以使用当前配置。",
+  "agent_settings_runtime_test_failed_timeout": "运行时测试超时。",
+  "agent_settings_runtime_test_passed": "已通过。这仅证明此次调用在所选计算机环境中使用当时的已保存配置成功。它不是持久的认证或就绪声明。",
+  "agent_settings_runtime_test_pending": "测试中…",
+  "agent_settings_runtime_test_warning": "此操作会向 Provider 发起真实请求。可能会消耗配额，并且 Provider 可能会保留或计费该请求。"
+}

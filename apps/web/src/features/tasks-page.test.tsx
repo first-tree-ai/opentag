@@ -101,7 +101,7 @@ function RefreshTasksButton() {
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("Tasks debug view", () => {
+describe("Tasks view", () => {
   it("loads stored Tasks and filters them locally", async () => {
     const second = {
       ...task,
@@ -117,7 +117,7 @@ describe("Tasks debug view", () => {
     expect(await screen.findByRole("table", { name: "Tasks" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Tasks table" }).tabIndex).toBe(0);
     expect(screen.getAllByRole("row")).toHaveLength(3);
-    expect(screen.getByText("Read-only debug view")).toBeTruthy();
+    expect(screen.queryByText("Read-only debug view")).toBeNull();
     expect(screen.queryByText("Demo data")).toBeNull();
 
     fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
@@ -260,23 +260,18 @@ describe("Tasks debug view", () => {
     },
   );
 
-  it("renders the stored inbound message and runtime report without claiming an outbound record", async () => {
+  it("renders a read-only activity record without exposing diagnostics", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detail);
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
-    const conversation = await screen.findByLabelText("Task conversation");
-    expect(within(conversation).getByText("Please investigate the failed deployment.")).toBeTruthy();
-    expect(
-      within(conversation).getByText("The runtime finished and the provider reply was sent separately."),
-    ).toBeTruthy();
-    expect(screen.getByText(/Provider outbound messages and detailed tool traces are not captured/)).toBeTruthy();
-    expect(screen.getByText(/Internal collaboration · 1 Sessions/)).toBeTruthy();
-
-    fireEvent.click(within(conversation).getByText("Runtime details"));
-    expect(
-      within(conversation).getByText("1 attempt · Outcome completed · Effects completed · 150 tokens · 4 trace events"),
-    ).toBeTruthy();
-    expect(screen.getByLabelText("Copy Session")).toBeTruthy();
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Please investigate the failed deployment.")).toBeTruthy();
+    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
+    expect(screen.queryByText(/Provider outbound messages and detailed tool traces/)).toBeNull();
+    expect(screen.queryByText(/Internal collaboration/)).toBeNull();
+    expect(screen.queryByText("Runtime details")).toBeNull();
+    expect(screen.queryByText(/150 tokens/)).toBeNull();
   });
 
   it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
@@ -324,10 +319,10 @@ describe("Tasks debug view", () => {
     vi.spyOn(browserApi, "task").mockResolvedValue({ ...detail, turns: [steered, root] });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
-    const conversation = await screen.findByLabelText("Task conversation");
-    expect(within(conversation).getByText("This input was steered into the active Turn.")).toBeTruthy();
-    expect(within(conversation).getByText("absorbed into running Turn")).toBeTruthy();
-    expect(within(conversation).getAllByText(/150 tokens/)).toHaveLength(1);
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("This message was included in the Agent's active work.")).toBeTruthy();
+    expect(within(activity).getByText("Added to active work")).toBeTruthy();
+    expect(within(activity).queryByText(/150 tokens/)).toBeNull();
   });
 
   it("loads older Turns from the detail cursor", async () => {
@@ -350,10 +345,10 @@ describe("Tasks debug view", () => {
       .mockResolvedValueOnce({ ...detail, turns: [olderTurn], nextCursor: null });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
     expect(await screen.findByText("This is an older inbound message.")).toBeTruthy();
     expect(taskRequest).toHaveBeenLastCalledWith(sessionId, "older-turns");
-    expect(screen.queryByRole("button", { name: "Load more Turns" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
   });
 
   it("does not let a late page for one Agent land on another Agent's Tasks", async () => {
@@ -410,7 +405,7 @@ describe("Tasks debug view", () => {
 
     // Away and back: the Agent id is the same again, but the list underneath is a different load.
     view.rerender(<AgentTasksSection agentId={otherAgentId} />);
-    view.rerender(<AgentTasksSection agentId={agentId} />);
+    view.rerender(<AgentTasksSection agentId="44444444-4444-4444-8444-444444444444" />);
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
 
     releaseFirstPage({
@@ -458,11 +453,11 @@ describe("Tasks debug view", () => {
       });
 
       const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
-      fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
 
       view.rerender(<TaskDetailPage taskId={secondTaskId} />);
       expect(await screen.findByRole("heading", { name: "Task B" })).toBeTruthy();
-      expect((screen.getByRole("button", { name: "Load more Turns" }) as HTMLButtonElement).disabled).toBe(false);
+      expect((screen.getByRole("button", { name: "Load earlier activity" }) as HTMLButtonElement).disabled).toBe(false);
 
       await act(async () => {
         if (outcome === "success") {
@@ -485,15 +480,15 @@ describe("Tasks debug view", () => {
       .mockRejectedValueOnce(new ApiError(status, `Task refused (${status})`));
 
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
-    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
 
     // The Server resolves the Task before it parses a cursor, so a terminal status on an append is
     // about the Task itself. The stored output must not stay on screen behind an inline note.
     expect(
       await screen.findByRole("heading", { name: status === 404 ? "Task not found" : "Task unavailable" }),
     ).toBeTruthy();
-    expect(screen.queryByRole("region", { name: "Stored runtime final output" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Load more Turns" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Agent response" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
   });
 
   it("clears a Task append error when taskId changes", async () => {
@@ -510,7 +505,7 @@ describe("Tasks debug view", () => {
       .mockResolvedValueOnce(secondDetail);
 
     const view = await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
-    fireEvent.click(await screen.findByRole("button", { name: "Load more Turns" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load earlier activity" }));
     expect(await screen.findByText("Task A pagination failure")).toBeTruthy();
 
     view.rerender(<TaskDetailPage taskId={secondTaskId} />);
@@ -530,5 +525,136 @@ describe("Tasks debug view", () => {
     expect(screen.getByRole("heading", { name: "Loading Tasks" })).toBeTruthy();
     resolve({ tasks: [], nextCursor: null });
     await waitFor(() => expect(screen.getByRole("heading", { name: "No Tasks found" })).toBeTruthy());
+  });
+
+  it("renders Agent Tasks loading, empty, append success, and append failure states", async () => {
+    let release: (value: { tasks: TaskSummary[]; nextCursor: string | null }) => void = () => undefined;
+    vi.spyOn(browserApi, "tasks").mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    const view = await renderInRouter(<AgentTasksSection agentId={agentId} />);
+    expect(screen.getByText("Loading Tasks…")).toBeTruthy();
+    release({ tasks: [], nextCursor: null });
+    expect(
+      await screen.findByText("No Tasks yet. Message this Agent in your chat app to put it to work."),
+    ).toBeTruthy();
+
+    vi.mocked(browserApi.tasks)
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "next" })
+      .mockResolvedValueOnce({
+        tasks: [{ ...task, id: "66666666-6666-4666-8666-666666666666", title: "Next Task" }],
+        nextCursor: null,
+      });
+    view.rerender(<AgentTasksSection agentId="44444444-4444-4444-8444-444444444444" />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByRole("link", { name: "Next Task" })).toBeTruthy();
+
+    vi.mocked(browserApi.tasks)
+      .mockResolvedValueOnce({ tasks: [task], nextCursor: "retry" })
+      .mockRejectedValueOnce(new Error("Agent append failed"));
+    view.rerender(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Could not load more Tasks.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+
+  it("reports when an Agent's Tasks cannot be loaded", async () => {
+    vi.spyOn(browserApi, "tasks").mockRejectedValueOnce(new ApiError(503, "Tasks unavailable"));
+
+    await renderInRouter(<AgentTasksSection agentId={agentId} />);
+
+    expect(await screen.findByText("Tasks are temporarily unavailable.")).toBeTruthy();
+  });
+
+  it("renders missing, unavailable, and empty Task detail states", async () => {
+    const view = await renderInRouter(<TaskDetailPage />, { path: "/tasks/missing" });
+    expect(await screen.findByRole("heading", { name: "Task not found" })).toBeTruthy();
+    expect(screen.getByText("Task not found")).toBeTruthy();
+
+    vi.spyOn(browserApi, "task").mockRejectedValueOnce(new ApiError(404, "not found"));
+    view.rerender(<TaskDetailPage taskId={sessionId} />);
+    expect(await screen.findByText("This Task does not exist or is outside your Account.")).toBeTruthy();
+
+    vi.mocked(browserApi.task).mockRejectedValueOnce(new Error("database unavailable"));
+    view.rerender(<TaskDetailPage taskId="66666666-6666-4666-8666-666666666666" />);
+    expect(await screen.findByRole("heading", { name: "Task unavailable" })).toBeTruthy();
+    expect(screen.getByText("database unavailable")).toBeTruthy();
+
+    vi.mocked(browserApi.task).mockResolvedValueOnce({
+      ...detail,
+      turns: [],
+      internalSessions: [],
+      collaborationMessages: [],
+    });
+    view.rerender(<TaskDetailPage taskId="77777777-7777-4777-8777-777777777777" />);
+    expect(await screen.findByRole("heading", { name: "No activity recorded" })).toBeTruthy();
+  });
+
+  it("shows concise pending and failed states without internal collaboration details", async () => {
+    const root = detail.turns[0];
+    if (!root) throw new Error("Expected the Task fixture to include a root Turn");
+    const pending = {
+      ...root,
+      deliveryId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      delivery: { ...root.delivery, state: "accepted" as const, attemptCount: 2, reason: null, lastErrorCode: null },
+      message: {
+        ...root.message,
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        authorDisplayName: null,
+        fallbackText: "",
+      },
+      report: null,
+    } satisfies TaskDetail["turns"][number];
+    const failed = {
+      ...root,
+      deliveryId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      delivery: {
+        ...root.delivery,
+        state: "terminal_rejected" as const,
+        attemptCount: 3,
+        reason: "Rejected by runtime",
+        lastErrorCode: "RUNTIME_REJECTED",
+      },
+      message: { ...root.message, id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", fallbackText: "Rejected input" },
+      report: {
+        ...root.report,
+        finalText: null,
+        errorReason: "Provider failed",
+        usage: null,
+        traceSummary: { lastSequence: 0, droppedEvents: 2 },
+        outcome: "failed" as const,
+      },
+    } satisfies TaskDetail["turns"][number];
+    const collaboration = {
+      id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      sourceSessionId: sessionId,
+      targetSessionId: "55555555-5555-4555-8555-555555555555",
+      content: "Please verify the deployment state.",
+      outcome: "accepted" as const,
+      attemptCount: 1,
+      lastErrorCode: null,
+      createdAt: "2026-08-27T01:20:00.000Z",
+      updatedAt: "2026-08-27T01:21:00.000Z",
+    };
+    const firstSession = detail.internalSessions[0];
+    if (!firstSession) throw new Error("Expected an internal session");
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      turns: [pending, failed],
+      internalSessions: [{ ...firstSession, endedAt: "2026-08-27T01:30:00.000Z", runtimeModel: null }],
+      collaborationMessages: [collaboration],
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Work is in progress.")).toBeTruthy();
+    expect(within(activity).getByText("No text content")).toBeTruthy();
+    expect(within(activity).getByText("Provider failed")).toBeTruthy();
+    expect(within(activity).queryByText(/attempts/)).toBeNull();
+    expect(screen.queryByText(/Internal collaboration/)).toBeNull();
+    expect(screen.queryByText("Please verify the deployment state.")).toBeNull();
   });
 });

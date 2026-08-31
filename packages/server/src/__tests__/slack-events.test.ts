@@ -188,6 +188,20 @@ describe("Slack Events API ingress", () => {
       },
     });
     apps.push(firstParty);
+    const malformed = "not-json";
+    const malformedSignature = `v0=${createHmac("sha256", "first-party-signing").update(`v0:${timestamp}:${malformed}`).digest("hex")}`;
+    const malformedResponse = await firstParty.inject({
+      method: "POST",
+      url: "/api/v1/im-bindings/slack/events",
+      payload: malformed,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": malformedSignature,
+      },
+    });
+    expect(malformedResponse.statusCode).toBe(400);
+    expect(malformedResponse.json()).toEqual({ error: "invalid_route" });
     const invalid = await firstParty.inject(signedRequest(payload, "wrong-secret"));
     expect(invalid.statusCode).toBe(401);
     const verified = await firstParty.inject(signedRequest(payload, "first-party-signing"));
@@ -236,6 +250,20 @@ describe("Slack Events API ingress", () => {
     const mismatchResponse = await mismatched.app.inject(signedRequest(envelope));
     expect(mismatchResponse.statusCode).toBe(401);
     expect(mismatchResponse.json()).toEqual({ error: "binding_mismatch" });
+
+    const agentMismatch = createServices();
+    const agentMismatchResponse = await agentMismatch.app.inject({
+      ...signedRequest({
+        type: "event_callback",
+        api_app_id: "A2",
+        team_id: "T1",
+        event_id: "Ev-agent-mismatch",
+        event: { type: "app_mention" },
+      }),
+      url: "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events",
+    });
+    expect(agentMismatchResponse.statusCode).toBe(401);
+    expect(agentMismatchResponse.json()).toEqual({ error: "binding_mismatch" });
   });
 
   it("validates URL verification and event callback envelope fields", async () => {
@@ -460,4 +488,85 @@ describe("Slack Events API ingress", () => {
       expect(logs).not.toContain("raw-request-body-detail");
     },
   );
+
+  it("claims a durable receipt before acknowledging and records asynchronous failures", async () => {
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({ accepted: true, duplicate: false, receiptId: "receipt-1" }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    const { app, inbox, adapter } = createServices({ receipts: receipts as never });
+    inbox.ingest.mockRejectedValue(new Error("provider processing failed"));
+    adapter.normalizeInbound.mockReturnValue([{ providerEventId: "Ev-async-failure" }]);
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-async-failure",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(receipts.claim).toHaveBeenCalledWith({
+      installationId: installation().installationId,
+      credentialGeneration: installation().generation,
+      eventId: "Ev-async-failure",
+    });
+    await vi.waitFor(() =>
+      expect(receipts.markFailed).toHaveBeenCalledWith("receipt-1", "SLACK_EVENT_PROCESSING_FAILED"),
+    );
+  });
+
+  it("records a fallback failure code when routing fails before processing", async () => {
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({ accepted: true, duplicate: false, receiptId: "receipt-routing-failure" }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    const { app, imBindings } = createServices({ receipts: receipts as never });
+    imBindings.resolveSlackDefaultRoute.mockRejectedValue(new Error("routing unavailable"));
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-routing-failure",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    await vi.waitFor(() =>
+      expect(receipts.markFailed).toHaveBeenCalledWith("receipt-routing-failure", "SLACK_EVENT_PROCESSING_FAILED"),
+    );
+  });
+
+  it("acknowledges duplicate receipts without normalizing or ingesting again", async () => {
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({
+        accepted: false,
+        duplicate: true,
+        receiptId: "receipt-existing",
+        status: "processed",
+      }),
+      markProcessed: vi.fn(),
+      markFailed: vi.fn(),
+    };
+    const { app, inbox, createAdapter } = createServices({ receipts: receipts as never });
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-duplicate",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(createAdapter).not.toHaveBeenCalled();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+  });
 });

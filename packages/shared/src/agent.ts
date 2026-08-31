@@ -253,6 +253,34 @@ export const ListAgentsResponseSchema = z
   })
   .strict();
 
+export const AGENT_RUNTIME_TEST_FAILURE_CODES = [
+  "stale_configuration",
+  "computer_unavailable",
+  "capability_missing",
+  "busy",
+  "timeout",
+  "cancelled",
+  "interaction_or_tool",
+  "provider_start_failed",
+  "provider_failed",
+] as const;
+export const AgentRuntimeTestFailureCodeSchema = z.enum(AGENT_RUNTIME_TEST_FAILURE_CODES);
+export const AgentRuntimeTestRequestSchema = z
+  .object({
+    expectedRevision: z.number().int().min(1),
+    expectedRuntimeConfigRevision: z.number().int().min(1),
+  })
+  .strict();
+export const AgentRuntimeTestResponseSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("passed") }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: AgentRuntimeTestFailureCodeSchema,
+    })
+    .strict(),
+]);
+
 export type AgentName = z.infer<typeof AgentNameSchema>;
 export type AgentDisplayName = z.infer<typeof AgentDisplayNameSchema>;
 export type AgentRuntimeProvider = z.infer<typeof AgentRuntimeProviderSchema>;
@@ -273,3 +301,6 @@ export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
 export type RebindAgentComputerRequest = z.infer<typeof RebindAgentComputerRequestSchema>;
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;
+export type AgentRuntimeTestFailureCode = z.infer<typeof AgentRuntimeTestFailureCodeSchema>;
+export type AgentRuntimeTestRequest = z.infer<typeof AgentRuntimeTestRequestSchema>;
+export type AgentRuntimeTestResponse = z.infer<typeof AgentRuntimeTestResponseSchema>;

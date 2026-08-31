@@ -2,16 +2,27 @@
 
 [English](../staging-onboarding-reset.md)
 
-onboarding 是为从未跑过它的 Account 写的，因此一个 staging Account 天然只能免费走一遍。staging onboarding reset 提供了回头路：
-它把**已认证的那个 Account** 恢复到真实的首次使用状态，从而可以从头再走一遍完整路径。
+onboarding 是为从未跑过它的 Account 写的，因此一个 staging Account 天然只能免费走一遍。staging onboarding reset 提供了回头路，
+而且有两种力度：`mode: "reboard"` 重新打开 onboarding 但什么都不删，`mode: "all"` 则把**已认证的那个 Account** 恢复到真实的
+首次使用状态。
 
-之所以需要它，是因为仅清除 setup 完成时间戳并不够。已有的 Computer enrollment、Agent、runtime readiness 和 IM binding 会立即
-推进由事实推导出的 onboarding 流程，因此一个已完成的 Account 无法自行回到首次使用状态。
+选哪个取决于你要测什么。只有 `mode: "all"` 能造出一次真正的首跑，因为**仅清除 setup 完成时间戳不足以做到这件事**：已有的
+Computer enrollment、Agent、runtime readiness 和 IM binding 会立即推进由事实推导出的 onboarding 流程。而 `mode: "reboard"`
+清除的恰恰只有那个时间戳，所以幸存下来的这些事实会把 Account 带进 resume 路径——这正是它存在的意义。
 
-reset 在 production 不可用，也永远不会触及已认证 Account 之外的任何 Account。
+两种模式在 production 都不可用，也都永远不会触及已认证 Account 之外的任何 Account。
 
 只做界面层面的设计评审——文案、层级、状态表达——请用 `/internal/onboarding-v2`：它用 mock 后端渲染真实的 onboarding 页面，
 既不需要 Account 也不需要 reset。
+
+## 在哪里点它
+
+`/internal` 是仅 staging 可用的内部工具索引页，两种 reset 都以按钮的形式放在上面，各自带一次确认。入口在账号菜单里的
+**Internal tools**——它只在 Server 应答「本部署提供这些工具」时才渲染，production 看到的还是它一直以来的那个菜单。
+
+本文余下部分描述的是这个页面发出的请求，供你想手动调用时参考。有一点两种方式都适用：两种 reset 都会把 Account 恢复成
+setup 未完成的状态，而这正是应用在显示其它任何东西之前会检查的状态——所以跑完之后你会落在 onboarding 里，你来时用的那个
+账号菜单不再被渲染。此时直接敲 `/internal` 仍然打得开。
 
 ## 每个测试者使用自己的 Account
 
@@ -47,6 +58,9 @@ POST /api/v1/me/setup/reset
 { "mode": "all" | "reboard" }
 ```
 
+同一个路径对 `GET` 的应答是：提供 reset 的部署返回 `204`，不提供的返回 `404`，除此之外什么都不做。页面靠它决定自己要不要显示、
+菜单入口要不要出现，而且它是唯一一种「不真的执行一次 reset 就能问出可用性」的方式。
+
 在 staging 标签页的控制台里执行（会话 cookie 与 CSRF cookie 都已存在）：
 
 ```js
@@ -61,7 +75,7 @@ await fetch("/api/v1/me/setup/reset", {
 });
 ```
 
-返回 `204` 表示该 Account 已回到 setup gate 之外；刷新页面就会自动进入 `/onboarding`。
+返回 `204` 表示该 Account 的 setup 完成标记已被清除；刷新页面就会自动进入 `/onboarding`。
 
 ### `mode: "reboard"`
 

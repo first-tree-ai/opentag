@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - packages/*
+  - e2e
 
 # Build scripts are opt-in. Keep optional native addons on their JavaScript fallbacks.
 onlyBuiltDependencies:

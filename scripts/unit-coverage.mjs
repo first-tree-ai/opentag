@@ -12,7 +12,9 @@
  *
  * So each project runs alone here, with `include` narrowed to the workspace that project actually
  * tests. Every file is then measured exactly once, by the only suite that can execute it, and the
- * per-workspace summaries are concatenated rather than merged.
+ * per-workspace summaries and detailed Istanbul maps are concatenated rather than merged. The
+ * detailed map at `coverage/unit/coverage-final.json` is what the pull-request patch-coverage gate
+ * walks for per-line hits; a provider-merged pass must not be used to produce it.
  *
  * Usage:
  *   node scripts/unit-coverage.mjs                 # every workspace, then the aggregate table
@@ -23,7 +25,16 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+export {
+  buildLineHitsByFile,
+  evaluatePatchCoverage,
+  extractChangedLines,
+  isSupportedSourcePath,
+  normalizeCoveragePath,
+  SUPPORTED_SOURCE_EXTENSIONS,
+} from "./unit-coverage-gate.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -38,6 +49,13 @@ const PROJECTS = [
 
 const COVERAGE_ROOT = resolve(repositoryRoot, "coverage/unit");
 
+/** CLI reporter flags. Passing any `--coverage.reporter` replaces the config list, so json must be restated. */
+export const COVERAGE_REPORTER_FLAGS = [
+  "--coverage.reporter=json",
+  "--coverage.reporter=json-summary",
+  "--coverage.reporter=text-summary",
+];
+
 function parseArguments(argv) {
   const options = { project: null, scope: null };
   for (let index = 0; index < argv.length; index += 1) {
@@ -50,6 +68,52 @@ function parseArguments(argv) {
     }
   }
   return options;
+}
+
+export function assertCoverageArtifacts(reportsDirectory, projectName) {
+  const summaryPath = resolve(reportsDirectory, "coverage-summary.json");
+  const detailedPath = resolve(reportsDirectory, "coverage-final.json");
+  if (!existsSync(summaryPath)) {
+    throw new Error(`Coverage run for project "${projectName}" produced no summary`);
+  }
+  if (!existsSync(detailedPath)) {
+    throw new Error(`Coverage run for project "${projectName}" produced no detailed report`);
+  }
+  return { detailedPath, summaryPath };
+}
+
+/**
+ * Concatenate per-workspace Istanbul maps. Each file must appear in exactly one map: a second copy
+ * is the merged-pass collision this script exists to avoid, not a number to max() or last-write.
+ */
+export function concatenateCoverageMaps(maps) {
+  const aggregate = {};
+  const owners = new Map();
+  for (const [index, map] of maps.entries()) {
+    if (map === null || typeof map !== "object" || Array.isArray(map)) {
+      throw new Error(`Coverage map ${index} is not an Istanbul file map`);
+    }
+    for (const [file, coverage] of Object.entries(map)) {
+      const owner = owners.get(file);
+      if (owner !== undefined) {
+        throw new Error(
+          `Coverage map collision for ${file} (already recorded from map ${owner}, also in map ${index}). ` +
+            "Per-workspace measurement must record each file once.",
+        );
+      }
+      aggregate[file] = coverage;
+      owners.set(file, index);
+    }
+  }
+  return aggregate;
+}
+
+export function writeAggregateReports({ coverageRoot, detailedMaps, summary }) {
+  mkdirSync(coverageRoot, { recursive: true });
+  const detailed = concatenateCoverageMaps(detailedMaps);
+  writeFileSync(resolve(coverageRoot, "coverage-summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
+  writeFileSync(resolve(coverageRoot, "coverage-final.json"), `${JSON.stringify(detailed)}\n`);
+  return detailed;
 }
 
 function runProject(project, scope) {
@@ -68,24 +132,24 @@ function runProject(project, scope) {
       "--project",
       project.name,
       `--coverage.include=${include}`,
-      "--coverage.reporter=json-summary",
-      "--coverage.reporter=text-summary",
+      ...COVERAGE_REPORTER_FLAGS,
       `--coverage.reportsDirectory=${reportsDirectory}`,
     ],
     { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
 
-  const summaryPath = resolve(reportsDirectory, "coverage-summary.json");
-  if (!existsSync(summaryPath)) {
+  try {
+    const { detailedPath, summaryPath } = assertCoverageArtifacts(reportsDirectory, project.name);
+    return {
+      detailed: JSON.parse(readFileSync(detailedPath, "utf8")),
+      failed: result.status !== 0,
+      summary: JSON.parse(readFileSync(summaryPath, "utf8")),
+    };
+  } catch (error) {
     process.stderr.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
-    throw new Error(`Coverage run for project "${project.name}" produced no summary`);
+    throw error;
   }
-
-  return {
-    failed: result.status !== 0,
-    summary: JSON.parse(readFileSync(summaryPath, "utf8")),
-  };
 }
 
 function main() {
@@ -97,13 +161,15 @@ function main() {
   }
 
   const aggregate = {};
+  const detailedMaps = [];
   const perProject = [];
   let anyFailed = false;
 
   for (const project of selected) {
     process.stdout.write(`\n── ${project.name} ──\n`);
-    const { failed, summary } = runProject(project, options.scope);
+    const { detailed, failed, summary } = runProject(project, options.scope);
     anyFailed ||= failed;
+    detailedMaps.push(detailed);
 
     for (const [file, metrics] of Object.entries(summary)) {
       if (file !== "total") {
@@ -159,8 +225,12 @@ function main() {
   };
 
   if (!options.project && !options.scope) {
-    mkdirSync(COVERAGE_ROOT, { recursive: true });
-    writeFileSync(resolve(COVERAGE_ROOT, "coverage-summary.json"), `${JSON.stringify(aggregate, null, 2)}\n`);
+    const detailed = writeAggregateReports({
+      coverageRoot: COVERAGE_ROOT,
+      detailedMaps,
+      summary: aggregate,
+    });
+    process.stdout.write(`   detailed ${Object.keys(detailed).length} files -> coverage/unit/coverage-final.json\n`);
   }
 
   process.stdout.write("\n=== unit line coverage ===\n");
@@ -180,4 +250,8 @@ function main() {
   }
 }
 
-main();
+const isProcessEntry =
+  process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+if (isProcessEntry) {
+  main();
+}

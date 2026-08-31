@@ -8,6 +8,7 @@ import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { ComputerSetup } from "../features/agents/computer-setup.js";
+import { compareText } from "../i18n/format.js";
 import {
   Banner,
   Button,
@@ -261,15 +262,23 @@ export function AgentCreationFlow({
 
   useEffect(() => {
     if (!pendingIntent || resumeAttemptedRef.current) return;
-    const routeStillReady = readyRoutes.some(
-      (route) =>
-        route.computer.id === pendingIntent.request.computerId &&
-        route.provider === pendingIntent.request.runtimeProvider,
-    );
-    if (!routeStillReady) return;
+    /*
+     * A resume finishes what the reader started, so it may only send what the reader is looking at.
+     * "Is that route still ready" is a weaker question: the reader moves the selection by choosing
+     * another Computer, and a newly connected one is adopted the same way, while the stored intent
+     * still names the original. When that machine comes back the weaker question turns true again
+     * and the Agent is created somewhere nobody is looking. Requiring the stored route to be the
+     * selected route keeps the target visible; an intent naming another route is not resumed, and
+     * its fields stay on the form for the reader to submit against what they can see.
+     */
+    const resumesTheSelectedRoute =
+      selectedRoute !== undefined &&
+      selectedRoute.computer.id === pendingIntent.request.computerId &&
+      selectedRoute.provider === pendingIntent.request.runtimeProvider;
+    if (!resumesTheSelectedRoute) return;
     resumeAttemptedRef.current = true;
     void create(pendingIntent.request, pendingIntent);
-  }, [create, pendingIntent, readyRoutes]);
+  }, [create, pendingIntent, selectedRoute]);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -495,7 +504,7 @@ function RuntimeRouteSection({
   const providerOptions = [...facts.providers]
     .filter((provider) => provider.computerId === displayedComputer?.id)
     .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
-  const computerOptions = [...facts.computers].sort((left, right) => left.displayName.localeCompare(right.displayName));
+  const computerOptions = [...facts.computers].sort((left, right) => compareText(left.displayName, right.displayName));
   // The heading names the section and everything under it answers it: the route rows label
   // themselves Computer and Runtime, and where there is no Computer yet the setup panel names the
   // task. A sentence here would only say those labels again, which is one more line between the
@@ -798,7 +807,7 @@ function resolveReadyRoutes(facts: AgentCreationFacts): ReadyRoute[] {
     .map((provider) => ({ computer: computers.get(provider.computerId), provider: provider.provider }))
     .filter((route): route is ReadyRoute => route.computer !== undefined)
     .sort((left, right) => {
-      const computerOrder = left.computer.displayName.localeCompare(right.computer.displayName);
+      const computerOrder = compareText(left.computer.displayName, right.computer.displayName);
       return computerOrder !== 0 ? computerOrder : providerRank(left.provider) - providerRank(right.provider);
     });
 }

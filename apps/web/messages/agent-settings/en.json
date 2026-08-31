@@ -1,0 +1,17 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agent_settings_runtime_test_action": "Test runtime",
+  "agent_settings_runtime_test_failed_busy": "A Runtime test is already in progress on this Computer.",
+  "agent_settings_runtime_test_failed_cancelled": "The Runtime test was cancelled.",
+  "agent_settings_runtime_test_failed_capability_missing": "The selected Computer cannot run this Runtime test.",
+  "agent_settings_runtime_test_failed_computer_unavailable": "The selected Computer is unavailable.",
+  "agent_settings_runtime_test_failed_interaction_or_tool": "The Runtime test failed because the Provider used a tool or asked for interaction.",
+  "agent_settings_runtime_test_failed_provider_failed": "The Provider request failed.",
+  "agent_settings_runtime_test_failed_provider_start_failed": "The Provider could not be started.",
+  "agent_settings_runtime_test_failed_request": "The Runtime test failed.",
+  "agent_settings_runtime_test_failed_stale_configuration": "The saved Agent Runtime configuration changed. Test again to use the current configuration.",
+  "agent_settings_runtime_test_failed_timeout": "The Runtime test timed out.",
+  "agent_settings_runtime_test_passed": "Passed. This proves only that this exact invocation succeeded with the saved configuration in the selected Computer environment. It is not a durable authentication or readiness claim.",
+  "agent_settings_runtime_test_pending": "Testing…",
+  "agent_settings_runtime_test_warning": "This makes a real Provider request. It may consume quota and may be retained or billed by the Provider."
+}

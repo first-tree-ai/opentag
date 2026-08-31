@@ -4,6 +4,7 @@ const WORKSPACE_BY_ID_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId`;
 export const WORKSPACE_SETUP_COMPLETE_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/setup/complete`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
@@ -32,6 +33,7 @@ export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMP
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
+export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
 export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
@@ -85,6 +87,10 @@ export function workspaceComputerConnectCodesPath(workspaceId: string): string {
   return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/computer-connect-codes`;
 }
 
+export function accountComputerConnectCodePath(connectCodeId: string): string {
+  return `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/${encodeURIComponent(connectCodeId)}`;
+}
+
 export function workspaceAgentsPath(workspaceId: string): string {
   return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/agents`;
 }
@@ -95,6 +101,10 @@ export function agentByIdPath(agentId: string): string {
 
 export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
+}
+
+export function agentRuntimeTestPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/runtime-test`;
 }
 
 export function agentUsagePath(agentId: string, windowDays: number): string {

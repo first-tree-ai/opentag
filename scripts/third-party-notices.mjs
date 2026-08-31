@@ -25,6 +25,7 @@ const bundledPackages = [
   },
   { name: "ws", consumerManifest: "apps/cli/package.json" },
   { name: "zod", consumerManifest: "packages/shared/package.json" },
+  { name: "semver", consumerManifest: "packages/client/package.json" },
 ];
 
 async function readLicense(packageDirectory) {

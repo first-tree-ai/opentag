@@ -10,7 +10,7 @@ import {
   WAITING_LINE,
 } from "../setup/index.js";
 import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
-import type { PlanSignIn } from "./backend.js";
+import type { KnownComputer, PlanSignIn } from "./backend.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
 import {
   CLOUD_RUNTIME_COPY,
@@ -666,6 +666,7 @@ function PlanSignInPanel({
  * front of a result that is already there.
  */
 export function ComputerStep({
+  computer,
   connect,
   creation,
   draft,
@@ -674,6 +675,8 @@ export function ComputerStep({
   onRefreshCommand,
   readiness,
 }: {
+  /** The Computer the Account has, when it has one. An Account has one machine, never a list. */
+  computer?: KnownComputer | undefined;
   connect: ConnectState;
   creation: CreationState;
   draft: AgentDraft;
@@ -683,6 +686,18 @@ export function ComputerStep({
   readiness: ReadinessFacts | undefined;
 }) {
   const connected = connect.kind === "connected";
+  /*
+   * The Computer this step is preparing, and so the one the check below answers for: the machine
+   * the Account already has once it is reachable, or a new arrival. The backend probes this same
+   * subject, so what is on screen is never a verdict about some other machine.
+   */
+  const ready = computer ? computer.online : connected;
+  /*
+   * The command enrols a machine, so it belongs to a run that has none. Beside a machine the
+   * Account already has — an offline one most of all — it would offer a second Computer as the way
+   * to repair the first, which is the duplicate this step exists to avoid.
+   */
+  const connectingNew = computer === undefined;
   const checks = deriveChecks(readiness?.runtime);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
@@ -695,16 +710,32 @@ export function ComputerStep({
     <section className={STEP} data-ui="onboarding-v2-step-computer">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {COPY.connect.title}
+          {computer ? COPY.connect.yoursTitle : COPY.connect.title}
         </Text>
-        <p className="text-kumo-subtle m-0">{COPY.connect.lead}</p>
+        <p className="text-kumo-subtle m-0">{computer ? COPY.connect.yoursLead : COPY.connect.lead}</p>
         <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
           <Icon className="shrink-0 mt-1 text-kumo-brand" name="shield" />
           {COPY.connect.privacy}
         </p>
       </header>
 
-      {connected ? null : (
+      {/* Which machine this is, said once. There is nothing here to operate: it is not a choice. */}
+      {computer ? (
+        <p className="flex items-center gap-2 m-0" data-ui="onboarding-v2-computer">
+          <Icon className="shrink-0 text-kumo-brand" name="laptop" />
+          <span className="font-medium text-kumo-strong">{computer.displayName}</span>
+          <span className="text-sm text-kumo-subtle">{computerStatus(computer)}</span>
+        </p>
+      ) : null}
+
+      {computer && !computer.online ? (
+        <p className="flex items-start gap-2 text-sm text-kumo-strong m-0" role="status">
+          <Icon className="shrink-0 mt-1 text-kumo-warning" name="laptop" />
+          {COPY.connect.offlineLead}
+        </p>
+      ) : null}
+
+      {connectingNew && !connected ? (
         <div className="flex flex-col gap-3">
           {/*
             The instruction and the validity read as one line: the command is what the reader is
@@ -721,11 +752,12 @@ export function ComputerStep({
           </div>
           <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
         </div>
-      )}
+      ) : null}
 
-      <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" expired={connect.kind === "expired"} />
+      {/* The Account's machine reports through the check below; the arrival line is for a new one. */}
+      {computer ? null : <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />}
 
-      {connected ? (
+      {ready ? (
         <>
           <ol className="flex flex-col m-0 p-0 list-none rounded-xl bg-kumo-base ring ring-kumo-line overflow-hidden">
             {checks.map((check, index) => (
@@ -754,12 +786,19 @@ export function ComputerStep({
 
       <StepNav
         back={onBack}
-        disabled={!connected || !passed || creation !== "idle"}
+        disabled={!ready || !passed || creation !== "idle"}
         label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
         onNext={onCreate}
       />
     </section>
   );
+}
+
+/** Whether the Account's machine can be reached, and when it was last seen if it cannot. */
+function computerStatus(computer: KnownComputer): string {
+  if (computer.online) return COPY.connect.online;
+  const seen = computer.lastSeen ? ` · ${COPY.connect.lastSeen(computer.lastSeen)}` : "";
+  return `${COPY.connect.offline}${seen}`;
 }
 
 function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {

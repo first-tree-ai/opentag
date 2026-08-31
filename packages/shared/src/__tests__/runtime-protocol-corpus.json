@@ -1,0 +1,210 @@
+[
+  {
+    "name": "effective-runtime-snapshot",
+    "schema": "EffectiveRuntimeSnapshotSchema",
+    "payload": {
+      "revision": {
+        "agent": { "sequence": 4, "id": "agent-1" },
+        "session": { "sequence": 9, "id": "session-1" }
+      },
+      "agentId": "agent-1",
+      "provider": "codex",
+      "model": "gpt-5",
+      "reasoningEffort": "high",
+      "instructions": { "platform": "OpenTag", "agent": "Review the change" },
+      "execution": { "approvalPolicy": "never", "networkAccess": false },
+      "workspace": { "workspaceId": "workspace-1", "mode": "empty_on_create", "sharing": "agent" },
+      "budget": { "maxDurationMs": 60000 }
+    }
+  },
+  {
+    "name": "session-reconcile-stopped",
+    "schema": "SessionReconcileRequestSchema",
+    "payload": {
+      "type": "session:reconcile",
+      "requestId": "11111111-1111-4111-8111-111111111111",
+      "computerId": "22222222-2222-4222-8222-222222222222",
+      "sessionId": "session-1",
+      "agentId": "agent-1",
+      "placementGeneration": 3,
+      "desired": "stopped"
+    }
+  },
+  {
+    "name": "direct-feishu-delivery",
+    "schema": "DirectImMessageDeliveryRequestSchema",
+    "payload": {
+      "type": "im:deliver",
+      "requestId": "33333333-3333-4333-8333-333333333333",
+      "deliveryId": "delivery-1",
+      "imMessageId": "message-1",
+      "sessionId": "session-1",
+      "agentId": "agent-1",
+      "placementGeneration": 3,
+      "attention": "direct",
+      "content": {
+        "kind": "text",
+        "text": "Please review this change.",
+        "providerRef": {
+          "provider": "feishu",
+          "teamBrand": "feishu",
+          "appId": "cli_app",
+          "botOpenId": "ou_bot",
+          "chatId": "oc_chat",
+          "chatType": "group",
+          "messageId": "om_message"
+        },
+        "resources": [{ "imMessageId": "message-1", "ordinal": 0, "kind": "file", "availability": "unavailable" }]
+      },
+      "runtime": {
+        "revision": {
+          "agent": { "sequence": 4, "id": "agent-1" },
+          "session": { "sequence": 9, "id": "session-1" }
+        },
+        "agentId": "agent-1",
+        "provider": "codex",
+        "instructions": { "platform": "OpenTag", "agent": "Review the change" },
+        "execution": { "approvalPolicy": "never", "networkAccess": false },
+        "workspace": { "workspaceId": "workspace-1", "mode": "empty_on_create", "sharing": "agent" }
+      },
+      "deadlineAt": "2026-08-31T04:00:00.000Z"
+    }
+  },
+  {
+    "name": "credential-grant-request",
+    "schema": "RuntimeImCredentialGrantRequestSchema",
+    "payload": {
+      "type": "im:credential",
+      "requestId": "44444444-4444-4444-8444-444444444444",
+      "sessionId": "session-1",
+      "agentId": "agent-1",
+      "placementGeneration": 3
+    }
+  },
+  {
+    "name": "credential-grant-rejected",
+    "schema": "RuntimeImCredentialGrantResultSchema",
+    "payload": {
+      "type": "im:credential:result",
+      "requestId": "44444444-4444-4444-8444-444444444444",
+      "status": "rejected",
+      "code": "credential_stale"
+    }
+  },
+  {
+    "name": "session-message-delivery-result",
+    "schema": "SessionMessageDeliveryResultSchema",
+    "payload": {
+      "type": "session:message:deliver:result",
+      "requestId": "55555555-5555-4555-8555-555555555555",
+      "messageId": "66666666-6666-4666-8666-666666666666",
+      "targetSessionId": "77777777-7777-4777-8777-777777777777",
+      "placementGeneration": 3,
+      "status": "accepted"
+    }
+  },
+  {
+    "name": "agent-trace-batch",
+    "schema": "AgentTraceBatchSchema",
+    "payload": {
+      "type": "agent:trace",
+      "batchId": "batch-1",
+      "sessionId": "session-1",
+      "turnId": "turn-1",
+      "placementGeneration": 3,
+      "events": [
+        { "kind": "turn_started", "sequence": 1, "at": "2026-08-31T03:00:00.000Z" },
+        {
+          "kind": "usage_updated",
+          "sequence": 2,
+          "at": "2026-08-31T03:00:01.000Z",
+          "usage": { "inputTokens": 12, "outputTokens": 4 }
+        },
+        { "kind": "turn_completed", "sequence": 3, "at": "2026-08-31T03:00:02.000Z", "outcome": "completed" }
+      ]
+    }
+  },
+  {
+    "name": "server-welcome-v1",
+    "schema": "ServerWelcomeFrameSchema",
+    "payload": {
+      "type": "server:welcome",
+      "protocolVersion": 1,
+      "capabilities": {
+        "sessionReconcile": 1,
+        "imDelivery": 1,
+        "turnReport": 1,
+        "agentTrace": 1,
+        "imCredentialGrant": 1
+      },
+      "heartbeatIntervalMs": 1000,
+      "heartbeatTimeoutMs": 5000
+    }
+  },
+  {
+    "name": "auth-v1",
+    "schema": "AuthFrameSchema",
+    "payload": {
+      "type": "auth",
+      "requestId": "88888888-8888-4888-8888-888888888888",
+      "protocolVersion": 1,
+      "machineToken": "machine-token"
+    }
+  },
+  {
+    "name": "computer-register-v1",
+    "schema": "ComputerRegisterFrameSchema",
+    "payload": {
+      "type": "computer:register",
+      "requestId": "99999999-9999-4999-8999-999999999999",
+      "computerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "instanceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "displayName": "Build machine",
+      "platform": "darwin",
+      "arch": "arm64",
+      "clientVersion": "0.1.0",
+      "capabilities": { "imCredentialGrant": 1 }
+    }
+  },
+  {
+    "name": "heartbeat-v1",
+    "schema": "HeartbeatFrameSchema",
+    "payload": {
+      "type": "heartbeat",
+      "requestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "computerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "instanceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "capabilities": { "imCredentialGrant": 1 }
+    }
+  },
+  {
+    "name": "agent-runtime-test-request",
+    "schema": "AgentRuntimeTestRequestFrameSchema",
+    "payload": {
+      "type": "agent-runtime:test",
+      "requestId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "computerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "provider": "codex",
+      "model": "gpt-5"
+    }
+  },
+  {
+    "name": "agent-runtime-test-result-passed",
+    "schema": "AgentRuntimeTestResultFrameSchema",
+    "payload": {
+      "type": "agent-runtime:test:result",
+      "requestId": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "status": "passed"
+    }
+  },
+  {
+    "name": "runtime-error",
+    "schema": "RuntimeErrorFrameSchema",
+    "payload": {
+      "type": "error",
+      "requestId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "code": "PROTOCOL_ERROR",
+      "message": "The request is invalid."
+    }
+  }
+]

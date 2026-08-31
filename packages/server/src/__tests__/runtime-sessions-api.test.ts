@@ -32,6 +32,14 @@ describe("Runtime Session CLI routes", () => {
       },
     });
     const messageId = randomUUID();
+    const created = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.runtimeInternalSessions,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+      payload: { messageId: randomUUID(), message: "task" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ message: "task" }), source);
     const response = await app.inject({
       method: "POST",
       url: HTTP_PATHS.runtimeSessionMessages,
@@ -49,6 +57,34 @@ describe("Runtime Session CLI routes", () => {
     });
     expect(listed.statusCode).toBe(200);
     expect(listInternalSessions).toHaveBeenCalledWith(source.sessionId, { recursive: true, limit: 100 });
+
+    const nonRecursive = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.runtimeSessions}?recursive=false&limit=1&cursor=next&since=2026-08-19T00:00:00.000Z`,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+    });
+    expect(nonRecursive.statusCode).toBe(200);
+    expect(listInternalSessions).toHaveBeenLastCalledWith(source.sessionId, {
+      recursive: false,
+      limit: 1,
+      cursor: "next",
+      since: "2026-08-19T00:00:00.000Z",
+    });
+
+    const defaultRecursive = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.runtimeSessions}?limit=2`,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+    });
+    expect(defaultRecursive.statusCode).toBe(200);
+    expect(listInternalSessions).toHaveBeenLastCalledWith(source.sessionId, { recursive: false, limit: 2 });
+
+    const invalidRecursive = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.runtimeSessions}?recursive=maybe`,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+    });
+    expect(invalidRecursive.statusCode).toBe(400);
 
     const invalid = await app.inject({
       method: "POST",

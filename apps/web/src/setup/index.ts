@@ -21,4 +21,5 @@ export {
 } from "./checks.js";
 export { CommandBlock } from "./command-block.js";
 export { CheckLine, ConnectStatus, Countdown, QrCode, useRemaining, WAITING_LINE } from "./components.js";
+export { type ConnectCodeVerdict, readConnectCodeVerdict } from "./connect-code-verdict.js";
 export { CHECK_COPY, SETUP_COPY } from "./copy.js";

@@ -10,9 +10,9 @@
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
- * Every check carries a line of detail in every state, not only when it fails. The list is the
- * page's spine while the user works in their terminal, so its rows must not change height as
- * results land — a list that reflows under someone is worse than one that says "checking".
+ * Copy for the numbered computer-check rows. Every row carries a line of detail in every state,
+ * not only when it fails, so the list does not reflow as results land. A missing messaging CLI is
+ * named later, as a sentence (`SETUP_COPY.messaging.cliMissing`) rather than a third check line.
  */
 export const CHECK_COPY: Record<
   CheckRow["id"],
@@ -36,15 +36,6 @@ export const CHECK_COPY: Record<
       blocked: () => "We'll know once the CLI is installed.",
     },
   },
-  "messaging-cli": {
-    title: () => "Lark CLI is installed",
-    detail: {
-      pending: () => "Looking for lark-cli.",
-      passed: () => "Found on this computer.",
-      failed: () => "We need lark-cli to send Lark messages.",
-      blocked: () => "",
-    },
-  },
 };
 
 export const SETUP_COPY = {
@@ -65,6 +56,20 @@ export const SETUP_COPY = {
     refresh: "Get a new command",
     waiting: "Waiting for your computer…",
     connected: "Your computer is connected.",
+
+    /*
+     * The same step, once the Account has its computer. An Account has one, so there is nothing to
+     * choose and nothing to add: the step says which machine the Agent will run on and whether it
+     * can be reached. Asking "which one" would surface a concept the reader should never meet, and
+     * offering another is how an Account ends up with a duplicate it then has to repair.
+     */
+    yoursTitle: "Your computer",
+    yoursLead: "Your AI worker runs on your own computer.",
+    online: "Online",
+    offline: "Offline",
+    lastSeen: (when: string) => `last seen ${when}`,
+    /** Reconnecting repairs this exact machine, rather than replacing it with a second one. */
+    offlineLead: "This computer is offline. Reconnect it and this page will continue on its own.",
   },
 
   messaging: {

@@ -399,6 +399,20 @@ describe("email and password routes", () => {
     expect(signIn.json().error.message).not.toContain("upstream failure");
   });
 
+  it("reports Better Auth rate limiting as a typed rate-limit response", async () => {
+    const betterAuth = betterAuthStub(() => new Response("slow down", { status: 429 }));
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authEmailSignIn,
+      headers: SAME_ORIGIN,
+      payload: { email: "member@example.com", password: VALID_PASSWORD },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.json().error).toMatchObject({ code: "RATE_LIMITED", category: "rate_limit" });
+  });
+
   it("preserves a suspension raised inside Better Auth rather than calling it a wrong password", async () => {
     const betterAuth = betterAuthStub(
       () =>
@@ -531,6 +545,15 @@ describe("email and password routes", () => {
     expect(signIn.json().error.code).toBe("AUTH_PROVIDER_DISABLED");
     // Refused by the route, so a disabled deployment never reaches the library at all.
     expect(betterAuth.paths).toEqual([]);
+  });
+
+  it("reports a provider response without an authorization URL as disabled", async () => {
+    const betterAuth = betterAuthStub(() => new Response(JSON.stringify({}), { status: 200 }));
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, googleSignIn: true });
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.authGoogleStart });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("AUTH_PROVIDER_DISABLED");
   });
 
   it("advertises the password provider without a start URL, because it is a form", async () => {

@@ -3,15 +3,20 @@ import {
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentRuntimeTestRequest,
+  type AgentRuntimeTestResponse,
+  AgentRuntimeTestResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
+  accountComputerConnectCodePath,
   agentByIdPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -20,6 +25,8 @@ import {
   ComputerConnectCodeExchangeResponseSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
+  type ComputerConnectCodeStatus,
+  ComputerConnectCodeStatusSchema,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -126,6 +133,12 @@ export class OpenTagApi {
     });
   }
 
+  getComputerConnectCodeStatus(accessToken: string, connectCodeId: string): Promise<ComputerConnectCodeStatus> {
+    return this.#request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
   listAccountComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
     return this.#request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
@@ -161,6 +174,18 @@ export class OpenTagApi {
   getAgentConfig(accessToken: string, agentId: string): Promise<AgentAdminConfig> {
     return this.#request(agentConfigPath(agentId), AgentAdminConfigSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  testAgentRuntime(
+    accessToken: string,
+    agentId: string,
+    input: AgentRuntimeTestRequest,
+  ): Promise<AgentRuntimeTestResponse> {
+    return this.#request(agentRuntimeTestPath(agentId), AgentRuntimeTestResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }
 

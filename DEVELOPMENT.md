@@ -73,6 +73,22 @@ root `scripts/`, Server PostgreSQL integration tests, and Provider end-to-end te
 prioritizing gaps, not a required pull request check, and does not yet enforce repository-wide or per-workspace coverage
 thresholds. Add regression thresholds only after the measurement is stable across repeated runs.
 
+## Web i18n
+
+Web messages live in `apps/web/messages/<area>/{en,zh}.json` and use `<area>_<surface>_<slot>` keys. Add the English
+message and its hand-authored Simplified Chinese counterpart in the area that emits the final visible string. Keep the
+key sets, placeholders, and sort order identical. Use Paraglide for sentences and `src/i18n/format.ts` for locale-aware
+dates and numbers. Run `pnpm --filter @opentag/web paraglide` after adding or changing messages; `typecheck`, `test`, and
+the Vite build also run this code generation through their Turbo dependency. If generated output looks stale, remove
+`apps/web/src/paraglide/` and rerun the command. Never run `inlang machine translate` or Sherlock extract: the array
+path pattern would duplicate the merged catalogue into every area file.
+
+`pnpm test:coverage` measures one Vitest project at a time and concatenates the per-workspace summaries into
+`coverage/unit/coverage-summary.json` and the detailed Istanbul maps into `coverage/unit/coverage-final.json`. A single
+merged Vitest pass under-reports, so those aggregates must not be produced by the coverage provider's merge. Pull
+requests run a separate `Patch Coverage` check that reads the detailed map and fails when fewer than 80% of the
+executable TypeScript lines the pull request added or changed were hit.
+
 Required pull request CI still runs all offline unit tests. Agent Runtime keeps its separate 100% gate in
 `packages/client/vitest.agent-runtime.config.ts`, enforced by
 `pnpm --filter @opentag/client test:agent-runtime:coverage`.

@@ -18,13 +18,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: "View details" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
     /*
      * Status sits beside Usage without adding another visible card title. Its two rows name the
-     * execution environment and channel directly, so Settings remains the header's only trailing
+     * execution environment and messaging dependency directly, so Settings remains the header's only trailing
      * link.
      */
     expect(screen.queryByText("Connection")).toBeNull();
     const status = screen.getByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Computer")).toBeTruthy();
-    expect(within(status).getByText("Message channel")).toBeTruthy();
+    expect(within(status).getByText("Messaging")).toBeTruthy();
     expect(within(status).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
     expect(within(status).getByText("Feishu · @reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Feishu · @reviewer" })).toBeNull();
@@ -153,7 +153,7 @@ describe("OpenTag Web App Shell", () => {
     const status = await screen.findByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Setup in progress")).toBeTruthy();
     const setupLink = within(status).getByRole("link", { name: "View setup" });
-    expect(setupLink.parentElement?.getAttribute("data-ui")).toBe("agent-status-message-channel");
+    expect(setupLink.closest('[data-ui="agent-status-message-channel"]')).toBeTruthy();
     fireEvent.click(setupLink);
     expect(await screen.findByRole("heading", { name: "Messaging" })).toBeTruthy();
     const backLink = screen.getByRole("link", { name: "Back to Reviewer" });

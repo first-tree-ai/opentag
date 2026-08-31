@@ -21,6 +21,16 @@ function declarationValue(selector: string, property: string): string {
 }
 
 describe("onboarding flow layout", () => {
+  it("selects the Codex mark from the app theme instead of the operating-system theme", () => {
+    expect(declarationValue(".otv2-codex-mark--light", "display")).toBe("block");
+    expect(declarationValue(".otv2-codex-mark--dark", "display")).toBe("none");
+
+    const stylesheetText = stylesheet.toString();
+    expect(stylesheetText).toContain('[data-mode="dark"] .otv2-codex-mark--light');
+    expect(stylesheetText).toContain('[data-mode="dark"] .otv2-codex-mark--dark');
+    expect(stylesheetText).not.toContain("prefers-color-scheme");
+  });
+
   it("lets choice-card copy wrap instead of scrolling a narrow viewport sideways", () => {
     // Buttons do not inherit the document's wrapping, so this has to be declared rather than assumed.
     expect(declarationValue(".otv2-choice", "white-space")).toBe("normal");

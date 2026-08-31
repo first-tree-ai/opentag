@@ -17,7 +17,11 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
-    expect(screen.getByRole("link", { name: "OpenTag" }).getAttribute("href")).toBe("/agents");
+    const brandLink = screen.getByRole("link", { name: "OpenTag" });
+    expect(brandLink.getAttribute("href")).toBe("/agents");
+    const brandLogo = brandLink.querySelector("img");
+    expect(brandLogo?.getAttribute("alt")).toBe("");
+    expect(brandLogo?.classList.contains("size-6")).toBe(true);
     expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByText("Example")).toBeNull();
@@ -30,9 +34,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/Monitor availability/)).toBeNull();
     expect(screen.getByText("1 Agent · 0 currently working")).toBeTruthy();
     expect(within(agentRow as HTMLElement).queryByText("@reviewer")).toBeNull();
-    expect(within(agentRow as HTMLElement).getByText("Tasks")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("Last checked")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).queryByText("Tokens")).toBeNull();
+    expect(within(agentRow as HTMLElement).getByText("Tasks (30d)")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).getByText("Tokens (30d)")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).getByText("428K")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).queryByText("Last checked")).toBeNull();
+    expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-avatar"]')?.classList.contains("size-10")).toBe(
+      true,
+    );
     const rowState = (agentRow as HTMLElement).querySelector('[data-ui="agent-row-state"]');
     expect(rowState).toBeTruthy();
     expect(within(agentRow as HTMLElement).getByText("Messaging disconnected")).toBeTruthy();

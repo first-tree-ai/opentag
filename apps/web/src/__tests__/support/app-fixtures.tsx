@@ -113,6 +113,7 @@ export function installApi(
     /** Fails only the handoff read, so the binding stays readable and `handoff_unconfirmed` is reachable. */
     handoffEvidenceFails?: boolean;
     initialStatus?: "active" | "suspended";
+    internalToolsOffered?: boolean;
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
     meDelayMsAfterProfileUpdate?: number;
@@ -222,6 +223,13 @@ export function installApi(
     if (path === "/api/v1/me/setup/complete" && init?.method === "POST") {
       setupCompletedAt = "2026-08-20T00:10:00.000Z";
       return json({ setupCompletedAt });
+    }
+    if (path === "/api/v1/me/setup/reset" && init?.method === undefined) {
+      return options.internalToolsOffered ? new Response(null, { status: 204 }) : new Response(null, { status: 404 });
+    }
+    if (path === "/api/v1/me/setup/reset" && init?.method === "POST" && options.internalToolsOffered) {
+      setupCompletedAt = null;
+      return new Response(null, { status: 204 });
     }
     if (path === "/api/v1/sessions" || path.startsWith("/api/v1/sessions?")) {
       return json({ tasks: [taskSummary], nextCursor: null });

@@ -232,6 +232,48 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/agents");
   });
 
+  it("keeps a staging re-board inspectable across its route handoff until it is explicitly finished", async () => {
+    installApi({ bound: true, handoffReady: true, internalToolsOffered: true, provider: "slack" });
+    const firstMount = render(<App />);
+
+    const { menu } = await openAccountMenu();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Internal tools" }));
+    expect(await screen.findByRole("heading", { name: "Internal tools" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-board" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Re-board" }));
+
+    expect(await screen.findByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST"),
+    ).toBe(false);
+
+    // The review intent is tab-scoped as well as represented in search, so a browser/history
+    // implementation that drops the search string still cannot turn a reload into auto-complete.
+    firstMount.unmount();
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Finish re-board" })).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST"),
+    ).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Finish re-board" }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST"),
+    ).toBe(true);
+  });
+
   it("does not preserve the retired self-serve Workspace creation route", async () => {
     installApi();
     window.history.replaceState({}, "", "/workspaces/new");

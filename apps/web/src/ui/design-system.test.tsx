@@ -19,8 +19,14 @@ import {
 describe("Kumo semantic adapter", () => {
   it("maps legacy button intents to Kumo variants", () => {
     expect(buttonClassName({ variant: "danger" })).toContain("bg-");
-    render(<Button variant="inline">Details</Button>);
+    render(
+      <>
+        <Button variant="inline">Details</Button>
+        <Button variant="secondary-destructive">Disconnect</Button>
+      </>,
+    );
     expect(screen.getByRole("button", { name: "Details" }).className).not.toContain("ds-");
+    expect(screen.getByRole("button", { name: "Disconnect" }).className).toContain("text-kumo-danger");
   });
 
   it("provides labelled Kumo tabs and settings rows", () => {

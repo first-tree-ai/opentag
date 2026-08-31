@@ -1,27 +1,9 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import * as m from "../paraglide/messages.js";
 import { Banner } from "../ui/design-system.js";
 
 type SlackOAuthIntent = "create" | "reauthorize";
-
-const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
-  AUTH_INVALID_TOKEN: "Sign in again, then retry adding OpenTag to Slack.",
-  IM_BINDING_FORBIDDEN: "Only the Account owner can manage this Slack configuration.",
-  IM_BINDING_PROVIDER_IMMUTABLE:
-    "This Agent is connected to a different IM provider. Disable that binding before connecting Slack.",
-  SLACK_APP_TEAM_ALREADY_BOUND:
-    "This Slack App installation is already connected to another OpenTag Agent. Disconnect that Agent first, or use a different Slack workspace.",
-  SLACK_AUTH_IDENTITY_INCOMPLETE:
-    "Slack did not identify this authorization as an installed Bot. Start OpenTag Slack again from this Agent.",
-  SLACK_AUTH_INVALID: "Slack rejected this authorization. Start OpenTag Slack again from this Agent.",
-  SLACK_BINDING_IDENTITY_MISMATCH:
-    "The Slack App, Team, or Bot identity does not match this operation. Reauthorize the current OpenTag Slack installation.",
-  SLACK_CONFIGURATION_CONFLICT: "The Slack binding changed. Start OpenTag Slack again from this Agent.",
-  SLACK_OAUTH_FAILED: "The Slack authorization flow is invalid or expired. Start it again from this Agent.",
-  SLACK_SCOPE_REAUTH_REQUIRED: "The installed App is missing required bot scopes. Reauthorize OpenTag Slack and retry.",
-  SLACK_TOKEN_REVOKED: "Slack revoked the Bot Token. Reauthorize to install fresh credentials.",
-  SLACK_UPSTREAM_UNAVAILABLE: "Slack did not return installation details. Check Slack availability and retry.",
-};
 
 export interface SlackConfigurationControl {
   /** Starts the first-party OpenTag Slack OAuth install when the server has configured it. */
@@ -51,10 +33,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     url.searchParams.delete("slack_oauth");
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     if (oauthError) {
-      setError(
-        SLACK_CONFIGURATION_MESSAGES[oauthError] ??
-          "The Slack authorization flow is invalid or expired. Start it again from this Agent.",
-      );
+      setError(slackConfigurationMessage(oauthError));
       return;
     }
     setSaved(true);
@@ -71,7 +50,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
       window.location.assign(started.authorizationUrl);
       return true;
     } catch (cause) {
-      setError(normalizeSlackConfigurationError(cause, "Unable to start OpenTag Slack authorization"));
+      setError(normalizeSlackConfigurationError(cause));
       return false;
     } finally {
       setLoading(false);
@@ -83,21 +62,22 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     startOAuth,
     feedback: (
       <>
-        {saved ? (
-          <Banner
-            variant="secondary"
-            role="status"
-            description="Slack configuration is active. A future signed event will verify the App-to-Bot identity before runtime access becomes ready; Request URL verification remains observation-only, and no test message is required to save this generation."
-          />
-        ) : null}
+        {saved ? <Banner variant="secondary" role="status" description={m.im_slack_connected()} /> : null}
         {error ? <Banner variant="error" role="alert" description={error} /> : null}
       </>
     ),
   });
 }
 
-function normalizeSlackConfigurationError(cause: unknown, fallback: string): string {
+function normalizeSlackConfigurationError(cause: unknown): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
-  if (code && SLACK_CONFIGURATION_MESSAGES[code]) return SLACK_CONFIGURATION_MESSAGES[code];
-  return cause instanceof Error ? cause.message : fallback;
+  return code ? slackConfigurationMessage(code) : m.im_slack_authorization_failed();
+}
+
+function slackConfigurationMessage(code: string): string {
+  if (code === "SLACK_SCOPE_REAUTH_REQUIRED" || code === "SLACK_TOKEN_REVOKED") {
+    return m.im_slack_permissions_missing();
+  }
+  if (code === "SLACK_UPSTREAM_UNAVAILABLE") return m.im_slack_unavailable();
+  return m.im_slack_authorization_failed();
 }

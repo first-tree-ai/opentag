@@ -47,6 +47,7 @@ import {
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   imBindingDiagnosticsPath,
@@ -417,6 +418,9 @@ describe("Agent contracts", () => {
     expect(agentImBindingConfigPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/config");
     expect(AGENT_IM_BINDING_CONFIG_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/config");
     expect(agentFeishuSetupAttemptsPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/feishu/setup-attempts");
+    expect(feishuSetupAttemptCancelPath("attempt/value")).toBe(
+      "/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue/cancel",
+    );
     expect(AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/feishu/setup-attempts");
     expect(feishuSetupAttemptPath("attempt/value")).toBe("/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue");
     expect(agentSlackOAuthStartPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/slack/oauth/start");

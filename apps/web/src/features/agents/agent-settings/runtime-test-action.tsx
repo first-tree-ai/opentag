@@ -6,7 +6,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button } from "../../../ui/design-system.js";
+import { Button, SettingsRow } from "../../../ui/design-system.js";
 
 type RuntimeTestFailure = AgentRuntimeTestFailureCode | "request";
 type RuntimeTestView =
@@ -15,12 +15,16 @@ type RuntimeTestView =
 
 export function RuntimeTestAction({
   agentId,
+  disabledReason,
   expectedRevision,
   expectedRuntimeConfigRevision,
+  providerName,
 }: {
   readonly agentId: string;
+  readonly disabledReason?: string;
   readonly expectedRevision: number;
   readonly expectedRuntimeConfigRevision: number;
+  readonly providerName?: string;
 }) {
   // A new saved configuration identity remounts the session so an in-flight test is aborted and a
   // previous result cannot outlive the revisions it described.
@@ -28,25 +32,32 @@ export function RuntimeTestAction({
     <RuntimeTestActionSession
       key={`${agentId}:${expectedRevision}:${expectedRuntimeConfigRevision}`}
       agentId={agentId}
+      disabledReason={disabledReason}
       expectedRevision={expectedRevision}
       expectedRuntimeConfigRevision={expectedRuntimeConfigRevision}
+      providerName={providerName ?? "Provider"}
     />
   );
 }
 
 function RuntimeTestActionSession({
   agentId,
+  disabledReason,
   expectedRevision,
   expectedRuntimeConfigRevision,
+  providerName,
 }: {
   readonly agentId: string;
+  readonly disabledReason?: string;
   readonly expectedRevision: number;
   readonly expectedRuntimeConfigRevision: number;
+  readonly providerName: string;
 }) {
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<RuntimeTestView>();
   const abortRef = useRef<AbortController>(undefined);
-  const warningId = `runtime-test-warning-${agentId}`;
+  const descriptionId = `runtime-test-description-${agentId}`;
+  const disabledReasonId = `runtime-test-disabled-${agentId}`;
 
   useEffect(() => {
     return () => {
@@ -81,21 +92,41 @@ function RuntimeTestActionSession({
   }
 
   return (
-    <div className="grid gap-3 border-t border-kumo-line pt-3" data-ui="runtime-test">
-      <p className="text-sm text-kumo-subtle" id={warningId}>
-        {m.agent_settings_runtime_test_warning()}
-      </p>
-      <div>
-        <Button aria-describedby={warningId} disabled={pending} variant="secondary" onClick={() => void run()}>
+    <SettingsRow
+      description={<span id={descriptionId}>{m.agent_settings_runtime_test_description()}</span>}
+      label={m.agent_settings_runtime_test_heading()}
+      supportingContent={
+        <>
+          {disabledReason ? (
+            <p className="text-sm text-kumo-subtle" id={disabledReasonId}>
+              {disabledReason}
+            </p>
+          ) : null}
+          {result ? <RuntimeTestResultMessage providerName={providerName} result={result} /> : null}
+        </>
+      }
+    >
+      <div className="flex justify-start @min-[44rem]/workspace:justify-end">
+        <Button
+          aria-describedby={`${descriptionId}${disabledReason ? ` ${disabledReasonId}` : ""}`}
+          disabled={pending || Boolean(disabledReason)}
+          variant="secondary"
+          onClick={() => void run()}
+        >
           {pending ? m.agent_settings_runtime_test_pending() : m.agent_settings_runtime_test_action()}
         </Button>
       </div>
-      {result ? <RuntimeTestResultMessage result={result} /> : null}
-    </div>
+    </SettingsRow>
   );
 }
 
-function RuntimeTestResultMessage({ result }: { readonly result: RuntimeTestView }) {
+function RuntimeTestResultMessage({
+  providerName,
+  result,
+}: {
+  readonly providerName: string;
+  readonly result: RuntimeTestView;
+}) {
   if (result.status === "passed") {
     return (
       <p className="text-sm text-kumo-success" role="status">
@@ -105,12 +136,12 @@ function RuntimeTestResultMessage({ result }: { readonly result: RuntimeTestView
   }
   return (
     <p className="text-sm text-kumo-danger" role="alert">
-      {runtimeTestFailureMessage(result.code)}
+      {runtimeTestFailureMessage(result.code, providerName)}
     </p>
   );
 }
 
-export function runtimeTestFailureMessage(code: RuntimeTestFailure): string {
+export function runtimeTestFailureMessage(code: RuntimeTestFailure, providerName = "Provider"): string {
   switch (code) {
     case "busy":
       return m.agent_settings_runtime_test_failed_busy();
@@ -125,7 +156,7 @@ export function runtimeTestFailureMessage(code: RuntimeTestFailure): string {
     case "provider_failed":
       return m.agent_settings_runtime_test_failed_provider_failed();
     case "provider_start_failed":
-      return m.agent_settings_runtime_test_failed_provider_start_failed();
+      return m.agent_settings_runtime_test_failed_provider_start_failed({ providerName });
     case "stale_configuration":
       return m.agent_settings_runtime_test_failed_stale_configuration();
     case "timeout":
@@ -133,6 +164,7 @@ export function runtimeTestFailureMessage(code: RuntimeTestFailure): string {
     case "request":
       return m.agent_settings_runtime_test_failed_request();
   }
+  return m.agent_settings_runtime_test_failed_request();
 }
 
 export const RUNTIME_TEST_FAILURE_CODES = [...AGENT_RUNTIME_TEST_FAILURE_CODES, "request"] as const;

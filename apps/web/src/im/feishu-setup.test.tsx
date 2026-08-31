@@ -22,9 +22,15 @@ function attempt(
   };
 }
 
-function Harness({ onSuccess = () => undefined }: { onSuccess?: () => void }) {
+function Harness({
+  onSuccess = () => undefined,
+  presentation = "inline",
+}: {
+  onSuccess?: () => void;
+  presentation?: "dialog" | "inline";
+}) {
   return (
-    <FeishuSetup agentId={agentId} onSuccess={onSuccess}>
+    <FeishuSetup agentId={agentId} onSuccess={onSuccess} presentation={presentation}>
       {(setup) => (
         <>
           <button type="button" onClick={() => void setup.start("create")}>
@@ -50,6 +56,46 @@ afterEach(() => {
 });
 
 describe("FeishuSetup", () => {
+  it("opens the first connection in a dialog and cancels the Server attempt", async () => {
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
+      attempt({
+        id: firstAttemptId,
+        intent: "create",
+        state: "awaiting_user",
+        qrUrl: "https://open.feishu.cn/setup",
+      }),
+    );
+    const cancel = vi
+      .spyOn(browserApi, "cancelFeishuSetupAttempt")
+      .mockResolvedValue(attempt({ id: firstAttemptId, intent: "create", state: "canceled" }));
+    render(<Harness presentation="dialog" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect Feishu" });
+    expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open in Feishu" })).toBeTruthy();
+    expect(dialog.textContent).not.toContain("State:");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(cancel).toHaveBeenCalledWith(firstAttemptId));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connect Feishu" })).toBeNull());
+  });
+
+  it("shows a non-cancellable finishing state without the QR code", async () => {
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
+      attempt({ id: firstAttemptId, intent: "reauthorize", state: "validating" }),
+    );
+    const cancel = vi.spyOn(browserApi, "cancelFeishuSetupAttempt");
+    render(<Harness presentation="dialog" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
+    await screen.findByRole("dialog", { name: "Update Feishu permissions" });
+    expect(screen.getByText("Finishing connection…")).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Scan this QR code in Feishu" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close Update Feishu permissions" }).hasAttribute("disabled")).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it("renders the setup link and generated QR without creating duplicate attempts", async () => {
     const create = vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
       attempt({
@@ -112,7 +158,7 @@ describe("FeishuSetup", () => {
     await act(async () => undefined);
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
 
-    expect(screen.getByRole("alert").textContent).toBe("Unable to refresh setup");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
     expect(poll).toHaveBeenCalledTimes(1);
 
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
@@ -190,7 +236,7 @@ describe("FeishuSetup", () => {
     expect(await screen.findByText(/already connected to another Agent/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
 
-    expect((await screen.findByRole("alert")).textContent).toBe("Retry unavailable");
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
     expect(screen.getByText(/State: failed/)).toBeTruthy();
     expect(screen.getByText(/already connected to another Agent/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry Feishu setup" })).toBeTruthy();
@@ -239,11 +285,11 @@ describe("FeishuSetup", () => {
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     await act(async () => undefined);
-    expect(screen.getByRole("alert").textContent).toBe("Replacement unavailable");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
 
     expect(screen.getByText(/State: validating/)).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toBe("Replacement unavailable");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
     expect(poll).toHaveBeenCalledTimes(1);
   });
 
@@ -263,7 +309,7 @@ describe("FeishuSetup", () => {
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
-    expect(screen.getByRole("alert").textContent).toBe("Old attempt poll failed");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
     await act(async () =>
       resolveReplacement(attempt({ id: secondAttemptId, intent: "replace", state: "awaiting_user" })),
     );
@@ -278,12 +324,11 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
-    expect((await screen.findByRole("alert")).textContent).toBe("Unable to start setup");
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
   });
 
   it("explains a Server-reported failure the same way whether or not an attempt exists", async () => {
-    const unavailable =
-      "The Feishu open platform did not return a usable authorization. Check the Server's network access to Feishu, then retry.";
+    const unavailable = "Feishu is unavailable right now. Check the connection and try again.";
     const start = vi
       .spyOn(browserApi, "createFeishuSetupAttempt")
       .mockRejectedValueOnce(
@@ -304,7 +349,7 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
-    expect(screen.getByText(/did not return a usable authorization/)).toBeTruthy();
+    expect(screen.getByText(/Feishu is unavailable right now/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -318,7 +363,7 @@ describe("FeishuSetup", () => {
 
     const failedState = await screen.findByText(/State: failed/);
     expect(failedState.closest('[data-ui="feishu-setup-feedback"]')?.textContent).toContain(
-      "Feishu setup failed. Retry or contact the Account owner for help.",
+      "Couldn’t connect Feishu. Try scanning a new QR code.",
     );
   });
 });

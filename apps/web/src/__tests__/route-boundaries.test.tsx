@@ -39,9 +39,10 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/runtime`);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Model & reasoning" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Model" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/settings/execution`);
-    expect(screen.queryByText("Runtime")).toBeNull();
+    expect(screen.getByText("Runtime")).toBeTruthy();
+    expect(screen.queryByText("Model & reasoning")).toBeNull();
   });
 
   it.each([

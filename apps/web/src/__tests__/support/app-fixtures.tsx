@@ -92,6 +92,8 @@ export function installApi(
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     multipleMemberships?: boolean;
     agentCreateError?: "conflict" | "generic" | "name";
+    /** Serves an Agent the Server says has no Computer, which is not the same as one it cannot read. */
+    agentUnbound?: boolean;
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
     passwordSignInFails?: boolean;
     bindingReauth?: boolean;
@@ -130,6 +132,9 @@ export function installApi(
   } = {},
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
+  // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
+  // the Server answers differently once the reader has chosen.
+  let agentUnbound = options.agentUnbound ?? false;
   let revision = lifecycleStatus === "active" ? 1 : 2;
   const adminConfig = () => ({
     id: agentId,
@@ -323,6 +328,7 @@ export function installApi(
                 activity: options.agentActivity ?? agentListItem.activity,
                 status: lifecycleStatus,
                 runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+                ...(agentUnbound ? { computer: null } : {}),
               },
             ],
       });
@@ -465,9 +471,15 @@ export function installApi(
         runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
         activity: options.agentActivity ?? { state: "idle" },
+        ...(agentUnbound ? { computer: null } : {}),
       });
     }
     if (path === `/api/v1/agents/${agentId}/config`) {
+      return json(adminConfig());
+    }
+    if (path === `/api/v1/agents/${agentId}/computer/rebind` && init?.method === "POST") {
+      agentUnbound = false;
+      revision += 1;
       return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/suspend` && init?.method === "POST") {

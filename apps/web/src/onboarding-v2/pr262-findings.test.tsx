@@ -193,7 +193,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     vi.spyOn(browserApi, "createAgent").mockRejectedValue(new Error("An active Agent with this name already exists"));
 
     const view = mount();
-    act(() => view.result.current.issueConnectCode());
+    act(() => view.result.current.computerConnected(computer()));
     await settle();
     await tick(POLL_MS);
     act(() => view.result.current.createAgent(draft()));

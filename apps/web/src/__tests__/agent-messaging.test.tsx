@@ -54,16 +54,15 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
-  it("offers messaging setup only when the missing binding is confirmed", async () => {
+  it("offers messaging app setup only when the missing binding is confirmed", async () => {
     installApi({ bound: false });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    // The section names the state it is in, rather than carrying one name when a channel exists and
-    // another when it does not.
-    expect(await screen.findByRole("heading", { name: "No channel connected" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Contact channel" })).toBeNull();
-    expect(screen.getByText(/cannot contact this Agent/)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
+    expect(screen.getByText("Connect Feishu or Slack so teammates can send messages to this Agent.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect Feishu" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
   });
 
   it("separates the connected channel from the trigger mode that acts on it", async () => {
@@ -71,24 +70,28 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
     expect(screen.getByText("Feishu · @reviewer")).toBeTruthy();
-    expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText(/Validated/)).toBeTruthy();
+    const identity = document.querySelector('[data-ui="messaging-app-identity"]') as HTMLElement;
+    expect(identity).toBeTruthy();
+    expect(identity.className).toContain("grid-cols-[auto_minmax(0,1fr)_auto]");
+    const connected = within(identity).getByText("Connected").closest("[data-state]") as HTMLElement;
+    expect(connected.className).toContain("justify-self-end");
+    expect(screen.queryByText(/Validated/)).toBeNull();
     // The channel identity is reported, not edited, so it carries no fields of its own.
     expect(screen.queryByText("Contact")).toBeNull();
     expect(screen.queryByText("How to use")).toBeNull();
-    expect(screen.getByRole("heading", { name: "Group chat trigger mode" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Group chat messages" })).toBeTruthy();
     expect(
       screen.getByText(
-        "Every message in connected group chats is kept as conversation history either way. This setting decides which of them wake this Agent up to act.",
+        "Direct messages are always checked. Choose when this Agent should check messages in group chats.",
       ),
     ).toBeTruthy();
-    // A direct message is always delivered, so the row that only ever said so is gone.
-    expect(screen.queryByText("Direct messages")).toBeNull();
-    expect(screen.getByRole("group", { name: "Group chat trigger mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change Feishu Bot" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Disconnect Feishu" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Group chat messages" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Change bot" }).className).toContain("h-9");
+    const disconnect = screen.getByRole("button", { name: "Disconnect Feishu" });
+    expect(disconnect.className).toContain("h-9");
+    expect(disconnect.className).toContain("text-kumo-danger");
   });
 
   it("names a Slack channel by its verified Bot rather than by an invented Agent handle", async () => {
@@ -96,7 +99,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     const messaging = render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
     expect(screen.getByText("Slack")).toBeTruthy();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Slack · @/)).toBeNull();
@@ -110,7 +113,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(status).queryByText(/Slack · @reviewer/)).toBeNull();
   });
 
-  it("does not blame an online Computer when the Provider is what is not ready", async () => {
+  it("keeps Computer and runtime state out of Messaging when the Provider is not ready", async () => {
     installApi({
       bound: true,
       handoffReady: false,
@@ -119,32 +122,28 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
-    expect(screen.getByText(/Messages wait until Codex is ready on this agent's computer\./)).toBeTruthy();
-    expect(screen.queryByText(/until this agent's computer is online/)).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
+    expect(screen.queryByText(/Messages wait until/)).toBeNull();
+    expect(screen.queryByText(/Computer/)).toBeNull();
   });
 
-  it("keeps the delivery explanation neutral when no blocker is observable", async () => {
+  it("does not add delivery diagnostics when no blocker is observable", async () => {
     installApi({ bound: true, handoffReady: false });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
-    expect(
-      screen.getByText(
-        "The channel itself is connected, but messages cannot be delivered yet. Retrying automatically.",
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText(/Computer is online/)).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
+    expect(screen.queryByText(/messages cannot be delivered/i)).toBeNull();
+    expect(screen.queryByText(/Computer/)).toBeNull();
   });
 
-  it("points at the Computer only when the Computer is the blocker", async () => {
+  it("keeps an offline Computer out of the Messaging app configuration", async () => {
     installApi({ bound: true, handoffReady: false, computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connected channel" })).toBeTruthy();
-    expect(screen.getByText(/Messages wait until this agent's computer is online\./)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
+    expect(screen.queryByText(/computer/i)).toBeNull();
   });
 
   it("shows a Messaging error instead of inferring an empty channel", async () => {
@@ -213,16 +212,14 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("changes Slack receive mode locally without opening Slack configuration", async () => {
+  it("changes Slack receive mode locally after a clear confirmation", async () => {
     installApi({ bound: true, provider: "slack" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    // Widening changes what the runtime is woken for, so it takes a deliberate second click -- but
-    // not a modal: the control itself asks.
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(await screen.findByText(/raises Token spend/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm every message" }));
+    const dialog = await screen.findByRole("dialog", { name: "Check every message?" });
+    expect(within(dialog).getByText(/may use more tokens/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Use every message" }));
     await waitFor(() =>
       expect(
         vi
@@ -275,14 +272,13 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Confirm every message" }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Unable to update message access");
+    fireEvent.click(await screen.findByRole("button", { name: "Use every message" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t update the message setting");
 
-    fireEvent.click(screen.getByRole("button", { name: "Every message" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Confirm every message" }));
-    await waitFor(() => expect(screen.queryByText("Unable to update message access")).toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: "Use every message" }));
+    await waitFor(() => expect(screen.queryByText("Couldn’t update the message setting. Try again.")).toBeNull());
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Group chat trigger mode" })),
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Group chat messages" })),
     );
   });
 
@@ -314,13 +310,13 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect Feishu" }));
-    const dialog = await screen.findByRole("dialog", { name: "Disconnect messaging?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
-    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to disconnect messaging");
+    const dialog = await screen.findByRole("dialog", { name: "Disconnect Feishu?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect Feishu" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Couldn’t disconnect Feishu");
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Disconnect messaging?" })).toBeNull());
-    expect(screen.queryByText("Unable to disconnect messaging")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect Feishu" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Disconnect Feishu?" })).toBeNull());
+    expect(screen.queryByText("Couldn’t disconnect Feishu. Try again.")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Messaging" })));
   });
 
@@ -328,7 +324,7 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Connect a Feishu Bot" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect Feishu" })).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -336,9 +332,9 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect a Feishu Bot" }));
-    expect(await screen.findByText("Feishu setup started")).toBeTruthy();
-    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Feishu" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect Feishu" });
+    expect(within(dialog).getByText(/Scan the QR code in Feishu/)).toBeTruthy();
     expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
     await waitFor(() =>
       expect(
@@ -355,11 +351,11 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bindingReauth: true, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByText(/Permissions need updating/)).toBeTruthy();
+    expect(await screen.findByText("Permissions required")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Change Feishu Bot" }));
-    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
+    expect(await screen.findByRole("dialog", { name: "Change Feishu bot" })).toBeTruthy();
     const request = vi
       .mocked(fetch)
       .mock.calls.find(
@@ -368,22 +364,18 @@ describe("OpenTag Web App Shell", () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
   });
 
-  it("separates an active channel from an Agent that cannot receive messages", async () => {
+  it("keeps Agent delivery state separate from its connected messaging app", async () => {
     installApi({ bound: true, handoffReady: false });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
     expect(await screen.findByText("Feishu · @reviewer")).toBeTruthy();
-    expect(
-      screen.getByText(
-        "The channel itself is connected, but messages cannot be delivered yet. Retrying automatically.",
-      ),
-    ).toBeTruthy();
+    expect(screen.queryByText(/messages cannot be delivered/i)).toBeNull();
     expect(screen.queryByText(/Needs attention/)).toBeNull();
     expect(screen.queryByText(/Online/)).toBeNull();
   });
 
-  it("shows the selected runtime state beside a connected Slack channel", async () => {
+  it("does not show the selected runtime state beside a connected Slack app", async () => {
     installApi({
       bound: true,
       provider: "slack",
@@ -395,22 +387,20 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Slack")).toBeTruthy();
-    expect(screen.getByText(/Messages wait until Codex is ready on this agent's computer\./)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/computer`,
-    );
+    expect(screen.queryByText(/Messages wait until/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
   });
 
   it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {
     installApi({ bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Change Feishu Bot" }));
-    const setupNotice = (await screen.findByText("Feishu setup started")).parentElement;
+    fireEvent.click(await screen.findByRole("button", { name: "Change bot" }));
+    const setupNotice = await screen.findByRole("dialog", { name: "Change Feishu bot" });
     expect(setupNotice?.textContent).toContain(
-      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
+      "This Feishu bot is already connected to another Agent. Choose a different bot and try again.",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => {
       const requests = vi
         .mocked(fetch)
@@ -430,7 +420,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Add OpenTag to Slack" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Slack" }));
     await waitFor(() =>
       expect(
         vi

@@ -5,6 +5,7 @@ const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 const dayFormatters = new Map<string, Intl.DateTimeFormat>();
 const numberFormatters = new Map<string, Intl.NumberFormat>();
 const compactNumberFormatters = new Map<string, Intl.NumberFormat>();
+const percentFormatters = new Map<string, Intl.NumberFormat>();
 const collators = new Map<string, Intl.Collator>();
 
 function dateTimeFormatter(locale: string): Intl.DateTimeFormat {
@@ -43,6 +44,15 @@ function compactNumberFormatter(locale: string): Intl.NumberFormat {
   return formatter;
 }
 
+function percentFormatter(locale: string): Intl.NumberFormat {
+  let formatter = percentFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, { maximumFractionDigits: 1, style: "percent" });
+    percentFormatters.set(locale, formatter);
+  }
+  return formatter;
+}
+
 function collator(locale: string): Intl.Collator {
   let formatter = collators.get(locale);
   if (!formatter) {
@@ -68,6 +78,10 @@ export function formatNumber(value: number): string {
 export function formatCompactNumber(value: number): string {
   if (value < 1_000) return formatNumber(value);
   return compactNumberFormatter(intlLocale()).format(value);
+}
+
+export function formatPercent(value: number): string {
+  return percentFormatter(intlLocale()).format(value);
 }
 
 export function formatRelativeTime(value: string | Date): string {

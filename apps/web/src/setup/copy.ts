@@ -56,6 +56,7 @@ export const SETUP_COPY = {
     refresh: "Get a new command",
     waiting: "Waiting for your computer…",
     connected: "Your computer is connected.",
+    preparing: "Preparing connection command…",
 
     /*
      * The same step, once the Account has its computer. An Account has one, so there is nothing to
@@ -67,9 +68,16 @@ export const SETUP_COPY = {
     yoursLead: "Your AI worker runs on your own computer.",
     online: "Online",
     offline: "Offline",
+    unknown: "Unable to confirm",
     lastSeen: (when: string) => `last seen ${when}`,
-    /** Reconnecting repairs this exact machine, rather than replacing it with a second one. */
-    offlineLead: "This computer is offline. Reconnect it and this page will continue on its own.",
+    offlineLead: (computerName: string) =>
+      `${computerName} is offline. Start OpenTag on that Computer; this page will continue when it reconnects.`,
+    unknownLead: (computerName: string) =>
+      `We can't confirm ${computerName} right now. Start OpenTag on that Computer; this page will continue when it reconnects.`,
+    generateRepair: "Need to reinstall? Generate a repair command.",
+    hideRepair: "Hide repair command",
+    repairCommandComment: (computerName: string) => `# Run this command in the terminal on ${computerName}`,
+    waitingRepair: (computerName: string) => `Waiting for ${computerName} to connect…`,
   },
 
   messaging: {

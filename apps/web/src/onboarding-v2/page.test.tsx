@@ -247,6 +247,7 @@ describe("OnboardingV2Page", () => {
 
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
+    await act(async () => undefined);
     expect(screen.getByText("This command has expired.")).toBeTruthy();
     expect(screen.getByText("Connection command expired.")).toBeTruthy();
     expect(screen.queryByText("Waiting for your computer…")).toBeNull();
@@ -317,6 +318,7 @@ describe("OnboardingV2Page", () => {
     // Expiring empties the countdown but must not collapse the row it sits on.
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
+    await act(async () => undefined);
     expect(screen.queryByText(/Expires in/)).toBeNull();
     expect(document.querySelector('[data-ui="onboarding-v2-expiry"]')).toBeTruthy();
   });
@@ -429,6 +431,7 @@ describe("OnboardingV2Page", () => {
       await reachConnectStep();
       openLab();
       fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
+      await act(async () => undefined);
       fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
 
       expect(screen.getByText("This command has expired.")).toBeTruthy();
@@ -657,7 +660,8 @@ describe("OnboardingV2Page", () => {
       expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(ISSUE_MS);
-      expect(screen.getByText("Your computer is connected.")).toBeTruthy();
+      expect(screen.getByText("MacBook Pro")).toBeTruthy();
+      expect(screen.getByText("Online")).toBeTruthy();
       expect(screen.queryByText("Waiting for your computer…")).toBeNull();
     });
 

@@ -47,6 +47,7 @@ import {
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   imBindingDiagnosticsPath,
@@ -157,6 +158,26 @@ describe("Agent contracts", () => {
         runtimeProvider: agent.runtimeProvider,
       }),
     ).toThrow();
+  });
+
+  it("creates an Agent with no Computer and projects the absent binding as null", () => {
+    const created = CreateAgentRequestSchema.parse({
+      displayName: agent.displayName,
+      name: agent.name,
+      runtimeProvider: agent.runtimeProvider,
+    });
+    expect(created.computerId).toBeUndefined();
+    expect(AgentAdminConfigSchema.parse({ ...agent, computerId: null })).toMatchObject({ computerId: null });
+    const { runtimeConfig: _, revision: _revision, createdByUserId, computerId: _computerId, ...base } = agent;
+    const unbound = {
+      ...base,
+      createdBy: { userId: createdByUserId, displayName: "Creator" },
+      computer: null,
+    };
+    expect(AgentSummarySchema.parse(unbound)).toEqual(unbound);
+    // Absent and null stay distinct: `computer` is always stated, so a reader never has to guess
+    // whether an Agent has no Computer or the field was dropped in transit.
+    expect(() => AgentSummarySchema.parse({ ...base, createdBy: unbound.createdBy })).toThrow();
   });
 
   it("rejects unexpected authority and immutable update fields", () => {
@@ -417,6 +438,9 @@ describe("Agent contracts", () => {
     expect(agentImBindingConfigPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/config");
     expect(AGENT_IM_BINDING_CONFIG_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/config");
     expect(agentFeishuSetupAttemptsPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/feishu/setup-attempts");
+    expect(feishuSetupAttemptCancelPath("attempt/value")).toBe(
+      "/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue/cancel",
+    );
     expect(AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/feishu/setup-attempts");
     expect(feishuSetupAttemptPath("attempt/value")).toBe("/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue");
     expect(agentSlackOAuthStartPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/slack/oauth/start");

@@ -15,6 +15,7 @@ import {
   AuthProvidersResponseSchema,
   accountComputerConnectCodePath,
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
@@ -35,6 +36,7 @@ import {
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
@@ -56,6 +58,7 @@ import {
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
+  type RebindAgentComputerRequest,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -181,6 +184,14 @@ export class BrowserApi {
     });
   }
 
+  rebindAgentComputer(agentId: string, computerId: string): Promise<AgentAdminConfig> {
+    return this.request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      body: JSON.stringify({ computerId } satisfies RebindAgentComputerRequest),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
     return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
       method: "POST",
@@ -220,6 +231,13 @@ export class BrowserApi {
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+  }
+
+  cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.request(feishuSetupAttemptCancelPath(attemptId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {

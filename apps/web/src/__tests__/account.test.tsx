@@ -209,6 +209,69 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/onboarding");
   });
 
+  it("lets an Account with no finished setup bind a Computer without leaving onboarding", async () => {
+    /*
+     * The recovery for an Agent that has no Computer has to work from inside the setup gate. It
+     * once linked to that Agent's Computer settings, which lives under the shell that redirects
+     * every Account with `setupCompletedAt === null` straight back to onboarding -- so the exit
+     * returned the reader to the screen they were trying to leave. A hook test cannot see that:
+     * only the real router mounts the route that redirects. So the recovery is rendered here, and
+     * this test drives it to a working bind rather than asserting a link's href.
+     */
+    installApi({ setupCompletedAt: null, agentUnbound: true });
+    render(<App />);
+
+    expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    // Reachable and resolved right here, not merely advertised: the Account has one Computer, so
+    // the Agent is put on it without the reader being asked which.
+
+    // The reader is out: the Agent has a Computer, the resume that refused this run reads again and
+    // continues. Asserting the blocked screen is gone is what a redirect loop could never satisfy.
+    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
+    // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
+  it("lets an Account with several Computers choose one without leaving onboarding", async () => {
+    /*
+     * Which machine an Agent runs on is the reader's question when the Account holds more than one,
+     * and this screen sits inside the setup gate -- so the choice has to be answerable here. A
+     * refusal, or a pointer to somewhere behind the gate, would strand an Account that has several.
+     */
+    installApi({
+      setupCompletedAt: null,
+      agentUnbound: true,
+      computers: () => [
+        {
+          id: "8c2b1d4e-5a6f-4b7c-8d9e-0f1a2b3c4d5e",
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+        {
+          id: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+          displayName: "Spare",
+          platform: "darwin",
+          connectionStatus: "online",
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+      ],
+    });
+    render(<App />);
+
+    expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+
+    // The second row, so this cannot pass by binding whichever Computer happens to be first.
+    fireEvent.click(await screen.findByRole("button", { name: "Use Spare" }));
+
+    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
+    // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
   it("renders onboarding without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);

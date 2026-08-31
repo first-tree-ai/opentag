@@ -126,19 +126,23 @@ describe("OpenTag Web App Shell", () => {
     const setup = await screen.findByRole("region", { name: "Agent setup" });
     expect(
       [...setup.querySelectorAll('[data-ui="agent-settings-entry"] strong')].map((entry) => entry.textContent),
-    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model & reasoning"]);
-    expect(screen.getByRole("heading", { name: "Danger zone" })).toBeTruthy();
+    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model"]);
+    const dangerZone = screen.getByRole("region", { name: "Danger zone" });
+    expect(within(dangerZone).getByRole("heading", { name: "Danger zone" })).toBeTruthy();
+    expect(dangerZone.className).not.toContain("border-t");
     expect(screen.getByRole("link", { name: /^Pause or delete/ })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
-    expect(screen.getByRole("link", { name: /^Instructions / })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Model & reasoning/ })).toBeTruthy();
+    const instructionsLink = screen.getByRole("link", { name: /^Instructions / });
+    expect(instructionsLink.className).toContain("focus-visible:ring-2");
+    expect(within(instructionsLink).getByText("No custom instructions").className).toContain("text-kumo-subtle");
+    expect(screen.getByRole("link", { name: /^Model / })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /^Name Reviewer$/ })).toBeTruthy();
     expect(screen.getByText("Computer")).toBeTruthy();
     // Every row in the list opens; a row that is a link only sometimes cannot be predicted.
     expect(screen.getByRole("link", { name: /^Computer / })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Pause or delete/ })).toBeTruthy();
-    expect(screen.getByText("Not configured")).toBeTruthy();
+    expect(screen.getByText("No custom instructions")).toBeTruthy();
     expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
     expect(screen.getByText("Ada's Mac · macOS · Online")).toBeTruthy();
@@ -201,15 +205,17 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
     render(<App />);
 
-    const unavailableDeleteButton = await screen.findByRole("button", { name: "Delete permanently" });
+    const unavailableDeleteButton = await screen.findByRole("button", { name: "Delete Agent" });
     expect(unavailableDeleteButton.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText("Pause this Agent before deleting it permanently.")).toBeTruthy();
+    expect(
+      screen.getByText("Permanently deletes this Agent and disconnects its messaging app. Pause the Agent first."),
+    ).toBeTruthy();
     fireEvent.click(unavailableDeleteButton);
     expect(screen.queryByRole("dialog", { name: "Delete Reviewer?" })).toBeNull();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
-    const deleteButton = screen.getByRole("button", { name: "Delete permanently" });
+    fireEvent.click(await screen.findByRole("button", { name: "Pause Agent" }));
+    expect(await screen.findByRole("button", { name: "Resume Agent" })).toBeTruthy();
+    const deleteButton = screen.getByRole("button", { name: "Delete Agent" });
     expect(deleteButton.hasAttribute("disabled")).toBe(false);
     fireEvent.click(deleteButton);
     const dialog = await screen.findByRole("dialog", { name: "Delete Reviewer?" });
@@ -235,9 +241,9 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("link", { name: "Open Reviewer" }));
     fireEvent.click(await screen.findByRole("link", { name: "Settings" }));
     fireEvent.click(await screen.findByRole("link", { name: /Pause or delete/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
-    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause Agent" }));
+    expect(await screen.findByRole("button", { name: "Resume Agent" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Reviewer?" });
     fireEvent.change(within(dialog).getByLabelText(/Type Reviewer to confirm/), { target: { value: "Reviewer" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
@@ -267,15 +273,15 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Pause Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "Pause Reviewer?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Pause Agent" }));
-    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to pause right now");
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Couldn’t pause this Agent");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Pause Agent" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Pause Reviewer?" })).toBeNull());
-    const reactivateButton = await screen.findByRole("button", { name: "Reactivate" });
-    await waitFor(() => expect(document.activeElement).toBe(reactivateButton));
+    const resumeButton = await screen.findByRole("button", { name: "Resume Agent" });
+    await waitFor(() => expect(document.activeElement).toBe(resumeButton));
   });
 
   it("keeps delete failures visible inside the confirmation dialog and clears them after retry", async () => {
@@ -296,14 +302,14 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "Delete Reviewer?" });
     fireEvent.change(within(dialog).getByLabelText(/Type Reviewer to confirm/), { target: { value: "Reviewer" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
-    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to delete right now");
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Couldn’t delete this Agent");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
     await waitFor(() => expect(window.location.pathname).toBe("/agents"));
-    expect(screen.queryByText("Unable to delete right now")).toBeNull();
+    expect(screen.queryByText("Couldn’t delete this Agent. Try again.")).toBeNull();
   });
 });

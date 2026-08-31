@@ -6,6 +6,7 @@
  * setup copy, so the same work says the same thing on both surfaces.
  */
 
+import * as m from "../paraglide/messages.js";
 import { SETUP_COPY } from "../setup/copy.js";
 import type { CloudRuntime, Destination, MessagingProvider, Runtime, StepId, TokenSource } from "./flow.js";
 
@@ -46,6 +47,20 @@ export const TOKEN_COPY: Record<TokenSource, { readonly title: string; readonly 
 
 export const COPY = {
   loading: "Picking up where you left off…",
+  /**
+   * The Agent exists but has no computer, and this flow cannot give it one: the connect step proves
+   * that *a* machine arrived, not that it is the machine that ran this command. Choosing is the
+   * reader's, on the page built for it.
+   */
+  resumeBlocked: {
+    /*
+     * Both are functions, including the one that takes no argument. A message resolved here would
+     * run at import, before `configureLocaleRuntime()` replaces Paraglide's persisting resolver —
+     * which would write a locale preference the reader never chose.
+     */
+    title: (agentName: string) => m.onboarding_v2_resume_blocked_title({ agentName }),
+    detail: () => m.onboarding_v2_resume_blocked_detail(),
+  },
   brand: "OpenTag",
 
   nav: {

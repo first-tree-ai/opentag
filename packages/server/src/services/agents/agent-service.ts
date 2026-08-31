@@ -34,6 +34,7 @@ import {
   users,
 } from "../../db/schema/index.js";
 import {
+  ensureSchemaWorkspaceId,
   schemaRequiredAgentProjection,
   schemaRequiredComputerProjection,
   schemaWorkspaceIdForComputer,
@@ -49,17 +50,21 @@ type QueryExecutor = Pick<DatabaseClient, "select">;
 interface AgentScope {
   agent: AgentRow;
   canManage: boolean;
+  computerId: string | null;
+}
+
+interface AgentComputer {
   computerId: string;
+  displayName: string;
+  ownerAccountId: string;
+  platform: "darwin" | "linux" | "win32";
 }
 
 interface AgentSafeRow {
   id: string;
   createdByUserId: string;
   creatorDisplayName: string;
-  computerId: string;
-  computerDisplayName: string;
-  computerPlatform: "darwin" | "linux" | "win32";
-  computerOwnerAccountId: string;
+  computer: AgentComputer | null;
   name: string;
   displayName: string;
   runtimeProvider: "codex" | "claude-code";
@@ -67,6 +72,30 @@ interface AgentSafeRow {
   status: AgentRow["status"];
   createdAt: Date;
   updatedAt: Date;
+}
+
+/**
+ * Separates the two ways a joined Computer can be absent. `agentComputerId` is null while the Agent
+ * has no Computer, which is a normal state the reader must see; a bound Agent whose Computer row did
+ * not join is a broken record and stays an error rather than being reported as unbound.
+ */
+function toAgentComputer(row: {
+  agentComputerId: string | null;
+  computerId: string | null;
+  computerDisplayName: string | null;
+  computerOwnerAccountId: string | null;
+  computerPlatform: "darwin" | "linux" | "win32" | null;
+}): AgentComputer | null {
+  if (row.agentComputerId === null) return null;
+  if (!row.computerId || !row.computerDisplayName || !row.computerPlatform || !row.computerOwnerAccountId) {
+    throw new Error("Active Agent is missing its enrolled Computer");
+  }
+  return {
+    computerId: row.computerId,
+    displayName: row.computerDisplayName,
+    ownerAccountId: row.computerOwnerAccountId,
+    platform: row.computerPlatform,
+  };
 }
 
 interface AgentActivityEvidence {
@@ -119,7 +148,11 @@ function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
   });
 }
 
-function toAgentAdminConfig(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow, computerId: string): AgentAdminConfig {
+function toAgentAdminConfig(
+  row: AgentRow,
+  runtimeConfig: AgentRuntimeConfigRow,
+  computerId: string | null,
+): AgentAdminConfig {
   if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as an admin config");
   return {
     id: row.id,
@@ -142,11 +175,13 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
   return {
     id: row.id,
     createdBy: { userId: row.createdByUserId, displayName: row.creatorDisplayName },
-    computer: {
-      computerId: row.computerId,
-      displayName: row.computerDisplayName,
-      platform: row.computerPlatform,
-    },
+    computer: row.computer
+      ? {
+          computerId: row.computer.computerId,
+          displayName: row.computer.displayName,
+          platform: row.computer.platform,
+        }
+      : null,
     name: row.name,
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
@@ -154,7 +189,7 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
     status: row.status,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    ...(row.computerOwnerAccountId !== row.createdByUserId ? { requiresComputerRebind: true } : {}),
+    ...(row.computer && row.computer.ownerAccountId !== row.createdByUserId ? { requiresComputerRebind: true } : {}),
   };
 }
 
@@ -295,7 +330,9 @@ export class AgentService {
     try {
       return await this.#database.transaction(async (transaction) => {
         await this.#afterMembershipLocked?.();
-        const computer = await this.#lockOwnedComputer(transaction, callerUserId, input.computerId);
+        const computer = input.computerId
+          ? await this.#lockOwnedComputer(transaction, callerUserId, input.computerId)
+          : undefined;
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
         );
@@ -328,11 +365,16 @@ export class AgentService {
         const [created] = await transaction
           .insert(agents)
           .values({
-            ...schemaRequiredAgentProjection(computer),
+            ...(computer
+              ? schemaRequiredAgentProjection(computer)
+              : {
+                  workspaceId: await ensureSchemaWorkspaceId(transaction, callerUserId, now),
+                  workspaceComputerId: null,
+                }),
             createdByUserId: callerUserId,
             creationIntentId: input.creationIntentId,
             creationIntentFingerprint: intentFingerprint,
-            computerId: computer.id,
+            computerId: computer?.id ?? null,
             name: input.name,
             displayName: input.displayName,
             runtimeProvider: input.runtimeProvider,
@@ -346,7 +388,7 @@ export class AgentService {
           .values({ agentId: created.id, ...runtimeConfig, createdAt: now, updatedAt: now })
           .returning();
         if (!createdRuntimeConfig) throw new Error("Agent runtime config insert did not return a row");
-        return toAgentAdminConfig(created, createdRuntimeConfig, computer.id);
+        return toAgentAdminConfig(created, createdRuntimeConfig, computer?.id ?? null);
       });
     } catch (error) {
       const constraintName = uniqueConstraintName(error);
@@ -415,6 +457,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
+        agentComputerId: agents.computerId,
         computerId: accountComputers.id,
         computerDisplayName: accountComputers.displayName,
         computerPlatform: accountComputers.platform,
@@ -429,21 +472,13 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .leftJoin(accountComputers, eq(accountComputers.id, agents.computerId))
       .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .orderBy(asc(agents.name), asc(agents.id));
     const summaries = rows.flatMap((row) => {
       if (!row.id) return [];
-      if (
-        !row.creatorDisplayName ||
-        !row.computerId ||
-        !row.computerDisplayName ||
-        !row.computerPlatform ||
-        !row.computerOwnerAccountId
-      ) {
-        throw new Error("Active Agent is missing its creator audit record or enrolled Computer");
-      }
-      return [toAgentSummary(row as AgentSafeRow)];
+      if (!row.creatorDisplayName) throw new Error("Active Agent is missing its creator audit record");
+      return [toAgentSummary({ ...row, computer: toAgentComputer(row) })];
     });
     if (summaries.length === 0) return { agents: [] };
 
@@ -518,6 +553,7 @@ export class AgentService {
         id: agents.id,
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
+        agentComputerId: agents.computerId,
         computerId: accountComputers.id,
         computerDisplayName: accountComputers.displayName,
         computerPlatform: accountComputers.platform,
@@ -532,7 +568,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .leftJoin(accountComputers, eq(accountComputers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
@@ -556,7 +592,7 @@ export class AgentService {
         ),
       );
     return {
-      ...toAgentSummary(row),
+      ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
       activity: projectActivityByAgent(activityRows).get(agentId) ?? { state: "idle" },
     };
   }

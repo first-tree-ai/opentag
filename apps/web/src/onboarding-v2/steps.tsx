@@ -1,5 +1,11 @@
 import { type FormEvent, useEffect, useId, useState } from "react";
 import {
+  type ComputerConnectAdapter,
+  type ComputerConnectIntent,
+  type ComputerConnectLifecycle,
+  ComputerConnectLifecycleRoot,
+} from "../features/computer-connect/computer-connect.js";
+import {
   CheckLine,
   CommandBlock,
   ConnectStatus,
@@ -9,8 +15,8 @@ import {
   QrCode,
   WAITING_LINE,
 } from "../setup/index.js";
-import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
-import type { KnownComputer, PlanSignIn } from "./backend.js";
+import { Banner, Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
+import type { KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
 import {
   CLOUD_RUNTIME_COPY,
@@ -25,7 +31,6 @@ import {
   type AgentDraft,
   CLOUD_RUNTIMES,
   type CloudComputerState,
-  type ConnectState,
   type CreationState,
   DEFAULT_AGENT_NAME,
   type Destination,
@@ -683,38 +688,31 @@ function PlanSignInPanel({
  * front of a result that is already there.
  */
 export function ComputerStep({
+  adapter,
   computer,
-  connect,
   creation,
   draft,
   onBack,
+  onComputerConnected,
   onCreate,
-  onRefreshCommand,
   readiness,
 }: {
+  adapter?: ComputerConnectAdapter;
   /** The Computer the Account has, when it has one. An Account has one machine, never a list. */
   computer?: KnownComputer | undefined;
-  connect: ConnectState;
   creation: CreationState;
   draft: AgentDraft;
   onBack?: () => void;
+  onComputerConnected: OnboardingBackend["computerConnected"];
   onCreate: () => void;
-  onRefreshCommand: () => void;
   readiness: ReadinessFacts | undefined;
 }) {
-  const connected = connect.kind === "connected";
   /*
    * The Computer this step is preparing, and so the one the check below answers for: the machine
    * the Account already has once it is reachable, or a new arrival. The backend probes this same
    * subject, so what is on screen is never a verdict about some other machine.
    */
-  const ready = computer ? computer.online : connected;
-  /*
-   * The command enrols a machine, so it belongs to a run that has none. Beside a machine the
-   * Account already has — an offline one most of all — it would offer a second Computer as the way
-   * to repair the first, which is the duplicate this step exists to avoid.
-   */
-  const connectingNew = computer === undefined;
+  const ready = computer?.availability === "online";
   const checks = deriveChecks(readiness?.runtime);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
@@ -745,39 +743,15 @@ export function ComputerStep({
         </p>
       ) : null}
 
-      {computer && !computer.online ? (
-        <p className="flex items-start gap-2 text-sm text-kumo-strong m-0" role="status">
-          <Icon className="shrink-0 mt-1 text-kumo-warning" name="laptop" />
-          {COPY.connect.offlineLead}
-        </p>
-      ) : null}
-
-      {connectingNew && !connected ? (
-        <div className="flex flex-col gap-3">
-          {/*
-            The instruction and the validity read as one line: the command is what the reader is
-            about to run, and how long it lasts belongs to it rather than to a note underneath.
-          */}
-          <div
-            className="otv2-command-lead flex items-center justify-between gap-3"
-            data-ui="onboarding-v2-command-lead"
-          >
-            <p className="text-sm text-kumo-subtle m-0">{COPY.connect.commandIntro}</p>
-            <span className="text-sm text-kumo-subtle shrink-0" data-ui="onboarding-v2-expiry">
-              {connect.kind === "issued" ? <Countdown expiresAt={connect.expiresAt} /> : null}
-            </span>
-          </div>
-          <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
-        </div>
-      ) : null}
-
-      {/* The Account's machine reports through the check below; the arrival line is for a new one. */}
-      {computer ? null : (
-        <ConnectStatus
-          connected={connected}
-          dataUi="onboarding-v2-connect-status"
-          expired={connect.kind === "expired"}
+      {computer?.availability === "offline" || computer?.availability === "unknown" ? (
+        <ComputerRecovery
+          adapter={adapter}
+          computer={computer}
+          key={`${computer.id}:${computer.availability}`}
+          onConnected={onComputerConnected}
         />
+      ) : computer ? null : (
+        <OnboardingComputerConnect adapter={adapter} intent={{ mode: "create" }} onConnected={onComputerConnected} />
       )}
 
       {ready ? (
@@ -817,22 +791,136 @@ export function ComputerStep({
   );
 }
 
+function ComputerRecovery({
+  adapter,
+  computer,
+  onConnected,
+}: {
+  adapter?: ComputerConnectAdapter;
+  computer: KnownComputer;
+  onConnected: OnboardingBackend["computerConnected"];
+}) {
+  const [repairing, setRepairing] = useState(false);
+  return (
+    <div className="flex flex-col items-start gap-3" data-ui="onboarding-v2-offline-recovery">
+      <p className="flex items-start gap-2 text-sm text-kumo-strong m-0" role="status">
+        <Icon className="shrink-0 mt-1 text-kumo-warning" name="laptop" />
+        {computer.availability === "offline"
+          ? COPY.connect.offlineLead(computer.displayName)
+          : COPY.connect.unknownLead(computer.displayName)}
+      </p>
+      <Button
+        aria-controls="onboarding-v2-repair-command"
+        aria-expanded={repairing}
+        onClick={() => setRepairing((current) => !current)}
+        size="compact"
+        variant="inline"
+      >
+        {repairing ? COPY.connect.hideRepair : COPY.connect.generateRepair}
+      </Button>
+      {repairing ? (
+        <div className="w-full" id="onboarding-v2-repair-command">
+          <OnboardingComputerConnect
+            adapter={adapter}
+            intent={{
+              mode: "repair",
+              target: { computerId: computer.id, displayName: computer.displayName },
+            }}
+            onConnected={onConnected}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Whether the Account's machine can be reached, and when it was last seen if it cannot. */
 function computerStatus(computer: KnownComputer): string {
-  if (computer.online) return COPY.connect.online;
+  if (computer.availability === "online") return COPY.connect.online;
+  if (computer.availability === "unknown") return COPY.connect.unknown;
   const seen = computer.lastSeen ? ` · ${COPY.connect.lastSeen(computer.lastSeen)}` : "";
   return `${COPY.connect.offline}${seen}`;
 }
 
-function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
+function OnboardingComputerConnect({
+  adapter,
+  intent,
+  onConnected,
+}: {
+  adapter?: ComputerConnectAdapter;
+  intent: ComputerConnectIntent;
+  onConnected: OnboardingBackend["computerConnected"];
+}) {
+  return (
+    <ComputerConnectLifecycleRoot adapter={adapter} intent={intent} onConnected={onConnected}>
+      {(lifecycle) => <OnboardingConnectPresentation intent={intent} lifecycle={lifecycle} />}
+    </ComputerConnectLifecycleRoot>
+  );
+}
+
+function OnboardingConnectPresentation({
+  intent,
+  lifecycle,
+}: {
+  intent: ComputerConnectIntent;
+  lifecycle: ComputerConnectLifecycle;
+}) {
+  const { error, reissue, state } = lifecycle;
+  if (state.kind === "issue-failed") {
+    return (
+      <div className="grid gap-3">
+        {error ? <Banner description={error} role="alert" variant="error" /> : null}
+        <Button className="w-fit" onClick={reissue}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
+  const repairTarget = intent.mode === "repair" ? intent.target.displayName : undefined;
+  return (
+    <div className="flex flex-col gap-3" data-state={state.kind} data-ui="onboarding-v2-computer-connect">
+      <div className="otv2-command-lead flex items-center justify-between gap-3" data-ui="onboarding-v2-command-lead">
+        <p className="text-sm text-kumo-subtle m-0">{COPY.connect.commandIntro}</p>
+        <span className="text-sm text-kumo-subtle shrink-0" data-ui="onboarding-v2-expiry">
+          {state.kind === "issued" ? <Countdown expiresAt={state.issued.expiresAt} /> : null}
+        </span>
+      </div>
+      <ConnectCommand lifecycle={lifecycle} repairTarget={repairTarget} />
+      {repairTarget ? (
+        state.kind === "connected" ? (
+          <StatusIndicator label={`${state.computer.displayName} is connected.`} tone="success" />
+        ) : (
+          <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0" role="status">
+            {state.kind === "issued" ? <span aria-hidden="true" className="ots-pulse shrink-0" /> : null}
+            {state.kind === "expired"
+              ? COPY.connect.expiredStatus
+              : state.kind === "issuing"
+                ? COPY.connect.preparing
+                : COPY.connect.waitingRepair(repairTarget)}
+          </p>
+        )
+      ) : (
+        <ConnectStatus
+          connected={state.kind === "connected"}
+          dataUi="onboarding-v2-connect-status"
+          expired={state.kind === "expired"}
+        />
+      )}
+      {error ? <Banner description={error} role="alert" variant="error" /> : null}
+    </div>
+  );
+}
+
+function ConnectCommand({ lifecycle, repairTarget }: { lifecycle: ComputerConnectLifecycle; repairTarget?: string }) {
+  const { reissue, state } = lifecycle;
   // Before a command exists, the block still renders — same structure, same length, so nothing
   // moves when the real one lands. It is inert: nothing to copy and nothing to announce.
-  if (connect.kind === "idle" || connect.kind === "issuing") {
+  if (state.kind === "issuing" || state.kind === "issue-failed") {
     return (
       <div aria-hidden="true" className="ots-command-pending">
         <CommandBlock
           command={PLACEHOLDER_CONNECT_COMMAND}
-          comment={COPY.connect.commandComment}
+          comment={repairTarget ? COPY.connect.repairCommandComment(repairTarget) : COPY.connect.commandComment}
           copiedLabel={COPY.connect.copied}
           copyLabel={COPY.connect.copy}
           fallbackHint={COPY.connect.copyFallback}
@@ -843,22 +931,23 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
   }
   return (
     <CommandBlock
-      command={connect.command}
-      comment={COPY.connect.commandComment}
+      command={state.issued.command}
+      comment={repairTarget ? COPY.connect.repairCommandComment(repairTarget) : COPY.connect.commandComment}
       copiedLabel={COPY.connect.copied}
       copyLabel={COPY.connect.copy}
       expiredNotice={
-        connect.kind === "expired" ? (
+        state.kind === "expired" ? (
           <>
             <span>{COPY.connect.expired}</span>
-            <Button onClick={onRefreshCommand} variant="inline">
+            <Button onClick={reissue} variant="inline">
               {COPY.connect.refresh}
             </Button>
           </>
         ) : undefined
       }
       fallbackHint={COPY.connect.copyFallback}
-      key={connect.command}
+      inert={state.kind === "redeemed"}
+      key={state.issued.command}
     />
   );
 }

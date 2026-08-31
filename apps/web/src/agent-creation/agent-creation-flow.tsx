@@ -21,13 +21,8 @@ import {
 } from "../ui/design-system.js";
 
 const CREATE_INTENT_VERSION = 3;
-/**
- * How long a superseded record is still worth keeping. Nothing reads it but a retry from the page
- * that sent it, and no request outlives a day, so this only bounds storage growth. Being wrong
- * about it costs a stale key, never a live one — unlike a deadline on a request still in flight.
- */
-const SUPERSEDED_RECORD_TTL_MS = 24 * 60 * 60_000;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
+const CREATION_CONTEXT_KEY = "opentag.agent-creation.context";
 
 export interface AgentCreationComputer {
   readonly id: string;
@@ -83,6 +78,12 @@ interface CreationIntentRecord {
   readonly creationIntentId: string;
   readonly request: Omit<CreateAgentRequest, "creationIntentId">;
   /**
+   * The browsing context that wrote this record. It is the only thing that says whose record this
+   * is: a page can decide about its own past requests and knows nothing about anyone else's, so
+   * this is what keeps one tab from judging another's.
+   */
+  readonly contextId?: string;
+  /**
    * When a creation succeeded that this record is no longer part of. A superseded record is never
    * resumed, but it is never destroyed either: it stays readable so that whoever sent it can still
    * retry under the same key if their response was lost.
@@ -100,6 +101,7 @@ const memoryIntentRecords = new Map<string, readonly CreationIntentRecord[]>();
 const memoryIntentFallbackAccounts = new Set<string>();
 const fallbackCreationLocks = new Map<string, Promise<void>>();
 const creationRequests = new Map<string, Promise<AgentAdminConfig>>();
+let memoryContextId: string | undefined;
 
 export function deriveAgentName(displayName: string): string {
   return displayName
@@ -262,11 +264,10 @@ export function AgentCreationFlow({
           : await getOrCreateCreationIntent(accountId, request);
         outstandingRecordRef.current = record;
         const created = await createAgentOnce(record);
-        // The Agent exists, so every record this Account holds is spent: this one, and any the
-        // reader abandoned along the way by changing the name or the route. Marking them stops
-        // them resuming later, and marking rather than deleting means a page still waiting on one
-        // keeps the key its retry needs.
-        await supersedeCreationIntents(accountId, new Date().toISOString());
+        // The Agent exists, so this page's own records are spent: the one it sent, and any it
+        // abandoned by changing the name or the route. Marking stops them resuming later; marking
+        // only its own leaves every other page's key exactly as that page left it.
+        await supersedeOwnCreationIntents(accountId, new Date().toISOString());
         outstandingRecordRef.current = undefined;
         onCreated(created);
       } catch (cause) {
@@ -902,13 +903,18 @@ async function getOrCreateCreationIntent(
     // Only a record still in play can answer for this request. A spent one belongs to a creation
     // that already happened, and replaying its key would return that Agent instead of making the
     // one being asked for now.
+    const contextId = creationContextId();
     const existing = records.find(
-      (record) => record.supersededAt === undefined && JSON.stringify(record.request) === fingerprint,
+      (record) =>
+        record.contextId === contextId &&
+        record.supersededAt === undefined &&
+        JSON.stringify(record.request) === fingerprint,
     );
     if (existing) return existing;
     const next: CreationIntentRecord = {
       version: CREATE_INTENT_VERSION,
       accountId,
+      contextId: creationContextId(),
       creationIntentId: crypto.randomUUID(),
       request,
     };
@@ -918,14 +924,37 @@ async function getOrCreateCreationIntent(
 }
 
 /**
- * The record a form may act on unprompted. A superseded record is skipped: a creation it is no
- * longer part of has already happened, so resuming it would create an Agent nobody asked for on
- * this visit. It stays in storage for the page that sent it to retry under.
+ * The record a form may act on unprompted: one this browsing context wrote itself and has not
+ * marked spent. Resuming is the page finishing its own interrupted request — a reload of this tab
+ * still finds it, because the context outlives the page — and another tab's request is never that,
+ * however ready its route looks.
  */
 function readCreationIntent(accountId: string): CreationIntentRecord | undefined {
+  const contextId = creationContextId();
   return readCreationIntents(accountId)
-    .filter((record) => record.supersededAt === undefined)
+    .filter((record) => record.contextId === contextId && record.supersededAt === undefined)
     .at(-1);
+}
+
+/**
+ * This browsing context's identity, kept in session storage so it survives a reload of this tab
+ * and is never shared with another. Where session storage is unavailable the context is unnamed
+ * for the life of the page: it can still finish its own in-memory request, and it neither resumes
+ * nor marks anything written before it.
+ */
+function creationContextId(): string {
+  try {
+    const stored = window.sessionStorage.getItem(CREATION_CONTEXT_KEY);
+    if (stored) return stored;
+    const created = crypto.randomUUID();
+    window.sessionStorage.setItem(CREATION_CONTEXT_KEY, created);
+    return created;
+  } catch {
+    // Session storage is unavailable, so the context cannot outlive this page. It is still stable
+    // for the page's own life, which is what lets an in-flight request be retried here.
+    memoryContextId ??= crypto.randomUUID();
+    return memoryContextId;
+  }
 }
 
 function readCreationIntents(accountId: string): readonly CreationIntentRecord[] {
@@ -967,40 +996,24 @@ function writeCreationIntents(accountId: string, records: readonly CreationInten
 }
 
 /**
- * Marks every record this Account holds as spent by a creation that has happened, and drops the
- * ones marked long enough ago that nothing can still be waiting on them.
+ * Marks this browsing context's own records spent, which is what a successful creation makes of
+ * them: the request it sent, and any it abandoned along the way by changing the name or the route.
  *
- * Nothing is destroyed at the moment of marking. A record may belong to a page that is still
- * waiting on its own response, and that record is its idempotency key: deleting it would let the
- * retry mint a new key and create the duplicate the key exists to prevent. Marking answers the
- * only question resume asks — may this be sent unprompted? — and leaves the answer to every other
- * question intact.
+ * It marks nothing else. Another tab's record may belong to a request still in flight, and no
+ * amount of reading storage can tell that from an abandoned one — so this page does not guess. It
+ * decides only about requests it made itself, which it does know the fate of.
+ *
+ * Nothing is destroyed, either. Marking answers the only question resume asks — may this be sent
+ * unprompted? — and leaves the key readable for the page that sent it to retry under.
  */
-async function supersedeCreationIntents(accountId: string, supersededAt: string): Promise<void> {
-  const collectBefore = Date.parse(supersededAt) - SUPERSEDED_RECORD_TTL_MS;
+async function supersedeOwnCreationIntents(accountId: string, supersededAt: string): Promise<void> {
+  const contextId = creationContextId();
   await withCreationLock(accountId, () => {
-    const records = readCreationIntents(accountId)
-      .filter((record) => !isCollectable(record, collectBefore))
-      .map((record) => (record.supersededAt ? record : { ...record, supersededAt }));
-    if (records.length > 0) {
-      writeCreationIntents(accountId, records);
-      return;
-    }
-    memoryIntentRecords.delete(accountId);
-    memoryIntentFallbackAccounts.delete(accountId);
-    try {
-      window.localStorage.removeItem(creationIntentKey(accountId));
-    } catch {
-      // No durable record is available to clear.
-    }
+    const records = readCreationIntents(accountId).map((record) =>
+      record.contextId === contextId && record.supersededAt === undefined ? { ...record, supersededAt } : record,
+    );
+    writeCreationIntents(accountId, records);
   });
-}
-
-/** Whether a superseded record is old enough that no page can still be waiting on its response. */
-function isCollectable(record: CreationIntentRecord, collectBefore: number): boolean {
-  if (!record.supersededAt) return false;
-  const supersededAt = Date.parse(record.supersededAt);
-  return Number.isFinite(supersededAt) && supersededAt <= collectBefore;
 }
 
 async function clearCreationIntent(accountId: string, creationIntentId: string): Promise<void> {
@@ -1027,6 +1040,7 @@ function validCreationIntentRecord(value: unknown, accountId: string): value is 
     record.version === CREATE_INTENT_VERSION &&
     record.accountId === accountId &&
     typeof record.creationIntentId === "string" &&
+    (record.contextId === undefined || typeof record.contextId === "string") &&
     (record.supersededAt === undefined || typeof record.supersededAt === "string") &&
     record.request !== undefined &&
     typeof record.request.name === "string" &&

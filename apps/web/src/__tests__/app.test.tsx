@@ -11,6 +11,7 @@ const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const taskSessionId = "11111111-1111-4111-8111-111111111111";
 const secondComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const creationIntentKey = `opentag.agent-creation.intent:${userId}`;
+const creationContextId = "3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b00";
 
 /** Two Computers an Agent could run on, so a reader has something to choose between. */
 const twoReadyComputers = [
@@ -34,9 +35,14 @@ const twoReadyComputers = [
   },
 ];
 
-/** Writes one version-3 creation intent, the shape a previous visit would have left behind. */
+/**
+ * Writes one version-3 creation intent, the shape an earlier page load of this same tab would have
+ * left behind — including the browsing context it was written in, since only that context resumes
+ * it.
+ */
 function storeCreationIntent(record: { creationIntentId: string; request: Record<string, unknown> }) {
-  const stored = { version: 3, accountId: userId, ...record };
+  window.sessionStorage.setItem("opentag.agent-creation.context", creationContextId);
+  const stored = { version: 3, accountId: userId, contextId: creationContextId, ...record };
   window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 3, accountId: userId, records: [stored] }));
   return stored;
 }

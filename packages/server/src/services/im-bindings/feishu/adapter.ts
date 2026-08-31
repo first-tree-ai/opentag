@@ -403,7 +403,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     channel?: FeishuChannel | null;
     http?: FeishuHttpCapability;
     scopeList?: () => Promise<FeishuScopeListResponse>;
-    policy?: ExternalCallPolicy;
+    /* type-only */ policy?: ExternalCallPolicy;
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;

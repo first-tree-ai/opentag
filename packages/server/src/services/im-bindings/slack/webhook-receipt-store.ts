@@ -5,34 +5,32 @@ import { slackWebhookReceipts } from "../../../db/schema/index.js";
 import type { PolicyErrorCategory, PolicyPhase, PolicyRetryability } from "../../im/external-call-policy.js";
 
 export class SlackWebhookReceiptError extends Error {
-  readonly code: string;
-  readonly category: PolicyErrorCategory = "validation";
-  readonly retryability: PolicyRetryability = "not_retryable";
-  readonly phase: PolicyPhase = "request";
-  readonly requestId: string;
+  declare readonly code: string;
+  declare readonly category: PolicyErrorCategory;
+  declare readonly retryability: PolicyRetryability;
+  declare readonly phase: PolicyPhase;
+  declare readonly requestId: string;
 
   constructor(code: string, requestId = randomUUID()) {
     super(code);
     this.name = "SlackWebhookReceiptError";
     this.code = code;
+    this.category = "validation";
+    this.retryability = "not_retryable";
+    this.phase = "request";
     this.requestId = requestId;
   }
 }
 
-export interface SlackWebhookReceiptMetric {
-  type: "receipt" | "duplicate";
-  installationId: string;
-  eventId: string;
-  status?: "processing" | "processed" | "failed";
-  errorCode?: string;
-}
+type SlackWebhookReceiptMetricCore = { type: "receipt" | "duplicate"; installationId: string; eventId: string };
+type SlackWebhookReceiptMetricDetails = { status?: "processing" | "processed" | "failed"; errorCode?: string };
+export type SlackWebhookReceiptMetric = SlackWebhookReceiptMetricCore & SlackWebhookReceiptMetricDetails;
 
-export interface SlackWebhookReceiptClaim {
-  accepted: boolean;
-  duplicate: boolean;
-  receiptId?: string;
-  status?: "processing" | "processed" | "failed";
-}
+type SlackWebhookReceiptClaimCore = { accepted: boolean; duplicate: boolean };
+type SlackWebhookReceiptClaimDetails = { receiptId?: string; status?: "processing" | "processed" | "failed" };
+export type SlackWebhookReceiptClaim = SlackWebhookReceiptClaimCore & SlackWebhookReceiptClaimDetails;
+
+type SlackWebhookReceiptInput = { installationId: string; credentialGeneration: number; eventId: string };
 
 export class SlackWebhookReceiptStore {
   readonly #database: DatabaseClient;
@@ -48,11 +46,7 @@ export class SlackWebhookReceiptStore {
     this.#onMetric = options.onMetric ?? (() => undefined);
   }
 
-  async claim(input: {
-    installationId: string;
-    credentialGeneration: number;
-    eventId: string;
-  }): Promise<SlackWebhookReceiptClaim> {
+  async claim(input: SlackWebhookReceiptInput): Promise<SlackWebhookReceiptClaim> {
     if (
       input.eventId.length < 1 ||
       input.eventId.length > 255 ||

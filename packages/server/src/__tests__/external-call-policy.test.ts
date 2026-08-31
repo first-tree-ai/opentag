@@ -47,6 +47,64 @@ describe("ExternalCallPolicy", () => {
     await expect(policy.fetch("https://api.example.test/file")).rejects.toMatchObject({
       code: "IM_PROVIDER_REDIRECT_REJECTED",
     });
+
+    transport.mockResolvedValue({
+      redirected: false,
+      status: 200,
+      url: "https://evil.example.test/file",
+    });
+    await expect(policy.fetch("https://api.example.test/file")).rejects.toMatchObject({
+      code: "IM_PROVIDER_REDIRECT_REJECTED",
+    });
+
+    transport.mockResolvedValue({
+      redirected: false,
+      status: 200,
+      url: "https://API.EXAMPLE.TEST/file",
+    });
+    await expect(policy.fetch("https://api.example.test/file")).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("combines request cancellation with the policy signal", async () => {
+    const controller = new AbortController();
+    const policy = new ExternalCallPolicy({ maxAttempts: 1 });
+    const pending = policy.run(
+      "cancelled",
+      (signal) =>
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      { signal: controller.signal },
+    );
+    controller.abort("test cancellation");
+    await expect(pending).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_ABORTED" });
+  });
+
+  it("wraps a raw action failure observed after the policy signal aborts", async () => {
+    let firstListener = true;
+    const signal = {
+      aborted: false,
+      reason: undefined,
+      addEventListener: vi.fn((_: string, listener: (event: unknown) => void) => {
+        if (firstListener) {
+          firstListener = false;
+          listener(new Event("abort"));
+        }
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as AbortSignal;
+    const policy = new ExternalCallPolicy({ maxAttempts: 1 });
+    await expect(
+      policy.run(
+        "raw-after-abort",
+        async () => {
+          throw new Error("raw failure");
+        },
+        { signal },
+      ),
+    ).rejects.toMatchObject({
+      code: "IM_PROVIDER_CALL_ABORTED",
+    });
   });
 
   it("bounds concurrent calls", async () => {
@@ -69,6 +127,53 @@ describe("ExternalCallPolicy", () => {
     expect(peak).toBe(2);
     release();
     await all;
+  });
+
+  it("cancels a call queued behind the concurrency limit", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const policy = new ExternalCallPolicy({ maxConcurrency: 1, maxAttempts: 1 });
+    const first = policy.run("queued-cancel", async () => gate);
+    await vi.waitFor(() => expect(policy.circuitState("queued-cancel")).toBe("closed"));
+    const controller = new AbortController();
+    const queued = policy.run("queued-cancel", async () => "unexpected", { signal: controller.signal });
+    controller.abort("queued cancellation");
+    await expect(queued).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_ABORTED" });
+    release();
+    await first;
+  });
+
+  it("rejects an already-cancelled call before queueing it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const policy = new ExternalCallPolicy({ maxConcurrency: 1, maxAttempts: 1 });
+    const first = policy.run("queued-already-cancelled", async () => gate);
+    const controller = new AbortController();
+    controller.abort("already cancelled");
+    await expect(
+      policy.run("queued-already-cancelled", async () => "unexpected", { signal: controller.signal }),
+    ).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_ABORTED" });
+    release();
+    await first;
+  });
+
+  it("exposes the stream limiter through the policy instance", async () => {
+    const policy = new ExternalCallPolicy();
+    const limited = policy.stream(Readable.from([Buffer.from("ok")]), 2);
+    await expect(
+      new Promise<string>((resolve, reject) => {
+        let value = "";
+        limited.on("data", (chunk: Buffer) => {
+          value += chunk.toString();
+        });
+        limited.once("end", () => resolve(value));
+        limited.once("error", reject);
+      }),
+    ).resolves.toBe("ok");
   });
 
   it("applies deadlines while a call waits for concurrency capacity", async () => {

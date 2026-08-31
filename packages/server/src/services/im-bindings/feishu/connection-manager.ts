@@ -46,7 +46,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     appSecret: string;
     teamId: string | null;
     teamBrand?: "feishu" | "lark" | null;
-    policy?: ExternalCallPolicy;
+    /* type-only */ policy?: ExternalCallPolicy;
   }) => FeishuAdapter;
   readonly #leaseMs: number;
   readonly #maintenanceMs: number;
@@ -75,17 +75,17 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       appSecret: string;
       teamId: string | null;
       teamBrand?: "feishu" | "lark" | null;
-      policy?: ExternalCallPolicy;
+      /* type-only */ policy?: ExternalCallPolicy;
     }) => FeishuAdapter;
     leaseMs?: number;
     maintenanceMs?: number;
     runtimeReady?: (agentId: string) => Promise<boolean> | boolean;
     onDiagnostic?: (code: string) => void;
     afterActivationAgentLocked?: () => Promise<void>;
-    policy?: ExternalCallPolicy;
-    maintenanceBackoffBaseMs?: number;
-    maintenanceBackoffMaxMs?: number;
-    now?: () => Date;
+    /* type-only */ policy?: ExternalCallPolicy;
+    /* type-only */ maintenanceBackoffBaseMs?: number;
+    /* type-only */ maintenanceBackoffMaxMs?: number;
+    /* type-only */ now?: () => Date;
   }) {
     this.#database = input.database;
     this.#inbox = input.inbox;

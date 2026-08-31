@@ -519,6 +519,30 @@ describe("Slack Events API ingress", () => {
     );
   });
 
+  it("records a fallback failure code when routing fails before processing", async () => {
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({ accepted: true, duplicate: false, receiptId: "receipt-routing-failure" }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
+    };
+    const { app, imBindings } = createServices({ receipts: receipts as never });
+    imBindings.resolveSlackDefaultRoute.mockRejectedValue(new Error("routing unavailable"));
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-routing-failure",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    await vi.waitFor(() =>
+      expect(receipts.markFailed).toHaveBeenCalledWith("receipt-routing-failure", "SLACK_EVENT_PROCESSING_FAILED"),
+    );
+  });
+
   it("acknowledges duplicate receipts without normalizing or ingesting again", async () => {
     const receipts = {
       claim: vi.fn().mockResolvedValue({

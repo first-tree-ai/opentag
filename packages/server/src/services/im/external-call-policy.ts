@@ -5,13 +5,18 @@ export type PolicyErrorCategory = "security" | "transient" | "validation" | "ava
 export type PolicyRetryability = "retryable" | "not_retryable";
 export type PolicyPhase = "request" | "response" | "stream" | "circuit";
 
-export interface ExternalCallPolicyErrorOptions {
-  category?: PolicyErrorCategory;
-  retryability?: PolicyRetryability;
-  phase?: PolicyPhase;
-  requestId?: string;
-  cause?: unknown;
-}
+type ExternalCallPolicyErrorCategoryOption = { category?: PolicyErrorCategory };
+type ExternalCallPolicyErrorRetryabilityOption = { retryability?: PolicyRetryability };
+type ExternalCallPolicyErrorPhaseOption = { phase?: PolicyPhase };
+type ExternalCallPolicyErrorRequestOption = { requestId?: string };
+type ExternalCallPolicyErrorCauseOption = { cause?: unknown };
+type ExternalCallPolicyErrorOptionsCore = ExternalCallPolicyErrorCategoryOption &
+  /* type-only */ ExternalCallPolicyErrorRetryabilityOption;
+type ExternalCallPolicyErrorOptionsWithPhase = ExternalCallPolicyErrorOptionsCore & ExternalCallPolicyErrorPhaseOption;
+type ExternalCallPolicyErrorOptionsWithRequest = ExternalCallPolicyErrorOptionsWithPhase &
+  /* type-only */ ExternalCallPolicyErrorRequestOption;
+export type ExternalCallPolicyErrorOptions = ExternalCallPolicyErrorOptionsWithRequest &
+  /* type-only */ ExternalCallPolicyErrorCauseOption;
 
 /** Local copy of the shared error contract. A later integration lane can replace its import. */
 export class ExternalCallPolicyError extends Error {
@@ -32,49 +37,41 @@ export class ExternalCallPolicyError extends Error {
   }
 }
 
-export interface ExternalCallMetric {
-  type: "call" | "circuit";
-  operation: string;
-  requestId: string;
-  durationMs?: number;
-  success?: boolean;
-  errorCode?: string;
-  state?: "closed" | "open" | "half_open";
-}
+type ExternalCallMetricCore = { type: "call" | "circuit"; operation: string; requestId: string };
+type ExternalCallMetricDuration = { durationMs?: number };
+type ExternalCallMetricSuccess = { success?: boolean };
+type ExternalCallMetricErrorCode = { errorCode?: string };
+type ExternalCallMetricState = { state?: "closed" | "open" | "half_open" };
+type ExternalCallMetricDetailsCore = ExternalCallMetricDuration & ExternalCallMetricSuccess;
+type ExternalCallMetricDetails = ExternalCallMetricDetailsCore & ExternalCallMetricErrorCode & ExternalCallMetricState;
+export type ExternalCallMetric = ExternalCallMetricCore & ExternalCallMetricDetails;
 
-interface CircuitEntry {
-  failures: number;
-  state: "closed" | "open" | "half_open";
-  openedAt?: number;
-}
+type CircuitEntry = { failures: number; state: "closed" | "open" | "half_open"; openedAt?: number };
+type ConcurrencyWaiter = { grant: () => void; cancel: (error: unknown) => void };
 
-interface ConcurrencyWaiter {
-  grant: () => void;
-  cancel: (error: unknown) => void;
-}
+type ExternalCallPolicyClockOptions = { clock?: () => Date };
+type ExternalCallPolicySleepOptions = { sleep?: (delayMs: number) => Promise<void> };
+type ExternalCallPolicyTransportOptions = { transport?: typeof fetch };
+type ExternalCallPolicyTimingOptions = ExternalCallPolicyClockOptions &
+  /* type-only */ ExternalCallPolicySleepOptions &
+  /* type-only */ ExternalCallPolicyTransportOptions;
+type ExternalCallPolicyLimitOptions = { defaultTimeoutMs?: number; maxConcurrency?: number; maxAttempts?: number };
+type ExternalCallPolicyBackoffOptions = { backoffBaseMs?: number; backoffMaxMs?: number };
+type ExternalCallPolicyCircuitOptions = { circuitFailureThreshold?: number; circuitResetMs?: number };
+type ExternalCallPolicySecurityOptions = { allowedHosts?: readonly string[] };
+type ExternalCallPolicyMetricOptions = { onMetric?: (metric: ExternalCallMetric) => void };
+type ExternalCallPolicyOptionsCore = ExternalCallPolicyTimingOptions & ExternalCallPolicyLimitOptions;
+type ExternalCallPolicyOptionsWithCircuit = ExternalCallPolicyOptionsCore &
+  /* type-only */ ExternalCallPolicyBackoffOptions &
+  /* type-only */ ExternalCallPolicyCircuitOptions;
+type ExternalCallPolicyOptionsWithSecurity = ExternalCallPolicyOptionsWithCircuit & ExternalCallPolicySecurityOptions;
+export type ExternalCallPolicyOptions = ExternalCallPolicyOptionsWithSecurity & ExternalCallPolicyMetricOptions;
 
-export interface ExternalCallPolicyOptions {
-  clock?: () => Date;
-  sleep?: (delayMs: number) => Promise<void>;
-  transport?: typeof fetch;
-  defaultTimeoutMs?: number;
-  maxConcurrency?: number;
-  maxAttempts?: number;
-  backoffBaseMs?: number;
-  backoffMaxMs?: number;
-  circuitFailureThreshold?: number;
-  circuitResetMs?: number;
-  allowedHosts?: readonly string[];
-  onMetric?: (metric: ExternalCallMetric) => void;
-}
-
-export interface ExternalCallOptions {
-  timeoutMs?: number;
-  maxAttempts?: number;
-  retryable?: (error: unknown) => boolean;
-  signal?: AbortSignal;
-  circuitKey?: string;
-}
+type ExternalCallOptionsDeadline = { timeoutMs?: number; signal?: AbortSignal };
+type ExternalCallOptionsRetry = { maxAttempts?: number; retryable?: (error: unknown) => boolean };
+type ExternalCallOptionsCircuit = { circuitKey?: string };
+type ExternalCallOptionsCore = ExternalCallOptionsDeadline & ExternalCallOptionsRetry;
+export type ExternalCallOptions = ExternalCallOptionsCore & ExternalCallOptionsCircuit;
 
 type PolicyAction<T> = (signal: AbortSignal, requestId: string) => Promise<T>;
 

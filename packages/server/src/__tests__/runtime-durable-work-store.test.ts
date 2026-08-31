@@ -45,10 +45,10 @@ describe("PostgresRuntimeDurableWorkStore", () => {
 
   it("recovers accepted work after a store restart and suppresses duplicate identity", async () => {
     const record = sessionRecord();
-    const first = new PostgresRuntimeDurableWorkStore(unit.database);
+    const first = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
     await first.write(workspaceComputerId, record);
 
-    const restarted = new PostgresRuntimeDurableWorkStore(unit.database);
+    const restarted = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
     await expect(restarted.list(workspaceComputerId, "session-message")).resolves.toEqual([record]);
     await expect(restarted.write(workspaceComputerId, record)).resolves.toBeUndefined();
     await expect(
@@ -70,7 +70,7 @@ describe("PostgresRuntimeDurableWorkStore", () => {
       retentionMs: 100,
       maxTerminalRecords: 1,
     });
-    const active = { ...sessionRecord(), key: "active", updatedAt: 0 };
+    const active = { ...sessionRecord(), key: "active", updatedAt: 9_950 };
     const oldTerminal = { ...sessionRecord(), key: "old-terminal", status: "succeeded" as const, updatedAt: 0 };
     const recentTerminal = {
       ...sessionRecord(),

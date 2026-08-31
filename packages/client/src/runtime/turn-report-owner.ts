@@ -13,6 +13,7 @@ import {
   type DurableFailure,
   type DurableWorkRecord,
   defaultRuntimeRetryScheduler,
+  durableFailureFromUnknown,
   RuntimeDurabilityFailure,
   type RuntimeDurabilityMetrics,
   type RuntimeDurabilityStore,
@@ -225,12 +226,12 @@ export class TurnReportOwner {
       pending.serverStatus = result.status;
       this.#clearRetry(pending);
       const failure: DurableFailure = {
-        category: "server",
+        category: "conflict",
         code: result.status,
         message: `Server rejected the Turn Report: ${result.status}`,
-        phase: "confirmation",
+        phase: "request",
         requestId: pending.report.requestId,
-        retryability: "terminal",
+        retryability: "never",
       };
       this.#emitFailure(failure);
       await this.#transition(pending, "failed", {
@@ -418,12 +419,21 @@ export class TurnReportOwner {
   async #handleFailure(pending: PendingReport, phase: string, error: unknown): Promise<void> {
     if (this.#stopped || pending.serverStatus) return;
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
-    const failure = toFailure(pending.report.requestId, phase, error);
+    const failure = durableFailureFromUnknown(
+      pending.report.requestId,
+      phase,
+      error,
+      phase === "confirmation"
+        ? "confirmation_failed"
+        : phase === "transport"
+          ? "transport_unavailable"
+          : "runtime_failed",
+    );
     this.#emitFailure(failure);
     const attempts = record.attempts + 1;
     const now = this.#now();
     const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
-    if (failure.retryability === "terminal" || retryExhausted(this.#retryPolicy, candidate, now)) {
+    if (failure.retryability === "never" || retryExhausted(this.#retryPolicy, candidate, now)) {
       await this.#transition(pending, "dead-letter", { ...candidate, nextAttemptAt: undefined }).catch(() => undefined);
       pending.reject(new RuntimeDurabilityFailure(failure));
       this.#pending.delete(pending.report.turnId);
@@ -484,39 +494,4 @@ function normalizeRetryPolicy(overrides: Partial<RuntimeRetryPolicy>): RuntimeRe
       throw new Error(`Runtime retry ${name} must be a positive safe integer`);
   }
   return policy;
-}
-
-function toFailure(requestId: string, phase: string, error: unknown): DurableFailure {
-  if (error && typeof error === "object" && "code" in error && "category" in error && "retryability" in error) {
-    const candidate = error as Partial<DurableFailure>;
-    if (
-      typeof candidate.code === "string" &&
-      typeof candidate.category === "string" &&
-      typeof candidate.retryability === "string" &&
-      typeof candidate.phase === "string" &&
-      typeof candidate.requestId === "string"
-    ) {
-      return {
-        code: candidate.code,
-        category: candidate.category,
-        retryability: candidate.retryability as DurableFailure["retryability"],
-        phase: candidate.phase,
-        requestId: candidate.requestId,
-        message: typeof candidate.message === "string" ? candidate.message.slice(0, 256) : "Runtime operation failed",
-      };
-    }
-  }
-  return {
-    code:
-      phase === "confirmation"
-        ? "confirmation_failed"
-        : phase === "transport"
-          ? "transport_unavailable"
-          : "runtime_failed",
-    category: phase,
-    retryability: "retryable",
-    phase,
-    requestId,
-    message: error instanceof Error ? error.message.slice(0, 256) : "Runtime operation failed",
-  };
 }

@@ -107,19 +107,19 @@ describe("runtime durability primitives", () => {
 
   it("exposes structured durable failures", () => {
     const failure = new RuntimeDurabilityFailure({
-      category: "transport",
+      category: "unavailable",
       code: "transport_unavailable",
       message: "socket closed",
       phase: "transport",
       requestId: "request-1",
-      retryability: "retryable",
+      retryability: "backoff",
     });
     expect(failure).toMatchObject({
-      category: "transport",
+      category: "unavailable",
       code: "transport_unavailable",
       phase: "transport",
       requestId: "request-1",
-      retryability: "retryable",
+      retryability: "backoff",
     });
     expect(failure.message).toBe("socket closed");
   });

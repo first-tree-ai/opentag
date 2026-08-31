@@ -84,12 +84,12 @@ describe("TurnReportOwner", () => {
     const runningReport = seed.create(reportInput({ turnId: "turn-running" }));
     seed.stop();
     const terminalFailure: DurableFailure = {
-      category: "server",
+      category: "conflict",
       code: "conflict",
       message: "conflict",
-      phase: "confirmation",
+      phase: "request",
       requestId: conflictReport.requestId,
-      retryability: "terminal",
+      retryability: "never",
     };
     await store.write(reportRecord(conflictReport, "failed", { lastError: terminalFailure }));
     await store.write(reportRecord(expiredReport, "accepted", { acceptedAt: 1 }));
@@ -115,11 +115,11 @@ describe("TurnReportOwner", () => {
   it("dead-letters structured transport failures without leaking unbounded messages", async () => {
     const report = new TurnReportOwner({ connection: new FakeConnection("registered") }).create(reportInput());
     const error = {
-      category: "transport",
+      category: "unavailable",
       code: "transport_blocked",
       phase: "transport",
       requestId: report.requestId,
-      retryability: "terminal",
+      retryability: "never",
       message: 42,
     };
     const connection = new FakeConnection("registered", error);
@@ -151,8 +151,8 @@ describe("TurnReportOwner", () => {
     });
     const submitted = owner.submit(report, vi.fn());
 
-    await expect(submitted).rejects.toMatchObject({ code: "runtime_failed", retryability: "retryable" });
-    expect(failures).toEqual([expect.objectContaining({ code: "runtime_failed", phase: "persist" })]);
+    await expect(submitted).rejects.toMatchObject({ code: "runtime_failed", retryability: "backoff" });
+    expect(failures).toEqual([expect.objectContaining({ code: "runtime_failed", phase: "persistence" })]);
     owner.stop();
   });
 

@@ -66,6 +66,8 @@ import {
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
+  type StructuredError,
+  StructuredErrorSchema,
   type UpdateAgentRequest,
   type ValidationIssue,
 } from "@opentag/shared";
@@ -89,6 +91,8 @@ interface RuntimeSchema<T> {
 }
 
 export class OpenTagApiError extends Error {
+  readonly structuredError: StructuredError;
+
   constructor(
     readonly code: ErrorCode | string,
     readonly category: ErrorCategory,
@@ -109,12 +113,36 @@ export class OpenTagApiError extends Error {
     this.phase = options.phase ?? defaultPhase(category);
     this.requestId = options.requestId;
     this.safeCause = options.safeCause ?? safeCause(options.cause);
+    this.structuredError = StructuredErrorSchema.parse({
+      code: this.code,
+      category: structuredCategory(category, this.code, status),
+      retryability: this.retryability,
+      phase: this.phase,
+      ...(this.requestId ? { requestId: this.requestId.slice(0, 256) } : {}),
+      message: message.slice(0, 2_048),
+      ...(this.safeCause ? { cause: this.safeCause } : {}),
+    });
   }
 
   readonly retryability: ErrorRetryability;
   readonly phase: ErrorPhase;
   readonly requestId?: string;
   readonly safeCause?: RequestCause;
+
+  toStructuredError(): StructuredError {
+    return this.structuredError;
+  }
+}
+
+function structuredCategory(category: ErrorCategory, code: string, status?: number): StructuredError["category"] {
+  if (category === "credential") return "auth";
+  if (category === "validation") return "validation";
+  if (category === "rate_limit") return "rate_limit";
+  if (category === "transient") return "unavailable";
+  if (code === "REQUEST_CANCELLED") return "cancelled";
+  if (code === "RESOURCE_NOT_FOUND" || status === 404) return "not_found";
+  if (status === 409 || /(?:CONFLICT|_CONFLICT)$/u.test(code)) return "conflict";
+  return "internal";
 }
 
 export interface OpenTagApiConstructorOptions {

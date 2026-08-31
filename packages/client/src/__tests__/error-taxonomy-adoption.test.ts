@@ -33,7 +33,7 @@ describe("client error taxonomy adoption", () => {
       requestId: "request-1",
       message: "The runtime transport is unavailable",
     });
-    expect(StructuredErrorSchema.parse(failure)).toMatchObject({
+    expect(StructuredErrorSchema.parse(failure.structuredError)).toMatchObject({
       code: "transport_unavailable",
       category: "unavailable",
       retryability: "backoff",

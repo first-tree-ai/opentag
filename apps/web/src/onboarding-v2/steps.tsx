@@ -1,7 +1,7 @@
 import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
-import type { PlanSignIn } from "./backend.js";
+import { Button, Icon, KumoInputControl, KumoSelectControl, StatusIndicator, Text } from "../ui/design-system.js";
+import type { KnownComputer, PlanSignIn } from "./backend.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
 import { CommandBlock } from "./command-block.js";
 import {
@@ -658,20 +658,35 @@ export function ComputerStep({
   connect,
   creation,
   draft,
+  knownComputers = [],
   onBack,
   onCreate,
   onRefreshCommand,
+  onSelectComputer,
   readiness,
+  selectedComputerId,
 }: {
   connect: ConnectState;
   creation: CreationState;
   draft: AgentDraft;
+  knownComputers?: readonly KnownComputer[];
   onBack?: () => void;
   onCreate: () => void;
   onRefreshCommand: () => void;
+  onSelectComputer?: (computerId: string | undefined) => void;
   readiness: ReadinessFacts | undefined;
+  selectedComputerId?: string | undefined;
 }) {
   const connected = connect.kind === "connected";
+  /*
+   * An Account with no computers is never asked to choose one: the option would be an empty list
+   * next to the only thing that can actually be done. So the whole selector is absent rather than
+   * disabled, and the step reads exactly as it did before this existed.
+   */
+  const choosing = knownComputers.length > 0;
+  const selected = knownComputers.find((computer) => computer.id === selectedComputerId);
+  // A computer this step can actually check: a chosen one that is reachable, or a new arrival.
+  const ready = selected ? selected.online : connected;
   const checks = deriveChecks(readiness);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
@@ -684,16 +699,31 @@ export function ComputerStep({
     <section className={STEP} data-ui="onboarding-v2-step-computer">
       <header className={HEADER}>
         <Text as="h1" size="lg" variant="heading">
-          {COPY.connect.title}
+          {choosing ? COPY.connect.chooseTitle : COPY.connect.title}
         </Text>
-        <p className="text-kumo-subtle m-0">{COPY.connect.lead}</p>
+        <p className="text-kumo-subtle m-0">{choosing ? COPY.connect.chooseLead : COPY.connect.lead}</p>
         <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
           <Icon className="shrink-0 mt-1 text-kumo-brand" name="shield" />
           {COPY.connect.privacy}
         </p>
       </header>
 
-      {connected ? null : (
+      {choosing ? (
+        <ComputerChoice
+          computers={knownComputers}
+          onSelect={onSelectComputer}
+          selectedComputerId={selectedComputerId}
+        />
+      ) : null}
+
+      {selected && !selected.online ? (
+        <p className="flex items-start gap-2 text-sm text-kumo-strong m-0" role="status">
+          <Icon className="shrink-0 mt-1 text-kumo-warning" name="laptop" />
+          {COPY.connect.offlineLead}
+        </p>
+      ) : null}
+
+      {ready ? null : (
         <div className="flex flex-col gap-3">
           {/*
             The instruction and the validity read as one line: the command is what the reader is
@@ -712,9 +742,9 @@ export function ComputerStep({
         </div>
       )}
 
-      <ConnectStatus connect={connect} />
+      {selected ? null : <ConnectStatus connect={connect} />}
 
-      {connected ? (
+      {ready ? (
         <>
           <ol className="flex flex-col m-0 p-0 list-none rounded-xl bg-kumo-base ring ring-kumo-line overflow-hidden">
             {checks.map((check, index) => (
@@ -743,12 +773,59 @@ export function ComputerStep({
 
       <StepNav
         back={onBack}
-        disabled={!connected || !passed || creation !== "idle"}
+        disabled={!ready || !passed || creation !== "idle"}
         label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
         onNext={onCreate}
       />
     </section>
   );
+}
+
+/**
+ * The computers this Account already has, with connecting a new one as the last option rather than
+ * a second control beside it. One question, one place to answer it.
+ *
+ * A machine that is offline stays selectable: it is usually the one the reader means, and telling
+ * them it cannot be used would be less useful than showing them how to bring it back.
+ */
+function ComputerChoice({
+  computers,
+  onSelect,
+  selectedComputerId,
+}: {
+  computers: readonly KnownComputer[];
+  onSelect?: (computerId: string | undefined) => void;
+  selectedComputerId: string | undefined;
+}) {
+  const selectId = useId();
+  return (
+    <div className={FIELDSET} data-ui="onboarding-v2-computer-choice">
+      <label className="font-medium text-kumo-strong" htmlFor={selectId} id={`${selectId}-label`}>
+        {COPY.connect.selectLabel}
+      </label>
+      <KumoSelectControl
+        aria-labelledby={`${selectId}-label`}
+        id={selectId}
+        onChange={(event) => onSelect?.(event.target.value === NEW_COMPUTER_VALUE ? undefined : event.target.value)}
+        value={selectedComputerId ?? NEW_COMPUTER_VALUE}
+      >
+        {computers.map((computer) => (
+          <option key={computer.id} value={computer.id}>
+            {computerLabel(computer)}
+          </option>
+        ))}
+        <option value={NEW_COMPUTER_VALUE}>{COPY.connect.newOption}</option>
+      </KumoSelectControl>
+    </div>
+  );
+}
+
+const NEW_COMPUTER_VALUE = "__new__";
+
+function computerLabel(computer: KnownComputer): string {
+  if (computer.online) return `${computer.displayName} · ${COPY.connect.online}`;
+  const seen = computer.lastSeen ? ` · ${COPY.connect.lastSeen(computer.lastSeen)}` : "";
+  return `${computer.displayName} · ${COPY.connect.offline}${seen}`;
 }
 
 function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {

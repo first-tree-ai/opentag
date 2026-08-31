@@ -28,6 +28,14 @@ export interface CreatedAgent {
   readonly runtimeProvider: Runtime;
 }
 
+export interface KnownComputer {
+  readonly id: string;
+  readonly displayName: string;
+  readonly online: boolean;
+  /** Human phrasing for how long ago it was seen, shown only when it is offline. */
+  readonly lastSeen?: string;
+}
+
 export interface OnboardingBackend {
   readonly connect: ConnectState;
   readonly readiness: ReadinessFacts | undefined;
@@ -42,6 +50,17 @@ export interface OnboardingBackend {
    * the provider its binding already names; a first run has none and reports nothing.
    */
   readonly messagingProvider: MessagingProvider | undefined;
+  /**
+   * Computers the Account already has, so this step can offer one instead of asking for a command.
+   *
+   * Optional because only the mock answers it today: the Server implementation still treats every
+   * run as a first connection, and a page that required the list would break that flow before the
+   * real read exists. An implementation that omits it gets the behaviour it has now.
+   */
+  readonly knownComputers?: readonly KnownComputer[];
+  /** Which one this run is preparing, or `undefined` while a new one is being connected. */
+  readonly selectedComputerId?: string | undefined;
+  readonly selectComputer?: (computerId: string | undefined) => void;
   readonly planSignIn: PlanSignIn;
   /**
    * Creating the Agent belongs here rather than to the page: it is the one step that writes to the

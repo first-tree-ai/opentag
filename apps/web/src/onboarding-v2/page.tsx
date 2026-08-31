@@ -12,7 +12,7 @@ import {
   type MessagingProvider,
 } from "./flow.js";
 import { LabControls } from "./lab-controls.js";
-import { type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
+import { type MockInventory, type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
 import { useServerBackend } from "./server-backend.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
@@ -105,13 +105,15 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
 export function OnboardingV2MockPage() {
   const [scenario, setScenario] = useState<MockScenario>(SCENARIOS[0] as MockScenario);
   const [speed, setSpeed] = useState<MockSpeed>("manual");
+  /** What the Account already owns. Orthogonal to the check outcome, so the lab picks it apart. */
+  const [inventory, setInventory] = useState<MockInventory>("none");
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   /**
    * Cloud is not shipped: the Server cannot allocate a cloud Computer yet, so the route is
    * Coming soon in production. The panel can still offer it so its pages stay reviewable.
    */
   const [cloudAvailable, setCloudAvailable] = useState(false);
-  const backend = useMockBackend(scenario, speed);
+  const backend = useMockBackend(scenario, speed, inventory);
 
   return (
     <OnboardingV2Flow
@@ -122,7 +124,9 @@ export function OnboardingV2MockPage() {
         <LabControls
           backend={backend}
           cloudAvailable={cloudAvailable}
+          inventory={inventory}
           onCloudAvailableChange={setCloudAvailable}
+          onInventoryChange={setInventory}
           onScenarioChange={setScenario}
           onSpeedChange={setSpeed}
           scenario={scenario}
@@ -318,10 +322,13 @@ function OnboardingV2Flow({
               connect={backend.connect}
               creation={backend.creation}
               draft={draft}
+              knownComputers={backend.knownComputers}
               onBack={resumed ? undefined : backToAgent}
               onCreate={() => backend.createAgent(draft)}
               onRefreshCommand={backend.refreshConnectCode}
+              onSelectComputer={backend.selectComputer}
               readiness={backend.readiness}
+              selectedComputerId={backend.selectedComputerId}
             />
           ) : (
             <MessagingStep

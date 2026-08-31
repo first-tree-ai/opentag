@@ -142,6 +142,24 @@ export const COPY = {
     refresh: "Get a new command",
     waiting: "Waiting for your computer…",
     connected: "Your computer is connected.",
+
+    /*
+     * The same step, once the Account already has a computer. The title changes because the
+     * question does: connecting one is now a choice rather than the only way through.
+     *
+     * What is deliberately not said: that several agents can share a computer. Offering an
+     * already-connected machine says it, and a reader who has one knows it — spelling it out adds
+     * a sentence to the step that needs one least.
+     */
+    chooseTitle: "Choose a computer",
+    chooseLead: "Your AI worker runs on your own computer. Use one you have already connected, or connect another.",
+    selectLabel: "Computer",
+    newOption: "Connect a new computer…",
+    online: "Online",
+    offline: "Offline",
+    lastSeen: (when: string) => `last seen ${when}`,
+    /** Reconnecting repairs this exact machine, so the Account does not collect a second one. */
+    offlineLead: "This computer is offline. Reconnect it and this page will continue on its own.",
   },
 
   check: {

@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CreatedAgent, OnboardingBackend, PlanSignIn } from "./backend.js";
+import type { CreatedAgent, KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
 import type {
   AgentDraft,
   ConnectState,
@@ -27,6 +27,46 @@ export interface MockScenario {
   readonly description: string;
   readonly runtime: Exclude<RuntimeStatus, "checking">;
   readonly messagingCli: Exclude<MessagingCliStatus, "checking">;
+}
+
+/**
+ * What the Account already owns when this run starts. Orthogonal to the readiness scenario: any
+ * inventory can meet any check outcome, and the step reads differently for each.
+ */
+export const INVENTORIES = ["none", "one-online", "one-offline", "several"] as const;
+export type MockInventory = (typeof INVENTORIES)[number];
+
+export const INVENTORY_TITLES: Record<MockInventory, string> = {
+  none: "No computers yet",
+  "one-online": "One, online",
+  "one-offline": "One, offline",
+  several: "Several",
+};
+
+function inventoryOf(inventory: MockInventory): readonly KnownComputer[] {
+  switch (inventory) {
+    case "none":
+      return [];
+    case "one-online":
+      return [{ id: "mac", displayName: COMPUTER_NAME, online: true }];
+    case "one-offline":
+      return [{ id: "mac", displayName: COMPUTER_NAME, online: false, lastSeen: "3 days ago" }];
+    case "several":
+      return [
+        { id: "mac", displayName: COMPUTER_NAME, online: true },
+        { id: "imac", displayName: "Work iMac", online: false, lastSeen: "3 days ago" },
+      ];
+  }
+}
+
+/**
+ * The one that costs the reader least. A reachable computer first, since it can be checked right
+ * away; otherwise the most recently seen one, because a machine they already have is almost always
+ * what they mean. Defaulting to "connect a new computer" instead would push someone whose only
+ * machine is asleep toward enrolling a second one.
+ */
+function preselected(computers: readonly KnownComputer[]): string | undefined {
+  return (computers.find((computer) => computer.online) ?? computers[0])?.id;
 }
 
 export const SCENARIOS: readonly MockScenario[] = [
@@ -161,7 +201,11 @@ export interface MockBackend extends OnboardingBackend {
   readonly repairNow: () => void;
 }
 
-export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBackend {
+export function useMockBackend(
+  scenario: MockScenario,
+  speed: MockSpeed,
+  inventory: MockInventory = "none",
+): MockBackend {
   const timings = TIMINGS[speed];
   const [connect, setConnect] = useState<ConnectState>({ kind: "idle" });
   const [readiness, setReadiness] = useState<ReadinessFacts | undefined>(undefined);
@@ -171,6 +215,13 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
   const [planSignIn, setPlanSignIn] = useState<PlanSignIn>("idle");
   const [creation, setCreation] = useState<CreationState>("idle");
   const [agent, setAgent] = useState<CreatedAgent>();
+  const knownComputers = useMemo(() => inventoryOf(inventory), [inventory]);
+  const [selectedComputerId, setSelectedComputerId] = useState<string | undefined>(() =>
+    preselected(inventoryOf(inventory)),
+  );
+  // Switching inventory in the lab is a different Account, not a change of mind, so the selection
+  // is taken again rather than carried across.
+  useEffect(() => setSelectedComputerId(preselected(knownComputers)), [knownComputers]);
 
   const timers = useRef<number[]>([]);
   const clearTimers = useCallback(() => {
@@ -336,9 +387,12 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       creation,
       error: undefined,
       readiness,
+      knownComputers,
       messaging,
       messagingProvider: undefined,
       planSignIn,
+      selectComputer: setSelectedComputerId,
+      selectedComputerId,
       // The mock has nothing to read back; it is the flow as it runs the first time.
       resuming: false,
       resumeError: undefined,
@@ -362,12 +416,14 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
       creation,
       issue,
       issueConnectCode,
+      knownComputers,
       messaging,
       pending,
       planSignIn,
       readiness,
       repairNow,
       reset,
+      selectedComputerId,
       startMessaging,
       startPlanSignIn,
       startSlackInstall,

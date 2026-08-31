@@ -153,7 +153,7 @@ function scrubString(value: string): string {
   return value
     .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
     .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")
-    .replace(/(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*:\s*)[^\r\n]+/giu, "$1[REDACTED]")
+    .replace(/(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*)[^\r\n,;}]+/giu, "$1[REDACTED]")
     .replace(
       /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
       "$1[REDACTED]",

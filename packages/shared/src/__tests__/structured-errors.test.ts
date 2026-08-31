@@ -74,6 +74,7 @@ describe("structured error redaction", () => {
       requestBody: { password: "password-value", prompt: "private prompt" },
       nested: [{ api_key: "key-value", safe: "keep me" }],
       message: "Authorization: Bearer embedded-token; cookie=session-cookie",
+      standaloneHeaderText: "authorization=header-secret cookie=cookie-secret",
     };
 
     const serialized = boundedSerialize(input);
@@ -87,6 +88,8 @@ describe("structured error redaction", () => {
       "key-value",
       "embedded-token",
       "session-cookie",
+      "header-secret",
+      "cookie-secret",
     ]) {
       expect(serialized).not.toContain(secret);
     }

@@ -232,6 +232,13 @@
       "when": 1788186258806,
       "tag": "0032_durable_turn_storage",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788196536534,
+      "tag": "0033_clear_default_agent_instructions",
+      "breakpoints": true
     }
   ]
 }

@@ -46,13 +46,6 @@ export interface AgentDraft {
   readonly tokenSource: TokenSource | undefined;
 }
 
-export type ConnectState =
-  | { readonly kind: "idle" }
-  | { readonly kind: "issuing" }
-  | { readonly kind: "issued"; readonly command: string; readonly expiresAt: number }
-  | { readonly kind: "expired"; readonly command: string }
-  | { readonly kind: "connected"; readonly command: string; readonly computerName: string };
-
 export interface ReadinessFacts {
   readonly runtime: RuntimeStatus;
   /**
@@ -111,10 +104,9 @@ export interface FlowFacts {
    */
   readonly destinationConfirmed: boolean;
   readonly draftConfirmed: boolean;
-  readonly connect: ConnectState;
   /**
-   * The Computer this run is preparing, when the Account already had it. A run that is connecting a
-   * new one has none until it arrives, which is what `connect` reports.
+   * The Computer this run is preparing. A run that is connecting a new one has none until the
+   * shared ComputerConnect lifecycle reports the exact arrival.
    */
   readonly selectedComputerId?: string | undefined;
   readonly readiness: ReadinessFacts | undefined;
@@ -169,7 +161,6 @@ export function initialFacts(): FlowFacts {
     draft: emptyDraft(),
     destinationConfirmed: false,
     draftConfirmed: false,
-    connect: { kind: "idle" },
     readiness: undefined,
     cloudComputer: "idle",
     creation: "idle",
@@ -198,20 +189,6 @@ export function draftIsSubmittable(draft: AgentDraft, planSignedIn = false): boo
   if (draft.destination !== "cloud") return draft.runtime !== undefined;
   if (draft.cloudRuntime === undefined || draft.tokenSource === undefined) return false;
   return draft.tokenSource === "opentag" || planSignedIn;
-}
-
-export function computerIsConnected(connect: ConnectState): boolean {
-  return connect.kind === "connected";
-}
-
-/**
- * Whether this run has a Computer to create the Agent on. One the Account already had counts
- * exactly as much as one that just arrived: the step asks which Computer the Agent runs on, not how
- * it came to be in the Account. Passing the check stays a separate gate, so a machine that was
- * merely chosen still cannot open this door.
- */
-export function computerIsPrepared(connect: ConnectState, selectedComputerId?: string): boolean {
-  return selectedComputerId !== undefined || computerIsConnected(connect);
 }
 
 /**
@@ -244,7 +221,7 @@ export function readinessIsResolving(readiness: ReadinessFacts | undefined): boo
 }
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
-  const { draft, destinationConfirmed, draftConfirmed, connect, readiness, creation, planSignedIn, messaging } = facts;
+  const { draft, destinationConfirmed, draftConfirmed, readiness, creation, planSignedIn, messaging } = facts;
   const { cloudComputer, selectedComputerId } = facts;
   const destination = draft.destination;
   if (!destination || !destinationConfirmed) {
@@ -273,10 +250,7 @@ export function deriveFlowState(facts: FlowFacts): FlowState {
   const done: Record<StepId, boolean> = { agent: false, computer: false, messaging: false };
   done.agent = draftIsSubmittable(draft) && draftConfirmed;
   done.computer =
-    done.agent &&
-    computerIsPrepared(connect, selectedComputerId) &&
-    readinessPassed(readiness) &&
-    creation === "created";
+    done.agent && selectedComputerId !== undefined && readinessPassed(readiness) && creation === "created";
   done.messaging = done.computer && messaging.kind === "connected";
 
   const currentIndex = STEP_IDS.findIndex((id) => !done[id]);

@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { lazy, Suspense, useState } from "react";
 import { browserApi } from "../../api.js";
+import opentagLogo from "../../assets/opentag-logo.png";
 import { initials } from "../../i18n/format.js";
+import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Button, DropdownMenu, Icon, type IconName, Loader, Sidebar } from "../../ui/design-system.js";
 import { useAccount } from "../session/session-context.js";
@@ -36,8 +38,9 @@ export function AccountShell() {
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas" data-ui="account-shell">
       <header className="shrink-0 px-4 pt-5 md:px-8 md:pt-7" data-ui="account-shell-header">
         <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4">
-          <Link className="text-lg font-semibold text-kumo-strong" to="/agents">
-            OpenTag
+          <Link className="inline-flex items-center gap-2 text-lg font-semibold text-kumo-strong" to="/agents">
+            <img alt="" className="block size-6 shrink-0" height={24} src={opentagLogo} width={24} />
+            <span>OpenTag</span>
           </Link>
           <AccountMenu placement="page" />
         </div>
@@ -52,7 +55,7 @@ export function AccountShell() {
 function ShellLoading() {
   return (
     <div className="grid h-full min-h-0 flex-1 place-items-center bg-kumo-canvas">
-      <Loader aria-label="Loading Agent workspace" />
+      <Loader aria-label={m.shell_loading_agent_workspace()} />
     </div>
   );
 }
@@ -79,7 +82,7 @@ function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; place
       endSession();
       void navigate({ replace: true, to: "/login" });
     } catch (cause) {
-      setAccountError(cause instanceof Error ? cause.message : "Unable to sign out");
+      setAccountError(cause instanceof Error ? cause.message : m.shell_unable_to_sign_out());
       setLoggingOut(false);
     }
   }
@@ -87,7 +90,7 @@ function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; place
   const trigger =
     placement === "sidebar" ? (
       <Sidebar.MenuButton
-        aria-label="Account menu"
+        aria-label={m.shell_account_menu()}
         className="justify-start"
         icon={
           <span className="flex w-8 shrink-0 items-center justify-center" aria-hidden="true">
@@ -102,7 +105,7 @@ function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; place
         <Icon className="size-3.5 text-kumo-subtle" name="chevron-up" />
       </Sidebar.MenuButton>
     ) : (
-      <Button aria-label="Account menu" className="gap-2" size="compact" variant="ghost">
+      <Button aria-label={m.shell_account_menu()} className="gap-2" size="compact" variant="ghost">
         <span
           className="grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
           aria-hidden="true"
@@ -119,7 +122,7 @@ function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; place
       <DropdownMenu.Trigger render={trigger} />
       <DropdownMenu.Content
         align={placement === "sidebar" ? "start" : "end"}
-        aria-label="Account"
+        aria-label={m.shell_account()}
         className={placement === "sidebar" ? "min-w-(--anchor-width)" : undefined}
         side={placement === "sidebar" ? "top" : "bottom"}
       >
@@ -128,14 +131,14 @@ function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; place
           icon={<MenuItemIcon name="laptop" />}
           render={<Link to="/agents/computers" onClick={() => onNavigate?.()} />}
         >
-          Computers
+          {m.shell_computers()}
         </DropdownMenu.LinkItem>
         <DropdownMenu.LinkItem
           closeOnClick
           icon={<MenuItemIcon name="user" />}
           render={<Link to="/account" onClick={() => onNavigate?.()} />}
         >
-          Account
+          {m.shell_account()}
         </DropdownMenu.LinkItem>
         {internalToolsOffered ? (
           <DropdownMenu.LinkItem
@@ -143,7 +146,7 @@ function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; place
             icon={<MenuItemIcon name="settings" />}
             render={<Link to="/internal" onClick={() => onNavigate?.()} />}
           >
-            Internal tools
+            {m.shell_internal_tools()}
           </DropdownMenu.LinkItem>
         ) : null}
         <DropdownMenu.Separator />
@@ -156,10 +159,10 @@ function AccountMenu({ onNavigate, placement }: { onNavigate?: () => void; place
         >
           {loggingOut ? (
             <span className="flex items-center gap-2">
-              <Loader aria-label="Signing out" size="sm" /> Signing out…
+              <Loader aria-label={m.shell_signing_out()} size="sm" /> {m.shell_signing_out()}
             </span>
           ) : (
-            "Sign out"
+            m.shell_sign_out()
           )}
         </DropdownMenu.Item>
         {accountError ? (

@@ -1,6 +1,7 @@
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { initials } from "../../i18n/format.js";
+import * as m from "../../paraglide/messages.js";
 import {
   DropdownMenu,
   Icon,
@@ -89,7 +90,7 @@ function AgentShellContent({
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas" data-ui="agent-shell">
       <Sidebar
-        aria-label="Agent navigation"
+        aria-label={m.shell_agent_navigation()}
         className="bg-kumo-canvas md:m-2 md:mr-0 md:h-[calc(100%-1rem)] md:rounded-lg md:shadow-xs"
         contentClassName="bg-kumo-canvas md:rounded-lg"
         fullScreenOnMobile
@@ -115,13 +116,13 @@ function AgentShellContent({
           <Sidebar.Close className="sm:hidden" />
         </Sidebar.Header>
         <Sidebar.Content>
-          <nav aria-label="Agent">
+          <nav aria-label={m.shell_agent()}>
             <Sidebar.Group>
               <Sidebar.Menu>
                 <AgentNavItem
                   active={isAgentSectionActive(pathname, agentId, "home")}
                   icon="home"
-                  label="Home"
+                  label={m.shell_home()}
                   onClick={() => {
                     closeMobile();
                     void navigate(agentDetailLink(agentId));
@@ -130,7 +131,7 @@ function AgentShellContent({
                 <AgentNavItem
                   active={isAgentSectionActive(pathname, agentId, "tasks")}
                   icon="instructions"
-                  label="Tasks"
+                  label={m.shell_tasks()}
                   onClick={() => {
                     closeMobile();
                     void navigate(agentTasksLink(agentId));
@@ -139,7 +140,7 @@ function AgentShellContent({
                 <AgentNavItem
                   active={isAgentSectionActive(pathname, agentId, "skills")}
                   icon="shield"
-                  label="Skills"
+                  label={m.shell_skills()}
                   onClick={() => {
                     closeMobile();
                     void navigate(agentSkillsLink(agentId));
@@ -148,7 +149,7 @@ function AgentShellContent({
                 <AgentNavItem
                   active={isAgentSectionActive(pathname, agentId, "integrations")}
                   icon="integrations"
-                  label="Integrations"
+                  label={m.shell_integrations()}
                   onClick={() => {
                     closeMobile();
                     void navigate(agentIntegrationsLink(agentId));
@@ -157,7 +158,7 @@ function AgentShellContent({
                 <AgentNavItem
                   active={isAgentSectionActive(pathname, agentId, "usage")}
                   icon="usage"
-                  label="Usage"
+                  label={m.shell_usage()}
                   onClick={() => {
                     closeMobile();
                     void navigate(agentUsageLink(agentId));
@@ -175,8 +176,10 @@ function AgentShellContent({
       </Sidebar>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas md:ml-2" data-ui="app-main">
         <header className="app-mobile-header shrink-0 items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3">
-          <span className="min-w-0 truncate font-semibold text-kumo-strong">{agent?.displayName ?? "Agent"}</span>
-          <SidebarTrigger aria-label="Open Agent navigation" title="Open Agent navigation" />
+          <span className="min-w-0 truncate font-semibold text-kumo-strong">
+            {agent?.displayName ?? m.shell_agent()}
+          </span>
+          <SidebarTrigger aria-label={m.shell_open_agent_navigation()} title={m.shell_open_agent_navigation()} />
         </header>
         <ShellMain>
           {isAgentHome(pathname, agentId) ? <AgentReturnEntry /> : null}
@@ -219,7 +222,9 @@ function AgentSwitcher({
       <DropdownMenu.Trigger
         render={
           <Sidebar.MenuButton
-            aria-label={`Switch Agent${agent ? `, current Agent ${agent.displayName}` : ""}`}
+            aria-label={
+              agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
+            }
             className="h-12 py-1"
             icon={
               <span
@@ -229,17 +234,22 @@ function AgentSwitcher({
                 {agent ? initials(agent.displayName) : "A"}
               </span>
             }
-            tooltip={agent?.displayName ?? "Agent"}
+            tooltip={agent?.displayName ?? m.shell_agent()}
           >
             <span className="grid min-w-0 flex-1 gap-0.5 text-left">
-              <strong className="truncate">{agent?.displayName ?? "Agent"}</strong>
+              <strong className="truncate">{agent?.displayName ?? m.shell_agent()}</strong>
               <span className="truncate text-xs font-normal text-kumo-subtle">{sidebarAgentStatus(agent)}</span>
             </span>
             <Icon name="chevron-down" />
           </Sidebar.MenuButton>
         }
       />
-      <DropdownMenu.Content align="start" aria-label="Switch Agent" className="min-w-(--anchor-width)" side="bottom">
+      <DropdownMenu.Content
+        align="start"
+        aria-label={m.shell_switch_agent()}
+        className="min-w-(--anchor-width)"
+        side="bottom"
+      >
         {agents.map((candidate) => (
           <DropdownMenu.Item
             icon={
@@ -259,10 +269,10 @@ function AgentSwitcher({
         ))}
         <DropdownMenu.Separator />
         <DropdownMenu.Item icon={<MenuItemIcon name="arrow-left" />} onClick={onAllAgents}>
-          All Agents
+          {m.shell_all_agents()}
         </DropdownMenu.Item>
         <DropdownMenu.Item icon={<MenuItemIcon name="plus" />} onClick={onNewAgent}>
-          New Agent
+          {m.shell_new_agent()}
         </DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu>
@@ -270,14 +280,14 @@ function AgentSwitcher({
 }
 
 function sidebarAgentStatus(agent?: AgentListItem): string {
-  if (!agent) return "Loading…";
-  if (agent.status === "suspended") return "Paused";
-  if (agent.activity.state === "working") return "Working";
-  if (agent.availability.state === "ready") return "Ready";
-  if (agent.availability.state === "setting_up") return "Setting up";
-  if (agent.availability.state === "not_connected") return "Setup required";
-  if (agent.availability.state === "action_required") return "Action needed";
-  return "Status unknown";
+  if (!agent) return m.shell_loading_compact();
+  if (agent.status === "suspended") return m.shell_paused();
+  if (agent.activity.state === "working") return m.shell_working();
+  if (agent.availability.state === "ready") return m.shell_ready();
+  if (agent.availability.state === "setting_up") return m.shell_setting_up();
+  if (agent.availability.state === "not_connected") return m.shell_setup_required();
+  if (agent.availability.state === "action_required") return m.shell_action_needed();
+  return m.shell_status_unknown();
 }
 
 function AgentNavItem({

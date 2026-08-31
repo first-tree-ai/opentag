@@ -35,6 +35,7 @@ import {
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
+  feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
@@ -220,6 +221,13 @@ export class BrowserApi {
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+  }
+
+  cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.request(feishuSetupAttemptCancelPath(attemptId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {

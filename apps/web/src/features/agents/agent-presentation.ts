@@ -78,15 +78,12 @@ export function computerRecoveryMessage(agent: AgentDetailView, computerName = a
 }
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {
-  if (binding.bindingState === "reauthorization_required" && binding.provider === "feishu") {
-    return "Permissions need updating";
-  }
   return {
-    active: "Connected",
-    provisioning: "Setting up",
-    reauthorization_required: "Permissions need updating",
-    error: "Connection failed",
-    disabled: "Disconnected",
+    active: m.im_connected(),
+    provisioning: m.im_connecting(),
+    reauthorization_required: m.im_permissions_required(),
+    error: m.im_connection_error(),
+    disabled: m.im_disconnected(),
   }[binding.bindingState];
 }
 
@@ -242,7 +239,7 @@ export function agentAvailabilityRecovery(
 ): { label: string; link: AgentSettingsSectionLink } | undefined {
   if (agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
-    return { label: "Manage Agent", link: agentSettingsSectionLink(agent.id, "manage") };
+    return { label: m.agent_settings_pause_or_delete(), link: agentSettingsSectionLink(agent.id, "manage") };
   }
   if (
     agent.availability.reason === "im_not_connected" ||

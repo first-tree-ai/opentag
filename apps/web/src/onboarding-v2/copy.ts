@@ -7,7 +7,7 @@
  */
 
 import { SETUP_COPY } from "../setup/copy.js";
-import type { CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
+import type { CloudRuntime, Destination, MessagingProvider, Runtime, StepId, TokenSource } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {
   agent: "Create agent",
@@ -114,7 +114,7 @@ export const COPY = {
      */
     repairHint: "Continue in your terminal or agent for instructions, or run",
     repairCommand: "opentag doctor --fix",
-    repairHintSuffix: "again.",
+    repairHintSuffix: "to start the repair.",
     creating: "Creating…",
   },
 
@@ -122,7 +122,11 @@ export const COPY = {
 
   done: {
     title: (name: string) => `${name} is ready.`,
-    description: (name: string) => `Tag @${name} in Lark to put it to work.`,
+    description: (name: string, provider: MessagingProvider = "feishu") =>
+      `Tag @${name} in ${provider === "slack" ? "Slack" : "Lark"} to put it to work.`,
+    finishReboard: "Finish re-board",
+    finishing: "Finishing…",
+    retryFinish: "Try again",
   },
 
   /**
@@ -136,6 +140,6 @@ export const COPY = {
     messaging: "We couldn't start connecting your messaging app.",
     feishuAttempt: "That code is no longer usable. Pick Lark again to get a new one.",
     resume: "We couldn't check what your account already has.",
-    completeSetup: "Your agent is ready, but we couldn't finish setting up your account. Reload to try again.",
+    completeSetup: "Your agent is ready, but we couldn't finish setting up your account.",
   },
 } as const;

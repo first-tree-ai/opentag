@@ -105,9 +105,17 @@ export function toCommandError(error: unknown, phase: CommandPhase = "unknown"):
     return new CommandError(mapped, error.message, { cause: error });
   }
 
-  const candidate = error as { code?: unknown; category?: unknown; requestId?: unknown; message?: unknown };
+  return classifyGenericError(error, phase);
+}
+
+function classifyGenericError(error: unknown, phase: CommandPhase): CommandError {
+  const candidate =
+    error !== null && typeof error === "object"
+      ? (error as { code?: unknown; category?: unknown; requestId?: unknown; message?: unknown })
+      : {};
   const code = typeof candidate.code === "string" && candidate.code.length > 0 ? candidate.code : "INTERNAL_ERROR";
   const message = typeof candidate.message === "string" ? candidate.message : String(error);
+  const requestId = typeof candidate.requestId === "string" ? candidate.requestId : undefined;
   if (candidate.category === "validation" || phase === "validation") {
     return new CommandError({ code, category: "validation", retryability: "never", phase: "validation" }, message, {
       cause: error,
@@ -120,40 +128,38 @@ export function toCommandError(error: unknown, phase: CommandPhase = "unknown"):
         category: "auth",
         retryability: "after_auth",
         phase: "authentication",
-        ...(typeof candidate.requestId === "string" ? { requestId: candidate.requestId } : {}),
+        ...(requestId ? { requestId } : {}),
       },
       message,
       { cause: error },
     );
   }
-  if (
-    candidate.category === "unavailable" ||
-    code === "SERVICE_UNAVAILABLE" ||
-    /(?:_UPSTREAM_)?UNAVAILABLE$/u.test(code) ||
-    /service unavailable|timed out|connection refused/iu.test(message)
-  ) {
+  if (isUnavailable(code, message, candidate.category)) {
     return new CommandError(
       {
         code,
         category: "unavailable",
         retryability: "backoff",
         phase: "transport",
-        ...(typeof candidate.requestId === "string" ? { requestId: candidate.requestId } : {}),
+        ...(requestId ? { requestId } : {}),
       },
       message,
       { cause: error },
     );
   }
   return new CommandError(
-    {
-      code,
-      category: "internal",
-      retryability: "never",
-      phase,
-      ...(typeof candidate.requestId === "string" ? { requestId: candidate.requestId } : {}),
-    },
+    { code, category: "internal", retryability: "never", phase, ...(requestId ? { requestId } : {}) },
     message,
     { cause: error },
+  );
+}
+
+function isUnavailable(code: string, message: string, category: unknown): boolean {
+  return (
+    category === "unavailable" ||
+    code === "SERVICE_UNAVAILABLE" ||
+    /(?:_UPSTREAM_)?UNAVAILABLE$/u.test(code) ||
+    /service unavailable|timed out|connection refused/iu.test(message)
   );
 }
 

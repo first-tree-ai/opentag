@@ -1,4 +1,10 @@
-import { type CommandExitCode, presentCommand, toCommandError } from "../../core/command/policy.js";
+import {
+  type CommandExitCode,
+  commandExitCode,
+  presentCommand,
+  redactSecrets,
+  toCommandError,
+} from "../../core/command/policy.js";
 import {
   createDaemonServiceManager,
   type DaemonServiceManager,
@@ -19,21 +25,35 @@ export async function executeDaemonServiceCommand(
   try {
     const manager = options.manager ?? (await createDaemonServiceManager());
     const info = await manager[action]();
-    const output = options.json ? JSON.stringify({ ok: true, result: info }) : formatDaemonServiceInfo(info);
+    const output = renderDaemonServiceOutput(info, options.json === true);
     (options.writeOutput ?? ((message) => process.stdout.write(`${message}\n`)))(output);
-    if (action === "status") return info.state === "active" ? 0 : 1;
-    if (["installAndStart", "restart", "start"].includes(action)) return info.state === "active" ? 0 : 1;
-    if (action === "stop") return ["inactive", "not-installed"].includes(info.state) ? 0 : 1;
-    return info.state === "not-installed" ? 0 : 1;
+    return daemonServiceExitCode(action, info.state);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (options.json) {
+      const commandError = toCommandError(error, "request");
       return presentCommand(
-        { ok: false, error: toCommandError(error, "request"), exitCode: 1 },
+        { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
         { json: true, stderr: options.writeError },
       );
     }
-    (options.writeError ?? ((value) => process.stderr.write(`${value}\n`)))(message);
+    (options.writeError ?? ((value) => process.stderr.write(`${value}\n`)))(redactSecrets(message));
     return 1;
   }
+}
+
+function renderDaemonServiceOutput(
+  info: Awaited<ReturnType<DaemonServiceManager[DaemonServiceAction]>>,
+  json: boolean,
+): string {
+  return json ? JSON.stringify({ ok: true, result: info }) : formatDaemonServiceInfo(info);
+}
+
+function daemonServiceExitCode(
+  action: DaemonServiceAction,
+  state: Awaited<ReturnType<DaemonServiceManager[DaemonServiceAction]>>["state"],
+): 0 | 1 {
+  if (action === "stop") return ["inactive", "not-installed"].includes(state) ? 0 : 1;
+  if (action === "uninstall") return state === "not-installed" ? 0 : 1;
+  return state === "active" ? 0 : 1;
 }

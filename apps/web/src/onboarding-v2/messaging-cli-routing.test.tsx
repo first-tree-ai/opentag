@@ -6,9 +6,12 @@
  * provider would warn a Slack user about a CLI they do not need, or stay silent about one they do,
  * and every other test feeds the two providers the same status.
  *
- * Both cases wait for something the step must render before reading. The silence one needs it: an
- * absent warning and a warning that has not arrived yet look identical to a synchronous query, so
- * without a settled render the assertion would pass on a slow machine for the wrong reason.
+ * Both cases wait for something the step must render before reading. Nothing on this path is
+ * asynchronous today — the panel and its warning are decided in one pass and settle inside
+ * `render` — so the silence case is not currently at risk. It waits anyway because "no warning"
+ * and "no warning yet" are the same reading to a synchronous query, and an anchor is what keeps
+ * those apart the day something async lands ahead of the warning. The anchor is the Slack panel's
+ * own lead rather than a page-level element, so what is waited for is the step under test.
  */
 
 import { render, screen } from "@testing-library/react";
@@ -45,7 +48,6 @@ describe("the messaging step's CLI check", () => {
 
   it("stays silent for a provider whose CLI is present, on the same facts", async () => {
     renderStep("slack");
-    // The Slack panel's own lead, so what is waited for is this step rather than the page around it.
     await screen.findByText(SETUP_COPY.messaging.slackIntro);
     // Neither its own warning nor the other provider's: reading position 0 would show one here.
     expect(screen.queryByText(warningFor("slack"))).toBeNull();

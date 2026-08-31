@@ -305,6 +305,28 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
 
     expect(onCompleteAfterReturn).toHaveBeenCalled();
   });
+
+  it("keeps a re-board review open until the tester explicitly finishes it", async () => {
+    vi.mocked(browserApi.agents).mockResolvedValue({ agents: [existingAgent()] });
+    computersReturning([computer()]);
+    vi.mocked(browserApi.imBinding).mockResolvedValue(activeSlackBinding());
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
+    const onComplete = vi.fn();
+
+    render(<OnboardingV2Page onComplete={onComplete} reviewMode />);
+    await settle();
+
+    expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Finish re-board" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start over" })).toBeNull();
+    expect(onComplete).not.toHaveBeenCalled();
+
+    press("Finish re-board");
+    await settle();
+
+    expect(onComplete).toHaveBeenCalledExactlyOnceWith(AGENT_ID);
+  });
+
   it("retries marking setup complete when the Server refuses it once", async () => {
     // `onComplete` is latched by agent id before it is called and its result is never inspected, so
     // a single failure is permanent: the reader sits on the finished screen with setup incomplete,

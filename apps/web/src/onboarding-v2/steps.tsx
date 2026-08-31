@@ -912,7 +912,15 @@ export function MessagingStep({
   );
 }
 
-export function DoneStep({ name, provider }: { name: string; provider?: MessagingProvider }) {
+export function DoneStep({
+  name,
+  onFinishReview,
+  provider,
+}: {
+  name: string;
+  onFinishReview?: () => void;
+  provider?: MessagingProvider;
+}) {
   return (
     <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
       <span
@@ -927,6 +935,7 @@ export function DoneStep({ name, provider }: { name: string; provider?: Messagin
         </Text>
         <p className="text-kumo-subtle m-0">{COPY.done.description(name, provider)}</p>
       </header>
+      {onFinishReview ? <Button onClick={onFinishReview}>{COPY.done.finishReboard}</Button> : null}
     </section>
   );
 }

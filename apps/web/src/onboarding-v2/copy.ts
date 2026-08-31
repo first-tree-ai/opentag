@@ -124,6 +124,7 @@ export const COPY = {
     title: (name: string) => `${name} is ready.`,
     description: (name: string, provider: MessagingProvider = "feishu") =>
       `Tag @${name} in ${provider === "slack" ? "Slack" : "Lark"} to put it to work.`,
+    finishReboard: "Finish re-board",
   },
 
   /**

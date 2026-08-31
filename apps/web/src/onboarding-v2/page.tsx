@@ -34,7 +34,13 @@ function localDraft(): AgentDraft {
  * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
  * given that after it runs.
  */
-export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string) => Promise<void> | void } = {}) {
+export function OnboardingV2Page({
+  onComplete,
+  reviewMode = false,
+}: {
+  onComplete?: (agentId: string) => Promise<void> | void;
+  reviewMode?: boolean;
+} = {}) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const backend = useServerBackend(draft);
 
@@ -97,6 +103,7 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
       draft={draft}
       onComplete={onComplete}
       onDraftChange={setDraft}
+      reviewMode={reviewMode}
     />
   );
 }
@@ -150,6 +157,7 @@ function OnboardingV2Flow({
   lab,
   onComplete,
   onDraftChange,
+  reviewMode = false,
 }: {
   backend: OnboardingBackend;
   cloudAvailable: boolean;
@@ -160,6 +168,8 @@ function OnboardingV2Flow({
   /** Told when the flow has actually finished, so setup can be marked complete. */
   onComplete?: (agentId: string) => Promise<void> | void;
   onDraftChange: (draft: AgentDraft) => void;
+  /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
+  reviewMode?: boolean;
 }) {
   const [destinationConfirmed, setDestinationConfirmed] = useState(destinationPreselected);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
@@ -220,9 +230,17 @@ function OnboardingV2Flow({
   const reported = useRef<string | undefined>(undefined);
   const [completionAttempt, setCompletionAttempt] = useState(0);
   const [completionFailed, setCompletionFailed] = useState(false);
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
   useEffect(() => {
     const agentId = backend.agent?.id;
-    if (!flow.complete || !agentId || reported.current === agentId || completionFailed) return;
+    if (
+      !flow.complete ||
+      !agentId ||
+      reported.current === agentId ||
+      completionFailed ||
+      (reviewMode && !reviewConfirmed)
+    )
+      return;
     // Claimed before the call so a re-render cannot send it twice, and released if it fails.
     // Holding the claim through a refusal would leave the Account permanently un-onboarded: the
     // gate keeps sending them back here, and this is the only page that can let them out.
@@ -241,7 +259,7 @@ function OnboardingV2Flow({
     return () => {
       live = false;
     };
-  }, [backend.agent?.id, completionAttempt, completionFailed, flow.complete, onComplete]);
+  }, [backend.agent?.id, completionAttempt, completionFailed, flow.complete, onComplete, reviewConfirmed, reviewMode]);
 
   // Held so a restart or an unmount can cancel an allocation still in flight; otherwise the stale
   // timer lands on the next run and skips its confirmation step.
@@ -286,9 +304,11 @@ function OnboardingV2Flow({
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas">
       <header className="flex items-center justify-between p-6">
         <span className="text-lg font-semibold text-kumo-strong">{COPY.brand}</span>
-        <Button onClick={startOver} variant="ghost">
-          Start over
-        </Button>
+        {reviewMode ? null : (
+          <Button onClick={startOver} variant="ghost">
+            Start over
+          </Button>
+        )}
       </header>
 
       <main className="otv2-frame flex flex-1 flex-col items-center gap-6 mx-auto p-6">
@@ -314,6 +334,7 @@ function OnboardingV2Flow({
           {flow.complete ? (
             <DoneStep
               name={backend.agent?.name ?? draft.name}
+              onFinishReview={reviewMode && !reviewConfirmed ? () => setReviewConfirmed(true) : undefined}
               provider={messagingProvider ?? backend.messagingProvider}
             />
           ) : flow.page === "destination" ? (

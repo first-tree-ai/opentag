@@ -48,7 +48,7 @@ function isExecutableSourceLine(value, syntax = {}) {
     syntax.declaration = true;
     return true;
   }
-  if (/^(?:type|interface)\s+\w.*\{\s*$/u.test(trimmed)) {
+  if (/^(?:export\s+)?(?:type|interface)\s+\w.*\{\s*$/u.test(trimmed)) {
     syntax.typeLiteral = true;
     return false;
   }

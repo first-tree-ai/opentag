@@ -93,7 +93,7 @@ test("function-valued type-literal signatures are not treated as executable line
     "--- a/packages/server/src/observability/background-failure-supervisor.ts",
     "+++ b/packages/server/src/observability/background-failure-supervisor.ts",
     "@@ -1,0 +1,4 @@",
-    "+interface Hooks {",
+    "+export interface Hooks {",
     "+  onEvent?: (event: unknown) => void;",
     "+  now?: () => Date;",
     "+}",

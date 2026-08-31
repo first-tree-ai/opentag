@@ -37,12 +37,14 @@ test("the patch-coverage gate still reads the concatenated detailed map", async 
   assert.match(workflow, /coverage\/unit\/coverage-final\.json/);
 });
 
-test("coverage reporter flags restate json so the CLI override still writes coverage-final.json", () => {
+test("coverage reporter flags restate json so the CLI override still writes coverage-final.json", async () => {
   assert.deepEqual(COVERAGE_REPORTER_FLAGS, [
     "--coverage.reporter=json",
     "--coverage.reporter=json-summary",
     "--coverage.reporter=text-summary",
   ]);
+  const source = await readFile(join(repoRoot, "scripts/unit-coverage.mjs"), "utf8");
+  assert.match(source, /\.\.\.COVERAGE_REPORTER_FLAGS/);
 });
 
 test("concatenateCoverageMaps unions disjoint Istanbul maps and keeps statement hits", () => {

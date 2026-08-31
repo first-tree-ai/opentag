@@ -47,7 +47,7 @@ export const COVERAGE_REPORTER_FLAGS = [
   "--coverage.reporter=text-summary",
 ];
 
-export function parseArguments(argv) {
+function parseArguments(argv) {
   const options = { project: null, scope: null };
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--project") {

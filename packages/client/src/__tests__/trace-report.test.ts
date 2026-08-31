@@ -3,6 +3,8 @@ import type { AgentTraceBatch, TurnReportHashInput, TurnReportRequest } from "@o
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import {
+  type DurableFailure,
+  type DurableWorkRecord,
   MemoryRuntimeDurabilityStore,
   RuntimeDurabilityMetrics,
   type RuntimeRetryScheduler,
@@ -63,6 +65,97 @@ describe("TurnTraceBuffer", () => {
 });
 
 describe("TurnReportOwner", () => {
+  it("rejects a duplicate Turn Report with a different immutable identity", async () => {
+    const owner = new TurnReportOwner({ connection: new FakeConnection("stopped") });
+    const report = owner.create(reportInput());
+    const other = { ...report, requestId: "00000000-0000-4000-8000-000000000002" };
+    const pending = owner.submit(report, vi.fn());
+
+    await expect(owner.submit(other, vi.fn())).rejects.toThrow("already owns this Turn");
+    owner.stop();
+    await expect(pending).rejects.toThrow("stopped");
+  });
+
+  it("hydrates terminal fences, expired records, and interrupted sends", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const seed = new TurnReportOwner({ connection: new FakeConnection("stopped") });
+    const conflictReport = seed.create(reportInput({ turnId: "turn-conflict" }));
+    const expiredReport = seed.create(reportInput({ turnId: "turn-expired" }));
+    const runningReport = seed.create(reportInput({ turnId: "turn-running" }));
+    seed.stop();
+    const terminalFailure: DurableFailure = {
+      category: "server",
+      code: "conflict",
+      message: "conflict",
+      phase: "confirmation",
+      requestId: conflictReport.requestId,
+      retryability: "terminal",
+    };
+    await store.write(reportRecord(conflictReport, "failed", { lastError: terminalFailure }));
+    await store.write(reportRecord(expiredReport, "accepted", { acceptedAt: 1 }));
+    await store.write(reportRecord(runningReport, "running"));
+
+    const owner = new TurnReportOwner({
+      connection: new FakeConnection("stopped"),
+      now: () => 10_000,
+      persistence: store,
+      retryPolicy: { maxAgeMs: 100, maxAttempts: 5 },
+    });
+    await owner.ready();
+
+    expect(owner.get(conflictReport.turnId)?.serverStatus).toBe("conflict");
+    expect(owner.getState(expiredReport.turnId)?.status).toBe("dead-letter");
+    expect(owner.getState(runningReport.turnId)?.status).toBe("retryable");
+    expect(owner.pendingCount).toBe(2);
+    const pending = [owner.submit(conflictReport, vi.fn()), owner.submit(runningReport, vi.fn())];
+    owner.stop();
+    await Promise.allSettled(pending);
+  });
+
+  it("dead-letters structured transport failures without leaking unbounded messages", async () => {
+    const report = new TurnReportOwner({ connection: new FakeConnection("registered") }).create(reportInput());
+    const error = {
+      category: "transport",
+      code: "transport_blocked",
+      phase: "transport",
+      requestId: report.requestId,
+      retryability: "terminal",
+      message: 42,
+    };
+    const connection = new FakeConnection("registered", error);
+    const owner = new TurnReportOwner({ connection, retryPolicy: { maxAttempts: 5, maxAgeMs: 10_000 } });
+    const submitted = owner.submit(report, vi.fn());
+
+    await expect(submitted).rejects.toMatchObject({ name: "RuntimeDurabilityFailure", code: "transport_blocked" });
+    expect(owner.getState(report.turnId)).toMatchObject({
+      status: "dead-letter",
+      lastError: { code: "transport_blocked", message: "Runtime operation failed" },
+    });
+    owner.stop();
+  });
+
+  it("classifies persistence failures with the fallback durable error code", async () => {
+    const report = new TurnReportOwner({ connection: new FakeConnection("stopped") }).create(reportInput());
+    const failures: DurableFailure[] = [];
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+    };
+    const owner = new TurnReportOwner({
+      connection: new FakeConnection("stopped"),
+      onFailure: (failure) => failures.push(failure),
+      persistence,
+      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+    });
+    const submitted = owner.submit(report, vi.fn());
+
+    await expect(submitted).rejects.toMatchObject({ code: "runtime_failed", retryability: "retryable" });
+    expect(failures).toEqual([expect.objectContaining({ code: "runtime_failed", phase: "persist" })]);
+    owner.stop();
+  });
+
   it("bounds confirmation retries and records a dead-letter state with injected time", async () => {
     const scheduled: Array<() => void> = [];
     const scheduler: RuntimeRetryScheduler = {
@@ -255,10 +348,10 @@ describe("TurnReportOwner", () => {
 class FakeConnection {
   readonly sent: Array<{ frame: unknown; options?: { priority?: string } }> = [];
   readonly #listeners = new Set<(state: RuntimeConnectionState) => void>();
-  readonly #rejectSends: boolean;
+  readonly #rejectSends: boolean | Error | unknown;
   state: RuntimeConnectionState;
 
-  constructor(state: RuntimeConnectionState, rejectSends = false) {
+  constructor(state: RuntimeConnectionState, rejectSends: boolean | Error | unknown = false) {
     this.state = state;
     this.#rejectSends = rejectSends;
   }
@@ -271,7 +364,7 @@ class FakeConnection {
 
   async send(frame: unknown, options?: { priority?: string }): Promise<void> {
     this.sent.push({ frame, options });
-    if (this.#rejectSends) throw new Error("socket unavailable");
+    if (this.#rejectSends) throw this.#rejectSends instanceof Error ? this.#rejectSends : this.#rejectSends;
   }
 
   setState(state: RuntimeConnectionState): void {
@@ -280,7 +373,7 @@ class FakeConnection {
   }
 }
 
-function reportInput(): TurnReportHashInput {
+function reportInput(overrides: Partial<TurnReportHashInput> = {}): TurnReportHashInput {
   return {
     deliveryId: "delivery-1",
     turnId: "turn-1",
@@ -292,6 +385,24 @@ function reportInput(): TurnReportHashInput {
     finalText: "done",
     usage: { inputTokens: 2, outputTokens: 1 },
     traceSummary: { lastSequence: 3, droppedEvents: 1 },
+    ...overrides,
+  };
+}
+
+function reportRecord(
+  report: TurnReportRequest,
+  status: DurableWorkRecord["status"],
+  overrides: Partial<DurableWorkRecord<TurnReportRequest>> = {},
+): DurableWorkRecord<TurnReportRequest> {
+  return {
+    acceptedAt: 10_000,
+    attempts: 0,
+    key: report.turnId,
+    kind: "turn-report",
+    payload: report,
+    status,
+    updatedAt: 10_000,
+    ...overrides,
   };
 }
 

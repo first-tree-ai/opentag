@@ -6,7 +6,7 @@
  * setup copy, so the same work says the same thing on both surfaces.
  */
 
-import { SETUP_COPY } from "../setup/index.js";
+import { SETUP_COPY } from "../setup/copy.js";
 import type { CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {

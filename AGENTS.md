@@ -37,7 +37,9 @@ In `apps/web` the route tree is the directory tree: a file under `src/routes` is
 `_`-prefixed file is a pathless layout that wraps the directory beside it. Route files stay thin —
 they read params and search, then hand them to a component in `src/features` as props, so pages do
 not read the router and can be mounted directly in tests. `src/routeTree.gen.ts` is generated and
-committed; never edit it. Build links from the typed helpers rather than template strings.
+committed; never edit it. `src/paraglide` is generated from `project.inlang` and `messages/*.json`,
+is not committed, and must never be edited. User-facing copy goes through `m.*()`, and migration
+changes must not modify string assertions in tests. Build links from the typed helpers rather than template strings.
 
 Do not import workspace-internal paths. Import only from each package's public `src/index.ts` surface. The shared package
 must not depend on another workspace. Client and server must not depend on each other. Runtime schemas are the source of

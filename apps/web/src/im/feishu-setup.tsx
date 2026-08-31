@@ -2,10 +2,18 @@ import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/brow
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import { formatDateTime } from "../i18n/format.js";
 import { Banner, Button, Loader } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
+/*
+ * This stays outside the query cache on purpose, for the same reason the Computer setup beside it
+ * does: it drives one authorization to completion rather than reading a resource. Nothing else reads
+ * an attempt, so there is no sharing to gain, and the lifecycle it does keep — which error came from
+ * starting versus from polling, and which attempt a late response belongs to — is the substance of
+ * the flow rather than incidental bookkeeping.
+ */
 const POLL_INTERVAL_MS = 1_500;
 const FEISHU_SETUP_MESSAGES: Record<string, string> = {
   FEISHU_APP_ALREADY_BOUND:
@@ -180,7 +188,7 @@ function FeishuSetupFeedback({
         ? "Confirm the updated permissions for the current Feishu Bot."
         : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
       <br />
-      State: {attempt.state}. Expires {formatSetupDate(attempt.expiresAt)}.
+      State: {attempt.state}. Expires {formatDateTime(attempt.expiresAt)}.
       {recovery ? (
         <>
           <br />
@@ -242,8 +250,4 @@ function normalizeError(cause: unknown, fallback: string): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
   if (code && FEISHU_SETUP_MESSAGES[code]) return FEISHU_SETUP_MESSAGES[code];
   return cause instanceof Error ? cause.message : fallback;
-}
-
-function formatSetupDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }

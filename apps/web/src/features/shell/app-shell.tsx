@@ -1,6 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
+import { initials } from "../../i18n/format.js";
+import { queryKeys } from "../../query/keys.js";
 import {
   DropdownMenu,
   Icon,
@@ -11,7 +14,6 @@ import {
   SidebarTrigger,
   useSidebar,
 } from "../../ui/design-system.js";
-import { initials } from "../agents/agent-presentation.js";
 import { useAccount } from "../session/session-context.js";
 
 export function AppShell() {
@@ -23,7 +25,7 @@ export function AppShell() {
 }
 
 export function AppShellContent() {
-  const { me } = useAccount();
+  const { endSession, me } = useAccount();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
   const { setOpenMobile } = useSidebar();
@@ -31,6 +33,18 @@ export function AppShellContent() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  /*
+   * The internal tools are staging-only, and the Server is the one that knows: outside staging the
+   * interface is absent rather than closed, so a deployment that does not offer it simply never
+   * renders the entry. The probe reads nothing about the Account, so a failure means "not offered"
+   * and the menu stays as production sees it.
+   */
+  const internalToolsOffered =
+    useQuery({
+      queryKey: queryKeys.internalToolsOffered(),
+      queryFn: () => browserApi.internalToolsOffered(),
+      staleTime: Number.POSITIVE_INFINITY,
+    }).data === true;
   useEffect(() => {
     if (openMenu !== "account") return;
     accountMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')?.focus();
@@ -40,6 +54,10 @@ export function AppShellContent() {
     setAccountError(undefined);
     try {
       await browserApi.logout();
+      // Everything read here belongs to the Account that is signing out. End the session before the
+      // login navigation, so a later Account cannot observe the previous one's data while its own
+      // reads are pending, and so a refresh still in flight cannot put it back afterwards.
+      endSession();
       void navigate({ replace: true, to: "/login" });
     } catch (cause) {
       setAccountError(cause instanceof Error ? cause.message : "Unable to sign out");
@@ -130,6 +148,9 @@ export function AppShellContent() {
                     }
                   />
                   <DropdownMenu.Content aria-label="Account" ref={accountMenuRef}>
+                    <DropdownMenu.Item href="/agents/computers" onClickCapture={() => setOpenMobile(false)}>
+                      Computers
+                    </DropdownMenu.Item>
                     <DropdownMenu.Item
                       onClick={() => {
                         setOpenMobile(false);
@@ -138,6 +159,16 @@ export function AppShellContent() {
                     >
                       Account
                     </DropdownMenu.Item>
+                    {internalToolsOffered ? (
+                      <DropdownMenu.Item
+                        onClick={() => {
+                          setOpenMobile(false);
+                          void navigate({ to: "/internal" });
+                        }}
+                      >
+                        Internal tools
+                      </DropdownMenu.Item>
+                    ) : null}
                     <DropdownMenu.Item disabled={loggingOut} onClick={() => void logout()}>
                       {loggingOut ? (
                         <span className="flex items-center gap-2">

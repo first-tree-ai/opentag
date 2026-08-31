@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { Button, KumoSelectControl } from "../ui/design-system.js";
-import type { MockBackend, MockScenario, MockSpeed } from "./mock-backend.js";
-import { MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
+import type { MockBackend, MockInventory, MockScenario, MockSpeed } from "./mock-backend.js";
+import { INVENTORIES, INVENTORY_TITLES, MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
 
 /**
  * The only thing on this page production would never show. It drives the mock so an interaction
@@ -15,7 +15,9 @@ import { MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
 export function LabControls({
   backend,
   cloudAvailable,
+  inventory,
   onCloudAvailableChange,
+  onInventoryChange,
   onScenarioChange,
   onSpeedChange,
   scenario,
@@ -23,7 +25,9 @@ export function LabControls({
 }: {
   backend: MockBackend;
   cloudAvailable: boolean;
+  inventory: MockInventory;
   onCloudAvailableChange: (available: boolean) => void;
+  onInventoryChange: (inventory: MockInventory) => void;
   onScenarioChange: (scenario: MockScenario) => void;
   onSpeedChange: (speed: MockSpeed) => void;
   scenario: MockScenario;
@@ -31,32 +35,40 @@ export function LabControls({
 }) {
   const [open, setOpen] = useState(false);
   const scenarioId = useId();
+  const inventoryId = useId();
   const panelId = useId();
 
   const pending = backend.pending;
 
   return (
-    <div className="otv2-lab" data-open={open ? "true" : undefined}>
+    <div
+      className="fixed right-6 bottom-6 z-30 flex items-end gap-2"
+      data-open={open ? "true" : undefined}
+      data-ui="onboarding-v2-lab"
+    >
       {/*
         The one thing the outside world would do next — the Computer arriving, the check coming
         back, the QR being scanned. In manual mode nothing happens until this is pressed, so any
         state can be looked at for as long as it takes.
       */}
-      <Button className="otv2-lab__advance" disabled={!pending} onClick={pending?.run}>
+      <Button disabled={!pending} onClick={pending?.run}>
         {pending?.label ?? "Nothing waiting"}
       </Button>
-      <div className="otv2-lab__stack">
+      <div className="flex flex-col items-end gap-2">
         <Button
-          variant="ghost"
           aria-controls={panelId}
           aria-expanded={open}
-          className="otv2-lab__toggle"
           onClick={() => setOpen((value) => !value)}
+          variant="secondary"
         >
           Mock controls
         </Button>
-        <div className="otv2-lab__panel" hidden={!open} id={panelId}>
-          <label className="otv2-lab__label" htmlFor={scenarioId}>
+        <div
+          className="flex w-72 flex-col gap-3 rounded-xl bg-kumo-base p-4 ring ring-kumo-line"
+          hidden={!open}
+          id={panelId}
+        >
+          <label className="text-xs font-medium text-kumo-strong" htmlFor={scenarioId}>
             Readiness outcome
           </label>
           <KumoSelectControl
@@ -73,11 +85,11 @@ export function LabControls({
               </option>
             ))}
           </KumoSelectControl>
-          <p className="otv2-lab__hint">{scenario.description}</p>
+          <p className="text-xs text-kumo-subtle m-0">{scenario.description}</p>
 
-          <div className="otv2-lab__row">
-            <span className="otv2-lab__label">Speed</span>
-            <div className="otv2-lab__segmented">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-kumo-strong">Speed</span>
+            <div className="flex gap-1">
               {MOCK_SPEEDS.map((candidate) => (
                 <Button
                   variant="ghost"
@@ -91,10 +103,27 @@ export function LabControls({
             </div>
           </div>
 
+          <div className="grid gap-1">
+            <label className="text-xs font-medium uppercase text-kumo-subtle" htmlFor={inventoryId}>
+              Computers on the account
+            </label>
+            <KumoSelectControl
+              id={inventoryId}
+              onChange={(event) => onInventoryChange(event.target.value as MockInventory)}
+              value={inventory}
+            >
+              {INVENTORIES.map((candidate) => (
+                <option key={candidate} value={candidate}>
+                  {INVENTORY_TITLES[candidate]}
+                </option>
+              ))}
+            </KumoSelectControl>
+          </div>
+
           {/* A toggle rather than a checkbox, so it reads and behaves like the speed control above it. */}
           <Button
             aria-pressed={cloudAvailable}
-            className="otv2-lab__check"
+            className="justify-start"
             onClick={() => onCloudAvailableChange(!cloudAvailable)}
             size="compact"
             variant="outline"
@@ -102,7 +131,7 @@ export function LabControls({
             Offer the cloud computer
           </Button>
 
-          <div className="otv2-lab__actions">
+          <div className="flex flex-wrap gap-2">
             <Button onClick={backend.expireNow} size="compact" variant="outline">
               Expire code
             </Button>

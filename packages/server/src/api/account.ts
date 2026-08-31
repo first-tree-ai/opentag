@@ -1,5 +1,6 @@
 import {
   AccountComputerConnectCodeIssueRequestSchema,
+  AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
   type ChannelName,
   CompleteWorkspaceSetupRequestSchema,
@@ -18,7 +19,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { AgentService } from "../services/agents/index.js";
-import type { UserAuthService } from "../services/auth/index.js";
+import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import {
   buildComputerConnectCommand,
   type ComputerService,
@@ -50,8 +51,23 @@ export interface AccountRoutesOptions {
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
+  /**
+   * Undoing setup so onboarding can be walked again. Staging decides whether it exists at all: the
+   * routes are registered only where the service is supplied, and each one re-checks `enabled`
+   * before doing anything, so a deployment that has the routes but not the feature answers exactly
+   * like one that never registered them.
+   */
+  setupResetService?: AccountSetupResetService;
   taskService?: TaskService;
   workspaceSetupService?: WorkspaceSetupService;
+}
+
+/** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
+export interface AccountSetupResetService {
+  /** Whether this deployment offers the reset at all; false outside staging. */
+  readonly enabled: boolean;
+  reboard(accountId: string): Promise<void>;
+  resetOnboarding(accountId: string): Promise<void>;
 }
 
 function accountId(request: FastifyRequest): string {
@@ -153,4 +169,39 @@ export function registerAccountRoutes(
         );
     });
   }
+
+  if (options.setupResetService) {
+    const setupResetService = options.setupResetService;
+
+    /*
+     * Reflexive by construction: the Account comes from the access token, and the body carries only
+     * how much to undo. There is no field here that could name somebody else's Account, which is
+     * what makes this safe to offer to every signed-in tester rather than to administrators.
+     */
+    /*
+     * Reachability is the whole answer a client needs: outside staging the reset is absent rather
+     * than closed, so a deployment that does not offer it is indistinguishable from one that never
+     * had it. A caller asks this before offering the operations, rather than discovering the answer
+     * by attempting one.
+     */
+    app.get(HTTP_PATHS.accountSetupReset, { preHandler }, async (_request, reply) => {
+      if (!setupResetService.enabled) throw resetNotOffered();
+      return reply.code(204).send();
+    });
+
+    app.post(HTTP_PATHS.accountSetupReset, { preHandler }, async (request, reply) => {
+      // Checked before the body is read, so a malformed request cannot tell a deployment that has
+      // the route but not the feature apart from one that never registered it.
+      if (!setupResetService.enabled) throw resetNotOffered();
+      const { mode } = parseRequest(AccountSetupResetRequestSchema, request.body);
+      const account = accountId(request);
+      if (mode === "all") await setupResetService.resetOnboarding(account);
+      else await setupResetService.reboard(account);
+      return reply.code(204).send();
+    });
+  }
+}
+
+function resetNotOffered(): AuthServiceError {
+  return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
 }

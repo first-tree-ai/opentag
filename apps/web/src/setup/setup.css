@@ -1,0 +1,208 @@
+/*
+ * The styling the setup pieces carry with them.
+ *
+ * These rules belong to the components in this directory rather than to any one page, so they
+ * travel with them: a surface that renders a check row or a command block gets the row's markers
+ * and the block's terminal palette without having to know where they came from. Everything here is
+ * either driven by an attribute the markup already publishes for assistive technology
+ * (`data-state`, `data-expired`) or is a measured height the layout depends on, neither of which a
+ * utility class can express.
+ *
+ * The `ots-` prefix is this module's, and only this module's. Onboarding keeps `otv2-` for the
+ * styling that stays its own.
+ */
+
+/* Check rows ------------------------------------------------------------- */
+
+/*
+ * These two need to read as green and amber at 22px. The operational status palette is tuned for
+ * large surfaces and goes indistinct at this size, so the pair is stated locally.
+ */
+.ots-check__marker {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--color-kumo-hairline);
+  line-height: 1;
+}
+
+.ots-check[data-state="passed"] .ots-check__marker {
+  border-color: #17a04a;
+  background: #e6f7ec;
+  color: #17a04a;
+}
+
+.ots-check[data-state="failed"] .ots-check__marker {
+  border-color: #d98207;
+  background: #fdf1de;
+  color: #d98207;
+}
+
+.ots-check[data-state="pending"] .ots-check__marker {
+  border-style: dashed;
+  animation: ots-fade 1.4s ease-in-out infinite;
+}
+
+@keyframes ots-fade {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Command block ---------------------------------------------------------- */
+
+/*
+ * The block carries its own near-black surface in both modes: it is a terminal quotation, and it
+ * reads as one only if it does not follow the page.
+ */
+.ots-command__body {
+  position: relative;
+  background: #0b101d;
+  border-color: var(--color-kumo-hairline);
+  transition: opacity 160ms ease;
+}
+
+.ots-command__code {
+  margin: 0;
+  color: #e6e9e0;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "PingFang SC", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+
+  /* Wraps rather than scrolling sideways: a command that runs off the edge cannot be read, and
+     `break-word` keeps short tokens like `sh` whole. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.ots-command__comment {
+  color: #9fb27f;
+}
+
+/*
+ * The trailing token is an opaque secret and breaks strictly by character. Left to break at its own
+ * hyphens and underscores, two codes of the same length wrap to a different number of lines and the
+ * block changes height when one is reissued.
+ *
+ * `overflow-wrap: anywhere` is not enough on its own: it still prefers an existing break opportunity
+ * when there is one, so a code ending in `-` or `_` took an extra line at some widths — 19 of 200
+ * random codes at 320px. `word-break: break-all` ignores those opportunities entirely. It is scoped
+ * to this span and no wider: on the whole command it would split short words like `sh`, which reads
+ * as a typo in something the reader is about to run.
+ */
+.ots-command__token {
+  word-break: break-all;
+}
+
+/*
+ * Sized as a real target rather than around the icon: a Kumo icon is 16px, which on a compact
+ * button reads as an afterthought next to the command it belongs to.
+ */
+.ots-command__copy {
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0;
+  background: transparent;
+
+  /* The same value the command itself is set in, so the control is as legible as what it copies. */
+  color: #e6e9e0;
+}
+
+.ots-command__copy svg {
+  width: 24px;
+  height: 24px;
+}
+
+.ots-command__copy:hover:not(:disabled) {
+  background: rgb(230 233 224 / 14%);
+  color: #fff;
+}
+
+.ots-command__copy:active:not(:disabled) {
+  background: rgb(230 233 224 / 22%);
+}
+
+/* The block's shape while its command is still being issued: same box, nothing legible in it. */
+.ots-command-pending {
+  opacity: 0.35;
+  filter: blur(3px);
+  pointer-events: none;
+}
+
+/*
+ * An expired command says so on the block itself, over a heavy scrim: the block is the thing that
+ * expired, and a line underneath is easy to miss when the command above it still looks runnable.
+ * The scrim sits over the content rather than fading the whole block, so the notice stays legible.
+ */
+.ots-command[data-expired="true"] .ots-command__code,
+.ots-command[data-expired="true"] .ots-command__copy {
+  opacity: 0.18;
+}
+
+.ots-command__expired {
+  position: absolute;
+  inset: 0;
+  background: rgb(11 16 29 / 78%);
+  color: #e6e9e0;
+}
+
+.ots-command__expired button {
+  color: #cfe3a6;
+}
+
+.ots-command__expired button:hover {
+  color: #e8f5cd;
+}
+
+/* Measurements ----------------------------------------------------------- */
+
+/*
+ * The numbers these pieces depend on. They live here because this app compiles no utilities of its
+ * own: it ships Kumo's prebuilt sheet, so a bracketed class would be inert.
+ *
+ * Anything that changes length while someone is reading is given the height of its tallest state,
+ * so what sits under it keeps one position. These are measured, not chosen.
+ */
+
+/* The connect status: waiting on one line, connected on another. */
+.ots-slot--status {
+  min-height: 28px;
+}
+
+/* A check row's second line is a status, and a failure reads longer than what it replaces. */
+.ots-check {
+  min-height: 73px;
+}
+
+/* Below this width a failing check's status takes a second line. */
+@media (width <= 399px) {
+  .ots-check {
+    min-height: 90px;
+  }
+}
+
+/* The waiting dot carries its own animation. */
+.ots-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-kumo-brand);
+  animation: ots-fade 1.4s ease-in-out infinite;
+}
+
+/* The QR keeps its box whether or not a code has arrived, so the panel never changes height. */
+.ots-qr {
+  width: 208px;
+  height: 208px;
+}
+
+.ots-qr__image {
+  width: 100%;
+  height: 100%;
+}

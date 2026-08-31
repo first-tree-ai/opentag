@@ -38,7 +38,7 @@ export default defineConfig({
     coverage: {
       all: true,
       enabled: true,
-      exclude: [...coverageConfigDefaults.exclude, "**/src/__tests__/**", "**/src/smoke/**"],
+      exclude: [...coverageConfigDefaults.exclude, "**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"],
       include: [
         "apps/cli/src/**/*.{ts,tsx}",
         "apps/web/src/**/*.{ts,tsx}",
@@ -47,7 +47,7 @@ export default defineConfig({
         "packages/server/src/**/*.{ts,tsx}",
       ],
       provider: "v8",
-      reporter: ["text", "json-summary", "html"],
+      reporter: ["text", "json", "json-summary", "html"],
       reportOnFailure: true,
       reportsDirectory: "coverage/unit",
     },

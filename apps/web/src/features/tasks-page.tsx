@@ -1,28 +1,28 @@
-import type { TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type { TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import feishuIconUrl from "../assets/feishu.svg";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import { compareText, foldCase, formatDateTime, formatRelativeTime, initials } from "../i18n/format.js";
+import { queryKeys } from "../query/keys.js";
 import {
-  Banner,
   Button,
-  Empty,
   Icon,
-  Input,
-  LayerCard,
-  Select,
-  SkeletonLine,
+  KumoInputControl,
+  KumoSelectControl,
+  Loader,
+  type SelectControlChangeEvent,
   StatusIndicator,
   type StatusTone,
   Table,
   Text,
 } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
+import { isTerminalResourceError } from "./resource/resource-state.js";
 import { TaskMessageBody } from "./task-message-body.js";
 
 type TaskFilter = "all" | TaskStatus;
-type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
-type TaskCollection = { tasks: TaskSummary[]; nextCursor: string | null };
 
 const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
   queued: { label: "Queued", tone: "info" },
@@ -34,53 +34,42 @@ const statusPresentation: Record<TaskStatus, { readonly label: string; readonly 
   idle: { label: "Idle", tone: "neutral" },
 };
 
-const statusItems = Object.fromEntries([
-  ["all", "All statuses"],
-  ...Object.entries(statusPresentation).map(([value, presentation]) => [value, presentation.label]),
-]);
-
 export function TasksPage() {
-  const [state, setState] = useState<LoadState<TaskCollection>>({ kind: "loading" });
   const [query, setQuery] = useState("");
   const [agentId, setAgentId] = useState("all");
   const [status, setStatus] = useState<TaskFilter>("all");
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
-  const initialLoadGeneration = useRef(0);
+  /*
+   * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
+   * stays retryable — the behavior the hand-rolled append kept its own error state for.
+   */
+  const tasksQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.list(),
+    queryFn: ({ pageParam }) => browserApi.tasks({ cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    // The API reports the end of the list as null; the cache reads undefined as "no page after this".
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const loaded = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
+  const taskError = asError(tasksQuery.error);
+  /*
+   * Which page failed does not change what a terminal status means. The Server resolves the Task
+   * scope before it parses a cursor — an unusable cursor is a 400 — so a 401, 403, 404 or 410 on an
+   * append says the same thing it says on the first read, and the rows already in hand are exactly
+   * what must stop being shown.
+   */
+  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
 
-  const loadTasks = useCallback(async (): Promise<void> => {
-    const generation = initialLoadGeneration.current + 1;
-    initialLoadGeneration.current = generation;
-    setState({ kind: "loading" });
-    setLoadMoreError(null);
-    try {
-      const value = await browserApi.tasks();
-      if (initialLoadGeneration.current !== generation) return;
-      setState({ kind: "ready", value: { tasks: [...value.tasks], nextCursor: value.nextCursor } });
-    } catch (error) {
-      if (initialLoadGeneration.current !== generation) return;
-      setState({ kind: "error", error: asError(error) });
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadTasks();
-    return () => {
-      // Invalidate an in-flight request when this page unmounts.
-      initialLoadGeneration.current += 1;
-    };
-  }, [loadTasks]);
-
-  const agents = useMemo(() => {
-    if (state.kind !== "ready") return [];
-    return [...new Map(state.value.tasks.map((task) => [task.agent.id, task.agent])).values()].sort((left, right) =>
-      left.displayName.localeCompare(right.displayName),
-    );
-  }, [state]);
+  const agents = useMemo(
+    () =>
+      [...new Map(loaded.map((task) => [task.agent.id, task.agent])).values()].sort((left, right) =>
+        compareText(left.displayName, right.displayName),
+      ),
+    [loaded],
+  );
   const tasks = useMemo(() => {
-    if (state.kind !== "ready") return [];
-    const normalizedQuery = query.trim().toLocaleLowerCase();
-    return state.value.tasks.filter((task) => {
+    const normalizedQuery = foldCase(query.trim());
+    return loaded.filter((task) => {
       const matchesQuery =
         normalizedQuery.length === 0 ||
         [
@@ -92,237 +81,264 @@ export function TasksPage() {
           task.source.channelId,
           task.source.threadKey,
         ]
+          .map((value) => foldCase(value ?? ""))
           .join(" ")
-          .toLocaleLowerCase()
           .includes(normalizedQuery);
       return (
         matchesQuery && (agentId === "all" || task.agent.id === agentId) && (status === "all" || task.status === status)
       );
     });
-  }, [agentId, query, state, status]);
-  const agentItems = useMemo(
-    () => Object.fromEntries([["all", "All Agents"], ...agents.map((agent) => [agent.id, agent.displayName])]),
-    [agents],
-  );
-  const hasActiveFilters = query.trim().length > 0 || agentId !== "all" || status !== "all";
-
-  function clearFilters(): void {
-    setQuery("");
-    setAgentId("all");
-    setStatus("all");
-  }
-
-  async function loadMore(): Promise<void> {
-    if (state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.tasks({ cursor: state.value.nextCursor });
-      setState((current) =>
-        current.kind === "ready"
-          ? { kind: "ready", value: { tasks: [...current.value.tasks, ...next.tasks], nextCursor: next.nextCursor } }
-          : current,
-      );
-    } catch (error) {
-      // Keep the rows already on screen. A failed append should be recoverable without making the
-      // viewer lose the page that was loaded successfully.
-      setLoadMoreError(asError(error));
-    } finally {
-      setLoadingMore(false);
-    }
-  }
+  }, [agentId, loaded, query, status]);
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
       <PageHeader description="Review Agent work, progress, and results." title="Tasks" titleId="tasks-page-title" />
 
-      <form
-        className="grid gap-3 @min-[36rem]/workspace:grid-cols-[minmax(14rem,1fr)_12rem_12rem_auto] @min-[36rem]/workspace:items-end"
-        aria-label="Filter Tasks"
-        data-ui="task-toolbar"
-        onSubmit={(event) => event.preventDefault()}
-      >
-        <Input
-          aria-label="Search Tasks"
-          className="w-full"
-          placeholder="Search loaded Tasks"
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <Select
-          aria-label="Filter by Agent"
-          className="w-full"
-          items={agentItems}
-          size="sm"
-          value={agentId}
-          onValueChange={(value) => setAgentId(value ?? "all")}
-        />
-        <Select
-          aria-label="Filter by status"
-          className="w-full"
-          items={statusItems}
-          size="sm"
-          value={status}
-          onValueChange={(value) => setStatus((value ?? "all") as TaskFilter)}
-        />
-        {hasActiveFilters ? (
-          <Button className="w-full @min-[36rem]/workspace:w-auto" type="button" variant="ghost" onClick={clearFilters}>
-            Clear filters
-          </Button>
-        ) : null}
-      </form>
+      {/*
+       * The toolbar is built out of the rows themselves — the Agent options are the Agents named by
+       * the Tasks that were read. A terminal response withdraws those rows, so it has to withdraw
+       * what was derived from them too, or the Account keeps reading Agent names off a list the
+       * Server has just refused. The typed filters are React state and come back on recovery.
+       */}
+      {terminalTasksError ? null : (
+        <form
+          className="flex flex-wrap items-end gap-3"
+          aria-label="Filter Tasks"
+          data-ui="task-toolbar"
+          onSubmit={(event) => event.preventDefault()}
+        >
+          <div className="min-w-56 flex-1">
+            <span className="sr-only">Search Tasks</span>
+            <KumoInputControl
+              aria-label="Search Tasks"
+              value={query}
+              type="search"
+              placeholder="Search Tasks"
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </div>
+          <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+            <option value="all">All Agents</option>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.displayName}
+              </option>
+            ))}
+          </TaskSelect>
+          <TaskSelect
+            label="Filter by status"
+            value={status}
+            onChange={(event) => setStatus(event.target.value as TaskFilter)}
+          >
+            <option value="all">All statuses</option>
+            {Object.entries(statusPresentation).map(([value, presentation]) => (
+              <option key={value} value={value}>
+                {presentation.label}
+              </option>
+            ))}
+          </TaskSelect>
+        </form>
+      )}
 
-      {state.kind === "loading" ? <TaskLoading heading="Loading Tasks" /> : null}
-      {state.kind === "error" ? (
-        <Banner
+      {!terminalTasksError && tasksQuery.isPending ? (
+        <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
+      ) : null}
+      {terminalTasksError ? (
+        <TaskNotice
           action={
-            <Button type="button" variant="secondary" onClick={() => void loadTasks()}>
+            <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
               Try again
             </Button>
           }
-          description={state.error.message}
-          role="alert"
-          title="Tasks unavailable"
-          variant="error"
+          heading="Tasks unavailable"
+          detail={terminalTasksError.message}
         />
       ) : null}
-      {state.kind === "ready" && tasks.length > 0 ? (
+      {!terminalTasksError && tasksQuery.isError && !tasksQuery.data ? (
+        <TaskNotice
+          action={
+            <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
+              Try again
+            </Button>
+          }
+          heading="Tasks unavailable"
+          detail={asError(tasksQuery.error).message}
+        />
+      ) : null}
+      {!terminalTasksError && tasksQuery.data && tasks.length > 0 ? (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-kumo-subtle">
-            <span aria-live="polite">
-              Showing {tasks.length} of {state.value.tasks.length} loaded{" "}
-              {state.value.tasks.length === 1 ? "Task" : "Tasks"}
-            </span>
-            {state.value.nextCursor ? <span>More Tasks are available.</span> : null}
-          </div>
-          <LayerCard className="overflow-hidden p-0 shadow-none ring-0 @min-[36rem]/workspace:shadow-xs @min-[36rem]/workspace:ring @min-[36rem]/workspace:ring-kumo-line">
-            <Table className="block @min-[36rem]/workspace:table" aria-label="Tasks" data-ui="task-table">
-              <Table.Header className="hidden @min-[36rem]/workspace:table-header-group">
-                <Table.Row>
-                  <Table.Head>Task</Table.Head>
-                  <Table.Head>Status</Table.Head>
-                </Table.Row>
-              </Table.Header>
-              <Table.Body className="grid gap-3 @min-[36rem]/workspace:table-row-group">
+          <section
+            aria-label="Tasks table"
+            className="min-w-0 overflow-x-auto rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus the horizontal scroll region.
+            tabIndex={0}
+          >
+            <Table className="min-w-[36rem]" aria-label="Tasks" data-ui="task-table">
+              <thead>
+                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
+                  <th scope="col">Task</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
                 {tasks.map((task) => (
                   <TaskRow key={task.id} task={task} />
                 ))}
-              </Table.Body>
+              </tbody>
             </Table>
-          </LayerCard>
-          {state.value.nextCursor ? (
+          </section>
+          {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
-                disabled={loadingMore}
-                loading={loadingMore}
+                disabled={tasksQuery.isFetchingNextPage}
+                loading={tasksQuery.isFetchingNextPage}
                 type="button"
                 variant="secondary"
-                onClick={() => void loadMore()}
+                onClick={() => void tasksQuery.fetchNextPage()}
               >
-                {loadingMore ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
               </Button>
               {loadMoreError ? (
-                <Banner description={loadMoreError.message} role="alert" size="sm" variant="error" />
+                <span className="text-sm text-kumo-danger" role="alert">
+                  {loadMoreError.message}
+                </span>
               ) : null}
             </div>
           ) : null}
         </>
       ) : null}
-      {state.kind === "ready" && tasks.length === 0 ? (
-        <Empty
-          contents={
-            hasActiveFilters ? (
-              <Button type="button" variant="secondary" onClick={clearFilters}>
-                Clear filters
+      {!terminalTasksError && tasksQuery.data && tasks.length === 0 ? (
+        <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
+ * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
+ */
+export function AgentTasksSection({ agentId }: { agentId: string }) {
+  /*
+   * Keyed by the Agent, so the route reusing this component for a different `:agentId` reads a
+   * different entry rather than a load that has to be told apart from the one before it. An append
+   * belongs to the entry that started it, and the pages it accumulated are still there on the way
+   * back — which is what the generation counter here had to imitate by hand.
+   */
+  const tasksQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.byAgent(agentId),
+    queryFn: ({ pageParam }) => browserApi.tasks({ agentId, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  });
+  const tasks = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
+  const taskError = asError(tasksQuery.error);
+  // The same rule the workspace list follows: a refusal withdraws the rows it refused, whichever
+  // page asked for them. Only a transient append failure keeps them, reported beside its control.
+  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
+  const unavailable = terminalTasksError !== null || (tasksQuery.isError && !tasksQuery.data);
+
+  return (
+    <section
+      className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-tasks-heading"
+      data-ui="agent-tasks"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <Text as="h2" id="agent-tasks-heading" variant="heading">
+          Tasks
+        </Text>
+        <Link className="text-sm text-kumo-link" to="/tasks">
+          All Tasks
+        </Link>
+      </div>
+      {!unavailable && tasksQuery.isPending ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Loading Tasks…
+        </p>
+      ) : null}
+      {unavailable ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          Tasks are temporarily unavailable.
+        </p>
+      ) : null}
+      {!unavailable && tasksQuery.data && tasks.length === 0 ? (
+        <p className="text-sm text-kumo-subtle" role="status">
+          No Tasks yet. Message this Agent in your chat app to put it to work.
+        </p>
+      ) : null}
+      {!unavailable && tasks.length > 0 ? (
+        <>
+          <div className="overflow-x-auto">
+            <Table className="w-full" aria-label="Agent Tasks" data-ui="task-table">
+              <thead>
+                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
+                  <th scope="col">Task</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tasks.map((task) => (
+                  <TaskRow key={task.id} showAgent={false} task={task} />
+                ))}
+              </tbody>
+            </Table>
+          </div>
+          {tasksQuery.hasNextPage ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                disabled={tasksQuery.isFetchingNextPage}
+                type="button"
+                variant="secondary"
+                onClick={() => void tasksQuery.fetchNextPage()}
+              >
+                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
               </Button>
-            ) : null
-          }
-          description={
-            hasActiveFilters ? "Try a different search or filter." : "Tasks will appear here as Agents receive work."
-          }
-          icon={<Icon name="message" />}
-          title="No Tasks found"
-        />
+              {loadMoreError ? (
+                <span className="text-sm text-kumo-subtle" role="status">
+                  Could not load more Tasks.
+                </span>
+              ) : null}
+            </div>
+          ) : null}
+        </>
       ) : null}
     </section>
   );
 }
 
 export function TaskDetailPage({ taskId }: { taskId?: string }) {
-  const [state, setState] = useState<LoadState<TaskDetail>>({ kind: "loading" });
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState<Error | null>(null);
-  const taskLoadGeneration = useRef(0);
+  /*
+   * The Task itself, its internal Sessions and its collaboration messages come from the first page
+   * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
+   */
+  const taskQuery = useInfiniteQuery({
+    queryKey: queryKeys.tasks.detail(taskId ?? ""),
+    queryFn: ({ pageParam }) => browserApi.task(taskId as string, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: taskId !== undefined,
+  });
+  const first = taskQuery.data?.pages[0];
+  const turns = useMemo(() => taskQuery.data?.pages.flatMap((page) => page.turns) ?? [], [taskQuery.data]);
+  const taskError = asError(taskQuery.error);
+  // `TaskService.get` resolves the Task before it parses a cursor, so a terminal status on a Turn
+  // append is about the Task, not the page boundary. It withdraws the conversation with it.
+  const terminalTaskError = taskQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
+  const loadMoreError = taskQuery.isFetchNextPageError && !terminalTaskError ? taskError : null;
 
-  useEffect(() => {
-    const generation = taskLoadGeneration.current + 1;
-    taskLoadGeneration.current = generation;
-    setState({ kind: "loading" });
-    setLoadingMore(false);
-    setLoadMoreError(null);
-    if (!taskId) {
-      setState({ kind: "error", error: new Error("Task not found") });
-      return () => {
-        if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
-      };
-    }
-    browserApi.task(taskId).then(
-      (value) => taskLoadGeneration.current === generation && setState({ kind: "ready", value }),
-      (error: unknown) =>
-        taskLoadGeneration.current === generation && setState({ kind: "error", error: asError(error) }),
-    );
-    return () => {
-      if (taskLoadGeneration.current === generation) taskLoadGeneration.current += 1;
-    };
-  }, [taskId]);
-
-  async function loadMoreTurns(): Promise<void> {
-    if (!taskId || state.kind !== "ready" || !state.value.nextCursor || loadingMore) return;
-    const generation = taskLoadGeneration.current;
-    const cursor = state.value.nextCursor;
-    setLoadingMore(true);
-    setLoadMoreError(null);
-    try {
-      const next = await browserApi.task(taskId, cursor);
-      if (taskLoadGeneration.current !== generation) return;
-      setState((current) =>
-        current.kind === "ready" && current.value.task.id === taskId
-          ? {
-              kind: "ready",
-              value: {
-                ...current.value,
-                turns: [...current.value.turns, ...next.turns],
-                nextCursor: next.nextCursor,
-              },
-            }
-          : current,
-      );
-    } catch (error) {
-      if (taskLoadGeneration.current !== generation) return;
-      setLoadMoreError(asError(error));
-    } finally {
-      if (taskLoadGeneration.current === generation) setLoadingMore(false);
-    }
+  if (terminalTaskError) return <TaskUnavailable error={terminalTaskError} />;
+  if (taskId !== undefined && taskQuery.isPending) {
+    return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
+  }
+  if (!first) {
+    // No Task id at all is the same answer as one the Server does not have.
+    const error = taskId === undefined ? new ApiError(404, "Task not found") : asError(taskQuery.error);
+    return <TaskUnavailable error={error} />;
   }
 
-  if (state.kind === "loading") return <TaskLoading heading="Loading Task" />;
-  if (state.kind === "error") {
-    const notFound = state.error instanceof ApiError && state.error.status === 404;
-    return (
-      <section className="grid gap-3" data-ui="task-not-found">
-        <Text as="h1" size="lg" variant="heading">
-          {notFound ? "Task not found" : "Task unavailable"}
-        </Text>
-        <Text as="p" variant="secondary">
-          {notFound ? "This Task does not exist or is outside your Account." : state.error.message}
-        </Text>
-        <Link to="/tasks">Back to Tasks</Link>
-      </section>
-    );
-  }
-
-  const { task, turns } = state.value;
+  const { task } = first;
   const status = statusPresentation[task.status];
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
@@ -350,10 +366,10 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
             <strong>{task.agent.displayName}</strong>
           </span>
           <span className="inline-flex items-center gap-1.5 text-kumo-subtle">
-            <ProviderIcon provider={task.source.provider} compact />
+            <ProviderIcon className="size-5" provider={task.source.provider} />
             {humanizeEnum(task.source.provider)}
           </span>
-          <span className="text-kumo-subtle">Started {formatDate(task.createdAt)}</span>
+          <span className="text-kumo-subtle">Started {formatDateTime(task.createdAt)}</span>
           <span className="text-kumo-subtle">Updated {formatRelativeTime(task.lastActivityAt)}</span>
           <StatusIndicator
             aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
@@ -370,35 +386,41 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
         {turns.length > 0 ? (
           turns.map((turn) => <TaskTurnView key={turn.deliveryId} task={task} turn={turn} />)
         ) : (
-          <Empty
-            description="Messages and Agent results will appear here."
-            icon={<Icon name="message" />}
-            size="sm"
-            title="No activity recorded"
-          />
+          <TaskNotice heading="No activity recorded" detail="Messages and Agent results will appear here." />
         )}
       </section>
-      {state.value.nextCursor ? (
+      {taskQuery.hasNextPage ? (
         <Button
-          loading={loadingMore}
+          loading={taskQuery.isFetchingNextPage}
           type="button"
           variant="secondary"
-          disabled={loadingMore}
-          onClick={() => void loadMoreTurns()}
+          disabled={taskQuery.isFetchingNextPage}
+          onClick={() => void taskQuery.fetchNextPage()}
         >
           Load earlier activity
         </Button>
       ) : null}
       {loadMoreError ? (
-        <Banner
-          data-ui="task-activity-error"
-          description={loadMoreError.message}
-          role="alert"
-          size="sm"
-          variant="error"
-        />
+        <p className="text-sm text-kumo-danger" data-ui="task-activity-error" role="alert">
+          {loadMoreError.message}
+        </p>
       ) : null}
     </article>
+  );
+}
+
+function TaskUnavailable({ error }: { error: Error }) {
+  const notFound = error instanceof ApiError && error.status === 404;
+  return (
+    <section className="grid gap-3" data-ui="task-not-found">
+      <Text as="h1" size="lg" variant="heading">
+        {notFound ? "Task not found" : "Task unavailable"}
+      </Text>
+      <Text as="p" variant="secondary">
+        {notFound ? "This Task does not exist or is outside your Account." : error.message}
+      </Text>
+      <Link to="/tasks">Back to Tasks</Link>
+    </section>
   );
 }
 
@@ -408,12 +430,12 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   return (
     <section
       className="grid gap-4"
-      aria-label={`Message sent at ${formatTimestamp(turn.message.occurredAt)}`}
+      aria-label={`Message sent at ${formatDateTime(turn.message.occurredAt)}`}
       data-ui="task-exchange"
     >
       <article className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3" data-ui="task-message-request">
         <span className="grid size-8 place-items-center rounded-md bg-kumo-tint text-xs font-medium" aria-hidden="true">
-          {getInitials(turn.message.authorDisplayName ?? turn.message.authorKind)}
+          {initials(turn.message.authorDisplayName ?? turn.message.authorKind)}
         </span>
         <div className="grid min-w-0 gap-2">
           <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
@@ -421,7 +443,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
               {turn.message.authorDisplayName ?? humanizeEnum(turn.message.authorKind)}
             </strong>
             <small className="text-kumo-subtle">
-              {attentionLabel(turn.attention)} · {formatTimestamp(turn.message.occurredAt)}
+              {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
             </small>
           </header>
           <div className="max-w-[48rem] rounded-lg bg-kumo-recessed p-4">
@@ -444,7 +466,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
               {absorbedBy
                 ? "Added to active work"
                 : report
-                  ? `${humanizeEnum(report.outcome)} · ${formatTimestamp(report.reportedAt)}`
+                  ? `${humanizeEnum(report.outcome)} · ${formatDateTime(report.reportedAt)}`
                   : deliveryStateLabel(turn.delivery.state)}
             </small>
           </header>
@@ -478,111 +500,97 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   );
 }
 
-function TaskRow({ task }: { task: TaskSummary }) {
+function TaskSelect({
+  children,
+  label,
+  onChange,
+  value,
+}: {
+  children: ReactNode;
+  label: string;
+  onChange: (event: SelectControlChangeEvent) => void;
+  value: string;
+}) {
+  return (
+    <div>
+      <span className="sr-only">{label}</span>
+      <KumoSelectControl aria-label={label} size="sm" value={value} onChange={onChange}>
+        {children}
+      </KumoSelectControl>
+    </div>
+  );
+}
+
+function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSummary }) {
   const status = statusPresentation[task.status];
   return (
-    <Table.Row
-      className="grid gap-3 rounded-lg p-4 ring ring-kumo-line @min-[36rem]/workspace:table-row @min-[36rem]/workspace:rounded-none @min-[36rem]/workspace:p-0 @min-[36rem]/workspace:ring-0"
-      data-ui="task-table-row"
-    >
-      <Table.Cell
-        className="block !p-0 @min-[36rem]/workspace:table-cell @min-[36rem]/workspace:!p-3"
-        data-label="Task"
-      >
-        <Link className="font-medium" params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
+    <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
+      <td className="p-3" data-label="Task">
+        <Link params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
           {task.title}
         </Link>
-        <span
-          className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-kumo-subtle"
-          data-ui="task-list-metadata"
-        >
-          <span>{task.agent.displayName}</span>
-          <span aria-hidden="true">·</span>
-          <ProviderIcon provider={task.source.provider} compact />
+        <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
+          {showAgent ? (
+            <>
+              <span>{task.agent.displayName}</span>
+              <span aria-hidden="true"> · </span>
+            </>
+          ) : null}
+          <TaskProviderIcon provider={task.source.provider} compact />
           <span>{task.source.provider}</span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true"> · </span>
           <span>{task.sessionKind}</span>
-          <span aria-hidden="true">·</span>
+          <span aria-hidden="true"> · </span>
           <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
         </span>
-      </Table.Cell>
-      <Table.Cell
-        className="block !p-0 @min-[36rem]/workspace:table-cell @min-[36rem]/workspace:!p-3"
-        data-label="Status"
-      >
+      </td>
+      <td className="p-3" data-label="Status">
         <StatusIndicator
-          className="flex-wrap"
           aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
           detail={formatRelativeTime(task.lastActivityAt)}
           label={status.label}
           tone={status.tone}
         />
-      </Table.Cell>
-    </Table.Row>
+      </td>
+    </tr>
   );
 }
 
-function ProviderIcon({
+function TaskProviderIcon({
   provider,
   compact = false,
 }: {
   provider: TaskSummary["source"]["provider"];
   compact?: boolean;
 }) {
-  if (provider !== "feishu")
-    return (
-      <span className="grid size-7 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-        S
-      </span>
-    );
-  return <img alt="" aria-hidden="true" className={compact ? "size-5" : "size-7"} src={feishuIconUrl} />;
+  return (
+    <ProviderIcon className={compact ? "mr-1 inline-block size-5" : "mr-1 inline-block size-6"} provider={provider} />
+  );
 }
 
-function TaskLoading({ heading }: { heading: string }) {
+function TaskNotice({ action, heading, detail }: { action?: ReactNode; heading: string; detail: string }) {
   return (
-    <LayerCard className="grid gap-4 p-4" aria-live="polite" data-ui="task-loading" role="status">
-      <div className="sr-only">
+    <section
+      className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line"
+      aria-live="polite"
+      data-ui="task-empty-state"
+    >
+      <div className="flex items-center justify-center gap-2">
+        {heading.startsWith("Loading") ? <Loader aria-label={heading} size="sm" /> : null}
         <Text as="h2" variant="heading">
           {heading}
         </Text>
       </div>
-      <SkeletonLine className="h-5 w-2/5" />
-      <SkeletonLine className="h-4 w-full" />
-      <SkeletonLine className="h-4 w-4/5" />
-    </LayerCard>
+      <Text as="p" variant="secondary">
+        {detail}
+      </Text>
+      {action ? <div className="flex justify-center">{action}</div> : null}
+    </section>
   );
-}
-
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(value));
-}
-
-function formatRelativeTime(value: string): string {
-  const deltaSeconds = Math.round((new Date(value).getTime() - Date.now()) / 1_000);
-  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-  const absolute = Math.abs(deltaSeconds);
-  if (absolute < 60) return formatter.format(deltaSeconds, "second");
-  const deltaMinutes = Math.round(deltaSeconds / 60);
-  if (Math.abs(deltaMinutes) < 60) return formatter.format(deltaMinutes, "minute");
-  const deltaHours = Math.round(deltaMinutes / 60);
-  if (Math.abs(deltaHours) < 24) return formatter.format(deltaHours, "hour");
-  return formatter.format(Math.round(deltaHours / 24), "day");
 }
 
 function shortId(value: string): string {
   return value.length <= 18 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
-}
-
-function getInitials(name: string): string {
-  return name
-    .split(/\s+/u)
-    .slice(0, 2)
-    .map((part) => part.charAt(0))
-    .join("");
 }
 
 function attentionLabel(value: TaskTurn["attention"]): string {

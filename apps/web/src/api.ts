@@ -1,4 +1,6 @@
 import {
+  type AccountComputerConnectCodeIssueRequest,
+  type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -225,30 +227,40 @@ export class BrowserApi {
     });
   }
 
-  issueComputerConnectCode(): Promise<ComputerConnectCodeIssueResponse> {
+  /**
+   * Issues a Computer connect code. Without a target this creates a new Computer; naming one
+   * repairs that exact Computer instead, which is what a reinstalled or re-enrolled machine needs —
+   * it keeps its identity rather than becoming a second Computer beside the one it replaced.
+   */
+  issueComputerConnectCode(input?: AccountComputerConnectCodeIssueRequest): Promise<ComputerConnectCodeIssueResponse> {
     return this.request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
       method: "POST",
-      headers: this.csrfHeaders(),
+      ...(input ? { body: JSON.stringify(input) } : {}),
+      headers: { ...(input ? { "content-type": "application/json" } : {}), ...this.csrfHeaders() },
     });
   }
 
   /**
-   * Whether this deployment offers the staging Onboarding Lab. Outside staging the interface is
-   * absent rather than closed, and both halves are open to any authenticated Account where it is
-   * present, so reachability is the whole answer.
+   * Whether this deployment offers the staging internal tools. Outside staging the interface is
+   * absent rather than closed, and everything behind it is open to any authenticated Account where
+   * it is present, so reachability is the whole answer.
    */
-  async onboardingLabOffered(): Promise<boolean> {
-    const response = await this.fetchWithRefresh(HTTP_PATHS.internalOnboardingLab);
+  async internalToolsOffered(): Promise<boolean> {
+    const response = await this.fetchWithRefresh(HTTP_PATHS.accountSetupReset);
     if (response.status === 204) return true;
     if (response.status === 404) return false;
     throw this.apiError(response, await response.json().catch(() => undefined));
   }
 
-  /** Resets the authenticated staging Lab Account; it accepts no client-selected Account. */
-  resetOnboardingLab(): Promise<void> {
-    return this.requestNoContent(HTTP_PATHS.internalOnboardingLab, {
+  /**
+   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
+   * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
+   */
+  resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.accountSetupReset, {
       method: "POST",
-      headers: this.csrfHeaders(),
+      body: JSON.stringify({ mode }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 

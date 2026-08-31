@@ -11,6 +11,12 @@ export interface AccountSession {
   reloadMe: () => void;
   /** Resolves only once the authoritative `/me` response has been installed as current state. */
   refreshMe: () => Promise<MeResponse>;
+  /**
+   * Ends this Account's session: drops everything read under it and retires any refresh still in
+   * flight, so nothing answered for this Account can reach the next one. Call it once the Server has
+   * confirmed the sign-out, before navigating.
+   */
+  endSession: () => void;
 }
 
 export const accountContext = createContext<AccountSession | undefined>(undefined);

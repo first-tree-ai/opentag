@@ -1,35 +1,42 @@
 import { Link } from "@tanstack/react-router";
+import { initials } from "../../i18n/format.js";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
-import { AsyncState, useResource } from "../resource/use-resource.js";
+import { AgentUsageOverview } from "../agent-usage.js";
+import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
+import { AgentTasksSection } from "../tasks-page.js";
 import type { AgentDetailView } from "./agent-model.js";
-import { loadAgentDetail, markAgentDetailUnconfirmed } from "./agent-model.js";
 import {
+  type AgentDependencyStatus,
   agentAvailabilityRecovery,
+  agentComputerStatus,
+  agentMessagingStatus,
   agentRecoveryMessage,
   agentStatusPresentation,
-  agentUseInstruction,
-  formatRelativeTime,
-  initials,
-  titleCase,
+  messagingChannelLabel,
+  platformLabel,
 } from "./agent-presentation.js";
-import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink, agentUsageLink } from "./agent-routes.js";
+import { useAgentDetailView } from "./agent-queries.js";
+import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "./agent-routes.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
-  const state = useResource(() => loadAgentDetail(agentId), agentId, {
-    onBackgroundError: markAgentDetailUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
-  });
+  const state = useAgentDetailView(agentId, { watched: true });
   return (
     <AsyncState state={state}>
       {(agent) => (
         <section className="grid gap-6">
           <AgentObjectHeader agent={agent} />
           <div className="grid gap-6">
-            {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
-            <AgentCurrentActivity agent={agent} />
-            <AgentContact agent={agent} />
+            <AgentLifecycleNotice agent={agent} />
+            {/*
+             * Usage and Connection share a row: neither fills the width on its own, and a failed
+             * dependency belongs beside the work it is stopping rather than in a banner above it.
+             */}
+            <div className="grid gap-6 @min-[48rem]/workspace:grid-cols-2">
+              <AgentUsageOverview agent={agent} agentId={agent.id} />
+              <AgentConnectionCard agent={agent} />
+            </div>
+            <AgentTasksSection agentId={agent.id} />
           </div>
         </section>
       )}
@@ -40,6 +47,12 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
 export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
+  /*
+   * The handle addresses the Agent in Feishu, where each Agent has its own bot. Slack routes one
+   * workspace Bot, so showing a per-Agent handle there names something nobody can address.
+   */
+  const handle =
+    agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack" ? undefined : agent.name;
   return (
     <header className="grid gap-4">
       <Link
@@ -64,18 +77,13 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
               </Text>
               <AgentAvailabilityAction agent={agent} />
             </div>
-            <p>
-              <span>@{agent.name}</span>
+            <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
+              {handle ? <span>@{handle}</span> : null}
               {showCreator ? <span>Created by {agent.createdBy.displayName}</span> : null}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
-          {!backToSettings ? (
-            <Link className="text-sm text-kumo-link" state={{ agent }} {...agentUsageLink(agent.id)}>
-              Usage
-            </Link>
-          ) : null}
           {!backToSettings ? (
             <Link
               className={buttonClassName({ variant: "secondary" })}
@@ -91,17 +99,106 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
   );
 }
 
-export function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
-  const recovery = agentAvailabilityRecovery(agent);
-  const status = agentStatusPresentation(agent);
+/**
+ * Computer and Messaging, side by side, each carrying its own status and its own repair exit. One
+ * card rather than two: they are the pair an Agent needs before it can do anything, and reading
+ * them together is how a viewer answers "can this Agent work" without holding two cards in mind.
+ */
+export function AgentConnectionCard({ agent }: { agent: AgentDetailView }) {
+  const computer = agentComputerStatus(agent);
+  const messaging = agentMessagingStatus(agent);
+  const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   return (
     <section
-      className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-danger-tint p-4"
-      aria-label={`Agent status: ${status.label}`}
+      className="grid content-start gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+      aria-labelledby="agent-connection-heading"
+      data-ui="connection-overview"
     >
-      <div>
-        <strong>{status.label}</strong>
-        <p>{agentRecoveryMessage(agent)}</p>
+      <Text as="h2" id="agent-connection-heading" variant="heading">
+        Connection
+      </Text>
+      <ConnectionRow
+        agent={agent}
+        identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)}`}
+        name="Computer"
+        status={computer}
+      />
+      <ConnectionRow
+        agent={agent}
+        identity={binding ? messagingChannelLabel(agent, binding) : undefined}
+        name="Messaging"
+        status={messaging}
+      />
+    </section>
+  );
+}
+
+function ConnectionRow({
+  agent,
+  identity,
+  name,
+  status,
+}: {
+  agent: AgentDetailView;
+  identity?: string;
+  name: string;
+  status: AgentDependencyStatus;
+}) {
+  return (
+    <div className="grid gap-1 border-t border-kumo-line pt-3" data-ui={`connection-${name.toLowerCase()}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <strong className="text-sm">{name}</strong>
+        <StatusIndicator label={status.label} tone={status.tone} />
+      </div>
+      {identity ? <p className="truncate text-sm text-kumo-subtle">{identity}</p> : null}
+      {status.detail ? <p className="text-sm text-kumo-subtle">{status.detail}</p> : null}
+      {status.action ? (
+        <Link
+          className="w-fit text-sm text-kumo-link"
+          state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
+          {...agentSettingsSectionLink(agent.id, status.action.section)}
+        >
+          {status.action.label}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
+  /*
+   * Only while the Agent is healthy. A failed dependency is already named, with its own exit, by
+   * the Connection card below, and saying it twice reads as two problems. A paused Agent is not a
+   * dependency failure and no card speaks for it, so it gets the notice beneath this header.
+   */
+  if (agent.availability.state !== "ready") return null;
+  const status = agentStatusPresentation(agent);
+  return (
+    <div className="inline-flex">
+      <StatusIndicator label={status.label} tone={status.tone} />
+    </div>
+  );
+}
+
+/**
+ * The Agent's own lifecycle, which no dependency row can carry. Computer and Messaging state their
+ * own failures in the Connection card, but a paused Agent has nothing wrong with either -- it was
+ * turned off -- so without this the home reports a healthy Computer and channel and never mentions
+ * that the Agent is not running.
+ */
+export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
+  if (agent.availability.state !== "suspended") return null;
+  const status = agentStatusPresentation(agent);
+  const recovery = agentAvailabilityRecovery(agent);
+  return (
+    <section
+      className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-tint p-4"
+      aria-label={`Agent status: ${status.label}`}
+      data-ui="agent-lifecycle-notice"
+    >
+      <div className="grid gap-1">
+        <StatusIndicator label={status.label} tone={status.tone} />
+        <p className="text-sm text-kumo-subtle">{agentRecoveryMessage(agent)}</p>
       </div>
       {recovery ? (
         <Link
@@ -113,105 +210,5 @@ export function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
         </Link>
       ) : null}
     </section>
-  );
-}
-
-export function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
-  return (
-    <section
-      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      aria-labelledby="current-activity-heading"
-    >
-      <header className="flex items-center justify-between gap-3">
-        <Text as="h2" id="current-activity-heading" variant="heading">
-          Current work
-        </Text>
-      </header>
-      {agent.activity.state === "working" ? (
-        <div className="flex items-center gap-3">
-          <span className="size-3 rounded-full bg-kumo-brand" aria-hidden="true" />
-          <div>
-            <strong>Handling a request</strong>
-            <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm text-kumo-subtle">
-          <strong>No active work</strong>
-        </p>
-      )}
-    </section>
-  );
-}
-
-export function AgentContact({ agent }: { agent: AgentDetailView }) {
-  const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
-  return (
-    <section
-      className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      aria-labelledby="agent-contact-heading"
-    >
-      <header className="flex items-center justify-between gap-3">
-        <Text as="h2" id="agent-contact-heading" variant="heading">
-          Messaging
-        </Text>
-      </header>
-      {agent.messaging.kind === "unconfirmed" ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            ?
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>Unable to confirm messaging</strong>
-            <small>Try again shortly</small>
-          </span>
-        </div>
-      ) : binding ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            {titleCase(binding.provider).charAt(0)}
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>
-              {titleCase(binding.provider)} · @{agent.name}
-            </strong>
-            <small>{agentUseInstruction(agent, binding.provider)}</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
-            {...agentSettingsSectionLink(agent.id, "messaging")}
-          >
-            Manage
-          </Link>
-        </div>
-      ) : (
-        <div className="flex flex-wrap items-center gap-3 rounded-md bg-kumo-recessed p-3">
-          <span className="grid size-8 place-items-center rounded-full bg-kumo-tint" aria-hidden="true">
-            +
-          </span>
-          <span className="grid min-w-0 flex-1 gap-1">
-            <strong>No messaging connected</strong>
-            <small>Connect Feishu or Slack to start sending work</small>
-          </span>
-          <Link
-            className={buttonClassName({ size: "compact", variant: "outline" })}
-            state={{ returnAgentId: agent.id, returnLabel: agent.displayName }}
-            {...agentSettingsSectionLink(agent.id, "messaging")}
-          >
-            Connect
-          </Link>
-        </div>
-      )}
-    </section>
-  );
-}
-
-export function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
-  const status = agentStatusPresentation(agent);
-  return (
-    <div className="inline-flex">
-      <StatusIndicator label={status.label} tone={status.tone} />
-    </div>
   );
 }

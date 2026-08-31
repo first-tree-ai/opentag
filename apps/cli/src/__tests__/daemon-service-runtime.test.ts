@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
@@ -55,6 +55,19 @@ describe("daemon service runtime", () => {
 
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledOnce();
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
+  });
+
+  it("logs malformed daemon environment lines without exposing their values", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-malformed-env-"));
+    directories.push(home);
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "BROKEN\n", { mode: 0o600 });
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+    clientMocks.readMachineCredentials.mockResolvedValue(undefined);
+
+    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not enrolled");
+    expect(entries).toContainEqual(expect.objectContaining({ message: "Malformed daemon environment line ignored" }));
   });
 
   it("does not configure or touch the service log when daemon ownership is already held", async () => {
@@ -160,6 +173,55 @@ describe("daemon service runtime", () => {
       runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process }),
     ).rejects.toThrow("run computer connect again");
     expect(clientMocks.createClientRuntime).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the local Computer identity cannot be read", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-invalid-identity-"));
+    directories.push(home);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockRejectedValue(new Error("malformed identity"));
+
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow(
+      "local Computer identity is invalid",
+    );
+  });
+
+  it("rejects a machine credential that belongs to another Computer", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-identity-mismatch-"));
+    directories.push(home);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue({
+      ...computerIdentity(),
+      computerId: "00000000-0000-4000-8000-000000000099",
+    });
+
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("belongs to another Computer");
+  });
+
+  it("reports unsupported daemon platforms after loading credentials", async () => {
+    const originalPlatform = process.platform;
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-unsupported-"));
+    directories.push(home);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    try {
+      Object.defineProperty(process, "platform", { configurable: true, value: "freebsd" });
+      await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow(
+        "Unsupported daemon service platform",
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+    }
+  });
+
+  it("returns success from the service entry after a clean runtime", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-entry-success-"));
+    directories.push(home);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    clientMocks.createClientRuntime.mockResolvedValue({ run: vi.fn(async () => undefined), stop: vi.fn() });
+
+    await expect(runDaemonServiceEntry({ home, logger: noopLogger() })).resolves.toBe(0);
   });
 
   it("logs ownership release failures safely and returns a failed service exit", async () => {

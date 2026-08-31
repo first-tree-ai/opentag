@@ -1,10 +1,18 @@
-import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
-import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
-import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
-import { CommandBlock } from "./command-block.js";
 import {
-  CHECK_COPY,
+  CheckLine,
+  CommandBlock,
+  ConnectStatus,
+  Countdown,
+  deriveChecks,
+  messagingCliCheck,
+  QrCode,
+  WAITING_LINE,
+} from "../setup/index.js";
+import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
+import type { KnownComputer, PlanSignIn } from "./backend.js";
+import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
+import {
   CLOUD_RUNTIME_COPY,
   COMING_SOON,
   COPY,
@@ -15,21 +23,17 @@ import {
 } from "./copy.js";
 import {
   type AgentDraft,
-  type CheckRow,
   CLOUD_RUNTIMES,
   type CloudComputerState,
   type ConnectState,
   type CreationState,
   DEFAULT_AGENT_NAME,
   type Destination,
-  deriveChecks,
   draftIsSubmittable,
   type FlowState,
-  formatRemaining,
   MESSAGING_PROVIDERS,
   type MessagingProvider,
   type MessagingState,
-  messagingCliCheck,
   needsPlanSignIn,
   type ReadinessFacts,
   RUNTIMES,
@@ -40,18 +44,36 @@ import {
   tokenChoiceApplies,
   validateAgentName,
 } from "./flow.js";
-import { PLACEHOLDER_CONNECT_COMMAND, type PlanSignIn } from "./mock-backend.js";
+import { PLACEHOLDER_CONNECT_COMMAND } from "./mock-backend.js";
+
+/** One step's worth of vertical rhythm. Every gap on every step is one of 4, 12 or 24px. */
+const STEP = "flex flex-col gap-6";
+const HEADER = "flex flex-col gap-1";
+const FIELDSET = "flex flex-col gap-1 m-0 p-0 border-0";
+const HINT = "text-sm text-kumo-subtle m-0";
+const CHOICES = "flex flex-col gap-3 m-0 p-0 list-none";
+const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
+const CARD =
+  "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
+const PANEL = "flex flex-col items-center gap-3 text-sm text-center";
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   return (
-    <nav aria-label="Setup progress" className="otv2-rail">
-      <ol>
+    <nav aria-label="Setup progress" className="w-full" data-ui="onboarding-v2-rail">
+      <ol className="flex gap-2 m-0 p-0 list-none">
         {steps.map((step, index) => (
-          <li className="otv2-rail__step" data-status={step.status} key={step.id}>
-            <span className="otv2-rail__marker" aria-hidden="true">
+          <li
+            className="otv2-rail__step flex flex-1 items-center gap-2 min-w-0 pt-3 text-xs text-kumo-subtle"
+            data-status={step.status}
+            key={step.id}
+          >
+            <span
+              aria-hidden="true"
+              className="otv2-rail__marker inline-flex shrink-0 items-center justify-center rounded-full bg-kumo-recessed text-xs"
+            >
               {step.status === "complete" ? <Icon name="check" /> : index + 1}
             </span>
-            <span className="otv2-rail__label">{STEP_LABELS[step.id]}</span>
+            <span data-ui="onboarding-v2-rail-label">{STEP_LABELS[step.id]}</span>
           </li>
         ))}
       </ol>
@@ -80,8 +102,8 @@ function StepNav({
   submit?: boolean;
 }) {
   return (
-    <div className="otv2-nav">
-      <div className="otv2-nav__back">
+    <div className="flex items-center justify-between gap-3" data-ui="onboarding-v2-nav">
+      <div data-ui="onboarding-v2-nav-back">
         {back ? (
           <Button onClick={back} variant="ghost">
             <Icon name="arrow-left" />
@@ -89,12 +111,27 @@ function StepNav({
           </Button>
         ) : null}
       </div>
-      <div className="otv2-nav__next">
+      <div data-ui="onboarding-v2-nav-next">
         <Button disabled={disabled} onClick={onNext} type={submit ? "submit" : "button"}>
           {label}
         </Button>
       </div>
     </div>
+  );
+}
+
+/** A card's copy: the title it is chosen by, and the line that explains it. */
+function CardCopy({ badge, description, title }: { badge?: string; description: string; title: string }) {
+  return (
+    <span className="flex flex-col gap-1 min-w-0">
+      <span className="flex items-center gap-2 font-medium text-kumo-strong" data-ui="onboarding-v2-card-title">
+        {title}
+        {badge ? (
+          <em className="rounded bg-kumo-recessed px-2 py-1 text-xs uppercase text-kumo-subtle">{badge}</em>
+        ) : null}
+      </span>
+      <span className="text-sm text-kumo-subtle">{description}</span>
+    </span>
   );
 }
 
@@ -114,30 +151,30 @@ export function DestinationStep({
     { id: "cloud", icon: "model", enabled: cloudAvailable },
   ];
   return (
-    <section className="otv2-step">
-      <header className="otv2-step__header">
-        <Text as="h1">{COPY.destination.title}</Text>
+    <section className={STEP} data-ui="onboarding-v2-step-destination">
+      <header className={HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {COPY.destination.title}
+        </Text>
       </header>
-      <ul className="otv2-choices">
+      <ul className={CHOICES}>
         {destinations.map((destination) => {
           const copy = DESTINATION_COPY[destination.id];
           return (
             <li key={destination.id}>
               <Button
-                variant="ghost"
                 aria-pressed={draft.destination === destination.id}
-                className="otv2-choice"
+                className={CARD}
                 disabled={!destination.enabled}
                 onClick={() => onChoose(destination.id)}
+                variant="ghost"
               >
-                <Icon className="otv2-choice__icon" name={destination.icon} />
-                <span className="otv2-choice__copy">
-                  <strong>
-                    {copy.title}
-                    {destination.enabled ? null : <em className="otv2-badge">{COMING_SOON}</em>}
-                  </strong>
-                  <span>{copy.description}</span>
-                </span>
+                <Icon className="size-10 shrink-0 text-kumo-brand" name={destination.icon} />
+                <CardCopy
+                  badge={destination.enabled ? undefined : COMING_SOON}
+                  description={copy.description}
+                  title={copy.title}
+                />
               </Button>
             </li>
           );
@@ -179,11 +216,11 @@ function AgentNameField({
           : undefined;
 
   return (
-    <div className="otv2-fieldset">
-      <label className="otv2-fieldset__label" htmlFor={nameId} id={labelId}>
+    <div className={FIELDSET} data-ui="onboarding-v2-field">
+      <label className="font-medium text-kumo-strong" data-ui="onboarding-v2-field-label" htmlFor={nameId} id={labelId}>
         {COPY.agent.nameLabel}
       </label>
-      <p className="otv2-fieldset__hint" id={hintId}>
+      <p className={HINT} data-ui="onboarding-v2-field-hint" id={hintId}>
         {COPY.agent.nameHint}
       </p>
       <KumoInputControl
@@ -191,7 +228,7 @@ function AgentNameField({
         aria-invalid={errorText ? true : undefined}
         aria-labelledby={labelId}
         autoComplete="off"
-        className="otv2-name"
+        data-ui="onboarding-v2-field-control"
         id={nameId}
         onBlur={onBlur}
         onChange={(event) => onChange({ ...draft, name: event.target.value })}
@@ -200,51 +237,51 @@ function AgentNameField({
         spellCheck={false}
         value={draft.name}
       />
+      {/*
+        The line is always here, whether or not it says anything: an error that appears would
+        otherwise push the runtime choice below it down as someone types.
+      */}
       <p
         aria-live="polite"
-        className="otv2-field-error"
+        className={`otv2-field-error text-sm m-0 ${errorText ? "text-kumo-danger" : "text-kumo-subtle"}`}
+        data-ui="onboarding-v2-field-error"
         data-empty={errorText || locked ? undefined : "true"}
         data-note={!errorText && locked ? "true" : undefined}
         id={errorId}
       >
-        {errorText ?? (locked ? lockedNote : undefined) ?? "\u00a0"}
+        {errorText ?? (locked ? lockedNote : undefined) ?? " "}
       </p>
     </div>
   );
 }
 
-/**
- * Placeholder runtime marks. Real vendor logos are licensed assets and are dropped in here once
- * their usage terms are cleared; the layout reserves the same square either way.
- */
 function RuntimeMark({ runtime }: { runtime: Runtime }) {
   return <BrandMark brand={runtime} label={RUNTIME_COPY[runtime].title} />;
 }
 
 function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
   return (
-    <fieldset className="otv2-fieldset">
-      <legend>{COPY.agent.runtimeLabel}</legend>
-      <p className="otv2-fieldset__hint">{COPY.agent.runtimeHint}</p>
-      <ul className="otv2-choices otv2-choices--grid">
+    <fieldset className={FIELDSET}>
+      <legend className="font-medium text-kumo-strong">{COPY.agent.runtimeLabel}</legend>
+      <p className={HINT} data-ui="onboarding-v2-field-hint">
+        {COPY.agent.runtimeHint}
+      </p>
+      <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
         {RUNTIMES.map((runtime) => (
           <li key={runtime}>
             <Button
-              variant="ghost"
               aria-pressed={draft.runtime === runtime}
-              className="otv2-choice otv2-choice--runtime"
+              className={CARD}
               onClick={() => onChange({ ...draft, runtime })}
+              variant="ghost"
             >
               <RuntimeMark runtime={runtime} />
-              <span className="otv2-choice__copy">
-                <strong>{RUNTIME_COPY[runtime].title}</strong>
-                <span>{RUNTIME_COPY[runtime].description}</span>
-              </span>
+              <CardCopy description={RUNTIME_COPY[runtime].description} title={RUNTIME_COPY[runtime].title} />
             </Button>
           </li>
         ))}
       </ul>
-      <p className="otv2-footnote">{COPY.agent.runtimeFootnote}</p>
+      <p className="text-xs text-kumo-subtle m-0">{COPY.agent.runtimeFootnote}</p>
     </fieldset>
   );
 }
@@ -257,20 +294,17 @@ function MessagingPicker({
   provider: MessagingProvider | undefined;
 }) {
   return (
-    <ul className="otv2-choices otv2-choices--grid">
+    <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
       {MESSAGING_PROVIDERS.map((candidate) => (
         <li key={candidate}>
           <Button
-            variant="ghost"
             aria-pressed={provider === candidate}
-            className="otv2-choice otv2-choice--runtime"
+            className={CARD}
             onClick={() => onChoose(candidate)}
+            variant="ghost"
           >
             <BrandMark brand={candidate} label={COPY.messaging[candidate].title} />
-            <span className="otv2-choice__copy">
-              <strong>{COPY.messaging[candidate].title}</strong>
-              <span>{COPY.messaging[candidate].description}</span>
-            </span>
+            <CardCopy description={COPY.messaging[candidate].description} title={COPY.messaging[candidate].title} />
           </Button>
         </li>
       ))}
@@ -279,12 +313,16 @@ function MessagingPicker({
 }
 
 function MessagingConnection({
+  computerOnline,
   messaging,
+  onRetry,
   onSlackInstall,
   provider,
   readiness,
 }: {
+  computerOnline: boolean | undefined;
   messaging: MessagingState;
+  onRetry: (provider: MessagingProvider) => void;
   onSlackInstall: () => void;
   provider: MessagingProvider | undefined;
   readiness: ReadinessFacts | undefined;
@@ -294,41 +332,93 @@ function MessagingConnection({
    * depends on the provider, and until this point there was no provider. A missing one used to
    * block creating the Agent at all, which stopped a Slack user over a Lark dependency.
    */
-  const cliState = provider ? messagingCliCheck(readiness) : "pending";
+  const cliState = provider ? messagingCliCheck(readiness?.messagingCli[provider]) : "pending";
+  /*
+   * Reachability needs more than the binding, and the Server's handoff status carries no reason —
+   * so a wait on one of its other conditions would otherwise be an unexplained spinner.
+   *
+   * Two of them can be named here. The third, an unready runtime, cannot: losing it fails the
+   * check this step was reached through, so the flow returns to the connect step, where the check
+   * rows say which line failed. That is a better answer than a sentence, and it is why there is no
+   * copy for it.
+   */
+  const waitingReason =
+    computerOnline === false
+      ? COPY.messaging.computerOffline
+      : cliState === "failed" && provider
+        ? COPY.messaging.cliMissing(COPY.messaging[provider].title)
+        : undefined;
   return (
-    <div className="otv2-slot otv2-slot--messaging">
-      {provider && cliState === "failed" ? (
-        <p className="otv2-note otv2-note--attention">
-          <Icon name="close" />
+    <div className="flex flex-col items-center gap-3">
+      {/*
+        Said once. While reachability is being waited on, the wait itself carries this reason, and
+        the same sentence standing twice on one screen reads as two different problems.
+      */}
+      {provider && cliState === "failed" && messaging.kind !== "waiting-handoff" ? (
+        <p className="flex items-start gap-2 text-sm text-kumo-warning m-0">
+          <Icon className="shrink-0 mt-1" name="close" />
           <span>{COPY.messaging.cliMissing(COPY.messaging[provider].title)}</span>
         </p>
       ) : null}
       {provider === "feishu" ? (
-        <div className="otv2-panel otv2-panel--qr">
-          <p className="otv2-muted">{COPY.messaging.feishuIntro}</p>
-          <div className="otv2-qr">
-            {messaging.kind === "waiting" ? (
-              <QrCode value={messaging.qrValue} />
-            ) : (
-              <div className="otv2-qr__placeholder" />
-            )}
+        <div className={PANEL}>
+          <p className="text-kumo-subtle m-0">{COPY.messaging.feishuIntro}</p>
+          <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
+            {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
           </div>
-          <p className="otv2-waiting" role="status">
-            <span aria-hidden="true" className="otv2-pulse" />
-            {COPY.messaging.waiting}
-          </p>
+          {/*
+            A refused code is not retried on sight, so this is the only way back to one. Saying
+            "Waiting for you to scan…" over an empty box would be untrue: nothing is waiting.
+          */}
+          {messaging.kind === "waiting-handoff" ? (
+            waitingReason ? (
+              <p className="flex items-start gap-2 text-sm text-kumo-warning m-0" role="status">
+                <Icon className="shrink-0 mt-1" name="close" />
+                <span>{waitingReason}</span>
+              </p>
+            ) : (
+              <p className={WAITING_LINE} role="status">
+                <span aria-hidden="true" className="ots-pulse shrink-0" />
+                {COPY.messaging.confirming}
+              </p>
+            )
+          ) : messaging.kind === "failed" ? (
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-sm text-kumo-danger m-0">{COPY.messaging.failed}</p>
+              <Button onClick={() => onRetry(provider)} variant="secondary">
+                {COPY.messaging.retry}
+              </Button>
+            </div>
+          ) : (
+            <p className={WAITING_LINE} role="status">
+              <span aria-hidden="true" className="ots-pulse shrink-0" />
+              {COPY.messaging.waiting}
+            </p>
+          )}
         </div>
       ) : provider === "slack" ? (
-        <div className="otv2-panel otv2-panel--slack">
-          <p className="otv2-muted">{COPY.messaging.slackIntro}</p>
+        <div className={PANEL}>
+          <p className="text-kumo-subtle m-0">{COPY.messaging.slackIntro}</p>
           {/*
             Installing is a link out: the user finishes in Slack and comes back. So the waiting
             state here is about a page they are not on, not something to watch on this one.
           */}
-          <div className="otv2-slot otv2-slot--signin">
-            {messaging.kind === "away" ? (
-              <p className="otv2-waiting" role="status">
-                <span aria-hidden="true" className="otv2-pulse" />
+          <div className="otv2-slot--signin flex items-center justify-center">
+            {messaging.kind === "waiting-handoff" ? (
+              waitingReason ? (
+                <p className="flex items-start gap-2 text-sm text-kumo-warning m-0" role="status">
+                  <Icon className="shrink-0 mt-1" name="close" />
+                  <span>{waitingReason}</span>
+                </p>
+              ) : (
+                <p className={WAITING_LINE} role="status">
+                  <span aria-hidden="true" className="ots-pulse shrink-0" />
+                  {COPY.messaging.confirming}
+                </p>
+              )
+            ) : messaging.kind === "away" ? (
+              <p className={WAITING_LINE} role="status">
+                <span aria-hidden="true" className="ots-pulse shrink-0" />
                 {COPY.messaging.slackWaiting}
               </p>
             ) : (
@@ -337,7 +427,11 @@ function MessagingConnection({
                * embeds rather than copied into this repository. Used unmodified, as their brand
                * guidelines require, and nothing of theirs is redistributed here.
                */
-              <Button variant="ghost" className="otv2-slack-install" onClick={onSlackInstall} type="button">
+              <Button
+                className="otv2-slack-install bg-transparent p-0 cursor-pointer"
+                onClick={onSlackInstall}
+                variant="ghost"
+              >
                 <img alt={COPY.messaging.slackAction} src={ADD_TO_SLACK_URL} />
               </Button>
             )}
@@ -355,7 +449,7 @@ export function AgentStep({
   onSubmit,
 }: {
   draft: AgentDraft;
-  onBack: () => void;
+  onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
   onSubmit: () => void;
 }) {
@@ -369,11 +463,13 @@ export function AgentStep({
   }
 
   return (
-    <section className="otv2-step">
-      <header className="otv2-step__header">
-        <Text as="h1">{COPY.agent.title}</Text>
+    <section className={STEP} data-ui="onboarding-v2-step-agent">
+      <header className={HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {COPY.agent.title}
+        </Text>
       </header>
-      <form className="otv2-form" onSubmit={submit}>
+      <form className="flex flex-col gap-6" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
         <RuntimePicker draft={draft} onChange={onChange} />
         {/*
@@ -387,11 +483,6 @@ export function AgentStep({
   );
 }
 
-/**
- * The whole cloud route, on one page. There is nothing to install, no Computer to connect and no
- * environment to check, so there is nothing for pagination to break up: name the agent, say where
- * it should listen, and the connection appears in place.
- */
 /**
  * The cloud route's first step: who the agent is, what it runs on, and who pays for it. Connecting
  * a messaging app follows on its own step, as it does for a local agent.
@@ -409,7 +500,7 @@ export function CloudStep({
   cloudComputer: CloudComputerState;
   creation: CreationState;
   draft: AgentDraft;
-  onBack: () => void;
+  onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
   onSignIn: () => void;
   onSubmit: () => void;
@@ -427,24 +518,31 @@ export function CloudStep({
   }
 
   return (
-    <section className="otv2-step">
-      <header className="otv2-step__header">
-        <Text as="h1">{COPY.cloud.title}</Text>
+    <section className={STEP} data-ui="onboarding-v2-step-cloud">
+      <header className={HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {COPY.cloud.title}
+        </Text>
       </header>
-      <form className="otv2-form" onSubmit={submit}>
+      <form className="flex flex-col gap-6" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
 
-        <fieldset className="otv2-fieldset">
-          <legend>{COPY.cloud.runtimeLabel}</legend>
-          <p className="otv2-fieldset__hint">{COPY.cloud.runtimeHint}</p>
+        <fieldset className={FIELDSET}>
+          <legend className="font-medium text-kumo-strong">{COPY.cloud.runtimeLabel}</legend>
+          <p className={HINT} data-ui="onboarding-v2-field-hint">
+            {COPY.cloud.runtimeHint}
+          </p>
           {/* OpenTag's own agent leads on its own row; the coding agents follow beside each other. */}
-          <ul className="otv2-choices otv2-choices--grid otv2-choices--lead">
-            {CLOUD_RUNTIMES.map((runtime) => (
-              <li key={runtime}>
+          <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
+            {CLOUD_RUNTIMES.map((runtime, index) => (
+              <li
+                className={index === 0 ? "otv2-lead" : undefined}
+                data-lead={index === 0 ? "true" : undefined}
+                key={runtime}
+              >
                 <Button
-                  variant="ghost"
                   aria-pressed={draft.cloudRuntime === runtime}
-                  className="otv2-choice otv2-choice--runtime"
+                  className={CARD}
                   onClick={() =>
                     onChange({
                       ...draft,
@@ -454,24 +552,27 @@ export function CloudStep({
                       tokenSource: runtime === "opentag" ? "opentag" : undefined,
                     })
                   }
+                  variant="ghost"
                 >
                   <BrandMark brand={runtime} label={CLOUD_RUNTIME_COPY[runtime].title} />
-                  <span className="otv2-choice__copy">
-                    <strong>{CLOUD_RUNTIME_COPY[runtime].title}</strong>
-                    <span>{CLOUD_RUNTIME_COPY[runtime].description}</span>
-                  </span>
+                  <CardCopy
+                    description={CLOUD_RUNTIME_COPY[runtime].description}
+                    title={CLOUD_RUNTIME_COPY[runtime].title}
+                  />
                 </Button>
               </li>
             ))}
           </ul>
-          <p className="otv2-footnote">{COPY.cloud.runtimeFootnote}</p>
+          <p className="text-xs text-kumo-subtle m-0">{COPY.cloud.runtimeFootnote}</p>
         </fieldset>
 
         {draft.cloudRuntime === undefined ? null : (
-          <fieldset className="otv2-fieldset">
-            <legend>{COPY.cloud.tokenLabel}</legend>
-            <p className="otv2-fieldset__hint">{COPY.cloud.tokenHint}</p>
-            <ul className="otv2-choices otv2-choices--grid">
+          <fieldset className={FIELDSET}>
+            <legend className="font-medium text-kumo-strong">{COPY.cloud.tokenLabel}</legend>
+            <p className={HINT} data-ui="onboarding-v2-field-hint">
+              {COPY.cloud.tokenHint}
+            </p>
+            <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
               {TOKEN_SOURCES.map((source) => {
                 /*
                  * Both options are always listed, so the choice that exists elsewhere is visible
@@ -482,16 +583,13 @@ export function CloudStep({
                 return (
                   <li key={source}>
                     <Button
-                      variant="ghost"
                       aria-pressed={draft.tokenSource === source}
-                      className="otv2-choice otv2-choice--runtime"
+                      className={CARD}
                       disabled={!available}
                       onClick={() => onChange({ ...draft, tokenSource: source })}
+                      variant="ghost"
                     >
-                      <span className="otv2-choice__copy">
-                        <strong>{TOKEN_COPY[source].title}</strong>
-                        <span>{TOKEN_COPY[source].description}</span>
-                      </span>
+                      <CardCopy description={TOKEN_COPY[source].description} title={TOKEN_COPY[source].title} />
                     </Button>
                   </li>
                 );
@@ -532,15 +630,17 @@ function PlanSignInPanel({
   signIn: PlanSignIn;
 }) {
   return (
-    <div className="otv2-panel otv2-signin">
-      <Text as="h2">{COPY.cloud.signInTitle(runtimeLabel)}</Text>
-      <p className="otv2-muted">{COPY.cloud.signInHint(runtimeLabel)}</p>
-      <div className="otv2-slot otv2-slot--signin">
+    <div className="flex flex-col gap-3 rounded-xl bg-kumo-base p-4 ring ring-kumo-line">
+      <Text as="h2" variant="heading">
+        {COPY.cloud.signInTitle(runtimeLabel)}
+      </Text>
+      <p className="text-sm text-kumo-subtle m-0">{COPY.cloud.signInHint(runtimeLabel)}</p>
+      <div className="otv2-slot--signin flex items-start">
         {signIn === "signed-in" ? (
-          <StatusIndicator className="otv2-status" label={COPY.cloud.signInDone(runtimeLabel)} tone="success" />
+          <StatusIndicator label={COPY.cloud.signInDone(runtimeLabel)} tone="success" />
         ) : signIn === "pending" ? (
-          <p className="otv2-waiting" role="status">
-            <span aria-hidden="true" className="otv2-pulse" />
+          <p className={WAITING_LINE} role="status">
+            <span aria-hidden="true" className="ots-pulse shrink-0" />
             {COPY.cloud.signInPending}
           </p>
         ) : (
@@ -557,6 +657,7 @@ function PlanSignInPanel({
  * front of a result that is already there.
  */
 export function ComputerStep({
+  computer,
   connect,
   creation,
   draft,
@@ -565,68 +666,110 @@ export function ComputerStep({
   onRefreshCommand,
   readiness,
 }: {
+  /** The Computer the Account has, when it has one. An Account has one machine, never a list. */
+  computer?: KnownComputer | undefined;
   connect: ConnectState;
   creation: CreationState;
   draft: AgentDraft;
-  onBack: () => void;
+  onBack?: () => void;
   onCreate: () => void;
   onRefreshCommand: () => void;
   readiness: ReadinessFacts | undefined;
 }) {
   const connected = connect.kind === "connected";
-  const checks = deriveChecks(readiness);
+  /*
+   * The Computer this step is preparing, and so the one the check below answers for: the machine
+   * the Account already has once it is reachable, or a new arrival. The backend probes this same
+   * subject, so what is on screen is never a verdict about some other machine.
+   */
+  const ready = computer ? computer.online : connected;
+  /*
+   * The command enrols a machine, so it belongs to a run that has none. Beside a machine the
+   * Account already has — an offline one most of all — it would offer a second Computer as the way
+   * to repair the first, which is the duplicate this step exists to avoid.
+   */
+  const connectingNew = computer === undefined;
+  const checks = deriveChecks(readiness?.runtime);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
-  const passed = readinessPassed(readiness);
+  // Asked about the runtime this draft chose, so a verdict left over from a different one
+  // cannot open the gate while the next poll is still in flight.
+  const passed = readinessPassed(readiness, draft.runtime);
   const failures = checks.filter((check) => check.state === "failed");
 
   return (
-    <section className="otv2-step">
-      <header className="otv2-step__header">
-        <Text as="h1">{COPY.connect.title}</Text>
-        <p>{COPY.connect.lead}</p>
-        <p className="otv2-privacy">
-          <Icon name="shield" />
+    <section className={STEP} data-ui="onboarding-v2-step-computer">
+      <header className={HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {computer ? COPY.connect.yoursTitle : COPY.connect.title}
+        </Text>
+        <p className="text-kumo-subtle m-0">{computer ? COPY.connect.yoursLead : COPY.connect.lead}</p>
+        <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
+          <Icon className="shrink-0 mt-1 text-kumo-brand" name="shield" />
           {COPY.connect.privacy}
         </p>
       </header>
 
-      {connected ? null : (
-        <div className="otv2-command-group">
-          <div className="otv2-command-lead">
-            <p className="otv2-muted">{COPY.connect.commandIntro}</p>
-            <span className="otv2-command__expiry">
+      {/* Which machine this is, said once. There is nothing here to operate: it is not a choice. */}
+      {computer ? (
+        <p className="flex items-center gap-2 m-0" data-ui="onboarding-v2-computer">
+          <Icon className="shrink-0 text-kumo-brand" name="laptop" />
+          <span className="font-medium text-kumo-strong">{computer.displayName}</span>
+          <span className="text-sm text-kumo-subtle">{computerStatus(computer)}</span>
+        </p>
+      ) : null}
+
+      {computer && !computer.online ? (
+        <p className="flex items-start gap-2 text-sm text-kumo-strong m-0" role="status">
+          <Icon className="shrink-0 mt-1 text-kumo-warning" name="laptop" />
+          {COPY.connect.offlineLead}
+        </p>
+      ) : null}
+
+      {connectingNew && !connected ? (
+        <div className="flex flex-col gap-3">
+          {/*
+            The instruction and the validity read as one line: the command is what the reader is
+            about to run, and how long it lasts belongs to it rather than to a note underneath.
+          */}
+          <div
+            className="otv2-command-lead flex items-center justify-between gap-3"
+            data-ui="onboarding-v2-command-lead"
+          >
+            <p className="text-sm text-kumo-subtle m-0">{COPY.connect.commandIntro}</p>
+            <span className="text-sm text-kumo-subtle shrink-0" data-ui="onboarding-v2-expiry">
               {connect.kind === "issued" ? <Countdown expiresAt={connect.expiresAt} /> : null}
             </span>
           </div>
           <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
         </div>
-      )}
+      ) : null}
 
-      <ConnectStatus connect={connect} />
+      {/* The Account's machine reports through the check below; the arrival line is for a new one. */}
+      {computer ? null : <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />}
 
-      {connected ? (
+      {ready ? (
         <>
-          <ol className="otv2-checks">
+          <ol className="flex flex-col m-0 p-0 list-none rounded-xl bg-kumo-base ring ring-kumo-line overflow-hidden">
             {checks.map((check, index) => (
               <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
             ))}
           </ol>
-          <div className="otv2-slot otv2-slot--outcome">
+          <div className="otv2-slot--outcome flex flex-col justify-start" data-ui="onboarding-v2-check-outcome">
             {resolving ? (
-              <p className="otv2-waiting" role="status">
-                <span aria-hidden="true" className="otv2-pulse" />
+              <p className={WAITING_LINE} role="status">
+                <span aria-hidden="true" className="ots-pulse shrink-0" />
                 {COPY.check.waiting}
               </p>
             ) : failures.length > 0 ? (
-              <div className="otv2-repair">
-                <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
-                <p className="otv2-muted">
+              <div className="flex flex-col gap-1">
+                <p className="font-medium text-kumo-strong m-0">{COPY.check.failedIntro(failures.length)}</p>
+                <p className="text-sm text-kumo-subtle m-0">
                   {COPY.check.repairHint} <code>{COPY.check.repairCommand}</code> {COPY.check.repairHintSuffix}
                 </p>
               </div>
             ) : (
-              <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" />
+              <StatusIndicator label={COPY.check.passed} tone="success" />
             )}
           </div>
         </>
@@ -634,7 +777,7 @@ export function ComputerStep({
 
       <StepNav
         back={onBack}
-        disabled={!passed || creation !== "idle"}
+        disabled={!ready || !passed || creation !== "idle"}
         label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
         onNext={onCreate}
       />
@@ -642,12 +785,19 @@ export function ComputerStep({
   );
 }
 
+/** Whether the Account's machine can be reached, and when it was last seen if it cannot. */
+function computerStatus(computer: KnownComputer): string {
+  if (computer.online) return COPY.connect.online;
+  const seen = computer.lastSeen ? ` · ${COPY.connect.lastSeen(computer.lastSeen)}` : "";
+  return `${COPY.connect.offline}${seen}`;
+}
+
 function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; onRefreshCommand: () => void }) {
   // Before a command exists, the block still renders — same structure, same length, so nothing
   // moves when the real one lands. It is inert: nothing to copy and nothing to announce.
   if (connect.kind === "idle" || connect.kind === "issuing") {
     return (
-      <div aria-hidden="true" className="otv2-command-pending">
+      <div aria-hidden="true" className="ots-command-pending">
         <CommandBlock
           command={PLACEHOLDER_CONNECT_COMMAND}
           comment={COPY.connect.commandComment}
@@ -661,7 +811,6 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
   }
   return (
     <CommandBlock
-      key={connect.command}
       command={connect.command}
       comment={COPY.connect.commandComment}
       copiedLabel={COPY.connect.copied}
@@ -677,62 +826,13 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
         ) : undefined
       }
       fallbackHint={COPY.connect.copyFallback}
+      key={connect.command}
     />
   );
 }
 
-function ConnectStatus({ connect }: { connect: ConnectState }) {
-  return (
-    <div className="otv2-slot otv2-slot--status">
-      {connect.kind === "connected" ? (
-        <StatusIndicator className="otv2-status" label={COPY.connect.connected} tone="success" />
-      ) : (
-        <p className="otv2-waiting" role="status">
-          <span aria-hidden="true" className="otv2-pulse" />
-          {COPY.connect.waiting}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function Countdown({ expiresAt }: { expiresAt: number }) {
-  return <span>{COPY.connect.expiresIn(formatRemaining(useRemaining(expiresAt)))}</span>;
-}
-
-/** Ticks once a second and settles at zero, so an expired code never shows a negative duration. */
-function useRemaining(expiresAt: number): number {
-  const [remaining, setRemaining] = useState(() => Math.max(0, expiresAt - Date.now()));
-  useEffect(() => {
-    setRemaining(Math.max(0, expiresAt - Date.now()));
-    const id = window.setInterval(() => {
-      const next = Math.max(0, expiresAt - Date.now());
-      setRemaining(next);
-      if (next === 0) window.clearInterval(id);
-    }, 1_000);
-    return () => window.clearInterval(id);
-  }, [expiresAt]);
-  return remaining;
-}
-
-function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; position: number; runtimeLabel: string }) {
-  const copy = CHECK_COPY[check.id];
-  // Always rendered, even when empty, so a resolving check never changes the row's height.
-  const detail = copy.detail[check.state](runtimeLabel);
-  return (
-    <li className="otv2-check" data-state={check.state}>
-      <span aria-hidden="true" className="otv2-check__marker">
-        {position}
-      </span>
-      <span className="otv2-check__copy">
-        <strong>{copy.title(runtimeLabel)}</strong>
-        <span>{detail || "\u00a0"}</span>
-      </span>
-    </li>
-  );
-}
-
 export function MessagingStep({
+  computerOnline,
   messaging,
   onChoose,
   onSlackInstall,
@@ -740,6 +840,7 @@ export function MessagingStep({
   provider,
   readiness,
 }: {
+  computerOnline: boolean | undefined;
   messaging: MessagingState;
   onChoose: (provider: MessagingProvider) => void;
   onSlackInstall: () => void;
@@ -753,15 +854,19 @@ export function MessagingStep({
   }, [messaging.kind, onStart, provider]);
 
   return (
-    <section className="otv2-step">
-      <header className="otv2-step__header">
-        <Text as="h1">{COPY.messaging.title}</Text>
-        <p>{COPY.messaging.description}</p>
+    <section className={STEP} data-ui="onboarding-v2-step-messaging">
+      <header className={HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {COPY.messaging.title}
+        </Text>
+        <p className="text-kumo-subtle m-0">{COPY.messaging.description}</p>
       </header>
 
       <MessagingPicker onChoose={onChoose} provider={provider} />
       <MessagingConnection
+        computerOnline={computerOnline}
         messaging={messaging}
+        onRetry={onStart}
         onSlackInstall={onSlackInstall}
         provider={provider}
         readiness={readiness}
@@ -775,32 +880,20 @@ export function MessagingStep({
   );
 }
 
-function QrCode({ value }: { value: string }) {
-  const [source, setSource] = useState<string>();
-  useEffect(() => {
-    let active = true;
-    void qrToString(value, { margin: 1, type: "svg", width: 208 }).then(
-      (svg) => {
-        if (active) setSource(`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`);
-      },
-      () => undefined,
-    );
-    return () => {
-      active = false;
-    };
-  }, [value]);
-  return source ? <img alt={COPY.messaging.qrAlt} className="otv2-qr__image" src={source} /> : null;
-}
-
 export function DoneStep({ name }: { name: string }) {
   return (
-    <section className="otv2-step otv2-step--done">
-      <span aria-hidden="true" className="otv2-done-mark">
+    <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
+      <span
+        aria-hidden="true"
+        className="inline-flex size-10 items-center justify-center rounded-full bg-kumo-tint text-kumo-brand"
+      >
         <Icon name="check" />
       </span>
-      <header className="otv2-step__header">
-        <Text as="h1">{COPY.done.title(name)}</Text>
-        <p>{COPY.done.description(name)}</p>
+      <header className={HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {COPY.done.title(name)}
+        </Text>
+        <p className="text-kumo-subtle m-0">{COPY.done.description(name)}</p>
       </header>
     </section>
   );

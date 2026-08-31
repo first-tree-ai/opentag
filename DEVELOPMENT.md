@@ -4,7 +4,8 @@
 
 ## Prerequisites
 
-- Node.js 22.13 or newer on 22.x, Node.js 24.x, or Node.js 26.x (use the latest patch; Node.js 24 is primary)
+- Node.js 24.19.0 for the pinned development toolchain (the supported range remains Node.js 22.13 or newer on 22.x,
+  Node.js 24.x, or Node.js 26.x; Node.js 24 is primary)
 - Corepack and pnpm 10.12.1
 - Docker with Compose support, only when running the local PostgreSQL service
 
@@ -15,14 +16,17 @@ corepack enable
 pnpm install
 ```
 
-The repository pins pnpm in `package.json`. Do not use npm or Yarn to update dependencies.
+The repository pins pnpm in `package.json` and pins the development Node.js patch in `.node-version`. It also sets
+`engine-strict=true` in `.npmrc`, so an unsupported Node.js version fails dependency installation instead of producing
+only an engine warning. Do not use npm or Yarn to update dependencies.
 
 ## Git hooks and worktrees
 
 `pnpm install` runs the root `prepare` script, which installs three hooks into the clone's hooks directory:
 
 - `pre-commit` runs Biome over the staged files, applies the fixes it can make safely, and stages the result.
-- `pre-push` runs `biome lint .` and `biome format .` over the whole repository.
+- `pre-push` runs `pnpm exec biome lint .`, `pnpm exec biome format .`, `pnpm check`, and `pnpm typecheck` over the whole
+  repository. These read-only jobs run in parallel.
 - `post-checkout` prepares a worktree that `git worktree add` has just created: it runs `pnpm install` inside the new
   worktree and reinstalls the hooks, so the worktree is ready to commit and push.
 
@@ -68,6 +72,22 @@ investigating coverage gaps. The measurement includes production source files th
 root `scripts/`, Server PostgreSQL integration tests, and Provider end-to-end tests. It is a baseline for finding and
 prioritizing gaps, not a required pull request check, and does not yet enforce repository-wide or per-workspace coverage
 thresholds. Add regression thresholds only after the measurement is stable across repeated runs.
+
+## Web i18n
+
+Web messages live in `apps/web/messages/<area>/{en,zh}.json` and use `<area>_<surface>_<slot>` keys. Add the English
+message and its hand-authored Simplified Chinese counterpart in the area that emits the final visible string. Keep the
+key sets, placeholders, and sort order identical. Use Paraglide for sentences and `src/i18n/format.ts` for locale-aware
+dates and numbers. Run `pnpm --filter @opentag/web paraglide` after adding or changing messages; `typecheck`, `test`, and
+the Vite build also run this code generation through their Turbo dependency. If generated output looks stale, remove
+`apps/web/src/paraglide/` and rerun the command. Never run `inlang machine translate` or Sherlock extract: the array
+path pattern would duplicate the merged catalogue into every area file.
+
+`pnpm test:coverage` measures one Vitest project at a time and concatenates the per-workspace summaries into
+`coverage/unit/coverage-summary.json` and the detailed Istanbul maps into `coverage/unit/coverage-final.json`. A single
+merged Vitest pass under-reports, so those aggregates must not be produced by the coverage provider's merge. Pull
+requests run a separate `Patch Coverage` check that reads the detailed map and fails when fewer than 80% of the
+executable TypeScript lines the pull request added or changed were hit.
 
 Required pull request CI still runs all offline unit tests. Agent Runtime keeps its separate 100% gate in
 `packages/client/vitest.agent-runtime.config.ts`, enforced by

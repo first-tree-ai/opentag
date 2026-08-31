@@ -4,6 +4,7 @@ import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
+import { OnboardingResetError } from "../services/onboarding-reset/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 
@@ -118,6 +119,13 @@ function services() {
         issuedAt: new Date("2026-08-19T00:00:00.000Z"),
         mode: "create",
       }),
+      exchangeConnectCode: vi.fn().mockResolvedValue({
+        computerId,
+        credentialId: "credential-id",
+        machineToken: "machine-token",
+        workspaceComputerId: computerId,
+        workspaceId,
+      }),
     },
     taskService: {
       list: vi.fn().mockResolvedValue({ tasks: [taskSummary], nextCursor: null }),
@@ -139,9 +147,13 @@ function services() {
   };
 }
 
-function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
+function appWith(
+  overrides: Partial<ReturnType<typeof services>> = {},
+  setupReset?: { enabled?: boolean; reboard: ReturnType<typeof vi.fn>; resetOnboarding: ReturnType<typeof vi.fn> },
+) {
   const service = { ...services(), ...overrides };
   const app = createApp({
+    ...(setupReset ? { setupResetService: setupReset as never } : {}),
     authService: authService(),
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
@@ -153,6 +165,143 @@ function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
   apps.push(app);
   return { app, service };
 }
+
+describe("undoing setup on the authenticated Account", () => {
+  function resetService(enabled = true) {
+    return {
+      enabled,
+      reboard: vi.fn().mockResolvedValue(undefined),
+      resetOnboarding: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  it("answers reachability, so a client can ask before it offers the operations", async () => {
+    const { app } = appWith({}, resetService());
+
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountSetupReset, headers: authorization });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
+  });
+
+  it("answers a deployment that has the routes but not the feature exactly like one that never had them", async () => {
+    const setupReset = resetService(false);
+    const { app } = appWith({}, setupReset);
+
+    const [read, run, malformed] = await Promise.all([
+      app.inject({ method: "GET", url: HTTP_PATHS.accountSetupReset, headers: authorization }),
+      app.inject({
+        method: "POST",
+        url: HTTP_PATHS.accountSetupReset,
+        headers: authorization,
+        payload: { mode: "all" },
+      }),
+      // The body is never parsed here: a malformed request must not be able to tell the two apart.
+      app.inject({ method: "POST", url: HTTP_PATHS.accountSetupReset, headers: authorization, payload: {} }),
+    ]);
+
+    expect(read.statusCode).toBe(404);
+    expect(run.statusCode).toBe(404);
+    expect(malformed.statusCode).toBe(404);
+    expect(setupReset.resetOnboarding).not.toHaveBeenCalled();
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("routes each mode to the operation it names", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const all = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "all" },
+    });
+    expect(all.statusCode).toBe(204);
+    expect(setupReset.resetOnboarding).toHaveBeenCalledWith(userId);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+
+    const reboard = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard" },
+    });
+    expect(reboard.statusCode).toBe(204);
+    expect(setupReset.reboard).toHaveBeenCalledWith(userId);
+    expect(setupReset.resetOnboarding).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the Account from the token, so no body can name another one", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard", accountId: "11111111-1111-4111-8111-111111111111" },
+    });
+
+    // Rejected outright rather than ignored: a caller who thought they were choosing an Account
+    // should be told they were not.
+    expect(response.statusCode).toBe(400);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("requires authentication", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      payload: { mode: "reboard" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused reset as the deterministic conflict the service raised", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+    setupReset.resetOnboarding.mockRejectedValueOnce(
+      new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "The Account still has active OpenTag resources"),
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "all" },
+    });
+
+    // A refusal the caller can act on, not a failure: the reset stopped before clearing setup, so
+    // the same request is worth making again once the Account is quiet.
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "ONBOARDING_RESET_UNVERIFIED",
+        category: "deterministic",
+        message: "The Account still has active OpenTag resources",
+      },
+    });
+  });
+
+  it("is not registered when the deployment does not offer it", async () => {
+    const { app } = appWith();
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard" },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
 
 describe("Account-native management collections", () => {
   it("lists and reads read-only Tasks in the authenticated Account scope", async () => {
@@ -199,6 +348,33 @@ describe("Account-native management collections", () => {
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ agents: [agentListItem] });
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
+  });
+
+  it("exchanges a Computer connect code and strips legacy authority fields", async () => {
+    const { app, service } = appWith();
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.computerConnectExchange,
+      payload: {
+        arch: "arm64",
+        clientVersion: "1.0.0",
+        code: "sixteen-character-code",
+        computerId,
+        displayName: "Laptop",
+        platform: "darwin",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({ computerId, machineToken: "machine-token", workspaceComputerId: computerId });
+    expect(service.machineAuthService.exchangeConnectCode).toHaveBeenCalledWith({
+      arch: "arm64",
+      clientVersion: "1.0.0",
+      code: "sixteen-character-code",
+      computerId,
+      displayName: "Laptop",
+      platform: "darwin",
+    });
   });
 
   it("does not register management Workspace routes", async () => {

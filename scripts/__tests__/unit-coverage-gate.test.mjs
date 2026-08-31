@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { evaluatePatchCoverage, isSupportedSourcePath, SUPPORTED_SOURCE_EXTENSIONS } from "../unit-coverage-gate.mjs";
 
@@ -11,6 +13,40 @@ function statementCoverage(file, line, hits) {
       0: { start: { line, column: 0 }, end: { line, column: 20 } },
     },
   };
+}
+
+async function evaluateTypeScriptSource(source, lineHits = {}) {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "opentag-coverage-gate-"));
+  const file = "example.ts";
+  try {
+    await writeFile(join(repositoryRoot, file), `${source}\n`);
+    const sourceLines = source.split("\n");
+    const diff = [
+      `--- a/${file}`,
+      `+++ b/${file}`,
+      `@@ -0,0 +1,${sourceLines.length} @@`,
+      ...sourceLines.map((line) => `+${line}`),
+      "",
+    ].join("\n");
+    const entries = Object.entries(lineHits);
+    const statementMap = Object.fromEntries(
+      entries.map(([line], index) => [
+        String(index),
+        { start: { line: Number(line), column: 0 }, end: { line: Number(line) } },
+      ]),
+    );
+    const coverage = entries.length
+      ? {
+          [file]: {
+            s: Object.fromEntries(entries.map(([_line, hits], index) => [String(index), hits])),
+            statementMap,
+          },
+        }
+      : {};
+    return evaluatePatchCoverage({ coverage, diff, repositoryRoot, threshold: 80 });
+  } finally {
+    await rm(repositoryRoot, { force: true, recursive: true });
+  }
 }
 
 test("an added executable line with zero hits fails the patch gate", () => {
@@ -32,100 +68,6 @@ test("an added executable line with zero hits fails the patch gate", () => {
   assert.equal(result.covered, 0);
   assert.equal(result.passed, false);
   assert.deepEqual(result.uncovered, ["src/example.ts:2"]);
-});
-
-test("multiline import and export specifiers are not treated as executable lines", () => {
-  const diff = [
-    "diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts",
-    "--- a/packages/shared/src/index.ts",
-    "+++ b/packages/shared/src/index.ts",
-    "@@ -1,0 +1,8 @@",
-    "+export {",
-    "+  firstBinding,",
-    "+  type SecondBinding,",
-    "+  thirdBinding,",
-    '+} from "./module.js";',
-    "+import {",
-    "+  fourthBinding,",
-    '+} from "./other.js";',
-  ].join("\n");
-  const result = evaluatePatchCoverage({
-    coverage: {
-      [resolve("packages/shared/src/index.ts")]: {
-        statementMap: { first: { start: { line: 1 } } },
-        s: { first: 1 },
-      },
-    },
-    diff,
-    repositoryRoot: process.cwd(),
-  });
-
-  assert.equal(result.total, 2);
-  assert.equal(result.covered, 1);
-  assert.equal(result.uncovered.length, 1);
-  assert.match(result.uncovered[0], /:6(?:\s|$)/u);
-});
-
-test("type-literal property signatures are not treated as executable lines", () => {
-  const diff = [
-    "--- a/packages/shared/src/structured-errors.ts",
-    "+++ b/packages/shared/src/structured-errors.ts",
-    "@@ -1,0 +1,5 @@",
-    "+type Example = {",
-    "+  code?: string;",
-    "+  message: string;",
-    "+};",
-    "+const executable = true;",
-  ].join("\n");
-  const result = evaluatePatchCoverage({
-    coverage: { "packages/shared/src/structured-errors.ts": statementCoverage("", 5, 1) },
-    diff,
-    repositoryRoot: process.cwd(),
-  });
-
-  assert.equal(result.total, 1);
-  assert.equal(result.covered, 1);
-  assert.deepEqual(result.uncovered, []);
-});
-
-test("function-valued type-literal signatures are not treated as executable lines", () => {
-  const diff = [
-    "--- a/packages/server/src/observability/background-failure-supervisor.ts",
-    "+++ b/packages/server/src/observability/background-failure-supervisor.ts",
-    "@@ -1,0 +1,4 @@",
-    "+export interface Hooks {",
-    "+  onEvent?: (event: unknown) => void;",
-    "+  now?: () => Date;",
-    "+}",
-  ].join("\n");
-  const result = evaluatePatchCoverage({ diff, coverage: {}, repositoryRoot: process.cwd() });
-
-  assert.equal(result.total, 0);
-  assert.equal(result.passed, true);
-});
-
-test("bare expressions in multiline arrays remain executable lines", () => {
-  const diff = [
-    "--- a/packages/shared/src/example.ts",
-    "+++ b/packages/shared/src/example.ts",
-    "@@ -1,0 +1,4 @@",
-    "+const values = [",
-    "+  firstValue,",
-    "+  secondValue,",
-    "+];",
-  ].join("\n");
-  const result = evaluatePatchCoverage({
-    diff,
-    coverage: { "packages/shared/src/example.ts": statementCoverage("", 1, 1) },
-    repositoryRoot: process.cwd(),
-  });
-
-  assert.equal(result.total, 3);
-  assert.equal(result.covered, 1);
-  assert.deepEqual(result.uncovered, [
-    "packages/shared/src/example.ts:2 (missing coverage entry)",
-    "packages/shared/src/example.ts:3 (missing coverage entry)",
-  ]);
 });
 
 test("renamed files use the new path and brand-new files use absolute coverage paths", () => {
@@ -220,6 +162,63 @@ test("a diff with no executable changes passes explicitly", () => {
   assert.equal(result.reason, "no executable changed lines");
 });
 
+test("TypeScript multiline imports, exports, and type declarations are not treated as executable", async () => {
+  const result = await evaluateTypeScriptSource(
+    [
+      "import {",
+      "  dependency,",
+      '} from "./dependency.js";',
+      "export {",
+      "  dependency,",
+      "  type Dependency,",
+      '} from "./dependency.js";',
+      "type Options = {",
+      "  dependency: string;",
+      "};",
+      "export interface Marker {",
+      "  dependency: string;",
+      "}",
+      "export const executable = dependency;",
+    ].join("\n"),
+    { 14: 1 },
+  );
+  assert.equal(result.total, 1);
+  assert.equal(result.covered, 1);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.uncovered, []);
+});
+
+test("type-literal property signatures are not treated as executable lines", async () => {
+  const result = await evaluateTypeScriptSource(
+    ["type Example = {", "  code?: string;", "  message: string;", "};", "const executable = true;"].join("\n"),
+    { 5: 1 },
+  );
+  assert.equal(result.total, 1);
+  assert.equal(result.covered, 1);
+  assert.deepEqual(result.uncovered, []);
+});
+
+test("function-valued type-literal signatures are not treated as executable lines", async () => {
+  const result = await evaluateTypeScriptSource(
+    ["export interface Hooks {", "  onEvent?: (event: unknown) => void;", "  now?: () => Date;", "}"].join("\n"),
+  );
+  assert.equal(result.total, 0);
+  assert.equal(result.passed, true);
+});
+
+test("bare expressions in multiline arrays remain executable lines", async () => {
+  const result = await evaluateTypeScriptSource(
+    ["const values = [", "  firstValue,", "  secondValue,", "];"].join("\n"),
+    { 1: 1 },
+  );
+  assert.equal(result.total, 3);
+  assert.equal(result.covered, 1);
+  assert.deepEqual(result.uncovered, [
+    "example.ts:2 (missing coverage entry)",
+    "example.ts:3 (missing coverage entry)",
+  ]);
+});
+
 test("supported script extensions are included while coverage artifacts remain excluded", () => {
   for (const extension of [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]) {
     assert.equal(SUPPORTED_SOURCE_EXTENSIONS.has(extension), true, extension);
@@ -229,4 +228,5 @@ test("supported script extensions are included while coverage artifacts remain e
   assert.equal(isSupportedSourcePath("scripts/toolchain-check.mjs"), false);
   assert.equal(isSupportedSourcePath("src/example.test.ts"), false);
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
+  assert.equal(isSupportedSourcePath("packages/client/vitest.agent-runtime.config.ts"), false);
 });

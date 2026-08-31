@@ -202,10 +202,12 @@ describe("Feishu adapter", () => {
     const groupThreadEvent = rawMessage("event-group-thread", "message-group-thread", "10");
     groupThreadEvent.event.message.chat_id = "oc_example_group";
     Object.assign(groupThreadEvent.event.message, { thread_id: "omt_example_thread" });
+    const threadRepresentation = structuredClone(groupThreadEvent);
+    threadRepresentation.header.event_id = "event-thread-representation";
 
     await Promise.all([
       dispatcher.invoke(groupThreadEvent, { needCheck: false }),
-      dispatcher.invoke(structuredClone(groupThreadEvent), { needCheck: false }),
+      dispatcher.invoke(threadRepresentation, { needCheck: false }),
     ]);
 
     expect(received).toHaveLength(1);

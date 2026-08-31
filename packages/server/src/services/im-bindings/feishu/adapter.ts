@@ -120,25 +120,31 @@ const DEDUPLICATION_MAX_ENTRIES = 10_000;
 type FeishuRawInboundEvent = RawFeishuMessageEvent | RawFeishuRecallEvent;
 
 function providerEventIdentity(raw: FeishuRawInboundEvent): {
-  key: string;
+  keys: string[];
   providerEventId: string | null;
   externalMessageId: string | null;
 } | null {
   const providerEventId = raw.header?.event_id ?? raw.event_id ?? null;
   if ("message" in raw) {
     const externalMessageId = raw.message.message_id;
-    if (providerEventId) return { key: `event:${providerEventId}`, providerEventId, externalMessageId };
+    const messageKey = `message:${externalMessageId}:${raw.message.create_time}`;
+    if (providerEventId) {
+      return { keys: [`event:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+    }
     return {
-      key: `message:${externalMessageId}:${raw.message.create_time}`,
+      keys: [messageKey],
       providerEventId: null,
       externalMessageId,
     };
   }
   const externalMessageId = raw.message_id ?? null;
   if (!externalMessageId && !providerEventId) return null;
-  if (providerEventId) return { key: `event:${providerEventId}`, providerEventId, externalMessageId };
+  const messageKey = `recall:${externalMessageId}:${raw.recall_time ?? "unknown"}`;
+  if (providerEventId) {
+    return { keys: [`event:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+  }
   return {
-    key: `recall:${externalMessageId}:${raw.recall_time ?? "unknown"}`,
+    keys: [messageKey],
     providerEventId: null,
     externalMessageId,
   };
@@ -163,7 +169,7 @@ function createFeishuInboundDeduplicator() {
     if (!identity) return onMessage();
     const now = Date.now();
     prune(now);
-    const existing = entries.get(identity.key);
+    const existing = identity.keys.map((key) => entries.get(key)).find((entry) => entry !== undefined);
     if (existing) {
       emitRootSpan("feishu.inbound.deduplicated", {
         ...imAttrs({
@@ -178,16 +184,21 @@ function createFeishuInboundDeduplicator() {
       return;
     }
     const promise = onMessage();
-    entries.set(identity.key, { expiresAt: now + DEDUPLICATION_TTL_MS, promise });
+    const entry = { expiresAt: now + DEDUPLICATION_TTL_MS, promise };
+    for (const key of identity.keys) entries.set(key, entry);
     try {
       await promise;
     } catch (error) {
-      const current = entries.get(identity.key);
-      if (current?.promise === promise) entries.delete(identity.key);
+      for (const key of identity.keys) {
+        const current = entries.get(key);
+        if (current?.promise === promise) entries.delete(key);
+      }
       throw error;
     } finally {
-      const current = entries.get(identity.key);
-      if (current?.promise === promise) entries.set(identity.key, { expiresAt: current.expiresAt });
+      for (const key of identity.keys) {
+        const current = entries.get(key);
+        if (current?.promise === promise) entries.set(key, { expiresAt: current.expiresAt });
+      }
     }
   };
 }

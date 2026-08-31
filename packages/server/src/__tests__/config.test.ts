@@ -10,22 +10,22 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
-  it("offers the Onboarding Lab on the staging environment alone, and takes no setting for it", () => {
+  it("offers the setup reset on the staging environment alone, and takes no setting for it", () => {
     expect(
       parseServerConfig({
         ...required,
         OPENTAG_ENV: "staging",
         OPENTAG_PUBLIC_URL: "https://staging.example.com",
-      }).stagingOnboardingLab,
+      }).stagingSetupReset,
     ).toBe(true);
 
-    expect(parseServerConfig(required).stagingOnboardingLab).toBe(false);
+    expect(parseServerConfig(required).stagingSetupReset).toBe(false);
     expect(
       parseServerConfig({ ...required, OPENTAG_ENV: "prod", OPENTAG_PUBLIC_URL: "https://example.com" })
-        .stagingOnboardingLab,
+        .stagingSetupReset,
     ).toBe(false);
 
-    // The Lab took one setting before the reset became reflexive. A deployment that still carries it
+    // The reset took one setting before it became reflexive. A deployment that still carries it
     // must keep starting, so the retired name is ignored rather than rejected as unknown.
     expect(
       parseServerConfig({
@@ -33,7 +33,7 @@ describe("parseServerConfig", () => {
         OPENTAG_ENV: "staging",
         OPENTAG_PUBLIC_URL: "https://staging.example.com",
         OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-      }).stagingOnboardingLab,
+      }).stagingSetupReset,
     ).toBe(true);
   });
 

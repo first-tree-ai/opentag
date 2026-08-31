@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ import {
   writeCredentialsAtomically,
 } from "../auth/credentials.js";
 import { AccessTokenProvider } from "../auth/token-provider.js";
+import { safeCause, statusFallback, validTimeout } from "../request-policy.js";
 import { computerIdentityPath, resolveComputerIdentity } from "../runtime/computer-identity.js";
 
 const temporaryDirectories: string[] = [];
@@ -72,6 +74,20 @@ describe("credential storage", () => {
     await writeFile(join(home, "credentials.json"), `${JSON.stringify(credentials)}\n`, { mode: 0o600 });
 
     await expect(readCredentials(home)).resolves.toBeUndefined();
+  });
+
+  it("reports malformed files without masking an invalid server URL", async () => {
+    const home = await temporaryHome();
+    await mkdir(join(home, "config"), { mode: 0o700 });
+    await writeFile(credentialsPath(home), `${JSON.stringify({ ...credentials, accessToken: "" })}\n`, { mode: 0o600 });
+    await expect(readCredentials(home)).rejects.toThrow("credentials file is invalid");
+
+    await writeFile(
+      credentialsPath(home),
+      `${JSON.stringify({ ...credentials, serverUrl: "https://opentag.example/api" })}\n`,
+      { mode: 0o600 },
+    );
+    await expect(readCredentials(home)).rejects.toThrow("origin without a path");
   });
 });
 
@@ -172,6 +188,36 @@ describe("OpenTagApi", () => {
     expect(error).toMatchObject({ code, category, requestId: expect.any(String) });
     expect((error as OpenTagApiError).category).not.toBe("credential");
   });
+
+  it("maps no-content failures and uses deterministic fallback categories", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("not json", { status: 404 }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+    await expect(api.deleteAgent("access", crypto.randomUUID())).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      category: "deterministic",
+    });
+    expect(statusFallback(401)).toMatchObject({ code: "AUTH_INVALID_TOKEN", category: "credential" });
+    expect(statusFallback(418)).toMatchObject({ code: "VALIDATION_ERROR", category: "validation" });
+  });
+
+  it("accepts a direct AbortSignal and validates timeout options", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("already stopped"));
+    const fetchImpl = vi.fn<typeof fetch>();
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+    await expect(api.me("access", controller.signal)).rejects.toMatchObject({ code: "REQUEST_CANCELLED" });
+    expect(() => validTimeout(0)).toThrow("positive safe integer");
+    expect(() => validTimeout(25)).not.toThrow();
+  });
+
+  it("sanitizes structured and primitive transport causes", () => {
+    expect(safeCause("Bearer secret-token")).toEqual({ message: "Bearer [REDACTED]" });
+    const cause = new Error("request failed", { cause: Object.assign(new Error("token=secret"), { code: "EFAIL" }) });
+    expect(safeCause(cause)).toEqual({
+      message: "request failed",
+      cause: { code: "EFAIL", message: "token=[REDACTED]" },
+    });
+  });
 });
 
 describe("AccessTokenProvider", () => {
@@ -267,6 +313,57 @@ describe("AccessTokenProvider", () => {
     await expect(readCredentials(home)).resolves.toMatchObject({ refreshToken: "rotated-refresh" });
     // The second provider waited for the lock, reloaded the winner, and did not overwrite its refresh token.
     expect(secondRefresh).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid lock settings and unsafe refresh expiry", async () => {
+    expect(() => new AccessTokenProvider({ lockRetryMs: 0 })).toThrow("lockRetryMs");
+    expect(() => new AccessTokenProvider({ lockRetryMs: 10, lockTimeoutMs: 5 })).toThrow("lockTimeoutMs");
+
+    const home = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, home);
+    const provider = new AccessTokenProvider({
+      api: {
+        refresh: vi.fn().mockResolvedValue({
+          accessToken: "new-access",
+          refreshToken: "new-refresh",
+          tokenType: "Bearer",
+          expiresIn: 1,
+        }),
+      },
+      home,
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
+    });
+    await expect(provider.getAccessToken()).rejects.toThrow("unsafe token expiry");
+  });
+
+  it("times out cleanly when a credential lock points at a missing target", async () => {
+    const home = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, home);
+    await symlink("missing-lock-target", join(home, "config", ".credentials.lock"));
+    const provider = new AccessTokenProvider({
+      home,
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
+      lockRetryMs: 1,
+      lockTimeoutMs: 5,
+    });
+    await expect(provider.getAccessToken()).rejects.toThrow("refresh lock");
+  });
+
+  it("propagates an unexpected credential lock filesystem error", async () => {
+    const home = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, home);
+    let removedConfig = false;
+    const provider = new AccessTokenProvider({
+      home,
+      now: () => {
+        if (!removedConfig) {
+          rmSync(join(home, "config"), { force: true, recursive: true });
+          removedConfig = true;
+        }
+        return new Date("2026-08-18T00:00:00.000Z");
+      },
+    });
+    await expect(provider.getAccessToken()).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

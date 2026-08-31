@@ -5,12 +5,22 @@
  * treated as uncovered for changed executable lines, which keeps the gate fail closed.
  */
 
-import { extname, isAbsolute, posix, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { extname, isAbsolute, posix, relative, resolve } from "node:path";
+import ts from "typescript";
 
 export const SUPPORTED_SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 
 const EXCLUDED_DIRECTORY_NAMES = new Set(["coverage", "dist", "node_modules"]);
 const EXCLUDED_ROOT_NAMES = new Set(["e2e", "scripts"]);
+const NON_EXECUTABLE_NODE_KINDS = new Set([
+  ts.SyntaxKind.ImportDeclaration,
+  ts.SyntaxKind.ImportEqualsDeclaration,
+  ts.SyntaxKind.InterfaceDeclaration,
+  ts.SyntaxKind.TypeAliasDeclaration,
+  ts.SyntaxKind.TypeLiteral,
+]);
+const nonExecutableLineCache = new Map();
 
 function normalizePath(value) {
   return posix.normalize(String(value).replaceAll("\\", "/").replace(/^\.\//, ""));
@@ -41,6 +51,39 @@ function isExecutableSourceLine(value) {
   }
   if (/^[{}[\]();,:]+$/.test(trimmed)) return false;
   return true;
+}
+
+/** TypeScript's AST is needed for multiline type/import declarations; their lines do not produce runtime code. */
+function nonExecutableSourceLines(file, repositoryRoot) {
+  const cacheKey = `${repositoryRoot}\0${file}`;
+  const cached = nonExecutableLineCache.get(cacheKey);
+  if (cached) return cached;
+
+  const lines = new Set();
+  try {
+    const sourcePath = resolve(repositoryRoot, file);
+    const source = readFileSync(sourcePath, "utf8");
+    const sourceFile = ts.createSourceFile(
+      sourcePath,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.getScriptKindFromFileName(file),
+    );
+    const visit = (node) => {
+      if (NON_EXECUTABLE_NODE_KINDS.has(node.kind)) {
+        const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+        const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+        for (let line = start; line <= end; line += 1) lines.add(line);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  } catch {
+    // Synthetic diffs used by the pure gate tests have no source file to parse.
+  }
+  nonExecutableLineCache.set(cacheKey, lines);
+  return lines;
 }
 
 /** Extract added lines from a unified diff, keyed by their post-change repository path. */
@@ -114,13 +157,14 @@ export function buildLineHitsByFile(coverage, repositoryRoot) {
   return lineHitsByFile;
 }
 
-function evaluateChangedFile({ file, lines, lineHits }) {
+function evaluateChangedFile({ file, lines, lineHits, repositoryRoot }) {
   if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
   const uncovered = [];
   let covered = 0;
   let total = 0;
+  const nonExecutableLines = nonExecutableSourceLines(file, repositoryRoot);
   for (const { content, line } of lines) {
-    if (!isExecutableSourceLine(content)) continue;
+    if (nonExecutableLines.has(line) || !isExecutableSourceLine(content)) continue;
     total += 1;
     if (!lineHits?.has(line)) {
       uncovered.push(`${file}:${line} (missing coverage entry)`);
@@ -145,7 +189,7 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   let total = 0;
 
   for (const [file, lines] of changedLines) {
-    const result = evaluateChangedFile({ file, lineHits: lineHitsByFile.get(file), lines });
+    const result = evaluateChangedFile({ file, lineHits: lineHitsByFile.get(file), lines, repositoryRoot });
     covered += result.covered;
     total += result.total;
     uncovered.push(...result.uncovered);

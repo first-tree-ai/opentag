@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { evaluatePatchCoverage, isSupportedSourcePath, SUPPORTED_SOURCE_EXTENSIONS } from "../unit-coverage-gate.mjs";
 
@@ -123,6 +126,42 @@ test("a diff with no executable changes passes explicitly", () => {
   assert.equal(result.covered, 0);
   assert.equal(result.passed, true);
   assert.equal(result.reason, "no executable changed lines");
+});
+
+test("TypeScript multiline imports and type declarations are not treated as executable", async () => {
+  const repositoryRoot = await mkdtemp(join(tmpdir(), "opentag-coverage-gate-"));
+  try {
+    const source = [
+      'import { dependency } from "./dependency.js";',
+      "type Options = {",
+      "  dependency: string;",
+      "};",
+      "interface Marker {",
+      "  dependency: string;",
+      "}",
+      "export const executable = dependency;",
+    ].join("\n");
+    await writeFile(join(repositoryRoot, "example.ts"), `${source}\n`);
+    const diff = [
+      "--- a/example.ts",
+      "+++ b/example.ts",
+      "@@ -0,0 +1,8 @@",
+      ...source.split("\n").map((line) => `+${line}`),
+      "",
+    ].join("\n");
+    const result = evaluatePatchCoverage({
+      diff,
+      coverage: { "example.ts": statementCoverage("example.ts", 8, 1) },
+      repositoryRoot,
+      threshold: 80,
+    });
+    assert.equal(result.total, 1);
+    assert.equal(result.covered, 1);
+    assert.equal(result.passed, true);
+    assert.deepEqual(result.uncovered, []);
+  } finally {
+    await rm(repositoryRoot, { force: true, recursive: true });
+  }
 });
 
 test("supported script extensions are included while coverage artifacts remain excluded", () => {

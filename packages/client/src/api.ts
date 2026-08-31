@@ -654,12 +654,12 @@ export class OpenTagApi {
   }
 
   #requestIdFromResponse(response: Response): string {
-    return (
+    const requestId =
       response.headers.get(REQUEST_ID_HEADER) ??
       response.headers.get("x-request-id") ??
-      this.#responseRequestIds.get(response) ??
-      "unknown"
-    );
+      this.#responseRequestIds.get(response);
+    if (!requestId) throw new Error("OpenTag response is missing a request ID");
+    return requestId;
   }
 
   #throwResponseError(status: number, body: unknown, requestId = "unknown"): never {

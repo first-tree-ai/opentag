@@ -10,16 +10,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
-import type {
-  AgentDraft,
-  ConnectState,
-  CreationState,
-  MessagingCliStatus,
-  MessagingState,
-  ReadinessFacts,
-  RuntimeStatus,
-} from "./flow.js";
+import type { AgentDraft, ConnectState, CreationState, MessagingState, ReadinessFacts } from "./flow.js";
 
 export interface MockScenario {
   readonly id: string;

@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button, Icon } from "../ui/design-system.js";
+import "./setup.css";
 
 const COPY_FEEDBACK_MS = 1_600;
 
@@ -73,11 +74,11 @@ export function CommandBlock({
   }
 
   return (
-    <div className="otv2-command flex flex-col gap-1" data-expired={expiredNotice ? "true" : undefined}>
-      <div className="otv2-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
-        <pre className="otv2-command__code flex-1 min-w-0">
+    <div className="ots-command flex flex-col gap-1" data-expired={expiredNotice ? "true" : undefined}>
+      <div className="ots-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
+        <pre className="ots-command__code flex-1 min-w-0">
           <code ref={codeRef}>
-            <span className="otv2-command__comment">{comment}</span>
+            <span className="ots-command__comment">{comment}</span>
             {"\n"}
             {lead}
             {/*
@@ -87,7 +88,7 @@ export function CommandBlock({
               one is reissued; measured, that was 19px of movement below 640px. The rest of the
               command still breaks between words, so short tokens like `sh` stay whole.
             */}
-            <span className="otv2-command__token">{token}</span>
+            <span className="ots-command__token">{token}</span>
           </code>
         </pre>
         {/*
@@ -97,7 +98,7 @@ export function CommandBlock({
         */}
         <Button
           aria-label={copied ? copiedLabel : copyLabel}
-          className="otv2-command__copy shrink-0"
+          className="ots-command__copy shrink-0"
           data-copied={copied ? "true" : undefined}
           disabled={inert || expiredNotice !== undefined}
           onClick={() => void copy()}
@@ -108,7 +109,7 @@ export function CommandBlock({
           <Icon name={copied ? "check" : "copy"} />
         </Button>
         {expiredNotice ? (
-          <div className="otv2-command__expired flex flex-wrap items-center justify-center gap-2 rounded-lg p-4 text-sm text-center">
+          <div className="ots-command__expired flex flex-wrap items-center justify-center gap-2 rounded-lg p-4 text-sm text-center">
             {expiredNotice}
           </div>
         ) : null}

@@ -1,11 +1,18 @@
-import { toString as qrToString } from "qrcode";
 import { type FormEvent, useEffect, useId, useState } from "react";
+import {
+  CheckLine,
+  CommandBlock,
+  ConnectStatus,
+  Countdown,
+  deriveChecks,
+  messagingCliCheck,
+  QrCode,
+  WAITING_LINE,
+} from "../setup/index.js";
 import { Button, Icon, KumoInputControl, KumoSelectControl, StatusIndicator, Text } from "../ui/design-system.js";
 import type { KnownComputer, PlanSignIn } from "./backend.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
-import { CommandBlock } from "./command-block.js";
 import {
-  CHECK_COPY,
   CLOUD_RUNTIME_COPY,
   COMING_SOON,
   COPY,
@@ -16,21 +23,17 @@ import {
 } from "./copy.js";
 import {
   type AgentDraft,
-  type CheckRow,
   CLOUD_RUNTIMES,
   type CloudComputerState,
   type ConnectState,
   type CreationState,
   DEFAULT_AGENT_NAME,
   type Destination,
-  deriveChecks,
   draftIsSubmittable,
   type FlowState,
-  formatRemaining,
   MESSAGING_PROVIDERS,
   type MessagingProvider,
   type MessagingState,
-  messagingCliCheck,
   needsPlanSignIn,
   type ReadinessFacts,
   RUNTIMES,
@@ -52,7 +55,6 @@ const CHOICES = "flex flex-col gap-3 m-0 p-0 list-none";
 const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
   "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
-const WAITING = "flex items-center gap-2 text-sm text-kumo-subtle m-0";
 const PANEL = "flex flex-col items-center gap-3 text-sm text-center";
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
@@ -330,7 +332,7 @@ function MessagingConnection({
    * depends on the provider, and until this point there was no provider. A missing one used to
    * block creating the Agent at all, which stopped a Slack user over a Lark dependency.
    */
-  const cliState = provider ? messagingCliCheck(readiness, provider) : "pending";
+  const cliState = provider ? messagingCliCheck(readiness?.messagingCli[provider]) : "pending";
   /*
    * Reachability needs more than the binding, and the Server's handoff status carries no reason —
    * so a wait on one of its other conditions would otherwise be an unexplained spinner.
@@ -361,7 +363,7 @@ function MessagingConnection({
       {provider === "feishu" ? (
         <div className={PANEL}>
           <p className="text-kumo-subtle m-0">{COPY.messaging.feishuIntro}</p>
-          <div className="otv2-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
+          <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
           </div>
           {/*
@@ -375,8 +377,8 @@ function MessagingConnection({
                 <span>{waitingReason}</span>
               </p>
             ) : (
-              <p className={WAITING} role="status">
-                <span aria-hidden="true" className="otv2-pulse shrink-0" />
+              <p className={WAITING_LINE} role="status">
+                <span aria-hidden="true" className="ots-pulse shrink-0" />
                 {COPY.messaging.confirming}
               </p>
             )
@@ -388,8 +390,8 @@ function MessagingConnection({
               </Button>
             </div>
           ) : (
-            <p className={WAITING} role="status">
-              <span aria-hidden="true" className="otv2-pulse shrink-0" />
+            <p className={WAITING_LINE} role="status">
+              <span aria-hidden="true" className="ots-pulse shrink-0" />
               {COPY.messaging.waiting}
             </p>
           )}
@@ -409,14 +411,14 @@ function MessagingConnection({
                   <span>{waitingReason}</span>
                 </p>
               ) : (
-                <p className={WAITING} role="status">
-                  <span aria-hidden="true" className="otv2-pulse shrink-0" />
+                <p className={WAITING_LINE} role="status">
+                  <span aria-hidden="true" className="ots-pulse shrink-0" />
                   {COPY.messaging.confirming}
                 </p>
               )
             ) : messaging.kind === "away" ? (
-              <p className={WAITING} role="status">
-                <span aria-hidden="true" className="otv2-pulse shrink-0" />
+              <p className={WAITING_LINE} role="status">
+                <span aria-hidden="true" className="ots-pulse shrink-0" />
                 {COPY.messaging.slackWaiting}
               </p>
             ) : (
@@ -637,8 +639,8 @@ function PlanSignInPanel({
         {signIn === "signed-in" ? (
           <StatusIndicator label={COPY.cloud.signInDone(runtimeLabel)} tone="success" />
         ) : signIn === "pending" ? (
-          <p className={WAITING} role="status">
-            <span aria-hidden="true" className="otv2-pulse shrink-0" />
+          <p className={WAITING_LINE} role="status">
+            <span aria-hidden="true" className="ots-pulse shrink-0" />
             {COPY.cloud.signInPending}
           </p>
         ) : (
@@ -687,7 +689,7 @@ export function ComputerStep({
   const selected = knownComputers.find((computer) => computer.id === selectedComputerId);
   // A computer this step can actually check: a chosen one that is reachable, or a new arrival.
   const ready = selected ? selected.online : connected;
-  const checks = deriveChecks(readiness);
+  const checks = deriveChecks(readiness?.runtime);
   const runtimeLabel = draft.runtime ? RUNTIME_COPY[draft.runtime].title : "";
   const resolving = readinessIsResolving(readiness);
   // Asked about the runtime this draft chose, so a verdict left over from a different one
@@ -742,7 +744,8 @@ export function ComputerStep({
         </div>
       )}
 
-      {selected ? null : <ConnectStatus connect={connect} />}
+      {/* A chosen machine reports through the check below; the arrival line is for a new one. */}
+      {selected ? null : <ConnectStatus connected={connected} dataUi="onboarding-v2-connect-status" />}
 
       {ready ? (
         <>
@@ -753,8 +756,8 @@ export function ComputerStep({
           </ol>
           <div className="otv2-slot--outcome flex flex-col justify-start" data-ui="onboarding-v2-check-outcome">
             {resolving ? (
-              <p className={WAITING} role="status">
-                <span aria-hidden="true" className="otv2-pulse shrink-0" />
+              <p className={WAITING_LINE} role="status">
+                <span aria-hidden="true" className="ots-pulse shrink-0" />
                 {COPY.check.waiting}
               </p>
             ) : failures.length > 0 ? (
@@ -833,7 +836,7 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
   // moves when the real one lands. It is inert: nothing to copy and nothing to announce.
   if (connect.kind === "idle" || connect.kind === "issuing") {
     return (
-      <div aria-hidden="true" className="otv2-command-pending">
+      <div aria-hidden="true" className="ots-command-pending">
         <CommandBlock
           command={PLACEHOLDER_CONNECT_COMMAND}
           comment={COPY.connect.commandComment}
@@ -864,64 +867,6 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
       fallbackHint={COPY.connect.copyFallback}
       key={connect.command}
     />
-  );
-}
-
-function ConnectStatus({ connect }: { connect: ConnectState }) {
-  return (
-    <div className="otv2-slot--status flex flex-col justify-center" data-ui="onboarding-v2-connect-status">
-      {connect.kind === "connected" ? (
-        <StatusIndicator label={COPY.connect.connected} tone="success" />
-      ) : (
-        <p className={WAITING} role="status">
-          <span aria-hidden="true" className="otv2-pulse shrink-0" />
-          {COPY.connect.waiting}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function Countdown({ expiresAt }: { expiresAt: number }) {
-  return <span>{COPY.connect.expiresIn(formatRemaining(useRemaining(expiresAt)))}</span>;
-}
-
-/** Ticks once a second and settles at zero, so an expired code never shows a negative duration. */
-function useRemaining(expiresAt: number): number {
-  const [remaining, setRemaining] = useState(() => Math.max(0, expiresAt - Date.now()));
-  useEffect(() => {
-    setRemaining(Math.max(0, expiresAt - Date.now()));
-    const id = window.setInterval(() => {
-      const next = Math.max(0, expiresAt - Date.now());
-      setRemaining(next);
-      if (next === 0) window.clearInterval(id);
-    }, 1_000);
-    return () => window.clearInterval(id);
-  }, [expiresAt]);
-  return remaining;
-}
-
-function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; position: number; runtimeLabel: string }) {
-  const copy = CHECK_COPY[check.id];
-  // Always rendered, even when empty, so a resolving check never changes the row's height.
-  const detail = copy.detail[check.state](runtimeLabel);
-  const dim = check.state === "blocked" || check.state === "pending";
-  return (
-    <li
-      className="otv2-check flex items-center gap-3 p-4 border-t border-kumo-line first:border-t-0 "
-      data-state={check.state}
-    >
-      <span
-        aria-hidden="true"
-        className="otv2-check__marker inline-flex shrink-0 items-center justify-center rounded-full text-xs text-kumo-subtle"
-      >
-        {position}
-      </span>
-      <span className="flex flex-col gap-1 min-w-0">
-        <span className={dim ? "text-kumo-subtle" : "font-medium text-kumo-strong"}>{copy.title(runtimeLabel)}</span>
-        <span className="text-xs text-kumo-subtle">{detail || " "}</span>
-      </span>
-    </li>
   );
 }
 
@@ -972,23 +917,6 @@ export function MessagingStep({
       */}
     </section>
   );
-}
-
-function QrCode({ value }: { value: string }) {
-  const [source, setSource] = useState<string>();
-  useEffect(() => {
-    let active = true;
-    void qrToString(value, { margin: 1, type: "svg", width: 208 }).then(
-      (svg) => {
-        if (active) setSource(`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`);
-      },
-      () => undefined,
-    );
-    return () => {
-      active = false;
-    };
-  }, [value]);
-  return source ? <img alt={COPY.messaging.qrAlt} className="otv2-qr__image" src={source} /> : null;
 }
 
 export function DoneStep({ name }: { name: string }) {

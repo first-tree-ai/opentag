@@ -184,14 +184,7 @@ function UsageSummaryState({
       </div>
     );
   }
-  return compact ? (
-    <>
-      <UsageMetrics usage={state.value} />
-      <UsageCoverage usage={state.value} />
-    </>
-  ) : (
-    <AgentUsageDetailContent usage={state.value} />
-  );
+  return compact ? <UsageMetrics usage={state.value} /> : <AgentUsageDetailContent usage={state.value} />;
 }
 
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
@@ -226,7 +219,7 @@ function UsageCoverage({ usage, includesCharts = false }: { usage: AgentUsageDet
 
 function Metric({ label, primary = false, value }: { label: string; primary?: boolean; value: string }) {
   return (
-    <div className={primary ? "rounded-md bg-kumo-tint p-3" : "rounded-md bg-kumo-recessed p-3"}>
+    <div className={`grid gap-1 ${primary ? "rounded-md bg-kumo-tint p-3" : "rounded-md bg-kumo-recessed p-3"}`}>
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>

@@ -6,7 +6,7 @@ import { Button, Dialog, Text } from "../ui/design-system.js";
 
 export interface InternalToolsPageProps {
   /** Runs after a completed reset: refresh authoritative `/me` state, then enter ordinary onboarding. */
-  readonly onResetSucceeded: () => Promise<void> | void;
+  readonly onResetSucceeded: (mode: AccountSetupResetMode) => Promise<void> | void;
   readonly user: UserProfile;
 }
 
@@ -81,7 +81,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
     setResetState({ kind: "pending", mode: operation.mode });
     try {
       await browserApi.resetAccountSetup(operation.mode);
-      await onResetSucceeded();
+      await onResetSucceeded(operation.mode);
     } catch (cause) {
       setResetState({
         kind: "error",

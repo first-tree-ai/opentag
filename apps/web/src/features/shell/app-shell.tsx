@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { lazy, Suspense, useState } from "react";
 import { browserApi } from "../../api.js";
+import opentagLogo from "../../assets/opentag-logo.png";
 import { initials } from "../../i18n/format.js";
 import { queryKeys } from "../../query/keys.js";
 import { Button, DropdownMenu, Icon, type IconName, Loader, Sidebar } from "../../ui/design-system.js";
@@ -36,8 +37,9 @@ export function AccountShell() {
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas" data-ui="account-shell">
       <header className="shrink-0 px-4 pt-5 md:px-8 md:pt-7" data-ui="account-shell-header">
         <div className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4">
-          <Link className="text-lg font-semibold text-kumo-strong" to="/agents">
-            OpenTag
+          <Link className="inline-flex items-center gap-2 text-lg font-semibold text-kumo-strong" to="/agents">
+            <img alt="" className="block size-6 shrink-0" height={24} src={opentagLogo} width={24} />
+            <span>OpenTag</span>
           </Link>
           <AccountMenu placement="page" />
         </div>

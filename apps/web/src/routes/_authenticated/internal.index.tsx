@@ -5,6 +5,7 @@ import { StandaloneNotFoundPage } from "../../features/not-found.js";
 import { AsyncState, toResourceState } from "../../features/resource/resource-state.js";
 import { useAccount } from "../../features/session/session-context.js";
 import { InternalToolsPage } from "../../internal/internal-tools-page.js";
+import { forgetReboardReview, rememberReboardReview } from "../../internal/reboard-review.js";
 import { queryKeys } from "../../query/keys.js";
 
 export const Route = createFileRoute("/_authenticated/internal/")({
@@ -28,14 +29,20 @@ function InternalToolsRoute() {
         value ? (
           <InternalToolsPage
             user={me.user}
-            onResetSucceeded={async () => {
+            onResetSucceeded={async (mode) => {
               // Success is never inferred from client state: onboarding is entered only once the
               // refreshed Account actually reports incomplete setup.
               const account = await refreshMe();
               if (account.setupCompletedAt) {
                 throw new Error("The Account still reports completed setup; try again.");
               }
-              await navigate({ replace: true, to: "/onboarding" });
+              if (mode === "reboard") rememberReboardReview(me.user.id);
+              else forgetReboardReview();
+              await navigate({
+                replace: true,
+                search: { review: mode === "reboard" ? "reboard" : undefined },
+                to: "/onboarding",
+              });
             }}
           />
         ) : (

@@ -4,7 +4,8 @@
 
 ## Prerequisites
 
-- Node.js 22.13 or newer on 22.x, Node.js 24.x, or Node.js 26.x (use the latest patch; Node.js 24 is primary)
+- Node.js 24.19.0 for the pinned development toolchain (the supported range remains Node.js 22.13 or newer on 22.x,
+  Node.js 24.x, or Node.js 26.x; Node.js 24 is primary)
 - Corepack and pnpm 10.12.1
 - Docker with Compose support, only when running the local PostgreSQL service
 
@@ -15,14 +16,17 @@ corepack enable
 pnpm install
 ```
 
-The repository pins pnpm in `package.json`. Do not use npm or Yarn to update dependencies.
+The repository pins pnpm in `package.json` and pins the development Node.js patch in `.node-version`. It also sets
+`engine-strict=true` in `.npmrc`, so an unsupported Node.js version fails dependency installation instead of producing
+only an engine warning. Do not use npm or Yarn to update dependencies.
 
 ## Git hooks and worktrees
 
 `pnpm install` runs the root `prepare` script, which installs three hooks into the clone's hooks directory:
 
 - `pre-commit` runs Biome over the staged files, applies the fixes it can make safely, and stages the result.
-- `pre-push` runs `biome lint .` and `biome format .` over the whole repository.
+- `pre-push` runs `pnpm exec biome lint .`, `pnpm exec biome format .`, `pnpm check`, and `pnpm typecheck` over the whole
+  repository. These read-only jobs run in parallel.
 - `post-checkout` prepares a worktree that `git worktree add` has just created: it runs `pnpm install` inside the new
   worktree and reinstalls the hooks, so the worktree is ready to commit and push.
 

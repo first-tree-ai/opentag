@@ -36,7 +36,7 @@
   "tasks_not_found": "未找到任务",
   "tasks_not_found_detail": "此任务不存在，或不属于你的账户。",
   "tasks_page_description": "查看 Agent 的工作、进度和结果。",
-  "tasks_report_summary": "{outcome} · {time}",
+  "tasks_report_summary": "{outcome}，{time}",
   "tasks_request_failed": "请求失败",
   "tasks_search_tasks": "搜索任务",
   "tasks_started": "开始于 {time}",

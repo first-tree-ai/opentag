@@ -231,7 +231,7 @@ function AgentSwitcher({
                 className="grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold group-data-[state=collapsed]/sidebar:size-4 group-data-[state=collapsed]/sidebar:text-xs"
                 aria-hidden="true"
               >
-                {agent ? initials(agent.displayName) : m.shell_agent_initial()}
+                {agent ? initials(agent.displayName) : "A"}
               </span>
             }
             tooltip={agent?.displayName ?? m.shell_agent()}

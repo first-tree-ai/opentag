@@ -1,5 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   agents,
@@ -16,7 +17,6 @@ import { AgentService } from "../../services/agents/index.js";
 import { AuthServiceError } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
 import { OnboardingResetService } from "../../services/onboarding-reset/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;

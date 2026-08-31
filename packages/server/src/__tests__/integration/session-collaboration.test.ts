@@ -10,6 +10,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import {
@@ -25,7 +26,6 @@ import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../
 import { AgentService } from "../../services/agents/index.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 

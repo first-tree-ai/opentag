@@ -9,7 +9,6 @@ import type {
   RuntimeImCredentialGrantRequest,
   RuntimeImCredentialGrantResult,
   SlackBindingActivation,
-  SlackConfigurationIntent,
   SlackConfigurationResult,
 } from "@opentag/shared";
 import {
@@ -1787,8 +1786,7 @@ export class ImBindingService {
   async #activate(
     input: {
       agentId: string;
-      provider: "feishu" | "slack";
-      intent?: SlackConfigurationIntent;
+      provider: "feishu";
       identity: {
         appId: string;
         teamId: string | null;
@@ -1796,7 +1794,7 @@ export class ImBindingService {
         botId: string;
         teamBrand: string | null;
       };
-      credential: z.infer<typeof FeishuCredentialSchema> | z.infer<typeof SlackCredentialSchema>;
+      credential: z.infer<typeof FeishuCredentialSchema>;
     },
     existingTransaction?: DatabaseTransaction,
   ): Promise<ActivatedBinding> {
@@ -1821,9 +1819,6 @@ export class ImBindingService {
           409,
           "The Agent already has a different IM provider",
         );
-      }
-      if (input.provider === "slack") {
-        throw new Error("Slack activation must use the Slack installation write path");
       }
       if (input.provider === "feishu") {
         const [conflicting] = await transaction

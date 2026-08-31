@@ -309,6 +309,34 @@ describe("RuntimeDomainOwner", () => {
     ).toThrow(RuntimeDomainConflictError);
   });
 
+  it("rejects a reissued delivery whose expired request belongs to a different Computer", async () => {
+    const fixture = await ownerFixture(25);
+    const request = deliveryRequest();
+    await expect(fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request)).rejects.toMatchObject({
+      code: "timeout",
+    });
+
+    expect(() => fixture.owner.requestDelivery(randomUUID(), fixture.instanceId, structuredClone(request))).toThrow(
+      RuntimeDomainConflictError,
+    );
+
+    const retried = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, structuredClone(request));
+    await vi.waitFor(() => expect(fixture.frames).toContainEqual(request));
+    await fixture.owner.handle(
+      {
+        type: "im:deliver:result",
+        requestId: request.requestId,
+        deliveryId: request.deliveryId,
+        sessionId: request.sessionId,
+        placementGeneration: 1,
+        status: "accepted",
+        turnId: "turn-1",
+      } as never,
+      fixture.context,
+    );
+    await expect(retried).resolves.toMatchObject({ status: "accepted" });
+  });
+
   it("applies reconcile admission after preparation and before the Runtime frame", async () => {
     const prepareReconcile = vi.fn(
       async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => ({

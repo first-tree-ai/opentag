@@ -1,7 +1,7 @@
 import type { TurnReportRequest } from "@opentag/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
-import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
 import {
   agents,
   computers,

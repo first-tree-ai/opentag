@@ -12,6 +12,7 @@ import {
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { createApp } from "../app.js";
 import { computers, imBindings, sessionPlacements, sessions, slackInstallations } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
@@ -25,7 +26,6 @@ import {
 import type { ImBindingService } from "../services/im-bindings/index.js";
 import { ImBindingService as RealImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";

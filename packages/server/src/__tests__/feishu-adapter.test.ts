@@ -9,6 +9,7 @@ import {
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { computers, imBindings } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -23,7 +24,6 @@ import { FeishuConnectionManager } from "../services/im-bindings/feishu/connecti
 import { FeishuOperationError } from "../services/im-bindings/feishu/errors.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 let connectionDatabase: UnitDatabase;
 const connectionNow = new Date("2026-08-19T00:00:00.000Z");

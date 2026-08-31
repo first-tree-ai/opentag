@@ -3,13 +3,13 @@ import { handleOAuthUserInfo } from "better-auth/oauth2";
 import { eq } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { BETTER_AUTH_BASE_PATH, createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { authIdentities, authSessions, users } from "../../db/schema/index.js";
 import { createUserAuthPreHandler, resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
 import { AuthService, DevBrowserAuthService, PostAuthenticationService } from "../../services/auth/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const GOOGLE_ISSUER = "https://accounts.google.com";

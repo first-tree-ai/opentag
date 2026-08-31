@@ -91,6 +91,52 @@ function exchangeInput(code: string, installationId = randomUUID(), version = "0
   };
 }
 
+/**
+ * Preserves the real PGlite transaction for every read and write except the `computers` update,
+ * whose builder is replaced so the repair path can be driven into its fail-closed branches on an
+ * engine whose native unique-violation shape differs from PostgreSQL's.
+ */
+function withComputerUpdateFailure(mode: "empty_returning" | "unique_violation") {
+  const database = new Proxy(unit.database, {
+    get(target, property, receiver) {
+      if (property !== "transaction") return Reflect.get(target, property, receiver);
+      return (callback: (transaction: unknown) => Promise<unknown>) =>
+        target.transaction(async (transaction: unknown) => {
+          const proxied = new Proxy(transaction as Record<PropertyKey, unknown>, {
+            get(txTarget, txProperty, txReceiver) {
+              if (txProperty !== "update") return Reflect.get(txTarget, txProperty, txReceiver);
+              return (table: unknown) => {
+                if (table !== computers) {
+                  return (Reflect.get(txTarget, txProperty, txReceiver) as (t: unknown) => unknown).call(
+                    txTarget,
+                    table,
+                  );
+                }
+                const builder: Record<string, unknown> = {};
+                builder.set = () => builder;
+                builder.where = () => builder;
+                builder.returning = async () => {
+                  if (mode === "unique_violation") {
+                    throw Object.assign(
+                      new Error(
+                        'duplicate key value violates unique constraint "computers_current_installation_id_unique"',
+                      ),
+                      { code: "23505", constraint_name: "computers_current_installation_id_unique" },
+                    );
+                  }
+                  return [];
+                };
+                return builder;
+              };
+            },
+          });
+          return callback(proxied);
+        });
+    },
+  });
+  return { machine: new MachineAuthService(database as never, { now: () => NOW }) };
+}
+
 describe("bootstrap and account authentication services", () => {
   it("normalizes bootstrap input, issues a hashed connect code, and rejects a second bootstrap", async () => {
     const result = await bootstrapInitialAdmin(
@@ -291,6 +337,78 @@ describe("machine authentication and Computer services", () => {
     await unit.database.update(computers).set({ ownerAccountId: other.id }).where(eq(computers.id, first.computerId));
     await expect(value.machine.exchangeConnectCode(exchangeInput(repairCode.code))).rejects.toMatchObject({
       code: "AUTH_INVALID_CODE",
+    });
+  });
+
+  it("maps a repair update rejected as a duplicate installation to a 409 and rolls everything back", async () => {
+    const value = await machineFixture();
+    const first = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code));
+    const repairCode = await value.machine.issueForAccount(value.bootstrap.userId, {
+      mode: "repair",
+      targetComputerId: first.computerId,
+    });
+    const failing = withComputerUpdateFailure("unique_violation");
+
+    await expect(
+      failing.machine.exchangeConnectCode(exchangeInput(repairCode.code, randomUUID())),
+    ).rejects.toMatchObject({ code: "COMPUTER_IDENTITY_CONFLICT", statusCode: 409 });
+
+    const [code] = await unit.database
+      .select()
+      .from(computerConnectCodes)
+      .where(eq(computerConnectCodes.tokenHash, hashSecret(repairCode.code)));
+    expect(code).toMatchObject({ consumedAt: null, consumedComputerId: null });
+    const [computer] = await unit.database.select().from(computers).where(eq(computers.id, first.computerId));
+    expect(computer).toMatchObject({ currentInstallationId: first.installationId });
+    expect(await unit.database.select().from(computerCredentials)).toHaveLength(1);
+  });
+
+  it("fails closed when the repair update returns no row and rolls everything back", async () => {
+    const value = await machineFixture();
+    const first = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code));
+    const repairCode = await value.machine.issueForAccount(value.bootstrap.userId, {
+      mode: "repair",
+      targetComputerId: first.computerId,
+    });
+    const failing = withComputerUpdateFailure("empty_returning");
+
+    await expect(failing.machine.exchangeConnectCode(exchangeInput(repairCode.code, randomUUID()))).rejects.toThrow(
+      "The repaired Computer does not match its issuing Account",
+    );
+
+    const [code] = await unit.database
+      .select()
+      .from(computerConnectCodes)
+      .where(eq(computerConnectCodes.tokenHash, hashSecret(repairCode.code)));
+    expect(code).toMatchObject({ consumedAt: null, consumedComputerId: null });
+    const [computer] = await unit.database.select().from(computers).where(eq(computers.id, first.computerId));
+    expect(computer).toMatchObject({ currentInstallationId: first.installationId });
+    expect(await unit.database.select().from(computerCredentials)).toHaveLength(1);
+  });
+
+  it("rejects a repair that reuses an installation already bound to another Computer", async () => {
+    const value = await machineFixture();
+    const first = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code));
+    const secondIssued = await value.machine.issueForAccount(value.bootstrap.userId, {});
+    const second = await value.machine.exchangeConnectCode(exchangeInput(secondIssued.code));
+    const repairCode = await value.machine.issueForAccount(value.bootstrap.userId, {
+      mode: "repair",
+      targetComputerId: second.computerId,
+    });
+    /* The embedded engine surfaces driver-shaped unique violations, so this asserts the fail-closed
+       rejection and the rollback; the mapped 409 for the same branch is covered by the integration
+       suite against a real PostgreSQL. */
+    await expect(
+      value.machine.exchangeConnectCode(exchangeInput(repairCode.code, first.installationId as TestUuid)),
+    ).rejects.toThrow();
+
+    const credentials = await unit.database.select().from(computerCredentials);
+    expect(credentials).toHaveLength(2);
+    const [computer] = await unit.database.select().from(computers).where(eq(computers.id, second.computerId));
+    expect(computer).toMatchObject({ currentInstallationId: second.installationId });
+    await expect(value.machine.verifyMachineToken(second.machineToken)).resolves.toMatchObject({
+      computerId: second.computerId,
+      installationId: second.installationId,
     });
   });
 
@@ -663,6 +781,40 @@ describe("Onboarding reset and setup services", () => {
     const setup = new AccountSetupService(unit.database, { getHandoffForAgent } as never, { now: () => NOW });
     await expect(setup.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+    });
+  });
+
+  it("rechecks the Account itself under lock before writing the completion marker", async () => {
+    const bootstrap = await account();
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const issued = await machine.issueForAccount(bootstrap.userId, {});
+    const exchange = await machine.exchangeConnectCode(exchangeInput(issued.code));
+    const [agent] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        computerId: exchange.computerId,
+        name: "vanishing",
+        displayName: "Vanishing",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!agent) throw new Error("agent fixture missing");
+    const getHandoffForAgent = vi.fn(async () => {
+      await unit.database.delete(agents).where(eq(agents.createdByUserId, bootstrap.userId));
+      await unit.database.delete(computerCredentials).where(eq(computerCredentials.issuedByUserId, bootstrap.userId));
+      await unit.database
+        .delete(computerConnectCodes)
+        .where(eq(computerConnectCodes.issuedByAccountId, bootstrap.userId));
+      await unit.database.delete(computers).where(eq(computers.ownerAccountId, bootstrap.userId));
+      await unit.database.delete(accountCliLoginCodes).where(eq(accountCliLoginCodes.userId, bootstrap.userId));
+      await unit.database.delete(users).where(eq(users.id, bootstrap.userId));
+      return { handoffReady: true };
+    });
+    const setup = new AccountSetupService(unit.database, { getHandoffForAgent } as never, { now: () => NOW });
+    await expect(setup.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
+      code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+      statusCode: 404,
     });
   });
 });

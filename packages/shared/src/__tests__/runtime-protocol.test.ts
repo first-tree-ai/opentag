@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AuthResultFrameSchema,
   AuthV1FrameSchema,
   AuthV2FrameSchema,
   ClientRuntimeFrameSchema,
@@ -19,6 +20,33 @@ import {
 } from "../runtime-protocol.js";
 
 describe("runtime protocol", () => {
+  it("requires the Computer identity on a successful auth result and an error code on failure", () => {
+    const ok = {
+      type: "auth:result" as const,
+      requestId: crypto.randomUUID(),
+      ok: true,
+      computerId: crypto.randomUUID(),
+      installationId: crypto.randomUUID(),
+    };
+    expect(AuthResultFrameSchema.parse(ok)).toEqual(ok);
+    expect(() => AuthResultFrameSchema.parse({ ...ok, computerId: undefined })).toThrow(
+      "requires the Computer identity",
+    );
+    expect(() => AuthResultFrameSchema.parse({ ...ok, installationId: undefined })).toThrow(
+      "requires the Computer identity",
+    );
+    const rejected = {
+      type: "auth:result" as const,
+      requestId: ok.requestId,
+      ok: false,
+      errorCode: "AUTH_INVALID_TOKEN" as const,
+    };
+    expect(AuthResultFrameSchema.parse(rejected)).toEqual(rejected);
+    expect(() => AuthResultFrameSchema.parse({ type: "auth:result", requestId: ok.requestId, ok: false })).toThrow(
+      "requires an error code",
+    );
+  });
+
   it("negotiates credential grants across v1 and v2", () => {
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imCredentialGrant]).toEqual({ min: 1, max: 2 });
     expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imCredentialGrant]).toEqual({ min: 1, max: 2 });

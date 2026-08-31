@@ -8,15 +8,15 @@ import {
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
-import { AuthService, ConnectCodeService } from "../../services/auth/index.js";
+import { AuthService, ConnectCodeService, hashSecret } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const betterAuthSecret = "computer-test-secret-at-least-32-characters";
@@ -304,6 +304,45 @@ describe("Computer connection persistence", () => {
         ownerAccountId: otherUser.id,
         currentInstallationId: computerId,
       });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects a repair that reuses an installation already bound to another Computer", async () => {
+    const value = await fixture();
+    try {
+      const first = await connect(value, value.bootstrap.userId, crypto.randomUUID());
+      const second = await connect(value, value.bootstrap.userId, crypto.randomUUID());
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+        mode: "repair",
+        targetComputerId: second.computerId,
+      });
+      const before = {
+        computers: await value.database.select().from(computers),
+        targetCredentials: await value.database.select().from(computerCredentials),
+        codes: await value.database.select().from(computerConnectCodes),
+      };
+
+      await expect(
+        value.machineAuth.exchangeConnectCode({
+          code: issued.code,
+          installationId: first.installationId,
+          displayName: "mutated",
+          platform: "darwin",
+          arch: "arm64",
+          clientVersion: "9.9.9",
+        }),
+      ).rejects.toMatchObject({ code: "COMPUTER_IDENTITY_CONFLICT", statusCode: 409 });
+
+      expect(await value.database.select().from(computers)).toEqual(before.computers);
+      expect(await value.database.select().from(computerCredentials)).toEqual(before.targetCredentials);
+      expect(before.codes.filter((row) => row.consumedAt === null)).toHaveLength(1);
+      const [code] = await value.database
+        .select()
+        .from(computerConnectCodes)
+        .where(eq(computerConnectCodes.tokenHash, hashSecret(issued.code)));
+      expect(code).toMatchObject({ consumedAt: null });
     } finally {
       await value.sql.end();
     }

@@ -6,6 +6,7 @@ import {
 } from "@opentag/shared";
 import { decodeJwt } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { createApp } from "../app.js";
 import { computers, slackOAuthNonces } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
@@ -24,7 +25,6 @@ import {
 import { SlackOAuthStateService } from "../services/im-bindings/slack/oauth-state.js";
 import { signedInBrowser } from "./signed-in-browser.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 const secret = "slack-oauth-state-secret-that-is-at-least-32-characters";
 const now = new Date("2026-08-19T00:00:00.000Z");

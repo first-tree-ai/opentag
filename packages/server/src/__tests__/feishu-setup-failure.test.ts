@@ -1,6 +1,7 @@
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { computers, imBindings } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -16,7 +17,6 @@ import type { FeishuRegistration, FeishuRegistrationGateway } from "../services/
 import { type FeishuBindingActivation, FeishuSetupService } from "../services/im-bindings/feishu/setup-service.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 function fetchFailed(cause: unknown): Error {
   const error = new TypeError("fetch failed");

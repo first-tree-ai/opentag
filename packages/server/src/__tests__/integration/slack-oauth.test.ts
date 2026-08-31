@@ -1,6 +1,7 @@
 import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   agents,
@@ -18,7 +19,6 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "../../services/im-bindings/slack/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const now = new Date("2026-08-25T00:00:00.000Z");

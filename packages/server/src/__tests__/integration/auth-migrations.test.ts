@@ -6,7 +6,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { bootstrapInitialAdmin as bootstrapProductAccount } from "../../admin/bootstrap.js";
+import { bootstrapInitialAdmin, bootstrapInitialAdmin as bootstrapProductAccount } from "../../admin/bootstrap.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
@@ -24,7 +24,6 @@ import {
   ConnectCodeService,
   hashSecret,
 } from "../../services/auth/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const betterAuthSecret = "im-binding-test-secret-at-least-32-characters";

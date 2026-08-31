@@ -2,8 +2,9 @@ import { FEISHU_REQUIRED_TENANT_SCOPES, type TurnReportRequest } from "@opentag/
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
-import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
 import {
+  agents,
   computers,
   imBindings,
   imMessageDeliveries,
@@ -214,6 +215,22 @@ async function createDelivery(
 }
 
 describe("AgentService", () => {
+  it("fails loudly when a stored Agent projection is internally inconsistent", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id);
+    /* The database cannot express the summary invariants the projection defends (display names are
+       plain NOT NULL text), so an inconsistent row must still fail closed instead of leaking a
+       malformed projection to the Account. */
+    await unitDatabase.database.update(computers).set({ displayName: "" }).where(eq(computers.id, computer.id));
+
+    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow(
+      "missing its creator audit record or bound Computer",
+    );
+
+    await unitDatabase.database.delete(agents).where(eq(agents.id, created.id));
+    await expect(service.listForAccount(bootstrap.userId)).resolves.toEqual({ agents: [] });
+  });
+
   it("creates, projects, updates, and authorizes an Agent", async () => {
     const { bootstrap, computer, service } = await fixture();
     await expect(service.listForAccount(bootstrap.userId)).resolves.toEqual({ agents: [] });

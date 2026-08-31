@@ -4,6 +4,7 @@ import {
   AgentTraceBatchSchema,
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
+  computeReconcilePayloadHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
   computeRuntimeSnapshotHashes,
@@ -312,6 +313,30 @@ describe("runtime domain contract", () => {
       "f0526b059b61ae051ea15a8a45b28f6ea2f8a7296fbb4421611cbb5e0d58c487",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
+  });
+
+  it("hashes the reconcile payload from its complete identity tuple", () => {
+    const request = {
+      type: "session:reconcile" as const,
+      requestId: "44444444-4444-4444-8444-444444444444",
+      installationId: "55555555-5555-4555-8555-555555555555",
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 2,
+      sessionKind: "internal" as const,
+      creatorSessionId: "66666666-6666-4666-8666-666666666666",
+      desired: "ready" as const,
+      runtime: snapshot(),
+    };
+    expect(computeReconcilePayloadHash(request)).toBe(
+      "973599fac890f01fa6d0f46a8a0e1410622287f1e80606523af19644b7992400",
+    );
+    expect(
+      computeReconcilePayloadHash({ ...request, installationId: "77777777-7777-4777-8777-777777777777" }),
+    ).not.toBe(computeReconcilePayloadHash(request));
+    expect(computeReconcilePayloadHash({ ...request, desired: "stopped", runtime: undefined })).toBe(
+      "27e33a25c9891fad2b548720db65feb9a61d65655ed54015314995687db7c54f",
+    );
   });
 
   it("B-06 rejects unsafe IDs and sequence boundaries without coercion", () => {

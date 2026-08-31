@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import type { NormalizedInboundImEvent, SessionReconcileRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import {
   agents,
   computers,
@@ -32,7 +33,6 @@ import {
   SessionServiceError,
 } from "../services/sessions/session-service.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 describe("SessionService with the unit database", () => {
   let db: UnitDatabase;

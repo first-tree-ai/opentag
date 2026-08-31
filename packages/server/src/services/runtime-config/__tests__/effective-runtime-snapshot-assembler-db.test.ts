@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
-import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
 import { agentRuntimeConfigs, agents, computers, imBindings, sessions } from "../../../db/schema/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../index.js";
 

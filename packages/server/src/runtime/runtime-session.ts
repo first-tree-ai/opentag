@@ -307,11 +307,11 @@ export class RuntimeSession {
   }
 
   async #register(frame: ComputerRegisterFrame): Promise<void> {
+    // #register runs only in the await-register state, which #authenticate enters immediately after
+    // assigning #authContext. A missing context here is a programming invariant violation, never a
+    // Client protocol event, so it must not be answered with a protocol close.
     const authContext = this.#authContext;
-    if (!authContext) {
-      this.#fail("PROTOCOL_ERROR", "Missing authenticated Computer credential", 4400, frame.requestId);
-      return;
-    }
+    if (!authContext) throw new Error("Computer registration requires an authenticated Computer");
     if (frame.installationId !== authContext.installationId) {
       this.#fail(
         "COMPUTER_IDENTITY_CONFLICT",

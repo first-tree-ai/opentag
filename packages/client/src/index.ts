@@ -357,6 +357,10 @@ export {
   snapshotPath,
 } from "./runtime/runtime-paths.js";
 export {
+  ServerRuntimeDurabilityStore,
+  type ServerRuntimeDurabilityStoreOptions,
+} from "./runtime/server-runtime-durability-store.js";
+export {
   type CustodyResult,
   type LocalSessionBinding,
   type RecordedInput,

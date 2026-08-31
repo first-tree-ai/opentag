@@ -1,8 +1,15 @@
 /**
  * Pure helpers for enforcing coverage on executable lines changed by a pull request.
  *
- * The coverage provider may omit files or statements that it could not instrument. Omissions are
- * treated as uncovered for changed executable lines, which keeps the gate fail closed.
+ * A file the coverage provider never instrumented is treated as wholly uncovered, which keeps the
+ * gate fail closed: a package that silently stopped being measured must not read as clean.
+ *
+ * Within a file it did instrument, the provider is the authority on which lines can be executed at
+ * all. It emits no statement for a TypeScript interface member or a bare JSX text child, because
+ * neither survives compilation as code, and no test can ever cover one. Counting those as uncovered
+ * would fail a pull request for adding a type or changing a string, with nothing the author could
+ * write to satisfy it — so a changed line an instrumented file has no statement for is skipped
+ * rather than blamed.
  */
 
 import { extname, isAbsolute, posix, relative } from "node:path";
@@ -116,13 +123,17 @@ export function buildLineHitsByFile(coverage, repositoryRoot) {
 
 function evaluateChangedFile({ file, lines, lineHits }) {
   if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
+  const instrumented = lineHits !== undefined;
   const uncovered = [];
   let covered = 0;
   let total = 0;
   for (const { content, line } of lines) {
     if (!isExecutableSourceLine(content)) continue;
+    // The provider instrumented this file and emitted nothing for this line: it is a declaration or
+    // a literal, not a statement a test could reach.
+    if (instrumented && !lineHits.has(line)) continue;
     total += 1;
-    if (!lineHits?.has(line)) {
+    if (!instrumented) {
       uncovered.push(`${file}:${line} (missing coverage entry)`);
     } else if (lineHits.get(line) > 0) {
       covered += 1;

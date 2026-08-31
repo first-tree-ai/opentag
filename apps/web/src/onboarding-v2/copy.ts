@@ -147,12 +147,12 @@ export const COPY = {
      * The same step, once the Account already has a computer. The title changes because the
      * question does: connecting one is now a choice rather than the only way through.
      *
-     * What is deliberately not said: that several agents can share a computer. Offering an
-     * already-connected machine says it, and a reader who has one knows it — spelling it out adds
-     * a sentence to the step that needs one least.
+     * The lead says what the step is for and stops. What the control offers — an existing machine
+     * or a new one — is visible in the control itself, so narrating it here would only add a
+     * sentence to the step that needs one least.
      */
     chooseTitle: "Choose a computer",
-    chooseLead: "Your AI worker runs on your own computer. Use one you have already connected, or connect another.",
+    chooseLead: "Your AI worker runs on your own computer.",
     selectLabel: "Computer",
     newOption: "Connect a new computer…",
     online: "Online",

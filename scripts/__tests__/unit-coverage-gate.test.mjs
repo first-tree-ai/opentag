@@ -172,6 +172,21 @@ test("package test infrastructure is excluded without excluding unrelated __test
   assert.equal(isSupportedSourcePath("packages/server/src/services/tasks/__tests__/fixture.ts"), false);
   assert.equal(isSupportedSourcePath("src/__tests__/production.ts"), true);
   assert.equal(isSupportedSourcePath("tools/__tests__/production.ts"), true);
+
+  const result = evaluatePatchCoverage({
+    diff: [
+      "--- a/apps/web/src/__tests__/support/app-fixtures.tsx",
+      "+++ b/apps/web/src/__tests__/support/app-fixtures.tsx",
+      "@@ -0,0 +1 @@",
+      "+export const fixture = true;",
+      "",
+    ].join("\n"),
+    coverage: {},
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.reason, "no executable changed lines");
+  assert.equal(result.passed, true);
 });
 
 test("a declaration the provider emits no statement for is not blamed for being uncoverable", () => {

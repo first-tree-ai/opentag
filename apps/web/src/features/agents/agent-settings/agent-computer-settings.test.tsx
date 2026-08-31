@@ -93,6 +93,32 @@ describe("An Agent with no Computer", () => {
     expect(onAgentChanged).not.toHaveBeenCalled();
   });
 
+  it("says the Computer read failed instead of reporting an Account with no Computers", async () => {
+    // The two look identical if the panel reads `data?.computers ?? []`, and the reader whose read
+    // is failing is the one told to go and enrol a machine they already have.
+    vi.spyOn(browserApi, "computers").mockRejectedValue(new Error("Service unavailable"));
+
+    await renderInRouter(
+      <AgentComputerSettings agent={view(unboundAgent, undefined)} onAgentChanged={() => undefined} />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(screen.getByText(/couldn't read the Computers on this Account/)).toBeTruthy();
+    // The section stays: a failed read never silently removes the choice it was going to offer.
+    expect(screen.getByText("Use a Computer you already connected")).toBeTruthy();
+  });
+
+  it("offers only a new Computer when the Account genuinely has none", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+
+    await renderInRouter(
+      <AgentComputerSettings agent={view(unboundAgent, undefined)} onAgentChanged={() => undefined} />,
+    );
+
+    expect(await screen.findByText("Connect a new Computer")).toBeTruthy();
+    expect(screen.queryByText("Use a Computer you already connected")).toBeNull();
+  });
+
   it("keeps showing the bound Computer's own panel once one is connected", async () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
     const bound: AgentDetail = {

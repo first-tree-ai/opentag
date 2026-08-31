@@ -277,6 +277,12 @@ describe("Agent CLI core", () => {
     expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
     expect(formatAgentList(response)).toContain("all_message");
     expect(formatAgentList({ agents: [] })).toBe("No Agents registered");
+    // An absent Computer is stated rather than left as a gap, so neither surface reads as a field
+    // that went missing on the way out.
+    const [listed] = response.agents;
+    if (!listed) throw new Error("Agent list fixture is empty");
+    expect(formatAgentList({ agents: [{ ...listed, computer: null }] })).toContain("\tnone\t");
+    expect(formatAgent({ ...agent, computerId: null })).toContain("computerId\tnone");
     await expect(runAgentShow(agentId, { accessToken: "access", api: client })).resolves.toEqual(agent);
     expect(client.getAgentConfig).toHaveBeenCalledWith("access", agentId);
   });

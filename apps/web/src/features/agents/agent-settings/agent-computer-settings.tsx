@@ -15,7 +15,11 @@ function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailVie
   const computersQuery = useComputersQuery();
   const [binding, setBinding] = useState(false);
   const [error, setError] = useState<string>();
-  const enrolled = computersQuery.data?.computers ?? [];
+  // Only a successful read says what the Account has. This panel is the recovery screen for an
+  // Agent that cannot run, so answering a failed read with "connect a new Computer" would send
+  // someone to enrol a machine they already own -- the same conflation the Agent's availability
+  // refuses to make one layer up.
+  const enrolled = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
 
   async function bind(computerId: string) {
     try {
@@ -45,7 +49,23 @@ function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailVie
         <div className="grid gap-4 rounded-md bg-kumo-recessed p-4">
           <p>{computerRecoveryMessage(agent)}</p>
           {error ? <Banner variant="error" role="alert" description={error} /> : null}
-          {enrolled.length > 0 ? (
+          {enrolled === undefined ? (
+            <div className="grid gap-2">
+              <Text variant="heading">Use a Computer you already connected</Text>
+              {computersQuery.isError ? (
+                <>
+                  <p>We couldn't read the Computers on this Account, so we can't offer the ones it already has.</p>
+                  <div>
+                    <Button size="compact" variant="secondary" onClick={() => void computersQuery.refetch()}>
+                      Try again
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <p>Checking which Computers this Account already has…</p>
+              )}
+            </div>
+          ) : enrolled.length > 0 ? (
             <div className="grid gap-2">
               <Text variant="heading">Use a Computer you already connected</Text>
               <ul className="grid gap-2">

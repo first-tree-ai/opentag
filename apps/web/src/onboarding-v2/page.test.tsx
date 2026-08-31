@@ -243,8 +243,13 @@ describe("OnboardingV2Page", () => {
     await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
-    // The messaging CLI is not checked here: no provider has been chosen yet.
-    expect(screen.queryByText("lark-cli is installed")).toBeNull();
+    /*
+     * The messaging CLI is not checked here: no provider has been chosen yet. The title is read from
+     * CHECK_COPY rather than restated, because the restated version outlived the string it named --
+     * it queried "lark-cli is installed" long after the copy said something else, so it could no
+     * longer fail. Sourcing it means a rename cannot quietly turn this back into a no-op.
+     */
+    expect(screen.queryByText(CHECK_COPY["messaging-cli"].title(""))).toBeNull();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
   });
 

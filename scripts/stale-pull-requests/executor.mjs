@@ -1,4 +1,4 @@
-import { sleep } from "./github.mjs";
+import { sleep } from "../github/client.mjs";
 import { renderClosingNotice, renderNotice } from "./notice.mjs";
 import { ACTION_CLOSE, ACTION_WARN } from "./policy.mjs";
 

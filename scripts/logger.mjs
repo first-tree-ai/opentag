@@ -1,6 +1,6 @@
 const LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 const DEFAULT_LEVEL = "info";
-const PREFIX = "[stale-pr]";
+const DEFAULT_PREFIX = "[script]";
 
 /**
  * Normalizes an arbitrary level string, falling back to `info` so a typo in the
@@ -25,11 +25,12 @@ function formatDetails(details) {
 }
 
 /**
- * Creates a level-aware logger. Production runs stay at `info`; re-running the
- * workflow with debug logging enabled raises it to `debug`, which prints every
- * per-pull-request decision and the GraphQL rate-limit budget.
+ * Creates a level-aware logger shared by the repository automation scripts.
+ * Production runs stay at `info`; re-running a workflow with debug logging
+ * enabled raises it to `debug`, which prints every per-item decision and the
+ * API rate-limit budget. `prefix` names the script in the run log.
  */
-export function createLogger({ level = DEFAULT_LEVEL, sink = console } = {}) {
+export function createLogger({ level = DEFAULT_LEVEL, prefix = DEFAULT_PREFIX, sink = console } = {}) {
   const resolved = resolveLogLevel(level);
   const threshold = LEVELS[resolved];
 
@@ -37,7 +38,7 @@ export function createLogger({ level = DEFAULT_LEVEL, sink = console } = {}) {
     if (LEVELS[name] > threshold) {
       return;
     }
-    write(`${PREFIX} ${name.toUpperCase()} ${message}${formatDetails(details)}`);
+    write(`${prefix} ${name.toUpperCase()} ${message}${formatDetails(details)}`);
   };
 
   const log = (...args) => sink.log(...args);

@@ -12,7 +12,7 @@ import type { CheckRow, CheckState } from "./checks.js";
 /**
  * Copy for the numbered computer-check rows. Every row carries a line of detail in every state,
  * not only when it fails, so the list does not reflow as results land. A missing messaging CLI is
- * named later, as a sentence (`SETUP_COPY.messaging.cliMissing`) rather than a third check line.
+ * named later, as a sentence (`messagingCliMissingCopy`) rather than a third check line.
  */
 export const CHECK_COPY: Record<
   CheckRow["id"],
@@ -84,15 +84,6 @@ export const SETUP_COPY = {
     title: "Connect your messaging app",
     description: "Pick the app your team already works in.",
     providerLabel: "Messaging app",
-    /**
-     * Feishu and Lark are one channel behind a regional switch, and the brand is only learned from
-     * the authorization result — a first connect has no brand yet, so the code this card leads to
-     * is always minted against Feishu. It therefore names Feishu alone: an "also called Feishu/Lark"
-     * would walk a Lark tenant into a code their account cannot authorize.
-     *
-     * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
-     * picker cannot drift from what the same provider is called everywhere else in the product.
-     */
     generating: "Generating QR code…",
     waiting: "Waiting for you to scan…",
     preparingCli: "Preparing CLI",

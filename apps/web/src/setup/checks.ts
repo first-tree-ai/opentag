@@ -20,7 +20,7 @@ export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable
  *
  * The messaging CLI is not a row: which binary is needed depends on a provider chosen later, and
  * both onboarding and Agent settings name a missing one with a sentence
- * (`SETUP_COPY.messaging.cliMissing`) rather than a third check line. `messagingCliCheck` returns
+ * (`messagingCliMissingCopy`) rather than a third check line. `messagingCliCheck` returns
  * that sentence's `CheckState`.
  */
 export type CheckState = "pending" | "passed" | "failed" | "blocked";

@@ -42,11 +42,13 @@ required by the browser file picker.
 
 `kumo-theme.tokens.ts` is the source configuration. `kumo-theme.css` is its
 generated output and only overrides Kumo semantic variables. OpenTag keeps the
-existing green direction (`#385a04`, `#4e7a06`, and `#90de14`) while Kumo
-success, warning, danger, and info tokens remain independent. Dark hover uses
-`#a8ec45`, which is a lightness adjustment on the same green direction. The
-theme contrast test verifies normal-text WCAG AA against the relevant light and
-dark foregrounds.
+existing green direction for brand emphasis while Kumo success, warning,
+danger, and info tokens remain independent. Generic recessed, tint, table-row,
+disabled, and hover surfaces stay in one warm-neutral family; `--brand-soft` is
+reserved for explicit selected and current states. Kumo lightens emphasis
+buttons at runtime, so the adapter replaces that mix with reviewed primary and
+danger gradients. The theme contrast test verifies every rendered gradient
+endpoint for normal-text WCAG AA, not only the source accent.
 
 The theme uses explicit `data-theme="opentag"` and `data-mode="light|dark"`
 attributes. Brand values were chosen for readable text and button contrast in

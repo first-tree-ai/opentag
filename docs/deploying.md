@@ -74,6 +74,12 @@ before the first deployment.
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://download.opentag.build/releases` |
+| `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
+
+The two optional variables control how the Server learns the exact channel latest target it advertises to connected
+Clients for automatic upgrades: it polls the channel's published `latest.json` under the download base URL and keeps
+advertising the last known target through any outage. The dev channel never advertises a target.
 
 Enable HTTPS and force HTTPS on the App before setting `OPENTAG_PUBLIC_URL`; the server refuses to start in a hosted
 environment whose public URL is not HTTPS. Staging secrets must not be shared with any other environment.

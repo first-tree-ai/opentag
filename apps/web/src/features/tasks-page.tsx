@@ -1,4 +1,4 @@
-import type { TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type { ListTasksResponse, TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
@@ -13,6 +13,7 @@ import {
   Icon,
   KumoInputControl,
   KumoSelectControl,
+  LayerCard,
   Loader,
   type SelectControlChangeEvent,
   StatusIndicator,
@@ -37,7 +38,7 @@ const statusPresentation: Record<TaskStatus, { readonly tone: StatusTone }> = {
   idle: { tone: "neutral" },
 };
 
-export function TasksPage({ agentId }: { agentId?: string } = {}) {
+export function TasksPage({ agentId, showExamples = false }: { agentId?: string; showExamples?: boolean } = {}) {
   const [query, setQuery] = useState("");
   const [selectedAgentId, setSelectedAgentId] = useState("all");
   const [status, setStatus] = useState<TaskFilter>("all");
@@ -46,8 +47,8 @@ export function TasksPage({ agentId }: { agentId?: string } = {}) {
    * stays retryable — the behavior the hand-rolled append kept its own error state for.
    */
   const tasksQuery = useInfiniteQuery({
-    queryKey: agentId ? queryKeys.tasks.byAgent(agentId) : queryKeys.tasks.list(),
-    queryFn: ({ pageParam }) => browserApi.tasks({ agentId, cursor: pageParam }),
+    queryKey: taskListQueryKey(agentId, showExamples),
+    queryFn: ({ pageParam }) => readTasks({ agentId, cursor: pageParam, showExamples }),
     initialPageParam: undefined as string | undefined,
     // The API reports the end of the list as null; the cache reads undefined as "no page after this".
     getNextPageParam: (page) => page.nextCursor ?? undefined,
@@ -94,6 +95,7 @@ export function TasksPage({ agentId }: { agentId?: string } = {}) {
       );
     });
   }, [agentId, loaded, query, selectedAgentId, status]);
+  const showingDevelopmentExamples = developmentExamplesLoaded(showExamples, tasksQuery.data);
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
@@ -112,7 +114,7 @@ export function TasksPage({ agentId }: { agentId?: string } = {}) {
           data-ui="task-toolbar"
           onSubmit={(event) => event.preventDefault()}
         >
-          <div className="min-w-56 flex-1">
+          <div className="min-w-56 flex-1 @min-[48rem]/workspace:max-w-md">
             <span className="sr-only">{m.tasks_search_tasks()}</span>
             <KumoInputControl
               aria-label={m.tasks_search_tasks()}
@@ -150,6 +152,11 @@ export function TasksPage({ agentId }: { agentId?: string } = {}) {
           </TaskSelect>
         </form>
       )}
+      {showingDevelopmentExamples ? (
+        <Text as="p" size="sm" variant="secondary">
+          {m.tasks_development_examples()}
+        </Text>
+      ) : null}
 
       {!terminalTasksError && tasksQuery.isPending ? (
         <TaskNotice loading heading={m.tasks_loading_tasks()} detail={m.tasks_loading_tasks_detail()} />
@@ -178,26 +185,7 @@ export function TasksPage({ agentId }: { agentId?: string } = {}) {
       ) : null}
       {!terminalTasksError && tasksQuery.data && tasks.length > 0 ? (
         <>
-          <section
-            aria-label={m.tasks_table_region()}
-            className="min-w-0 overflow-x-auto rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus the horizontal scroll region.
-            tabIndex={0}
-          >
-            <Table className="min-w-[36rem]" aria-label={m.tasks_title()} data-ui="task-table">
-              <thead>
-                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-                  <th scope="col">{m.tasks_task_label()}</th>
-                  <th scope="col">{m.tasks_status_label()}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
-                ))}
-              </tbody>
-            </Table>
-          </section>
+          <TaskTable showAgent={!agentId} showExamples={showExamples} tasks={tasks} />
           {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
@@ -223,7 +211,7 @@ export function TasksPage({ agentId }: { agentId?: string } = {}) {
         </>
       ) : null}
       {!terminalTasksError && tasksQuery.data && tasks.length === 0 ? (
-        <TaskNotice heading={m.tasks_no_tasks_found()} detail={m.tasks_no_tasks_found_detail()} />
+        <TasksEmptyState hasLoadedTasks={loaded.length > 0} />
       ) : null}
     </section>
   );
@@ -242,7 +230,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
    */
   const tasksQuery = useInfiniteQuery({
     queryKey: queryKeys.tasks.byAgent(agentId),
-    queryFn: ({ pageParam }) => browserApi.tasks({ agentId, cursor: pageParam }),
+    queryFn: ({ pageParam }) => readTasks({ agentId, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
@@ -280,26 +268,12 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
       ) : null}
       {!unavailable && tasksQuery.data && tasks.length === 0 ? (
         <p className="text-sm text-kumo-subtle" role="status">
-          {m.tasks_no_tasks_yet()}
+          {m.tasks_no_tasks_yet_detail()}
         </p>
       ) : null}
       {!unavailable && tasks.length > 0 ? (
         <>
-          <div className="overflow-x-auto">
-            <Table className="w-full" aria-label={m.tasks_agent_tasks()} data-ui="task-table">
-              <thead>
-                <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-                  <th scope="col">{m.tasks_task_label()}</th>
-                  <th scope="col">{m.tasks_status_label()}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tasks.map((task) => (
-                  <TaskRow key={task.id} showAgent={false} task={task} />
-                ))}
-              </tbody>
-            </Table>
-          </div>
+          <TaskTable compact tasks={tasks} showAgent={false} />
           {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
@@ -327,14 +301,22 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   );
 }
 
-export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?: string }) {
+export function TaskDetailPage({
+  agentId,
+  showExamples = false,
+  taskId,
+}: {
+  agentId?: string;
+  showExamples?: boolean;
+  taskId?: string;
+}) {
   /*
    * The Task itself, its internal Sessions and its collaboration messages come from the first page
    * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
    */
   const taskQuery = useInfiniteQuery({
-    queryKey: queryKeys.tasks.detail(taskId ?? ""),
-    queryFn: ({ pageParam }) => browserApi.task(taskId as string, pageParam),
+    queryKey: taskDetailQueryKey(taskId, showExamples),
+    queryFn: ({ pageParam }) => readTaskDetail(taskId as string, agentId, pageParam, showExamples),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
     enabled: taskId !== undefined,
@@ -347,14 +329,16 @@ export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?:
   const terminalTaskError = taskQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
   const loadMoreError = taskQuery.isFetchNextPageError && !terminalTaskError ? taskError : null;
 
-  if (terminalTaskError) return <TaskUnavailable agentId={agentId} error={terminalTaskError} />;
+  if (terminalTaskError) {
+    return <TaskUnavailable agentId={agentId} error={terminalTaskError} showExamples={showExamples} />;
+  }
   if (taskId !== undefined && taskQuery.isPending) {
     return <TaskNotice loading heading={m.tasks_loading_task()} detail={m.tasks_loading_task_detail()} />;
   }
   if (!first) {
     // No Task id at all is the same answer as one the Server does not have.
     const error = taskId === undefined ? new ApiError(404, m.tasks_not_found()) : asError(taskQuery.error);
-    return <TaskUnavailable agentId={agentId} error={error} />;
+    return <TaskUnavailable agentId={agentId} error={error} showExamples={showExamples} />;
   }
 
   const { task } = first;
@@ -362,43 +346,46 @@ export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?:
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
       <nav className="flex items-center gap-3" aria-label={m.tasks_breadcrumb()}>
-        <Link {...agentTasksLink(agentId ?? task.agent.id)}>
-          <Icon name="arrow-left" />
-          {m.tasks_title()}
-        </Link>
+        <TaskBackLink agentId={agentId ?? task.agent.id} showExamples={showExamples} />
       </nav>
 
-      <header className="grid gap-3" data-ui="task-conversation-header">
-        <div className="break-words">
+      <header className="grid gap-4" data-ui="task-conversation-header">
+        <div className="flex flex-wrap items-center justify-between gap-3 break-words">
           <Text as="h1" size="lg" variant="heading">
             {task.title}
           </Text>
+          <StatusIndicator label={taskStatusLabel(task.status)} tone={status.tone} />
         </div>
-        <section className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" aria-label={m.tasks_details()}>
-          <span className="inline-flex items-center gap-2">
-            <span
-              className="grid size-7 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
-              aria-hidden="true"
-            >
-              {task.agent.displayName.charAt(0)}
+        <dl
+          className="grid gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/workspace:grid-cols-2 @min-[60rem]/workspace:grid-cols-4"
+          aria-label={m.tasks_details()}
+        >
+          <TaskDetailFact label={m.tasks_agent_label()}>
+            <span className="inline-flex items-center gap-2">
+              <span
+                className="grid size-7 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+                aria-hidden="true"
+              >
+                {task.agent.displayName.charAt(0)}
+              </span>
+              <strong>{task.agent.displayName}</strong>
             </span>
-            <strong>{task.agent.displayName}</strong>
-          </span>
-          <span className="inline-flex items-center gap-1.5 text-kumo-subtle">
-            <ProviderIcon className="size-5" provider={task.source.provider} />
-            {messagingProviderLabel(task.source.provider)}
-          </span>
-          <span className="text-kumo-subtle">{m.tasks_started({ time: formatDateTime(task.createdAt) })}</span>
-          <span className="text-kumo-subtle">{m.tasks_updated({ time: formatRelativeTime(task.lastActivityAt) })}</span>
-          <StatusIndicator
-            aria-label={m.tasks_status_updated({
-              status: taskStatusLabel(task.status),
-              time: formatRelativeTime(task.lastActivityAt),
-            })}
-            label={taskStatusLabel(task.status)}
-            tone={status.tone}
-          />
-        </section>
+          </TaskDetailFact>
+          <TaskDetailFact label={m.tasks_source_label()}>
+            <span className="inline-flex items-center gap-1.5">
+              <ProviderIcon className="size-5" provider={task.source.provider} />
+              {sourceLabel(task)}
+            </span>
+          </TaskDetailFact>
+          <TaskDetailFact label={m.tasks_started_label()}>
+            <time dateTime={task.createdAt}>{formatDateTime(task.createdAt)}</time>
+          </TaskDetailFact>
+          <TaskDetailFact label={m.tasks_last_activity_label()}>
+            <time dateTime={task.lastActivityAt} title={formatDateTime(task.lastActivityAt)}>
+              {formatRelativeTime(task.lastActivityAt)}
+            </time>
+          </TaskDetailFact>
+        </dl>
       </header>
 
       <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
@@ -406,7 +393,11 @@ export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?:
           {m.tasks_activity()}
         </Text>
         {turns.length > 0 ? (
-          turns.map((turn) => <TaskTurnView key={turn.deliveryId} task={task} turn={turn} />)
+          <div className="grid divide-y divide-kumo-line">
+            {turns.map((turn) => (
+              <TaskTurnView key={turn.deliveryId} task={task} turn={turn} />
+            ))}
+          </div>
         ) : (
           <TaskNotice heading={m.tasks_no_activity()} detail={m.tasks_no_activity_detail()} />
         )}
@@ -431,7 +422,15 @@ export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?:
   );
 }
 
-function TaskUnavailable({ agentId, error }: { agentId?: string; error: Error }) {
+function TaskUnavailable({
+  agentId,
+  error,
+  showExamples = false,
+}: {
+  agentId?: string;
+  error: Error;
+  showExamples?: boolean;
+}) {
   const notFound = error instanceof ApiError && error.status === 404;
   return (
     <section className="grid gap-3" data-ui="task-not-found">
@@ -441,7 +440,9 @@ function TaskUnavailable({ agentId, error }: { agentId?: string; error: Error })
       <Text as="p" variant="secondary">
         {notFound ? m.tasks_not_found_detail() : error.message}
       </Text>
-      {agentId ? (
+      {showExamples ? (
+        <Link to="/tasks">{m.tasks_back_to_tasks()}</Link>
+      ) : agentId ? (
         <Link {...agentTasksLink(agentId)}>{m.tasks_back_to_tasks()}</Link>
       ) : (
         <Link to="/agents">{m.tasks_back_to_agents()}</Link>
@@ -455,18 +456,18 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   const absorbedBy = turn.absorbedBy;
   return (
     <section
-      className="grid gap-4"
+      className="grid gap-4 py-6 first:pt-0 last:pb-0"
       aria-label={m.tasks_message_sent_at({ time: formatDateTime(turn.message.occurredAt) })}
       data-ui="task-exchange"
     >
       <article className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3" data-ui="task-message-request">
         <span className="grid size-8 place-items-center rounded-md bg-kumo-tint text-xs font-medium" aria-hidden="true">
-          {initials(turn.message.authorDisplayName ?? turn.message.authorKind)}
+          {initials(turn.message.authorDisplayName ?? taskAuthorLabel(turn.message.authorKind))}
         </span>
         <div className="grid min-w-0 gap-2">
           <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
             <strong className="break-words">
-              {turn.message.authorDisplayName ?? humanizeEnum(turn.message.authorKind)}
+              {turn.message.authorDisplayName ?? taskAuthorLabel(turn.message.authorKind)}
             </strong>
             <small className="text-kumo-subtle">
               {attentionLabel(turn.attention)} · {formatDateTime(turn.message.occurredAt)}
@@ -550,53 +551,176 @@ function TaskSelect({
   );
 }
 
-function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSummary }) {
-  const status = statusPresentation[task.status];
+function TasksEmptyState({ hasLoadedTasks }: { hasLoadedTasks: boolean }) {
+  if (hasLoadedTasks) {
+    return <TaskNotice heading={m.tasks_no_tasks_found()} detail={m.tasks_no_tasks_found_detail()} />;
+  }
+  return <TaskNotice heading={m.tasks_no_tasks_yet_heading()} detail={m.tasks_no_tasks_yet_detail()} />;
+}
+
+function TaskBackLink({ agentId, showExamples }: { agentId: string; showExamples: boolean }) {
+  if (showExamples) {
+    return (
+      <Link to="/tasks">
+        <Icon name="arrow-left" />
+        {m.tasks_title()}
+      </Link>
+    );
+  }
   return (
-    <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
-      <td className="p-3" data-label={m.tasks_task_label()}>
-        <Link {...agentTaskDetailLink(task.agent.id, task.id)} title={task.title}>
-          {task.title}
-        </Link>
-        <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
-          {showAgent ? (
-            <>
-              <span>{task.agent.displayName}</span>
-              <span aria-hidden="true"> · </span>
-            </>
-          ) : null}
-          <TaskProviderIcon provider={task.source.provider} compact />
-          <span>{messagingProviderLabel(task.source.provider)}</span>
-          <span aria-hidden="true"> · </span>
-          <span>{task.sessionKind}</span>
-          <span aria-hidden="true"> · </span>
-          <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
-        </span>
-      </td>
-      <td className="p-3" data-label={m.tasks_status_label()}>
-        <StatusIndicator
-          aria-label={m.tasks_status_updated({
-            status: taskStatusLabel(task.status),
-            time: formatRelativeTime(task.lastActivityAt),
-          })}
-          detail={formatRelativeTime(task.lastActivityAt)}
-          label={taskStatusLabel(task.status)}
-          tone={status.tone}
-        />
-      </td>
-    </tr>
+    <Link {...agentTasksLink(agentId)}>
+      <Icon name="arrow-left" />
+      {m.tasks_title()}
+    </Link>
   );
 }
 
-function TaskProviderIcon({
-  provider,
+function TaskTable({
   compact = false,
+  showAgent = true,
+  showExamples = false,
+  tasks,
 }: {
-  provider: TaskSummary["source"]["provider"];
   compact?: boolean;
+  showAgent?: boolean;
+  showExamples?: boolean;
+  tasks: TaskSummary[];
 }) {
+  const table = (
+    <section
+      aria-label={m.tasks_table_region()}
+      className="min-w-0 overflow-hidden rounded-lg @min-[40rem]/workspace:overflow-x-auto @min-[40rem]/workspace:focus:outline-none @min-[40rem]/workspace:focus-visible:ring-2 @min-[40rem]/workspace:focus-visible:ring-kumo-brand @min-[40rem]/workspace:focus-visible:ring-inset"
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: The same region remains keyboard-scrollable on wider workspaces.
+      tabIndex={0}
+    >
+      <Table
+        aria-label={compact ? m.tasks_agent_tasks() : m.tasks_title()}
+        className={`block min-w-0 @min-[40rem]/workspace:table ${showAgent ? "@min-[40rem]/workspace:min-w-[52rem]" : "@min-[40rem]/workspace:min-w-[42rem]"}`}
+        data-ui="task-table"
+        layout="fixed"
+      >
+        <colgroup className="hidden @min-[40rem]/workspace:table-column-group">
+          <col />
+          {showAgent ? <col className="w-44" /> : null}
+          <col className="w-44" />
+          <col className="w-32" />
+          <col className="w-36" />
+        </colgroup>
+        <Table.Header
+          className="hidden @min-[40rem]/workspace:table-header-group"
+          variant={compact ? "compact" : undefined}
+        >
+          <Table.Row>
+            <Table.Head>{m.tasks_task_label()}</Table.Head>
+            {showAgent ? <Table.Head>{m.tasks_agent_label()}</Table.Head> : null}
+            <Table.Head>{m.tasks_source_label()}</Table.Head>
+            <Table.Head>{m.tasks_status_label()}</Table.Head>
+            <Table.Head>{m.tasks_last_activity_label()}</Table.Head>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body className="block @min-[40rem]/workspace:table-row-group">
+          {tasks.map((task) => (
+            <TaskRow key={task.id} showAgent={showAgent} showExamples={showExamples} task={task} />
+          ))}
+        </Table.Body>
+      </Table>
+    </section>
+  );
+  if (compact) return table;
   return (
-    <ProviderIcon className={compact ? "mr-1 inline-block size-5" : "mr-1 inline-block size-6"} provider={provider} />
+    <LayerCard className="p-0" data-ui="tasks-card">
+      {table}
+    </LayerCard>
+  );
+}
+
+function TaskRow({
+  showAgent = true,
+  showExamples = false,
+  task,
+}: {
+  showAgent?: boolean;
+  showExamples?: boolean;
+  task: TaskSummary;
+}) {
+  const status = statusPresentation[task.status];
+  return (
+    <Table.Row
+      className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/workspace:table-row @min-[40rem]/workspace:border-b-0"
+      data-ui="task-table-row"
+    >
+      <Table.Cell className="col-start-1 row-start-1 min-w-0" data-label={m.tasks_task_label()}>
+        <TaskTitleLink showExamples={showExamples} task={task} />
+      </Table.Cell>
+      {showAgent ? (
+        <Table.Cell className="col-span-2 row-start-3" data-label={m.tasks_agent_label()}>
+          <span className="inline-flex min-w-0 items-center gap-2">
+            <span
+              className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+              aria-hidden="true"
+            >
+              {task.agent.displayName.charAt(0)}
+            </span>
+            <span className="truncate">{task.agent.displayName}</span>
+          </span>
+        </Table.Cell>
+      ) : null}
+      <Table.Cell className="col-start-1 row-start-2 min-w-0" data-label={m.tasks_source_label()}>
+        <span className="inline-flex items-center gap-2">
+          <ProviderIcon className="size-5" provider={task.source.provider} />
+          <span>{sourceLabel(task)}</span>
+        </span>
+      </Table.Cell>
+      <Table.Cell className="col-start-2 row-start-1 justify-self-end" data-label={m.tasks_status_label()}>
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={status.tone} />
+      </Table.Cell>
+      <Table.Cell
+        className="col-start-2 row-start-2 justify-self-end self-center"
+        data-label={m.tasks_last_activity_label()}
+      >
+        <time
+          className="text-sm text-kumo-subtle"
+          dateTime={task.lastActivityAt}
+          title={formatDateTime(task.lastActivityAt)}
+        >
+          {formatRelativeTime(task.lastActivityAt)}
+        </time>
+      </Table.Cell>
+    </Table.Row>
+  );
+}
+
+function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: TaskSummary }) {
+  const className =
+    "block break-words font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/workspace:truncate";
+  if (showExamples) {
+    return (
+      <Link
+        className={className}
+        params={{ taskId: task.id }}
+        search={{ examples: true }}
+        title={task.title}
+        to="/tasks/$taskId"
+      >
+        {task.title}
+      </Link>
+    );
+  }
+  return (
+    <Link className={className} {...agentTaskDetailLink(task.agent.id, task.id)} title={task.title}>
+      {task.title}
+    </Link>
+  );
+}
+
+function TaskDetailFact({ children, label }: { children: ReactNode; label: string }) {
+  return (
+    <div className="grid min-w-0 gap-1">
+      <Text as="dt" size="xs" variant="secondary">
+        {label}
+      </Text>
+      <dd className="min-w-0 text-sm">{children}</dd>
+    </div>
   );
 }
 
@@ -631,8 +755,22 @@ function TaskNotice({
   );
 }
 
-function shortId(value: string): string {
-  return value.length <= 18 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
+function sourceLabel(task: TaskSummary): string {
+  const context =
+    task.sessionKind === "thread"
+      ? m.tasks_source_thread()
+      : task.source.conversationKind === "dm"
+        ? m.tasks_source_direct_message()
+        : task.source.conversationKind === "group_dm"
+          ? m.tasks_source_group_chat()
+          : m.tasks_source_channel();
+  return `${messagingProviderLabel(task.source.provider)} · ${context}`;
+}
+
+function taskAuthorLabel(value: TaskTurn["message"]["authorKind"]): string {
+  if (value === "human") return m.tasks_author_user();
+  if (value === "bot") return m.tasks_author_bot();
+  return m.tasks_author_system();
 }
 
 function attentionLabel(value: TaskTurn["attention"]): string {
@@ -658,6 +796,55 @@ function taskStatusLabel(value: TaskStatus): string {
 function humanizeEnum(value: string): string {
   const normalized = value.replaceAll(/[_-]+/gu, " ");
   return `${normalized.charAt(0).toLocaleUpperCase()}${normalized.slice(1)}`;
+}
+
+function taskListQueryKey(agentId: string | undefined, showExamples: boolean) {
+  if (showExamples) return [...queryKeys.tasks.list(), "development-examples"] as const;
+  return agentId ? queryKeys.tasks.byAgent(agentId) : queryKeys.tasks.list();
+}
+
+function taskDetailQueryKey(taskId: string | undefined, showExamples: boolean) {
+  const key = queryKeys.tasks.detail(taskId ?? "");
+  return showExamples ? ([...key, "development-example"] as const) : key;
+}
+
+function developmentExamplesLoaded(showExamples: boolean, data: unknown): boolean {
+  return showExamples && data !== undefined;
+}
+
+async function readTasks({
+  agentId,
+  cursor,
+  showExamples = false,
+}: {
+  agentId?: string;
+  cursor?: string;
+  showExamples?: boolean;
+}): Promise<ListTasksResponse> {
+  if (showExamples) {
+    const { createDevelopmentTasks } = await loadDevelopmentTaskData();
+    return createDevelopmentTasks(agentId ?? "40000000-0000-4000-8000-000000000001");
+  }
+  return browserApi.tasks({ agentId, cursor });
+}
+
+async function readTaskDetail(
+  taskId: string,
+  agentId?: string,
+  cursor?: string,
+  showExamples = false,
+): Promise<TaskDetail> {
+  if (showExamples && !cursor) {
+    const { createDevelopmentTaskDetail } = await loadDevelopmentTaskData();
+    const detail = createDevelopmentTaskDetail(taskId, agentId ?? "40000000-0000-4000-8000-000000000001");
+    if (detail) return detail;
+  }
+  return browserApi.task(taskId, cursor);
+}
+
+async function loadDevelopmentTaskData() {
+  if (!import.meta.env.DEV) throw new Error("Development Task examples are unavailable in production");
+  return import("../mock/dev-task-data.js");
 }
 
 function asError(value: unknown): Error {

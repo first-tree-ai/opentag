@@ -7,6 +7,35 @@ import {
 } from "../services/im/external-call-policy.js";
 
 describe("ExternalCallPolicy", () => {
+  /*
+   * The breaker exists to stop hammering a provider that is broken. A caller withdrawing its own
+   * call says nothing about the provider — and where cancelling is an ordinary act, counting it
+   * would open the breaker against a provider that never misbehaved. Connecting a messaging app is
+   * exactly that: switching brand cancels the running registration and issues a new code.
+   */
+  it("does not count a caller's own cancellation toward opening the circuit", async () => {
+    const policy = new ExternalCallPolicy({ circuitFailureThreshold: 3 });
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const controller = new AbortController();
+      const call = policy.run("feishu.registration", () => new Promise(() => undefined), {
+        maxAttempts: 1,
+        signal: controller.signal,
+        circuitKey: "feishu:registration",
+      });
+      controller.abort();
+      await expect(call).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_ABORTED" });
+    }
+
+    // Past the threshold; a genuine call still gets through rather than meeting an open circuit.
+    await expect(
+      policy.run("feishu.registration", async () => "authorized", {
+        maxAttempts: 1,
+        circuitKey: "feishu:registration",
+      }),
+    ).resolves.toBe("authorized");
+  });
+
   it("aborts a call at the injected deadline", async () => {
     const controller = new AbortController();
     const policy = new ExternalCallPolicy({ defaultTimeoutMs: 10, maxAttempts: 1 });

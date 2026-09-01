@@ -105,12 +105,12 @@ function enrollment({
   };
 }
 
-async function writeValidHome(name, serverUrl, enrollments = [enrollment({ serverUrl })]) {
+async function writeValidHome(name, serverUrl, computer = enrollment({ serverUrl })) {
   const home = await createHome(name);
   const config = join(home, "config");
   await mkdir(config, { mode: 0o700 });
   await writePrivateJson(join(config, "computer.json"), { version: 2, computerId, serverUrl });
-  await writePrivateJson(join(config, "computer-credentials.json"), { version: 1, enrollments });
+  await writePrivateJson(join(config, "computer-credentials.json"), { version: 2, computer });
   return home;
 }
 
@@ -215,41 +215,47 @@ async function runCoreSuite() {
       secret: responseSecret,
     });
     await writePrivateJson(join(config, "computer-credentials.json"), {
-      version: 1,
-      enrollments: [enrollment({ serverUrl: "http://127.0.0.1:18080" })],
+      version: 2,
+      computer: enrollment({ serverUrl: "http://127.0.0.1:18080" }),
     });
     const result = runDoctor(home);
     expectIncludes(result.stdout, "identity file is invalid", "identity result", result);
     expectExcludes(result.stdout, responseSecret, "identity result", result);
   });
 
-  await record("one malformed enrollment invalidates the full credential set", async () => {
+  await record("a malformed Computer credential invalidates the credential set", async () => {
     const serverUrl = "http://127.0.0.1:18080";
     const before = await requestCount(18080);
-    const home = await writeValidHome("malformed-enrollment", serverUrl, [
-      enrollment({ serverUrl }),
-      { workspaceComputerId: "not-a-uuid", machineToken: responseSecret, computerId, serverUrl },
-    ]);
+    const home = await writeValidHome("malformed-enrollment", serverUrl, {
+      workspaceComputerId: "not-a-uuid",
+      machineToken: responseSecret,
+      computerId,
+      serverUrl,
+    });
     const result = runDoctor(home);
     expectIncludes(result.stdout, "unusable OpenTag Computer credential", "enrollment result", result);
     expectExcludes(result.stdout, responseSecret, "enrollment result", result);
     expect((await requestCount(18080)) === before, "doctor contacted Server for malformed credentials");
   });
 
-  await record("multiple enrolled Server origins receive zero requests", async () => {
+  await record("legacy multi-enrollment credentials receive zero Server requests", async () => {
     const first = "http://127.0.0.1:18081";
     const second = "http://127.0.0.1:18082";
     const beforeA = await requestCount(18081);
     const beforeB = await requestCount(18082);
-    const home = await writeValidHome("multiple-servers", first, [
-      enrollment({ serverUrl: first }),
-      enrollment({
-        serverUrl: second,
-        workspaceComputerId: "44444444-4444-4444-8444-444444444444",
-      }),
-    ]);
+    const home = await writeValidHome("multiple-servers", first);
+    await writePrivateJson(join(home, "config", "computer-credentials.json"), {
+      version: 1,
+      enrollments: [
+        enrollment({ serverUrl: first }),
+        enrollment({
+          serverUrl: second,
+          workspaceComputerId: "44444444-4444-4444-8444-444444444444",
+        }),
+      ],
+    });
     const result = runDoctor(home);
-    expectIncludes(result.stdout, "multiple enrollments", "binding result", result);
+    expectIncludes(result.stdout, "unsupported format", "binding result", result);
     expect((await requestCount(18081)) === beforeA, "doctor contacted the first ambiguous Server");
     expect((await requestCount(18082)) === beforeB, "doctor contacted the second ambiguous Server");
   });
@@ -257,9 +263,11 @@ async function runCoreSuite() {
   await record("Computer mismatch skips the enrolled Server", async () => {
     const serverUrl = "http://127.0.0.1:18081";
     const before = await requestCount(18081);
-    const home = await writeValidHome("computer-mismatch", serverUrl, [
+    const home = await writeValidHome(
+      "computer-mismatch",
+      serverUrl,
       enrollment({ computer: otherComputerId, serverUrl }),
-    ]);
+    );
     const result = runDoctor(home);
     expectIncludes(result.stdout, "do not belong to the local Computer identity", "binding result", result);
     expect((await requestCount(18081)) === before, "doctor contacted Server after Computer mismatch");

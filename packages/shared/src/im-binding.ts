@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ReceiveModeSchema } from "./agent.js";
+import { IntegrationCredentialExecutionReasonSchema, IntegrationCredentialExecutionStatusSchema } from "./computer.js";
 
 export const ImProviderSchema = z.enum(["feishu", "slack"]);
 
@@ -149,9 +150,24 @@ export const ImBindingSummarySchema = z
   })
   .strict();
 
+export const ProviderCliHandoffPhaseSchema = z.enum(["preparing_cli", "checking_credentials", "needs_attention"]);
+
+export const ProviderCliHandoffProgressSchema = z
+  .object({
+    phase: ProviderCliHandoffPhaseSchema,
+    reason: IntegrationCredentialExecutionReasonSchema.optional(),
+  })
+  .strict();
+
 export const ImBindingHandoffStatusSchema = z.union([
   z.object({ bindingState: z.literal("active"), handoffReady: z.literal(true) }).strict(),
-  z.object({ bindingState: z.literal("active"), handoffReady: z.literal(false) }).strict(),
+  z
+    .object({
+      bindingState: z.literal("active"),
+      handoffReady: z.literal(false),
+      providerCli: ProviderCliHandoffProgressSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       bindingState: z.enum(["provisioning", "reauthorization_required", "error", "disabled"]),
@@ -258,6 +274,8 @@ export const ImBindingDiagnosticsSchema = z
     ready: z.boolean(),
     agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
     providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
+    credentialExecutionReadiness: IntegrationCredentialExecutionStatusSchema,
+    credentialExecutionReason: IntegrationCredentialExecutionReasonSchema.optional(),
     credentialGeneration: z.number().int().min(0),
     credentialStatus: ImBindingCredentialStatusSchema,
     requiredCapabilities: z.array(z.string().min(1).max(160)).max(128),
@@ -306,6 +324,8 @@ export type ImBindingState = z.infer<typeof ImBindingStateSchema>;
 export type ImBindingIdentity = z.infer<typeof ImBindingIdentitySchema>;
 export type ImBindingSummary = z.infer<typeof ImBindingSummarySchema>;
 export type ImBindingHandoffStatus = z.infer<typeof ImBindingHandoffStatusSchema>;
+export type ProviderCliHandoffPhase = z.infer<typeof ProviderCliHandoffPhaseSchema>;
+export type ProviderCliHandoffProgress = z.infer<typeof ProviderCliHandoffProgressSchema>;
 export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuBrand = z.infer<typeof FeishuBrandSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;

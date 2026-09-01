@@ -146,6 +146,7 @@ describe("Agent CLI core", () => {
       ready: false,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "install",
+      credentialExecutionReadiness: "unconfirmed",
       credentialGeneration: 0,
       credentialStatus: "invalid",
       requiredCapabilities: ["im:message"],
@@ -161,6 +162,7 @@ describe("Agent CLI core", () => {
       lastErrorCode: null,
     };
     expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReadiness\tinstall");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialExecutionReadiness\tunconfirmed");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("agentRuntimeReadiness\tready");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialGeneration\t0");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialStatus\tinvalid");
@@ -212,6 +214,7 @@ describe("Agent CLI core", () => {
       ready: true,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "ready",
+      credentialExecutionReadiness: "ready",
       credentialGeneration: 2,
       credentialStatus: "valid",
       requiredCapabilities: ["im:message"],
@@ -598,6 +601,7 @@ describe("Agent CLI core", () => {
       ready: true,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "ready",
+      credentialExecutionReadiness: "ready",
       credentialGeneration: 1,
       credentialStatus: "valid",
       requiredCapabilities: [],
@@ -670,6 +674,24 @@ describe("Agent CLI core", () => {
       diagnoseSpy.mockRestore();
       disableSpy.mockRestore();
       receiveSpy.mockRestore();
+    }
+  });
+
+  it("presents unauthenticated Agent bind failures without a rejected Commander action", async () => {
+    const bindSpy = vi
+      .spyOn(agentMutations, "runAgentBind")
+      .mockRejectedValue(new Error("OpenTag is not logged in; run login first"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "agent", "bind", agentId]);
+      expect(process.exitCode).toBe(1);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("OpenTag is not logged in; run login first"));
+    } finally {
+      process.exitCode = previousExitCode;
+      stderr.mockRestore();
+      bindSpy.mockRestore();
     }
   });
 

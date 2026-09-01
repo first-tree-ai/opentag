@@ -10,6 +10,7 @@ import {
   Icon,
   type KumoInputControlProps,
   KumoSelectControl,
+  Select,
   SettingsList,
   SettingsRow,
   StatusIndicator,
@@ -27,6 +28,19 @@ describe("Kumo semantic adapter", () => {
     );
     expect(screen.getByRole("button", { name: "Details" }).className).not.toContain("ds-");
     expect(screen.getByRole("button", { name: "Disconnect" }).className).toContain("text-kumo-danger");
+  });
+
+  it("overrides Kumo's lightened emphasis mix with accessible button surfaces", () => {
+    render(
+      <>
+        <Button variant="primary">Create</Button>
+        <Button variant="danger">Delete</Button>
+      </>,
+    );
+    const primary = screen.getByRole("button", { name: "Create" });
+    const danger = screen.getByRole("button", { name: "Delete" });
+    expect(primary.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-primary-bg)");
+    expect(danger.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-danger-bg)");
   });
 
   it("provides labelled Kumo tabs and settings rows", () => {
@@ -78,6 +92,20 @@ describe("Kumo semantic adapter", () => {
       </KumoSelectControl>,
     );
     expect(screen.getByRole("combobox", { name: "Usage period" })).toBeTruthy();
+  });
+
+  it("associates a direct Kumo select with the visible Field label", () => {
+    render(
+      <Field htmlFor="locale" label="Language">
+        <Select id="locale" value="en">
+          <Select.Option value="en">English</Select.Option>
+          <Select.Option value="zh">简体中文</Select.Option>
+        </Select>
+      </Field>,
+    );
+    const selector = screen.getByRole("combobox", { name: "Language" });
+    expect(selector.getAttribute("aria-labelledby")).toBe("locale-label");
+    expect(selector.getAttribute("aria-label")).toBeNull();
   });
 
   it("normalizes non-string option identities for controlled selection", () => {

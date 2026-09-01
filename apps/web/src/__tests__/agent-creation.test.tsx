@@ -185,7 +185,9 @@ describe("OpenTag Web App Shell", () => {
     });
 
     expect(agentCreationPosts()).toHaveLength(0);
-    expect(screen.getByRole("button", { name: /Zulu Tower/ }).getAttribute("aria-pressed")).toBe("true");
+    const selectedComputer = screen.getByRole("button", { name: /Zulu Tower/ });
+    expect(selectedComputer.getAttribute("aria-pressed")).toBe("true");
+    expect(selectedComputer.className).toContain("data-[selected=true]:!bg-(--brand-soft)");
   });
 
   it("does not resume a stored creation intent onto a Runtime the form is not offering", async () => {
@@ -680,7 +682,8 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Codex")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Change Runtime" }));
-    const claudeCode = screen.getByRole("button", { name: /Claude Code Sign-in required/ });
+    // jsdom 30 drops inter-element whitespace from accessible names; \s? tolerates both engines.
+    const claudeCode = screen.getByRole("button", { name: /Claude Code\s?Sign-in required/ });
     expect(claudeCode.hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Codex Reviewer" } });
@@ -738,13 +741,13 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Change Runtime" }));
     expect(
       within(dialog)
-        .getByRole("button", { name: /Claude Code Unavailable/ })
+        .getByRole("button", { name: /Claude Code\s?Unavailable/ })
         .hasAttribute("disabled"),
     ).toBe(true);
 
     claudeReadiness.status = "ready";
     window.dispatchEvent(new Event("focus"));
-    fireEvent.click(await within(dialog).findByRole("button", { name: /Claude Code Ready/ }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Claude Code\s?Ready/ }));
     expect(await within(dialog).findByText("Claude Code")).toBeTruthy();
 
     claudeReadiness.status = "unavailable";

@@ -151,6 +151,10 @@ function unbound(id = UNBOUND_AGENT_ID): AgentDetailView {
 describe("An Agent with no Computer", () => {
   beforeEach(() => vi.useRealTimers());
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("gives the Agent the Computer this Account has, without asking which", async () => {
     // An Account has one Computer, so there is nothing to disambiguate and nothing to click: the
     // read that finds it is the whole decision.
@@ -220,7 +224,8 @@ describe("An Agent with no Computer", () => {
 
     await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={onAgentChanged} />);
 
-    expect(await screen.findByText("Choose the Computer this Agent should run on")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Choose the Computer this Agent should run on" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect another Computer" })).toBeTruthy();
     // Nothing is decided for the reader while the question is open.
     expect(rebind).not.toHaveBeenCalled();
 

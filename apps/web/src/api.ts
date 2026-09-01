@@ -65,6 +65,8 @@ import {
   StartSlackOAuthResponseSchema,
   type TaskDetail,
   TaskDetailSchema,
+  type TaskTitleUpdateRequest,
+  TaskTitleUpdateResponseSchema,
   taskByIdPath,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
@@ -135,6 +137,14 @@ export class BrowserApi {
   task(sessionId: string, cursor?: string): Promise<TaskDetail> {
     const query = cursor ? `?${new URLSearchParams({ cursor }).toString()}` : "";
     return this.request(`${taskByIdPath(sessionId)}${query}`, TaskDetailSchema);
+  }
+
+  updateTaskTitle(sessionId: string, input: TaskTitleUpdateRequest): Promise<TaskDetail["task"]> {
+    return this.request(`${taskByIdPath(sessionId)}`, TaskTitleUpdateResponseSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    }).then(({ task }) => task);
   }
 
   agent(agentId: string): Promise<AgentDetail> {

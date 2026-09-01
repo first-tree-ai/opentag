@@ -7,7 +7,6 @@
  * Agent's settings. Copy that only one of those surfaces says stays with that surface.
  */
 
-import { messagingProviderLabel } from "../im/provider-label.js";
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
@@ -95,14 +94,20 @@ export const SETUP_COPY = {
      * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
      * picker cannot drift from what the same provider is called everywhere else in the product.
      */
-    feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu or Lark workspace" },
-    slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
-    qrAlt: (brand: string) => `Scan this QR code in ${brand}`,
-    /** Says nothing about which brand, so it needs nothing from one. */
     generating: "Generating QR code…",
     waiting: "Waiting for you to scan…",
-    cliMissing: (provider: string) =>
-      `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,
+    preparingCli: "Preparing CLI",
+    checkingCredentials: "Checking credentials",
+    cliUnavailable: "OpenTag could not prepare or validate the messaging CLI on this computer.",
+    needsAttention: {
+      upgrade_required: "Upgrade the OpenTag client on this computer, then reconnect.",
+      credential_rejected: "Reauthorize this messaging app. The current credential was rejected.",
+      identity_mismatch: "Reauthorize this messaging app. The bot identity does not match.",
+      scope_missing: "Grant the missing messaging permissions, then reauthorize.",
+      provider_unreachable:
+        "The messaging provider could not be reached after several attempts. Check the network and try again.",
+      rate_limited: "The messaging provider is rate-limiting checks. Wait a moment, then try again.",
+    } as const,
     slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
     slackAction: "Add to Slack",
     slackWaiting: "Waiting for you to finish in Slack…",

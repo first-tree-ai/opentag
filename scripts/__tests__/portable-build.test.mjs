@@ -236,6 +236,23 @@ test("the installer only commits a release after it verifies and smoke-tests the
   assert.match(source, /if \[ "\$FORCE" -eq 0 \] && portable_install_is_current "\$VERSION" "\$BIN_NAME"; then/);
 });
 
+test("the installer reports Provider CLI state without provisioning third-party software", async () => {
+  const source = await readFile(join(portableDir, "install.sh"), "utf8");
+  const inspection = source.slice(
+    source.indexOf("report_provider_cli_state() {"),
+    source.indexOf('WORK_DIR="$(mktemp -d'),
+  );
+
+  assert.ok(inspection.length > 0);
+  assert.match(inspection, /provider-cli inspect --provider all/);
+  assert.doesNotMatch(inspection, /provider-cli ensure/);
+  assert.equal(
+    source.match(/report_provider_cli_state "\$BIN_NAME"/g)?.length,
+    2,
+    "fresh and already-current installs must both report the same read-only state",
+  );
+});
+
 test("the installer help documents the supported options", () => {
   const result = spawnSync("sh", [join(portableDir, "install.sh"), "--help"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);

@@ -229,6 +229,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     } finally {
       this.#unsubscribe?.();
       this.#unsubscribe = undefined;
+      /* v8 ignore next -- client teardown in finally is best-effort. */
       await client?.close().catch(() => undefined);
       this.#client = undefined;
       this.#context = undefined;
@@ -444,6 +445,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "error") {
       const failedMessage = record(update.error) ?? record(update.partial);
+      /* v8 ignore else -- Pi error updates always carry an errorMessage string. */
       if (typeof failedMessage?.errorMessage === "string") this.#lastError = failedMessage.errorMessage;
       await this.#emitProviderEvent({ type: "assistant_update", updateType: type });
       return;
@@ -606,6 +608,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#providerFailure = error;
     this.#terminal?.reject(error);
     this.#promptAccepted?.reject(error);
+    /* v8 ignore next -- client teardown during a provider failure must not raise a second fault. */
     void this.#client?.close().catch(() => undefined);
     this.closeForProviderFailure();
   }

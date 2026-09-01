@@ -395,6 +395,7 @@ describe("OpenTagApi Agent methods", () => {
           ready: false,
           agentRuntimeReadiness: "ready",
           providerCliReadiness: "install",
+          credentialExecutionReadiness: "unconfirmed",
           credentialGeneration: 1,
           credentialStatus: "valid",
           requiredCapabilities: [],
@@ -417,7 +418,12 @@ describe("OpenTagApi Agent methods", () => {
     await api.getFeishuSetupAttempt("access", attemptId);
     await api.getImBindingDiagnostics("access", imBindingId);
     await api.disableImBinding("access", imBindingId);
-    expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
+    expect(
+      fetchImpl.mock.calls.map(([url, init]) => [
+        new URL(url instanceof Request ? url.url : url).pathname,
+        init?.method ?? "GET",
+      ]),
+    ).toEqual([
       [`/api/v1/agents/${agentId}/im-binding`, "GET"],
       [`/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`, "POST"],
       [`/api/v1/im-bindings/feishu/setup-attempts/${attemptId}`, "GET"],
@@ -438,9 +444,12 @@ describe("OpenTagApi Agent methods", () => {
     await expect(api.startSlackOAuth("access", agentId, { intent: "create" })).resolves.toMatchObject({
       authorizationUrl: expect.stringContaining("https://slack.com/oauth/v2/authorize"),
     });
-    expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
-      [`/api/v1/agents/${agentId}/im-binding/slack/oauth/start`, "POST"],
-    ]);
+    expect(
+      fetchImpl.mock.calls.map(([url, init]) => [
+        new URL(url instanceof Request ? url.url : url).pathname,
+        init?.method ?? "GET",
+      ]),
+    ).toEqual([[`/api/v1/agents/${agentId}/im-binding/slack/oauth/start`, "POST"]]);
     expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });
 });

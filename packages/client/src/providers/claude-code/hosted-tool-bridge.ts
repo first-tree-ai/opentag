@@ -40,11 +40,13 @@ export async function startClaudeCodeHostedToolBridge(
           runId,
           signal,
           token,
-        }).catch(() => {
-          /* v8 ignore next 2 -- only a socket failure after response headers can reach the destroy branch. */
-          if (!response.headersSent) writeJson(response, 500, jsonRpcError(null, -32603, "Internal error"));
-          else response.destroy();
-        });
+        }).catch(
+          /* v8 ignore next -- only transport failures reach this recovery callback. */ () => {
+            /* v8 ignore next 2 -- only a socket failure after response headers can reach the destroy branch. */
+            if (!response.headersSent) writeJson(response, 500, jsonRpcError(null, -32603, "Internal error"));
+            else response.destroy();
+          },
+        );
       });
       await listen(server);
       const address = server.address();

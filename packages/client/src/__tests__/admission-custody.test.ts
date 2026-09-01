@@ -20,6 +20,21 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("AdmissionController", () => {
+  it("quiesces new work while allowing already accepted work to reserve", () => {
+    const admission = new AdmissionController();
+    admission.pause();
+    expect(admission.paused).toBe(true);
+    expect(admission.reserve("new-session", "agent-1")).toEqual({ accepted: false, reason: "client_busy" });
+
+    const acceptedWork = admission.reserve("accepted-session", "agent-1", { acceptedWork: true });
+    expect(acceptedWork.accepted).toBe(true);
+    if (acceptedWork.accepted) acceptedWork.reservation.release();
+
+    admission.resume();
+    expect(admission.paused).toBe(false);
+    expect(admission.reserve("new-session", "agent-1").accepted).toBe(true);
+  });
+
   it("C-20/C-21 enforces one Session and ten concurrent Sessions per Agent without a queue", () => {
     const admission = new AdmissionController();
     const reservations = Array.from({ length: 10 }, (_, index) => admission.reserve(`session-${index}`, "agent-1"));

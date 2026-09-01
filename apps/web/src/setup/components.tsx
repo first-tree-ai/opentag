@@ -1,9 +1,10 @@
 import type { FeishuBrand } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import { useEffect, useState } from "react";
+import { messagingProviderLabel } from "../im/provider-label.js";
+import * as m from "../paraglide/messages.js";
 import { StatusIndicator } from "../ui/design-system.js";
 import "./setup.css";
-import { messagingProviderLabel } from "../im/provider-label.js";
 import { type CheckRow, formatRemaining } from "./checks.js";
 import { CHECK_COPY, SETUP_COPY } from "./copy.js";
 
@@ -113,7 +114,7 @@ export function QrCode({ brand, value }: { brand: FeishuBrand; value: string }) 
   }, [value]);
   return source ? (
     <img
-      alt={SETUP_COPY.messaging.qrAlt(messagingProviderLabel("feishu", brand))}
+      alt={m.im_qr_scan_alt({ provider: messagingProviderLabel("feishu", brand) })}
       className="ots-qr__image"
       src={source}
     />

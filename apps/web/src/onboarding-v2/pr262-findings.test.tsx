@@ -425,12 +425,16 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
    * readiness, so an unexplained spinner is a choice rather than a limitation.
    */
   it("says what a wait for reachability is waiting on, when it knows", async () => {
-    computersReturning([computer({ imCliReadiness: [{ provider: "feishu", status: "install", observedAt: NOW }] })]);
+    computersReturning([computer({ imCliReadiness: [{ provider: "feishu", status: "checking", observedAt: NOW }] })]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
     vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
-    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: false });
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({
+      bindingState: "active",
+      handoffReady: false,
+      providerCli: { phase: "preparing_cli" },
+    });
 
     render(<OnboardingV2Page />);
 
@@ -444,6 +448,6 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(FEISHU_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 2);
 
-    expect(screen.getByText(/Feishu messages are sent through its CLI/)).toBeTruthy();
+    expect(screen.getByText("Preparing CLI")).toBeTruthy();
   });
 });

@@ -15,8 +15,12 @@ describe("OpenTag Web App Shell", () => {
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
     expect(email.value).toBe("ada@example.com");
     expect(email.readOnly).toBe(true);
+    expect(email.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText("Read only")).toBeNull();
     expect(email.closest('[data-ui="field"]')).toBeTruthy();
     expect(displayName.closest('[data-ui="field"]')).toBeTruthy();
+    expect(email.closest('[data-ui="field"]')?.querySelector("label")?.classList.contains("sr-only")).toBe(true);
+    expect(displayName.closest('[data-ui="field"]')?.querySelector("label")?.classList.contains("sr-only")).toBe(true);
     fireEvent.change(displayName, { target: { value: "  Ada Lovelace  " } });
     fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
 

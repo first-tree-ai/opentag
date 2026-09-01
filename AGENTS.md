@@ -9,7 +9,7 @@ historical feature with the same name in the First Tree repository. Do not copy 
 
 ## Toolchain
 
-- Node.js `^22.13.0 || ^24.0.0 || ^26.0.0` (Node.js 24 primary), ESM, strict TypeScript
+- Node.js `^22.22.2 || ^24.15.0 || ^26.0.0` (Node.js 24 primary), ESM, strict TypeScript
 - pnpm 10.12.1 and Turborepo
 - Biome for formatting and linting
 - lefthook for the local `pre-commit` and `pre-push` gates, installed by `pnpm install`
@@ -61,6 +61,20 @@ Run directly affected tests during development and all commands above before ope
 depend on the public network, external providers, or a running PostgreSQL instance. Run `pnpm test:coverage` when changing
 the root coverage configuration or investigating repository-wide coverage gaps; the scheduled `Unit Coverage` workflow
 owns the recurring baseline measurement.
+
+## Database migrations
+
+Adding a migration under `packages/server/drizzle` requires two extra steps, or CI fails even when
+`pnpm check` passes locally:
+
+- Bump `CURRENT_MIGRATION_COUNT` in `packages/server/src/__tests__/integration/setup-completion-backfill.test.ts`
+  by one. The constant is a deliberate ratchet over the migration journal; the migration drift check
+  in `pnpm check` does not cover it, only the PostgreSQL integration suite does.
+- Run `pnpm --filter @opentag/server test:integration` (Docker with testcontainers) before opening
+  the pull request.
+
+Two concurrent pull requests that each add a migration also collide on the migration number itself:
+whichever merges second must renumber its migration and journal entry, then bump the count again.
 
 ## Code and Git conventions
 

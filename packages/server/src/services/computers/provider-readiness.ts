@@ -16,6 +16,16 @@ export interface ProviderReadinessSource {
     computerId: string,
     now: number,
   ): readonly { observation: RuntimeImCliReadinessObservation; observedAt: number }[];
+  providerCliArtifactReadiness?(
+    computerId: string,
+    now: number,
+  ): readonly {
+    observation: {
+      provider: RuntimeImCliReadinessObservation["provider"];
+      status: RuntimeImCliReadinessObservation["status"];
+    };
+    observedAt: number;
+  }[];
 }
 
 export function projectComputerImCliReadiness(
@@ -28,7 +38,10 @@ export function projectComputerImCliReadiness(
   if (connectionStatus === "offline") {
     return providers.map((provider) => ({ provider, status: "unavailable", observedAt: null }));
   }
-  const snapshots = source?.imCliReadiness?.(computerId, observedAt.getTime()) ?? [];
+  const snapshots =
+    source?.providerCliArtifactReadiness?.(computerId, observedAt.getTime()) ??
+    source?.imCliReadiness?.(computerId, observedAt.getTime()) ??
+    [];
   const byProvider = new Map(snapshots.map((snapshot) => [snapshot.observation.provider, snapshot]));
   return providers.map((provider) => {
     const snapshot = byProvider.get(provider);

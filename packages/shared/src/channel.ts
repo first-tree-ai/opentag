@@ -2,9 +2,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import definitions from "./channel-config.json" with { type: "json" };
+import type { ChannelName } from "./channel-name.js";
 
-export const ChannelNameSchema = z.enum(["dev", "staging", "prod"]);
-export type ChannelName = z.infer<typeof ChannelNameSchema>;
+export { type ChannelName, ChannelNameSchema } from "./channel-name.js";
 
 export const ServiceIdSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 export type ServiceId = z.infer<typeof ServiceIdSchema>;

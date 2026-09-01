@@ -66,6 +66,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   imBindingDiagnostics: [ID],
   disableImBinding: [ID],
   computers: [],
+  updateTaskTitle: [ID, { title: "A task" }],
   computerConnectCodeStatus: [ID],
   rebindAgentComputer: [ID, ID],
   testAgentRuntime: [ID, { provider: "codex" }],

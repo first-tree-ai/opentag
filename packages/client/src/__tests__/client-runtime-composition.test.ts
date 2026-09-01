@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fro
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type DirectImMessageDeliveryRequest,
@@ -25,11 +25,9 @@ import {
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
   createLoginShellDiscovery,
-  refreshImCliReadiness,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
-  resolveExecutable,
 } from "../runtime/client-runtime-composition.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
@@ -73,77 +71,19 @@ describe("createClientRuntime production composition", () => {
     expect(includeLoginShell()).toBe(true);
   });
 
-  it("probes Feishu and Slack CLI readiness independently from Agent Runtime providers", async () => {
-    const home = await temporaryDirectory("opentag-im-cli-readiness-");
-    const lark = resolve(home, "lark-cli");
-    const slack = resolve(home, "slack");
-    const brokenSlack = resolve(home, "broken-slack");
-    await writeFile(
-      lark,
-      '#!/bin/sh\nif [ "$1" = "--version" ] || { [ "$1" = "im" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
-      "utf8",
-    );
-    await writeFile(
-      slack,
-      '#!/bin/sh\nif [ "$1" = "version" ] || { [ "$1" = "api" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
-      "utf8",
-    );
-    await writeFile(brokenSlack, "#!/bin/sh\nexit 1\n", "utf8");
-    await Promise.all([chmod(lark, 0o700), chmod(slack, 0o700), chmod(brokenSlack, 0o700)]);
-    const setImCliReadiness = vi.fn();
-
-    await refreshImCliReadiness({ setImCliReadiness } as never, "feishu", lark, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", slack, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", brokenSlack, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", resolve(home, "missing"), {});
-
-    expect(setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
-      { provider: "feishu", status: "checking" },
-      { provider: "feishu", status: "ready" },
-      { provider: "slack", status: "checking" },
-      { provider: "slack", status: "ready" },
-      { provider: "slack", status: "checking" },
-      { provider: "slack", status: "unavailable" },
-      { provider: "slack", status: "checking" },
-      { provider: "slack", status: "install" },
-    ]);
-
-    const abortedBeforeStart = new AbortController();
-    abortedBeforeStart.abort(new Error("stop before IM probe"));
-    await refreshImCliReadiness({ setImCliReadiness } as never, "feishu", lark, {}, abortedBeforeStart.signal);
-    expect(setImCliReadiness).toHaveBeenCalledTimes(8);
-
-    const abortAfterChecking = new AbortController();
-    const checkingUpdates = vi.fn((observation: { status: string }) => {
-      if (observation.status === "checking") abortAfterChecking.abort(new Error("stop after checking"));
+  it("does not publish ambient PATH IM CLI readiness from production composition", async () => {
+    const home = await temporaryDirectory("opentag-im-cli-no-path-");
+    await writeReadyImClis(home);
+    const connection = runtimeConnection();
+    const imUpdates = vi.spyOn(connection, "setImCliReadiness");
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: `${home}:${process.env.PATH ?? ""}` },
+      factories: [readyFactory("codex", async () => ({ ready: true, issues: [] }))],
+      home,
     });
-    await refreshImCliReadiness(
-      { setImCliReadiness: checkingUpdates } as never,
-      "feishu",
-      lark,
-      {},
-      abortAfterChecking.signal,
-    );
-    expect(checkingUpdates.mock.calls.map(([observation]) => observation)).toEqual([
-      { provider: "feishu", status: "checking" },
-    ]);
-
-    const slowLark = resolve(home, "slow-lark");
-    await writeFile(slowLark, "#!/bin/sh\nsleep 1\nexit 0\n", "utf8");
-    await chmod(slowLark, 0o700);
-    const abortDuringProbe = new AbortController();
-    const inFlightUpdates = vi.fn();
-    const inFlight = refreshImCliReadiness(
-      { setImCliReadiness: inFlightUpdates } as never,
-      "feishu",
-      slowLark,
-      {},
-      abortDuringProbe.signal,
-    );
-    await vi.waitFor(() => expect(inFlightUpdates).toHaveBeenCalledWith({ provider: "feishu", status: "checking" }));
-    abortDuringProbe.abort(new Error("stop during IM probe"));
-    await inFlight;
-    expect(inFlightUpdates).toHaveBeenCalledTimes(1);
+    runtime.stop();
+    expect(imUpdates).not.toHaveBeenCalled();
   });
 
   it("projects Codex probe outcomes without exposing provider diagnostics", () => {
@@ -368,25 +308,10 @@ describe("createClientRuntime production composition", () => {
     defaultEnvironment.stop();
   });
 
-  it("tests executable resolution and the resolved factory readiness fence without a shell", async () => {
+  it("tests the resolved factory readiness fence without a shell", async () => {
     const home = await temporaryDirectory("opentag-client-executable-");
     const empty = resolve(home, "empty");
-    const bin = resolve(home, "bin");
     await mkdir(empty);
-    await mkdir(bin);
-    const command = resolve(bin, "codex-fixture");
-    await writeFile(command, "#!/bin/sh\nexit 0\n", "utf8");
-    await chmod(command, 0o755);
-    const canonicalCommand = await realpath(command);
-    await expect(resolveExecutable(command, {})).resolves.toBe(canonicalCommand);
-    await expect(resolveExecutable("codex-fixture", { PATH: `${delimiter}${empty}${delimiter}${bin}` })).resolves.toBe(
-      canonicalCommand,
-    );
-    await expect(resolveExecutable("missing", {})).rejects.toThrow("PATH is unavailable");
-    await expect(resolveExecutable("missing", { PATH: empty })).rejects.toThrow(
-      "compatible Agent Runtime provider executable",
-    );
-
     const factory = resolvedCodexFactory({
       clientVersion: "0.0.1",
       codexHome: home,
@@ -416,8 +341,6 @@ describe("createClientRuntime production composition", () => {
       codexCommand: "codex",
       environment: { HOME: home, PATH: empty, SHELL: fakeShell },
       home,
-      larkCliCommand: resolve(empty, "missing-lark"),
-      slackCliCommand: resolve(empty, "missing-slack"),
     });
     runtime.stop();
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
@@ -446,8 +369,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       codexCommand: "opentag-missing-codex-post-connect",
       environment: { HOME: home, PATH: empty, SHELL: fakeShell },
       home,
-      larkCliCommand: resolve(empty, "missing-lark"),
-      slackCliCommand: resolve(empty, "missing-slack"),
     });
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(
@@ -609,7 +530,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       collaboration: { close: vi.fn() },
       sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       reconciler: {},
-      reportOwner: { stop: vi.fn() },
+      reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runtimeManager: { close: vi.fn(async () => undefined) },
       workspace: {},
@@ -689,6 +610,42 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     );
     await expect(failingClose.run()).rejects.toBe(runtimeCloseFailure);
     expect(credentialClose).toHaveBeenCalledOnce();
+  });
+
+  it("aggregates protected work from every authoritative owner", () => {
+    const admission = { pause: vi.fn(), resume: vi.fn() };
+    const runtime = new ComposedClientRuntime(
+      {} as never,
+      {
+        admission,
+        bindingStore: {},
+        custody: { liveTurnCount: 1 },
+        credentialEnvironment: {},
+        reconciler: { protectedWorkSnapshot: () => ({ activities: [{}], recoveries: [{}, {}] }) },
+        sessionMessageInbox: { pendingCount: 2 },
+        reportOwner: { pendingCount: 3 },
+        runner: { activeCount: 4 },
+        runtimeManager: {},
+        workspace: {},
+        refreshCapability: async () => undefined,
+        capabilityRefreshIntervalMs: 10,
+        capabilityAbort: new AbortController(),
+      } as never,
+    );
+    expect(runtime.protectedWork()).toEqual({
+      sessionActivities: 1,
+      pendingRecoveries: 2,
+      custodyTurns: 1,
+      activeTurns: 4,
+      pendingReports: 3,
+      queuedSessionMessages: 2,
+      total: 13,
+    });
+    const resume = runtime.quiesceForUpdate();
+    expect(admission.pause).toHaveBeenCalledOnce();
+    resume();
+    resume();
+    expect(admission.resume).toHaveBeenCalledOnce();
   });
 
   it("keeps the credential-grant capability while refreshing Provider readiness", async () => {
@@ -1009,6 +966,16 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory,
       home,
     });
+    let releaseCredentialClose!: () => void;
+    const credentialCloseGate = new Promise<void>((resolveClose) => {
+      releaseCredentialClose = resolveClose;
+    });
+    cleanup.push(async () => releaseCredentialClose());
+    const closeCredentialEnvironment = runtime.credentialEnvironment.close.bind(runtime.credentialEnvironment);
+    const credentialClose = vi.spyOn(runtime.credentialEnvironment, "close").mockImplementation(async () => {
+      await credentialCloseGate;
+      await closeCredentialEnvironment();
+    });
     const running = runtime.run();
     await registration;
     const request = reconcileRequest(connection.computerId, snapshot());
@@ -1027,6 +994,10 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
 
     releaseCreate();
     await expect(starting).rejects.toThrow("manager is closing");
+    await vi.waitFor(() => expect(credentialClose).toHaveBeenCalledOnce());
+    await new Promise((resolveTurn) => setTimeout(resolveTurn, 0));
+    expect(credentialClose).toHaveBeenCalledOnce();
+    releaseCredentialClose();
     await running;
     expect(closeCalls).toBe(1);
     expect(() => runtime.runtimeManager.runtime("session-1")).toThrow("manager is closing");
@@ -1034,14 +1005,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
 
   it("recovers other Provider and IM readiness when one periodic probe never settles", async () => {
     const home = await temporaryDirectory("opentag-client-hung-probe-");
-    const { lark, slack } = await writeReadyImClis(home);
     const server = await runtimeServer();
     cleanup.push(server.close);
     let currentTime = Date.now();
     const connection = runtimeConnection(server.url, () => currentTime);
     const capabilityUpdates = vi.spyOn(connection, "setVerifiedCapabilities");
     const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
-    const imUpdates = vi.spyOn(connection, "setImCliReadiness");
     const heartbeats: Array<Record<string, unknown>> = [];
     let releaseHung!: (result: { ready: true; issues: [] } | { ready: false; issues: [] }) => void;
     const hung = new Promise<{ ready: true; issues: [] } | { ready: false; issues: [] }>((resolve) => {
@@ -1098,8 +1067,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       environment: { HOME: home, PATH: process.env.PATH },
       factories: [readyFactory("codex", codexProbe), readyFactory("claude-code", claudeProbe)],
       home,
-      larkCliCommand: lark,
-      slackCliCommand: slack,
     });
     expect(codexProbe).toHaveBeenCalledOnce();
     expect(claudeProbe).toHaveBeenCalledOnce();
@@ -1109,19 +1076,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         { provider: "claude-code", status: "ready" },
       ]),
     );
-    expect(imUpdates.mock.calls.map(([observation]) => observation)).toEqual(
-      expect.arrayContaining([
-        { provider: "feishu", status: "ready" },
-        { provider: "slack", status: "ready" },
-      ]),
-    );
     const codexUnavailableAtStart = readinessUpdates.mock.calls.filter(
       ([observation]) => observation.provider === "codex" && observation.status === "unavailable",
     ).length;
     const running = runtime.run();
     await vi.waitFor(() => expect(codexProbe).toHaveBeenCalledTimes(2));
     const claudeAtHungRefresh = claudeProbe.mock.calls.length;
-    const imReadyAtHungRefresh = imUpdates.mock.calls.filter(([{ status }]) => status === "ready").length;
     const capabilitiesAtHungRefresh = capabilityUpdates.mock.calls.length;
     await vi.waitFor(() =>
       expect(
@@ -1146,11 +1106,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     ).toEqual({ provider: "codex", status: "unavailable" });
 
     await vi.waitFor(() => expect(claudeProbe.mock.calls.length).toBeGreaterThan(claudeAtHungRefresh));
-    await vi.waitFor(() =>
-      expect(imUpdates.mock.calls.filter(([{ status }]) => status === "ready").length).toBeGreaterThan(
-        imReadyAtHungRefresh,
-      ),
-    );
     await vi.waitFor(() => expect(capabilityUpdates.mock.calls.length).toBeGreaterThan(capabilitiesAtHungRefresh));
 
     currentTime += RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1;
@@ -1164,10 +1119,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
           { provider: "codex", status: "unavailable" },
           { provider: "claude-code", status: "ready" },
         ]),
-        imCliReadiness: expect.arrayContaining([
-          { provider: "feishu", status: "ready" },
-          { provider: "slack", status: "ready" },
-        ]),
+        imCliReadiness: [],
       });
     });
 
@@ -1177,7 +1129,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
 
   it("settles shutdown without publishing late hung-probe results", async () => {
     const home = await temporaryDirectory("opentag-client-hung-stop-");
-    const { lark, slack } = await writeReadyImClis(home);
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
@@ -1233,8 +1184,6 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       environment: { HOME: home, PATH: process.env.PATH },
       factory: countingFactory,
       home,
-      larkCliCommand: lark,
-      slackCliCommand: slack,
     });
     const running = runtime.run();
     await started;
@@ -2057,8 +2006,6 @@ async function composeClaudeCodeRuntime(options: {
     codexCommand: resolve(options.home, "missing-codex"),
     environment: options.environment,
     home: options.home,
-    larkCliCommand: resolve(options.home, "missing-lark"),
-    slackCliCommand: resolve(options.home, "missing-slack"),
   });
   return { capture: await readFile(capturePath, "utf8"), runtime };
 }

@@ -114,7 +114,7 @@
       "id": "apps/web/src/api.csrf.test.ts#it",
       "path": "apps/web/src/api.csrf.test.ts",
       "symbol": "it",
-      "complexity": 18
+      "complexity": 21
     },
     {
       "id": "apps/web/src/features/agents/agent-computer-choice.tsx#AgentComputerChoice",

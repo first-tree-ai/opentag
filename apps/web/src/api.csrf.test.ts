@@ -118,6 +118,13 @@ describe("BrowserApi mutations", () => {
         }
         if (headerValue(init) !== "probe-token") missing.push(name);
       }
+
+      /*
+       * A method that never reaches `fetch` would assert nothing above and pass vacuously, which
+       * reads identically to a real pass. Every method here makes a request today; requiring it
+       * keeps a future short-circuit from silently dropping out of the invariant.
+       */
+      if (calls.length === 0) missing.push(`${name} (made no request)`);
     }
 
     expect(missing).toEqual([]);

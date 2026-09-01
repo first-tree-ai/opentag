@@ -86,6 +86,7 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm test:e2e:smoke
 ```
 
 Static contract tests reject legacy stylesheet imports, legacy token and class

@@ -115,7 +115,7 @@ function AgentShellContent({
           </Sidebar.Menu>
           <Sidebar.Close className="sm:hidden" />
         </Sidebar.Header>
-        <Sidebar.Content>
+        <Sidebar.Content className="md:[&_[data-sidebar=viewport]]:pt-2">
           <nav aria-label={m.shell_agent()}>
             <Sidebar.Group>
               <Sidebar.Menu>

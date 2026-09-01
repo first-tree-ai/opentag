@@ -24,6 +24,13 @@ export interface RotatingFileStreamOptions {
   maxBackups?: number;
   maxBytes?: number;
   minRetentionMs?: number;
+  /**
+   * Hard ceiling on the bytes held by all backups. The retention floor decides *which* backups to
+   * keep; this decides how many may exist at all, so enabling a time floor can never let diagnostics
+   * fill the host disk. Defaults to `maxBytes * maxBackups`, i.e. the cap that applied before a
+   * retention floor existed.
+   */
+  maxTotalBytes?: number;
 }
 
 export interface RotatingFileOperations {
@@ -57,6 +64,7 @@ export class RotatingFileStream {
   readonly #maxBackups: number;
   readonly #maxBytes: number;
   readonly #minRetentionMs: number;
+  readonly #maxTotalBytes: number;
   readonly #operations: RotatingFileOperations;
   #bytes = 0;
   #failed = false;
@@ -70,6 +78,10 @@ export class RotatingFileStream {
     this.#maxBackups = options.maxBackups ?? CLIENT_LOG_BACKUPS;
     this.#maxBytes = options.maxBytes ?? CLIENT_LOG_MAX_BYTES;
     this.#minRetentionMs = options.minRetentionMs ?? 0;
+    this.#maxTotalBytes = options.maxTotalBytes ?? this.#maxBytes * this.#maxBackups;
+    if (!Number.isSafeInteger(this.#maxTotalBytes) || this.#maxTotalBytes < 1) {
+      throw new Error("Client log total size ceiling must be a positive safe integer");
+    }
     if (!Number.isSafeInteger(this.#maxBackups) || this.#maxBackups < 1) {
       throw new Error("Client log backup count must be a positive safe integer");
     }
@@ -143,6 +155,32 @@ export class RotatingFileStream {
       this.#renameIfPresent(`${this.path}.${index}`, `${this.path}.${index + 1}`);
     }
     this.#renameIfPresent(this.path, `${this.path}.1`);
+    this.#enforceStorageCeiling();
+  }
+
+  /**
+   * Drop the oldest backups until the retained bytes fit the ceiling, even when they are younger
+   * than the retention floor. The floor is a target, never a licence to grow without bound: a
+   * high-volume day would otherwise add a full-size backup on every rotation for the whole window.
+   */
+  #enforceStorageCeiling(): void {
+    let total = 0;
+    const highest = this.#highestBackupIndex();
+    for (let index = 1; index <= highest; index += 1) {
+      total += this.#backupSize(index);
+    }
+    for (let index = highest; index >= 1 && total > this.#maxTotalBytes; index -= 1) {
+      total -= this.#backupSize(index);
+      this.#removeIfPresent(`${this.path}.${index}`);
+    }
+  }
+
+  #backupSize(index: number): number {
+    try {
+      return this.#operations.lstat(`${this.path}.${index}`).size;
+    } catch {
+      return 0;
+    }
   }
 
   #pruneExpiredBackups(cutoff: number): void {

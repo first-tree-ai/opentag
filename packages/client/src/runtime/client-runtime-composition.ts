@@ -265,6 +265,7 @@ export class ComposedClientRuntime {
   readonly #capabilityAbort: AbortController;
   #capabilityTimer?: ReturnType<typeof setInterval>;
   #capabilityRefreshInFlight?: Promise<void>;
+  #shutdownPromise?: Promise<void>;
   #stopped = false;
 
   constructor(
@@ -310,42 +311,44 @@ export class ComposedClientRuntime {
     try {
       await this.#runtime.run();
     } finally {
-      this.#stopCapabilityMonitor();
-      this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
-      await this.#capabilityRefreshInFlight?.catch(() => undefined);
-      this.sessionMessageInbox.stop();
-      this.runner.stop();
-      await this.runner.settled();
-      await this.sessionMessageInbox.settled();
-      try {
-        await this.runtimeManager.close();
-      } finally {
-        this.reportOwner.stop();
-        await this.credentialEnvironment.close();
-        await this.#providerCliTurnPlans?.recover();
-        await this.#providerCliReconciler?.close();
-      }
+      await this.#shutdown();
     }
   }
 
   stop(): void {
     if (this.#stopped) return;
     this.#stopped = true;
+    const shutdown = this.#shutdown();
+    this.#runtime.stop();
+    void shutdown.catch(() => undefined);
+  }
+
+  #shutdown(): Promise<void> {
+    this.#stopped = true;
+    this.#shutdownPromise ??= this.#performShutdown();
+    return this.#shutdownPromise;
+  }
+
+  async #performShutdown(): Promise<void> {
     this.#stopCapabilityMonitor();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
     this.runner.stop();
-    this.#runtime.stop();
-    // Recovery may remove PATH sentinels, so it must run only after all Runs and
-    // Agent Runtime processes have stopped using their per-Session launch bin.
-    void Promise.allSettled([this.runner.settled(), this.sessionMessageInbox.settled()])
-      .then(async () => {
-        await this.runtimeManager.close();
-        await this.credentialEnvironment.close();
-        await this.#providerCliTurnPlans?.recover();
-        await this.#providerCliReconciler?.close();
-      })
-      .catch(() => undefined);
+    await Promise.all([
+      this.#capabilityRefreshInFlight?.catch(() => undefined),
+      this.runner.settled(),
+      this.sessionMessageInbox.settled(),
+    ]);
+    try {
+      await this.runtimeManager.close();
+    } finally {
+      this.reportOwner.stop();
+      await this.credentialEnvironment.close();
+      // Recovery may remove PATH sentinels, so it must run only after all Runs
+      // and Agent Runtime processes have stopped using their launch bin.
+      await this.#providerCliTurnPlans?.recover();
+      await this.#providerCliReconciler?.close();
+    }
   }
 
   #startCapabilityMonitor(): void {

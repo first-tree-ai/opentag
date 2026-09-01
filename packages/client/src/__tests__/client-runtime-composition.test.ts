@@ -1043,6 +1043,16 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory,
       home,
     });
+    let releaseCredentialClose!: () => void;
+    const credentialCloseGate = new Promise<void>((resolveClose) => {
+      releaseCredentialClose = resolveClose;
+    });
+    cleanup.push(async () => releaseCredentialClose());
+    const closeCredentialEnvironment = runtime.credentialEnvironment.close.bind(runtime.credentialEnvironment);
+    const credentialClose = vi.spyOn(runtime.credentialEnvironment, "close").mockImplementation(async () => {
+      await credentialCloseGate;
+      await closeCredentialEnvironment();
+    });
     const running = runtime.run();
     await registration;
     const request = reconcileRequest(connection.computerId, snapshot());
@@ -1061,6 +1071,10 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
 
     releaseCreate();
     await expect(starting).rejects.toThrow("manager is closing");
+    await vi.waitFor(() => expect(credentialClose).toHaveBeenCalledOnce());
+    await new Promise((resolveTurn) => setTimeout(resolveTurn, 0));
+    expect(credentialClose).toHaveBeenCalledOnce();
+    releaseCredentialClose();
     await running;
     expect(closeCalls).toBe(1);
     expect(() => runtime.runtimeManager.runtime("session-1")).toThrow("manager is closing");

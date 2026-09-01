@@ -18,6 +18,12 @@
   "agent_settings_computer_not_ready": "未就绪",
   "agent_settings_computer_offline": "离线",
   "agent_settings_computer_online": "在线",
+  "agent_settings_computer_recovery_offline": "{computerName} 上的 OpenTag 未运行。请在该电脑上启动 OpenTag 以恢复在线。",
+  "agent_settings_computer_recovery_provider_checking": "OpenTag 正在检查 {computerName} 上的 {providerName}。",
+  "agent_settings_computer_recovery_provider_not_installed": "{computerName} 上未安装 {providerName}。",
+  "agent_settings_computer_recovery_provider_not_signed_in": "{computerName} 上的 {providerName} 尚未登录。",
+  "agent_settings_computer_recovery_provider_unavailable": "{computerName} 上的 {providerName} 不可用。",
+  "agent_settings_computer_recovery_unconfirmed": "OpenTag 无法确认此电脑当前的连接状态。",
   "agent_settings_computer_repair_hide": "隐藏修复命令",
   "agent_settings_computer_repair_show": "需要重新安装？生成修复命令。",
   "agent_settings_computer_unconfirmed": "无法确认",
@@ -50,6 +56,7 @@
   "agent_settings_instructions_saved": "指令已保存。",
   "agent_settings_instructions_title": "指令",
   "agent_settings_keep_active": "保持活跃",
+  "agent_settings_keep_editing": "继续编辑",
   "agent_settings_last_seen": "上次看到于 {relative} · {date}",
   "agent_settings_loading_title": "正在加载 Agent 设置",
   "agent_settings_model": "模型",
@@ -127,5 +134,7 @@
   "agent_settings_status_working_description": "此 Agent 正在处理请求。暂停会停止接收新请求，但当前请求可能会继续，直到安全停止点。",
   "agent_settings_title": "Agent 设置",
   "agent_settings_troubleshooting": "故障排除",
-  "agent_settings_unsaved_changes": "有未保存的更改"
+  "agent_settings_unsaved_changes": "有未保存的更改",
+  "agent_settings_unsaved_confirm_description": "离开此页面将丢失尚未保存的更改。",
+  "agent_settings_unsaved_confirm_title": "放弃未保存的更改？"
 }

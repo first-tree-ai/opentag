@@ -3,7 +3,9 @@ import {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,
   DiagnosticEventSchema,
+  redactForLog,
   redactSensitive,
+  STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
   StructuredErrorSchema,
 } from "../structured-errors.js";
 
@@ -174,5 +176,15 @@ describe("structured error redaction", () => {
 
     const minimal = boundedSerialize("x".repeat(20_000), 1);
     expect(new TextEncoder().encode(minimal).byteLength).toBeLessThanOrEqual(1);
+  });
+
+  it("caps every string value by UTF-8 bytes for log payloads", () => {
+    const redacted = redactForLog({ nested: { value: "界".repeat(10_000) } }) as {
+      nested: { value: string };
+    };
+    expect(new TextEncoder().encode(redacted.nested.value).byteLength).toBeLessThanOrEqual(
+      STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
+    );
+    expect(redacted.nested.value).toContain("[TRUNCATED]");
   });
 });

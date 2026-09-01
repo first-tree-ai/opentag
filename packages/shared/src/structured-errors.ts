@@ -8,6 +8,8 @@ export const STRUCTURED_ERROR_REQUEST_ID_MAX_BYTES = 256;
 export const STRUCTURED_ERROR_MAX_CAUSE_DEPTH = 8;
 /** Maximum UTF-8 bytes emitted by {@link boundedSerialize}. */
 export const BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES = 16 * 1024;
+/** Maximum UTF-8 bytes allowed for each string value crossing a log boundary. */
+export const STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES = 4 * 1024;
 export const STRUCTURED_ERROR_SERIALIZATION_MAX_DEPTH = 8;
 export const STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS = 64;
 export const STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS = 32;
@@ -230,6 +232,22 @@ function truncateUtf8(value: string, maxBytes: number): string {
     output += character;
   }
   return output + suffix;
+}
+
+function capLogStringValues(value: unknown, seen: WeakSet<object>): unknown {
+  if (typeof value === "string") return truncateUtf8(value, STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES);
+  if (value === null || value === undefined || typeof value !== "object") return value;
+  if (seen.has(value)) return CIRCULAR;
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => capLogStringValues(item, seen));
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) output[key] = capLogStringValues(child, seen);
+  return output;
+}
+
+/** Return a detached, recursively redacted copy with a UTF-8 cap on every string value. */
+export function redactForLog<T>(value: T): T {
+  return capLogStringValues(redactSensitive(value), new WeakSet<object>()) as T;
 }
 
 /**

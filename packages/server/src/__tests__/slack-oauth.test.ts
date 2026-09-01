@@ -4,6 +4,7 @@ import {
   SLACK_OAUTH_CALLBACK_PATH,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
+import { eq } from "drizzle-orm";
 import { decodeJwt } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
@@ -114,41 +115,104 @@ function authService(): UserAuthService {
 }
 
 describe("SlackOAuthStateService", () => {
-  it("signs a one-time nonce bound to account, agent, intent, and expected generation", async () => {
+  it("signs a one-time nonce bound to account, exact Agent, intent, surface, and expected generation", async () => {
     const service = new SlackOAuthStateService(secret, { now: () => now });
     expect(service.ttlSeconds).toBe(10 * 60);
     const issued = await service.issue({
       userId,
-      agentId,
-      intent: "reauthorize",
-      expectedBinding: { id: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0", credentialGeneration: 4 },
+      context: {
+        agentId,
+        intent: "reauthorize",
+        returnSurface: "agent-setup",
+        expectedMessaging: {
+          kind: "bound",
+          provider: "slack",
+          bindingId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
+          credentialGeneration: 4,
+        },
+      },
     });
     const payload = decodeJwt(issued.state);
     expect(payload).toMatchObject({
       userId,
-      agentId,
-      intent: "reauthorize",
-      expectedBinding: { id: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0", credentialGeneration: 4 },
+      context: {
+        agentId,
+        intent: "reauthorize",
+        returnSurface: "agent-setup",
+        expectedMessaging: {
+          kind: "bound",
+          provider: "slack",
+          bindingId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
+          credentialGeneration: 4,
+        },
+      },
     });
     expect(payload).not.toHaveProperty("botAccessToken");
     expect(payload).not.toHaveProperty("signingSecret");
+    expect(payload).not.toHaveProperty("returnUrl");
     expect(issued.nonceHash).toBe(hashSecret(String(payload.nonce)));
     expect(issued.payload.sessionBindingHash).toBe(hashSecret(issued.sessionBinding));
     await expect(service.verify(issued.state, issued.sessionBinding)).resolves.toMatchObject({
       userId,
-      agentId,
-      intent: "reauthorize",
+      context: { agentId, intent: "reauthorize", returnSurface: "agent-setup" },
     });
   });
 
-  it("rejects cookie mismatch, expiry, and substitution", async () => {
+  it("refuses to sign a context that violates the OAuth context contract", async () => {
+    const service = new SlackOAuthStateService(secret, { now: () => now });
+    await expect(
+      service.issue({
+        userId,
+        context: {
+          agentId,
+          intent: "create",
+          returnSurface: "agent-setup",
+          expectedMessaging: {
+            kind: "bound",
+            provider: "slack",
+            bindingId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
+            credentialGeneration: 1,
+          },
+        },
+      }),
+    ).rejects.toThrow("Slack create requires the Agent to remain unbound");
+    await expect(
+      service.issue({
+        userId,
+        context: {
+          agentId,
+          intent: "reauthorize",
+          returnSurface: "agent-messaging-settings",
+          expectedMessaging: { kind: "unbound" },
+        },
+      }),
+    ).rejects.toThrow("Slack reauthorization requires the exact current Slack binding");
+  });
+
+  it("rejects cookie mismatch, expiry, tampering, and substitution", async () => {
     const service = new SlackOAuthStateService(secret, { now: () => now, ttlSeconds: 60 });
-    const first = await service.issue({ userId, agentId, intent: "create", expectedBinding: null });
+    const first = await service.issue({
+      userId,
+      context: {
+        agentId,
+        intent: "create",
+        returnSurface: "agent-setup",
+        expectedMessaging: { kind: "unbound" },
+      },
+    });
     const second = await service.issue({
       userId,
-      agentId,
-      intent: "reauthorize",
-      expectedBinding: { id: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0", credentialGeneration: 1 },
+      context: {
+        agentId,
+        intent: "reauthorize",
+        returnSurface: "agent-messaging-settings",
+        expectedMessaging: {
+          kind: "bound",
+          provider: "slack",
+          bindingId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
+          credentialGeneration: 1,
+        },
+      },
     });
     await expect(service.verify(first.state, second.sessionBinding)).rejects.toMatchObject({
       code: "SLACK_OAUTH_FAILED",
@@ -159,6 +223,22 @@ describe("SlackOAuthStateService", () => {
       ttlSeconds: 60,
     });
     await expect(expired.verify(first.state, first.sessionBinding)).rejects.toMatchObject({
+      code: "SLACK_OAUTH_FAILED",
+    });
+    // A state re-signed by an attacker holding a different key never verifies.
+    const forged = await new SlackOAuthStateService("attacker-controlled-signing-key-32-chars", {
+      now: () => now,
+      ttlSeconds: 60,
+    }).issue({
+      userId,
+      context: {
+        agentId,
+        intent: "create",
+        returnSurface: "agent-setup",
+        expectedMessaging: { kind: "unbound" },
+      },
+    });
+    await expect(service.verify(forged.state, forged.sessionBinding)).rejects.toMatchObject({
       code: "SLACK_OAUTH_FAILED",
     });
   });
@@ -260,7 +340,7 @@ describe("SlackConfigurationService persistence", () => {
     ).rejects.toMatchObject({ code: "SLACK_SCOPE_REAUTH_REQUIRED" });
   });
 
-  it("enforces provider, intent, and expected-generation conflicts", async () => {
+  it("enforces unbind-required, intent, and expected-generation conflicts", async () => {
     const value = await oauthFixture();
     const client = apiClient();
     client.inspectInstallation.mockResolvedValue(inspection());
@@ -269,7 +349,7 @@ describe("SlackConfigurationService persistence", () => {
       database: oauthDatabase.database,
       imBindings: value.imBindingService,
     });
-    await value.imBindingService.activateFeishu({
+    const feishuBindingId = await value.imBindingService.activateFeishu({
       agentId: value.agent.id,
       appId: "cli_feishu",
       teamId: "tenant",
@@ -277,8 +357,15 @@ describe("SlackConfigurationService persistence", () => {
       appSecret: "secret",
       grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
     });
+    // A direct cross-Provider start fails closed with the exact binding the Account must unbind first.
     await expect(service.currentBinding(value.bootstrap.userId, value.agent.id)).rejects.toMatchObject({
-      code: "IM_BINDING_PROVIDER_IMMUTABLE",
+      code: "IM_BINDING_UNBIND_REQUIRED",
+      statusCode: 409,
+      unbindRequired: {
+        currentProvider: "feishu",
+        currentBindingId: feishuBindingId,
+        requestedProvider: "slack",
+      },
     });
     await expect(
       service.configure(value.bootstrap.userId, value.agent.id, {
@@ -288,7 +375,14 @@ describe("SlackConfigurationService persistence", () => {
         botAccessToken: "xoxb-token",
         signingSecret: "signing-secret",
       }),
-    ).rejects.toMatchObject({ code: "IM_BINDING_PROVIDER_IMMUTABLE" });
+    ).rejects.toMatchObject({
+      code: "IM_BINDING_UNBIND_REQUIRED",
+      unbindRequired: {
+        currentProvider: "feishu",
+        currentBindingId: feishuBindingId,
+        requestedProvider: "slack",
+      },
+    });
 
     const emptyAgent = await new AgentService(oauthDatabase.database).createForAccount(value.bootstrap.userId, {
       name: "oauth-empty-agent",
@@ -376,15 +470,31 @@ describe("SlackOAuthService persistence", () => {
       configure: vi.fn(),
     };
     const service = createService(value, client, slack);
-    const started = await service.start(value.bootstrap.userId, value.agent.id, "create");
+    const started = await service.start(value.bootstrap.userId, value.agent.id, "create", "agent-setup");
     expect(started).toMatchObject({
       authorizationUrl: expect.stringContaining("client_id=client-id"),
       expiresAt: "2026-08-19T00:10:00.000Z",
       sessionBinding: expect.any(String),
     });
+    const state = new URL(started.authorizationUrl).searchParams.get("state") ?? "";
+    expect(decodeJwt(state)).toMatchObject({
+      userId: value.bootstrap.userId,
+      context: {
+        agentId: value.agent.id,
+        intent: "create",
+        returnSurface: "agent-setup",
+        expectedMessaging: { kind: "unbound" },
+      },
+    });
     const rows = await oauthDatabase.database.select().from(slackOAuthNonces);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ userId: value.bootstrap.userId, agentId: value.agent.id, intent: "create" });
+    expect(rows[0]).toMatchObject({
+      userId: value.bootstrap.userId,
+      agentId: value.agent.id,
+      intent: "create",
+      expectedBindingId: null,
+      expectedCredentialGeneration: null,
+    });
     slack.currentBinding.mockResolvedValue({
       id: rows[0]?.expectedBindingId ?? crypto.randomUUID(),
       credentialGeneration: 1,
@@ -396,6 +506,28 @@ describe("SlackOAuthService persistence", () => {
     await expect(service.start(value.bootstrap.userId, value.agent.id, "reauthorize")).rejects.toMatchObject({
       code: "SLACK_CONFIGURATION_CONFLICT",
     });
+  });
+
+  it("signs the exact current binding generation into a reauthorize state", async () => {
+    const value = await oauthFixture();
+    const client = apiClient();
+    const bindingId = crypto.randomUUID();
+    const slack = {
+      currentBinding: vi.fn().mockResolvedValue({ id: bindingId, credentialGeneration: 3 }),
+      configure: vi.fn(),
+    };
+    const service = createService(value, client, slack);
+    const started = await service.start(value.bootstrap.userId, value.agent.id, "reauthorize");
+    const state = new URL(started.authorizationUrl).searchParams.get("state") ?? "";
+    expect(decodeJwt(state)).toMatchObject({
+      context: {
+        intent: "reauthorize",
+        returnSurface: "agent-messaging-settings",
+        expectedMessaging: { kind: "bound", provider: "slack", bindingId, credentialGeneration: 3 },
+      },
+    });
+    const [row] = await oauthDatabase.database.select().from(slackOAuthNonces);
+    expect(row).toMatchObject({ expectedBindingId: bindingId, expectedCredentialGeneration: 3 });
   });
 
   it("consumes a valid callback and binds the authenticated user", async () => {
@@ -415,7 +547,7 @@ describe("SlackOAuthService persistence", () => {
       configure: vi.fn().mockResolvedValue(result),
     };
     const service = createService(value, client, slack);
-    const started = await service.start(value.bootstrap.userId, value.agent.id, "create");
+    const started = await service.start(value.bootstrap.userId, value.agent.id, "create", "agent-setup");
     await expect(
       service.callback({
         authenticatedUserId: value.bootstrap.userId,
@@ -423,7 +555,7 @@ describe("SlackOAuthService persistence", () => {
         state: new URL(started.authorizationUrl).searchParams.get("state") ?? "",
         sessionBinding: started.sessionBinding,
       }),
-    ).resolves.toEqual({ agentId: value.agent.id, result });
+    ).resolves.toEqual({ agentId: value.agent.id, returnSurface: "agent-setup", result });
     expect(slack.configure).toHaveBeenCalledWith(
       value.bootstrap.userId,
       value.agent.id,
@@ -454,6 +586,104 @@ describe("SlackOAuthService persistence", () => {
         sessionBinding: missingAuth.sessionBinding,
       }),
     ).rejects.toMatchObject({ code: "SLACK_OAUTH_FAILED" });
+  });
+
+  it("rejects superseded, replayed, and forged callback states", async () => {
+    const value = await oauthFixture();
+    const client = apiClient();
+    client.oauthAccess.mockResolvedValue({
+      appId: "A1",
+      teamId: "T1",
+      enterpriseId: null,
+      botUserId: "U1",
+      botId: "B1",
+      botAccessToken: "xoxb-token",
+    });
+    const result = { imBindingId: crypto.randomUUID(), agentId: value.agent.id };
+    const slack = { currentBinding: vi.fn().mockResolvedValue(null), configure: vi.fn().mockResolvedValue(result) };
+    const service = createService(value, client, slack);
+
+    // A newer start for the same Account and Agent supersedes every earlier unconsumed state.
+    const superseded = await service.start(value.bootstrap.userId, value.agent.id, "create");
+    const current = await service.start(value.bootstrap.userId, value.agent.id, "create");
+    const stateOf = (start: { authorizationUrl: string }) =>
+      new URL(start.authorizationUrl).searchParams.get("state") ?? "";
+    await expect(
+      service.callback({
+        authenticatedUserId: value.bootstrap.userId,
+        code: "oauth-code",
+        state: stateOf(superseded),
+        sessionBinding: superseded.sessionBinding,
+      }),
+    ).rejects.toMatchObject({ code: "SLACK_OAUTH_FAILED", slackOAuthAgentId: value.agent.id });
+    expect(slack.configure).not.toHaveBeenCalled();
+
+    // The surviving state completes exactly once: a replay finds its nonce already consumed.
+    await expect(
+      service.callback({
+        authenticatedUserId: value.bootstrap.userId,
+        code: "oauth-code",
+        state: stateOf(current),
+        sessionBinding: current.sessionBinding,
+      }),
+    ).resolves.toMatchObject({ agentId: value.agent.id, returnSurface: "agent-messaging-settings" });
+    await expect(
+      service.callback({
+        authenticatedUserId: value.bootstrap.userId,
+        code: "oauth-code",
+        state: stateOf(current),
+        sessionBinding: current.sessionBinding,
+      }),
+    ).rejects.toMatchObject({ code: "SLACK_OAUTH_FAILED" });
+    expect(slack.configure).toHaveBeenCalledTimes(1);
+
+    // A state minted under a different key is rejected before any nonce is consumed.
+    const forged = await new SlackOAuthStateService("attacker-controlled-signing-key-32-chars", {
+      now: () => now,
+    }).issue({
+      userId: value.bootstrap.userId,
+      context: {
+        agentId: value.agent.id,
+        intent: "create",
+        returnSurface: "agent-setup",
+        expectedMessaging: { kind: "unbound" },
+      },
+    });
+    await expect(
+      service.callback({
+        authenticatedUserId: value.bootstrap.userId,
+        code: "oauth-code",
+        state: forged.state,
+        sessionBinding: forged.sessionBinding,
+      }),
+    ).rejects.toMatchObject({ code: "SLACK_OAUTH_FAILED" });
+    expect(slack.configure).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when the signed expectation no longer matches the consumed nonce", async () => {
+    const value = await oauthFixture();
+    const client = apiClient();
+    const slack = { currentBinding: vi.fn().mockResolvedValue(null), configure: vi.fn() };
+    const service = createService(value, client, slack);
+    const started = await service.start(value.bootstrap.userId, value.agent.id, "create");
+    const state = new URL(started.authorizationUrl).searchParams.get("state") ?? "";
+    // Tamper with the persisted fence after issuance: the signed context says unbound, the nonce row
+    // now names an exact binding. Divergence is treated as a stale or tampered flow and rejected.
+    await oauthDatabase.database
+      .update(slackOAuthNonces)
+      .set({ expectedBindingId: crypto.randomUUID(), expectedCredentialGeneration: 1 })
+      .where(eq(slackOAuthNonces.agentId, value.agent.id));
+    await expect(
+      service.callback({
+        authenticatedUserId: value.bootstrap.userId,
+        code: "oauth-code",
+        state,
+        sessionBinding: started.sessionBinding,
+      }),
+    ).rejects.toMatchObject({ code: "SLACK_OAUTH_FAILED" });
+    expect(slack.configure).not.toHaveBeenCalled();
+    const [row] = await oauthDatabase.database.select().from(slackOAuthNonces);
+    expect(row?.consumedAt).not.toBeNull();
   });
 
   it("maps exchange failures and propagates configuration errors", async () => {
@@ -504,6 +734,58 @@ describe("SlackOAuthService persistence", () => {
 });
 
 describe("Slack OAuth HTTP routes", () => {
+  it("returns the callback only to the fixed surface the signed state named", async () => {
+    const slackOAuth = {
+      start: vi.fn(),
+      callback: vi
+        .fn()
+        .mockResolvedValueOnce({
+          agentId,
+          returnSurface: "agent-setup",
+          result: { imBindingId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0" },
+        })
+        .mockRejectedValueOnce(
+          Object.assign(new SlackConfigurationServiceError("SLACK_CONFIGURATION_CONFLICT", 409, "changed"), {
+            slackOAuthAgentId: agentId,
+            slackOAuthReturnSurface: "agent-setup",
+          }),
+        ),
+    };
+    const app = createApp({
+      authService: authService(),
+      betterAuth: signedInBrowser(userId),
+      slackOAuth: {
+        authService: authService(),
+        publicOrigin: "https://opentag.example.com",
+        secureCookies: true,
+        slackOAuth: slackOAuth as never,
+      },
+    });
+    apps.push(app);
+
+    // Adversarial navigation parameters are ignored: the redirect target comes from the signed state alone.
+    const success = await app.inject({
+      method: "GET",
+      url: `${SLACK_OAUTH_CALLBACK_PATH}?code=slack-oauth-code&state=signed-state&returnUrl=https%3A%2F%2Fevil.example.com&next=%2F%2Fevil.example.com`,
+      headers: { cookie: "opentag.session_token=session; opentag_slack_oauth_context=session-binding" },
+    });
+    expect(success.statusCode).toBe(302);
+    expect(success.headers.location).toBe(
+      `https://opentag.example.com/onboarding?agentId=${agentId}&slack_oauth=success`,
+    );
+    expect(JSON.stringify(success.headers)).not.toContain("evil.example.com");
+
+    const failure = await app.inject({
+      method: "GET",
+      url: `${SLACK_OAUTH_CALLBACK_PATH}?error=access_denied&state=signed-state`,
+      headers: { cookie: "opentag.session_token=session; opentag_slack_oauth_context=session-binding" },
+    });
+    expect(failure.statusCode).toBe(302);
+    expect(failure.headers.location).toBe(
+      `https://opentag.example.com/onboarding?agentId=${agentId}&slack_oauth_error=SLACK_CONFIGURATION_CONFLICT`,
+    );
+  });
+
   it("starts an authenticated install and keeps secrets out of the JSON body", async () => {
     const slackOAuth = {
       start: vi.fn().mockResolvedValue({
@@ -541,7 +823,25 @@ describe("Slack OAuth HTTP routes", () => {
       expect.arrayContaining([expect.stringContaining("opentag_slack_oauth_context=")]),
     );
     expect(String(started.headers["set-cookie"])).toContain("HttpOnly");
-    expect(slackOAuth.start).toHaveBeenCalledWith(userId, agentId, "create");
+    expect(slackOAuth.start).toHaveBeenCalledWith(userId, agentId, "create", undefined);
+
+    slackOAuth.start.mockClear();
+    const setupStarted = await app.inject({
+      method: "POST",
+      url: agentSlackOAuthStartPath(agentId),
+      headers: { authorization: "Bearer access", "content-type": "application/json" },
+      payload: { intent: "create", returnSurface: "agent-setup" },
+    });
+    expect(setupStarted.statusCode).toBe(200);
+    expect(slackOAuth.start).toHaveBeenCalledWith(userId, agentId, "create", "agent-setup");
+
+    const invalidSurface = await app.inject({
+      method: "POST",
+      url: agentSlackOAuthStartPath(agentId),
+      headers: { authorization: "Bearer access", "content-type": "application/json" },
+      payload: { intent: "create", returnSurface: "https://evil.example.com/return" },
+    });
+    expect(invalidSurface.statusCode).toBe(400);
   });
 
   it("redirects public callback success and failures without exposing codes or state", async () => {
@@ -549,6 +849,7 @@ describe("Slack OAuth HTTP routes", () => {
       start: vi.fn(),
       callback: vi.fn().mockResolvedValueOnce({
         agentId,
+        returnSurface: "agent-messaging-settings",
         result: { imBindingId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0" },
       }),
     };

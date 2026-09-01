@@ -1,23 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { SlackConfigurationIntentSchema } from "@opentag/shared";
+import { type AgentSetupSlackOAuthContext, AgentSetupSlackOAuthContextSchema } from "@opentag/shared";
 import { jwtVerify, SignJWT } from "jose";
 import { z } from "zod";
 import { generateSecret, hashSecret } from "../../auth/security.js";
 import { SlackConfigurationServiceError } from "./configuration-service.js";
 
+/**
+ * The signed state carries the exact F0 Agent setup OAuth context: the exact Agent, the fixed return
+ * surface, the intent, and the expected unbound or exact binding generation. Anything the Account did
+ * not see signed cannot be substituted without failing verification, and the payload never holds a
+ * return URL — the redirect target is derived from the fixed surface after verification.
+ */
 const SlackOAuthStatePayloadSchema = z.object({
   nonce: z.string().min(1),
   userId: z.string().uuid(),
-  agentId: z.string().uuid(),
-  intent: SlackConfigurationIntentSchema,
-  expectedBinding: z
-    .object({
-      id: z.string().uuid(),
-      credentialGeneration: z.number().int().min(1),
-    })
-    .strict()
-    .nullable(),
   sessionBindingHash: z.string().min(1),
+  context: AgentSetupSlackOAuthContextSchema,
 });
 
 export type SlackOAuthStatePayload = z.infer<typeof SlackOAuthStatePayloadSchema>;
@@ -47,22 +45,16 @@ export class SlackOAuthStateService {
     return this.#ttlSeconds;
   }
 
-  async issue(input: {
-    userId: string;
-    agentId: string;
-    intent: SlackOAuthStatePayload["intent"];
-    expectedBinding: SlackOAuthStatePayload["expectedBinding"];
-  }): Promise<SlackOAuthIssuedState> {
+  async issue(input: { userId: string; context: AgentSetupSlackOAuthContext }): Promise<SlackOAuthIssuedState> {
+    const context = AgentSetupSlackOAuthContextSchema.parse(input.context);
     const nonce = generateSecret(24);
     const sessionBinding = generateSecret(24);
     const issuedAt = Math.floor(this.#now().getTime() / 1000);
     const payload: SlackOAuthStatePayload = {
       nonce,
       userId: input.userId,
-      agentId: input.agentId,
-      intent: input.intent,
-      expectedBinding: input.expectedBinding,
       sessionBindingHash: hashSecret(sessionBinding),
+      context,
     };
     const state = await new SignJWT(payload)
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })

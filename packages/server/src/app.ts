@@ -32,7 +32,11 @@ import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "
 import type { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
-import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
+import {
+  type ImBindingService,
+  ImBindingServiceError,
+  ImBindingUnbindRequiredError,
+} from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
@@ -81,6 +85,39 @@ export interface CreateAppOptions {
 
 export function sanitizeRequestUrl(url: string): string {
   return url.split("?", 1)[0] ?? "/";
+}
+
+type AccountFacingError =
+  | AuthServiceError
+  | AgentServiceError
+  | ImBindingServiceError
+  | OnboardingResetError
+  | TaskQueryError
+  | SlackConfigurationServiceError
+  | AccountSetupServiceError;
+
+function isAccountFacingError(error: unknown): error is AccountFacingError {
+  return (
+    error instanceof AuthServiceError ||
+    error instanceof AgentServiceError ||
+    error instanceof ImBindingServiceError ||
+    error instanceof OnboardingResetError ||
+    error instanceof TaskQueryError ||
+    error instanceof SlackConfigurationServiceError ||
+    error instanceof AccountSetupServiceError
+  );
+}
+
+function accountFacingErrorEnvelope(error: AccountFacingError, requestId: string) {
+  return ErrorEnvelopeSchema.parse({
+    error: {
+      code: error.code,
+      category: error.category,
+      message: error.message,
+      requestId,
+      ...(error instanceof ImBindingUnbindRequiredError ? { unbindRequired: error.unbindRequired } : {}),
+    },
+  });
 }
 
 export function formatHttpSpanName(request: { method?: string; routeOptions?: { url?: string } }): string {
@@ -303,24 +340,8 @@ export function createApp(options: CreateAppOptions = {}) {
       });
       return reply.code(feishuFailure.statusCode).send(envelope);
     }
-    if (
-      error instanceof AuthServiceError ||
-      error instanceof AgentServiceError ||
-      error instanceof ImBindingServiceError ||
-      error instanceof OnboardingResetError ||
-      error instanceof TaskQueryError ||
-      error instanceof SlackConfigurationServiceError ||
-      error instanceof AccountSetupServiceError
-    ) {
-      const envelope = ErrorEnvelopeSchema.parse({
-        error: {
-          code: error.code,
-          category: error.category,
-          message: error.message,
-          requestId: request.id,
-        },
-      });
-      return reply.code(error.statusCode).send(envelope);
+    if (isAccountFacingError(error)) {
+      return reply.code(error.statusCode).send(accountFacingErrorEnvelope(error, request.id));
     }
     if (error instanceof SessionCliProofError) {
       return reply.code(401).send(

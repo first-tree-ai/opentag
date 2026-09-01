@@ -9,6 +9,7 @@ export {
   disableImBindingInTransaction,
   ImBindingService,
   ImBindingServiceError,
+  ImBindingUnbindRequiredError,
 } from "./im-binding-service.js";
 export type {
   ImProviderAdapter,

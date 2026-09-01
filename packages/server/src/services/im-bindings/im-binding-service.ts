@@ -4,6 +4,7 @@ import type {
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
+  ImBindingUnbindRequiredDetail,
   ImCliReadinessStatus,
   IntegrationCredentialExecutionReason,
   IntegrationCredentialExecutionStatus,
@@ -18,6 +19,7 @@ import {
   FEISHU_REQUIRED_TENANT_SCOPES,
   hasRequiredFeishuTenantScopes,
   hasRequiredSlackBotScopes,
+  ImBindingUnbindRequiredDetailSchema,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
 import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -219,6 +221,24 @@ export class ImBindingServiceError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * A cross-Provider messaging start fails closed: the Account must explicitly unbind the exact current
+ * binding first, then bind any Provider. The structured identity lets the caller offer that unbind
+ * without a second lookup. Same-Provider reauthorization and replacement never raise it.
+ */
+export class ImBindingUnbindRequiredError extends ImBindingServiceError {
+  readonly unbindRequired: ImBindingUnbindRequiredDetail;
+  constructor(detail: ImBindingUnbindRequiredDetail) {
+    super(
+      "IM_BINDING_UNBIND_REQUIRED",
+      409,
+      "Unbind the current messaging connection before starting a different Provider",
+    );
+    this.name = "ImBindingUnbindRequiredError";
+    this.unbindRequired = ImBindingUnbindRequiredDetailSchema.parse(detail);
   }
 }
 
@@ -935,6 +955,37 @@ export class ImBindingService {
       }
       await disableImBindingInTransaction(transaction, imBindingId, this.#now());
       return imBinding.agentId;
+    });
+    await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
+  }
+
+  /**
+   * The explicit Account-owned unbind. Naming the exact current Provider and binding fences the mutation
+   * against a stale view: anything else fails closed and nothing is disabled. The atomic disable clears the
+   * effective credential, setup attempt context and owner, and connection leases, terminates active chat
+   * sessions, and retains message and session history. Afterwards any Provider may bind.
+   */
+  async unbindForAgent(
+    callerUserId: string,
+    agentId: string,
+    expected: { provider: "feishu" | "slack"; bindingId: string },
+  ): Promise<void> {
+    await this.#database.transaction(async (transaction) => {
+      await this.assertCanManageForMutation(callerUserId, agentId, transaction);
+      const [current] = await transaction
+        .select({ id: imBindings.id, provider: imBindings.provider })
+        .from(imBindings)
+        .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+        .limit(1)
+        .for("update");
+      if (!current || current.id !== expected.bindingId || current.provider !== expected.provider) {
+        throw new ImBindingServiceError(
+          "IM_BINDING_CONFIGURATION_CONFLICT",
+          409,
+          "The Agent's messaging connection changed since it was observed; refresh before unbinding",
+        );
+      }
+      await disableImBindingInTransaction(transaction, current.id, this.#now());
     });
     await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
   }

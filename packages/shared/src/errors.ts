@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ImBindingUnbindRequiredDetailSchema } from "./im-binding.js";
 
 export const ErrorCategorySchema = z.enum(["credential", "deterministic", "validation", "transient", "rate_limit"]);
 
@@ -26,10 +27,12 @@ export const ErrorCodeSchema = z.enum([
   "AGENT_REBIND_BLOCKED",
   "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
   "ONBOARDING_RESET_UNVERIFIED",
+  "IM_BINDING_CONFIGURATION_CONFLICT",
   "IM_BINDING_FORBIDDEN",
   "IM_BINDING_NOT_FOUND",
   "IM_BINDING_PROVIDER_IMMUTABLE",
   "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+  "IM_BINDING_UNBIND_REQUIRED",
   "FEISHU_UPSTREAM_UNAVAILABLE",
   "SLACK_APP_TEAM_ALREADY_BOUND",
   "SLACK_AUTH_IDENTITY_INCOMPLETE",
@@ -73,8 +76,18 @@ export const ErrorDetailSchema = z
     requestId: z.string().min(1).optional(),
     retryAfterSeconds: z.number().int().positive().optional(),
     issues: z.array(ValidationIssueSchema).optional(),
+    unbindRequired: ImBindingUnbindRequiredDetailSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((detail, context) => {
+    if (detail.unbindRequired && detail.code !== "IM_BINDING_UNBIND_REQUIRED") {
+      context.addIssue({
+        code: "custom",
+        path: ["unbindRequired"],
+        message: "Only an unbind-required failure carries the unbind identity",
+      });
+    }
+  });
 
 export const ErrorEnvelopeSchema = z
   .object({

@@ -10,6 +10,7 @@ export const AGENT_COMPUTER_REBIND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/computer/
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
 export const AGENT_IM_BINDING_HANDOFF_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/handoff`;
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
+export const AGENT_IM_BINDING_UNBIND_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/unbind`;
 export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/feishu/setup-attempts`;
 export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/:attemptId`;
 export const AGENT_SLACK_OAUTH_START_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/oauth/start`;
@@ -118,6 +119,10 @@ export function agentImBindingHandoffPath(agentId: string): string {
 
 export function agentImBindingConfigPath(agentId: string): string {
   return `${agentImBindingPath(agentId)}/config`;
+}
+
+export function agentImBindingUnbindPath(agentId: string): string {
+  return `${agentImBindingPath(agentId)}/unbind`;
 }
 
 export function agentFeishuSetupAttemptsPath(agentId: string): string {

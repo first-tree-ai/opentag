@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
-import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared";
+import type { FeishuSetupAttempt, FeishuSetupIntent, ImBindingMessagingExpectation } from "@opentag/shared";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
-import type { DatabaseClient } from "../../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
 import type { ApplicationCipher } from "../../crypto.js";
-import { type ImBindingService, ImBindingServiceError, type VerifiedFeishuBinding } from "../im-binding-service.js";
+import {
+  type ImBindingService,
+  ImBindingServiceError,
+  ImBindingUnbindRequiredError,
+  type VerifiedFeishuBinding,
+} from "../im-binding-service.js";
 import {
   FeishuOperationError,
   feishuSetupFailureCode,
@@ -97,9 +102,16 @@ export class FeishuSetupService {
     this.#running.clear();
   }
 
-  async createOrReuse(callerUserId: string, agentId: string, intent: FeishuSetupIntent): Promise<FeishuSetupAttempt> {
+  async createOrReuse(
+    callerUserId: string,
+    agentId: string,
+    intent: FeishuSetupIntent,
+    expectedMessaging?: ImBindingMessagingExpectation,
+  ): Promise<FeishuSetupAttempt> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
-    const current = await this.#currentForAgent(agentId);
+    const observed = await this.#currentForAgent(agentId);
+    this.#assertMessagingStartAllowed(observed, intent, expectedMessaging);
+    const current = observed;
     if (current?.setupAttemptId && current.setupState && ["awaiting_user", "validating"].includes(current.setupState)) {
       if (
         (current.setupOwnerInstanceId === this.#instanceId && !this.#running.has(current.setupAttemptId)) ||
@@ -136,16 +148,7 @@ export class FeishuSetupService {
         "The Agent must be bound to a Computer before messaging can be connected",
       );
     }
-    const existing = await this.#currentForAgent(agentId);
-    if (intent === "create" && existing && existing.status !== "provisioning") {
-      throw new Error("FEISHU_IM_BINDING_ALREADY_EXISTS");
-    }
-    if (intent === "reauthorize" && (existing?.provider !== "feishu" || !existing.externalAppId)) {
-      throw new Error("FEISHU_REAUTHORIZATION_REQUIRES_BINDING");
-    }
-    if (intent === "replace" && (existing?.provider !== "feishu" || existing.status === "provisioning")) {
-      throw new Error("FEISHU_REPLACEMENT_REQUIRES_BINDING");
-    }
+    const existing = current;
     const profile: FeishuAppProfile = {
       name: agent.displayName,
       description: `OpenTag Agent: ${agent.displayName}`,
@@ -176,7 +179,11 @@ export class FeishuSetupService {
     try {
       row = await this.#database.transaction(async (transaction) => {
         await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
-        if (existing) {
+        // Re-read under the Agent mutation lock: the expectation and intent fences must hold against
+        // what is current now, not against what the caller observed before the Feishu registration ran.
+        const fenced = await this.#currentForAgent(agentId, transaction, true);
+        this.#assertMessagingStartAllowed(fenced, intent, expectedMessaging);
+        if (fenced) {
           const [updated] = await transaction
             .update(imBindings)
             .set({
@@ -192,7 +199,7 @@ export class FeishuSetupService {
             })
             .where(
               and(
-                eq(imBindings.id, existing.id),
+                eq(imBindings.id, fenced.id),
                 ne(imBindings.status, "disabled"),
                 isNull(imBindings.setupOwnerInstanceId),
               ),
@@ -409,13 +416,93 @@ export class FeishuSetupService {
     void observed.catch(() => undefined);
   }
 
-  async #currentForAgent(agentId: string): Promise<typeof imBindings.$inferSelect | undefined> {
-    const [row] = await this.#database
+  async #currentForAgent(
+    agentId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+    forUpdate = false,
+  ): Promise<typeof imBindings.$inferSelect | undefined> {
+    const query = executor
       .select()
       .from(imBindings)
       .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
       .limit(1);
+    if (forUpdate) {
+      const [row] = await query.for("update");
+      return row;
+    }
+    const [row] = await query;
     return row;
+  }
+
+  /**
+   * One guard for every Feishu setup command. A current binding owned by another Provider fails closed
+   * with the structured unbind-required identity; there is no direct Provider switch. A declared
+   * expectation must match the exact current binding and credential generation. Same-Provider
+   * reauthorization and replacement stay legal; create never replaces a configured binding.
+   */
+  #assertMessagingStartAllowed(
+    current: typeof imBindings.$inferSelect | undefined,
+    intent: FeishuSetupIntent,
+    expectedMessaging: ImBindingMessagingExpectation | undefined,
+  ): void {
+    if (current && current.provider !== "feishu") {
+      throw new ImBindingUnbindRequiredError({
+        currentProvider: current.provider,
+        currentBindingId: current.id,
+        requestedProvider: "feishu",
+      });
+    }
+    const configured = current && current.status !== "provisioning" ? current : undefined;
+    this.#assertExpectationMatches(configured, expectedMessaging);
+    this.#assertIntentAllowed(configured, intent);
+  }
+
+  #assertExpectationMatches(
+    configured: typeof imBindings.$inferSelect | undefined,
+    expectedMessaging: ImBindingMessagingExpectation | undefined,
+  ): void {
+    if (!expectedMessaging) return;
+    const stale = new ImBindingServiceError(
+      "IM_BINDING_CONFIGURATION_CONFLICT",
+      409,
+      "The Agent's messaging connection changed since it was observed; refresh and try again",
+    );
+    if (expectedMessaging.kind === "unbound") {
+      if (configured) throw stale;
+      return;
+    }
+    if (
+      !configured ||
+      configured.provider !== expectedMessaging.provider ||
+      configured.id !== expectedMessaging.bindingId ||
+      configured.credentialGeneration !== expectedMessaging.credentialGeneration
+    ) {
+      throw stale;
+    }
+  }
+
+  #assertIntentAllowed(configured: typeof imBindings.$inferSelect | undefined, intent: FeishuSetupIntent): void {
+    if (intent === "create" && configured) {
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "The Agent already has a configured Feishu connection; reauthorize, replace, or unbind it first",
+      );
+    }
+    if (intent === "reauthorize" && !configured?.externalAppId) {
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "Feishu reauthorization requires a current configured binding",
+      );
+    }
+    if (intent === "replace" && !configured) {
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "Feishu replacement requires a current configured binding",
+      );
+    }
   }
 
   async #load(attemptId: string): Promise<typeof imBindings.$inferSelect | undefined> {

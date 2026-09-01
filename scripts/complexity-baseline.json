@@ -888,7 +888,7 @@
       "id": "packages/server/src/services/im-bindings/feishu/setup-service.ts#createOrReuse",
       "path": "packages/server/src/services/im-bindings/feishu/setup-service.ts",
       "symbol": "createOrReuse",
-      "complexity": 31
+      "complexity": 23
     },
     {
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#activate",

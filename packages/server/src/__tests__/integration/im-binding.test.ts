@@ -6578,9 +6578,10 @@ describe("IM binding persistence", () => {
       activation: { activateAtomicAttempt },
     });
     try {
-      await expect(setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize")).rejects.toThrow(
-        "FEISHU_REAUTHORIZATION_REQUIRES_BINDING",
-      );
+      await expect(setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize")).rejects.toMatchObject({
+        code: "IM_BINDING_CONFIGURATION_CONFLICT",
+        statusCode: 409,
+      });
       expect(start).not.toHaveBeenCalled();
       const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
       await expect(setup.cancel(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({ state: "canceled" });

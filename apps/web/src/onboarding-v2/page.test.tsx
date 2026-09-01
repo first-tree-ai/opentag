@@ -86,6 +86,38 @@ describe("OnboardingV2Page", () => {
     expect(cloud.textContent).toContain("Coming soon");
   });
 
+  it("keeps mock choices interactive above the fixed lab panel", () => {
+    render(<OnboardingV2MockPage />);
+    openLab();
+
+    const controls = screen.getByRole("button", { name: "Mock controls" });
+    const panel = document.getElementById(controls.getAttribute("aria-controls") ?? "");
+    expect(panel).toBeTruthy();
+
+    const manual = screen.getByRole("button", { name: "manual" });
+    const fast = screen.getByRole("button", { name: "fast" });
+    expect(manual.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(fast);
+    expect(manual.getAttribute("aria-pressed")).toBe("false");
+    expect(fast.getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(screen.getByLabelText("Readiness outcome"));
+    expect(panel?.contains(screen.getByRole("listbox"))).toBe(true);
+    const scenario = screen.getByRole("option", { name: "Runtime not installed" });
+    fireEvent.pointerDown(scenario);
+    fireEvent.pointerUp(scenario);
+    fireEvent.click(scenario);
+    expect(screen.getByText("The chosen agent CLI is missing, so sign-in cannot be answered yet.")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Computers on the account"));
+    expect(screen.getAllByRole("listbox").every((listbox) => panel?.contains(listbox))).toBe(true);
+    const inventory = screen.getByRole("option", { name: "Several" });
+    fireEvent.pointerDown(inventory);
+    fireEvent.pointerUp(inventory);
+    fireEvent.click(inventory);
+    expect(screen.getByLabelText("Computers on the account").textContent).toContain("Several");
+  });
+
   it("shows no progress rail until the branch is known", () => {
     render(<OnboardingV2MockPage />);
     // How many steps follow depends on this step's answer, so there is no honest length to show.

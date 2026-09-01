@@ -6,11 +6,7 @@ import {
   type ComputerConnectLifecycle,
   ComputerConnectLifecycleRoot,
 } from "../features/computer-connect/computer-connect.js";
-import {
-  messagingProviderAlternateBrandInSentence,
-  messagingProviderLabel,
-  messagingProviderLabelInSentence,
-} from "../im/provider-label.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import {
   CheckLine,
@@ -361,10 +357,10 @@ function MessagingPicker({
               description={
                 candidate === "feishu"
                   ? m.onboarding_v2_messaging_feishu_description({
-                      provider: messagingProviderAlternateBrandInSentence(),
+                      provider: messagingProviderAlternateBrand(),
                     })
                   : m.onboarding_v2_messaging_provider_description({
-                      provider: messagingProviderLabelInSentence(candidate),
+                      provider: messagingProviderLabel(candidate),
                     })
               }
               title={messagingProviderLabel(candidate)}
@@ -428,8 +424,8 @@ function MessagingConnection({
         <div className={PANEL}>
           <p className="text-kumo-subtle m-0">
             {messaging.kind === "waiting"
-              ? m.onboarding_v2_messaging_lark_intro({ provider: messagingProviderLabelInSentence("feishu") })
-              : m.onboarding_v2_messaging_feishu_preparing({ provider: messagingProviderLabelInSentence("feishu") })}
+              ? m.onboarding_v2_messaging_lark_intro({ provider: messagingProviderLabel("feishu") })
+              : m.onboarding_v2_messaging_feishu_preparing({ provider: messagingProviderLabel("feishu") })}
           </p>
           <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
@@ -1131,7 +1127,9 @@ export function DoneStep({
             installers to an app their Agent is not in.
           */}
           {provider
-            ? m.onboarding_v2_done_description({ name, provider: messagingProviderLabelInSentence(provider) })
+            ? spaceBrandInSentence(
+                m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) }),
+              )
             : m.onboarding_v2_done_description_any_app({ name })}
         </p>
       </header>

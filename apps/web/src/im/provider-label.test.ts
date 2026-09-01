@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { overwriteGetLocale } from "../paraglide/runtime.js";
-import {
-  messagingProviderAlternateBrand,
-  messagingProviderAlternateBrandInSentence,
-  messagingProviderLabel,
-  messagingProviderLabelInSentence,
-} from "./provider-label.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "./provider-label.js";
 
 /** Mirrors the helper in i18n/format.test.ts: run one assertion under a locale, then restore. */
 function withLocale(locale: "en" | "zh", callback: () => void): void {
@@ -55,24 +50,34 @@ describe("messagingProviderLabel", () => {
   });
 
   /*
-   * Chinese sets no space between Chinese characters and one space either side of Latin text, and
-   * the same {provider} slot receives both. The template cannot decide that; the label knows its own
-   * script, so it carries its own boundary.
+   * The cases the previous model got wrong. Padding the label put a space wherever the slot sat,
+   * which is right between two runs of text and wrong everywhere else: at the end of a button, or
+   * against Chinese punctuation that already carries its own width.
    */
-  it("spaces a Latin brand inside a Chinese sentence and a Chinese one not at all", () => {
+  it("spaces a Latin brand against Chinese text and nothing else", () => {
     withLocale("zh", () => {
-      expect(messagingProviderLabelInSentence("feishu")).toBe("飞书");
-      expect(messagingProviderLabelInSentence("slack")).toBe(" Slack ");
-      expect(messagingProviderAlternateBrandInSentence()).toBe(" Lark ");
+      expect(spaceBrandInSentence("断开Slack")).toBe("断开 Slack");
+      expect(spaceBrandInSentence("无法断开Slack，请重试。")).toBe("无法断开 Slack，请重试。");
+      expect(spaceBrandInSentence("断开飞书")).toBe("断开飞书");
+      expect(spaceBrandInSentence("已连接的Slack频道")).toBe("已连接的 Slack 频道");
     });
   });
 
-  /** English already spaces every word, so the in-sentence form must add nothing. */
+  /** Running it twice must not widen a gap it already set, since messages compose. */
+  it("leaves an already-spaced sentence alone", () => {
+    withLocale("zh", () => {
+      const once = spaceBrandInSentence("断开Slack");
+      expect(spaceBrandInSentence(once)).toBe(once);
+      expect(spaceBrandInSentence("同时支持 Lark")).toBe("同时支持 Lark");
+    });
+  });
+
+  /** English already spaces every word, so the rule must not touch it. */
   it("leaves English untouched", () => {
     withLocale("en", () => {
-      expect(messagingProviderLabelInSentence("feishu")).toBe("Lark");
-      expect(messagingProviderLabelInSentence("slack")).toBe("Slack");
-      expect(messagingProviderAlternateBrandInSentence()).toBe("Feishu");
+      expect(spaceBrandInSentence("Disconnect Slack")).toBe("Disconnect Slack");
+      expect(messagingProviderLabel("feishu")).toBe("Lark");
+      expect(messagingProviderAlternateBrand()).toBe("Feishu");
     });
   });
 });

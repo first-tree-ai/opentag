@@ -49,24 +49,20 @@ export function messagingProviderAlternateBrand(): string {
 }
 
 /**
- * The label as it should sit *inside* a Chinese sentence.
+ * One space between Chinese characters and Latin text, none between Chinese ones.
  *
- * Chinese sets no space between Chinese characters and one space either side of Latin text, so a
- * template cannot carry the spacing: the same `{provider}` slot receives 飞书 in one branch and
- * Slack in the next. The label knows its own script, so it carries its own boundary — CJK joins the
- * sentence directly, Latin brings the spaces Chinese typography expects. In `en` this is the label
- * unchanged, because English already spaces every word.
+ * Spacing is a property of the finished sentence, not of the template or the label. The template
+ * cannot carry it: the same `{provider}` slot receives 飞书 in one branch and Slack in the next, so
+ * a space written into the template is right for one and wrong for the other. The label cannot
+ * carry it either: padding a Latin brand is right mid-sentence but leaves a stray space when the
+ * slot ends the string ("断开 Slack ") or sits before Chinese punctuation ("...Slack ，请重试").
+ * Only the assembled string knows which two scripts actually met, so the rule is applied there.
  *
- * Only interpolation sites use this. A label rendered on its own — an Agent card, a button — wants
- * `messagingProviderLabel`, which has no padding to trim.
+ * Chinese punctuation is deliberately outside the character ranges below: 。，？ already carry
+ * their own width, and spacing them off the brand is the error this is here to avoid. In `en` this
+ * returns the text untouched, because English already spaces every word.
  */
-export function messagingProviderLabelInSentence(provider: MessagingProvider): string {
-  const label = messagingProviderLabel(provider);
-  return getLocale() === "zh" && !/^[\u3400-\u9fff]/.test(label) ? ` ${label} ` : label;
-}
-
-/** The counterpart brand, spaced for a Chinese sentence on the same rule. */
-export function messagingProviderAlternateBrandInSentence(): string {
-  const brand = messagingProviderAlternateBrand();
-  return getLocale() === "zh" ? ` ${brand} ` : brand;
+export function spaceBrandInSentence(text: string): string {
+  if (getLocale() !== "zh") return text;
+  return text.replace(/([\u4e00-\u9fff])([A-Za-z0-9])/g, "$1 $2").replace(/([A-Za-z0-9])([\u4e00-\u9fff])/g, "$1 $2");
 }

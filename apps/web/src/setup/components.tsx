@@ -1,6 +1,6 @@
 import { toString as qrToString } from "qrcode";
 import { useEffect, useState } from "react";
-import { messagingProviderLabelInSentence } from "../im/provider-label.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { StatusIndicator } from "../ui/design-system.js";
 import "./setup.css";
@@ -113,7 +113,7 @@ export function QrCode({ value }: { value: string }) {
   }, [value]);
   return source ? (
     <img
-      alt={m.im_qr_scan_alt({ provider: messagingProviderLabelInSentence("feishu") })}
+      alt={m.im_qr_scan_alt({ provider: messagingProviderLabel("feishu") })}
       className="ots-qr__image"
       src={source}
     />

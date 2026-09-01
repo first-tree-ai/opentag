@@ -10,7 +10,7 @@ import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSum
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { formatRelativeTime } from "../i18n/format.js";
-import { messagingProviderLabelInSentence } from "../im/provider-label.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
@@ -407,9 +407,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
               if (current.state === "failed" || current.state === "expired" || current.state === "canceled") {
                 window.clearInterval(feishuTimer.current);
                 setMessaging({ kind: "failed" });
-                setActionError(
-                  m.onboarding_v2_errors_feishu_attempt({ provider: messagingProviderLabelInSentence("feishu") }),
-                );
+                setActionError(m.onboarding_v2_errors_feishu_attempt({ provider: messagingProviderLabel("feishu") }));
                 return;
               }
               if (current.qrUrl) setMessaging({ kind: "waiting", qrValue: current.qrUrl });

@@ -157,9 +157,12 @@ function errorMessage(error: unknown): string {
 
 async function currentTargetNeedsRepair(home: string, target: string): Promise<boolean> {
   const loaded = await readUpdaterState(home);
-  if (loaded.status === "invalid") return true;
-  if (loaded.status !== "ok" || loaded.state.target !== target) return false;
-  return loaded.state.state === "blocked" || loaded.state.attempts[target]?.result === "failed";
+  if (loaded.status !== "ok") return true;
+  return (
+    loaded.state.target !== target ||
+    loaded.state.state !== "installed" ||
+    loaded.state.attempts[target]?.result !== "installed"
+  );
 }
 
 async function noInstallResult(
@@ -226,31 +229,43 @@ async function installResolvedTarget(
   return result.cleanupFailure;
 }
 
-async function recordInstalledUpgrade(
-  home: string,
-  target: string,
-  now: number,
-  writeState: typeof writeUpdaterState,
-): Promise<{ persistenceFailure?: string; state: UpdaterStateSnapshot }> {
+async function prepareUpgradeState(home: string, target: string, now: number): Promise<UpdaterStateSnapshot> {
   const loaded = await readUpdaterState(home);
   const state: UpdaterStateSnapshot =
     loaded.status === "ok" ? loaded.state : { schemaVersion: 1, currentVersion: target, state: "idle", attempts: {} };
   const attempt = {
     target,
     startedAt: new Date(now).toISOString(),
-    finishedAt: new Date(now).toISOString(),
-    result: "installed" as const,
   };
   state.currentVersion = target;
-  state.state = "installed";
+  state.state = "installing";
   state.target = target;
   state.attempts[target] = attempt;
   state.lastAttempt = attempt;
+  return state;
+}
+
+async function recordInstalledUpgrade(
+  home: string,
+  target: string,
+  now: number,
+  state: UpdaterStateSnapshot,
+  writeState: typeof writeUpdaterState,
+): Promise<string | undefined> {
+  const attempt = state.attempts[target];
+  if (!attempt) throw new UpgradeError("The updater attempt disappeared before it could be recorded");
+  attempt.finishedAt = new Date(now).toISOString();
+  attempt.result = "installed";
+  delete attempt.failureReason;
+  state.currentVersion = target;
+  state.state = "installed";
+  state.target = target;
+  state.lastAttempt = attempt;
   try {
     await writeState(home, state);
-    return { state };
+    return undefined;
   } catch (error) {
-    return { state, persistenceFailure: errorMessage(error) };
+    return errorMessage(error);
   }
 }
 
@@ -335,12 +350,8 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
     });
   }
 
-  const { state, persistenceFailure } = await recordInstalledUpgrade(
-    context.home,
-    target.version,
-    (options.now ?? Date.now)(),
-    options.writeState ?? writeUpdaterState,
-  );
+  const now = (options.now ?? Date.now)();
+  const state = await prepareUpgradeState(context.home, target.version, now);
 
   const { serviceRefresh, serviceMessage } = await refreshDaemonService(
     context.home,
@@ -349,6 +360,10 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
     options.reconcileService ?? reconcileDaemonService,
     options.writeState ?? writeUpdaterState,
   );
+  const persistenceFailure =
+    serviceRefresh === "failed"
+      ? undefined
+      : await recordInstalledUpgrade(context.home, target.version, now, state, options.writeState ?? writeUpdaterState);
 
   return finishUpgrade(context, {
     exitCode: serviceRefresh === "failed" || persistenceFailure ? 1 : 0,

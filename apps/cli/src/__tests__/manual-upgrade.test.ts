@@ -165,20 +165,67 @@ describe("manual upgrade", () => {
 
   it("never installs automatically and reports ahead/up-to-date without work", async () => {
     const runNpm = vi.fn();
-    for (const [latest, status] of [
-      ["0.0.2", "up-to-date"],
-      ["0.0.1", "ahead"],
-    ] as const) {
-      const result = await runUpgrade({
-        channel: "staging",
-        home: await tempHome(),
-        environment: {},
-        fetchFn: (async () => jsonResponse(packument(latest))) as typeof fetch,
-        runNpm,
-      });
-      expect(result).toMatchObject({ exitCode: 0, status, targetVersion: latest });
-    }
+    const home = await tempHome();
+    await writeUpdaterState(home, {
+      schemaVersion: 1,
+      currentVersion: "0.0.2",
+      state: "installed",
+      target: "0.0.2",
+      attempts: {
+        "0.0.2": {
+          target: "0.0.2",
+          startedAt: "2026-08-31T00:00:00.000Z",
+          finishedAt: "2026-08-31T00:00:01.000Z",
+          result: "installed",
+        },
+      },
+    });
+    const upToDate = await runUpgrade({
+      channel: "staging",
+      currentVersion: "0.0.2",
+      home,
+      environment: {},
+      fetchFn: (async () => jsonResponse(packument("0.0.2"))) as typeof fetch,
+      runNpm,
+    });
+    const ahead = await runUpgrade({
+      channel: "staging",
+      currentVersion: "0.0.2",
+      home: await tempHome(),
+      environment: {},
+      fetchFn: (async () => jsonResponse(packument("0.0.1"))) as typeof fetch,
+      runNpm,
+    });
+    expect(upToDate).toMatchObject({ exitCode: 0, status: "up-to-date", targetVersion: "0.0.2" });
+    expect(ahead).toMatchObject({ exitCode: 0, status: "ahead", targetVersion: "0.0.1" });
     expect(runNpm).not.toHaveBeenCalled();
+  });
+
+  it("repairs an exact-current target without recording installed before service reconciliation", async () => {
+    const home = await tempHome();
+    const runNpm = vi.fn();
+    const reconcileService = vi.fn(async () => {
+      expect(await readUpdaterState(home)).toEqual({ status: "missing" });
+      return readyReconcile;
+    });
+
+    const result = await runUpgrade({
+      channel: "staging",
+      currentVersion: "0.0.2",
+      home,
+      environment: {},
+      fetchFn: (async () => jsonResponse(packument("0.0.2"))) as typeof fetch,
+      runNpm,
+      reconcileService,
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, status: "installed", serviceRefresh: "ready" });
+    expect(runNpm).not.toHaveBeenCalled();
+    expect(reconcileService).toHaveBeenCalledOnce();
+    const state = await readUpdaterState(home);
+    if (state.status !== "ok") throw new Error("state missing");
+    expect(state.state).toMatchObject({ state: "installed", target: "0.0.2" });
+    expect(state.state.attempts["0.0.2"]).toMatchObject({ result: "installed" });
   });
 
   it("repairs a blocked current target and retries service reconciliation without reinstalling", async () => {
@@ -310,10 +357,7 @@ describe("manual upgrade", () => {
 
   it("reports both service-refresh and blocked-state persistence failures", async () => {
     const home = await tempHome();
-    const writeState = vi
-      .fn<typeof writeUpdaterState>()
-      .mockImplementationOnce(writeUpdaterState)
-      .mockRejectedValueOnce(new Error("state disk unavailable"));
+    const writeState = vi.fn<typeof writeUpdaterState>().mockRejectedValueOnce(new Error("state disk unavailable"));
     const result = await runUpgrade({
       channel: "staging",
       home,
@@ -329,7 +373,7 @@ describe("manual upgrade", () => {
     expect(result).toMatchObject({ exitCode: 1, status: "installed", serviceRefresh: "failed" });
     expect(result.message).toContain("systemd unavailable");
     expect(result.message).toContain("state disk unavailable");
-    expect(writeState).toHaveBeenCalledTimes(2);
+    expect(writeState).toHaveBeenCalledOnce();
   });
 
   it("reports a durable-state write failure after the target is installed", async () => {

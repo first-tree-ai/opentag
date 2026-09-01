@@ -9,6 +9,7 @@ import {
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
   RuntimeImSteerResultSchema,
+  type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
@@ -21,6 +22,19 @@ import {
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import { SessionReconciler } from "./session-reconciler.js";
+
+type ResidualBusinessFrame = Extract<
+  ServerRuntimeBusinessFrame,
+  {
+    type:
+      | "provider-cli:requirement"
+      | "provider-cli:validation:grant"
+      | "provider-cli:cancel"
+      | "agent-runtime:test"
+      | "agent-runtime:test:cancel"
+      | "turn:report:result";
+  }
+>;
 
 export interface DeliveryDecision {
   result: ImMessageDeliveryResult;
@@ -169,13 +183,11 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "im:credential:result") return;
-    if (
-      frame.type === "provider-cli:requirement" ||
-      frame.type === "provider-cli:validation:grant" ||
-      frame.type === "provider-cli:cancel"
-    ) {
-      return;
-    }
+    await this.#handleResidualFrame(frame);
+  }
+
+  async #handleResidualFrame(frame: ResidualBusinessFrame): Promise<void> {
+    if (frame.type.startsWith("provider-cli:")) return;
     if (frame.type === "agent-runtime:test") {
       await this.#runAgentRuntimeTest(frame);
       return;
@@ -184,7 +196,7 @@ export class ClientRuntime {
       this.#tests.get(frame.requestId)?.abort();
       return;
     }
-    await this.#options.handleTurnReportResult?.(frame);
+    if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
   }
 
   async #runAgentRuntimeTest(frame: AgentRuntimeTestRequestFrame): Promise<void> {

@@ -57,6 +57,21 @@ export type AgentDetailView = AgentDetail & {
   messaging: DetailEvidence<ImBindingSummary>;
 };
 
+function handoffDependency(
+  state: AgentAvailability["dependencies"]["handoff"]["state"],
+  binding: ImBindingSummary | undefined,
+  handoff: ImBindingHandoffStatus | undefined,
+): AgentAvailability["dependencies"]["handoff"] {
+  const dependency: AgentAvailability["dependencies"]["handoff"] = {
+    state,
+    lastConfirmedAt: binding?.lastRuntimeObservationAt ?? binding?.lastValidatedAt ?? null,
+  };
+  if (handoff?.bindingState === "active" && !handoff.handoffReady && handoff.providerCli) {
+    dependency.providerCli = handoff.providerCli;
+  }
+  return dependency;
+}
+
 export function projectAgentAvailability(
   agent: AgentSummary,
   computer: WorkspaceComputerSummary | undefined,
@@ -94,13 +109,7 @@ export function projectAgentAvailability(
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
     runtime: { provider: agent.runtimeProvider, status: providerReadiness?.status ?? null },
-    handoff: {
-      state: handoffState,
-      lastConfirmedAt: binding?.lastRuntimeObservationAt ?? binding?.lastValidatedAt ?? null,
-      ...(handoff && handoff.bindingState === "active" && !handoff.handoffReady && handoff.providerCli
-        ? { providerCli: handoff.providerCli }
-        : {}),
-    },
+    handoff: handoffDependency(handoffState, binding, handoff),
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
       provider: binding?.provider ?? null,

@@ -814,7 +814,7 @@ export class AgentService {
     });
     await this.#notifyProviderCliPlacement({
       agentId,
-      previousWorkspaceComputerId: result.computerId,
+      previousWorkspaceComputerId: result.computerId ?? undefined,
     });
     await this.#stopSessionsBestEffort(result.targets);
     return result.config;
@@ -837,7 +837,7 @@ export class AgentService {
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before reactivation");
       return { computerId: scope.computerId, config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
     });
-    await this.#notifyProviderCliPlacement({ agentId, workspaceComputerId: result.computerId });
+    await this.#notifyProviderCliPlacement({ agentId, workspaceComputerId: result.computerId ?? undefined });
     return result.config;
   }
 
@@ -944,7 +944,7 @@ export class AgentService {
     if (result.changedComputer) {
       await this.#notifyProviderCliPlacement({
         agentId,
-        previousWorkspaceComputerId: result.previousComputerId,
+        previousWorkspaceComputerId: result.previousComputerId ?? undefined,
         workspaceComputerId: result.computerId,
       });
     }
@@ -979,7 +979,7 @@ export class AgentService {
     });
     await this.#notifyProviderCliPlacement({
       agentId,
-      previousWorkspaceComputerId: result.computerId,
+      previousWorkspaceComputerId: result.computerId ?? undefined,
     });
     await this.#stopSessionsBestEffort(result.targets);
   }

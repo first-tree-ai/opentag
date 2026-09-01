@@ -1,4 +1,3 @@
-import type { ProviderCliHandoffProgress } from "@opentag/shared/browser";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import {
   COMPUTER_CONNECT_COMMAND_PLACEHOLDER,
@@ -43,6 +42,7 @@ import {
   tokenChoiceApplies,
   validateAgentName,
 } from "./flow.js";
+import { messagingCliMissingCopy, messagingWaitingReason } from "./messaging-readiness-copy.js";
 
 /** One step's worth of vertical rhythm. Every gap on every step is one of 4, 12 or 24px. */
 const STEP = "flex flex-col gap-6";
@@ -378,18 +378,6 @@ function MessagingPicker({
   );
 }
 
-function providerCliWaitingCopy(progress: ProviderCliHandoffProgress): string {
-  if (progress.phase === "preparing_cli") return m.onboarding_v2_messaging_cli_preparing();
-  if (progress.phase === "checking_credentials") return m.onboarding_v2_messaging_cli_checking_credentials();
-  if (!progress.reason) return m.onboarding_v2_messaging_cli_unavailable();
-  if (progress.reason === "upgrade_required") return m.onboarding_v2_messaging_cli_upgrade_required();
-  if (progress.reason === "credential_rejected") return m.onboarding_v2_messaging_cli_credential_rejected();
-  if (progress.reason === "identity_mismatch") return m.onboarding_v2_messaging_cli_identity_mismatch();
-  if (progress.reason === "scope_missing") return m.onboarding_v2_messaging_cli_scope_missing();
-  if (progress.reason === "provider_unreachable") return m.onboarding_v2_messaging_cli_provider_unreachable();
-  return m.onboarding_v2_messaging_cli_rate_limited();
-}
-
 function MessagingConnection({
   computerOnline,
   messaging,
@@ -420,17 +408,12 @@ function MessagingConnection({
    * rows say which line failed. That is a better answer than a sentence, and it is why there is no
    * copy for it.
    */
-  const waitingReason =
-    computerOnline === false
-      ? m.onboarding_v2_messaging_computer_offline()
-      : messaging.kind === "waiting-handoff" && messaging.providerCli
-        ? providerCliWaitingCopy(messaging.providerCli)
-        : cliState === "failed" && provider
-          ? m.onboarding_v2_messaging_cli_missing({
-              provider:
-                provider === "feishu" ? m.onboarding_v2_messaging_lark_title() : m.onboarding_v2_messaging_slack_title(),
-            })
-          : undefined;
+  const waitingReason = messagingWaitingReason({
+    cliFailed: cliState === "failed",
+    computerOnline,
+    messaging,
+    provider,
+  });
   return (
     <div className="flex flex-col items-center gap-3">
       {/*
@@ -440,14 +423,7 @@ function MessagingConnection({
       {provider && cliState === "failed" && messaging.kind !== "waiting-handoff" ? (
         <p className="flex items-start gap-2 text-sm text-kumo-warning m-0">
           <Icon className="shrink-0 mt-1" name="close" />
-          <span>
-            {m.onboarding_v2_messaging_cli_missing({
-              provider:
-                provider === "feishu"
-                  ? m.onboarding_v2_messaging_lark_title()
-                  : m.onboarding_v2_messaging_slack_title(),
-            })}
-          </span>
+          <span>{messagingCliMissingCopy(provider)}</span>
         </p>
       ) : null}
       {provider === "feishu" ? (

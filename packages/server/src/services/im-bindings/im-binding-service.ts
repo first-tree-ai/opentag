@@ -4,16 +4,13 @@ import type {
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
-  ImCliProvider,
   ImCliReadinessStatus,
   IntegrationCredentialExecutionReason,
   IntegrationCredentialExecutionStatus,
-  ProviderCliExpectedIdentity,
-  ProviderCliHandoffProgress,
-  ProviderCliValidationGrantFrame,
   ProviderReadinessStatus,
   RuntimeImCredentialGrantRequest,
   RuntimeImCredentialGrantResult,
+  RuntimeImOutboxContext,
   SlackBindingActivation,
   SlackConfigurationIntent,
   SlackConfigurationResult,
@@ -25,7 +22,6 @@ import {
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
 import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
-import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   accountComputers,
@@ -38,25 +34,24 @@ import {
 } from "../../db/schema/index.js";
 import { schemaRequiredSlackInstallationProjection } from "../../db/schema-required-legacy.js";
 import type { ApplicationCipher } from "../crypto.js";
+import {
+  decodeFeishuCredential,
+  decodeSlackCredential,
+  type FeishuCredential,
+  FeishuCredentialSchema,
+  inspectBindingCredentials,
+  inspectCredentialMaterial,
+  type SlackCredential,
+  SlackCredentialSchema,
+  slackInstallationInspectionInput,
+} from "./credential-material.js";
+import {
+  ImBindingProviderCli,
+  type ImBindingReadiness,
+  type ImBindingReadinessInput,
+} from "./im-binding-provider-cli.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
-
-const FeishuCredentialSchema = z
-  .object({
-    appId: z.string().min(1),
-    appSecret: z.string().min(1),
-    grantedScopes: z.array(z.string().min(1)).max(128),
-  })
-  .strict();
-
-const SlackCredentialSchema = z
-  .object({
-    botId: z.string().min(1),
-    botAccessToken: z.string().min(1),
-    signingSecret: z.string().min(1),
-    grantedScopes: z.array(z.string().min(1)).max(128),
-  })
-  .strict();
 
 export interface VerifiedFeishuBinding {
   agentId: string;
@@ -115,42 +110,11 @@ export interface SlackConnectionMaterial {
   grantedScopes: string[];
 }
 
-interface ImBindingReadinessInput {
-  id: string;
-  agentId: string;
-  provider: "feishu" | "slack";
-  status: ImBindingState;
-  connectionLeaseExpiresAt: Date | null;
-  observedConnectedAt: Date | null;
-  observedAt: Date | null;
-  grantedCapabilities: string[];
-  credentialGeneration: number;
-  credentialStatus: "valid" | "invalid";
-}
-
 interface CredentialInspection {
   status: "valid" | "invalid";
   grantedCapabilities: string[];
   requiredCapabilities: string[];
   missingCapabilities: string[];
-}
-
-function uniqueSorted(values: readonly string[]): string[] {
-  return [...new Set(values)].sort();
-}
-
-function requiredCapabilitiesFor(provider: "feishu" | "slack"): string[] {
-  return provider === "feishu" ? [...FEISHU_REQUIRED_TENANT_SCOPES] : [...SLACK_REQUIRED_BOT_SCOPES];
-}
-
-interface ImBindingReadiness {
-  handoff: ImBindingHandoffStatus;
-  agentRuntimeReadiness: ProviderReadinessStatus;
-  providerCliReadiness: ImCliReadinessStatus;
-  credentialExecutionReadiness: IntegrationCredentialExecutionStatus;
-  credentialExecutionReason?: IntegrationCredentialExecutionReason;
-  reauthorizationRequired: boolean;
-  connection: { state: "connected" | "disconnected"; observedAt: string } | null;
 }
 
 interface ActivatedBinding {
@@ -276,45 +240,6 @@ function projectedErrorCode(input: {
   return null;
 }
 
-function slackInstallationInspectionInput(installation: typeof slackInstallations.$inferSelect): {
-  provider: "slack";
-  encryptedCredential: string | null;
-  externalAppId: string | null;
-  externalBotId: string | null;
-  externalTeamId: string | null;
-  credentialGeneration: number;
-  credentialSchemaVersion: number | null;
-  grantedCapabilities: string[];
-} {
-  return {
-    provider: "slack",
-    encryptedCredential: installation.encryptedCredential,
-    externalAppId: installation.externalAppId,
-    externalBotId: installation.externalBotId,
-    externalTeamId: installation.externalTeamId,
-    credentialGeneration: installation.credentialGeneration,
-    credentialSchemaVersion: installation.credentialSchemaVersion,
-    grantedCapabilities: installation.grantedCapabilities,
-  };
-}
-
-function providerCliProgress(
-  artifactStatus: ImCliReadinessStatus,
-  credential: { status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason },
-): ProviderCliHandoffProgress | undefined {
-  if (credential.reason === "upgrade_required" || credential.status === "needs_attention") {
-    return {
-      phase: "needs_attention",
-      ...(credential.reason ? { reason: credential.reason } : {}),
-    };
-  }
-  if (artifactStatus !== "ready") {
-    return artifactStatus === "unavailable" ? { phase: "needs_attention" } : { phase: "preparing_cli" };
-  }
-  if (credential.status === "ready") return undefined;
-  return { phase: "checking_credentials" };
-}
-
 function needsScopeUpdate(
   status: "provisioning" | "active" | "reauthorization_required" | "error" | "disabled",
   provider: "feishu" | "slack",
@@ -324,24 +249,49 @@ function needsScopeUpdate(
   return provider === "feishu" ? !hasRequiredFeishuTenantScopes(scopes) : !hasRequiredSlackBotScopes(scopes);
 }
 
+function credentialExecutionReasonProjection(
+  reason: IntegrationCredentialExecutionReason | undefined,
+): Partial<Pick<ImBindingDiagnostics, "credentialExecutionReason">> {
+  return reason ? { credentialExecutionReason: reason } : {};
+}
+
+function feishuOutboxProjection(
+  version: 1 | 2 | undefined,
+  input: { sessionKind: "channel" | "thread"; chatId: string; threadId: string | null },
+): { outboxContext?: Extract<RuntimeImOutboxContext, { provider: "feishu" }> } {
+  if (version !== 2) return {};
+  return {
+    outboxContext: {
+      provider: "feishu",
+      sessionKind: input.sessionKind,
+      chatId: input.chatId,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+    },
+  };
+}
+
+function slackOutboxProjection(
+  version: 1 | 2 | undefined,
+  input: { sessionKind: "channel" | "thread"; channelId: string; threadTs: string | null },
+): { outboxContext?: Extract<RuntimeImOutboxContext, { provider: "slack" }> } {
+  if (version !== 2) return {};
+  return {
+    outboxContext: {
+      provider: "slack",
+      sessionKind: input.sessionKind,
+      channelId: input.channelId,
+      ...(input.threadTs ? { threadTs: input.threadTs } : {}),
+    },
+  };
+}
+
 export class ImBindingService {
   readonly #afterMutationAuthorityLocked: (() => Promise<void> | void) | undefined;
   readonly #cipher: ApplicationCipher;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #agentRuntimeReadiness: (agentId: string) => Promise<ProviderReadinessStatus>;
-  readonly #imCliReadiness: (
-    agentId: string,
-    provider: "feishu" | "slack",
-    integrationId: string,
-    credentialGeneration: number,
-  ) => Promise<ImCliReadinessStatus>;
-  readonly #credentialExecutionReadiness: (
-    agentId: string,
-    provider: "feishu" | "slack",
-    integrationId: string,
-    credentialGeneration: number,
-  ) => Promise<{ status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason }>;
+  readonly #providerCli: ImBindingProviderCli;
   readonly #onActiveBindingChanged:
     | ((input: { agentId: string; workspaceComputerId: string }) => Promise<void> | void)
     | undefined;
@@ -375,12 +325,14 @@ export class ImBindingService {
     this.#cipher = cipher;
     this.#now = options.now ?? (() => new Date());
     this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
-    this.#imCliReadiness = async (agentId, provider, integrationId, credentialGeneration) =>
-      (await options.imCliReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? "checking";
-    this.#credentialExecutionReadiness = async (agentId, provider, integrationId, credentialGeneration) =>
-      (await options.credentialExecutionReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? {
-        status: "unconfirmed",
-      };
+    this.#providerCli = new ImBindingProviderCli(database, cipher, {
+      artifactReadiness: async (agentId, provider, integrationId, credentialGeneration) =>
+        (await options.imCliReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? "checking",
+      credentialReadiness: async (agentId, provider, integrationId, credentialGeneration) =>
+        (await options.credentialExecutionReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? {
+          status: "unconfirmed",
+        },
+    });
     this.#onActiveBindingChanged = options.onActiveBindingChanged;
   }
 
@@ -394,113 +346,12 @@ export class ImBindingService {
     return agent?.workspaceComputerId ?? undefined;
   }
 
-  async listActiveProviderCliRequirements(workspaceComputerId: string): Promise<
-    readonly {
-      agentId: string;
-      credentialGeneration: number;
-      expectedIdentity: ProviderCliExpectedIdentity;
-      integrationId: string;
-      provider: ImCliProvider;
-    }[]
-  > {
-    const rows = await this.#database
-      .select({
-        binding: imBindings,
-        slackInstallation: slackInstallations,
-      })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(
-        and(eq(agents.computerId, workspaceComputerId), eq(agents.status, "active"), eq(imBindings.status, "active")),
-      );
-    const requirements: {
-      agentId: string;
-      credentialGeneration: number;
-      expectedIdentity: ProviderCliExpectedIdentity;
-      integrationId: string;
-      provider: ImCliProvider;
-    }[] = [];
-    for (const row of rows) {
-      const identity = this.#expectedIdentity(row.binding, row.slackInstallation);
-      if (!identity) continue;
-      requirements.push({
-        agentId: row.binding.agentId,
-        credentialGeneration:
-          row.binding.provider === "slack" && row.slackInstallation
-            ? row.slackInstallation.credentialGeneration
-            : row.binding.credentialGeneration,
-        expectedIdentity: identity,
-        integrationId: row.binding.id,
-        provider: row.binding.provider,
-      });
-    }
-    return requirements;
+  async listActiveProviderCliRequirements(workspaceComputerId: string) {
+    return this.#providerCli.listActiveRequirements(workspaceComputerId);
   }
 
-  async issueIntegrationCliValidationGrant(input: {
-    agentId: string;
-    computerId: string;
-    credentialGeneration: number;
-    integrationId: string;
-    provider: ImCliProvider;
-    workspaceComputerId: string;
-  }): Promise<
-    { expectedIdentity: ProviderCliExpectedIdentity; grant: ProviderCliValidationGrantFrame["grant"] } | undefined
-  > {
-    const [row] = await this.#database
-      .select({
-        binding: imBindings,
-        slackInstallation: slackInstallations,
-        workspaceComputerId: agents.computerId,
-        computerId: accountComputers.currentInstallationId,
-        agentStatus: agents.status,
-      })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
-      .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(and(eq(imBindings.id, input.integrationId), eq(imBindings.agentId, input.agentId)))
-      .limit(1);
-    if (
-      !row ||
-      row.agentStatus !== "active" ||
-      row.workspaceComputerId !== input.workspaceComputerId ||
-      row.computerId !== input.computerId
-    ) {
-      return undefined;
-    }
-    if (row.binding.status !== "active" || row.binding.provider !== input.provider) return undefined;
-    const identity = this.#expectedIdentity(row.binding, row.slackInstallation);
-    if (!identity) return undefined;
-    if (row.binding.provider === "feishu") {
-      if (row.binding.credentialGeneration !== input.credentialGeneration) return undefined;
-      const credential = this.#decodeFeishuCredential(row.binding.encryptedCredential);
-      if (!credential || credential.appId !== row.binding.externalAppId) return undefined;
-      return {
-        expectedIdentity: identity,
-        grant: {
-          provider: "feishu",
-          appId: credential.appId,
-          appSecret: credential.appSecret,
-          teamBrand: row.binding.externalTeamBrand === "lark" ? "lark" : "feishu",
-        },
-      };
-    }
-    const installation = row.slackInstallation;
-    if (
-      !installation ||
-      installation.status !== "active" ||
-      installation.credentialGeneration !== input.credentialGeneration
-    ) {
-      return undefined;
-    }
-    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
-    if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return undefined;
-    return {
-      expectedIdentity: identity,
-      grant: { provider: "slack", botAccessToken: credential.botAccessToken },
-    };
+  async issueIntegrationCliValidationGrant(input: Parameters<ImBindingProviderCli["issueValidationGrant"]>[0]) {
+    return this.#providerCli.issueValidationGrant(input);
   }
 
   async issueRuntimeCredentialGrant(
@@ -563,11 +414,12 @@ export class ImBindingService {
       return rejected("placement_stale");
     }
     const binding = row.binding;
+    const sessionKind = row.sessionKind;
     if (binding.status !== "active") return rejected("binding_inactive");
     if (binding.provider !== "slack" && this.#inspectCredentialMaterial(binding).status !== "valid") {
       return rejected("credential_stale");
     }
-    if (binding.provider === "feishu") {
+    const issueFeishuGrant = async (): Promise<RuntimeImCredentialGrantResult> => {
       const credential = this.#decodeFeishuCredential(binding.encryptedCredential);
       if (!credential || credential.appId !== binding.externalAppId) return rejected("credential_stale");
       if (
@@ -591,59 +443,52 @@ export class ImBindingService {
           appSecret: credential.appSecret,
           teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",
         },
-        ...(computerAuth.imCredentialGrantVersion === 2
-          ? {
-              outboxContext: {
-                provider: "feishu" as const,
-                sessionKind: row.sessionKind,
-                chatId: row.channelId,
-                ...(row.threadKey ? { threadId: row.threadKey } : {}),
-              },
-            }
-          : {}),
+        ...feishuOutboxProjection(computerAuth.imCredentialGrantVersion, {
+          sessionKind,
+          chatId: row.channelId,
+          threadId: row.threadKey,
+        }),
       };
-    }
-    const installation = row.slackInstallation;
-    if (!installation) return rejected("binding_inactive");
-    if (
-      installation.status !== "active" ||
-      installation.agentId !== row.boundAgentId ||
-      !installation.observedConnectedAt
-    ) {
-      return rejected("binding_inactive");
-    }
-    if (this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation)).status !== "valid") {
-      return rejected("credential_stale");
-    }
-    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
-    if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
-    if (
-      !(await this.#runtimeProviderCliReady(
-        binding.agentId,
-        binding.provider,
-        binding.id,
-        installation.credentialGeneration,
-      ))
-    ) {
-      return rejected("provider_cli_unready");
-    }
-    return {
-      type: "im:credential:result",
-      requestId: request.requestId,
-      status: "succeeded",
-      credentialGeneration: installation.credentialGeneration,
-      grant: { provider: "slack", botAccessToken: credential.botAccessToken },
-      ...(computerAuth.imCredentialGrantVersion === 2
-        ? {
-            outboxContext: {
-              provider: "slack" as const,
-              sessionKind: row.sessionKind,
-              channelId: row.channelId,
-              ...(row.threadKey ? { threadTs: row.threadKey } : {}),
-            },
-          }
-        : {}),
     };
+    const issueSlackGrant = async (): Promise<RuntimeImCredentialGrantResult> => {
+      const installation = row.slackInstallation;
+      if (!installation) return rejected("binding_inactive");
+      if (
+        installation.status !== "active" ||
+        installation.agentId !== row.boundAgentId ||
+        !installation.observedConnectedAt
+      ) {
+        return rejected("binding_inactive");
+      }
+      if (this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation)).status !== "valid") {
+        return rejected("credential_stale");
+      }
+      const credential = this.#decodeSlackCredential(installation.encryptedCredential);
+      if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
+      if (
+        !(await this.#runtimeProviderCliReady(
+          binding.agentId,
+          binding.provider,
+          binding.id,
+          installation.credentialGeneration,
+        ))
+      ) {
+        return rejected("provider_cli_unready");
+      }
+      return {
+        type: "im:credential:result",
+        requestId: request.requestId,
+        status: "succeeded",
+        credentialGeneration: installation.credentialGeneration,
+        grant: { provider: "slack", botAccessToken: credential.botAccessToken },
+        ...slackOutboxProjection(computerAuth.imCredentialGrantVersion, {
+          sessionKind,
+          channelId: row.channelId,
+          threadTs: row.threadKey,
+        }),
+      };
+    };
+    return binding.provider === "feishu" ? issueFeishuGrant() : issueSlackGrant();
   }
 
   async activateSlack(
@@ -1110,9 +955,7 @@ export class ImBindingService {
       agentRuntimeReadiness: readiness.agentRuntimeReadiness,
       providerCliReadiness: readiness.providerCliReadiness,
       credentialExecutionReadiness: readiness.credentialExecutionReadiness,
-      ...(readiness.credentialExecutionReason
-        ? { credentialExecutionReason: readiness.credentialExecutionReason }
-        : {}),
+      ...credentialExecutionReasonProjection(readiness.credentialExecutionReason),
       credentialGeneration: imBinding.credentialGeneration,
       credentialStatus: credential.status,
       requiredCapabilities: credential.requiredCapabilities,
@@ -1318,60 +1161,7 @@ export class ImBindingService {
   }
 
   async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
-    const [agentRuntimeReadiness, providerCliReadiness, credentialExecution] = await Promise.all([
-      this.#agentRuntimeReadiness(imBinding.agentId),
-      this.#imCliReadiness(imBinding.agentId, imBinding.provider, imBinding.id, imBinding.credentialGeneration),
-      this.#credentialExecutionReadiness(
-        imBinding.agentId,
-        imBinding.provider,
-        imBinding.id,
-        imBinding.credentialGeneration,
-      ),
-    ]);
-    const reauthorizationRequired =
-      imBinding.status === "reauthorization_required" ||
-      needsScopeUpdate(imBinding.status, imBinding.provider, imBinding.grantedCapabilities) ||
-      (imBinding.status === "active" && imBinding.credentialStatus === "invalid");
-    const bindingState = reauthorizationRequired ? "reauthorization_required" : imBinding.status;
-    const connection =
-      imBinding.provider === "feishu" && imBinding.observedAt
-        ? {
-            state:
-              imBinding.connectionLeaseExpiresAt &&
-              imBinding.connectionLeaseExpiresAt > this.#now() &&
-              imBinding.observedConnectedAt
-                ? ("connected" as const)
-                : ("disconnected" as const),
-            observedAt: imBinding.observedAt.toISOString(),
-          }
-        : null;
-    const connectionReady =
-      imBinding.provider === "slack" ? imBinding.observedConnectedAt !== null : connection?.state === "connected";
-    const layersReady =
-      agentRuntimeReadiness === "ready" &&
-      providerCliReadiness === "ready" &&
-      credentialExecution.status === "ready" &&
-      connectionReady;
-    const providerCli = providerCliProgress(providerCliReadiness, credentialExecution);
-    const handoff: ImBindingHandoffStatus =
-      bindingState !== "active"
-        ? { bindingState, handoffReady: false }
-        : layersReady
-          ? { bindingState, handoffReady: true }
-          : {
-              bindingState,
-              handoffReady: false,
-              ...(providerCli ? { providerCli } : {}),
-            };
-    return {
-      handoff,
-      agentRuntimeReadiness,
-      providerCliReadiness,
-      credentialExecutionReadiness: credentialExecution.status,
-      ...(credentialExecution.reason ? { credentialExecutionReason: credentialExecution.reason } : {}),
-      reauthorizationRequired,
-      connection,
-    };
+    return this.#providerCli.readiness(imBinding, this.#agentRuntimeReadiness(imBinding.agentId), this.#now());
   }
 
   async #runtimeProviderCliReady(
@@ -1380,11 +1170,7 @@ export class ImBindingService {
     integrationId: string,
     credentialGeneration: number,
   ): Promise<boolean> {
-    const [artifact, credential] = await Promise.all([
-      this.#imCliReadiness(agentId, provider, integrationId, credentialGeneration),
-      this.#credentialExecutionReadiness(agentId, provider, integrationId, credentialGeneration),
-    ]);
-    return artifact === "ready" && credential.status === "ready";
+    return this.#providerCli.runtimeReady({ agentId, provider, integrationId, credentialGeneration });
   }
 
   #withCredentialStatus<
@@ -1415,84 +1201,7 @@ export class ImBindingService {
     credentialSchemaVersion: number | null;
     grantedCapabilities: string[];
   }): CredentialInspection {
-    const requiredCapabilities = requiredCapabilitiesFor(input.provider);
-    const storedCapabilities = uniqueSorted(input.grantedCapabilities);
-    const invalid = (credentialCapabilities: readonly string[] = storedCapabilities): CredentialInspection => ({
-      status: "invalid",
-      grantedCapabilities: storedCapabilities,
-      requiredCapabilities,
-      missingCapabilities: requiredCapabilities.filter(
-        (capability) => !storedCapabilities.includes(capability) || !credentialCapabilities.includes(capability),
-      ),
-    });
-    if (
-      input.credentialGeneration < 1 ||
-      input.credentialSchemaVersion !== 1 ||
-      !input.encryptedCredential ||
-      !input.externalAppId ||
-      !input.externalBotId ||
-      (input.provider === "slack" && !input.externalTeamId)
-    ) {
-      return invalid();
-    }
-    if (input.provider === "feishu") {
-      const credential = this.#decodeFeishuCredential(input.encryptedCredential);
-      if (!credential) return invalid();
-      const credentialCapabilities = uniqueSorted(credential.grantedScopes);
-      const snapshotsMatch =
-        credentialCapabilities.length === storedCapabilities.length &&
-        credentialCapabilities.every((capability, index) => capability === storedCapabilities[index]);
-      if (credential.appId !== input.externalAppId || !snapshotsMatch) return invalid(credentialCapabilities);
-      const missingCapabilities = requiredCapabilities.filter((capability) => !storedCapabilities.includes(capability));
-      return {
-        // A scope-incomplete Feishu grant remains usable by the existing Channel
-        // while the replacement authorization is validated. Readiness still
-        // projects the missing capabilities as reauthorization required.
-        status: "valid",
-        grantedCapabilities: storedCapabilities,
-        requiredCapabilities,
-        missingCapabilities,
-      };
-    }
-    const credential = this.#decodeSlackCredential(input.encryptedCredential);
-    if (!credential) return invalid();
-    const credentialCapabilities = uniqueSorted(credential.grantedScopes);
-    const snapshotsMatch =
-      credentialCapabilities.length === storedCapabilities.length &&
-      credentialCapabilities.every((capability, index) => capability === storedCapabilities[index]);
-    const missingCapabilities = requiredCapabilities.filter(
-      (capability) => !storedCapabilities.includes(capability) || !credentialCapabilities.includes(capability),
-    );
-    return {
-      status: snapshotsMatch && missingCapabilities.length === 0 ? "valid" : "invalid",
-      grantedCapabilities: storedCapabilities,
-      requiredCapabilities,
-      missingCapabilities,
-    };
-  }
-
-  #expectedIdentity(
-    binding: typeof imBindings.$inferSelect,
-    installation: typeof slackInstallations.$inferSelect | null,
-  ): ProviderCliExpectedIdentity | undefined {
-    if (binding.provider === "feishu") {
-      if (!binding.externalAppId || !binding.externalBotId) return undefined;
-      return {
-        provider: "feishu",
-        appId: binding.externalAppId,
-        botOpenId: binding.externalBotId,
-        teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",
-      };
-    }
-    if (!installation) return undefined;
-    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
-    if (!credential || !installation.externalTeamId || !installation.externalBotId) return undefined;
-    return {
-      provider: "slack",
-      teamId: installation.externalTeamId,
-      botUserId: installation.externalBotId,
-      botId: credential.botId,
-    };
+    return inspectCredentialMaterial(this.#cipher, input);
   }
 
   async notifyProviderCliRequirementChanged(agentId: string): Promise<void> {
@@ -1506,22 +1215,12 @@ export class ImBindingService {
     await this.#onActiveBindingChanged({ agentId, workspaceComputerId });
   }
 
-  #decodeFeishuCredential(encryptedCredential: string | null): z.infer<typeof FeishuCredentialSchema> | undefined {
-    if (!encryptedCredential) return undefined;
-    try {
-      return FeishuCredentialSchema.parse(JSON.parse(this.#cipher.decrypt(encryptedCredential)));
-    } catch {
-      return undefined;
-    }
+  #decodeFeishuCredential(encryptedCredential: string | null): FeishuCredential | undefined {
+    return decodeFeishuCredential(this.#cipher, encryptedCredential);
   }
 
-  #decodeSlackCredential(encryptedCredential: string | null): z.infer<typeof SlackCredentialSchema> | undefined {
-    if (!encryptedCredential) return undefined;
-    try {
-      return SlackCredentialSchema.parse(JSON.parse(this.#cipher.decrypt(encryptedCredential)));
-    } catch {
-      return undefined;
-    }
+  #decodeSlackCredential(encryptedCredential: string | null): SlackCredential | undefined {
+    return decodeSlackCredential(this.#cipher, encryptedCredential);
   }
 
   #inspectBindingCredentials(
@@ -1537,20 +1236,7 @@ export class ImBindingService {
     },
     installation: typeof slackInstallations.$inferSelect | null | undefined,
   ): CredentialInspection {
-    if (binding.provider !== "slack") return this.#inspectCredentialMaterial(binding);
-    if (!installation) {
-      return this.#inspectCredentialMaterial({
-        provider: "slack",
-        encryptedCredential: null,
-        externalAppId: binding.externalAppId,
-        externalBotId: binding.externalBotId,
-        externalTeamId: binding.externalTeamId,
-        credentialGeneration: binding.credentialGeneration,
-        credentialSchemaVersion: binding.credentialSchemaVersion,
-        grantedCapabilities: binding.grantedCapabilities,
-      });
-    }
-    return this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation));
+    return inspectBindingCredentials(this.#cipher, binding, installation);
   }
 
   #slackInstallationIngressFromRow(
@@ -1626,7 +1312,7 @@ export class ImBindingService {
 
   async #activateSlackInstallation(
     input: SlackBindingActivation,
-    credential: z.infer<typeof SlackCredentialSchema>,
+    credential: SlackCredential,
     existingTransaction?: DatabaseTransaction,
   ): Promise<{
     id: string;
@@ -2088,7 +1774,7 @@ export class ImBindingService {
         botId: string;
         teamBrand: string | null;
       };
-      credential: z.infer<typeof FeishuCredentialSchema> | z.infer<typeof SlackCredentialSchema>;
+      credential: FeishuCredential | SlackCredential;
     },
     existingTransaction?: DatabaseTransaction,
   ): Promise<ActivatedBinding> {

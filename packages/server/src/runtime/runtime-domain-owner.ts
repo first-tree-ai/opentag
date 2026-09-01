@@ -28,6 +28,13 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
+type ProviderCliResultFrame = Extract<
+  ClientRuntimeBusinessFrame,
+  { type: "provider-cli:artifact:status" | "provider-cli:validation:result" }
+>;
+
+type ResidualRuntimeFrame = ProviderCliResultFrame | RuntimeImCredentialGrantRequest | TurnReportRequest;
+
 export class RuntimeDomainConflictError extends Error {
   readonly code = "conflict" as const;
 
@@ -598,6 +605,13 @@ export class RuntimeDomainOwner {
       }
       return undefined;
     }
+    return this.#handleResidualFrame(frame, context);
+  }
+
+  async #handleResidualFrame(
+    frame: ResidualRuntimeFrame,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
     if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
       return undefined;
     }

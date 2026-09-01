@@ -151,7 +151,7 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 
-const CREDENTIAL_HEADER_PATTERN = /\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*/giu;
+const CREDENTIAL_HEADER_PATTERN = /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*[:=][ \t]*/giu;
 
 function lineBreakStart(value: string, from: number): number {
   const carriageReturn = value.indexOf("\r", from);

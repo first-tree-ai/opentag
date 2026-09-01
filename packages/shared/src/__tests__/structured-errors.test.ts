@@ -201,6 +201,9 @@ describe("structured error redaction", () => {
     };
     expect(cookie.message).not.toContain("b=leaked");
     expect(cookie.message).toContain("Content-Type: text/plain");
+
+    const empty = redactForLog("Authorization:\r\nX-Safe: ok");
+    expect(empty).toContain("X-Safe: ok");
   });
 
   it("redacts compound credential headers without swallowing JSON-ish fragments", () => {

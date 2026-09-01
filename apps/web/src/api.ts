@@ -25,6 +25,7 @@ import {
   agentImBindingConfigPath,
   agentImBindingHandoffPath,
   agentImBindingPath,
+  agentImBindingUnbindPath,
   agentReactivatePath,
   agentRuntimeTestPath,
   agentSetupPath,
@@ -72,6 +73,7 @@ import {
   type TaskTitleUpdateRequest,
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
+  type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
@@ -237,6 +239,14 @@ export class BrowserApi {
 
   imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {
     return this.requestOptional(agentImBindingConfigPath(agentId), ImBindingAdminDetailSchema);
+  }
+
+  unbindAgentMessaging(agentId: string, input: UnbindAgentMessagingRequest): Promise<void> {
+    return this.requestNoContent(agentImBindingUnbindPath(agentId), {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   createFeishuSetupAttempt(

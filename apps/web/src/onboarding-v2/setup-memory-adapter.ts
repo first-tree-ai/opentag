@@ -323,9 +323,10 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       state.messaging = { kind: "slack-install", intent, prior };
       return `https://slack.com/oauth/v2/authorize?state=memory-${encodeURIComponent(agentId)}`;
     },
-    unbindMessaging: async (bindingId) => {
+    unbindMessaging: async (agentId, provider, bindingId) => {
+      if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       const current = readBoundMessaging(state, "unbind");
-      if (current.bindingId !== bindingId) {
+      if (current.bindingId !== bindingId || current.provider !== provider) {
         throw new Error(`Binding ${bindingId} is not the current binding`);
       }
       state.messaging = { kind: "not-configured" };

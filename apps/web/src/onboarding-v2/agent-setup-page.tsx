@@ -135,7 +135,7 @@ async function performSetupAction(
       await adapter.startFeishuAttempt(agentId, "replace");
       return undefined;
     case "unbind-messaging":
-      await adapter.unbindMessaging(action.bindingId);
+      await adapter.unbindMessaging(agentId, action.provider, action.bindingId);
       return undefined;
     default:
       return undefined;

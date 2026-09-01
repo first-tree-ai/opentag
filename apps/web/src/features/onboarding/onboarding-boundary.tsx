@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { browserApi } from "../../api.js";
 import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-review.js";
 import { OnboardingV2Page } from "../../onboarding-v2/page.js";
@@ -32,11 +32,11 @@ type TargetResolution =
   | { kind: "create" }
   | { kind: "redirect"; agentId: string }
   | { kind: "choice"; agents: readonly ActiveAgentTarget[] }
-  | { kind: "exact" };
+  | { kind: "exact"; agentId: string };
 
 function resolveTargets(agentId: string | undefined, active: readonly ActiveAgentTarget[]): TargetResolution {
   if (agentId !== undefined) {
-    return active.some((candidate) => candidate.id === agentId) ? { kind: "exact" } : { kind: "unavailable" };
+    return active.some((candidate) => candidate.id === agentId) ? { kind: "exact", agentId } : { kind: "unavailable" };
   }
   const [single] = active;
   if (active.length === 0) return { kind: "create" };
@@ -55,43 +55,52 @@ function resolveTargets(agentId: string | undefined, active: readonly ActiveAgen
 export function OnboardingBoundary({ agentId, review }: { agentId?: string; review?: "reboard" }) {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
-  /**
-   * Whether the Account had already finished setup when it arrived. Finishing the flow from an
-   * incomplete Account opens the normal gate and sends the reader into the application; an exact
-   * setup link visited by a completed Account instead stays open, so reporting completion there
-   * must not navigate away.
-   */
-  const arrivedCompleted = useRef(me.setupCompletedAt !== null);
-  // Held stable: the flow retries this a bounded number of times, and an identity that changed on
-  // every render would reopen that budget each time.
-  const complete = useCallback(
+  const reviewMode = review === "reboard" || isReboardReviewFor(me.user.id);
+  const adopt = useCallback(
     async (adoptedAgentId: string) => {
       await browserApi.completeSetup(adoptedAgentId);
       await refreshMe();
-      forgetReboardReview();
-      if (!arrivedCompleted.current) await navigate({ replace: true, to: "/agents" });
     },
-    [navigate, refreshMe],
+    [refreshMe],
   );
-  if (me.setupCompletedAt && agentId === undefined) return <Redirect replace to="/agents" />;
+  const finishReview = useCallback(async () => {
+    forgetReboardReview();
+    await navigate({ replace: true, to: "/agents" });
+  }, [navigate]);
+  const openExactTarget = useCallback(
+    async (createdAgentId: string) => {
+      await navigate({ replace: true, search: { agentId: createdAgentId, review }, to: "/onboarding" });
+    },
+    [navigate, review],
+  );
+  if (me.setupCompletedAt && agentId === undefined && !reviewMode) return <Redirect replace to="/agents" />;
   return (
     <TargetedOnboarding
+      accountCompleted={me.setupCompletedAt !== null}
       agentId={agentId}
-      onComplete={complete}
+      onAdopt={adopt}
+      onReviewFinished={finishReview}
+      onTarget={openExactTarget}
       review={review}
-      reviewMode={review === "reboard" || isReboardReviewFor(me.user.id)}
+      reviewMode={reviewMode}
     />
   );
 }
 
 function TargetedOnboarding({
+  accountCompleted,
   agentId,
-  onComplete,
+  onAdopt,
+  onReviewFinished,
+  onTarget,
   review,
   reviewMode,
 }: {
+  accountCompleted: boolean;
   agentId?: string;
-  onComplete: (agentId: string) => Promise<void>;
+  onAdopt: (agentId: string) => Promise<void>;
+  onReviewFinished: (agentId: string) => Promise<void>;
+  onTarget: (agentId: string) => Promise<void>;
   review?: "reboard";
   reviewMode: boolean;
 }) {
@@ -206,5 +215,108 @@ function TargetedOnboarding({
     );
   }
 
-  return <OnboardingV2Page onComplete={onComplete} reviewMode={reviewMode} />;
+  if (resolution.kind === "exact") {
+    return (
+      <ExactAgentOnboarding
+        accountCompleted={accountCompleted}
+        agentId={resolution.agentId}
+        key={resolution.agentId}
+        onAdopt={onAdopt}
+        onReviewFinished={onReviewFinished}
+        reviewMode={reviewMode}
+      />
+    );
+  }
+
+  return (
+    <OnboardingV2Page
+      onAgentAvailable={onTarget}
+      onComplete={reviewMode ? onReviewFinished : undefined}
+      reviewMode={reviewMode}
+    />
+  );
+}
+
+type AdmissionState = "failed" | "loading" | "ready";
+
+/**
+ * Account admission and Agent readiness are deliberately separate. Once the boundary has proved
+ * the exact active owned Agent, this component adopts it immediately; Computer, runtime, and
+ * Messaging setup continue on the same canonical URL without becoming Account access gates.
+ */
+function ExactAgentOnboarding({
+  accountCompleted,
+  agentId,
+  onAdopt,
+  onReviewFinished,
+  reviewMode,
+}: {
+  accountCompleted: boolean;
+  agentId: string;
+  onAdopt: (agentId: string) => Promise<void>;
+  onReviewFinished: (agentId: string) => Promise<void>;
+  reviewMode: boolean;
+}) {
+  const [attempt, setAttempt] = useState(0);
+  const [admission, setAdmission] = useState<AdmissionState>(accountCompleted ? "ready" : "loading");
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the explicit retry signal; incrementing it must repeat admission even though the value is not otherwise read.
+  useEffect(() => {
+    if (accountCompleted) {
+      setAdmission("ready");
+      return;
+    }
+    let live = true;
+    setAdmission("loading");
+    void onAdopt(agentId).then(
+      () => {
+        if (live) setAdmission("ready");
+      },
+      () => {
+        if (live) setAdmission("failed");
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [accountCompleted, agentId, attempt, onAdopt]);
+
+  if (admission === "loading") {
+    return (
+      <div
+        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
+        data-ui="onboarding-target-adopting"
+      >
+        <Loader />
+        <p className="text-sm text-kumo-subtle m-0" role="status">
+          {m.onboarding_target_adopting()}
+        </p>
+      </div>
+    );
+  }
+
+  if (admission === "failed") {
+    return (
+      <div
+        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
+        data-ui="onboarding-target-adoption-failed"
+      >
+        <Text as="h1" size="lg" variant="heading">
+          {m.onboarding_target_adoption_failed_title()}
+        </Text>
+        <p className="text-sm text-kumo-danger m-0 max-w-prose text-center" role="alert">
+          {m.onboarding_target_adoption_failed_detail()}
+        </p>
+        <Button onClick={() => setAttempt((current) => current + 1)}>{m.onboarding_target_retry()}</Button>
+      </div>
+    );
+  }
+
+  return (
+    <OnboardingV2Page
+      agentId={agentId}
+      onComplete={reviewMode ? onReviewFinished : undefined}
+      reviewMode={reviewMode}
+    />
+  );
 }

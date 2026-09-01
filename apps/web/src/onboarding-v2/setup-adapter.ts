@@ -10,7 +10,12 @@
  * its answer is a URL the browser is sent to, which no later snapshot can deliver.
  */
 
-import type { AgentSetupSnapshot, FeishuSetupIntent, SlackConfigurationIntent } from "@opentag/shared/browser";
+import type {
+  AgentSetupSnapshot,
+  FeishuSetupIntent,
+  ImProvider,
+  SlackConfigurationIntent,
+} from "@opentag/shared/browser";
 import { type BrowserApi, browserApi } from "../api.js";
 
 export interface AgentSetupAdapter {
@@ -27,14 +32,14 @@ export interface AgentSetupAdapter {
   /** Starts Slack's install or reauthorization; resolves the URL the browser must be sent to. */
   readonly startSlackInstall: (agentId: string, intent: SlackConfigurationIntent) => Promise<string>;
   /** Disables the exact current binding. A fresh Provider can be started only after this lands. */
-  readonly unbindMessaging: (bindingId: string) => Promise<void>;
+  readonly unbindMessaging: (agentId: string, provider: ImProvider, bindingId: string) => Promise<void>;
 }
 
 /** The production adapter: every call is the matching BrowserApi request, nothing more. */
 export function createHttpSetupAdapter(
   api: Pick<
     BrowserApi,
-    "agentSetup" | "createFeishuSetupAttempt" | "cancelFeishuSetupAttempt" | "startSlackOAuth" | "disableImBinding"
+    "agentSetup" | "createFeishuSetupAttempt" | "cancelFeishuSetupAttempt" | "startSlackOAuth" | "unbindAgentMessaging"
   > = browserApi,
 ): AgentSetupAdapter {
   return {
@@ -46,11 +51,11 @@ export function createHttpSetupAdapter(
       await api.cancelFeishuSetupAttempt(attemptId);
     },
     startSlackInstall: async (agentId, intent) => {
-      const started = await api.startSlackOAuth(agentId, { intent });
+      const started = await api.startSlackOAuth(agentId, { intent, returnSurface: "agent-setup" });
       return started.authorizationUrl;
     },
-    unbindMessaging: async (bindingId) => {
-      await api.disableImBinding(bindingId);
+    unbindMessaging: async (agentId, provider, bindingId) => {
+      await api.unbindAgentMessaging(agentId, { provider, bindingId });
     },
   };
 }

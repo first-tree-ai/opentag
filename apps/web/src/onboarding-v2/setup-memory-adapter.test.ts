@@ -171,7 +171,7 @@ describe("createMemorySetupAdapter", () => {
     await expect(adapter.startSlackInstall(agent.id, "create")).rejects.toThrow(/unbound/);
     await expect(adapter.startFeishuAttempt(agent.id, "create")).rejects.toThrow(/not-configured/);
 
-    await adapter.unbindMessaging(bindingId);
+    await adapter.unbindMessaging(agent.id, "feishu", bindingId);
     const cleared = await adapter.readSnapshot(agent.id);
     expect(cleared.messaging).toEqual({ kind: "not-configured" });
     expect(cleared.actions).toEqual([
@@ -201,7 +201,9 @@ describe("createMemorySetupAdapter", () => {
       messaging: { kind: "bound", provider: "slack", reachable: true },
     });
 
-    await expect(adapter.unbindMessaging(crypto.randomUUID())).rejects.toThrow(/not the current binding/);
+    await expect(adapter.unbindMessaging(agent.id, "slack", crypto.randomUUID())).rejects.toThrow(
+      /not the current binding/,
+    );
     await expect(adapter.cancelFeishuAttempt(crypto.randomUUID())).rejects.toThrow(/No open Feishu attempt/);
     await expect(adapter.startSlackInstall(agent.id, "reauthorize")).resolves.toContain("https://slack.com/");
     await expect(adapter.startFeishuAttempt(agent.id, "reauthorize")).rejects.toThrow(/current Feishu binding/);

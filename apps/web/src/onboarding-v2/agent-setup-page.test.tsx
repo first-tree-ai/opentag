@@ -400,7 +400,7 @@ describe("AgentSetupPage transitions", () => {
     fireEvent.click(confirm[confirm.length - 1] as HTMLElement);
     await settle();
 
-    expect(unbind).toHaveBeenCalledWith(bindingId);
+    expect(unbind).toHaveBeenCalledWith(SETUP_AGENT_ID, "slack", bindingId);
     // The binding is gone, and only now is a fresh Provider choice offered.
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();

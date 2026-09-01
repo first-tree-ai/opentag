@@ -121,7 +121,7 @@ describe("createHttpSetupAdapter", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/im-binding/slack/oauth/start`);
       expect(init?.method).toBe("POST");
-      expect(init?.body).toBe(JSON.stringify({ intent: "reauthorize" }));
+      expect(init?.body).toBe(JSON.stringify({ intent: "reauthorize", returnSurface: "agent-setup" }));
       return jsonResponse({
         authorizationUrl: "https://slack.com/oauth/v2/authorize?state=signed",
         expiresAt: "2026-09-01T10:10:00.000Z",
@@ -135,14 +135,18 @@ describe("createHttpSetupAdapter", () => {
   });
 
   it("unbinds the exact current binding", async () => {
+    setDocumentCookie("opentag_csrf=unbind-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe(`/api/v1/im-bindings/${BINDING_ID}/disable`);
+      expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/im-binding/unbind`);
       expect(init?.method).toBe("POST");
+      expect(init?.body).toBe(JSON.stringify({ provider: "slack", bindingId: BINDING_ID }));
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("unbind-csrf");
       return new Response(null, { status: 204 });
     });
 
     const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
-    await expect(adapter.unbindMessaging(BINDING_ID)).resolves.toBeUndefined();
+    await expect(adapter.unbindMessaging(SETUP_AGENT_ID, "slack", BINDING_ID)).resolves.toBeUndefined();
   });
 });
 
@@ -163,11 +167,13 @@ describe("Agent Setup adapter alignment", () => {
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "feishu", reachable: true },
     });
-    await expect(memory.unbindMessaging(BINDING_ID)).rejects.toThrow(/not the current binding/);
+    await expect(memory.unbindMessaging(SETUP_AGENT_ID, "feishu", BINDING_ID)).rejects.toThrow(
+      /not the current binding/,
+    );
 
     const fetchImpl = vi.fn<typeof fetch>(async () => errorEnvelope(409, "IM_BINDING_NOT_FOUND"));
     const http = createHttpSetupAdapter(new BrowserApi(fetchImpl));
-    await expect(http.unbindMessaging(BINDING_ID)).rejects.toBeInstanceOf(ApiError);
+    await expect(http.unbindMessaging(SETUP_AGENT_ID, "feishu", BINDING_ID)).rejects.toBeInstanceOf(ApiError);
   });
 
   it("moves both adapters through the same create scan ready transition", async () => {

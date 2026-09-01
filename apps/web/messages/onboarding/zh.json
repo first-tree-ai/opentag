@@ -1,5 +1,8 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_target_adopting": "正在为此 Agent 开放应用访问…",
+  "onboarding_target_adoption_failed_detail": "Agent 合法，但暂时无法开放应用访问。请检查网络连接，然后重试。",
+  "onboarding_target_adoption_failed_title": "无法开放应用访问",
   "onboarding_target_choice_detail": "设置每次针对一个 Agent 继续。请选择本次要设置的 Agent。",
   "onboarding_target_choice_title": "选择要设置的 Agent",
   "onboarding_target_loading": "正在加载你的 Agent…",

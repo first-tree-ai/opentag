@@ -28,7 +28,7 @@
     },
     {
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
-      "lines": 2046,
+      "lines": 2097,
       "owner": "@bestony",
       "expires": "2026-10-31"
     }

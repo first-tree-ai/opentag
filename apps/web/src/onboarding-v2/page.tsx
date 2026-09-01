@@ -39,12 +39,15 @@ function localDraft(): AgentDraft {
  */
 export function OnboardingV2Page({
   agentId,
+  onAgentAvailable,
   onComplete,
   reviewMode = false,
   setupAdapter,
 }: {
   /** The exact Agent being set up. Present, the page renders from its canonical setup snapshot. */
   agentId?: string;
+  /** Canonicalizes the creation flow as soon as the Server returns the exact Agent it created. */
+  onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onComplete?: (agentId: string) => Promise<void> | void;
   reviewMode?: boolean;
   /** Review Lab and tests pass the in-memory adapter; production leaves the HTTP default. */
@@ -53,7 +56,7 @@ export function OnboardingV2Page({
   if (agentId) {
     return <AgentSetupPage adapter={setupAdapter} agentId={agentId} onReady={onComplete} reviewMode={reviewMode} />;
   }
-  return <OnboardingV2CreatePage onComplete={onComplete} reviewMode={reviewMode} />;
+  return <OnboardingV2CreatePage onAgentAvailable={onAgentAvailable} onComplete={onComplete} reviewMode={reviewMode} />;
 }
 
 /**
@@ -62,9 +65,11 @@ export function OnboardingV2Page({
  * chose, and a hook cannot be given that after it runs.
  */
 function OnboardingV2CreatePage({
+  onAgentAvailable,
   onComplete,
   reviewMode = false,
 }: {
+  onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onComplete?: (agentId: string) => Promise<void> | void;
   reviewMode?: boolean;
 } = {}) {
@@ -77,6 +82,7 @@ function OnboardingV2CreatePage({
    * actually has, on the runtime it actually runs.
    */
   const resumed = backend.agent;
+  const announcedAgent = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!resumed) return;
     setDraft((current) =>
@@ -85,6 +91,14 @@ function OnboardingV2CreatePage({
         : { ...current, destination: "local", name: resumed.name, runtime: resumed.runtimeProvider },
     );
   }, [resumed]);
+
+  useEffect(() => {
+    if (!resumed || !onAgentAvailable || announcedAgent.current === resumed.id) return;
+    announcedAgent.current = resumed.id;
+    void Promise.resolve(onAgentAvailable(resumed.id)).catch(() => {
+      if (announcedAgent.current === resumed.id) announcedAgent.current = undefined;
+    });
+  }, [onAgentAvailable, resumed]);
 
   /*
    * The read has to show something. This is the only route the setup gate allows, so a read that is

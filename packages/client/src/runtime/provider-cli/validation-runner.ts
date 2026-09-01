@@ -178,26 +178,29 @@ export class ProviderCliValidationRunner {
     signal?: AbortSignal,
   ): Promise<ProviderCliValidationClassification> {
     if (request.grant.provider !== "feishu") return { status: "needs_attention" };
+    if (request.expectedIdentity.provider !== "feishu") {
+      return { status: "needs_attention", reason: "identity_mismatch" };
+    }
+    const expectedIdentity = request.expectedIdentity;
+    if (request.grant.appId !== expectedIdentity.appId || request.grant.teamBrand !== expectedIdentity.teamBrand) {
+      return { status: "needs_attention", reason: "identity_mismatch" };
+    }
     const tenantAccessToken = await this.#exchangeFeishuToken(request.grant, signal);
     if (Date.parse(request.expiresAt) <= this.#now()) {
       return { status: "retrying", reason: "validation_expired" };
     }
     env.LARKSUITE_CLI_APP_ID = request.grant.appId;
-    env.LARKSUITE_CLI_APP_SECRET = request.grant.appSecret;
     env.LARKSUITE_CLI_CONFIG_DIR = join(workDir, "config");
     env.LARKSUITE_CLI_BRAND = request.grant.teamBrand;
     env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN = tenantAccessToken;
+    delete env.LARKSUITE_CLI_APP_SECRET;
     delete env.LARKSUITE_CLI_USER_ACCESS_TOKEN;
     return this.#runProcess(
       request.targetPath,
-      ["auth", "status", "--verify", "--json"],
+      ["api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "ndjson"],
       env,
       workDir,
-      (payload) =>
-        classifyLarkAuthStatus(
-          payload,
-          request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
-        ),
+      (payload) => classifyLarkAuthStatus(payload, expectedIdentity),
       signal,
     );
   }

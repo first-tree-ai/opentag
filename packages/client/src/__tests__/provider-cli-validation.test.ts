@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -33,6 +33,19 @@ const fence = {
   integrationId: "33333333-3333-4333-8333-333333333333",
   credentialGeneration: 1,
 };
+const feishuFence = { ...fence, provider: "feishu" as const };
+
+function feishuValidationRequest() {
+  return {
+    expectedFingerprint: "v1:test",
+    expectedIdentity: feishuIdentity,
+    expiresAt: new Date(Date.now() + 15_000).toISOString(),
+    grant: feishuGrant,
+    requestId: fence.requestId,
+    targetPath: "/bin/true",
+    version: "1.0.92",
+  };
+}
 
 async function fakeCli(home: string, script: string): Promise<string> {
   const path = join(home, "cli");
@@ -59,35 +72,71 @@ describe("provider CLI validation classification", () => {
     expect(classifySlackAuthTest("not-json", slackIdentity)).toEqual({ status: "needs_attention" });
   });
 
-  it("requires an explicit Lark brand and fails closed on missing brand or unknown schema", () => {
+  it("accepts raw v1.0.92 and forward-compatible normalized Feishu bot info", () => {
+    expect(classifyLarkAuthStatus({ code: 0, msg: "ok", bot: { open_id: "ou_bot" } }, feishuIdentity)).toEqual({
+      status: "ready",
+    });
     expect(
       classifyLarkAuthStatus(
-        {
-          identity: { app_id: "cli_app", brand: "feishu", bot_open_id: "ou_bot" },
-          identities: { bot: { available: true, verified: true, open_id: "ou_bot" } },
-          _notice: { update: true },
-        },
+        { ok: true, identity: "bot", data: { bot: { open_id: "ou_bot", app_name: "OpenTag" } } },
         feishuIdentity,
       ),
     ).toEqual({ status: "ready" });
+    expect(classifyLarkAuthStatus({ code: 0, msg: "ok", bot: { open_id: "ou_other" } }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+      reason: "identity_mismatch",
+    });
     expect(
-      classifyLarkAuthStatus(
-        {
-          identity: { app_id: "cli_app", bot_open_id: "ou_bot" },
-          identities: { bot: { available: true, verified: true, open_id: "ou_bot" } },
-        },
-        feishuIdentity,
-      ),
-    ).toEqual({ status: "needs_attention" });
+      classifyLarkAuthStatus({ ok: true, identity: "user", data: { bot: { open_id: "ou_bot" } } }, feishuIdentity),
+    ).toEqual({ status: "needs_attention", reason: "identity_mismatch" });
+    expect(classifyLarkAuthStatus({ ok: true, identity: "bot", data: {} }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+    });
+    expect(classifyLarkAuthStatus({ code: 0, msg: "ok" }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+    });
     expect(classifyLarkAuthStatus("not-json", feishuIdentity)).toEqual({ status: "needs_attention" });
-    expect(classifyLarkAuthStatus({ error: "rate_limited" }, feishuIdentity)).toEqual({
-      status: "retrying",
-      reason: "rate_limited",
-    });
-    expect(classifyLarkAuthStatus({ error: "internal_error" }, feishuIdentity)).toEqual({
-      status: "retrying",
-      reason: "provider_unreachable",
-    });
+  });
+
+  it.each([
+    [
+      "authentication",
+      { ok: false, error: { type: "authentication", subtype: "token_invalid", code: 99991663 } },
+      { status: "needs_attention", reason: "credential_rejected" },
+    ],
+    [
+      "authorization",
+      { ok: false, error: { type: "authorization", subtype: "permission_denied" } },
+      { status: "needs_attention", reason: "scope_missing" },
+    ],
+    [
+      "missing scopes",
+      { ok: false, error: { type: "api", missing_scopes: ["im:message"] } },
+      { status: "needs_attention", reason: "scope_missing" },
+    ],
+    [
+      "rate limit",
+      { ok: false, error: { type: "api", subtype: "rate_limit", code: 429, retryable: true } },
+      { status: "retrying", reason: "rate_limited" },
+    ],
+    [
+      "network",
+      { ok: false, error: { type: "network", subtype: "timeout", retryable: true } },
+      { status: "retrying", reason: "provider_unreachable" },
+    ],
+    [
+      "server",
+      { ok: false, error: { type: "api", subtype: "server_error", code: 503, retryable: true } },
+      { status: "retrying", reason: "provider_unreachable" },
+    ],
+    [
+      "CLI compatibility",
+      { ok: false, error: { type: "validation", subtype: "invalid_argument" } },
+      { status: "needs_attention", reason: "upgrade_required" },
+    ],
+    ["unknown", { ok: false, error: { type: "api", subtype: "unknown" } }, { status: "needs_attention" }],
+  ])("classifies structured Feishu %s failures", (_case, payload, expected) => {
+    expect(classifyLarkAuthStatus(payload, feishuIdentity)).toEqual(expected);
   });
 
   it("extracts one bounded JSON envelope and rejects oversize input", () => {
@@ -159,6 +208,119 @@ describe("Feishu tenant token exchange", () => {
 });
 
 describe("provider CLI validation runner", () => {
+  it("runs one live Feishu bot-info probe through lark-cli without projecting the app secret", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-feishu-"));
+    const execFile = vi.fn(async (_file, args, options) => {
+      expect(args).toEqual(["api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "ndjson"]);
+      expect(args[0]).not.toBe("auth");
+      expect(options.env.LARKSUITE_CLI_APP_ID).toBe("cli_app");
+      expect(options.env.LARKSUITE_CLI_APP_SECRET).toBeUndefined();
+      expect(options.env.LARKSUITE_CLI_BRAND).toBe("feishu");
+      expect(options.env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("tenant-token");
+      expect(options.env.LARKSUITE_CLI_USER_ACCESS_TOKEN).toBeUndefined();
+      return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
+    });
+    const runner = new ProviderCliValidationRunner({
+      home,
+      exchangeFeishuToken: async () => "tenant-token",
+      execFile,
+      verifyTarget: async () => true,
+    });
+
+    await expect(runner.run(feishuValidationRequest(), feishuFence)).resolves.toEqual({
+      ...feishuFence,
+      status: "ready",
+    });
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(await readdir(join(home, "data", "runtime", "provider-cli-validation"))).toEqual([]);
+  });
+
+  it.each([
+    ["app", { ...feishuGrant, appId: "cli_other" }],
+    ["brand", { ...feishuGrant, teamBrand: "lark" as const }],
+  ])("rejects a Feishu grant with the wrong %s before token exchange or spawn", async (_case, grant) => {
+    const exchangeFeishuToken = vi.fn(async () => "tenant-token");
+    const execFile = vi.fn();
+    const runner = new ProviderCliValidationRunner({
+      home: await mkdtemp(join(tmpdir(), "opentag-validation-feishu-identity-")),
+      exchangeFeishuToken,
+      execFile,
+      verifyTarget: async () => true,
+    });
+
+    await expect(runner.run({ ...feishuValidationRequest(), grant }, feishuFence)).resolves.toMatchObject({
+      status: "needs_attention",
+      reason: "identity_mismatch",
+    });
+    expect(exchangeFeishuToken).not.toHaveBeenCalled();
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("classifies a nested lark-cli error returned by a non-zero process", async () => {
+    const error = Object.assign(new Error("lark-cli exited with code 3"), {
+      stdout: JSON.stringify({
+        ok: false,
+        identity: "bot",
+        error: { type: "authentication", subtype: "token_invalid", code: 99991663 },
+      }),
+      stderr: "",
+    });
+    const runner = new ProviderCliValidationRunner({
+      home: await mkdtemp(join(tmpdir(), "opentag-validation-feishu-error-")),
+      exchangeFeishuToken: async () => "tenant-token",
+      execFile: vi.fn(async () => {
+        throw error;
+      }),
+      verifyTarget: async () => true,
+    });
+
+    await expect(runner.run(feishuValidationRequest(), feishuFence)).resolves.toMatchObject({
+      status: "needs_attention",
+      reason: "credential_rejected",
+    });
+  });
+
+  it("executes the Feishu probe in a real isolated child process", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-feishu-process-"));
+    const targetPath = await fakeCli(
+      home,
+      `#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "GET" ] && [ "$3" = "/open-apis/bot/v3/info" ] && [ "$4" = "--as" ] && [ "$5" = "bot" ] && [ "$6" = "--format" ] && [ "$7" = "ndjson" ] && [ "$LARKSUITE_CLI_APP_ID" = "cli_app" ] && [ "$LARKSUITE_CLI_BRAND" = "feishu" ] && [ "$LARKSUITE_CLI_TENANT_ACCESS_TOKEN" = "tenant-token" ] && [ -z "$LARKSUITE_CLI_APP_SECRET" ] && [ -z "$LARKSUITE_CLI_USER_ACCESS_TOKEN" ]; then
+  echo '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}'
+  exit 0
+fi
+exit 1
+`,
+    );
+    const runner = new ProviderCliValidationRunner({
+      home,
+      exchangeFeishuToken: async () => "tenant-token",
+      verifyTarget: async () => true,
+    });
+
+    await expect(runner.run({ ...feishuValidationRequest(), targetPath }, feishuFence)).resolves.toMatchObject({
+      status: "ready",
+    });
+  });
+
+  it("cleans up after a Feishu CLI timeout", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-feishu-timeout-"));
+    const runner = new ProviderCliValidationRunner({
+      home,
+      exchangeFeishuToken: async () => "tenant-token",
+      execFile: vi.fn(async () => {
+        throw Object.assign(new Error("timeout"), { killed: true, stdout: "", stderr: "" });
+      }),
+      verifyTarget: async () => true,
+    });
+
+    await expect(runner.run(feishuValidationRequest(), feishuFence)).resolves.toMatchObject({
+      status: "retrying",
+      reason: "provider_unreachable",
+    });
+    expect(await readdir(join(home, "data", "runtime", "provider-cli-validation"))).toEqual([]);
+  });
+
   it("runs the Slack auth.test argv in an isolated env and never persists the grant", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-validation-"));
     const targetPath = await fakeCli(

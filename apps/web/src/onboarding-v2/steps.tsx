@@ -353,11 +353,9 @@ function MessagingPicker({
           >
             <BrandMark brand={candidate} label={messagingProviderLabel(candidate)} />
             <CardCopy
-              description={
-                candidate === "feishu"
-                  ? m.onboarding_v2_messaging_lark_description()
-                  : m.onboarding_v2_messaging_slack_description()
-              }
+              description={m.onboarding_v2_messaging_provider_description({
+                provider: messagingProviderLabel(candidate),
+              })}
               title={messagingProviderLabel(candidate)}
             />
           </Button>

@@ -94,8 +94,11 @@ export const SETUP_COPY = {
      * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
      * picker cannot drift from what the same provider is called everywhere else in the product.
      */
-    feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu workspace" },
-    slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
+    feishu: {
+      title: messagingProviderLabel("feishu"),
+      description: `Your ${messagingProviderLabel("feishu")} workspace`,
+    },
+    slack: { title: messagingProviderLabel("slack"), description: `Your ${messagingProviderLabel("slack")} workspace` },
     feishuIntro: "Scan this with Feishu. You'll finish the last step inside Feishu itself.",
     feishuPreparing: "OpenTag is preparing a secure Feishu authorization.",
     qrAlt: "Scan this QR code in Feishu",

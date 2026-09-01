@@ -37,7 +37,10 @@ describe("OpenTag Web App Shell", () => {
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
     expect(within(dialog).queryByText("Create")).toBeNull();
     expect(window.location.pathname).toBe("/agents");
-    await waitFor(() => expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement));
+    const dialogHeading = within(dialog)
+      .getByRole("heading", { name: "New Agent" })
+      .closest('[data-ui="dialog-heading"]');
+    await waitFor(() => expect(dialogHeading).toBe(document.activeElement));
     expect(within(dialog).queryByLabelText("Agent name")).toBeNull();
     expect(within(dialog).getByRole("button", { name: "Edit Agent name" })).toBeTruthy();
     expect(within(dialog).getByRole("heading", { name: "Where it runs" })).toBeTruthy();
@@ -122,7 +125,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
 
-    const listed = await screen.findByRole("region", { name: "Enrolled Computers" });
+    const listed = await screen.findByRole("region", { name: "Connected Computers" });
     // An Account may hold several, so the page shows all of them and adding one stays available
     // rather than disappearing once the first exists.
     expect(within(listed).getAllByRole("listitem")).toHaveLength(3);

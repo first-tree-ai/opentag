@@ -9,8 +9,8 @@ import type {
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
-  accountComputers,
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
@@ -22,7 +22,7 @@ import type { RuntimeBusinessContext } from "./runtime-session.js";
 
 export interface AcceptedDeliveryRecord {
   agentId: string;
-  workspaceComputerId: string;
+  computerId: string;
   deliveryId: string;
   inputHash: string;
   instanceId: string;
@@ -32,7 +32,7 @@ export interface AcceptedDeliveryRecord {
 }
 
 export interface RecordedTurnRecord {
-  workspaceComputerId: string;
+  computerId: string;
   instanceId: string;
   report: TurnReportRequest;
   resultHash: string;
@@ -45,7 +45,7 @@ export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "s
 export type SteerReleaseStatus = "released" | "already_released" | "conflict";
 
 export interface DeliveryDispatchContext {
-  workspaceComputerId: string;
+  computerId: string;
   instanceId: string;
 }
 
@@ -109,7 +109,7 @@ interface DeliveryScope {
   message: typeof imMessages.$inferSelect;
   placement: typeof sessionPlacements.$inferSelect;
   session: typeof sessions.$inferSelect;
-  workspaceComputer: typeof accountComputers.$inferSelect;
+  workspaceComputer: typeof computers.$inferSelect;
   agentId: string;
 }
 
@@ -130,7 +130,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
-      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state !== "pending") return "conflict";
       if (scope.delivery.dispatchRequestId !== null) {
         return scope.delivery.dispatchRequestId === request.requestId && scope.delivery.dispatchInputHash === inputHash
@@ -205,7 +205,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !steerRequestMatches(scope, request)) return "conflict";
-      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state !== "pending") return "conflict";
       if (scope.delivery.dispatchRequestId !== null) {
         return scope.delivery.dispatchRequestId === request.requestId && scope.delivery.dispatchInputHash === inputHash
@@ -245,7 +245,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !steerRequestMatches(scope, request)) return "conflict";
-      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state === "steered") {
         return scope.delivery.inputHash === semanticHash &&
           scope.delivery.steerTargetDeliveryId === request.rootDeliveryId
@@ -279,7 +279,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
-      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state === "steered") {
         return scope.delivery.inputHash === semanticHash && scope.delivery.steerTargetDeliveryId === rootDeliveryId
           ? "already_steered"
@@ -353,7 +353,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
-      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.dispatchRequestId !== request.requestId || scope.delivery.dispatchInputHash !== inputHash) {
         return "conflict";
       }
@@ -402,7 +402,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .where(
           and(
             eq(sessionPlacements.sessionId, request.sessionId),
-            eq(sessionPlacements.computerId, context.workspaceComputerId),
+            eq(sessionPlacements.computerId, context.computerId),
             eq(sessionPlacements.generation, request.placementGeneration),
             isNull(sessions.endedAt),
           ),
@@ -417,7 +417,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           scope.delivery.sessionId !== request.sessionId ||
           scope.agentId !== request.agentId ||
           scope.delivery.placementGeneration !== claim.placementGeneration ||
-          !placementMatches(scope, context.workspaceComputerId, request.placementGeneration) ||
+          !placementMatches(scope, context.computerId, request.placementGeneration) ||
           scope.delivery.dispatchRequestId !== claim.dispatchRequestId ||
           scope.delivery.dispatchInputHash !== claim.inputHash ||
           (scope.delivery.resultHash !== null && scope.delivery.resultHash !== claim.resultHash)
@@ -462,7 +462,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .select({
         delivery: imMessageDeliveries,
         placement: sessionPlacements,
-        workspaceComputer: accountComputers,
+        workspaceComputer: computers,
         agentId: agents.id,
       })
       .from(imMessageDeliveries)
@@ -470,7 +470,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1);
     return row ? acceptedRecord(row.delivery, row.workspaceComputer.id, row.agentId) : undefined;
@@ -491,19 +491,19 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         report: imMessageDeliveries.turnReport,
         resultHash: imMessageDeliveries.resultHash,
         instanceId: imMessageDeliveries.reportOwnerInstanceId,
-        workspaceComputerId: accountComputers.id,
+        computerId: computers.id,
       })
       .from(imMessageDeliveries)
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
       .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(eq(imMessageDeliveries.turnId, turnId))
       .limit(1);
     return row?.report && row.resultHash && row.instanceId
       ? {
-          workspaceComputerId: row.workspaceComputerId,
+          computerId: row.computerId,
           instanceId: row.instanceId,
           report: row.report,
           resultHash: row.resultHash,
@@ -525,7 +525,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       ) {
         return "conflict";
       }
-      if (!placementMatches(scope, context.workspaceComputerId, report.placementGeneration)) return "stale_generation";
+      if (!placementMatches(scope, context.computerId, report.placementGeneration)) return "stale_generation";
       if (scope.delivery.turnReport) {
         return scope.delivery.resultHash === report.resultHash && sameReport(scope.delivery.turnReport, report)
           ? "already_recorded"
@@ -572,7 +572,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         message: imMessages,
         placement: sessionPlacements,
         session: sessions,
-        workspaceComputer: accountComputers,
+        workspaceComputer: computers,
         agentId: agents.id,
       })
       .from(imMessageDeliveries)
@@ -581,7 +581,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1)
       .for("update", { of: imMessageDeliveries });
@@ -612,13 +612,13 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
 
 function acceptedRecord(
   delivery: typeof imMessageDeliveries.$inferSelect,
-  workspaceComputerId: string,
+  computerId: string,
   agentId: string,
 ): AcceptedDeliveryRecord | undefined {
   return delivery.state === "accepted" && delivery.inputHash && delivery.turnId && delivery.reportOwnerInstanceId
     ? {
         agentId,
-        workspaceComputerId,
+        computerId,
         deliveryId: delivery.id,
         inputHash: delivery.inputHash,
         instanceId: delivery.reportOwnerInstanceId,
@@ -664,7 +664,7 @@ function steerTargetMatches(
     target.delivery.sessionId === delivery.delivery.sessionId &&
     target.agentId === delivery.agentId &&
     target.delivery.placementGeneration === request.placementGeneration &&
-    target.workspaceComputer.id === context.workspaceComputerId &&
+    target.workspaceComputer.id === context.computerId &&
     target.delivery.reportOwnerInstanceId === context.instanceId
   );
 }
@@ -681,15 +681,15 @@ function absorbedTargetMatches(
     target.delivery.sessionId === delivery.delivery.sessionId &&
     target.agentId === delivery.agentId &&
     target.delivery.placementGeneration === delivery.delivery.placementGeneration &&
-    target.workspaceComputer.id === context.workspaceComputerId &&
+    target.workspaceComputer.id === context.computerId &&
     target.delivery.reportOwnerInstanceId === context.instanceId
   );
 }
 
-function placementMatches(scope: DeliveryScope, workspaceComputerId: string, placementGeneration: number): boolean {
+function placementMatches(scope: DeliveryScope, computerId: string, placementGeneration: number): boolean {
   return (
     scope.delivery.placementGeneration === placementGeneration &&
-    scope.workspaceComputer.id === workspaceComputerId &&
+    scope.workspaceComputer.id === computerId &&
     scope.placement.generation === placementGeneration
   );
 }

@@ -1,15 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
-import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
-import {
-  accountComputers,
-  agentRuntimeConfigs,
-  agents,
-  computers,
-  imBindings,
-  sessions,
-  workspaceComputers,
-} from "../../../db/schema/index.js";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
+import { agentRuntimeConfigs, agents, computers, imBindings, sessions } from "../../../db/schema/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../index.js";
 
 let unitDatabase: UnitDatabase;
@@ -30,40 +22,25 @@ async function fixture(withConfig = true) {
   const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
     displayName: "Runtime User",
     email: "runtime@example.com",
-    workspaceDisplayName: "Runtime",
-    workspaceName: "runtime",
   });
   const installationId = crypto.randomUUID();
-  await unitDatabase.database.insert(computers).values({ id: installationId });
-  const [enrollment] = await unitDatabase.database
-    .insert(workspaceComputers)
+  const [computer] = await unitDatabase.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: installationId,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: installationId,
       displayName: "Runtime Computer",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!enrollment) throw new Error("Runtime computer fixture was not created");
-  await unitDatabase.database.insert(accountComputers).values({
-    id: enrollment.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: installationId,
-    displayName: "Runtime Computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const [agent] = await unitDatabase.database
     .insert(agents)
     .values({
-      workspaceId: bootstrap.workspaceId,
       createdByUserId: bootstrap.userId,
-      workspaceComputerId: enrollment.id,
-      computerId: enrollment.id,
+      computerId: computer.id,
       name: "runtime-agent",
       displayName: "Runtime Agent",
       runtimeProvider: "codex",

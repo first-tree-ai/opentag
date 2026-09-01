@@ -2,7 +2,8 @@ import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Field, KumoInputControl, Text } from "../../../ui/design-system.js";
+import { KumoInputControl, SettingsList, SettingsRow } from "../../../ui/design-system.js";
+import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
 
 export function GeneralConfigForm({
   initialConfig,
@@ -34,45 +35,38 @@ export function GeneralConfigForm({
     }
   }
   return (
-    <form className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line" onSubmit={submit}>
-      <header className="grid gap-2">
-        <Text as="h1" size="lg" variant="heading">
-          {m.agent_settings_name_title()}
-        </Text>
-      </header>
-      <Field htmlFor="agent-display-name" label={m.agent_settings_display_name_label()}>
-        <KumoInputControl
-          id="agent-display-name"
-          name="displayName"
-          required
-          value={displayName}
-          onChange={(event) => {
-            setDisplayName(event.currentTarget.value);
-            setMessage(undefined);
-          }}
-        />
-      </Field>
-      {dirty ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-          <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button
-              disabled={saving}
-              variant="ghost"
-              onClick={() => {
-                setDisplayName(config.displayName);
-                setMessage(undefined);
-              }}
-            >
-              {m.agent_settings_discard_action()}
-            </Button>
-            <Button disabled={saving} type="submit">
-              {saving ? m.agent_settings_saving_action() : m.agent_settings_save_changes_action()}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-      {message ? <p role="status">{message}</p> : null}
-    </form>
+    <div className="grid gap-6">
+      <AgentSettingsPageHeader title={m.agent_settings_name_title()} />
+      <UnsavedChangesGuard when={dirty} />
+      <form className="grid gap-4" onSubmit={submit}>
+        <SettingsList>
+          <SettingsRow label={m.agent_settings_display_name_label()}>
+            <div className="w-full [&>input]:w-full @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
+              <KumoInputControl
+                aria-label={m.agent_settings_display_name_label()}
+                id="agent-display-name"
+                name="displayName"
+                required
+                value={displayName}
+                onChange={(event) => {
+                  setDisplayName(event.currentTarget.value);
+                  setMessage(undefined);
+                }}
+              />
+            </div>
+          </SettingsRow>
+        </SettingsList>
+        {dirty ? (
+          <SettingsSaveActions
+            busy={saving}
+            onDiscard={() => {
+              setDisplayName(config.displayName);
+              setMessage(undefined);
+            }}
+          />
+        ) : null}
+        {message ? <p role="status">{message}</p> : null}
+      </form>
+    </div>
   );
 }

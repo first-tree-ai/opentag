@@ -69,12 +69,6 @@
       "complexity": 20
     },
     {
-      "id": "apps/cli/src/core/daemon/runtime.ts#runDaemonService",
-      "path": "apps/cli/src/core/daemon/runtime.ts",
-      "symbol": "runDaemonService",
-      "complexity": 16
-    },
-    {
       "id": "apps/cli/src/core/daemon/service/launchd.ts#callback",
       "path": "apps/cli/src/core/daemon/service/launchd.ts",
       "symbol": "callback",
@@ -126,7 +120,7 @@
       "id": "apps/web/src/features/agents/agent-model.ts#projectAgentAvailability",
       "path": "apps/web/src/features/agents/agent-model.ts",
       "symbol": "projectAgentAvailability",
-      "complexity": 48
+      "complexity": 47
     },
     {
       "id": "apps/web/src/features/agents/agent-presentation.ts#agentStatusPresentation",
@@ -234,13 +228,13 @@
       "id": "apps/web/src/onboarding-v2/server-backend.ts#callback",
       "path": "apps/web/src/onboarding-v2/server-backend.ts",
       "symbol": "callback",
-      "complexity": 45
+      "complexity": 22
     },
     {
       "id": "apps/web/src/onboarding-v2/server-backend.ts#callback~2",
       "path": "apps/web/src/onboarding-v2/server-backend.ts",
       "symbol": "callback",
-      "complexity": 22
+      "complexity": 45
     },
     {
       "id": "apps/web/src/onboarding-v2/steps.tsx#AgentNameField",
@@ -264,7 +258,7 @@
       "id": "apps/web/src/onboarding-v2/steps.tsx#MessagingConnection",
       "path": "apps/web/src/onboarding-v2/steps.tsx",
       "symbol": "MessagingConnection",
-      "complexity": 43
+      "complexity": 34
     },
     {
       "id": "apps/web/src/onboarding-v2/steps.tsx#OnboardingConnectPresentation",
@@ -516,7 +510,7 @@
       "id": "packages/client/src/runtime/client-runtime.ts##handleBusinessFrame",
       "path": "packages/client/src/runtime/client-runtime.ts",
       "symbol": "#handleBusinessFrame",
-      "complexity": 25
+      "complexity": 23
     },
     {
       "id": "packages/client/src/runtime/install-locations.ts#versionManagerBinDirs",
@@ -768,25 +762,25 @@
       "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~3",
       "path": "packages/server/src/runtime/runtime-custody-store.ts",
       "symbol": "callback",
-      "complexity": 20
+      "complexity": 19
     },
     {
       "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~4",
       "path": "packages/server/src/runtime/runtime-custody-store.ts",
       "symbol": "callback",
-      "complexity": 19
+      "complexity": 18
     },
     {
       "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~5",
       "path": "packages/server/src/runtime/runtime-custody-store.ts",
       "symbol": "callback",
-      "complexity": 18
+      "complexity": 17
     },
     {
       "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~6",
       "path": "packages/server/src/runtime/runtime-custody-store.ts",
       "symbol": "callback",
-      "complexity": 17
+      "complexity": 20
     },
     {
       "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~7",
@@ -811,12 +805,6 @@
       "path": "packages/server/src/runtime/runtime-domain-owner.ts",
       "symbol": "#request",
       "complexity": 23
-    },
-    {
-      "id": "packages/server/src/runtime/runtime-domain-owner.ts#handle",
-      "path": "packages/server/src/runtime/runtime-domain-owner.ts",
-      "symbol": "handle",
-      "complexity": 19
     },
     {
       "id": "packages/server/src/runtime/runtime-domain-owner.ts#requestReconcile",
@@ -846,13 +834,13 @@
       "id": "packages/server/src/services/agents/agent-service.ts#callback",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 18
+      "complexity": 21
     },
     {
       "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 21
+      "complexity": 16
     },
     {
       "id": "packages/server/src/services/agents/agent-service.ts#callback~3",
@@ -897,12 +885,6 @@
       "complexity": 21
     },
     {
-      "id": "packages/server/src/services/im-bindings/feishu/connection-manager.ts#callback",
-      "path": "packages/server/src/services/im-bindings/feishu/connection-manager.ts",
-      "symbol": "callback",
-      "complexity": 31
-    },
-    {
       "id": "packages/server/src/services/im-bindings/feishu/setup-service.ts#createOrReuse",
       "path": "packages/server/src/services/im-bindings/feishu/setup-service.ts",
       "symbol": "createOrReuse",
@@ -918,19 +900,13 @@
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#callback",
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
       "symbol": "callback",
-      "complexity": 41
+      "complexity": 39
     },
     {
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#diagnostics",
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
       "symbol": "diagnostics",
       "complexity": 21
-    },
-    {
-      "id": "packages/server/src/services/im-bindings/im-binding-service.ts#issueRuntimeCredentialGrant",
-      "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
-      "symbol": "issueRuntimeCredentialGrant",
-      "complexity": 27
     },
     {
       "id": "packages/server/src/services/im-bindings/slack/adapter.ts#normalizeSlackEnvelope",
@@ -948,7 +924,7 @@
       "id": "packages/server/src/services/im/im-message-inbox.ts#callback",
       "path": "packages/server/src/services/im/im-message-inbox.ts",
       "symbol": "callback",
-      "complexity": 170
+      "complexity": 169
     },
     {
       "id": "packages/server/src/services/runtime-config/effective-runtime-snapshot-assembler.ts#assembleForSession",
@@ -966,13 +942,13 @@
       "id": "packages/server/src/services/sessions/session-service.ts#callback",
       "path": "packages/server/src/services/sessions/session-service.ts",
       "symbol": "callback",
-      "complexity": 19
+      "complexity": 21
     },
     {
       "id": "packages/server/src/services/sessions/session-service.ts#callback~2",
       "path": "packages/server/src/services/sessions/session-service.ts",
       "symbol": "callback",
-      "complexity": 21
+      "complexity": 19
     },
     {
       "id": "packages/server/src/services/tasks/__tests__/task-service.test.ts#createDelivery",

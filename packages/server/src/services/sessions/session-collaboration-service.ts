@@ -48,9 +48,9 @@ export class SessionCollaborationService {
     try {
       const attempt = await this.#sessions.createInternalSessionWithMessage({
         creatorSessionId: source.sessionId,
-        creatorComputerId: source.computerId,
+        creatorInstallationId: source.installationId,
         creatorConnectionInstanceId: source.connectionInstanceId,
-        creatorWorkspaceComputerId: source.workspaceComputerId,
+        creatorComputerId: source.computerId,
         creatorPlacementGeneration: source.placementGeneration,
         messageId: input.messageId,
         initialMessage: input.message,
@@ -71,9 +71,9 @@ export class SessionCollaborationService {
       const attempt = await this.#sessions.authorizeAndRecordMessage({
         messageId: input.messageId,
         sourceSessionId: source.sessionId,
+        sourceInstallationId: source.installationId,
         sourceComputerId: source.computerId,
         sourceConnectionInstanceId: source.connectionInstanceId,
-        sourceWorkspaceComputerId: source.workspaceComputerId,
         sourcePlacementGeneration: source.placementGeneration,
         targetSessionId: input.targetSessionId,
         content: input.message,
@@ -102,11 +102,11 @@ export class SessionCollaborationService {
         attempt.attemptCount,
       );
     }
-    const targetInstanceId = this.#registry.currentInstanceId(attempt.route.targetWorkspaceComputerId);
+    const targetInstanceId = this.#registry.currentInstanceId(attempt.route.targetComputerId);
     if (
       !targetInstanceId ||
       !this.#registry.supportsCapability(
-        attempt.route.targetWorkspaceComputerId,
+        attempt.route.targetComputerId,
         targetInstanceId,
         RUNTIME_CAPABILITY.sessionCollaboration,
       )
@@ -119,7 +119,7 @@ export class SessionCollaborationService {
     if (
       attempt.route.targetSessionKind !== "internal" &&
       this.#registry.capabilityVersion(
-        attempt.route.targetWorkspaceComputerId,
+        attempt.route.targetComputerId,
         targetInstanceId,
         RUNTIME_CAPABILITY.imCredentialGrant,
       ) !== 2
@@ -132,12 +132,12 @@ export class SessionCollaborationService {
     let reconciled: SessionReconcileResult;
     try {
       reconciled = await this.#domain.requestReconcile(
-        attempt.route.targetWorkspaceComputerId,
+        attempt.route.targetComputerId,
         targetInstanceId,
         {
           type: "session:reconcile",
           requestId: randomUUID(),
-          computerId: attempt.route.targetComputerId,
+          installationId: attempt.route.targetInstallationId,
           sessionId: attempt.route.targetSessionId,
           agentId: attempt.route.agentId,
           placementGeneration: attempt.route.targetPlacementGeneration,
@@ -178,7 +178,7 @@ export class SessionCollaborationService {
     };
     try {
       const delivered = await this.#domain.requestSessionMessageDelivery(
-        attempt.route.targetWorkspaceComputerId,
+        attempt.route.targetComputerId,
         targetInstanceId,
         delivery,
         undefined,

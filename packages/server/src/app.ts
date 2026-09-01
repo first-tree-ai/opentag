@@ -3,7 +3,7 @@ import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
 import Fastify, { type FastifyLoggerOptions } from "fastify";
-import { registerAccountRoutes } from "./api/account.js";
+import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
@@ -31,8 +31,8 @@ import { type ImBindingService, ImBindingServiceError } from "./services/im-bind
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
+import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
-import { type WorkspaceSetupService, WorkspaceSetupServiceError } from "./services/workspaces/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
@@ -69,15 +69,13 @@ export interface CreateAppOptions {
    * deployment outside staging stays indistinguishable from one that never had the capability.
    */
   setupResetService?: OnboardingResetService;
+  internalNavigationService?: InternalNavigationVisibilityService;
   taskService?: TaskService;
-  workspaceSetupService?: WorkspaceSetupService;
+  accountSetupService?: AccountSetupService;
 }
 
 export function sanitizeRequestUrl(url: string): string {
-  const path = url.split("?", 1)[0] ?? "/";
-  return path
-    .replace(/^(\/invites\/)[^/]+/, "$1[REDACTED]")
-    .replace(/^(\/api\/v1\/admin-invitations\/)[^/]+/, "$1[REDACTED]");
+  return url.split("?", 1)[0] ?? "/";
 }
 
 export function formatHttpSpanName(request: { method?: string; routeOptions?: { url?: string } }): string {
@@ -232,8 +230,8 @@ export function createApp(options: CreateAppOptions = {}) {
       options.agentService ||
       options.taskService ||
       options.computerService ||
-      options.workspaceSetupService ||
       options.setupResetService ||
+      options.accountSetupService ||
       (options.machineAuthService && options.computerConnectCode)
     ) {
       registerAccountRoutes(app, authService, {
@@ -241,9 +239,10 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
         ...(options.computerService ? { computerService: options.computerService } : {}),
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
-        ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
+        ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
         ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
+        internalNavigationService: options.internalNavigationService,
         authOptions,
       });
     }
@@ -300,7 +299,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof OnboardingResetError ||
       error instanceof TaskQueryError ||
       error instanceof SlackConfigurationServiceError ||
-      error instanceof WorkspaceSetupServiceError
+      error instanceof AccountSetupServiceError
     ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {

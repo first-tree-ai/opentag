@@ -28,8 +28,8 @@
   "skills_page_description": "Reusable playbooks that give Agents the context and methods they need to do specialized work.",
   "skills_page_title": "Skills",
   "skills_preview": "Preview",
+  "skills_shared": "Shared",
   "skills_upload": "Upload skill",
-  "skills_upload_file": "Skill file",
-  "skills_upload_status": "{fileName} selected · Demo only, not uploaded",
+  "skills_upload_unavailable": "Upload is unavailable while this page uses demo data.",
   "skills_used_by": "Used by"
 }

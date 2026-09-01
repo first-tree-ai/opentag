@@ -1,4 +1,5 @@
 import type {
+  AccountComputerSummary,
   AgentDetail,
   AgentListItem as AgentListApiItem,
   AgentSummary,
@@ -6,7 +7,6 @@ import type {
   ImBindingSummary,
   ProviderCliHandoffProgress,
   ProviderReadinessStatus,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 
 export type AgentAvailability = {
@@ -74,7 +74,7 @@ function handoffDependency(
 
 export function projectAgentAvailability(
   agent: AgentSummary,
-  computer: WorkspaceComputerSummary | undefined,
+  computer: AccountComputerSummary | undefined,
   binding: ImBindingSummary | undefined,
   handoff: ImBindingHandoffStatus | undefined,
   bindingEvidenceConfirmed: boolean,

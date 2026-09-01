@@ -5,7 +5,7 @@
  * The gate works. What the demotion is guarded by does not match what it was meant to protect.
  */
 
-import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentListItem } from "@opentag/shared/browser";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -34,7 +34,7 @@ function agentOn(computerId: string, displayName: string): AgentListItem {
   };
 }
 
-function machine(id: string, name: string, online: boolean, ready = true): WorkspaceComputerSummary {
+function machine(id: string, name: string, online: boolean, ready = true): AccountComputerSummary {
   return {
     computerId: id,
     displayName: name,
@@ -43,7 +43,7 @@ function machine(id: string, name: string, online: boolean, ready = true): Works
     connectedAt: online ? "2026-08-29T00:00:20.000Z" : null,
     lastSeenAt: NOW,
     observedAt: NOW,
-    enrolledAt: NOW,
+    createdAt: NOW,
     agentIds: [],
     providerReadiness: ready ? [{ provider: "codex", status: "ready", observedAt: NOW }] : undefined,
   };

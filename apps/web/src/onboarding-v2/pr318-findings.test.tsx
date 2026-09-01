@@ -1,7 +1,7 @@
 /**
  * Probe for the reviews of `40e082c` and `8df0d51`, and for the product rule this step now follows:
  * an Account has one Computer. It is never asked which one, and never offered another — being
- * nudged into enrolling a second machine is what leaves an Account with a duplicate to repair.
+ * nudged into connecting a second machine is what leaves an Account with a duplicate to repair.
  *
  * The first review found that offering the Account's machine had changed what the step *said*
  * without changing what it could *do*: the check only ran for a machine that had just arrived, a
@@ -72,8 +72,8 @@ function continueButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
 }
 
-/** The enroll command: the thing a reader should never be shown beside a machine they already own. */
-function enrollCommandShown(): boolean {
+/** The connect command: the thing a reader should never be shown beside a machine they already own. */
+function connectCommandShown(): boolean {
   return screen.queryByText(/opentag computer connect/) !== null;
 }
 
@@ -101,8 +101,8 @@ describe("the Computer the Account already has", () => {
     await advance(ISSUE_MS);
 
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    // The first run is the one that has to enrol, so this is where the command belongs.
-    expect(enrollCommandShown()).toBe(true);
+    // The first run is the one that has to connect, so this is where the command belongs.
+    expect(connectCommandShown()).toBe(true);
     expect(asksWhichComputer()).toBe(false);
   });
 
@@ -142,9 +142,9 @@ describe("the Computer the Account already has", () => {
     await reachComputerStep();
     await advance(ISSUE_MS);
 
-    // A code enrols a *new* machine. Issuing one here would quietly hand a second Computer to an
+    // A code connects a *new* machine. Issuing one here would quietly hand a second Computer to an
     // Account that is meant to have one.
-    expect(enrollCommandShown()).toBe(false);
+    expect(connectCommandShown()).toBe(false);
     expect(screen.queryByRole("button", { name: "Connect computer" })).toBeNull();
   });
 
@@ -154,11 +154,11 @@ describe("the Computer the Account already has", () => {
     await reachComputerStep();
 
     // An Account is meant to have one machine. One that predates that rule still gets no question
-    // and no second enrolment — the reachable machine is prepared and named, and that is all.
+    // and no second connection — the reachable machine is prepared and named, and that is all.
     expect(asksWhichComputer()).toBe(false);
     expect(machineLine()).toContain("MacBook Pro");
     expect(machineLine()).not.toContain("Work iMac");
-    expect(enrollCommandShown()).toBe(false);
+    expect(connectCommandShown()).toBe(false);
 
     await advanceMock("Return check result");
     expect(continueButton().disabled).toBe(false);
@@ -178,8 +178,8 @@ describe("the Computer the Account already has", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeTruthy();
-    // Enrolling a second machine is not the way to repair the first.
-    expect(enrollCommandShown()).toBe(false);
+    // Connecting a second machine is not the way to repair the first.
+    expect(connectCommandShown()).toBe(false);
     expect(asksWhichComputer()).toBe(false);
 
     await advanceMock("Reconnect MacBook Pro");

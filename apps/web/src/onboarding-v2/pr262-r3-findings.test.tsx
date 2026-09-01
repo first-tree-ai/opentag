@@ -6,7 +6,7 @@
  * control the resumed flow leaves on screen without a job.
  */
 
-import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentListItem } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -36,7 +36,7 @@ function existingAgent(): AgentListItem {
 }
 
 /** The machine the Agent was created on, since gone: closed laptop, stopped daemon, reinstall. */
-function departedComputer(): WorkspaceComputerSummary {
+function departedComputer(): AccountComputerSummary {
   return {
     computerId: COMPUTER_ID,
     displayName: "Ada's Mac",
@@ -45,7 +45,7 @@ function departedComputer(): WorkspaceComputerSummary {
     connectedAt: null,
     lastSeenAt: NOW,
     observedAt: NOW,
-    enrolledAt: NOW,
+    createdAt: NOW,
     agentIds: [AGENT_ID],
   };
 }

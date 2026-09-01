@@ -12,7 +12,7 @@ opentag session list
 
 The current source Session is implicit. The Runtime supplies a managed proof file and the CLI reads the Server binding
 from `OPENTAG_HOME/config/computer.json`; callers cannot pass an Agent or source Session identity. The proof is bound to
-the current Session, placement generation, Computer enrollment, and Client connection. Reconciles for the same binding
+the current Session, placement generation, Computer connection, and Client connection. Reconciles for the same binding
 reuse the same proof, including retries after a timeout or lost response. Placement, connection, Agent, or IM-binding
 changes invalidate the old proof.
 

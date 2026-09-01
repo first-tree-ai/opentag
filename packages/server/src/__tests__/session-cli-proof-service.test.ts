@@ -8,7 +8,7 @@ describe("SessionCliProofService", () => {
     const request = {
       type: "session:reconcile",
       requestId: randomUUID(),
-      computerId: randomUUID(),
+      installationId: randomUUID(),
       sessionId: randomUUID(),
       agentId: randomUUID(),
       placementGeneration: 1,

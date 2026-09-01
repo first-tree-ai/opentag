@@ -217,7 +217,7 @@ function FeishuSetupLifecycle({
       setDialogOpen(false);
       return;
     }
-    if (!current || current.state !== "awaiting_user" || canceling) return;
+    if (current?.state !== "awaiting_user" || canceling) return;
     setCanceling(true);
     setError(undefined);
     lifecycleRef.current += 1;
@@ -227,10 +227,7 @@ function FeishuSetupLifecycle({
       setAttempt(undefined);
       setDialogOpen(false);
     } catch {
-      setError({
-        message: m.im_feishu_cancel_failed({ provider: messagingProviderLabel("feishu") }),
-        source: "start",
-      });
+      setError({ message: m.im_feishu_cancel_failed({ provider: messagingProviderLabel("feishu") }), source: "start" });
     } finally {
       setCanceling(false);
     }
@@ -297,8 +294,6 @@ function FeishuSetupDialog({
   open: boolean;
   returnFocusRef?: RefObject<HTMLElement | null>;
 }) {
-  const recovery = attempt ? setupRecovery(attempt) : undefined;
-  const terminal = attempt ? RETRYABLE_STATES.includes(attempt.state) : Boolean(error && !loading);
   const title = feishuDialogTitle(intent);
   return (
     <Dialog
@@ -309,49 +304,91 @@ function FeishuSetupDialog({
       title={title}
       onClose={onClose}
     >
-      <div className="grid gap-4" data-ui="feishu-setup-dialog">
-        {loading && !attempt ? (
-          <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
-            <Loader aria-label={m.im_feishu_preparing()} size="sm" />
-            <span>{m.im_feishu_preparing()}</span>
-          </div>
-        ) : null}
-        {attempt?.state === "awaiting_user" ? (
-          <>
-            {attempt.qrUrl ? <FeishuQrCode value={attempt.qrUrl} /> : null}
-            <p className="text-sm text-kumo-subtle">
-              {m.im_feishu_qr_expires({ date: formatDateTime(attempt.expiresAt) })}
-            </p>
-            <div className="flex flex-wrap justify-end gap-3">
-              <Button variant="ghost" onClick={onClose}>
-                {m.common_cancel()}
-              </Button>
-              {attempt.qrUrl ? (
-                <a className={buttonClassName()} href={attempt.qrUrl} rel="noreferrer" target="_blank">
-                  {m.im_feishu_open({ provider: messagingProviderLabel("feishu") })}
-                </a>
-              ) : null}
-            </div>
-          </>
-        ) : null}
-        {attempt?.state === "validating" ? (
-          <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
-            <Loader aria-label={m.im_feishu_finishing()} size="sm" />
-            <span>{m.im_feishu_finishing()}</span>
-          </div>
-        ) : null}
-        {recovery ? <Banner variant="error" role="alert" description={recovery} /> : null}
-        {error ? <Banner variant="error" role="alert" description={error} /> : null}
-        {terminal ? (
-          <div className="flex flex-wrap justify-end gap-3">
-            <Button variant="ghost" onClick={onClose}>
-              {m.common_close()}
-            </Button>
-            <Button onClick={() => void onRetry(intent)}>{m.im_feishu_retry()}</Button>
-          </div>
+      <FeishuSetupDialogContent
+        attempt={attempt}
+        error={error}
+        intent={intent}
+        loading={loading}
+        onClose={onClose}
+        onRetry={onRetry}
+      />
+    </Dialog>
+  );
+}
+
+function FeishuSetupDialogContent({
+  attempt,
+  error,
+  intent,
+  loading,
+  onClose,
+  onRetry,
+}: {
+  attempt?: FeishuSetupAttempt;
+  error?: string;
+  intent: FeishuSetupIntent;
+  loading: boolean;
+  onClose: () => void;
+  onRetry: (intent: FeishuSetupIntent) => Promise<boolean>;
+}) {
+  const recovery = attempt ? setupRecovery(attempt) : undefined;
+  const terminal = attempt ? RETRYABLE_STATES.includes(attempt.state) : Boolean(error && !loading);
+  return (
+    <div className="grid gap-4" data-ui="feishu-setup-dialog">
+      {loading && !attempt ? (
+        <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+          <Loader aria-label={m.im_feishu_preparing()} size="sm" />
+          <span>{m.im_feishu_preparing()}</span>
+        </div>
+      ) : null}
+      {attempt?.state === "awaiting_user" ? <FeishuAwaitingUser attempt={attempt} onClose={onClose} /> : null}
+      {attempt?.state === "validating" ? (
+        <div className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+          <Loader aria-label={m.im_feishu_finishing()} size="sm" />
+          <span>{m.im_feishu_finishing()}</span>
+        </div>
+      ) : null}
+      {recovery ? <Banner variant="error" role="alert" description={recovery} /> : null}
+      {error ? <Banner variant="error" role="alert" description={error} /> : null}
+      {terminal ? (
+        <div className="flex flex-wrap justify-end gap-3">
+          <Button variant="ghost" onClick={onClose}>
+            {m.common_close()}
+          </Button>
+          <Button onClick={() => void onRetry(intent)}>
+            {attempt?.state === "expired" ? m.im_feishu_generate_new_code() : m.im_feishu_retry()}
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FeishuAwaitingUser({ attempt, onClose }: { attempt: FeishuSetupAttempt; onClose: () => void }) {
+  return (
+    <>
+      {attempt.qrUrl ? (
+        <div className="hidden sm:block">
+          <FeishuQrCode value={attempt.qrUrl} />
+          <FeishuQrExpiry expiresAt={attempt.expiresAt} />
+        </div>
+      ) : null}
+      <div className="grid gap-3 sm:flex sm:flex-wrap sm:justify-end">
+        <Button className="w-full sm:w-auto" variant="ghost" onClick={onClose}>
+          {m.common_cancel()}
+        </Button>
+        {attempt.qrUrl ? (
+          <a
+            className={buttonClassName({ className: "w-full sm:w-auto" })}
+            href={attempt.qrUrl}
+            rel="noreferrer"
+            target="_blank"
+          >
+            {m.im_feishu_open({ provider: messagingProviderLabel("feishu") })}
+          </a>
         ) : null}
       </div>
-    </Dialog>
+    </>
   );
 }
 
@@ -437,10 +474,24 @@ function FeishuQrCode({ value }: { value: string }) {
   return source ? (
     <img
       alt={m.im_feishu_qr_alt({ provider: messagingProviderLabel("feishu") })}
-      className="my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
+      className="mx-auto my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />
   ) : null;
+}
+
+function FeishuQrExpiry({ expiresAt }: { expiresAt: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const remaining = Date.parse(expiresAt) - now;
+  if (remaining <= 0) {
+    return <p className="text-center text-sm text-kumo-warning">{m.im_feishu_qr_expired()}</p>;
+  }
+  const minutes = Math.max(1, Math.ceil(remaining / 60_000));
+  return <p className="text-center text-sm text-kumo-subtle">{m.im_feishu_qr_expires_in({ minutes })}</p>;
 }
 
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {

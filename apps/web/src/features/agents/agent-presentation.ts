@@ -51,8 +51,8 @@ export function agentCardStatus(agent: AgentListItem): {
 
 /**
  * Names the machine-level action that resolves the failure. Recovery is stated against the Computer
- * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
- * Agent creator audit-only while stating that enrollment implies no control of the physical host.
+ * rather than a person: the Account model keeps the Agent creator audit-only, and owning a Computer
+ * implies no control of the physical host.
  */
 export function computerRecoveryMessage(agent: AgentDetailView): string {
   if (!agent.computer) {
@@ -62,15 +62,21 @@ export function computerRecoveryMessage(agent: AgentDetailView): string {
   if (agent.availability.reason === "runtime_unavailable") {
     const { provider, status } = agent.availability.dependencies.runtime;
     const providerName = provider === "codex" ? "Codex" : "Claude Code";
-    if (status === "install") return `${providerName} is not installed on ${computerName}.`;
-    if (status === "sign-in") return `${providerName} is not signed in on ${computerName}.`;
-    if (status === "checking") return `OpenTag is still checking ${providerName} on ${computerName}.`;
-    return `${providerName} is unavailable on ${computerName}.`;
+    if (status === "install") {
+      return m.agent_settings_computer_recovery_provider_not_installed({ computerName, providerName });
+    }
+    if (status === "sign-in") {
+      return m.agent_settings_computer_recovery_provider_not_signed_in({ computerName, providerName });
+    }
+    if (status === "checking") {
+      return m.agent_settings_computer_recovery_provider_checking({ computerName, providerName });
+    }
+    return m.agent_settings_computer_recovery_provider_unavailable({ computerName, providerName });
   }
   if (agent.availability.dependencies.computer.state !== "action_required") {
-    return "OpenTag could not confirm this Computer's current connection.";
+    return m.agent_settings_computer_recovery_unconfirmed();
   }
-  return `OpenTag is not running on ${computerName}. Start it there to bring it back online.`;
+  return m.agent_settings_computer_recovery_offline({ computerName });
 }
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {

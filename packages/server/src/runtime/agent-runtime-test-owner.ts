@@ -28,7 +28,7 @@ interface PendingTest {
   requestId: string;
   resolve(result: AgentRuntimeTestResponse): void;
   timer: ReturnType<typeof setTimeout>;
-  workspaceComputerId: string;
+  computerId: string;
 }
 
 function failed(code: AgentRuntimeTestFailureCode): AgentRuntimeTestResponse {
@@ -58,8 +58,8 @@ export class AgentRuntimeTestOwner {
     return this.#pending.size;
   }
 
-  hasComputerInFlight(workspaceComputerId: string): boolean {
-    return this.#computers.has(workspaceComputerId);
+  hasComputerInFlight(computerId: string): boolean {
+    return this.#computers.has(computerId);
   }
 
   businessOptions(): RuntimeBusinessOptions {
@@ -75,13 +75,13 @@ export class AgentRuntimeTestOwner {
     };
   }
 
-  async start(workspaceComputerId: string, input: AgentRuntimeTestDispatchInput): Promise<AgentRuntimeTestResponse> {
-    const instanceId = this.#registry.currentInstanceId(workspaceComputerId);
+  async start(computerId: string, input: AgentRuntimeTestDispatchInput): Promise<AgentRuntimeTestResponse> {
+    const instanceId = this.#registry.currentInstanceId(computerId);
     if (!instanceId) return failed("computer_unavailable");
-    if (!this.#registry.supportsCapability(workspaceComputerId, instanceId, RUNTIME_CAPABILITY.agentRuntimeTest)) {
+    if (!this.#registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.agentRuntimeTest)) {
       return failed("capability_missing");
     }
-    if (this.#computers.has(workspaceComputerId) || this.#pending.size >= this.#maxPending) {
+    if (this.#computers.has(computerId) || this.#pending.size >= this.#maxPending) {
       return failed("busy");
     }
 
@@ -109,10 +109,10 @@ export class AgentRuntimeTestOwner {
       requestId,
       resolve: resolvePromise,
       timer,
-      workspaceComputerId,
+      computerId,
     };
     this.#pending.set(requestId, pending);
-    this.#computers.add(workspaceComputerId);
+    this.#computers.add(computerId);
 
     const onAbort = () => {
       this.#finish(requestId, failed("cancelled"), true);
@@ -122,7 +122,7 @@ export class AgentRuntimeTestOwner {
       if (input.signal?.aborted) {
         onAbort();
       } else {
-        await this.#registry.send(workspaceComputerId, instanceId, request);
+        await this.#registry.send(computerId, instanceId, request);
       }
     } catch {
       this.#finish(requestId, failed("computer_unavailable"), false);
@@ -143,7 +143,7 @@ export class AgentRuntimeTestOwner {
   async #complete(frame: AgentRuntimeTestResultFrame, context: RuntimeBusinessContext): Promise<undefined> {
     const pending = this.#pending.get(frame.requestId);
     if (!pending) return undefined;
-    if (pending.workspaceComputerId !== context.workspaceComputerId || pending.instanceId !== context.instanceId) {
+    if (pending.computerId !== context.computerId || pending.instanceId !== context.instanceId) {
       return undefined;
     }
     const result: AgentRuntimeTestResponse =
@@ -156,12 +156,12 @@ export class AgentRuntimeTestOwner {
     const pending = this.#pending.get(requestId);
     if (!pending) return;
     this.#pending.delete(requestId);
-    this.#computers.delete(pending.workspaceComputerId);
+    this.#computers.delete(pending.computerId);
     clearTimeout(pending.timer);
     pending.resolve(result);
     if (cancelDaemon) {
       const cancel: AgentRuntimeTestCancelFrame = { type: "agent-runtime:test:cancel", requestId };
-      void this.#registry.send(pending.workspaceComputerId, pending.instanceId, cancel).catch(() => undefined);
+      void this.#registry.send(pending.computerId, pending.instanceId, cancel).catch(() => undefined);
     }
   }
 }

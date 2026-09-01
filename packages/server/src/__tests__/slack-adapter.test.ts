@@ -499,7 +499,6 @@ describe("Slack installed-binding adapter", () => {
           findSlackInstallationIngress: vi.fn().mockResolvedValue({
             installationId: crypto.randomUUID(),
             generation: 1,
-            workspaceId: crypto.randomUUID(),
             appId: "A1",
             teamId: "T1",
             botUserId: "U1",

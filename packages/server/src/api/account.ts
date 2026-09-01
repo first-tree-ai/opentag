@@ -1,23 +1,25 @@
 import {
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
+  AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
   type ChannelName,
-  CompleteWorkspaceSetupRequestSchema,
+  CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
   HTTP_PATHS,
+  type InternalNavigationVisibility,
+  InternalNavigationVisibilitySchema,
+  ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
   ListTasksResponseSchema,
-  ListWorkspaceComputersResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
   TASK_BY_ID_TEMPLATE,
   TaskDetailSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
-  WorkspaceSetupCompletionSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -29,8 +31,8 @@ import {
   type ComputerService,
   type MachineAuthService,
 } from "../services/computers/index.js";
+import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
-import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const TaskListQuerySchema = z
@@ -63,8 +65,10 @@ export interface AccountRoutesOptions {
    * like one that never registered them.
    */
   setupResetService?: AccountSetupResetService;
+  /** Process-wide staging preview state; absent everywhere the internal tools are absent. */
+  internalNavigationService?: InternalNavigationVisibilityService | undefined;
   taskService?: TaskService;
-  workspaceSetupService?: WorkspaceSetupService;
+  accountSetupService?: AccountSetupService;
 }
 
 /** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
@@ -75,6 +79,11 @@ export interface AccountSetupResetService {
   resetOnboarding(accountId: string): Promise<void>;
 }
 
+export interface InternalNavigationVisibilityService {
+  read(): InternalNavigationVisibility;
+  update(value: InternalNavigationVisibility): InternalNavigationVisibility;
+}
+
 function accountId(request: FastifyRequest): string {
   const value = request.authContext?.me.user.id;
   if (!value) throw new Error("Authenticated Account context is missing");
@@ -82,8 +91,8 @@ function accountId(request: FastifyRequest): string {
 }
 
 /**
- * Account-native management collections. Ownership comes only from the authenticated Account: these routes
- * accept neither a management `workspaceId` nor a client-selected `accountId`.
+ * Account-native management collections. Ownership comes only from the authenticated Account; clients
+ * cannot select another authority scope.
  */
 export function registerAccountRoutes(
   app: FastifyInstance,
@@ -141,7 +150,7 @@ export function registerAccountRoutes(
       return reply
         .code(200)
         .send(
-          ListWorkspaceComputersResponseSchema.parse(
+          ListAccountComputersResponseSchema.parse(
             await computerService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
           ),
         );
@@ -181,17 +190,15 @@ export function registerAccountRoutes(
     });
   }
 
-  if (options.workspaceSetupService) {
-    const workspaceSetupService = options.workspaceSetupService;
+  if (options.accountSetupService) {
+    const accountSetupService = options.accountSetupService;
 
     app.post(HTTP_PATHS.accountSetupComplete, { preHandler }, async (request, reply) => {
-      const { agentId } = parseRequest(CompleteWorkspaceSetupRequestSchema, request.body);
+      const { agentId } = parseRequest(CompleteAccountSetupRequestSchema, request.body);
       return reply
         .code(200)
         .send(
-          WorkspaceSetupCompletionSchema.parse(
-            await workspaceSetupService.completeForAccount(accountId(request), agentId),
-          ),
+          AccountSetupCompletionSchema.parse(await accountSetupService.completeForAccount(accountId(request), agentId)),
         );
     });
   }
@@ -224,6 +231,25 @@ export function registerAccountRoutes(
       if (mode === "all") await setupResetService.resetOnboarding(account);
       else await setupResetService.reboard(account);
       return reply.code(204).send();
+    });
+  }
+
+  if (options.internalNavigationService) {
+    const internalNavigationService = options.internalNavigationService;
+
+    app.get(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (_request, reply) =>
+      reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.read())),
+    );
+
+    app.put(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (request, reply) => {
+      const input = parseRequest(InternalNavigationVisibilitySchema, request.body);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.update(input)));
     });
   }
 }

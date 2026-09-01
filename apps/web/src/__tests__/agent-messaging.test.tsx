@@ -181,7 +181,7 @@ describe("OpenTag Web App Shell", () => {
     expect(agentReads).toBe(2);
 
     releaseAgentRead();
-    expect(await screen.findByText("Computer offline")).toBeTruthy();
+    expect(await screen.findByText("Offline")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open computer setup" })).toBeTruthy();
   });
 
@@ -334,7 +334,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Connect Lark" }));
     const dialog = await screen.findByRole("dialog", { name: "Connect Lark" });
-    expect(within(dialog).getByText(/Scan the QR code in Lark/)).toBeTruthy();
+    expect(within(dialog).getByText(/Scan with Lark on your phone/)).toBeTruthy();
     expect(await screen.findByRole("img", { name: "Scan this QR code in Lark" })).toBeTruthy();
     await waitFor(() =>
       expect(

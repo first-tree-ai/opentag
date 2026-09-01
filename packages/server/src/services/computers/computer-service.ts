@@ -1,7 +1,7 @@
-import type { ComputerRegisterFrame, ListWorkspaceComputersResponse, MeResponse } from "@opentag/shared";
+import type { ComputerRegisterFrame, ListAccountComputersResponse, MeResponse } from "@opentag/shared";
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { accountComputers, agents, computerCredentials } from "../../db/schema/index.js";
+import { agents, computerCredentials, computers } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
@@ -37,27 +37,23 @@ export class ComputerService {
   async listAccountComputers(
     accountId: string,
     includeProviderReadiness = false,
-  ): Promise<ListWorkspaceComputersResponse> {
+  ): Promise<ListAccountComputersResponse> {
     const rows = await this.#database
-      .select({ computer: accountComputers, agentId: agents.id })
-      .from(accountComputers)
+      .select({ computer: computers, agentId: agents.id })
+      .from(computers)
       .innerJoin(
         computerCredentials,
-        and(eq(computerCredentials.computerId, accountComputers.id), isNull(computerCredentials.revokedAt)),
+        and(eq(computerCredentials.computerId, computers.id), isNull(computerCredentials.revokedAt)),
       )
       .leftJoin(
         agents,
-        and(
-          eq(agents.computerId, accountComputers.id),
-          eq(agents.createdByUserId, accountId),
-          ne(agents.status, "deleted"),
-        ),
+        and(eq(agents.computerId, computers.id), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")),
       )
-      .where(eq(accountComputers.ownerAccountId, accountId))
-      .orderBy(asc(accountComputers.displayName), asc(accountComputers.id), asc(agents.id));
+      .where(eq(computers.ownerAccountId, accountId))
+      .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
     const observedAt = this.#now();
     const cutoff = observedAt.getTime() - this.#presenceTimeoutMs;
-    const byId = new Map<string, ListWorkspaceComputersResponse["computers"][number]>();
+    const byId = new Map<string, ListAccountComputersResponse["computers"][number]>();
     for (const row of rows) {
       const existing = byId.get(row.computer.id);
       if (existing) {
@@ -92,7 +88,7 @@ export class ComputerService {
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
         lastSeenAt: row.computer.lastSeenAt?.toISOString() ?? null,
         observedAt: observedAt.toISOString(),
-        enrolledAt: row.computer.createdAt.toISOString(),
+        createdAt: row.computer.createdAt.toISOString(),
         agentIds: row.agentId ? [row.agentId] : [],
       });
     }
@@ -101,7 +97,7 @@ export class ComputerService {
 
   async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
     rejectUnsupportedClientVersion(frame.clientVersion);
-    if (frame.computerId !== context.computerId) {
+    if (frame.installationId !== context.installationId) {
       throw new AuthServiceError(
         "COMPUTER_IDENTITY_CONFLICT",
         "deterministic",
@@ -123,15 +119,10 @@ export class ComputerService {
         updatedAt: now,
       };
       const updated = await transaction
-        .update(accountComputers)
+        .update(computers)
         .set(observation)
-        .where(
-          and(
-            eq(accountComputers.id, context.workspaceComputerId),
-            eq(accountComputers.currentInstallationId, context.computerId),
-          ),
-        )
-        .returning({ id: accountComputers.id });
+        .where(and(eq(computers.id, context.computerId), eq(computers.currentInstallationId, context.installationId)))
+        .returning({ id: computers.id });
       if (updated.length !== 1) throw unavailableComputer();
     });
   }
@@ -141,16 +132,16 @@ export class ComputerService {
     return this.#database.transaction(async (transaction) => {
       await this.#lockActiveCredential(transaction, context);
       const updated = await transaction
-        .update(accountComputers)
+        .update(computers)
         .set({ lastSeenAt: now, updatedAt: now })
         .where(
           and(
-            eq(accountComputers.id, context.workspaceComputerId),
-            eq(accountComputers.currentInstallationId, context.computerId),
-            eq(accountComputers.currentInstanceId, instanceId),
+            eq(computers.id, context.computerId),
+            eq(computers.currentInstallationId, context.installationId),
+            eq(computers.currentInstanceId, instanceId),
           ),
         )
-        .returning({ id: accountComputers.id });
+        .returning({ id: computers.id });
       return updated.length === 1;
     });
   }
@@ -159,38 +150,38 @@ export class ComputerService {
     await this.#database.transaction((transaction) => this.#lockActiveCredential(transaction, context));
   }
 
-  async disconnect(workspaceComputerId: string, instanceId: string): Promise<boolean> {
+  async disconnect(computerId: string, instanceId: string): Promise<boolean> {
     const now = this.#now();
     const updated = await this.#database
-      .update(accountComputers)
+      .update(computers)
       .set({
         currentInstanceId: null,
         connectedAt: null,
         lastSeenAt: now,
         updatedAt: now,
       })
-      .where(and(eq(accountComputers.id, workspaceComputerId), eq(accountComputers.currentInstanceId, instanceId)))
-      .returning({ id: accountComputers.id });
+      .where(and(eq(computers.id, computerId), eq(computers.currentInstanceId, instanceId)))
+      .returning({ id: computers.id });
     return updated.length === 1;
   }
 
   async #lockActiveCredential(transaction: DatabaseTransaction, context: ComputerAuthContext): Promise<void> {
-    const [accountComputer] = await transaction
-      .select({ id: accountComputers.id })
-      .from(accountComputers)
-      .where(eq(accountComputers.id, context.workspaceComputerId))
+    const [computer] = await transaction
+      .select({ id: computers.id })
+      .from(computers)
+      .where(eq(computers.id, context.computerId))
       .limit(1)
       .for("update");
-    if (!accountComputer) throw unavailableComputer();
+    if (!computer) throw unavailableComputer();
     const [active] = await transaction
       .select({ id: computerCredentials.id })
       .from(computerCredentials)
-      .innerJoin(accountComputers, eq(accountComputers.id, computerCredentials.computerId))
+      .innerJoin(computers, eq(computers.id, computerCredentials.computerId))
       .where(
         and(
           eq(computerCredentials.id, context.credentialId),
-          eq(accountComputers.id, context.workspaceComputerId),
-          eq(accountComputers.currentInstallationId, context.computerId),
+          eq(computers.id, context.computerId),
+          eq(computers.currentInstallationId, context.installationId),
           isNull(computerCredentials.revokedAt),
         ),
       )
@@ -203,7 +194,7 @@ function unavailableComputer(): AuthServiceError {
   return new AuthServiceError(
     "COMPUTER_NOT_REGISTERED",
     "deterministic",
-    "The Computer enrollment credential is unavailable",
+    "The Computer credential is no longer active",
     409,
   );
 }

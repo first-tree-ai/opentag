@@ -169,9 +169,9 @@ export function buttonClassName({
   return classes(
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
     variant === "primary" &&
-      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring)]",
+      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring)]",
     variant === "danger" &&
-      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-ring)]",
+      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-danger-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-danger-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-ring)]",
     className,
   );
 }
@@ -282,7 +282,7 @@ export function SettingsRow({
 }) {
   return (
     <div
-      className="grid gap-3 p-4 @min-[44rem]/workspace:grid-cols-[2fr_1fr] @min-[44rem]/workspace:items-center"
+      className="grid gap-3 p-4 @min-[44rem]/content:grid-cols-[2fr_1fr] @min-[44rem]/content:items-center"
       data-ui="settings-row"
     >
       <div className="grid gap-1">
@@ -475,6 +475,7 @@ type SelectControlChangeProps = {
 
 export type KumoSelectControlProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, "onChange" | "size" | "value"> &
   SelectControlChangeProps & {
+    container?: KumoSelectProps["container"];
     size?: KumoSelectProps["size"];
     value?: string;
     onValueChange?: (value: string) => void;
@@ -537,6 +538,7 @@ export function Dialog({
   closeLabel,
   description,
   eyebrow,
+  initialFocusRef,
   onClose,
   open = true,
   returnFocusRef,
@@ -549,6 +551,7 @@ export function Dialog({
   closeLabel?: string;
   description?: ReactNode;
   eyebrow?: ReactNode;
+  initialFocusRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
   open?: boolean;
   returnFocusRef?: RefObject<HTMLElement | null>;
@@ -556,12 +559,16 @@ export function Dialog({
   title: ReactNode;
 }) {
   const id = useId();
-  const closeRef = useRef<HTMLButtonElement>(null);
+  const headingRef = useRef<HTMLDivElement>(null);
+  const wasOpenRef = useRef(open);
   useEffect(() => {
-    if (open) closeRef.current?.focus();
-  }, [open]);
+    if (!open) return;
+    const timer = window.setTimeout(() => (initialFocusRef?.current ?? headingRef.current)?.focus());
+    return () => window.clearTimeout(timer);
+  }, [initialFocusRef, open]);
   useEffect(() => {
-    if (!open) returnFocusRef?.current?.focus();
+    if (wasOpenRef.current && !open) returnFocusRef?.current?.focus();
+    wasOpenRef.current = open;
   }, [open, returnFocusRef]);
   return (
     <KumoDialog.Root
@@ -574,7 +581,7 @@ export function Dialog({
     >
       <KumoDialog className={classes("max-h-[min(90vh,42rem)] overflow-y-auto p-6", className)}>
         <header className="mb-4 flex items-start justify-between gap-4">
-          <div className="grid gap-1">
+          <div className="grid gap-1 outline-none" data-ui="dialog-heading" ref={headingRef} tabIndex={-1}>
             {eyebrow ? <span className="text-xs font-medium text-kumo-subtle">{eyebrow}</span> : null}
             <KumoDialog.Title id={`${id}-title`} className="text-lg font-semibold text-kumo-strong">
               {title}
@@ -586,8 +593,8 @@ export function Dialog({
             }
             className="shrink-0"
             disabled={busy}
-            ref={closeRef}
             shape="square"
+            size="compact"
             variant="ghost"
             onClick={onClose}
           >

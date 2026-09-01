@@ -27,6 +27,12 @@ fix: classify client connection failures
 Pull requests should describe the change, its validation, any breaking behavior, and important non-goals. Keep unrelated
 refactors out of the same pull request. CI must pass before merge.
 
+Open pull requests are swept daily by the `Stale Pull Requests` workflow. A pull request with no activity for five days
+gets a comment naming its author and reviewers; if it is still untouched after seven days, and at least two days after
+that comment, the bot closes it. Pushing a commit, leaving a comment, or submitting a review resets the clock. Drafts are
+never swept, and the `keep-open` label exempts a pull request indefinitely. Closing is reversible: the branch survives
+and anyone with write access can reopen the pull request.
+
 All code, code comments, GitHub templates, and technical documentation use English as the canonical source. When a
 canonical document has a Chinese mirror, update both in the same pull request and refresh the mirror's sync date.
 

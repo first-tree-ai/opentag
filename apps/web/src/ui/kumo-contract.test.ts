@@ -1,16 +1,101 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "@babel/parser";
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceFiles = readdirSync(root, { recursive: true, withFileTypes: true })
-  .filter((entry) => entry.isFile() && entry.name.endsWith(".tsx") && !entry.name.includes(".test."))
+const moduleSourceFiles = readdirSync(root, { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile() && /\.tsx?$/.test(entry.name) && !entry.name.includes(".test."))
   .map((entry) => resolve(entry.parentPath, entry.name));
+const sourceFiles = moduleSourceFiles.filter((file) => file.endsWith(".tsx"));
 const source = sourceFiles.map((file) => readFileSync(resolve(root, file), "utf8")).join("\n");
 const appCss = readFileSync(resolve(root, "app.css"), "utf8");
 const main = readFileSync(resolve(root, "main.tsx"), "utf8");
 const viteConfig = readFileSync(resolve(root, "..", "vite.config.ts"), "utf8");
+const productModules = moduleSourceFiles
+  .map((file) => {
+    const content = readFileSync(file, "utf8");
+    const path = sourcePath(file);
+    return { content, imports: moduleSpecifiers(content, path), path };
+  })
+  .filter((entry) => !entry.path.startsWith("__tests__/"));
+const stylesheets = readdirSync(root, { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".css"))
+  .map((entry) => {
+    const file = resolve(entry.parentPath, entry.name);
+    return { content: readFileSync(file, "utf8"), path: sourcePath(file) };
+  });
+
+function sourcePath(file: string): string {
+  return relative(root, file).replaceAll("\\", "/");
+}
+
+function moduleSpecifiers(content: string, path = "contract-fixture.tsx"): string[] {
+  const syntax = parse(content, {
+    createImportExpressions: true,
+    plugins: ["typescript", "jsx"],
+    sourceFilename: path,
+    sourceType: "module",
+  });
+  const specifiers: string[] = [];
+
+  walkSyntax(syntax, (node) => {
+    if (
+      node.type === "ImportDeclaration" ||
+      node.type === "ExportNamedDeclaration" ||
+      node.type === "ExportAllDeclaration" ||
+      node.type === "ImportExpression"
+    ) {
+      const specifier = stringNodeValue(node.source);
+      if (specifier) specifiers.push(specifier);
+    }
+  });
+
+  return specifiers;
+}
+
+function walkSyntax(value: unknown, visit: (node: Record<string, unknown>) => void): void {
+  if (Array.isArray(value)) {
+    for (const item of value) walkSyntax(item, visit);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const node = value as Record<string, unknown>;
+  if (typeof node.type === "string") visit(node);
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "loc" || key === "extra") continue;
+    walkSyntax(child, visit);
+  }
+}
+
+function stringNodeValue(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = (value as Record<string, unknown>).value;
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
+function stylesheetImportSpecifiers(content: string, path = "contract-fixture.css"): string[] {
+  const specifiers: string[] = [];
+  postcss.parse(content, { from: path }).walkAtRules("import", (atRule) => {
+    const match = atRule.params.match(/^\s*(?:url\(\s*)?["']([^"']+)["']|^\s*url\(\s*([^\s)]+)\s*\)|^\s*([^\s;]+)/);
+    const specifier = match?.[1] ?? match?.[2] ?? match?.[3];
+    specifiers.push(specifier ?? `<unresolved: ${atRule.params}>`);
+  });
+  return specifiers;
+}
+
+function isStylesheetSpecifier(specifier: string): boolean {
+  return (specifier.split(/[?#]/, 1)[0] ?? "").endsWith(".css");
+}
+
+function hasRawColorLiteral(content: string): boolean {
+  const hex = /#(?:[\da-f]{8}|[\da-f]{6}|[\da-f]{4}|[\da-f]{3})(?![\da-f])/i;
+  const functional = /(?:^|[^\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*[^)]/i;
+  return hex.test(content) || functional.test(content);
+}
 
 describe("Kumo integration contract", () => {
   it("compiles application and Kumo utilities through Tailwind", () => {
@@ -51,12 +136,75 @@ describe("Kumo integration contract", () => {
     expect(source).not.toMatch(/data-kumo-component|kumo-select/);
   });
 
+  it("keeps direct Kumo imports behind the approved product seams", () => {
+    const violations = productModules
+      .filter(({ imports }) => imports.some((specifier) => /^@cloudflare\/kumo(?:\/|$)/.test(specifier)))
+      .map(({ path }) => path)
+      .filter((path) => path !== "app.tsx" && path !== "ui/design-system.tsx" && !path.startsWith("components/kumo/"));
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps module-owned stylesheet imports at reviewed seams", () => {
+    const allowedImports = new Set([
+      "main.tsx -> ./app.css",
+      "onboarding-v2/page.tsx -> ./onboarding-v2.css",
+      "setup/command-block.tsx -> ./setup.css",
+      "setup/components.tsx -> ./setup.css",
+      "app.css -> @fontsource/dm-sans/400.css",
+      "app.css -> @fontsource/dm-sans/500.css",
+      "app.css -> @fontsource/dm-sans/600.css",
+      "app.css -> @fontsource/sora/600.css",
+      "app.css -> @fontsource/sora/700.css",
+      "app.css -> @cloudflare/kumo/styles/tailwind",
+      "app.css -> tailwindcss",
+      "app.css -> ./ui/kumo-theme.css",
+      "app.css -> ./ui/typography.css",
+    ]);
+    const moduleImports = productModules.flatMap(({ imports, path }) =>
+      imports.filter(isStylesheetSpecifier).map((specifier) => `${path} -> ${specifier}`),
+    );
+    const cssImports = stylesheets.flatMap(({ content, path }) =>
+      stylesheetImportSpecifiers(content, path).map((specifier) => `${path} -> ${specifier}`),
+    );
+    const violations = [...moduleImports, ...cssImports].filter((entry) => !allowedImports.has(entry));
+
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps raw colors at the theme seam or an explicitly reviewed module stylesheet", () => {
+    const allowedFiles = new Set(["app.css", "setup/setup.css", "ui/kumo-theme.css", "ui/kumo-theme.tokens.ts"]);
+    const violations = [...productModules, ...stylesheets]
+      .filter(({ content }) => hasRawColorLiteral(content))
+      .map(({ path }) => path)
+      .filter((path) => !allowedFiles.has(path));
+
+    expect(violations).toEqual([]);
+  });
+
+  it("recognizes alternate module, stylesheet, and color syntax before enforcing seams", () => {
+    expect(
+      moduleSpecifiers(`
+        export type { ButtonProps } from "@cloudflare/kumo";
+        const loadKumo = () => import("@cloudflare/kumo");
+        import styles from "./feature.css?inline";
+      `),
+    ).toEqual(["@cloudflare/kumo", "@cloudflare/kumo", "./feature.css?inline"]);
+    expect(stylesheetImportSpecifiers('@import url("./feature.css") layer(feature);')).toEqual(["./feature.css"]);
+    expect(isStylesheetSpecifier("./feature.css?inline")).toBe(true);
+    expect(hasRawColorLiteral("color: rgb(1 2 3)")).toBe(true);
+    expect(hasRawColorLiteral("color: oklch(50% .2 120)")).toBe(true);
+    expect(hasRawColorLiteral("color: var(--text-color); background: color-mix(in srgb, var(--a), var(--b))")).toBe(
+      false,
+    );
+  });
+
   it("uses the Kumo compound sidebar layout for the application shell", () => {
     const shell = ["app-shell.tsx", "agent-shell.tsx", "shell-main.tsx"]
       .map((file) => readFileSync(resolve(root, "features/shell", file), "utf8"))
       .join("\n");
     expect(shell).toContain('<Sidebar.Header className="border-b-0">');
-    expect(shell).toContain("<Sidebar.Content>");
+    expect(shell).toMatch(/<Sidebar\.Content(?:\s|>)/);
     expect(shell).toContain("<Sidebar.Menu>");
     expect(shell).toContain("<Sidebar.MenuButton");
     expect(shell).toContain("<Sidebar.Footer>");
@@ -78,7 +226,7 @@ describe("Kumo integration contract", () => {
     expect(shell).toContain('className="flex min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas md:ml-2"');
     expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");
     expect(shell).toContain(
-      'className="@container/workspace mx-auto w-full min-w-0 max-w-5xl" data-ui="workspace-page-frame"',
+      'className="@container/content mx-auto w-full min-w-0 max-w-5xl" data-ui="content-page-frame"',
     );
     expect(shell).not.toContain('data-ui="sidebar-content"');
   });

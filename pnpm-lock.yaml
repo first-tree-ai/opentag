@@ -101,6 +101,9 @@ importers:
         specifier: 4.0.1
         version: 4.0.1
     devDependencies:
+      '@babel/parser':
+        specifier: 7.29.8
+        version: 7.29.8
       '@inlang/paraglide-js':
         specifier: 2.25.0
         version: 2.25.0(typescript@7.0.2)(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0))

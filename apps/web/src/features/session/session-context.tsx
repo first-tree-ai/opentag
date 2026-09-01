@@ -4,7 +4,7 @@ import * as m from "../../paraglide/messages.js";
 
 /**
  * Authentication proves the Account identity and nothing more. Resource pages use the same Account
- * session; they no longer depend on a management Workspace membership.
+ * session and derive management authority from Account ownership.
  */
 export interface AccountSession {
   me: MeResponse;

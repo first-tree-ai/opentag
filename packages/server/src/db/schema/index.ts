@@ -7,7 +7,6 @@ export * from "./computers.js";
 export * from "./feishu-inbound-receipts.js";
 export * from "./im-bindings.js";
 export * from "./im-messages.js";
-export * from "./invitations.js";
 export * from "./runtime-durable-work.js";
 export * from "./session-cli-proofs.js";
 export * from "./session-messages.js";

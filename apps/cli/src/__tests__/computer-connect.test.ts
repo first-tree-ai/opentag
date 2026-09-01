@@ -128,7 +128,7 @@ describe("computer connect", () => {
             connectedAt: "2026-08-19T00:00:00.000Z",
             lastSeenAt: "2026-08-19T00:00:00.000Z",
             observedAt: "2026-08-19T00:00:00.000Z",
-            enrolledAt: "2026-08-19T00:00:00.000Z",
+            createdAt: "2026-08-19T00:00:00.000Z",
             agentIds: [],
             platform: "linux",
           },
@@ -186,7 +186,7 @@ describe("computer connect", () => {
           connectedAt: "2026-08-19T00:00:00.000Z",
           lastSeenAt: "2026-08-19T00:00:00.000Z",
           observedAt: "2026-08-19T00:00:00.000Z",
-          enrolledAt: "2026-08-19T00:00:00.000Z",
+          createdAt: "2026-08-19T00:00:00.000Z",
           agentIds: [],
           platform: "linux" as const,
         },
@@ -237,9 +237,9 @@ describe("computer connect", () => {
     await writeCredentialsAtomically(accountCredentials, home);
     const firstComputerId = crypto.randomUUID();
     const secondComputerId = crypto.randomUUID();
-    const exchangeComputerConnectCode = vi.fn(async (input: { code: string; computerId: string }) => ({
-      workspaceComputerId: input.code === "first-code" ? firstComputerId : secondComputerId,
-      computerId: input.computerId,
+    const exchangeComputerConnectCode = vi.fn(async (input: { code: string; installationId: string }) => ({
+      computerId: input.code === "first-code" ? firstComputerId : secondComputerId,
+      installationId: input.installationId,
       machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
     }));
 
@@ -262,8 +262,8 @@ describe("computer connect", () => {
 
     expect(await readCredentials(home)).toEqual(accountCredentials);
     const stored = await readMachineCredentials(home);
-    expect(stored?.computer.workspaceComputerId).toBe(secondComputerId);
-    const exchangedComputerIds = exchangeComputerConnectCode.mock.calls.map(([input]) => input.computerId);
+    expect(stored?.computer.computerId).toBe(secondComputerId);
+    const exchangedComputerIds = exchangeComputerConnectCode.mock.calls.map(([input]) => input.installationId);
     expect(new Set(exchangedComputerIds).size).toBe(2);
     expect(JSON.stringify(stored)).not.toContain("account-access");
     expect(JSON.stringify(stored)).not.toContain("account-refresh");
@@ -290,10 +290,9 @@ describe("computer connect", () => {
 
   it("does not replace the current local binding when code exchange fails", async () => {
     const home = await temporaryHome();
-    const firstExchange = vi.fn(async (input: { computerId: string }) => ({
-      workspaceComputerId: crypto.randomUUID(),
-      workspaceId: crypto.randomUUID(),
-      computerId: input.computerId,
+    const firstExchange = vi.fn(async (input: { installationId: string }) => ({
+      computerId: crypto.randomUUID(),
+      installationId: input.installationId,
       machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
     }));
     await runComputerConnect({
@@ -323,10 +322,9 @@ describe("computer connect", () => {
   it("restarts an active daemon after storing a machine credential without requiring Account login", async () => {
     const home = await temporaryHome();
     const manager = managerFixture();
-    const exchangeComputerConnectCode = vi.fn(async (input: { computerId: string }) => ({
-      workspaceComputerId: crypto.randomUUID(),
-      workspaceId: crypto.randomUUID(),
-      computerId: input.computerId,
+    const exchangeComputerConnectCode = vi.fn(async (input: { installationId: string }) => ({
+      computerId: crypto.randomUUID(),
+      installationId: input.installationId,
       machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
     }));
 
@@ -341,7 +339,7 @@ describe("computer connect", () => {
     ).resolves.toMatchObject({ service: { state: "active" } });
 
     expect(await readCredentials(home)).toBeUndefined();
-    expect(await readMachineCredentials(home)).toMatchObject({ computer: expect.any(Object), version: 2 });
+    expect(await readMachineCredentials(home)).toMatchObject({ computer: expect.any(Object), version: 3 });
     expect(manager.status).toHaveBeenCalledOnce();
     expect(manager.restart).toHaveBeenCalledOnce();
     expect(manager.installAndStart).not.toHaveBeenCalled();
@@ -351,10 +349,9 @@ describe("computer connect", () => {
     const home = await temporaryHome();
     const manager = managerFixture();
     manager.status = vi.fn(async () => ({ ...(await managerFixture().status()), state: "inactive" as const }));
-    const exchangeComputerConnectCode = vi.fn(async (input: { computerId: string }) => ({
-      workspaceComputerId: crypto.randomUUID(),
-      workspaceId: crypto.randomUUID(),
-      computerId: input.computerId,
+    const exchangeComputerConnectCode = vi.fn(async (input: { installationId: string }) => ({
+      computerId: crypto.randomUUID(),
+      installationId: input.installationId,
       machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
     }));
 

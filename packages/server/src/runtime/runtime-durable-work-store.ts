@@ -42,26 +42,26 @@ export class PostgresRuntimeDurableWorkStore {
     );
   }
 
-  async list(workspaceComputerId: string, kind: RuntimeDurableWorkKind): Promise<RuntimeDurableWorkRecord[]> {
+  async list(computerId: string, kind: RuntimeDurableWorkKind): Promise<RuntimeDurableWorkRecord[]> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
-      await this.#prune(transaction, workspaceComputerId, kind, now);
+      await this.#prune(transaction, computerId, kind, now);
       const rows = await transaction
         .select()
         .from(runtimeDurableWork)
-        .where(and(eq(runtimeDurableWork.workspaceComputerId, workspaceComputerId), eq(runtimeDurableWork.kind, kind)))
+        .where(and(eq(runtimeDurableWork.computerId, computerId), eq(runtimeDurableWork.kind, kind)))
         .orderBy(asc(runtimeDurableWork.updatedAt), asc(runtimeDurableWork.recordKey));
       return rows.map((row) => rowToRecord(row));
     });
   }
 
-  async write(workspaceComputerId: string, input: RuntimeDurableWorkRecord): Promise<void> {
+  async write(computerId: string, input: RuntimeDurableWorkRecord): Promise<void> {
     const record = RuntimeDurableWorkRecordSchema.parse(input);
     validatePayload(record);
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
       const values = {
-        workspaceComputerId,
+        computerId,
         kind: record.kind,
         recordKey: record.key,
         payload: record.payload,
@@ -76,14 +76,14 @@ export class PostgresRuntimeDurableWorkStore {
         .insert(runtimeDurableWork)
         .values(values)
         .onConflictDoNothing({
-          target: [runtimeDurableWork.workspaceComputerId, runtimeDurableWork.kind, runtimeDurableWork.recordKey],
+          target: [runtimeDurableWork.computerId, runtimeDurableWork.kind, runtimeDurableWork.recordKey],
         });
       const [existing] = await transaction
         .select()
         .from(runtimeDurableWork)
         .where(
           and(
-            eq(runtimeDurableWork.workspaceComputerId, workspaceComputerId),
+            eq(runtimeDurableWork.computerId, computerId),
             eq(runtimeDurableWork.kind, record.kind),
             eq(runtimeDurableWork.recordKey, record.key),
           ),
@@ -95,13 +95,13 @@ export class PostgresRuntimeDurableWorkStore {
       }
       if (existing)
         await transaction.update(runtimeDurableWork).set(values).where(eq(runtimeDurableWork.id, existing.id));
-      await this.#prune(transaction, workspaceComputerId, record.kind, now);
+      await this.#prune(transaction, computerId, record.kind, now);
     });
   }
 
   async #prune(
     transaction: DatabaseTransaction,
-    workspaceComputerId: string,
+    computerId: string,
     kind: RuntimeDurableWorkKind,
     now: number,
   ): Promise<void> {
@@ -110,7 +110,7 @@ export class PostgresRuntimeDurableWorkStore {
       .delete(runtimeDurableWork)
       .where(
         and(
-          eq(runtimeDurableWork.workspaceComputerId, workspaceComputerId),
+          eq(runtimeDurableWork.computerId, computerId),
           eq(runtimeDurableWork.kind, kind),
           lt(runtimeDurableWork.updatedAt, cutoff),
         ),
@@ -120,7 +120,7 @@ export class PostgresRuntimeDurableWorkStore {
       .from(runtimeDurableWork)
       .where(
         and(
-          eq(runtimeDurableWork.workspaceComputerId, workspaceComputerId),
+          eq(runtimeDurableWork.computerId, computerId),
           eq(runtimeDurableWork.kind, kind),
           inArray(runtimeDurableWork.status, ["succeeded", "failed", "dead-letter"]),
         ),

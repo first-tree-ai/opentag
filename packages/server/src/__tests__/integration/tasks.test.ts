@@ -2,21 +2,12 @@ import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
-import {
-  accountComputers,
-  agents,
-  computers,
-  imBindings,
-  imMessageDeliveries,
-  imMessages,
-  sessions,
-  workspaceComputers,
-} from "../../db/schema/index.js";
+import { agents, computers, imBindings, imMessageDeliveries, imMessages, sessions } from "../../db/schema/index.js";
 import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
 import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
 import { TaskQueryError, TaskService } from "../../services/tasks/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -35,40 +26,24 @@ async function fixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
-  const [computer] = await client.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await client.database
-    .insert(workspaceComputers)
+  const [computer] = await client.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "workstation",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await client.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   const [agent] = await client.database
     .insert(agents)
     .values({
-      workspaceId: bootstrap.workspaceId,
       createdByUserId: bootstrap.userId,
-      workspaceComputerId: workspaceComputer.id,
-      computerId: workspaceComputer.id,
+      computerId: computer.id,
       name: "atlas",
       displayName: "Atlas",
       runtimeProvider: "codex",
@@ -368,7 +343,7 @@ describe("Task debug queries", () => {
     }
   });
 
-  it("isolates Workspace data and rejects malformed cursors", async () => {
+  it("isolates Account data and rejects malformed cursors", async () => {
     const value = await fixture();
     try {
       await expect(value.service.list(crypto.randomUUID(), { limit: 50 })).resolves.toEqual({

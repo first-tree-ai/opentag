@@ -190,7 +190,7 @@ describe("Agent Runtime test owner", () => {
       .businessOptions()
       .handle(
         { type: "agent-runtime:test:result", requestId, status: "passed" },
-        { ...fixture.context, workspaceComputerId: randomUUID() },
+        { ...fixture.context, computerId: randomUUID() },
       );
     expect(fixture.owner.pendingCount()).toBe(1);
     await fixture.owner
@@ -208,8 +208,7 @@ describe("Agent Runtime test owner", () => {
     await failingRegistry.register(
       {
         computerId,
-        workspaceComputerId: computerId,
-        workspaceId: randomUUID(),
+        installationId: randomUUID(),
         instanceId,
         lastHeartbeatAt: 1,
         negotiatedCapabilities: { [RUNTIME_CAPABILITY.agentRuntimeTest]: 1 },
@@ -452,8 +451,7 @@ async function testOwnerFixture(options?: { maxPending?: number; ttlMs?: number 
   const owner = new AgentRuntimeTestOwner(registry, options);
   const context: RuntimeBusinessContext = {
     computerId: registered.computerId,
-    workspaceComputerId: registered.computerId,
-    workspaceId: registered.workspaceId,
+    installationId: registered.installationId,
     instanceId: registered.instanceId,
     signal: new AbortController().signal,
   };
@@ -466,13 +464,12 @@ async function registerComputer(
 ) {
   const computerId = randomUUID();
   const instanceId = randomUUID();
-  const workspaceId = randomUUID();
+  const installationId = randomUUID();
   const frames: unknown[] = [];
   await registry.register(
     {
       computerId,
-      workspaceComputerId: computerId,
-      workspaceId,
+      installationId,
       instanceId,
       lastHeartbeatAt: 1,
       negotiatedCapabilities: entry.negotiatedCapabilities,
@@ -488,5 +485,5 @@ async function registerComputer(
     },
     async () => undefined,
   );
-  return { computerId, frames, instanceId, workspaceId };
+  return { computerId, frames, instanceId, installationId };
 }

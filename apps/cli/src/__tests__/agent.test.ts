@@ -52,7 +52,7 @@ const computer = {
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:01.000Z",
   observedAt: "2026-08-19T00:00:01.000Z",
-  enrolledAt: "2026-08-19T00:00:00.000Z",
+  createdAt: "2026-08-19T00:00:00.000Z",
   agentIds: [],
 };
 const agent: AgentAdminConfig = {
@@ -298,9 +298,9 @@ describe("Agent CLI core", () => {
     expect(client.me).not.toHaveBeenCalled();
   });
 
-  it("resolves an enrolled Computer and rejects ambiguous or unknown choices", () => {
+  it("resolves an owned Computer and rejects ambiguous or unknown choices", () => {
     expect(selectComputer({ computers: [computer] })).toEqual(computer);
-    // Nothing enrolled is an answer, not a failure: the Agent is created and bound later.
+    // No connected Computer is an answer, not a failure: the Agent is created and bound later.
     expect(selectComputer({ computers: [] })).toBeUndefined();
     expect(() =>
       selectComputer({
@@ -308,10 +308,10 @@ describe("Agent CLI core", () => {
       }),
     ).toThrow("use --computer");
     expect(() => selectComputer({ computers: [computer] }, crypto.randomUUID())).toThrow(
-      "is not enrolled by this Account",
+      "is not owned by this Account",
     );
     expect(() => selectComputer({ computers: [computer] }, "75fe9af3-d1c6-472b-b78c-8a7ccf512750")).toThrow(
-      "is not enrolled by this Account",
+      "is not owned by this Account",
     );
   });
 
@@ -337,7 +337,7 @@ describe("Agent CLI core", () => {
     expect(formatAgentCreated(result)).toContain(agentId);
   });
 
-  it("creates an Agent with no Computer and names the command that binds one", async () => {
+  it("creates an Agent with no Computer and names the command that connects one", async () => {
     const client = api();
     client.listAccountComputers.mockResolvedValue({ computers: [] });
     client.createAgent.mockResolvedValue({ ...agent, computerId: null });
@@ -353,7 +353,7 @@ describe("Agent CLI core", () => {
       name: "code-reviewer",
       runtimeProvider: "codex",
     });
-    expect(result.warning).toContain("opentag agent bind");
+    expect(result.warning).toContain("opentag computer connect");
     expect(formatAgentCreated(result)).toContain("without a Computer");
   });
 
@@ -411,7 +411,6 @@ describe("Agent CLI core", () => {
     expect(client.listAgents).toHaveBeenCalledWith("access");
     expect(formatAgentList(response)).toContain("code-reviewer\t");
     expect(formatAgent(agent)).toContain(`revision\t1`);
-    expect(formatAgent(agent)).not.toContain("workspaceId");
     expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
     expect(formatAgentList(response)).toContain("all_message");
     expect(formatAgentList({ agents: [] })).toBe("No Agents registered");
@@ -520,8 +519,8 @@ describe("Agent CLI core", () => {
     const connect = computerCommand?.commands.find((command) => command.name() === "connect");
     expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
     expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
-    expect(connect?.description()).toBe("Enroll this Computer with a one-time code");
-    expect(bind?.description()).toBe("Bind an Agent to a Computer enrolled by this Account");
+    expect(connect?.description()).toBe("Connect this Computer with a one-time code");
+    expect(bind?.description()).toBe("Bind an Agent to a Computer owned by this Account");
     expect(bind?.options.map((option) => option.long)).toEqual(expect.arrayContaining(["--computer"]));
     expect(create?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining([
@@ -546,7 +545,7 @@ describe("Agent CLI core", () => {
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
     expect(create?.options.find((option) => option.long === "--computer")?.description).toBe(
-      "Computer enrolled by this Account",
+      "Computer owned by this Account",
     );
     expect(create?.options.find((option) => option.long === "--workspace")).toBeUndefined();
     expect(list?.options.find((option) => option.long === "--workspace")).toBeUndefined();

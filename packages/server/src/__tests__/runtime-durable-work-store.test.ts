@@ -5,7 +5,7 @@ import type {
   SessionMessageDeliveryRequest,
 } from "@opentag/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { accountComputers, computers, runtimeDurableWork, users, workspaces } from "../db/schema/index.js";
+import { computers, runtimeDurableWork, users } from "../db/schema/index.js";
 import {
   PostgresRuntimeDurableWorkStore,
   RuntimeDurableWorkConflictError,
@@ -14,7 +14,7 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
 
 describe("PostgresRuntimeDurableWorkStore", () => {
   let unit: UnitDatabase;
-  let workspaceComputerId: string;
+  let computerId: string;
 
   beforeAll(async () => {
     unit = await createUnitDatabase();
@@ -27,15 +27,12 @@ describe("PostgresRuntimeDurableWorkStore", () => {
   beforeEach(async () => {
     await unit.reset();
     const accountId = randomUUID();
-    workspaceComputerId = randomUUID();
+    computerId = randomUUID();
     await unit.database.insert(users).values({ id: accountId, email: `${accountId}@example.com`, displayName: "Test" });
-    const workspaceId = randomUUID();
-    await unit.database.insert(workspaces).values({ id: workspaceId, name: `test-${accountId}`, displayName: "Test" });
-    await unit.database.insert(computers).values({ id: workspaceComputerId });
-    await unit.database.insert(accountComputers).values({
-      id: workspaceComputerId,
+    await unit.database.insert(computers).values({
+      id: computerId,
       ownerAccountId: accountId,
-      currentInstallationId: workspaceComputerId,
+      currentInstallationId: randomUUID(),
       displayName: "Test Computer",
       platform: "linux",
       arch: "x86_64",
@@ -46,13 +43,13 @@ describe("PostgresRuntimeDurableWorkStore", () => {
   it("recovers accepted work after a store restart and suppresses duplicate identity", async () => {
     const record = sessionRecord();
     const first = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
-    await first.write(workspaceComputerId, record);
+    await first.write(computerId, record);
 
     const restarted = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
-    await expect(restarted.list(workspaceComputerId, "session-message")).resolves.toEqual([record]);
-    await expect(restarted.write(workspaceComputerId, record)).resolves.toBeUndefined();
+    await expect(restarted.list(computerId, "session-message")).resolves.toEqual([record]);
+    await expect(restarted.write(computerId, record)).resolves.toBeUndefined();
     await expect(
-      restarted.write(workspaceComputerId, {
+      restarted.write(computerId, {
         ...record,
         payload: {
           ...(record.payload as SessionMessageDeliveryRequest),
@@ -67,9 +64,10 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     const record = sessionRecord();
     const first = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
     const second = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
-    await expect(
-      Promise.all([first.write(workspaceComputerId, record), second.write(workspaceComputerId, record)]),
-    ).resolves.toEqual([undefined, undefined]);
+    await expect(Promise.all([first.write(computerId, record), second.write(computerId, record)])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
     expect(await unit.database.select().from(runtimeDurableWork)).toHaveLength(1);
   });
 
@@ -88,12 +86,12 @@ describe("PostgresRuntimeDurableWorkStore", () => {
       status: "succeeded" as const,
       updatedAt: 9_950,
     };
-    await store.write(workspaceComputerId, active);
-    await store.write(workspaceComputerId, oldTerminal);
-    await store.write(workspaceComputerId, recentTerminal);
+    await store.write(computerId, active);
+    await store.write(computerId, oldTerminal);
+    await store.write(computerId, recentTerminal);
 
     now = 10_000;
-    await expect(store.list(workspaceComputerId, "session-message")).resolves.toEqual([active, recentTerminal]);
+    await expect(store.list(computerId, "session-message")).resolves.toEqual([active, recentTerminal]);
   });
 });
 

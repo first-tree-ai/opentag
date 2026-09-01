@@ -1,5 +1,4 @@
-import { AxeBuilder } from "@axe-core/playwright";
-import type { Page } from "@playwright/test";
+import { expectAccessible } from "./browser-contract.js";
 import { expect, smokeTest as test } from "./fixtures.js";
 
 test.describe.configure({ mode: "parallel" });
@@ -77,11 +76,3 @@ test("the Account menu has named keyboard destinations", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
   await expectAccessible(page);
 });
-
-async function expectAccessible(page: Page): Promise<void> {
-  const results = await new AxeBuilder({ page }).analyze();
-  const violations = results.violations.map(
-    (violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(", ")).join(" | ")}`,
-  );
-  expect(violations, "axe accessibility violations").toEqual([]);
-}

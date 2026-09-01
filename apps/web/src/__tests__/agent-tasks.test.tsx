@@ -80,12 +80,15 @@ describe("OpenTag Web App Shell", () => {
   );
 
   it("keeps Skills and Integrations reachable from the object navigation", async () => {
-    installApi();
+    installApi({
+      internalNavigationVisibility: { integrations: true, skills: true },
+      internalToolsOffered: true,
+    });
     window.history.replaceState({}, "", `/agents/${agentId}/skills`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Integrations" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Integrations" }));
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
     expect(screen.getByRole("table", { name: "Demo Integrations" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/integrations`);
@@ -103,11 +106,10 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path) === "/api/v1/agents")).toBe(true),
     );
-    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).includes("/api/v1/workspaces/"))).toBe(false);
     getItem.mockRestore();
   });
 
-  it("keeps Workspace management and switching out of the account menu", async () => {
+  it("keeps organization switching out of the account menu", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);
     const { menu } = await openAccountMenu();

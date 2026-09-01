@@ -1,5 +1,7 @@
 import {
   type AccountComputerConnectCodeIssueRequest,
+  type AccountSetupCompletion,
+  AccountSetupCompletionSchema,
   type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
@@ -47,14 +49,16 @@ import {
   ImBindingHandoffStatusSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
+  type InternalNavigationVisibility,
+  InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  type ListAccountComputersResponse,
+  ListAccountComputersResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
-  type ListWorkspaceComputersResponse,
-  ListWorkspaceComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
@@ -72,8 +76,6 @@ import {
   type UserProfile,
   UserProfileSchema,
   type ValidationIssue,
-  type WorkspaceSetupCompletion,
-  WorkspaceSetupCompletionSchema,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -112,8 +114,8 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema);
   }
 
-  completeSetup(agentId: string): Promise<WorkspaceSetupCompletion> {
-    return this.request(HTTP_PATHS.accountSetupComplete, WorkspaceSetupCompletionSchema, {
+  completeSetup(agentId: string): Promise<AccountSetupCompletion> {
+    return this.request(HTTP_PATHS.accountSetupComplete, AccountSetupCompletionSchema, {
       method: "POST",
       body: JSON.stringify({ agentId }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
@@ -269,15 +271,15 @@ export class BrowserApi {
     });
   }
 
-  computers(): Promise<ListWorkspaceComputersResponse> {
-    return this.request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
+  computers(): Promise<ListAccountComputersResponse> {
+    return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
       headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
   /**
    * Issues a Computer connect code. Without a target this creates a new Computer; naming one
-   * repairs that exact Computer instead, which is what a reinstalled or re-enrolled machine needs —
+   * repairs that exact Computer instead, which is what a reinstalled or re-connected machine needs —
    * it keeps its identity rather than becoming a second Computer beside the one it replaced.
    */
   issueComputerConnectCode(input?: AccountComputerConnectCodeIssueRequest): Promise<ComputerConnectCodeIssueResponse> {
@@ -301,6 +303,27 @@ export class BrowserApi {
   }
 
   /**
+   * Reads the staging-wide navigation preview. A deployment without Internal Tools has no endpoint,
+   * which is the same product answer as both previews being hidden.
+   */
+  async internalNavigationVisibility(): Promise<InternalNavigationVisibility> {
+    try {
+      return await this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema);
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 404) return { integrations: false, skills: false };
+      throw cause;
+    }
+  }
+
+  updateInternalNavigationVisibility(input: InternalNavigationVisibility): Promise<InternalNavigationVisibility> {
+    return this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema, {
+      method: "PUT",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  /**
    * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
    * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
    */
@@ -315,7 +338,7 @@ export class BrowserApi {
   /**
    * The Server's own verdict on a code this Account issued: pending until a machine redeems it,
    * then the exact Computer that did. This — never a Computers-list heuristic — is how a waiting
-   * page learns which Computer its command enrolled.
+   * page learns which Computer its command connected.
    */
   computerConnectCodeStatus(connectCodeId: string): Promise<ComputerConnectCodeStatus> {
     return this.request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema);

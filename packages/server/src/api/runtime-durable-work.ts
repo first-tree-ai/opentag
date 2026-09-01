@@ -23,7 +23,7 @@ export interface RuntimeDurableWorkRoutesOptions {
 }
 
 function computerId(request: FastifyRequest): string {
-  const value = request.computerAuthContext?.workspaceComputerId;
+  const value = request.computerAuthContext?.computerId;
   if (!value) throw new Error("Authenticated Computer context is missing");
   return value;
 }

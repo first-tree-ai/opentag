@@ -6,7 +6,7 @@
  * including the ones the Server uses to say a binding is finished in the other sense.
  */
 
-import type { AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentListItem } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -47,10 +47,10 @@ function machine(id: string, name: string, online: boolean, connectedAt = "2026-
     connectedAt: online ? connectedAt : null,
     lastSeenAt: NOW,
     observedAt: NOW,
-    enrolledAt: NOW,
+    createdAt: NOW,
     agentIds: [],
     providerReadiness: [{ provider: "codex" as const, status: "ready" as const, observedAt: NOW }],
-  } satisfies WorkspaceComputerSummary;
+  } satisfies AccountComputerSummary;
 }
 
 async function settle() {
@@ -114,7 +114,7 @@ describe("repair and handoff at cabaf79", () => {
 
   it("does not accept another machine against a repair code", async () => {
     // Lock-in for the repair correlation: the code names its target, and the Server's verdict is
-    // the only thing that can settle the wait — a different Computer enrolling during the wait
+    // the only thing that can settle the wait — a different Computer connecting during the wait
     // cannot satisfy it, here or on any path that mutates ownership.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);

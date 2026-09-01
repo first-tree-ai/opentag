@@ -308,8 +308,19 @@ describe("Agent availability model and presentation", () => {
     expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");
-    expect(sharedConversationDestination("feishu")).toContain("Feishu");
-    expect(sharedConversationDestination("slack", true)).toContain("Slack");
+    /*
+     * Exact, and both branches in both numbers, so the complete visible sentence is pinned: anything
+     * added, dropped or reworded around the brand fails here, which `toContain("Feishu")` did not.
+     *
+     * What they deliberately do not prove is where the brand came from. Replacing the helper call
+     * with the same correctly-spelled literals leaves all four green, because the rendered text is
+     * identical either way -- no assertion about output can see sourcing. That guarantee needs a
+     * structural check (#335), not a stronger expectation here.
+     */
+    expect(sharedConversationDestination("feishu")).toBe("a Feishu group chat");
+    expect(sharedConversationDestination("feishu", true)).toBe("connected Feishu group chats");
+    expect(sharedConversationDestination("slack")).toBe("a Slack channel");
+    expect(sharedConversationDestination("slack", true)).toBe("connected Slack channels");
     expect(agentAvailabilitySummary(base)).toBe("Available in Feishu");
     expect(
       agentAvailabilitySummary({
@@ -335,7 +346,9 @@ describe("Agent availability model and presentation", () => {
     expect(
       agentRecoveryMessage({ ...base, availability: { ...base.availability, reason: null, state: "ready" } }),
     ).toContain("Available");
-    expect(agentUseInstruction(base, "feishu")).toContain("mention it in a Feishu group chat");
+    expect(agentUseInstruction(base, "feishu")).toBe(
+      "Send @reviewer a direct message, or mention it in a Feishu group chat.",
+    );
     expect(agentUseInstruction({ ...base, receiveMode: "all_message" }, "slack")).toContain(
       "every message in connected Slack channels",
     );

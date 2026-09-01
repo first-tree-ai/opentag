@@ -61,6 +61,7 @@
   "im_messaging_page_title": "Messaging",
   "im_no_messaging_app": "No messaging app connected",
   "im_permissions_required": "Permissions required",
+  "im_qr_scan_alt": "Scan this QR code in {provider}",
   "im_receive_mode_failed": "Couldn’t update the message setting. Try again.",
   "im_reconnect": "Reconnect",
   "im_slack_agent_computer_not_bound": "Connect a Computer to this Agent before connecting Slack.",

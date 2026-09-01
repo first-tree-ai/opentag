@@ -198,8 +198,8 @@ describe("Server-backed onboarding: the defects it had", () => {
 
   it("does not report a messaging CLI verdict taken from a different provider", async () => {
     // `imCliReadiness[0]` is whichever CLI the Server happened to observe first, in its own
-    // canonical order. Here only Slack has been probed, so a reader who picks Lark is told
-    // Lark's CLI is present on the strength of Slack's result.
+    // canonical order. Here only Slack has been probed, so a reader who picks Feishu is told
+    // Feishu's CLI is present on the strength of Slack's result.
     const view = mount();
     act(() =>
       view.result.current.computerConnected(
@@ -210,13 +210,13 @@ describe("Server-backed onboarding: the defects it had", () => {
       ),
     );
 
-    // Slack's result answers for Slack and for nothing else; Lark has simply not been probed.
+    // Slack's result answers for Slack and for nothing else; Feishu has simply not been probed.
     expect(view.result.current.readiness?.messagingCli.slack).toBe("ready");
     expect(view.result.current.readiness?.messagingCli.feishu).toBeUndefined();
     expect(messagingCliCheck(view.result.current.readiness?.messagingCli.feishu)).toBe("pending");
   });
 
-  it("stops polling a Lark attempt that Start over abandoned", async () => {
+  it("stops polling a Feishu attempt that Start over abandoned", async () => {
     computersReturning([computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })]);
     issuing();
     vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemedVerdict());
@@ -241,7 +241,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     expect(poll).not.toHaveBeenCalled();
     expect(view.result.current.messaging).toEqual({ kind: "idle" });
   });
-  it("asks for one Lark code per attempt rather than retrying a refused one on sight", async () => {
+  it("asks for one Feishu code per attempt rather than retrying a refused one on sight", async () => {
     // The messaging step starts an attempt whenever the state is idle, and a refused attempt is
     // returned to idle, so the effect starts another one immediately. Nothing paces the two, and
     // nothing bounds them: the mock below has to stop refusing in order for the test to end.
@@ -252,7 +252,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     let calls = 0;
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockImplementation(async () => {
       calls += 1;
-      if (calls < 8) throw new Error("Lark is unavailable");
+      if (calls < 8) throw new Error("Feishu is unavailable");
       return attempt();
     });
     vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt());
@@ -268,7 +268,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     await tick(POLL_MS);
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await settle();
 
     expect(calls).toBe(1);

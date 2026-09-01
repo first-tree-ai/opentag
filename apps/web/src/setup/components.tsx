@@ -1,5 +1,7 @@
 import { toString as qrToString } from "qrcode";
 import { useEffect, useState } from "react";
+import { messagingProviderLabel } from "../im/provider-label.js";
+import * as m from "../paraglide/messages.js";
 import { StatusIndicator } from "../ui/design-system.js";
 import "./setup.css";
 import { type CheckRow, formatRemaining } from "./checks.js";
@@ -109,5 +111,11 @@ export function QrCode({ value }: { value: string }) {
       active = false;
     };
   }, [value]);
-  return source ? <img alt={SETUP_COPY.messaging.qrAlt} className="ots-qr__image" src={source} /> : null;
+  return source ? (
+    <img
+      alt={m.im_qr_scan_alt({ provider: messagingProviderLabel("feishu") })}
+      className="ots-qr__image"
+      src={source}
+    />
+  ) : null;
 }

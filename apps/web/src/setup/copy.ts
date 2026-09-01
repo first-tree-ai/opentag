@@ -12,7 +12,7 @@ import type { CheckRow, CheckState } from "./checks.js";
 /**
  * Copy for the numbered computer-check rows. Every row carries a line of detail in every state,
  * not only when it fails, so the list does not reflow as results land. A missing messaging CLI is
- * named later, as a sentence (`SETUP_COPY.messaging.cliMissing`) rather than a third check line.
+ * named later, as a sentence — `messagingCliMissingCopy` in onboarding — rather than a third row.
  */
 export const CHECK_COPY: Record<
   CheckRow["id"],
@@ -84,20 +84,8 @@ export const SETUP_COPY = {
     title: "Connect your messaging app",
     description: "Pick the app your team already works in.",
     providerLabel: "Messaging app",
-    /**
-     * Lark is the name this product goes by in English; Feishu is the same app under its
-     * mainland China name. The provider's id stays `feishu`, because that is the Server's own
-     * vocabulary — only what the reader sees changes here.
-     */
-    feishu: { title: "Lark", description: "Also called Feishu" },
-    slack: { title: "Slack", description: "Your Slack workspace" },
-    feishuIntro: "Scan this with Lark. You'll finish the last step inside Lark itself.",
-    feishuPreparing: "OpenTag is preparing a secure Lark authorization.",
-    qrAlt: "Scan this QR code in Lark",
     generating: "Generating QR code…",
     waiting: "Waiting for you to scan…",
-    cliMissing: (provider: string) =>
-      `${provider} messages are sent through its official CLI. After this app is connected, the OpenTag daemon prepares it automatically. opentag doctor only checks; it does not install.`,
     preparingCli: "Preparing CLI",
     checkingCredentials: "Checking credentials",
     cliUnavailable: "OpenTag could not prepare or validate the messaging CLI on this computer.",

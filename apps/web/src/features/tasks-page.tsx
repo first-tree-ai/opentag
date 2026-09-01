@@ -5,6 +5,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { compareText, foldCase, formatDateTime, formatRelativeTime, initials } from "../i18n/format.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import {
@@ -791,7 +792,7 @@ function sourceLabel(task: TaskSummary): string {
         : task.source.conversationKind === "group_dm"
           ? m.tasks_source_group_chat()
           : m.tasks_source_channel();
-  return `${humanizeEnum(task.source.provider)} · ${context}`;
+  return `${messagingProviderLabel(task.source.provider)} · ${context}`;
 }
 
 function taskAuthorLabel(value: TaskTurn["message"]["authorKind"]): string {

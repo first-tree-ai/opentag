@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
+import { messagingProviderLabel } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
@@ -10,7 +11,7 @@ import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/desig
 import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
-import { messagingConnectionLabel, messagingConnectionTone, titleCase } from "../agent-presentation.js";
+import { messagingConnectionLabel, messagingConnectionTone } from "../agent-presentation.js";
 
 type Confirmation =
   | { bindingId: string; kind: "disable_binding"; provider: ImBindingSummary["provider"] }
@@ -81,7 +82,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setConfirmation(undefined);
       onAgentChanged();
     } catch {
-      setConfirmationError(m.im_disconnect_failed({ providerName: providerName(provider) }));
+      setConfirmationError(m.im_disconnect_failed({ providerName: messagingProviderLabel(provider) }));
     } finally {
       setConfirmationBusy(false);
     }
@@ -148,7 +149,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               <ProviderIcon className="size-6" provider={binding.provider} />
                               <span className="grid min-w-0 gap-1">
                                 <strong className="text-base font-semibold text-kumo-strong">
-                                  {binding.bot.displayName ?? providerName(binding.provider)}
+                                  {binding.bot.displayName ?? messagingProviderLabel(binding.provider)}
                                 </strong>
                                 <span className="text-sm text-kumo-subtle">{messagingAppDetail(agent, binding)}</span>
                               </span>
@@ -198,7 +199,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   });
                                 }}
                               >
-                                {m.im_disconnect({ providerName: providerName(binding.provider) })}
+                                {m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) })}
                               </Button>
                             </div>
                           </>
@@ -291,9 +292,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
-          description={m.im_disconnect_description({ providerName: providerName(confirmation.provider) })}
+          description={m.im_disconnect_description({ providerName: messagingProviderLabel(confirmation.provider) })}
           returnFocusRef={disableBindingButtonRef}
-          title={m.im_disconnect_title({ providerName: providerName(confirmation.provider) })}
+          title={m.im_disconnect_title({ providerName: messagingProviderLabel(confirmation.provider) })}
           onClose={closeConfirmation}
         >
           {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
@@ -307,7 +308,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
               variant="danger"
               onClick={() => void disableBinding(confirmation.bindingId, confirmation.provider)}
             >
-              {m.im_disconnect({ providerName: providerName(confirmation.provider) })}
+              {m.im_disconnect({ providerName: messagingProviderLabel(confirmation.provider) })}
             </Button>
           </div>
         </Dialog>
@@ -370,8 +371,11 @@ function TriggerModeOption({
 
 function messagingAppDetail(agent: AgentDetailView, binding: ImBindingSummary): string {
   return binding.provider === "feishu"
-    ? m.agent_settings_channel_detail_with_name({ provider: titleCase(binding.provider), name: agent.name })
-    : m.agent_settings_channel_detail({ provider: titleCase(binding.provider) });
+    ? m.agent_settings_channel_detail_with_name({
+        provider: messagingProviderLabel(binding.provider),
+        name: agent.name,
+      })
+    : m.agent_settings_channel_detail({ provider: messagingProviderLabel(binding.provider) });
 }
 
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {
@@ -390,8 +394,4 @@ function triggerModeExplanation(provider: ImBindingSummary["provider"]): string 
 
 function triggerModeDescription(receiveMode: AgentSummary["receiveMode"]): string {
   return receiveMode === "all_message" ? m.im_every_message_description() : m.im_mentions_only_description();
-}
-
-function providerName(provider: ImBindingSummary["provider"]): string {
-  return titleCase(provider);
 }

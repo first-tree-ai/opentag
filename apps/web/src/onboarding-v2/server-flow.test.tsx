@@ -165,7 +165,7 @@ describe("the onboarding flow against the Server", () => {
     expect(cloud.textContent).toContain("Coming soon");
   });
 
-  it("walks from the connect command to a created Agent and a scanned Lark code", async () => {
+  it("walks from the connect command to a created Agent and a scanned Feishu code", async () => {
     computersReturning([], [computer()]);
     redeemedVerdict();
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
@@ -200,7 +200,7 @@ describe("the onboarding flow against the Server", () => {
     });
 
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
 
@@ -251,7 +251,7 @@ describe("the onboarding flow against the Server", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("labels a not-yet-issued Lark QR as generating rather than scannable", async () => {
+  it("labels a not-yet-issued Feishu QR as generating rather than scannable", async () => {
     computersReturning([computer()]);
     redeemedVerdict();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
@@ -264,7 +264,7 @@ describe("the onboarding flow against the Server", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
 
     expect(screen.getByText("Generating QR code…")).toBeTruthy();

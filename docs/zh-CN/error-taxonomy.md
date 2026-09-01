@@ -30,7 +30,7 @@ Retryability 的值为 `never`、`immediate`、`backoff` 和 `after_auth`。`pha
 
 ## 日志词汇与级别
 
-运行日志对每个概念使用固定的 Pino key：`module`、`operation`、`requestId`、`workspaceId`、`agentId`、`computerId`、`sessionId`、`deliveryId`、`provider`、`outcome`、`errorCode`、`attempt`、`durationMs` 和 `status`。其中 structured failure identity 只能使用 `errorCode`；不要把 `reason`、`errorReason`、`failureReason`、`dropReason` 或 `detail` 当作同义词。`error` 表示终止或不可恢复，`warn` 表示已处理或降级，`info` 表示状态转换，`debug` 表示单请求细节。
+运行日志对每个概念使用固定的 Pino key：`module`、`operation`、`requestId`、`accountId`、`agentId`、`computerId`、`sessionId`、`deliveryId`、`provider`、`outcome`、`errorCode`、`attempt`、`durationMs` 和 `status`。其中 structured failure identity 只能使用 `errorCode`；不要把 `reason`、`errorReason`、`failureReason`、`dropReason` 或 `detail` 当作同义词。`error` 表示终止或不可恢复，`warn` 表示已处理或降级，`info` 表示状态转换，`debug` 表示单请求细节。
 
 Client 的 `OPENTAG_LOG_LEVEL` 行为是：测试中未设置时为 `silent`，Service 或显式 file/dual logger 未设置时为 `info`，one-shot logger 未设置时为 `warn`，有效 level 选择对应级别，无效值回退到 `info` 并输出一次安全 warning。支持的值为 `trace`、`debug`、`info`、`warn`、`error`、`fatal` 和 `silent`。
 

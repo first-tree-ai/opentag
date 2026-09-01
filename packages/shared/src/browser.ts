@@ -1,3 +1,4 @@
+export * from "./account.js";
 export * from "./agent.js";
 export * from "./auth.js";
 export * from "./computer.js";
@@ -41,4 +42,3 @@ export {
   serializeDiagnostic,
 } from "./structured-errors.js";
 export * from "./task.js";
-export * from "./workspace.js";

@@ -98,7 +98,7 @@ The daemon's updater follows a strict contract:
   anything itself. It then exits with the reserved supervisor-restart exit code `75`: systemd maps it to a clean
   forced restart (`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`), and launchd restarts it through
   `KeepAlive.SuccessfulExit=false`. The stable shim means the restarted service runs the new version with the
-  OpenTag home, Account credentials, Computer enrollment, Agents, and placement untouched.
+  OpenTag home, Account credentials, Computer connection, Agents, and placement untouched.
 
 Current version, target, updater state, and the last attempt with its failure reason are visible in
 `opentag daemon status`.

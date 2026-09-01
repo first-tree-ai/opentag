@@ -113,7 +113,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
           data-ui="task-toolbar"
           onSubmit={(event) => event.preventDefault()}
         >
-          <div className="min-w-56 flex-1 @min-[48rem]/workspace:max-w-md">
+          <div className="min-w-56 flex-1 @min-[48rem]/content:max-w-md">
             <span className="sr-only">{m.tasks_search_tasks()}</span>
             <KumoInputControl
               aria-label={m.tasks_search_tasks()}
@@ -218,7 +218,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
 
 /**
  * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
- * workspace-wide page, so paging past the first page cannot hide this Agent's older Tasks.
+ * an Account-wide page, so paging past the first page cannot hide this Agent's older Tasks.
  */
 export function AgentTasksSection({ agentId }: { agentId: string }) {
   /*
@@ -235,7 +235,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   });
   const tasks = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
   const taskError = asError(tasksQuery.error);
-  // The same rule the workspace list follows: a refusal withdraws the rows it refused, whichever
+  // The same rule the Account list follows: a refusal withdraws the rows it refused, whichever
   // page asked for them. Only a transient append failure keeps them, reported beside its control.
   const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
   const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
@@ -356,7 +356,7 @@ export function TaskDetailPage({
           <StatusIndicator label={taskStatusLabel(task.status)} tone={status.tone} />
         </div>
         <dl
-          className="grid gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/workspace:grid-cols-2 @min-[60rem]/workspace:grid-cols-4"
+          className="grid gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-2 @min-[60rem]/content:grid-cols-4"
           aria-label={m.tasks_details()}
         >
           <TaskDetailFact label={m.tasks_agent_label()}>
@@ -588,17 +588,17 @@ function TaskTable({
   const table = (
     <section
       aria-label={m.tasks_table_region()}
-      className="min-w-0 overflow-hidden rounded-lg @min-[40rem]/workspace:overflow-x-auto @min-[40rem]/workspace:focus:outline-none @min-[40rem]/workspace:focus-visible:ring-2 @min-[40rem]/workspace:focus-visible:ring-kumo-brand @min-[40rem]/workspace:focus-visible:ring-inset"
-      // biome-ignore lint/a11y/noNoninteractiveTabindex: The same region remains keyboard-scrollable on wider workspaces.
+      className="min-w-0 overflow-hidden rounded-lg @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset"
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: The same region remains keyboard-scrollable in wider content areas.
       tabIndex={0}
     >
       <Table
         aria-label={compact ? m.tasks_agent_tasks() : m.tasks_title()}
-        className={`block min-w-0 @min-[40rem]/workspace:table ${showAgent ? "@min-[40rem]/workspace:min-w-[52rem]" : "@min-[40rem]/workspace:min-w-[42rem]"}`}
+        className={`block min-w-0 @min-[40rem]/content:table ${showAgent ? "@min-[40rem]/content:min-w-[52rem]" : "@min-[40rem]/content:min-w-[42rem]"}`}
         data-ui="task-table"
         layout="fixed"
       >
-        <colgroup className="hidden @min-[40rem]/workspace:table-column-group">
+        <colgroup className="hidden @min-[40rem]/content:table-column-group">
           <col />
           {showAgent ? <col className="w-44" /> : null}
           <col className="w-44" />
@@ -606,7 +606,7 @@ function TaskTable({
           <col className="w-36" />
         </colgroup>
         <Table.Header
-          className="hidden @min-[40rem]/workspace:table-header-group"
+          className="hidden @min-[40rem]/content:table-header-group"
           variant={compact ? "compact" : undefined}
         >
           <Table.Row>
@@ -617,7 +617,7 @@ function TaskTable({
             <Table.Head>{m.tasks_last_activity_label()}</Table.Head>
           </Table.Row>
         </Table.Header>
-        <Table.Body className="block @min-[40rem]/workspace:table-row-group">
+        <Table.Body className="block @min-[40rem]/content:table-row-group">
           {tasks.map((task) => (
             <TaskRow key={task.id} showAgent={showAgent} showExamples={showExamples} task={task} />
           ))}
@@ -645,7 +645,7 @@ function TaskRow({
   const status = statusPresentation[task.status];
   return (
     <Table.Row
-      className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/workspace:table-row @min-[40rem]/workspace:border-b-0"
+      className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
       data-ui="task-table-row"
     >
       <Table.Cell className="col-start-1 row-start-1 min-w-0" data-label={m.tasks_task_label()}>
@@ -691,7 +691,7 @@ function TaskRow({
 
 function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: TaskSummary }) {
   const className =
-    "block break-words font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/workspace:truncate";
+    "block break-words font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/content:truncate";
   if (showExamples) {
     return (
       <Link

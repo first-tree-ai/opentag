@@ -68,7 +68,7 @@ only the derived structured error is observable.
 
 ## Logging vocabulary and levels
 
-Operational logs use one fixed Pino key per concept. Use `module`, `operation`, `requestId`, `workspaceId`, `agentId`,
+Operational logs use one fixed Pino key per concept. Use `module`, `operation`, `requestId`, `accountId`, `agentId`,
 `computerId`, `sessionId`, `deliveryId`, `provider`, `outcome`, `errorCode`, `attempt`, `durationMs`, and `status` for
 their corresponding values. In particular, `errorCode` is the only field for a structured failure identity; do not use
 `reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` as synonyms. `error` means terminal or unrecoverable,

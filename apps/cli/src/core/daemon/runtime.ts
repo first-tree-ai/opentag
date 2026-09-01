@@ -204,12 +204,15 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
     context.currentPlatform,
     signal,
   );
-  context.state.terminalLogger = context.logger.child({ computerId: identity.computerId });
+  context.state.terminalLogger = context.logger.child({
+    computerId: credential.computerId,
+    installationId: identity.computerId,
+  });
   const connectionInstanceId = randomUUID();
   const runtimeLogger = context.gatedRuntimeLogger.logger.child({
-    computerId: identity.computerId,
+    computerId: credential.computerId,
+    installationId: identity.computerId,
     instanceId: connectionInstanceId,
-    workspaceComputerId: credential.workspaceComputerId,
   });
   const apiContext = await resolveCommandContext({ home: context.home, serverUrl: credential.serverUrl });
   if (!apiContext.api) throw new Error("Command context did not resolve an API");
@@ -254,7 +257,7 @@ async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform
   signal.throwIfAborted();
   const bound = resolveBoundAccountComputer(credentials);
   if (bound.status === "disconnected") {
-    throw new DaemonRuntimeConfigurationError("This Computer is not enrolled; run computer connect first");
+    throw new DaemonRuntimeConfigurationError("This Computer is not connected; run computer connect first");
   }
   let identity: Awaited<ReturnType<typeof resolveComputerIdentity>>;
   try {
@@ -266,7 +269,7 @@ async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform
   if (currentPlatform !== "darwin" && currentPlatform !== "linux") {
     throw new DaemonRuntimeConfigurationError(`Unsupported daemon service platform: ${currentPlatform}`);
   }
-  if (bound.credential.computerId !== identity.computerId) {
+  if (bound.credential.installationId !== identity.computerId) {
     throw new DaemonRuntimeConfigurationError("A machine credential belongs to another Computer");
   }
   return { credential: bound.credential, identity, supportedPlatform: currentPlatform };

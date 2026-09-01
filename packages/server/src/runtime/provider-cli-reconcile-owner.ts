@@ -37,12 +37,12 @@ export interface ProviderCliReconcileBindingSource {
   issueIntegrationCliValidationGrant(input: {
     agentId: string;
     computerId: string;
+    installationId: string;
     credentialGeneration: number;
     integrationId: string;
     provider: ImCliProvider;
-    workspaceComputerId: string;
   }): Promise<IntegrationCliValidationGrantMaterial | undefined>;
-  listActiveProviderCliRequirements(workspaceComputerId: string): Promise<readonly ProviderCliRequirementSnapshot[]>;
+  listActiveProviderCliRequirements(computerId: string): Promise<readonly ProviderCliRequirementSnapshot[]>;
 }
 
 type ProviderCliArtifactReadiness = ReturnType<ConnectionRegistry["providerCliArtifactReadiness"]>;
@@ -52,6 +52,7 @@ interface CurrentRequest {
   agentId: string;
   artifactRetryAttempt: number;
   computerId: string;
+  installationId: string;
   credentialGeneration: number;
   expectedIdentity: ProviderCliExpectedIdentity;
   grantConsumed: boolean;
@@ -64,13 +65,12 @@ interface CurrentRequest {
   requestId: string;
   retryTimer?: ReturnType<typeof setTimeout>;
   snapshot: ProviderCliRequirementSnapshot;
-  workspaceComputerId: string;
 }
 
 const INTERNAL_RETRY_REASONS = new Set<string>(PROVIDER_CLI_VALIDATION_RETRY_REASONS);
 
-function requestKey(workspaceComputerId: string, integrationId: string): string {
-  return `${workspaceComputerId}:${integrationId}`;
+function requestKey(computerId: string, integrationId: string): string {
+  return `${computerId}:${integrationId}`;
 }
 
 function matchObservation<T extends { agentId: string; credentialGeneration: number; integrationId: string }>(
@@ -142,24 +142,16 @@ export class ProviderCliReconcileOwner {
     };
   }
 
-  async onComputerRegistered(input: {
-    computerId: string;
-    instanceId: string;
-    workspaceComputerId: string;
-  }): Promise<void> {
+  async onComputerRegistered(input: { computerId: string; installationId: string; instanceId: string }): Promise<void> {
     if (this.#closed) return;
-    await this.#resetComputer(input.workspaceComputerId);
-    const requirements = await this.#bindings.listActiveProviderCliRequirements(input.workspaceComputerId);
+    await this.#resetComputer(input.computerId);
+    const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
     if (
-      !this.#registry.supportsCapability(
-        input.workspaceComputerId,
-        input.instanceId,
-        RUNTIME_CAPABILITY.providerCliReconcile,
-      )
+      !this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliReconcile)
     ) {
       for (const requirement of requirements) {
         this.#registry.setProviderCliCredentialObservation(
-          input.workspaceComputerId,
+          input.computerId,
           input.instanceId,
           {
             agentId: requirement.agentId,
@@ -176,29 +168,27 @@ export class ProviderCliReconcileOwner {
       return;
     }
     for (const requirement of requirements) {
-      await this.#dispatchRequirement(input.workspaceComputerId, input.instanceId, input.computerId, requirement);
+      await this.#dispatchRequirement(input.computerId, input.installationId, input.instanceId, requirement);
     }
   }
 
-  async onActiveBindingChanged(input: { agentId: string; workspaceComputerId: string }): Promise<void> {
+  async onActiveBindingChanged(input: { agentId: string; computerId: string }): Promise<void> {
     if (this.#closed) return;
-    const instanceId = this.#registry.currentInstanceId(input.workspaceComputerId);
+    const instanceId = this.#registry.currentInstanceId(input.computerId);
     if (!instanceId) return;
-    const computerId = this.#registry.computerId(input.workspaceComputerId);
-    if (!computerId) return;
-    const requirements = await this.#bindings.listActiveProviderCliRequirements(input.workspaceComputerId);
+    const installationId = this.#registry.installationId(input.computerId);
+    if (!installationId) return;
+    const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
     const activeIds = new Set(requirements.map((requirement) => requirement.integrationId));
     for (const [key, current] of [...this.#requests]) {
-      if (current.workspaceComputerId === input.workspaceComputerId && !activeIds.has(current.integrationId)) {
+      if (current.computerId === input.computerId && !activeIds.has(current.integrationId)) {
         await this.#retireRequest(key);
       }
     }
-    if (
-      !this.#registry.supportsCapability(input.workspaceComputerId, instanceId, RUNTIME_CAPABILITY.providerCliReconcile)
-    ) {
+    if (!this.#registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.providerCliReconcile)) {
       for (const requirement of requirements.filter((item) => item.agentId === input.agentId)) {
         this.#registry.setProviderCliCredentialObservation(
-          input.workspaceComputerId,
+          input.computerId,
           instanceId,
           {
             agentId: requirement.agentId,
@@ -215,30 +205,30 @@ export class ProviderCliReconcileOwner {
       return;
     }
     for (const requirement of requirements.filter((item) => item.agentId === input.agentId)) {
-      await this.#dispatchRequirement(input.workspaceComputerId, instanceId, computerId, requirement, { force: true });
+      await this.#dispatchRequirement(input.computerId, installationId, instanceId, requirement, { force: true });
     }
   }
 
   async onAgentPlacementChanged(input: {
     agentId: string;
-    previousWorkspaceComputerId?: string;
-    workspaceComputerId?: string;
+    previousComputerId?: string;
+    computerId?: string;
   }): Promise<void> {
     if (this.#closed) return;
-    if (input.previousWorkspaceComputerId && input.previousWorkspaceComputerId !== input.workspaceComputerId) {
-      await this.#retireAgentOnComputer(input.agentId, input.previousWorkspaceComputerId);
+    if (input.previousComputerId && input.previousComputerId !== input.computerId) {
+      await this.#retireAgentOnComputer(input.agentId, input.previousComputerId);
     }
-    if (input.workspaceComputerId) {
+    if (input.computerId) {
       await this.onActiveBindingChanged({
         agentId: input.agentId,
-        workspaceComputerId: input.workspaceComputerId,
+        computerId: input.computerId,
       });
     }
   }
 
-  async ensureActiveReadiness(input: { agentId: string; workspaceComputerId: string }): Promise<void> {
+  async ensureActiveReadiness(input: { agentId: string; computerId: string }): Promise<void> {
     if (this.#closed) return;
-    const key = `${input.workspaceComputerId}:${input.agentId}`;
+    const key = `${input.computerId}:${input.agentId}`;
     const existing = this.#inflightFresh.get(key);
     if (existing) return existing;
     const task = this.#refreshActiveReadiness(input).finally(() => {
@@ -255,13 +245,13 @@ export class ProviderCliReconcileOwner {
   }
 
   async #dispatchRequirement(
-    workspaceComputerId: string,
-    instanceId: string,
     computerId: string,
+    installationId: string,
+    instanceId: string,
     requirement: ProviderCliRequirementSnapshot,
     options: { force?: boolean } = {},
   ): Promise<void> {
-    const key = requestKey(workspaceComputerId, requirement.integrationId);
+    const key = requestKey(computerId, requirement.integrationId);
     const existing = this.#requests.get(key);
     if (
       !options.force &&
@@ -283,14 +273,14 @@ export class ProviderCliReconcileOwner {
       grantConsumed: false,
       grantRetryAttempt: 0,
       instanceId,
+      installationId,
       integrationId: requirement.integrationId,
       provider: requirement.provider,
       requestId,
       snapshot: requirement,
-      workspaceComputerId,
     });
     this.#registry.setProviderCliArtifactObservation(
-      workspaceComputerId,
+      computerId,
       instanceId,
       {
         agentId: requirement.agentId,
@@ -303,7 +293,7 @@ export class ProviderCliReconcileOwner {
       this.#now(),
     );
     this.#registry.setProviderCliCredentialObservation(
-      workspaceComputerId,
+      computerId,
       instanceId,
       {
         agentId: requirement.agentId,
@@ -326,7 +316,7 @@ export class ProviderCliReconcileOwner {
       expectedIdentity: requirement.expectedIdentity,
     };
     try {
-      await this.#registry.send(workspaceComputerId, instanceId, frame);
+      await this.#registry.send(computerId, instanceId, frame);
     } catch {
       this.#scheduleArtifactRetry(this.#requests.get(key));
     }
@@ -336,7 +326,7 @@ export class ProviderCliReconcileOwner {
     frame: ProviderCliArtifactStatusFrame | ProviderCliValidationResultFrame,
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
-    const current = this.#requests.get(requestKey(context.workspaceComputerId, frame.integrationId));
+    const current = this.#requests.get(requestKey(context.computerId, frame.integrationId));
     if (frame.type === "provider-cli:artifact:status") return this.#handleArtifact(current, frame, context);
     return this.#handleValidation(current, frame, context);
   }
@@ -348,7 +338,7 @@ export class ProviderCliReconcileOwner {
   ): Promise<undefined> {
     if (!this.#acceptsArtifact(current, frame, context)) return undefined;
     this.#registry.setProviderCliArtifactObservation(
-      context.workspaceComputerId,
+      context.computerId,
       context.instanceId,
       {
         agentId: frame.agentId,
@@ -372,7 +362,7 @@ export class ProviderCliReconcileOwner {
     // artifact selection. Any new check or artifact failure invalidates it
     // until a fresh validation grant succeeds.
     this.#registry.setProviderCliCredentialObservation(
-      context.workspaceComputerId,
+      context.computerId,
       context.instanceId,
       {
         agentId: frame.agentId,
@@ -400,7 +390,7 @@ export class ProviderCliReconcileOwner {
       const reason =
         frame.reason === "rate_limited" || frame.reason === "provider_unreachable" ? frame.reason : undefined;
       this.#registry.setProviderCliCredentialObservation(
-        context.workspaceComputerId,
+        context.computerId,
         context.instanceId,
         {
           agentId: frame.agentId,
@@ -417,7 +407,7 @@ export class ProviderCliReconcileOwner {
       return undefined;
     }
     this.#registry.setProviderCliCredentialObservation(
-      context.workspaceComputerId,
+      context.computerId,
       context.instanceId,
       {
         agentId: frame.agentId,
@@ -438,16 +428,16 @@ export class ProviderCliReconcileOwner {
     const material = await this.#bindings.issueIntegrationCliValidationGrant({
       agentId: current.agentId,
       computerId: current.computerId,
+      installationId: current.installationId,
       credentialGeneration: current.credentialGeneration,
       integrationId: current.integrationId,
       provider: current.provider,
-      workspaceComputerId: current.workspaceComputerId,
     });
-    const stillCurrent = this.#requests.get(requestKey(current.workspaceComputerId, current.integrationId));
+    const stillCurrent = this.#requests.get(requestKey(current.computerId, current.integrationId));
     if (!material || stillCurrent !== current) return;
     if (!expectedIdentitiesMatch(current.expectedIdentity, material.expectedIdentity)) {
       this.#registry.setProviderCliCredentialObservation(
-        current.workspaceComputerId,
+        current.computerId,
         current.instanceId,
         {
           agentId: current.agentId,
@@ -467,7 +457,7 @@ export class ProviderCliReconcileOwner {
     current.grantExpiresAt = expiresAt;
     current.grantConsumed = false;
     this.#registry.setProviderCliCredentialObservation(
-      current.workspaceComputerId,
+      current.computerId,
       current.instanceId,
       {
         agentId: current.agentId,
@@ -492,7 +482,7 @@ export class ProviderCliReconcileOwner {
       grant: material.grant,
     };
     try {
-      await this.#registry.send(current.workspaceComputerId, current.instanceId, frame);
+      await this.#registry.send(current.computerId, current.instanceId, frame);
     } catch {
       current.grantRequestId = undefined;
     }
@@ -501,7 +491,7 @@ export class ProviderCliReconcileOwner {
   #scheduleGrantRetry(current: CurrentRequest, reason: "rate_limited" | "provider_unreachable"): void {
     if (current.grantRetryAttempt >= this.#maxRetries) {
       this.#registry.setProviderCliCredentialObservation(
-        current.workspaceComputerId,
+        current.computerId,
         current.instanceId,
         {
           agentId: current.agentId,
@@ -533,7 +523,7 @@ export class ProviderCliReconcileOwner {
     if (reason === "artifact_changed") {
       if (current.artifactRetryAttempt >= this.#maxRetries) {
         this.#registry.setProviderCliArtifactObservation(
-          current.workspaceComputerId,
+          current.computerId,
           current.instanceId,
           {
             agentId: current.agentId,
@@ -549,9 +539,9 @@ export class ProviderCliReconcileOwner {
       }
       current.artifactRetryAttempt += 1;
       await this.#dispatchRequirement(
-        current.workspaceComputerId,
-        current.instanceId,
         current.computerId,
+        current.installationId,
+        current.instanceId,
         current.snapshot,
         { force: true },
       );
@@ -559,7 +549,7 @@ export class ProviderCliReconcileOwner {
     }
     if (current.grantRetryAttempt >= this.#maxRetries) {
       this.#registry.setProviderCliCredentialObservation(
-        current.workspaceComputerId,
+        current.computerId,
         current.instanceId,
         {
           agentId: current.agentId,
@@ -591,9 +581,9 @@ export class ProviderCliReconcileOwner {
       current,
       () => {
         void this.#dispatchRequirement(
-          current.workspaceComputerId,
-          current.instanceId,
           current.computerId,
+          current.installationId,
+          current.instanceId,
           current.snapshot,
           { force: true },
         );
@@ -627,9 +617,9 @@ export class ProviderCliReconcileOwner {
   ): current is CurrentRequest {
     if (!current) return false;
     return (
-      current.workspaceComputerId === context.workspaceComputerId &&
-      current.instanceId === context.instanceId &&
       current.computerId === context.computerId &&
+      current.instanceId === context.instanceId &&
+      current.installationId === context.installationId &&
       current.agentId === frame.agentId &&
       current.integrationId === frame.integrationId &&
       current.provider === frame.provider &&
@@ -663,42 +653,33 @@ export class ProviderCliReconcileOwner {
     return true;
   }
 
-  async #refreshActiveReadiness(input: { agentId: string; workspaceComputerId: string }): Promise<void> {
+  async #refreshActiveReadiness(input: { agentId: string; computerId: string }): Promise<void> {
     if (this.#closed) return;
-    const instanceId = this.#registry.currentInstanceId(input.workspaceComputerId);
+    const instanceId = this.#registry.currentInstanceId(input.computerId);
     if (!instanceId) return;
-    const computerId = this.#registry.computerId(input.workspaceComputerId);
-    if (!computerId) return;
+    const installationId = this.#registry.installationId(input.computerId);
+    if (!installationId) return;
     const now = this.#now();
-    const requirements = (await this.#bindings.listActiveProviderCliRequirements(input.workspaceComputerId)).filter(
+    const requirements = (await this.#bindings.listActiveProviderCliRequirements(input.computerId)).filter(
       (requirement) => requirement.agentId === input.agentId,
     );
     if (requirements.length === 0) {
-      await this.#retireAgentOnComputer(input.agentId, input.workspaceComputerId);
+      await this.#retireAgentOnComputer(input.agentId, input.computerId);
       return;
     }
-    if (
-      !this.#registry.supportsCapability(input.workspaceComputerId, instanceId, RUNTIME_CAPABILITY.providerCliReconcile)
-    ) {
+    if (!this.#registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.providerCliReconcile)) {
       return;
     }
-    const artifacts = this.#registry.providerCliArtifactReadiness(input.workspaceComputerId, now);
-    const credentials = this.#registry.providerCliCredentialReadiness(input.workspaceComputerId, now);
+    const artifacts = this.#registry.providerCliArtifactReadiness(input.computerId, now);
+    const credentials = this.#registry.providerCliCredentialReadiness(input.computerId, now);
     for (const requirement of requirements) {
-      await this.#refreshRequirement(
-        input.workspaceComputerId,
-        computerId,
-        instanceId,
-        requirement,
-        artifacts,
-        credentials,
-      );
+      await this.#refreshRequirement(input.computerId, installationId, instanceId, requirement, artifacts, credentials);
     }
   }
 
   async #refreshRequirement(
-    workspaceComputerId: string,
     computerId: string,
+    installationId: string,
     instanceId: string,
     requirement: ProviderCliRequirementSnapshot,
     artifacts: ProviderCliArtifactReadiness,
@@ -708,14 +689,14 @@ export class ProviderCliReconcileOwner {
     const credential = matchObservation(credentials, requirement);
     if (credential?.status === "needs_attention") return;
     if (artifact?.status === "ready" && credential?.status === "ready") return;
-    const current = this.#requests.get(requestKey(workspaceComputerId, requirement.integrationId));
+    const current = this.#requests.get(requestKey(computerId, requirement.integrationId));
     if (
       !current ||
       current.instanceId !== instanceId ||
       current.agentId !== requirement.agentId ||
       current.credentialGeneration !== requirement.credentialGeneration
     ) {
-      await this.#dispatchRequirement(workspaceComputerId, instanceId, computerId, requirement);
+      await this.#dispatchRequirement(computerId, installationId, instanceId, requirement);
       return;
     }
     if (isReconcileInFlight(artifact, credential)) return;
@@ -723,21 +704,21 @@ export class ProviderCliReconcileOwner {
       await this.#issueGrant(current);
       return;
     }
-    await this.#dispatchRequirement(workspaceComputerId, instanceId, computerId, requirement, { force: true });
+    await this.#dispatchRequirement(computerId, installationId, instanceId, requirement, { force: true });
   }
 
-  async #retireAgentOnComputer(agentId: string, workspaceComputerId: string): Promise<void> {
+  async #retireAgentOnComputer(agentId: string, computerId: string): Promise<void> {
     await Promise.all(
       [...this.#requests]
-        .filter(([, current]) => current.workspaceComputerId === workspaceComputerId && current.agentId === agentId)
+        .filter(([, current]) => current.computerId === computerId && current.agentId === agentId)
         .map(([key]) => this.#retireRequest(key)),
     );
   }
 
-  async #resetComputer(workspaceComputerId: string): Promise<void> {
+  async #resetComputer(computerId: string): Promise<void> {
     await Promise.all(
       [...this.#requests]
-        .filter(([, current]) => current.workspaceComputerId === workspaceComputerId)
+        .filter(([, current]) => current.computerId === computerId)
         .map(([key]) => this.#retireRequest(key)),
     );
   }
@@ -760,7 +741,7 @@ export class ProviderCliReconcileOwner {
       credentialGeneration: current.credentialGeneration,
     };
     try {
-      await this.#registry.send(current.workspaceComputerId, current.instanceId, frame);
+      await this.#registry.send(current.computerId, current.instanceId, frame);
     } catch {
       return;
     }

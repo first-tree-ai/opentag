@@ -16,7 +16,7 @@ synonyms:
 | Module | `module` | Owning package or service boundary. |
 | Operation | `operation` | Stable operation name, not a free-form explanation. |
 | Request correlation | `requestId` | HTTP or client request identifier. |
-| Workspace boundary | `workspaceId` | Tenant boundary for an Agent and its resources. |
+| Account boundary | `accountId` | Tenant boundary for an Agent and its resources. |
 | Agent, Computer, Session, Delivery | `agentId`, `computerId`, `sessionId`, `deliveryId` | Stable resource identifiers. |
 | Provider | `provider` | A provider name such as `feishu` or `slack`. |
 | Outcome | `outcome` | A stable state transition such as `accepted`, `failed`, or `rejected`. |

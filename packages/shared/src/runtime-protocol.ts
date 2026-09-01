@@ -290,15 +290,14 @@ export const AuthResultFrameSchema = z
     type: z.literal("auth:result"),
     requestId: RuntimeRequestIdSchema,
     ok: z.boolean(),
-    workspaceComputerId: z.string().uuid().optional(),
-    workspaceId: z.string().uuid().optional(),
     computerId: z.string().uuid().optional(),
+    installationId: z.string().uuid().optional(),
     errorCode: ErrorCodeSchema.optional(),
   })
   .strict()
   .superRefine((frame, context) => {
-    if (frame.ok && (!frame.workspaceComputerId || !frame.workspaceId || !frame.computerId)) {
-      context.addIssue({ code: "custom", message: "A successful auth result requires enrollment identity" });
+    if (frame.ok && (!frame.computerId || !frame.installationId)) {
+      context.addIssue({ code: "custom", message: "A successful auth result requires the Computer identity" });
     }
     if (!frame.ok && !frame.errorCode) {
       context.addIssue({ code: "custom", message: "A failed auth result requires an error code" });
@@ -308,7 +307,7 @@ export const AuthResultFrameSchema = z
 const computerRegistrationShape = {
   type: z.literal("computer:register"),
   requestId: RuntimeRequestIdSchema,
-  computerId: z.string().uuid(),
+  installationId: z.string().uuid(),
   instanceId: z.string().uuid(),
   displayName: z.string().trim().min(1).max(255),
   platform: ComputerPlatformSchema,
@@ -366,7 +365,7 @@ export const ComputerRegisterResultFrameSchema = z.union([
 const heartbeatShape = {
   type: z.literal("heartbeat"),
   requestId: RuntimeRequestIdSchema,
-  computerId: z.string().uuid(),
+  installationId: z.string().uuid(),
   instanceId: z.string().uuid(),
   capabilities: RuntimeClientCapabilitiesSchema.default({ imCredentialGrant: 0 }),
   providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),

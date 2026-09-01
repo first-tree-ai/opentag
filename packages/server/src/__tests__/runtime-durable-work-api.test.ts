@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { RuntimeDurableWorkConflictError } from "../runtime/runtime-durable-work-store.js";
 
-const workspaceComputerId = randomUUID();
+const computerId = randomUUID();
 const agentId = randomUUID();
 const targetSessionId = randomUUID();
 const record: RuntimeDurableWorkRecord = {
@@ -35,9 +35,9 @@ const record: RuntimeDurableWorkRecord = {
 };
 
 describe("Runtime durable work HTTP API", () => {
-  it("authenticates the Computer and scopes list/write to its enrollment", async () => {
+  it("authenticates the Computer and scopes list/write to its identity", async () => {
     const store = { list: vi.fn().mockResolvedValue([record]), write: vi.fn().mockResolvedValue(undefined) };
-    const verifyMachineToken = vi.fn().mockResolvedValue({ workspaceComputerId });
+    const verifyMachineToken = vi.fn().mockResolvedValue({ computerId });
     const app = createApp({
       runtimeDurableWork: { machineAuth: { verifyMachineToken }, store },
     });
@@ -48,7 +48,7 @@ describe("Runtime durable work HTTP API", () => {
     });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ items: [record] });
-    expect(store.list).toHaveBeenCalledWith(workspaceComputerId, "session-message");
+    expect(store.list).toHaveBeenCalledWith(computerId, "session-message");
 
     const write = await app.inject({
       method: "PUT",
@@ -57,7 +57,7 @@ describe("Runtime durable work HTTP API", () => {
       payload: record,
     });
     expect(write.statusCode).toBe(204);
-    expect(store.write).toHaveBeenCalledWith(workspaceComputerId, record);
+    expect(store.write).toHaveBeenCalledWith(computerId, record);
     await app.close();
   });
 
@@ -65,7 +65,7 @@ describe("Runtime durable work HTTP API", () => {
     const store = { list: vi.fn(), write: vi.fn().mockRejectedValue(new RuntimeDurableWorkConflictError()) };
     const app = createApp({
       runtimeDurableWork: {
-        machineAuth: { verifyMachineToken: vi.fn().mockResolvedValue({ workspaceComputerId }) },
+        machineAuth: { verifyMachineToken: vi.fn().mockResolvedValue({ computerId }) },
         store,
       },
     });

@@ -1,23 +1,23 @@
 import {
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
+  AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
   type ChannelName,
-  CompleteWorkspaceSetupRequestSchema,
+  CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
   HTTP_PATHS,
+  ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
   ListTasksResponseSchema,
-  ListWorkspaceComputersResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
   TASK_BY_ID_TEMPLATE,
   TaskDetailSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
-  WorkspaceSetupCompletionSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -29,8 +29,8 @@ import {
   type ComputerService,
   type MachineAuthService,
 } from "../services/computers/index.js";
+import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
-import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const TaskListQuerySchema = z
@@ -64,7 +64,7 @@ export interface AccountRoutesOptions {
    */
   setupResetService?: AccountSetupResetService;
   taskService?: TaskService;
-  workspaceSetupService?: WorkspaceSetupService;
+  accountSetupService?: AccountSetupService;
 }
 
 /** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
@@ -82,8 +82,8 @@ function accountId(request: FastifyRequest): string {
 }
 
 /**
- * Account-native management collections. Ownership comes only from the authenticated Account: these routes
- * accept neither a management `workspaceId` nor a client-selected `accountId`.
+ * Account-native management collections. Ownership comes only from the authenticated Account; clients
+ * cannot select another authority scope.
  */
 export function registerAccountRoutes(
   app: FastifyInstance,
@@ -141,7 +141,7 @@ export function registerAccountRoutes(
       return reply
         .code(200)
         .send(
-          ListWorkspaceComputersResponseSchema.parse(
+          ListAccountComputersResponseSchema.parse(
             await computerService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
           ),
         );
@@ -181,17 +181,15 @@ export function registerAccountRoutes(
     });
   }
 
-  if (options.workspaceSetupService) {
-    const workspaceSetupService = options.workspaceSetupService;
+  if (options.accountSetupService) {
+    const accountSetupService = options.accountSetupService;
 
     app.post(HTTP_PATHS.accountSetupComplete, { preHandler }, async (request, reply) => {
-      const { agentId } = parseRequest(CompleteWorkspaceSetupRequestSchema, request.body);
+      const { agentId } = parseRequest(CompleteAccountSetupRequestSchema, request.body);
       return reply
         .code(200)
         .send(
-          WorkspaceSetupCompletionSchema.parse(
-            await workspaceSetupService.completeForAccount(accountId(request), agentId),
-          ),
+          AccountSetupCompletionSchema.parse(await accountSetupService.completeForAccount(accountId(request), agentId)),
         );
     });
   }

@@ -10,11 +10,7 @@ import { parseRequest } from "./request-validation.js";
 export function registerComputerRoutes(app: FastifyInstance, machineAuthService: MachineAuthService): void {
   app.post(HTTP_PATHS.computerConnectExchange, async (request, reply) => {
     const input = parseRequest(ComputerConnectCodeExchangeRequestSchema, request.body);
-    const {
-      credentialId: _credentialId,
-      workspaceId: _workspaceId,
-      ...result
-    } = await machineAuthService.exchangeConnectCode(input);
+    const { credentialId: _credentialId, ...result } = await machineAuthService.exchangeConnectCode(input);
     return reply
       .header("Cache-Control", "no-store")
       .code(200)

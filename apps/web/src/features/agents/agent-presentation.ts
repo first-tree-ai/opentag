@@ -50,8 +50,8 @@ export function agentCardStatus(agent: AgentListItem): {
 
 /**
  * Names the machine-level action that resolves the failure. Recovery is stated against the Computer
- * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
- * Agent creator audit-only while stating that enrollment implies no control of the physical host.
+ * rather than a person: the Account model keeps the Agent creator audit-only, and owning a Computer
+ * implies no control of the physical host.
  */
 export function computerRecoveryMessage(agent: AgentDetailView): string {
   if (!agent.computer) {

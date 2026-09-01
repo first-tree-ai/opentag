@@ -10,7 +10,6 @@ import {
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
-  accountComputers,
   agents,
   computers,
   imBindings,
@@ -19,8 +18,6 @@ import {
   sessionPlacements,
   sessions,
   users,
-  workspaceComputers,
-  workspaces,
 } from "../db/schema/index.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
@@ -58,7 +55,7 @@ describe("PostgresRuntimeCustodyStore", () => {
       store.beginDeliveryDispatch({ ...request, deliveryId: randomUUID() }, hash, fixture.dispatchContext),
     ).resolves.toBe("conflict");
     await expect(
-      store.beginDeliveryDispatch(request, hash, { ...fixture.dispatchContext, workspaceComputerId: randomUUID() }),
+      store.beginDeliveryDispatch(request, hash, { ...fixture.dispatchContext, computerId: randomUUID() }),
     ).resolves.toBe("stale_generation");
 
     await unit.database
@@ -92,7 +89,7 @@ describe("PostgresRuntimeCustodyStore", () => {
     await expect(store.acceptDelivery(request, "different", "turn-1", fixture.context)).resolves.toBe("conflict");
     await expect(store.acceptDelivery(request, hash, "different", fixture.context)).resolves.toBe("conflict");
     await expect(
-      store.acceptDelivery(request, hash, "turn-1", { ...fixture.context, workspaceComputerId: randomUUID() }),
+      store.acceptDelivery(request, hash, "turn-1", { ...fixture.context, computerId: randomUUID() }),
     ).resolves.toBe("stale_generation");
 
     await unit.database
@@ -161,7 +158,7 @@ describe("PostgresRuntimeCustodyStore", () => {
       ),
     ).resolves.toBe("conflict");
     await expect(
-      store.beginSteerDispatch(request, hash, { ...fixture.dispatchContext, workspaceComputerId: randomUUID() }),
+      store.beginSteerDispatch(request, hash, { ...fixture.dispatchContext, computerId: randomUUID() }),
     ).resolves.toBe("stale_generation");
 
     await expect(store.recordSteered(request, hash, "semantic-1", fixture.context)).resolves.toBe("steered");
@@ -327,7 +324,7 @@ type Fixture = {
   deliveryId: string;
   instanceId: string;
   context: RuntimeBusinessContext;
-  dispatchContext: { workspaceComputerId: string; instanceId: string };
+  dispatchContext: { computerId: string; instanceId: string };
   now: Date;
   sessionId: string;
   agentId: string;
@@ -347,9 +344,7 @@ async function createFixture(unit: UnitDatabase, options: { withRoot: true }): P
 async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean } = {}): Promise<Fixture | RootFixture> {
   const now = new Date("2026-01-01T00:00:00.000Z");
   const userId = randomUUID();
-  const workspaceId = randomUUID();
   const computerId = randomUUID();
-  const workspaceComputerId = computerId;
   const agentId = randomUUID();
   const bindingId = randomUUID();
   const sessionId = randomUUID();
@@ -357,32 +352,18 @@ async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean }
   const deliveryId = randomUUID();
   const instanceId = randomUUID();
   await unit.database.insert(users).values({ id: userId, email: `${userId}@example.com`, displayName: "User" });
-  await unit.database.insert(workspaces).values({ id: workspaceId, name: workspaceId, displayName: "Workspace" });
-  await unit.database.insert(computers).values({ id: computerId });
-  await unit.database.insert(accountComputers).values({
+  await unit.database.insert(computers).values({
     id: computerId,
     ownerAccountId: userId,
-    currentInstallationId: computerId,
+    currentInstallationId: randomUUID(),
     displayName: "Computer",
     platform: "linux",
     arch: "x64",
     clientVersion: "test",
-  });
-  await unit.database.insert(workspaceComputers).values({
-    id: workspaceComputerId,
-    workspaceId,
-    computerId,
-    displayName: "Computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "test",
-    enrolledByUserId: userId,
   });
   await unit.database.insert(agents).values({
     id: agentId,
-    workspaceId,
     createdByUserId: userId,
-    workspaceComputerId,
     computerId,
     name: `agent-${agentId}`,
     displayName: "Agent",
@@ -396,7 +377,7 @@ async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean }
     conversationKind: "channel",
     kind: "channel",
   });
-  await unit.database.insert(sessionPlacements).values({ sessionId, workspaceComputerId, computerId, generation: 1 });
+  await unit.database.insert(sessionPlacements).values({ sessionId, computerId, generation: 1 });
   await unit.database.insert(imMessages).values({
     id: messageId,
     imBindingId: bindingId,
@@ -438,7 +419,7 @@ async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean }
       provider: "codex",
       instructions: { platform: "", agent: "", session: "" },
       execution: { approvalPolicy: "never", networkAccess: false },
-      workspace: { workspaceId, mode: "empty_on_create", sharing: "agent" },
+      workspace: { workspaceId: agentId, mode: "empty_on_create", sharing: "agent" },
     },
   };
   await unit.database.insert(imMessageDeliveries).values({
@@ -451,16 +432,15 @@ async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean }
   });
   const context: RuntimeBusinessContext = {
     computerId,
-    workspaceComputerId,
-    workspaceId,
+    installationId: randomUUID(),
     instanceId,
     signal: new AbortController().signal,
   };
-  const dispatchContext = { workspaceComputerId, instanceId };
+  const dispatchContext = { computerId, instanceId };
   const reconcile: SessionReconcileRequest = {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: randomUUID(),
     sessionId,
     agentId,
     placementGeneration: 1,

@@ -185,6 +185,11 @@
       "idx": 36,
       "tag": "0036_first_the_stranger",
       "sha256": "961d97e5e1e0bd399ef6b4e99d577d51e5acd9c14ee1b40f13bbcbf2eb3f4608"
+    },
+    {
+      "idx": 37,
+      "tag": "0037_drop_workspace_ownership_persistence",
+      "sha256": "145f3d61201af749380bbcb565c3ba0bbb364c7571128194ca42c1abc49c2f4e"
     }
   ]
 }

@@ -24,21 +24,15 @@ import { and, asc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-or
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
-  accountComputers,
   agentRuntimeConfigs,
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   sessionPlacements,
   sessions,
   users,
 } from "../../db/schema/index.js";
-import {
-  ensureSchemaWorkspaceId,
-  schemaRequiredAgentProjection,
-  schemaRequiredComputerProjection,
-  schemaWorkspaceIdForComputer,
-} from "../../db/schema-required-legacy.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
@@ -88,7 +82,7 @@ function toAgentComputer(row: {
 }): AgentComputer | null {
   if (row.agentComputerId === null) return null;
   if (!row.computerId || !row.computerDisplayName || !row.computerPlatform || !row.computerOwnerAccountId) {
-    throw new Error("Active Agent is missing its enrolled Computer");
+    throw new Error("Active Agent is missing its bound Computer");
   }
   return {
     computerId: row.computerId,
@@ -133,7 +127,7 @@ function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<str
 export interface AgentSessionStopTarget {
   agentId: string;
   computerId: string;
-  workspaceComputerId: string;
+  installationId: string;
   placementGeneration: number;
   sessionId: string;
 }
@@ -300,11 +294,7 @@ export class AgentService {
   readonly #now: () => Date;
   readonly #onDiagnostic: (code: string) => void;
   readonly #onProviderCliPlacementChanged?:
-    | ((input: {
-        agentId: string;
-        previousWorkspaceComputerId?: string;
-        workspaceComputerId?: string;
-      }) => Promise<void> | void)
+    | ((input: { agentId: string; previousComputerId?: string; computerId?: string }) => Promise<void> | void)
     | undefined;
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
 
@@ -317,8 +307,8 @@ export class AgentService {
       onDiagnostic?: (code: string) => void;
       onProviderCliPlacementChanged?: (input: {
         agentId: string;
-        previousWorkspaceComputerId?: string;
-        workspaceComputerId?: string;
+        previousComputerId?: string;
+        computerId?: string;
       }) => Promise<void> | void;
       stopSessions?: (targets: AgentSessionStopTarget[]) => Promise<void>;
     } = {},
@@ -378,12 +368,6 @@ export class AgentService {
         const [created] = await transaction
           .insert(agents)
           .values({
-            ...(computer
-              ? schemaRequiredAgentProjection(computer)
-              : {
-                  workspaceId: await ensureSchemaWorkspaceId(transaction, callerUserId, now),
-                  workspaceComputerId: null,
-                }),
             createdByUserId: callerUserId,
             creationIntentId: input.creationIntentId,
             creationIntentFingerprint: intentFingerprint,
@@ -471,10 +455,10 @@ export class AgentService {
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
         agentComputerId: agents.computerId,
-        computerId: accountComputers.id,
-        computerDisplayName: accountComputers.displayName,
-        computerPlatform: accountComputers.platform,
-        computerOwnerAccountId: accountComputers.ownerAccountId,
+        computerId: computers.id,
+        computerDisplayName: computers.displayName,
+        computerPlatform: computers.platform,
+        computerOwnerAccountId: computers.ownerAccountId,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -485,7 +469,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .leftJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .orderBy(asc(agents.name), asc(agents.id));
     const summaries = rows.flatMap((row) => {
@@ -567,10 +551,10 @@ export class AgentService {
         createdByUserId: agents.createdByUserId,
         creatorDisplayName: creator.displayName,
         agentComputerId: agents.computerId,
-        computerId: accountComputers.id,
-        computerDisplayName: accountComputers.displayName,
-        computerPlatform: accountComputers.platform,
-        computerOwnerAccountId: accountComputers.ownerAccountId,
+        computerId: computers.id,
+        computerDisplayName: computers.displayName,
+        computerPlatform: computers.platform,
+        computerOwnerAccountId: computers.ownerAccountId,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -581,7 +565,7 @@ export class AgentService {
       })
       .from(agents)
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
-      .leftJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
@@ -814,7 +798,7 @@ export class AgentService {
     });
     await this.#notifyProviderCliPlacement({
       agentId,
-      previousWorkspaceComputerId: result.computerId ?? undefined,
+      previousComputerId: result.computerId ?? undefined,
     });
     await this.#stopSessionsBestEffort(result.targets);
     return result.config;
@@ -837,7 +821,7 @@ export class AgentService {
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before reactivation");
       return { computerId: scope.computerId, config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
     });
-    await this.#notifyProviderCliPlacement({ agentId, workspaceComputerId: result.computerId ?? undefined });
+    await this.#notifyProviderCliPlacement({ agentId, computerId: result.computerId ?? undefined });
     return result.config;
   }
 
@@ -851,7 +835,7 @@ export class AgentService {
           endedAt: sessions.endedAt,
           generation: sessionPlacements.generation,
           sessionId: sessions.id,
-          workspaceComputerId: sessionPlacements.computerId,
+          computerId: sessionPlacements.computerId,
         })
         .from(sessions)
         .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
@@ -861,7 +845,7 @@ export class AgentService {
         .for("update", { of: sessionPlacements });
       const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const changesAgent = scope.agent.computerId !== target.id;
-      const changesPlacement = active.some(({ workspaceComputerId }) => workspaceComputerId !== target.id);
+      const changesPlacement = active.some(({ computerId }) => computerId !== target.id);
       if (!changesAgent && !changesPlacement) {
         return {
           changedComputer: false,
@@ -903,7 +887,6 @@ export class AgentService {
         const [changed] = await transaction
           .update(agents)
           .set({
-            ...schemaRequiredAgentProjection(target),
             computerId: target.id,
             revision: sql`${agents.revision} + 1`,
             updatedAt: now,
@@ -914,11 +897,10 @@ export class AgentService {
         updated = changed;
       }
       for (const row of active) {
-        if (row.workspaceComputerId === target.id) continue;
+        if (row.computerId === target.id) continue;
         const [moved] = await transaction
           .update(sessionPlacements)
           .set({
-            ...schemaRequiredComputerProjection(target.id),
             computerId: target.id,
             generation: row.generation + 1,
             updatedAt: now,
@@ -944,8 +926,8 @@ export class AgentService {
     if (result.changedComputer) {
       await this.#notifyProviderCliPlacement({
         agentId,
-        previousWorkspaceComputerId: result.previousComputerId ?? undefined,
-        workspaceComputerId: result.computerId,
+        previousComputerId: result.previousComputerId ?? undefined,
+        computerId: result.computerId,
       });
     }
     return result.config;
@@ -979,7 +961,7 @@ export class AgentService {
     });
     await this.#notifyProviderCliPlacement({
       agentId,
-      previousWorkspaceComputerId: result.computerId ?? undefined,
+      previousComputerId: result.computerId ?? undefined,
     });
     await this.#stopSessionsBestEffort(result.targets);
   }
@@ -1015,18 +997,17 @@ export class AgentService {
     transaction: DatabaseTransaction,
     accountId: string,
     computerId: string,
-  ): Promise<{ id: string; workspaceId: string }> {
+  ): Promise<{ id: string }> {
     const [computer] = await transaction
-      .select({ id: accountComputers.id })
-      .from(accountComputers)
-      .where(and(eq(accountComputers.id, computerId), eq(accountComputers.ownerAccountId, accountId)))
+      .select({ id: computers.id })
+      .from(computers)
+      .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId)))
       .limit(1)
       .for("update");
     if (!computer) {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }
-    const schemaWorkspaceId = await schemaWorkspaceIdForComputer(transaction, computer.id);
-    return { id: computer.id, workspaceId: schemaWorkspaceId };
+    return computer;
   }
 
   async #resolveAgentScope(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentScope> {
@@ -1069,8 +1050,8 @@ export class AgentService {
     return transaction
       .select({
         agentId: imBindings.agentId,
-        computerId: accountComputers.currentInstallationId,
-        workspaceComputerId: sessionPlacements.computerId,
+        installationId: computers.currentInstallationId,
+        computerId: sessionPlacements.computerId,
         placementGeneration: sessionPlacements.generation,
         sessionId: sessions.id,
       })
@@ -1078,7 +1059,7 @@ export class AgentService {
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(accountComputers, eq(accountComputers.id, sessionPlacements.computerId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(and(eq(imBindings.agentId, agentId), isNull(sessions.endedAt)));
   }
 
@@ -1096,8 +1077,8 @@ export class AgentService {
 
   async #notifyProviderCliPlacement(input: {
     agentId: string;
-    previousWorkspaceComputerId?: string;
-    workspaceComputerId?: string;
+    previousComputerId?: string;
+    computerId?: string;
   }): Promise<void> {
     if (!this.#onProviderCliPlacementChanged) return;
     try {

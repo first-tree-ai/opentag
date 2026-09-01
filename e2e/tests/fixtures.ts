@@ -38,7 +38,6 @@ export interface E2ERuntime {
   setSetupComplete(): Promise<void>;
   seedTask(agentId: string): Promise<string>;
   userId: string;
-  workspaceId: string;
 }
 
 interface RuntimeFile {
@@ -48,7 +47,6 @@ interface RuntimeFile {
   databaseURL: string;
   devEmail: string;
   userId: string;
-  workspaceId: string;
 }
 
 function connectionTarget(url: string): { database: string; password: string; username: string } {
@@ -105,6 +103,9 @@ async function waitFor(description: string, predicate: () => Promise<boolean>, t
 async function startDaemon(
   runtime: RuntimeFile,
 ): Promise<{ daemon: ReturnType<typeof spawn>; openTagHome: string; temporaryHome: string }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(runtime.accountComputerId)) {
+    throw new Error("The E2E runtime is missing its canonical Account Computer identity");
+  }
   const temporaryHome = await mkdtemp(join(tmpdir(), "opentag-e2e-daemon-"));
   const home = join(temporaryHome, "home");
   const openTagHome = join(temporaryHome, "opentag-home");
@@ -168,9 +169,8 @@ async function startDaemon(
   await waitFor(
     "the E2E Computer to connect",
     async () =>
-      Number(
-        await psql(runtime.databaseURL, "select count(*) from account_computers where current_instance_id is not null"),
-      ) > 0,
+      Number(await psql(runtime.databaseURL, "select count(*) from computers where current_instance_id is not null")) >
+      0,
   );
   return { daemon, openTagHome, temporaryHome };
 }
@@ -293,7 +293,6 @@ export const test = browserTest.extend<Record<never, never>, { e2eRuntime: E2ERu
           },
           seedTask: (agentId) => seedTask(runtime, agentId),
           userId: runtime.userId,
-          workspaceId: runtime.workspaceId,
         });
       } finally {
         await stopDaemon(daemon.daemon, daemon.temporaryHome);

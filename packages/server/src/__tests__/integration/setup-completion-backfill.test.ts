@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "../../db/migrate.js";
 import { AuthService } from "../../services/auth/index.js";
-import { WorkspaceSetupService } from "../../services/workspaces/index.js";
+import { AccountSetupService } from "../../services/setup/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -33,7 +33,7 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
 const THROUGH_0030_COUNT = 31;
-const CURRENT_MIGRATION_COUNT = 37;
+const CURRENT_MIGRATION_COUNT = 38;
 
 type Journal = {
   version: string;
@@ -346,12 +346,24 @@ describe("Account setup completion backfill", () => {
     await migrateDatabase(databaseUrl, migrationsFolder);
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {
-      await populateHistoricalEvidence(sql);
       await sql`
-        update users set setup_completed_at = ${EARLY} where id = ${ACCOUNT_A}
+        insert into users (id, email, display_name)
+        values
+          (${ACCOUNT_A}, 'a@example.com', 'A'),
+          (${ACCOUNT_B}, 'b@example.com', 'B'),
+          (${ACCOUNT_GRANT_ONLY}, 'grant@example.com', 'Grant Only'),
+          (${ACCOUNT_EMPTY}, 'empty@example.com', 'Empty')
       `;
       await sql`
-        update workspaces set setup_completed_at = null where id = ${WORKSPACE_LATE}
+        insert into computers (id, owner_account_id, current_installation_id, display_name, platform, arch, client_version)
+        values (${ENROLLMENT_B}, ${ACCOUNT_B}, ${INSTALLATION_B}, 'box', 'linux', 'x64', '0.0.1')
+      `;
+      await sql`
+        insert into agents (id, created_by_user_id, computer_id, name, display_name, runtime_provider, status)
+        values (${AGENT_LATE}, ${ACCOUNT_B}, ${ENROLLMENT_B}, 'b-assistant', 'B', 'codex', 'active')
+      `;
+      await sql`
+        update users set setup_completed_at = ${EARLY} where id = ${ACCOUNT_A}
       `;
     } finally {
       await sql.end();
@@ -371,7 +383,7 @@ describe("Account setup completion backfill", () => {
       await expect(auth.getActiveUserById(ACCOUNT_GRANT_ONLY)).resolves.toMatchObject({ setupCompletedAt: null });
       await expect(auth.getActiveUserById(ACCOUNT_EMPTY)).resolves.toMatchObject({ setupCompletedAt: null });
 
-      const setup = new WorkspaceSetupService(
+      const setup = new AccountSetupService(
         client.database,
         {
           getHandoffForAgent: async () => ({ bindingState: "active", handoffReady: true }),
@@ -384,15 +396,6 @@ describe("Account setup completion backfill", () => {
       await expect(auth.getActiveUserById(ACCOUNT_B)).resolves.toMatchObject({
         setupCompletedAt: LATE.toISOString(),
       });
-      const verification = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
-      try {
-        const [legacy] = await verification<{ setup_completed_at: Date | null }[]>`
-          select setup_completed_at from workspaces where id = ${WORKSPACE_LATE}
-        `;
-        expect(legacy?.setup_completed_at).toBeNull();
-      } finally {
-        await verification.end();
-      }
     } finally {
       await client.sql.end();
     }

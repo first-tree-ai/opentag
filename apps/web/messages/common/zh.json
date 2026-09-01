@@ -43,7 +43,7 @@
   "common_request_failed": "请求失败",
   "common_required": "必填",
   "common_reset_all": "全部重置",
-  "common_reset_all_confirm_description": "这会在预发布环境删除你当前的 Agent，并撤销电脑注册和消息连接。不会影响其他人的账户。",
+  "common_reset_all_confirm_description": "这会在预发布环境删除你当前的 Agent，并断开电脑和消息连接。不会影响其他人的账户。",
   "common_reset_all_confirm_title": "重置你的预发布账户？",
   "common_reset_all_description": "将此账户恢复为真正的首次运行状态：删除其中的 Agent，并撤销电脑访问权限。可用于测试创建流程；下一次运行需要新的电脑连接命令。",
   "common_reset_and_start_onboarding": "重置并开始引导",

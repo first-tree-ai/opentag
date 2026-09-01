@@ -6,7 +6,7 @@
  * readiness; issuance, redemption, expiry and reissue belong to ComputerConnect.
  */
 
-import type { AgentRuntimeProvider, ImBindingHandoffStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentRuntimeProvider, ImBindingHandoffStatus } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { formatRelativeTime } from "../i18n/format.js";
@@ -66,7 +66,7 @@ function readMessaging(handoff: ImBindingHandoffStatus | undefined): MessagingSt
  * Provider rather than by position — the Server sends only what it has observed, in its own
  * canonical order, so position 0 is whichever CLI happened to report, not the one being asked about.
  */
-function readReadiness(computer: WorkspaceComputerSummary, runtime: AgentRuntimeProvider | undefined): ReadinessFacts {
+function readReadiness(computer: AccountComputerSummary, runtime: AgentRuntimeProvider | undefined): ReadinessFacts {
   const provider = runtime ? computer.providerReadiness?.find((entry) => entry.provider === runtime) : undefined;
   const messagingCli: Partial<Record<MessagingProvider, MessagingCliStatus>> = {};
   for (const entry of computer.imCliReadiness ?? []) messagingCli[entry.provider] = entry.status;
@@ -83,7 +83,7 @@ function readReadiness(computer: WorkspaceComputerSummary, runtime: AgentRuntime
  * keeps that dependency visible instead of threading it through every call.
  */
 export function useServerBackend(draft: AgentDraft): OnboardingBackend {
-  const [computer, setComputer] = useState<WorkspaceComputerSummary>();
+  const [computer, setComputer] = useState<AccountComputerSummary>();
   const [selectedComputer, setSelectedComputer] = useState<KnownComputer>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
@@ -107,7 +107,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   /** Discards the reply of a read the reader has already asked to redo. */
   const resumeRun = useRef(0);
 
-  /** The Computer this run enrolled. Messaging and creation both need it after the step is left. */
+  /** The Computer this run connected. Messaging and creation both need it after the step is left. */
   const computerId = useRef<string | undefined>(undefined);
   /** Bumped by reset and unmount so replies from an abandoned run are discarded. */
   const attempt = useRef(0);
@@ -149,26 +149,26 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         /*
          * Redeeming a Computer command and creating its Agent are separate durable writes. A
          * refresh can land between them, so inventory must be resumed even when no Agent exists
-         * yet; otherwise the page would forget the enrolled Computer and issue a second create
+         * yet; otherwise the page would forget the connected Computer and issue a second create
          * command. Prefer the reachable row where legacy data contains more than one.
          */
         if (active.length === 0) {
-          const enrolled = computers.find((candidate) => candidate.connectionStatus === "online") ?? computers[0];
-          if (!enrolled) return;
-          computerId.current = enrolled.computerId;
-          setComputer(enrolled);
+          const connected = computers.find((candidate) => candidate.connectionStatus === "online") ?? computers[0];
+          if (!connected) return;
+          computerId.current = connected.computerId;
+          setComputer(connected);
           setSelectedComputer({
-            id: enrolled.computerId,
-            displayName: enrolled.displayName,
-            availability: enrolled.connectionStatus,
-            lastSeen: enrolled.lastSeenAt ? formatRelativeTime(enrolled.lastSeenAt) : undefined,
+            id: connected.computerId,
+            displayName: connected.displayName,
+            availability: connected.connectionStatus,
+            lastSeen: connected.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
           });
           return;
         }
 
         /*
          * The Agent names its Computer, but that is a foreign key rather than a state: it says which
-         * machine was enrolled, not whether it is there now. Asserting a live connection from it
+         * machine connected, not whether it is there now. Asserting a live connection from it
          * would put "Your computer is connected." on screen while the Server says otherwise, and
          * hide the command that is the only way to bring the machine back — so the connection is
          * read, not inferred. One extra round trip buys not saying something untrue.
@@ -198,16 +198,16 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
         creationRef.current = "created";
         setCreation("created");
-        const enrolled = byId.get(resumedComputer.computerId);
+        const connected = byId.get(resumedComputer.computerId);
         computerId.current = resumedComputer.computerId;
         setSelectedComputer({
           id: resumedComputer.computerId,
-          displayName: enrolled?.displayName ?? resumedComputer.displayName,
-          availability: enrolled?.connectionStatus ?? "unknown",
-          lastSeen: enrolled?.lastSeenAt ? formatRelativeTime(enrolled.lastSeenAt) : undefined,
+          displayName: connected?.displayName ?? resumedComputer.displayName,
+          availability: connected?.connectionStatus ?? "unknown",
+          lastSeen: connected?.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
         });
-        if (enrolled) {
-          setComputer(enrolled);
+        if (connected) {
+          setComputer(connected);
         }
 
         /*
@@ -259,7 +259,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     void readAccount();
   }, [readAccount]);
 
-  const computerConnected = useCallback((connected: WorkspaceComputerSummary) => {
+  const computerConnected = useCallback((connected: AccountComputerSummary) => {
     computerId.current = connected.computerId;
     setComputer(connected);
     setSelectedComputer({

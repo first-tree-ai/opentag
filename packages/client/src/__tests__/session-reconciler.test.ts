@@ -12,7 +12,7 @@ import { type RuntimePreparation, SessionReconciler } from "../runtime/session-r
 describe("SessionReconciler", () => {
   it("B-07 makes readiness per session and fences delivery by placement and runtime revision", async () => {
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId });
+    const reconciler = new SessionReconciler({ installationId: computerId });
     const request = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"));
     const delivery = directDelivery(request);
 
@@ -33,7 +33,7 @@ describe("SessionReconciler", () => {
     const computerId = randomUUID();
     const sessionId = randomUUID();
     const agentId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId });
+    const reconciler = new SessionReconciler({ installationId: computerId });
     const request = {
       ...reconcileRequest(computerId, sessionId, snapshot(agentId, agentId)),
       sessionKind: "internal" as const,
@@ -62,7 +62,7 @@ describe("SessionReconciler", () => {
     const computerId = randomUUID();
     const internalId = randomUUID();
     const agentId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId });
+    const reconciler = new SessionReconciler({ installationId: computerId });
     const internal = {
       ...reconcileRequest(computerId, internalId, snapshot(agentId, agentId)),
       sessionKind: "internal" as const,
@@ -99,7 +99,7 @@ describe("SessionReconciler", () => {
     const computerId = randomUUID();
     const sessionId = randomUUID();
     const agentId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId });
+    const reconciler = new SessionReconciler({ installationId: computerId });
     const initialRuntime = snapshot(agentId, agentId);
     const initial = {
       ...reconcileRequest(computerId, sessionId, initialRuntime),
@@ -132,7 +132,7 @@ describe("SessionReconciler", () => {
     });
     const preparation = preparationFixture();
     preparation.prepareAgent.mockImplementation(() => gate);
-    const reconciler = new SessionReconciler({ computerId, preparation });
+    const reconciler = new SessionReconciler({ installationId: computerId, preparation });
     const first = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"));
     const duplicate = reconciler.reconcile(first);
     const sameRequest = reconciler.reconcile(structuredClone(first));
@@ -151,7 +151,7 @@ describe("SessionReconciler", () => {
 
   it("B-09/B-10 rejects same-sequence conflicts and late revisions without state rollback", async () => {
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId });
+    const reconciler = new SessionReconciler({ installationId: computerId });
     const initialRuntime = snapshot("agent-1", "workspace-1");
     const initial = reconcileRequest(computerId, "session-1", initialRuntime);
     await reconciler.reconcile(initial);
@@ -183,7 +183,7 @@ describe("SessionReconciler", () => {
 
   it("B-11/B-12 blocks session migration and agent revision changes while a turn owns the binding", async () => {
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId });
+    const reconciler = new SessionReconciler({ installationId: computerId });
     const firstRuntime = snapshot("agent-1", "workspace-1");
     const siblingRuntime = snapshot("agent-1", "workspace-1");
     const first = reconcileRequest(computerId, "session-1", firstRuntime);
@@ -215,7 +215,7 @@ describe("SessionReconciler", () => {
   it("B-14/B-16 keeps one agent workspace invariant and stops only the target binding", async () => {
     const computerId = randomUUID();
     const preparation = preparationFixture();
-    const reconciler = new SessionReconciler({ computerId, preparation });
+    const reconciler = new SessionReconciler({ installationId: computerId, preparation });
     const firstRuntime = snapshot("agent-1", "workspace-1");
     const siblingRuntime = snapshot("agent-1", "workspace-1");
     const first = reconcileRequest(computerId, "session-1", firstRuntime);
@@ -234,7 +234,7 @@ describe("SessionReconciler", () => {
       reconciler.reconcile({
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId,
+        installationId: computerId,
         sessionId: "session-1",
         agentId: "agent-1",
         placementGeneration: 1,
@@ -249,7 +249,7 @@ describe("SessionReconciler", () => {
 
   it("B-17 distinguishes a live owner from disk-only recovery", async () => {
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId });
+    const reconciler = new SessionReconciler({ installationId: computerId });
     const request = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"));
     await reconciler.reconcile(request);
     reconciler.setActivity("session-1", { phase: "reporting", deliveryId: "delivery-1", turnId: "turn-1" });
@@ -273,7 +273,7 @@ describe("SessionReconciler", () => {
     const computerId = randomUUID();
     const preparation = preparationFixture();
     const reconciler = new SessionReconciler({
-      computerId,
+      installationId: computerId,
       preparation,
       localPolicy: {
         validate: (runtime) => (runtime.execution.networkAccess ? "configuration_unsupported" : undefined),
@@ -298,7 +298,10 @@ describe("SessionReconciler", () => {
       (_snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined => "provider_unavailable",
     );
     const validateDelivery = vi.fn(() => undefined);
-    const reconciler = new SessionReconciler({ computerId, localPolicy: { validate, validateDelivery } });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      localPolicy: { validate, validateDelivery },
+    });
     const request = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"));
 
     validate.mockReturnValueOnce(undefined);
@@ -323,7 +326,7 @@ function snapshot(agentId: string, workspaceId: string): EffectiveRuntimeSnapsho
 }
 
 function reconcileRequest(
-  computerId: string,
+  installationId: string,
   sessionId: string,
   runtime: EffectiveRuntimeSnapshot,
   placementGeneration = 1,
@@ -331,7 +334,7 @@ function reconcileRequest(
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId,
     sessionId,
     agentId: runtime.agentId,
     placementGeneration,

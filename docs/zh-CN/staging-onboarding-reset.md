@@ -7,7 +7,7 @@ onboarding 是为从未跑过它的 Account 写的，因此一个 staging Accoun
 首次使用状态。
 
 选哪个取决于你要测什么。只有 `mode: "all"` 能造出一次真正的首跑，因为**仅清除 setup 完成时间戳不足以做到这件事**：已有的
-Computer enrollment、Agent、runtime readiness 和 IM binding 会立即推进由事实推导出的 onboarding 流程。而 `mode: "reboard"`
+Computer connection、Agent、runtime readiness 和 IM binding 会立即推进由事实推导出的 onboarding 流程。而 `mode: "reboard"`
 清除的恰恰只有那个时间戳，所以幸存下来的这些事实会把 Account 带进 resume 路径——这正是它存在的意义。
 
 两种模式在 production 都不可用，也都永远不会触及已认证 Account 之外的任何 Account。
@@ -43,7 +43,7 @@ Server 强制执行的规则：
 - 每个请求都必须完成认证；
 - staging 之外的任何部署，响应都与路径不存在完全一致，且环境会在每个请求上重新确认，而不是信任路由注册这一事实；
 - reset 始终作用于已认证 Account，不接受客户端选择的 Account；
-- 除非该 Account 恰好独占一个活跃资源域，否则 reset 拒绝执行，因此它只可能作用于调用者自己的资源；
+- reset 只选择该 Account 创建的 Agent 与该 Account 拥有的 Computer，并在清除 setup 完成状态前验证没有活跃事实残留；
 - reset 需要常规的浏览器 CSRF 保护。
 
 `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` 过去用于指定唯一允许 reset 的 Account，现已废弃：仍然设置它的部署可以正常启动，该值被
@@ -90,13 +90,13 @@ await fetch("/api/v1/me/setup/reset", {
 1. 通过既有 Agent 生命周期挂起并删除每个未删除的 Agent，这会禁用 IM binding、清除加密的 IM 与 setup 凭据、结束活跃 Session
    并移除 runtime 配置；
 2. 撤销未消费的 Computer connect code；
-3. 撤销活跃的 enrollment 凭据与 Computer enrollment；
+3. 撤销活跃的 Computer 凭据并清除当前连接观察；
 4. 关闭受影响的在线 Computer 连接；
 5. 重新读取权威事实并校验；
 6. 只有在校验通过后才清除 setup 完成时间戳。
 
 由于该时间戳是最终提交标记，在校验之前失败的 reset 会让 Account 停留在应用内部，可以直接重跑。两名测试者同时 reset 作用于不同
-Account、锁的是不同资源域，因此互不阻塞。
+Account、锁的是不同 Account 行，因此互不阻塞。
 
 历史与身份数据会被保留：Account 及其 Google identity、已删除的 Agent 行、已禁用的 IM binding、已结束的 Session 与消息、
 稳定的 Computer 身份，以及外部 Feishu Bot。这些数据之后都不会满足 onboarding 的活跃事实。
@@ -105,13 +105,13 @@ Account、锁的是不同资源域，因此互不阻塞。
 
 重复测试不需要删除或重建 `OPENTAG_HOME`。执行 `mode: "all"` 的 reset 之后：
 
-1. 之前的 enrollment 与 machine token 失效；
+1. 之前的 connection 与 machine token 失效；
 2. Web 生成新的 Computer connect 命令；
 3. CLI 复用稳定的物理 Computer 身份；
-4. 新的 enrollment 凭据替换同一 Account 与 scope 下失效的凭据；
+4. 新的 Computer 凭据替换同一 Account 与稳定 Computer 身份下失效的凭据；
 5. 既有 daemon 服务重启并重连。
 
-这会验证 Computer 步骤、connect 命令、enrollment、readiness 与 Agent 创建。它刻意不重复验证首次安装 package、首次安装 daemon
+这会验证 Computer 步骤、connect 命令、connection、readiness 与 Agent 创建。它刻意不重复验证首次安装 package、首次安装 daemon
 服务，或每次都创建全新的本地 Computer 身份；需要覆盖这些时请使用干净的 VM 或 CI 主机。
 
 ## 两次运行之间的 Feishu

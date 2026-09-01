@@ -19,8 +19,8 @@ export class PostAuthenticationService {
   }
 
   /**
-   * Locks the Account and refuses a suspended caller. Management Workspace and grant provisioning
-   * are not part of Account onboarding.
+   * Locks the Account and refuses a suspended caller. Resource provisioning is not part of
+   * authentication.
    */
   async ensureAccountReady(userId: string): Promise<PostAuthenticationResult> {
     return this.#database.transaction((transaction) => this.completeInTransaction(transaction, userId));

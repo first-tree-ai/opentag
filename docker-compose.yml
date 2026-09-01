@@ -11,7 +11,7 @@ services:
       POSTGRES_USER: opentag
       POSTGRES_PASSWORD: opentag
     ports:
-      - "5432:5432"
+      - "${OPENTAG_POSTGRES_PORT:-5432}:5432"
     volumes:
       - opentag-postgres-data:/var/lib/postgresql/data
     healthcheck:

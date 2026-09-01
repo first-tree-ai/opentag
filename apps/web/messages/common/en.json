@@ -43,7 +43,7 @@
   "common_request_failed": "The request failed",
   "common_required": "Required",
   "common_reset_all": "Reset all",
-  "common_reset_all_confirm_description": "This deletes your current Agents and revokes your Computer enrollments and messaging connections on staging. Nobody else's Account is touched.",
+  "common_reset_all_confirm_description": "This deletes your current Agents and disconnects your Computers and messaging connections on staging. Nobody else's Account is touched.",
   "common_reset_all_confirm_title": "Reset your staging Account?",
   "common_reset_all_description": "Returns this Account to a genuine first-run state: its Agents are deleted and its Computer access revoked. Use it to test the create path — the next run needs a fresh Computer connect command.",
   "common_reset_and_start_onboarding": "Reset and start onboarding",

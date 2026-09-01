@@ -53,26 +53,53 @@ export function classifyLarkAuthStatus(
   expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
 ): ProviderCliValidationClassification {
   if (!isRecord(payload)) return { status: "needs_attention" };
-  const failure = classifyProviderFailure(
-    [stringifyUnknown(payload.error), stringifyUnknown(payload.code)],
-    payload.missing_scopes,
-  );
+  const failure = classifyLarkFailure(payload);
   if (failure) return failure;
-  if (!isRecord(payload.identity) || !isRecord(payload.identities)) return { status: "needs_attention" };
-  if (!isRecord(payload.identities.bot)) return { status: "needs_attention" };
-  const bot = payload.identities.bot;
-  if (typeof bot.available !== "boolean" || typeof bot.verified !== "boolean") return { status: "needs_attention" };
-  if (!bot.available || !bot.verified) return { status: "needs_attention", reason: "credential_rejected" };
-  const identity = larkIdentity(payload.identity, bot);
-  if (!identity) return { status: "needs_attention" };
-  if (
-    identity.appId !== expected.appId ||
-    identity.botOpenId !== expected.botOpenId ||
-    identity.brand !== expected.teamBrand
-  ) {
+
+  const rawSuccess = payload.code === 0;
+  const normalizedSuccess = payload.ok === true;
+  if (!rawSuccess && !normalizedSuccess) return { status: "needs_attention" };
+  if (normalizedSuccess && payload.identity !== "bot") {
+    return typeof payload.identity === "string"
+      ? { status: "needs_attention", reason: "identity_mismatch" }
+      : { status: "needs_attention" };
+  }
+
+  const container = normalizedSuccess && isRecord(payload.data) ? payload.data : payload;
+  if (!isRecord(container.bot) || typeof container.bot.open_id !== "string" || container.bot.open_id.length === 0) {
+    return { status: "needs_attention" };
+  }
+  if (container.bot.open_id !== expected.botOpenId) {
     return { status: "needs_attention", reason: "identity_mismatch" };
   }
   return { status: "ready" };
+}
+
+function classifyLarkFailure(payload: Record<string, unknown>): ProviderCliValidationClassification | undefined {
+  const error = isRecord(payload.error) ? payload.error : undefined;
+  const type = normalizedField(error?.type);
+  const subtype = normalizedField(error?.subtype);
+  const code = error?.code ?? payload.code;
+  const missingScopes = error?.missing_scopes ?? payload.missing_scopes;
+
+  if (hasMissingScopes(missingScopes) || type === "authorization" || isScopeFailure(subtype)) {
+    return { status: "needs_attention", reason: "scope_missing" };
+  }
+  if (isRateLimitFailure(type, subtype, code)) {
+    return { status: "retrying", reason: "rate_limited" };
+  }
+  if (type === "authentication") {
+    return { status: "needs_attention", reason: "credential_rejected" };
+  }
+  if (type === "validation" && isCliCompatibilityFailure(subtype)) {
+    return { status: "needs_attention", reason: "upgrade_required" };
+  }
+  if (isProviderFailure(type, subtype, code, error?.retryable)) {
+    return { status: "retrying", reason: "provider_unreachable" };
+  }
+
+  const scalarError = error ? undefined : stringifyUnknown(payload.error);
+  return classifyProviderFailure([scalarError, stringifyUnknown(payload.code)], payload.missing_scopes);
 }
 
 function classifyProviderFailure(
@@ -98,20 +125,6 @@ function slackIdentity(
   return { botId: payload.bot_id, teamId: payload.team_id, userId: payload.user_id };
 }
 
-function larkIdentity(
-  identity: Record<string, unknown>,
-  bot: Record<string, unknown>,
-): { readonly appId: string; readonly botOpenId: string; readonly brand: "feishu" | "lark" } | undefined {
-  const appId = stringField(identity, ["app_id", "appId"]) ?? stringField(bot, ["app_id"]);
-  const brand = stringField(identity, ["brand", "team_brand", "teamBrand"]);
-  const botOpenId =
-    stringField(identity, ["bot_open_id", "botOpenId", "open_id", "openId"]) ??
-    stringField(bot, ["bot_open_id", "open_id", "openId"]);
-  if (!appId || !botOpenId) return undefined;
-  if (brand !== "lark" && brand !== "feishu") return undefined;
-  return { appId, botOpenId, brand };
-}
-
 export function classifySpawnFailure(error: unknown): ProviderCliValidationClassification {
   if (isAbortError(error)) throw error;
   const code = errorCode(error);
@@ -132,6 +145,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasMissingScopes(value: unknown): boolean {
   if (Array.isArray(value)) return value.length > 0;
   return typeof value === "string" ? value.length > 0 : false;
+}
+
+function normalizedField(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value.toLowerCase() : undefined;
+}
+
+function isScopeFailure(subtype: string | undefined): boolean {
+  return (
+    subtype === "missing_scope" ||
+    subtype === "app_scope_not_applied" ||
+    subtype === "token_scope_insufficient" ||
+    subtype === "permission_denied"
+  );
+}
+
+function isRateLimitFailure(type: string | undefined, subtype: string | undefined, code: unknown): boolean {
+  return (
+    type === "rate_limit" ||
+    type === "rate_limited" ||
+    subtype === "rate_limit" ||
+    subtype === "rate_limited" ||
+    String(code) === "429"
+  );
+}
+
+function isProviderFailure(
+  type: string | undefined,
+  subtype: string | undefined,
+  code: unknown,
+  retryable: unknown,
+): boolean {
+  if (retryable === true) return true;
+  if (type === "network" || type === "transport") return true;
+  if (
+    subtype === "timeout" ||
+    subtype === "dns" ||
+    subtype === "tls" ||
+    subtype === "server_error" ||
+    subtype === "service_unavailable"
+  ) {
+    return true;
+  }
+  const status = Number(code);
+  return Number.isInteger(status) && status >= 500 && status < 600;
+}
+
+function isCliCompatibilityFailure(subtype: string | undefined): boolean {
+  return (
+    subtype === "invalid_argument" ||
+    subtype === "command_unavailable" ||
+    subtype === "unsupported_command" ||
+    subtype === "unsupported_flag"
+  );
 }
 
 function isRateLimited(error: string | undefined): boolean {
@@ -164,16 +230,14 @@ function isCredentialRejected(error: string | undefined): boolean {
   );
 }
 
-function stringField(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return undefined;
-}
-
 function stringifyUnknown(value: unknown): string | undefined {
-  return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value === null || typeof value !== "object") return undefined;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function errorCode(error: unknown): string | undefined {

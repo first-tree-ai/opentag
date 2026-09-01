@@ -21,12 +21,8 @@ export interface BetterAuthConfig {
    * Runs before any session row exists, and must throw to prevent one.
    *
    * Better Auth owns account creation on its own sign-in paths, so this is where OpenTag decides whether an Account
-   * may hold a session at all — which is a question about identity, not authority. A suspended Account is refused, and
-   * an Account that has never been provisioned gets its default Workspace before it can sign in.
-   *
-   * It deliberately does not require an *active* Workspace grant. Revoking every grant removes an Account's authority,
-   * not its ability to sign in: it can still authenticate and see that it has no Workspace, and re-provisioning it
-   * here would hand the revoked authority straight back. Routes derive authority from grants read live per request.
+   * may hold a session at all. A suspended Account is refused; an active Account may authenticate, while resource
+   * routes derive authority directly from that Account's ownership.
    */
   onSessionCreating: (userId: string) => Promise<void>;
   /** Origin the browser reaches the server on; also the only trusted origin. */

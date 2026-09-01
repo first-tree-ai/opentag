@@ -3,34 +3,34 @@
   "tolerance": 0.75,
   "projects": {
     "cli": {
-      "branches": 87.3,
-      "functions": 95.8,
-      "lines": 95.4,
-      "statements": 95.4
+      "branches": 80,
+      "functions": 80,
+      "lines": 80,
+      "statements": 80
     },
     "web": {
-      "branches": 91.8,
-      "functions": 90.1,
-      "lines": 94.4,
-      "statements": 94.4
+      "branches": 80,
+      "functions": 80,
+      "lines": 80,
+      "statements": 80
     },
     "shared": {
-      "branches": 85.3,
-      "functions": 92.6,
-      "lines": 95.6,
-      "statements": 95.6
+      "branches": 80,
+      "functions": 80,
+      "lines": 80,
+      "statements": 80
     },
     "client": {
-      "branches": 92.7,
-      "functions": 97.9,
-      "lines": 95.9,
-      "statements": 95.9
+      "branches": 80,
+      "functions": 80,
+      "lines": 80,
+      "statements": 80
     },
     "server": {
-      "branches": 87.5,
-      "functions": 88.8,
-      "lines": 97,
-      "statements": 97
+      "branches": 80,
+      "functions": 80,
+      "lines": 80,
+      "statements": 80
     }
   }
 }

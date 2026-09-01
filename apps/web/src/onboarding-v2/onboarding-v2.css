@@ -72,13 +72,13 @@
 
 .otv2-choice[aria-pressed="true"] {
   border-color: var(--color-kumo-brand);
-  background: var(--color-kumo-tint);
+  background: var(--brand-soft);
 }
 
 /* Nothing here shrinks under a click; it answers with colour instead. */
 .otv2-choice:active:not(:disabled) {
   transform: none;
-  background: var(--color-kumo-tint);
+  background: var(--color-kumo-fill-hover);
 }
 
 .otv2-shell button:active {

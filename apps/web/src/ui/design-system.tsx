@@ -69,6 +69,7 @@ import {
 import {
   Children,
   type ComponentPropsWithoutRef,
+  type CSSProperties,
   cloneElement,
   forwardRef,
   type HTMLAttributes,
@@ -167,18 +168,42 @@ export function buttonClassName({
 } = {}): string {
   return classes(
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
+    variant === "primary" &&
+      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring)]",
+    variant === "danger" &&
+      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-ring)]",
     className,
   );
 }
 
+type EmphasisButtonStyle = CSSProperties & {
+  "--kumo-button-emphasis-bg": string;
+  "--kumo-button-emphasis-gradient-end": string;
+  "--kumo-button-emphasis-gradient-start": string;
+  "--kumo-button-emphasis-ring": string;
+};
+
+function emphasisButtonStyle(variant: ButtonVariant): EmphasisButtonStyle | undefined {
+  const intent = variant === "primary" ? "primary" : variant === "danger" ? "danger" : undefined;
+  if (!intent) return undefined;
+  return {
+    "--kumo-button-emphasis-bg": `var(--opentag-button-${intent}-bg)`,
+    "--kumo-button-emphasis-gradient-end": `var(--opentag-button-${intent}-gradient-end)`,
+    "--kumo-button-emphasis-gradient-start": `var(--opentag-button-${intent}-gradient-start)`,
+    "--kumo-button-emphasis-ring": `var(--opentag-button-${intent}-ring)`,
+  };
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { className, size = "default", variant = "primary", type = "button", ...props },
+  { className, size = "default", style, variant = "primary", type = "button", ...props },
   ref,
 ) {
+  const emphasisStyle = emphasisButtonStyle(variant);
   const kumoProps: KumoButtonProps = {
     ...props,
     className: buttonClassName({ className, size, variant }),
     size: size === "compact" ? "sm" : "base",
+    style: emphasisStyle ? { ...style, ...emphasisStyle } : style,
     type,
     variant: kumoButtonVariant(variant),
   };

@@ -236,20 +236,11 @@ function UsageMetricSkeleton() {
 function UsageMetrics({ compact = false, usage }: { compact?: boolean; usage: AgentUsageDetail }) {
   return (
     <dl
-      className={
-        compact
-          ? "grid gap-3 @min-[36rem]/workspace:grid-cols-2"
-          : "grid divide-y divide-kumo-line @min-[36rem]/workspace:grid-cols-2 @min-[36rem]/workspace:divide-x @min-[36rem]/workspace:divide-y-0"
-      }
+      className="grid divide-y divide-kumo-line @min-[36rem]/workspace:grid-cols-2 @min-[36rem]/workspace:divide-x @min-[36rem]/workspace:divide-y-0"
       aria-label={m.usage_metrics_label({ window: usageWindowLabel(usage.windowDays) })}
       data-ui="usage-metrics"
     >
-      <Metric
-        compact={compact}
-        label={m.usage_metric_total_tokens()}
-        value={formatCompactNumber(usage.tokens)}
-        primary
-      />
+      <Metric compact={compact} label={m.usage_metric_total_tokens()} value={formatCompactNumber(usage.tokens)} />
       <Metric compact={compact} label={m.usage_metric_tasks()} value={formatCompactNumber(usage.tasks)} />
     </dl>
   );
@@ -277,21 +268,13 @@ function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
   );
 }
 
-function Metric({
-  compact = false,
-  label,
-  primary = false,
-  value,
-}: {
-  compact?: boolean;
-  label: string;
-  primary?: boolean;
-  value: string;
-}) {
+function Metric({ compact = false, label, value }: { compact?: boolean; label: string; value: string }) {
   return (
     <div
       className={
-        compact ? `grid gap-1 rounded-md p-3 ${primary ? "bg-kumo-tint" : "bg-kumo-recessed"}` : "grid gap-1 p-5"
+        compact
+          ? "grid gap-1 py-2.5 first:pt-0 last:pb-0 @min-[36rem]/workspace:px-4 @min-[36rem]/workspace:py-0 @min-[36rem]/workspace:first:pl-0 @min-[36rem]/workspace:last:pr-0"
+          : "grid gap-1 p-5"
       }
     >
       <Text as="dt" size="sm" variant="secondary">

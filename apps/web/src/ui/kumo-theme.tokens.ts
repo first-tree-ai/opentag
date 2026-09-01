@@ -12,13 +12,27 @@ export const kumoThemeTokens = {
     // is intentionally reserved for headings at 24px and above, so it is not used here.
     brandHover: "#2f4a03",
     brandText: "#3a5c04",
-    buttonRing: "#3a5c04",
+    buttonBackground: "#3a5c04",
+    buttonGradientStart: "#4b7308",
+    buttonGradientEnd: "#3a5c04",
+    buttonRing: "#2f4a03",
+    dangerButtonBackground: "#b42318",
+    dangerButtonGradientStart: "#c12c20",
+    dangerButtonGradientEnd: "#a61b13",
+    dangerButtonRing: "#88180f",
   },
   dark: {
     brand: "#8fdd14",
     brandHover: "#a8ec45",
     brandText: "#8fdd14",
+    buttonBackground: "#466d05",
+    buttonGradientStart: "#527f08",
+    buttonGradientEnd: "#466d05",
     buttonRing: "#8fdd14",
+    dangerButtonBackground: "#b42318",
+    dangerButtonGradientStart: "#c12c20",
+    dangerButtonGradientEnd: "#a61b13",
+    dangerButtonRing: "#e65a4f",
   },
 } as const;
 

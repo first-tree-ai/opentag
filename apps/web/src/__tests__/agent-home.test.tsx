@@ -131,6 +131,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dangerZone).getByRole("heading", { name: "Danger zone" })).toBeTruthy();
     expect(dangerZone.className).not.toContain("border-t");
     expect(screen.getByRole("link", { name: /^Pause or delete/ })).toBeTruthy();
+    expect(dangerZone.querySelector('[data-ui="agent-settings-entry-icon"]')?.className).toContain("text-kumo-danger");
     expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
     const instructionsLink = screen.getByRole("link", { name: /^Instructions / });
     expect(instructionsLink.className).toContain("focus-visible:ring-2");

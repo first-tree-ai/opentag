@@ -185,7 +185,9 @@ describe("OpenTag Web App Shell", () => {
     });
 
     expect(agentCreationPosts()).toHaveLength(0);
-    expect(screen.getByRole("button", { name: /Zulu Tower/ }).getAttribute("aria-pressed")).toBe("true");
+    const selectedComputer = screen.getByRole("button", { name: /Zulu Tower/ });
+    expect(selectedComputer.getAttribute("aria-pressed")).toBe("true");
+    expect(selectedComputer.className).toContain("data-[selected=true]:!bg-(--brand-soft)");
   });
 
   it("does not resume a stored creation intent onto a Runtime the form is not offering", async () => {

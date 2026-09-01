@@ -29,6 +29,19 @@ describe("RotatingFileStream", () => {
     expect(await readFile(join(directory, "client.log.2"), "utf8")).toBe("two\n");
   });
 
+  it("keeps young backups beyond the size ring until the retention floor expires", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "logs");
+    const stream = new RotatingFileStream(directory, { maxBackups: 1, maxBytes: 5, minRetentionMs: 60_000 });
+    stream.write("one\n");
+    stream.write("two\n");
+    stream.write("three\n");
+    stream.close();
+
+    expect(await readFile(join(directory, "client.log.1"), "utf8")).toBe("two\n");
+    expect(await readFile(join(directory, "client.log.2"), "utf8")).toBe("one\n");
+  });
+
   it("switches permanently to stderr fallback when the file sink cannot open", async () => {
     const root = await temporaryDirectory();
     const blocked = join(root, "not-a-directory");

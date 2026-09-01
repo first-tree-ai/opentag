@@ -2,7 +2,12 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { configureClientLoggerForService, createLogger, resetClientLoggerForTests } from "../logger.js";
+import {
+  configureClientLoggerContext,
+  configureClientLoggerForService,
+  createLogger,
+  resetClientLoggerForTests,
+} from "../logger.js";
 
 const directories: string[] = [];
 const originalLevel = process.env.OPENTAG_LOG_LEVEL;
@@ -44,6 +49,19 @@ describe("Client logger", () => {
     for (const key of ["module", "computerId", "instanceId"]) {
       expect(raw.match(new RegExp(`"${key}":`, "gu"))).toHaveLength(1);
     }
+  });
+
+  it("inherits process context and scrubs sensitive string values", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerContext({ instanceId: "instance-1", processRole: "daemon" });
+    configureClientLoggerForService(directory);
+    createLogger("daemon").info({ error: { message: "Authorization: Bearer embedded-secret" } }, "Observed failure");
+
+    const raw = await readFile(join(directory, "client.log"), "utf8");
+    const record = JSON.parse(raw) as Record<string, unknown>;
+    expect(record).toMatchObject({ instanceId: "instance-1", processRole: "daemon" });
+    expect(raw).not.toContain("embedded-secret");
   });
 
   it("treats repeated configuration as a no-op and rejects another directory", async () => {

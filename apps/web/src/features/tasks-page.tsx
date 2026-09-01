@@ -1,5 +1,5 @@
 import type { TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
@@ -368,10 +368,11 @@ export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?:
       </nav>
 
       <header className="grid gap-3" data-ui="task-conversation-header">
-        <div className="break-words">
+        <div className="flex flex-wrap items-center gap-2 break-words">
           <Text as="h1" size="lg" variant="heading">
             {task.title}
           </Text>
+          <TaskTitleEditor showTitle={false} task={task} />
         </div>
         <section className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" aria-label={m.tasks_details()}>
           <span className="inline-flex items-center gap-2">
@@ -554,9 +555,7 @@ function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSu
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
       <td className="p-3" data-label={m.tasks_task_label()}>
-        <Link {...agentTaskDetailLink(task.agent.id, task.id)} title={task.title}>
-          {task.title}
-        </Link>
+        <TaskTitleEditor task={task} link={{ ...agentTaskDetailLink(task.agent.id, task.id) }} />
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
           {showAgent ? (
             <>
@@ -584,6 +583,116 @@ function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSu
         />
       </td>
     </tr>
+  );
+}
+
+function TaskTitleEditor({
+  link,
+  showTitle = true,
+  task,
+}: {
+  link?: ReturnType<typeof agentTaskDetailLink>;
+  showTitle?: boolean;
+  task: TaskSummary;
+}) {
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(task.title);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const begin = () => {
+    setDraft(task.title);
+    setError(null);
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    if (saving) return;
+    setDraft(task.title);
+    setError(null);
+    setEditing(false);
+  };
+
+  const save = async (title: string | null) => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await browserApi.updateTaskTitle(task.id, { title });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all() });
+      setEditing(false);
+    } catch {
+      setError(m.tasks_title_save_failed());
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <span className="inline-flex max-w-full items-center gap-1">
+        {showTitle && link ? (
+          <Link {...link} title={task.title}>
+            {task.title}
+          </Link>
+        ) : showTitle ? (
+          <span>{task.title}</span>
+        ) : null}
+        <Button
+          aria-label={m.tasks_edit_title()}
+          disabled={saving}
+          size="compact"
+          type="button"
+          variant="ghost"
+          onClick={begin}
+        >
+          {m.tasks_edit_title()}
+        </Button>
+      </span>
+    );
+  }
+
+  return (
+    <form
+      className="grid max-w-xl gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save(draft.trim() || null);
+      }}
+    >
+      <KumoInputControl
+        aria-label={m.tasks_edit_title()}
+        autoFocus
+        disabled={saving}
+        maxLength={120}
+        placeholder={m.tasks_title_placeholder()}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      <span className="flex flex-wrap gap-2">
+        <Button disabled={saving} loading={saving} size="compact" type="submit" variant="primary">
+          {m.tasks_save_title()}
+        </Button>
+        <Button disabled={saving} size="compact" type="button" variant="ghost" onClick={cancel}>
+          {m.tasks_cancel_title()}
+        </Button>
+        <Button
+          disabled={saving}
+          size="compact"
+          type="button"
+          variant="secondary-destructive"
+          onClick={() => void save(null)}
+        >
+          {m.tasks_clear_title()}
+        </Button>
+      </span>
+      {error ? (
+        <span className="text-sm text-kumo-danger" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </form>
   );
 }
 

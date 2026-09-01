@@ -20,6 +20,7 @@ import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
+import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
@@ -197,16 +198,46 @@ export async function startServer(): Promise<void> {
     };
     const runtimeReadyForAgent = async (agentId: string): Promise<boolean> =>
       (await agentRuntimeReadinessForAgent(agentId)) === "ready";
+    let providerCliReconcileOwner: ProviderCliReconcileOwner | undefined;
+    const refreshProviderCliReadiness = (agentId: string, workspaceComputerId: string): void => {
+      void providerCliReconcileOwner?.ensureActiveReadiness({ agentId, workspaceComputerId }).catch(() => {
+        reportDiagnostic("PROVIDER_CLI_READINESS_REFRESH_FAILED");
+      });
+    };
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
-      imCliReadiness: async (agentId, provider) => {
+      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
         const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
         if (!workspaceComputerId) return "unavailable";
-        const observations = registry.imCliReadiness(workspaceComputerId);
+        refreshProviderCliReadiness(agentId, workspaceComputerId);
+        const observations = registry.providerCliArtifactReadiness(workspaceComputerId);
         return (
-          observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
+          observations.find(
+            ({ observation }) =>
+              observation.agentId === agentId &&
+              observation.provider === provider &&
+              observation.integrationId === integrationId &&
+              observation.credentialGeneration === credentialGeneration,
+          )?.observation.status ?? "checking"
         );
       },
+      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+        const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
+        if (!workspaceComputerId) return { status: "unconfirmed" };
+        refreshProviderCliReadiness(agentId, workspaceComputerId);
+        const observations = registry.providerCliCredentialReadiness(workspaceComputerId);
+        const observation = observations.find(
+          ({ observation }) =>
+            observation.agentId === agentId &&
+            observation.provider === provider &&
+            observation.integrationId === integrationId &&
+            observation.credentialGeneration === credentialGeneration,
+        )?.observation;
+        return observation
+          ? { status: observation.status, ...(observation.reason ? { reason: observation.reason } : {}) }
+          : { status: "unconfirmed" };
+      },
+      onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
     });
     const workspaceSetupService = new WorkspaceSetupService(database, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
@@ -223,6 +254,7 @@ export async function startServer(): Promise<void> {
         sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
+    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, imBindingService);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -233,6 +265,7 @@ export async function startServer(): Promise<void> {
     });
     const agentService = new AgentService(database, {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
+      onProviderCliPlacementChanged: (input) => providerCliReconcileOwner?.onAgentPlacementChanged(input),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {
           currentInstanceId: (workspaceComputerId) => registry.currentInstanceId(workspaceComputerId),
@@ -342,6 +375,7 @@ export async function startServer(): Promise<void> {
         registry,
         domainOwner,
         agentRuntimeTestOwner,
+        providerCliReconcileOwner,
         channelTarget: () => channelTargetPoller.get(),
       },
       runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },

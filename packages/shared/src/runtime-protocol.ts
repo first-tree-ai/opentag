@@ -31,6 +31,7 @@ export const RUNTIME_CAPABILITY = {
   imDelivery: "runtime.imDelivery",
   imSteer: "runtime.imSteer",
   imCredentialGrant: "runtime.imCredentialGrant",
+  providerCliReconcile: "runtime.providerCliReconcile",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
@@ -43,6 +44,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 1 },
@@ -58,6 +60,13 @@ export const RUNTIME_HEARTBEAT_INTERVAL_MAX_MS = 5 * 60 * 1_000;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS = 100;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS = 15 * 60 * 1_000;
 export const RUNTIME_CLIENT_CAPABILITY_TTL_MS = 60_000;
+export const RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS = 300_000;
+export const RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS = 120_000;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS = 15_000;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_TIMEOUT_MS = 10_000;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES = 1024 * 1024;
+export const RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION = 1 as const;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_MAX_RETRIES = 3;
 export const RUNTIME_AGENT_RUNTIME_TEST_TIMEOUT_MS = 180_000;
 export const RUNTIME_AGENT_RUNTIME_TEST_CLEANUP_MS = 5_000;
 export const RUNTIME_AGENT_RUNTIME_TEST_TTL_MS =

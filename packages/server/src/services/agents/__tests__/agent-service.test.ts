@@ -563,4 +563,48 @@ describe("AgentService", () => {
       code: "COMPUTER_NOT_FOUND",
     });
   });
+
+  it("notifies provider CLI placement after committed lifecycle changes and reports callback failures", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const target = await createComputer(bootstrap.userId, bootstrap.workspaceId, "target-cli");
+    const created = await createAgent(service, bootstrap.userId, computer.id, "placement-agent");
+    const onProviderCliPlacementChanged = vi.fn(async () => undefined);
+    const hooked = new AgentService(unitDatabase.database, {
+      now: () => NOW,
+      onProviderCliPlacementChanged,
+    });
+    await hooked.suspendById(bootstrap.userId, created.id);
+    expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
+      agentId: created.id,
+      previousWorkspaceComputerId: computer.id,
+    });
+    onProviderCliPlacementChanged.mockClear();
+    await hooked.reactivateById(bootstrap.userId, created.id);
+    expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
+      agentId: created.id,
+      workspaceComputerId: computer.id,
+    });
+    onProviderCliPlacementChanged.mockClear();
+    await hooked.rebindById(bootstrap.userId, created.id, computer.id);
+    expect(onProviderCliPlacementChanged).not.toHaveBeenCalled();
+    await hooked.rebindById(bootstrap.userId, created.id, target.id);
+    expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
+      agentId: created.id,
+      previousWorkspaceComputerId: computer.id,
+      workspaceComputerId: target.id,
+    });
+    const diagnostics: string[] = [];
+    const failing = new AgentService(unitDatabase.database, {
+      now: () => NOW,
+      onDiagnostic: (code) => diagnostics.push(code),
+      onProviderCliPlacementChanged: async () => {
+        throw new Error("notify failed");
+      },
+    });
+    await expect(failing.suspendById(bootstrap.userId, created.id)).resolves.toMatchObject({ status: "suspended" });
+    expect(diagnostics).toEqual(["PROVIDER_CLI_PLACEMENT_NOTIFY_FAILED"]);
+    diagnostics.length = 0;
+    await failing.deleteById(bootstrap.userId, created.id);
+    expect(diagnostics).toEqual(["PROVIDER_CLI_PLACEMENT_NOTIFY_FAILED"]);
+  });
 });

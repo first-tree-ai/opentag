@@ -65,6 +65,42 @@ describe("TurnTraceBuffer", () => {
 });
 
 describe("TurnReportOwner", () => {
+  it("waits for an in-flight durable write before shutdown settles", async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolveWrite) => {
+      releaseWrite = resolveWrite;
+    });
+    let writeStarted!: () => void;
+    const started = new Promise<void>((resolveStarted) => {
+      writeStarted = resolveStarted;
+    });
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async () => {
+        writeStarted();
+        await writeGate;
+      }),
+    };
+    const owner = new TurnReportOwner({ connection: new FakeConnection("stopped"), persistence });
+    const report = owner.create(reportInput());
+    const submitted = owner.submit(report, vi.fn());
+    await started;
+
+    const stopped = expect(submitted).rejects.toThrow("stopped");
+    owner.stop();
+    let settled = false;
+    const shutdown = owner.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseWrite();
+    await shutdown;
+    await stopped;
+    expect(persistence.write).toHaveBeenCalledOnce();
+  });
+
   it("rejects a duplicate Turn Report with a different immutable identity", async () => {
     const owner = new TurnReportOwner({ connection: new FakeConnection("stopped") });
     const report = owner.create(reportInput());

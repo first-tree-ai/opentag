@@ -76,6 +76,11 @@ export interface RuntimeSessionOptions {
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
   now?: () => Date;
+  onRegistered?: (input: {
+    computerId: string;
+    instanceId: string;
+    workspaceComputerId: string;
+  }) => Promise<void> | void;
   providerReadiness?: readonly AgentRuntimeProvider[];
   registerTimeoutMs?: number;
 }
@@ -85,10 +90,11 @@ export class RuntimeSession {
   readonly #computers: ComputerService;
   readonly #registry: ConnectionRegistry;
   readonly #socket: WebSocket;
-  readonly #options: Required<Omit<RuntimeSessionOptions, "business" | "channelTarget" | "now">> & {
+  readonly #options: Required<Omit<RuntimeSessionOptions, "business" | "channelTarget" | "now" | "onRegistered">> & {
     business?: RuntimeBusinessOptions;
     channelTarget?: () => RuntimeChannelTarget | undefined;
     now: () => Date;
+    onRegistered?: RuntimeSessionOptions["onRegistered"];
   };
   readonly #abort = new AbortController();
   readonly #businessScheduler?: KeyedTaskScheduler;
@@ -130,6 +136,7 @@ export class RuntimeSession {
       heartbeatIntervalMs: heartbeat.heartbeatIntervalMs,
       heartbeatTimeoutMs: heartbeat.heartbeatTimeoutMs,
       now: options.now ?? (() => new Date()),
+      onRegistered: options.onRegistered,
       providerReadiness: Object.freeze([...(options.providerReadiness ?? [])]),
       registerTimeoutMs: positiveTimeout(options.registerTimeoutMs ?? 5_000, "registerTimeoutMs"),
     };
@@ -420,7 +427,15 @@ export class RuntimeSession {
           );
           if (!this.#registry.activate(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
             this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced during registration", 4409);
+            return;
           }
+          void Promise.resolve(
+            this.#options.onRegistered?.({
+              computerId: frame.computerId,
+              instanceId: frame.instanceId,
+              workspaceComputerId: authContext.workspaceComputerId,
+            }),
+          ).catch(() => undefined);
         },
       );
       if (this.#isClosing()) {

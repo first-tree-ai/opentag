@@ -706,6 +706,43 @@ describe("SessionMessageInbox", () => {
     expect(input.items[1]?.text).toBe("Report the result");
   });
 
+  it("adds Slack native CLI guidance on the visible collaboration callback path", () => {
+    const slackInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
+      sessionKind: "visible",
+      outboxContext: {
+        provider: "slack",
+        sessionKind: "channel",
+        channelId: "C-visible",
+      },
+    });
+    const slackText = slackInput.items[0]?.text ?? "";
+    expect(slackText).toContain("OPENTAG_PROVIDER_ENV_FILE");
+    expect(slackText).toContain("slack api chat.postMessage --json");
+    expect(slackText).toContain("never key=value pairs");
+    expect(slackText).toContain("Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update");
+    expect(slackText).toContain("`text` (at most 4,000 characters)");
+    expect(slackText).toContain("`markdown_text` (at most 12,000 characters)");
+    expect(slackText).toContain("Thread placement is a Session policy decision");
+    expect(slackText).toContain("at most 1 message per second per channel");
+    expect(slackText).toContain("<@U...>");
+    expect(slackText).toContain("conversations.history and similar reads are rate-limited");
+    expect(slackText).toContain("Never print credentials, tokens, or the environment file");
+    expect(slackText).not.toContain("OPENTAG_LARK_BODY");
+    expect(slackText).not.toMatch(/xox[bpa]-/);
+    expect(Buffer.byteLength(slackText, "utf8")).toBeLessThan(16 * 1024);
+
+    const feishuInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
+      sessionKind: "visible",
+      outboxContext: {
+        provider: "feishu",
+        sessionKind: "channel",
+        chatId: "oc_visible",
+      },
+    });
+    expect(feishuInput.items[0]?.text).toContain("OPENTAG_LARK_BODY");
+    expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
+  });
+
   it("prepares visible Session outbox resources before Provider start and cleans them after the Run", async () => {
     const order: string[] = [];
     const credentials = {
@@ -759,6 +796,81 @@ describe("SessionMessageInbox", () => {
       expect.any(AbortSignal),
     );
     inbox.stop();
+  });
+
+  it("prepares a visible collaboration Turn plan before Provider start and skips it for internal Sessions", async () => {
+    const order: string[] = [];
+    const turnPlan = {
+      prepare: vi.fn(async () => {
+        order.push("plan");
+        return { sessionDir: "/tmp/plans" };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("plan-cleanup");
+      }),
+    };
+    const credentials = {
+      prepare: vi.fn(async () => {
+        order.push("prepare");
+        return {
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: {
+            provider: "feishu" as const,
+            sessionKind: "channel" as const,
+            chatId: "oc-visible",
+          },
+        };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("cleanup");
+      }),
+    };
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        order.push("prompt");
+        return { runId: "run", status: "completed", output: [] };
+      }),
+    };
+    const visible = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => {
+          order.push("runtime");
+          return runtime as never;
+        }),
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      turnPlan,
+    });
+    expect((await visible.accept(delivery())).status).toBe("accepted");
+    await visible.settled();
+    expect(order).toEqual(["prepare", "plan", "runtime", "prompt", "plan-cleanup", "cleanup"]);
+    expect(turnPlan.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "feishu", runId: expect.stringMatching(/^session-message-/) }),
+    );
+    visible.stop();
+
+    const internalPlan = { prepare: vi.fn(), cleanup: vi.fn() };
+    const internal = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      turnPlan: internalPlan,
+    });
+    expect((await internal.accept(delivery({ text: "internal" }))).status).toBe("accepted");
+    await internal.settled();
+    expect(internalPlan.prepare).not.toHaveBeenCalled();
+    internal.stop();
   });
 
   it("rejects a visible callback before ACK under grant v1 and accepts the same message after v2 is restored", async () => {

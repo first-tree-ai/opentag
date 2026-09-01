@@ -28,7 +28,8 @@ const packageName = "open-tag-staging";
 
 // The embedded runtime is replaced by a shell script so the installer can be exercised without
 // downloading a real Node.js build. It answers the two invocations the installer makes: the
-// pre-commit `--version` smoke check and the post-install service reconciliation.
+// pre-commit `--version` smoke check, post-install service reconciliation, and
+// read-only Provider CLI inspection.
 const RUNTIME_DOUBLE = `#!/bin/sh
 root=$(CDPATH= cd -L "$(dirname "$0")/../.." && pwd -L)
 shift
@@ -43,6 +44,19 @@ case "\${1:-}" in
     fi
     exit 1
     ;;
+  provider-cli)
+    printf '%s\n' "$*" >> "$root/cli-invocations.log"
+    if [ "\${2:-}" = "inspect" ] && [ "\${3:-}" = "--provider" ] && [ "\${4:-}" = "all" ]; then
+      echo "provider-cli inspect invoked"
+      exit 1
+    fi
+    if [ "\${2:-}" = "ensure" ]; then
+      echo "provider-cli ensure invoked"
+      exit 9
+    fi
+    echo "provider-cli unexpected invoked"
+    exit 9
+    ;;
   *)
     exit 1
     ;;
@@ -52,6 +66,27 @@ esac
 function writeExecutable(path, content) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content, { mode: 0o755 });
+}
+
+function snapshotFileTree(root) {
+  const entries = [];
+  function walk(path) {
+    if (!existsSync(path)) return;
+    const st = statSync(path);
+    if (st.isDirectory()) {
+      for (const name of readdirSync(path).sort()) walk(join(path, name));
+      return;
+    }
+    if (!st.isFile()) return;
+    entries.push({
+      hash: createHash("sha256").update(readFileSync(path)).digest("hex"),
+      mode: st.mode,
+      mtimeMs: st.mtimeMs,
+      rel: path.slice(root.length),
+    });
+  }
+  walk(root);
+  return entries.sort((left, right) => left.rel.localeCompare(right.rel));
 }
 
 function buildRelease({ releaseRoot, version, baseUrl }) {
@@ -205,6 +240,9 @@ test("portable installer activates a release and short-circuits when it is alrea
     assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
     assert.match(first.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.match(first.stdout, /daemon service setup is deferred until login/i);
+    assert.match(first.stdout, /provider-cli inspect invoked/);
+    assert.match(first.stdout, /daemon will prepare only a provider you bind/i);
+    assert.doesNotMatch(first.stdout, /provider-cli ensure invoked/);
     assert.equal(tarballRequests(requests, "0.0.2-staging.1.1"), 1);
 
     const shim = join(root, "bin", binName);
@@ -217,6 +255,8 @@ test("portable installer activates a release and short-circuits when it is alrea
     assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
     assert.match(second.stdout, /already installed and up to date; skipping download/);
     assert.match(second.stdout, /--force to reinstall/);
+    assert.match(second.stdout, /provider-cli inspect invoked/);
+    assert.doesNotMatch(second.stdout, /provider-cli ensure invoked/);
     assert.equal(
       tarballRequests(requests, "0.0.2-staging.1.1"),
       1,
@@ -228,7 +268,41 @@ test("portable installer activates a release and short-circuits when it is alrea
     const forced = await runInstaller({ args: ["--force"], baseUrl, root });
     assert.equal(forced.status, 0, `${forced.stdout}\n${forced.stderr}`);
     assert.match(forced.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(forced.stdout, /provider-cli inspect invoked/);
+    assert.doesNotMatch(forced.stdout, /provider-cli ensure invoked/);
     assert.equal(tarballRequests(requests, "0.0.2-staging.1.1"), 2, "--force must reinstall the same version");
+  });
+});
+
+test("portable installer does not mutate account-global Provider CLI state or call ensure/validation", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, requests, root }) => {
+    buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.1.1" });
+    const home = join(root, "home");
+    const accountCli = join(home, ".opentag", "provider-cli");
+    mkdirSync(join(accountCli, "state"), { recursive: true });
+    writeFileSync(join(accountCli, "state", "marker.txt"), "account-global marker\n", { mode: 0o600 });
+    const beforeHome = snapshotFileTree(home);
+    const beforeAccount = snapshotFileTree(accountCli);
+
+    const result = await runInstaller({ baseUrl, root });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /provider-cli inspect invoked/);
+    assert.match(result.stdout, /daemon will prepare only a provider you bind/i);
+    assert.doesNotMatch(result.stdout, /provider-cli ensure invoked/);
+    assert.doesNotMatch(result.stdout, /provider-cli unexpected invoked/);
+    assert.doesNotMatch(result.stdout, /auth\.test|auth status|validation grant/i);
+    assert.equal(
+      requests.filter((url) => /lark-cli|slack|provider-cli/i.test(url)).length,
+      0,
+      "portable install must not download Provider CLI artifacts",
+    );
+
+    assert.deepEqual(snapshotFileTree(home), beforeHome);
+    assert.deepEqual(snapshotFileTree(accountCli), beforeAccount);
+    const payloadLog = join(root, "prefix", "current", "cli-invocations.log");
+    assert.equal(readFileSync(payloadLog, "utf8").trim(), "provider-cli inspect --provider all");
   });
 });
 

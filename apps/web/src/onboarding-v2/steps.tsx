@@ -42,6 +42,7 @@ import {
   tokenChoiceApplies,
   validateAgentName,
 } from "./flow.js";
+import { messagingCliMissingCopy, messagingWaitingReason } from "./messaging-readiness-copy.js";
 
 /** One step's worth of vertical rhythm. Every gap on every step is one of 4, 12 or 24px. */
 const STEP = "flex flex-col gap-6";
@@ -407,15 +408,12 @@ function MessagingConnection({
    * rows say which line failed. That is a better answer than a sentence, and it is why there is no
    * copy for it.
    */
-  const waitingReason =
-    computerOnline === false
-      ? m.onboarding_v2_messaging_computer_offline()
-      : cliState === "failed" && provider
-        ? m.onboarding_v2_messaging_cli_missing({
-            provider:
-              provider === "feishu" ? m.onboarding_v2_messaging_lark_title() : m.onboarding_v2_messaging_slack_title(),
-          })
-        : undefined;
+  const waitingReason = messagingWaitingReason({
+    cliFailed: cliState === "failed",
+    computerOnline,
+    messaging,
+    provider,
+  });
   return (
     <div className="flex flex-col items-center gap-3">
       {/*
@@ -425,14 +423,7 @@ function MessagingConnection({
       {provider && cliState === "failed" && messaging.kind !== "waiting-handoff" ? (
         <p className="flex items-start gap-2 text-sm text-kumo-warning m-0">
           <Icon className="shrink-0 mt-1" name="close" />
-          <span>
-            {m.onboarding_v2_messaging_cli_missing({
-              provider:
-                provider === "feishu"
-                  ? m.onboarding_v2_messaging_lark_title()
-                  : m.onboarding_v2_messaging_slack_title(),
-            })}
-          </span>
+          <span>{messagingCliMissingCopy(provider)}</span>
         </p>
       ) : null}
       {provider === "feishu" ? (

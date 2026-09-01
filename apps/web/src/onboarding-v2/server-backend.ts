@@ -43,7 +43,12 @@ export function errorMessage(cause: unknown, fallback: string): string {
  */
 function readMessaging(handoff: ImBindingHandoffStatus | undefined): MessagingState {
   if (handoff?.handoffReady) return { kind: "connected" };
-  if (handoff?.bindingState === "active") return { kind: "waiting-handoff" };
+  if (handoff?.bindingState === "active") {
+    return {
+      kind: "waiting-handoff",
+      ...("providerCli" in handoff && handoff.providerCli ? { providerCli: handoff.providerCli } : {}),
+    };
+  }
   return { kind: "idle" };
 }
 

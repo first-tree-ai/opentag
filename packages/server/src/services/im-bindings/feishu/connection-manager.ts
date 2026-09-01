@@ -290,6 +290,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         generation: committed.material.generation,
         appId: committed.material.appId,
       };
+      await this.#imBindings.notifyProviderCliRequirementChanged(input.agentId).catch(() => undefined);
       setActiveSpanAttributes(imAttrs({ provider: "feishu", bindingId: committed.imBindingId }));
       const previous = this.#owned.get(committed.imBindingId);
       this.#owned.set(committed.imBindingId, next);

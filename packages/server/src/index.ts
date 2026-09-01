@@ -35,6 +35,7 @@ import { ComputerService, MachineAuthService } from "./services/computers/index.
 import { ApplicationCipher } from "./services/crypto.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
   DefaultFeishuRegistrationGateway,
   FeishuConnectionManager,
@@ -199,6 +200,9 @@ export async function startServer(): Promise<void> {
     });
     const workspaceSetupService = new WorkspaceSetupService(database, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
+    const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
+    });
     const sessionService = new SessionService(database);
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
@@ -236,6 +240,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       policy: imCallPolicy,
       supervisor: backgroundFailureSupervisor,
+      receipts: feishuInboundReceipts,
     });
     const feishuSetupService = new FeishuSetupService({
       database,

@@ -56,6 +56,28 @@ Server 自行管理显式的 OpenTelemetry trace provider 和 OTLP exporter，�
 
 消息正文、raw provider event、mentions、resources、sender identity、provider response body、prompt、模型输出、tool payload、authorization header、cookie、token、secret 和 credential 均不会上传或会被 scrub。
 
+## 飞书入站去重
+
+飞书入站投递有两个相互独立的去重键：
+
+- 内存 adapter 快速路径把 envelope event ID 以及 message/revision 身份按租户和会话隔离。它限制为
+  10 分钟、最多 10,000 条，只保护进程存活期间的即时 WebSocket 重试。
+- 持久化 receipt claim 使用 `(im_binding_id, event_id)`。`feishu_inbound_receipts` 上的唯一索引
+  负责跨实例选出唯一 winner。claim 成功后在 inbox 持久化完成时标记为 `processed`；处理失败时写入
+  受限长度的诊断 code 并标记为 `failed`。
+- inbox 持久化另外强制 `(im_binding_id, channel_id, external_message_id, provider_revision_key)`。
+  因此不同 envelope event ID 也不能为同一逻辑消息创建第二个 revision，同时编辑或撤回 revision
+  仍然可执行。
+
+飞书不一定提供 envelope `event_id`。这种情况下，规范化只为 inbox 创建稳定的 message/revision
+fallback，不 claim 持久化 receipt；binding 和会话范围内的语义唯一键仍负责没有 envelope ID 的重试。
+Receipt 行是运行证据，应保留 30 天。定时数据库维护任务可以只删除超过该期限的 `processed` 或 `failed`
+行；例行清理不得删除 `processing` 行，因为它们代表进行中的投递。
+
+重复结果是脱敏且稳定的：`feishu.inbound.deduplicated` span 记录 binding、可用时的 provider event
+ID、external message ID 和 `duplicate=true`，绝不记录 token 或消息内容。重复事件会被确认，不会再次写入
+inbox、启动 Session、创建 Task 或追加上下文。
+
 ## 排查飞书 Bot 无响应
 
 先查看当前状态：

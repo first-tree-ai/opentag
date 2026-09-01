@@ -12,7 +12,7 @@ This repository currently provides the engineering foundation and first control-
 - a schema-validating client health check;
 - provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
 - one-time Account login codes with sliding stateless refresh JWTs;
-- independently authenticated Computer enrollment and presence;
+- independently authenticated Computer connection and presence;
 - Agent registry with immutable Computer/provider binding and revision fencing;
 - durable Agent Runtime execution, delivery custody, reporting, and recovery;
 - Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
@@ -58,7 +58,7 @@ docker compose up -d postgres
 ```
 
 The Compose service is a local development dependency; it does not start the OpenTag Server or any Agent runtime.
-For Node.js setup, server configuration, Account bootstrap, Computer enrollment, authentication, and Agent management,
+For Node.js setup, server configuration, Account bootstrap, Computer connection, authentication, and Agent management,
 see the [development guide](./DEVELOPMENT.md).
 
 ## Project status

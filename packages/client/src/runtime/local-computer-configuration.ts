@@ -55,7 +55,7 @@ export async function inspectLocalComputerConfiguration(home: string): Promise<L
   }
 
   const stored = credentialsValue.computer;
-  if (stored.computerId !== identityValue.computerId) {
+  if (stored.installationId !== identityValue.computerId) {
     return {
       identity,
       credentials,

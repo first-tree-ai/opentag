@@ -14,34 +14,32 @@ function socket(): WebSocket & { send: ReturnType<typeof vi.fn> } {
 }
 
 async function registered(registry: ConnectionRegistry) {
-  const workspaceComputerId = randomUUID();
-  const instanceId = randomUUID();
   const computerId = randomUUID();
+  const instanceId = randomUUID();
+  const installationId = randomUUID();
   const runtimeSocket = socket();
   await registry.register(
     {
       active: true,
-      computerId,
+      installationId,
       instanceId,
-      workspaceComputerId,
-      workspaceId: randomUUID(),
+      computerId,
       lastHeartbeatAt: Date.now(),
       socket: runtimeSocket,
       negotiatedCapabilities: { [RUNTIME_CAPABILITY.providerCliReconcile]: 1 },
     },
     async () => undefined,
   );
-  registry.activate(workspaceComputerId, instanceId, runtimeSocket);
-  return { computerId, instanceId, workspaceComputerId, socket: runtimeSocket };
+  registry.activate(computerId, instanceId, runtimeSocket);
+  return { installationId, instanceId, computerId, socket: runtimeSocket };
 }
 
 function contextOf(connection: Awaited<ReturnType<typeof registered>>) {
   return {
-    computerId: connection.computerId,
+    installationId: connection.installationId,
     instanceId: connection.instanceId,
     signal: new AbortController().signal,
-    workspaceComputerId: connection.workspaceComputerId,
-    workspaceId: randomUUID(),
+    computerId: connection.computerId,
   };
 }
 
@@ -69,8 +67,8 @@ describe("provider CLI product Server readiness", () => {
     await owner.onComputerRegistered(connection);
     expect(connection.socket.send).not.toHaveBeenCalled();
     expect(bindings.issueIntegrationCliValidationGrant).not.toHaveBeenCalled();
-    expect(registry.providerCliArtifactReadiness(connection.workspaceComputerId)).toEqual([]);
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)).toEqual([]);
+    expect(registry.providerCliArtifactReadiness(connection.computerId)).toEqual([]);
+    expect(registry.providerCliCredentialReadiness(connection.computerId)).toEqual([]);
   });
 
   it("requires both artifact and credential layers and fail-closes old generation observations", async () => {
@@ -98,12 +96,8 @@ describe("provider CLI product Server readiness", () => {
       credentialGeneration: 2,
     });
     expect(JSON.stringify(requirement)).not.toContain("xoxb-secret");
-    expect(registry.providerCliArtifactReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "checking",
-    );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "unconfirmed",
-    );
+    expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("unconfirmed");
 
     await owner.businessOptions().handle(
       {
@@ -118,9 +112,7 @@ describe("provider CLI product Server readiness", () => {
       contextOf(connection),
     );
     expect(bindings.issueIntegrationCliValidationGrant).not.toHaveBeenCalled();
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "unconfirmed",
-    );
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("unconfirmed");
 
     const requestId = requirement?.requestId as string;
     await owner.businessOptions().handle(
@@ -136,10 +128,8 @@ describe("provider CLI product Server readiness", () => {
       contextOf(connection),
     );
     expect(bindings.issueIntegrationCliValidationGrant).toHaveBeenCalledTimes(1);
-    expect(registry.providerCliArtifactReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe("ready");
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "checking",
-    );
+    expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation.status).toBe("ready");
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
     const grant = framesOf(connection).find((frame) => frame.type === "provider-cli:validation:grant");
     expect(grant).toMatchObject({ type: "provider-cli:validation:grant", requirementRequestId: requestId });
 
@@ -155,10 +145,8 @@ describe("provider CLI product Server readiness", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliArtifactReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe("ready");
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "ready",
-    );
+    expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation.status).toBe("ready");
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("ready");
 
     await owner.businessOptions().handle(
       {
@@ -172,7 +160,7 @@ describe("provider CLI product Server readiness", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation).toMatchObject({
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation).toMatchObject({
       status: "ready",
       credentialGeneration: 2,
     });

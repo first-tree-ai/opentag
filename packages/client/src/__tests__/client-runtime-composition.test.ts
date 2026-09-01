@@ -170,7 +170,7 @@ describe("createClientRuntime production composition", () => {
       environment: { HOME: home, PATH: process.env.PATH },
       home,
     });
-    const result = await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()));
+    const result = await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()));
     expect(result).toMatchObject({ status: "ready" });
     await runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
     expect(await runtime.bindingStore.read("agent-1", "session-1")).toMatchObject({
@@ -184,7 +184,7 @@ describe("createClientRuntime production composition", () => {
     expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(4);
     await expect(
       runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         desired: "stopped",
         runtime: undefined,
@@ -207,7 +207,7 @@ describe("createClientRuntime production composition", () => {
       home,
     });
     await expect(
-      runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot())),
+      runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot())),
     ).resolves.toMatchObject({ status: "ready" });
     await expect(runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal)).rejects.toMatchObject(
       {
@@ -228,7 +228,7 @@ describe("createClientRuntime production composition", () => {
       }),
       home: resolve(home, "throwing-runtime"),
     });
-    await throwingRuntime.reconciler.reconcile(reconcileRequest(throwingConnection.computerId, snapshot()));
+    await throwingRuntime.reconciler.reconcile(reconcileRequest(throwingConnection.installationId, snapshot()));
     await expect(throwingRuntime.runtimeManager.ensureRuntime("session-1")).rejects.toMatchObject({
       result: { issues: [{ code: "temporarily_unavailable" }] },
     });
@@ -372,7 +372,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(
-      runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot())),
+      runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot())),
     ).resolves.toMatchObject({
       status: "ready",
     });
@@ -785,7 +785,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory,
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const running = runtime.run();
@@ -978,7 +978,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const running = runtime.run();
     await registration;
-    const request = reconcileRequest(connection.computerId, snapshot());
+    const request = reconcileRequest(connection.installationId, snapshot());
     await runtime.reconciler.reconcile(request);
     const starting = runtime.runtimeManager.ensureRuntime("session-1");
     await createStart;
@@ -1255,12 +1255,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       home,
     });
     expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1337,12 +1337,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       home,
     });
     expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1416,12 +1416,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1480,12 +1480,12 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1539,7 +1539,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       signal: caller.signal,
     });
     expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const published = readinessUpdates.mock.calls.length;
@@ -1576,7 +1576,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       home,
       providerProbeDeadlineMs: 5_000,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const ensureSignal = new AbortController();
@@ -1617,7 +1617,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory: readyFactory("codex"),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const firstSignal = new AbortController();
@@ -1690,7 +1690,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     for (const sessionId of ["session-1", "session-2", "session-3"]) {
       expect(
         await runtime.reconciler.reconcile({
-          ...reconcileRequest(connection.computerId, snapshot()),
+          ...reconcileRequest(connection.installationId, snapshot()),
           requestId: randomUUID(),
           sessionId,
         }),
@@ -1761,7 +1761,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const firstSignal = new AbortController();
@@ -1807,7 +1807,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const ensuring = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
@@ -1873,9 +1873,8 @@ function completeLegacyAuth(
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     }),
   );
   const providers = Array.isArray(providerReadiness) ? providerReadiness : providerReadiness ? ["codex"] : undefined;
@@ -1937,7 +1936,7 @@ function reconcileRequest(computerId: string, runtime: EffectiveRuntimeSnapshot)
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

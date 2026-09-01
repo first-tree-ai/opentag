@@ -141,12 +141,12 @@ function RuntimeConfigurationEditor({
           <form className="grid gap-4" onSubmit={saveRuntime}>
             <SettingsList>
               <SettingsRow description={m.agent_settings_runtime_fixed()} label={m.agent_settings_runtime()}>
-                <div className="flex justify-start @min-[44rem]/workspace:justify-end">
+                <div className="flex justify-start @min-[44rem]/content:justify-end">
                   <span className="text-sm text-kumo-default">{providerName}</span>
                 </div>
               </SettingsRow>
               <SettingsRow label={m.agent_settings_model()}>
-                <div className="grid w-full gap-2 @min-[44rem]/workspace:ml-auto @min-[44rem]/workspace:max-w-80">
+                <div className="grid w-full gap-2 @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
                   <Select
                     aria-label={m.agent_settings_model()}
                     className="w-full"
@@ -191,7 +191,7 @@ function RuntimeConfigurationEditor({
                 description={m.agent_settings_reasoning_effort_description()}
                 label={m.agent_settings_reasoning_effort()}
               >
-                <div className="w-full @min-[44rem]/workspace:ml-auto @min-[44rem]/workspace:max-w-80">
+                <div className="w-full @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
                   <Select
                     aria-label={m.agent_settings_reasoning_effort()}
                     className="w-full"

@@ -30,7 +30,6 @@ describe("sign-in destinations", () => {
       "/agents\\evil",
       "/agents#fragment",
       "/admin",
-      "/workspaces/new",
       "agents",
       `/invites/${"A".repeat(43)}`,
       `/agents${"?".repeat(1025)}`,

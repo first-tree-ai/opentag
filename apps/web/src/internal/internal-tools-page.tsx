@@ -30,6 +30,7 @@ interface ResetOperation {
  * act on the signed-in Account and nobody else's, so the copy names the Account rather than warning
  * about scope.
  */
+
 function resetOperations(): readonly ResetOperation[] {
   return [
     {

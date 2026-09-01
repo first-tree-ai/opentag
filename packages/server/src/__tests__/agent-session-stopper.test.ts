@@ -65,7 +65,7 @@ describe("stopAgentSessions", () => {
         {
           agentId: randomUUID(),
           computerId: randomUUID(),
-          workspaceComputerId: randomUUID(),
+          installationId: randomUUID(),
           sessionId: randomUUID(),
           placementGeneration: 1,
         },
@@ -93,20 +93,20 @@ describe("stopAgentSessions", () => {
       {
         agentId: randomUUID(),
         computerId: randomUUID(),
-        workspaceComputerId: randomUUID(),
+        installationId: randomUUID(),
         sessionId: randomUUID(),
         placementGeneration: 2,
       },
       {
         agentId: randomUUID(),
         computerId: randomUUID(),
-        workspaceComputerId: randomUUID(),
+        installationId: randomUUID(),
         sessionId: randomUUID(),
         placementGeneration: 3,
       },
     ];
-    const currentInstanceId = vi.fn((workspaceComputerId: string) =>
-      workspaceComputerId === targets[0]?.workspaceComputerId ? "instance-1" : undefined,
+    const currentInstanceId = vi.fn((computerId: string) =>
+      computerId === targets[0]?.computerId ? "instance-1" : undefined,
     );
     const requestReconcile = vi.fn(
       async (_computerId: string, _instanceId: string, _request: unknown, onDispatched?: () => void) => {
@@ -124,7 +124,7 @@ describe("stopAgentSessions", () => {
       stopAgentSessions(database as never, targets, { currentInstanceId, requestReconcile: requestReconcile as never }),
     ).rejects.toThrow("Agent runtime stop notification failed");
     expect(requestReconcile).toHaveBeenCalledWith(
-      targets[0]?.workspaceComputerId,
+      targets[0]?.computerId,
       "instance-1",
       expect.objectContaining({ desired: "stopped", placementGeneration: 2 }),
       expect.any(Function),

@@ -260,6 +260,13 @@
       "when": 1788226671075,
       "tag": "0036_first_the_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788231695621,
+      "tag": "0037_drop_workspace_ownership_persistence",
+      "breakpoints": true
     }
   ]
 }

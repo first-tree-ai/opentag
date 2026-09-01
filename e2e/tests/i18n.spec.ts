@@ -1,6 +1,8 @@
 import { expect, test } from "./fixtures.js";
 
-test("browser negotiation does not label untranslated copy or persist an implicit preference", async ({ browser }) => {
+test("browser negotiation renders the supported locale without persisting an implicit preference", async ({
+  browser,
+}) => {
   const context = await browser.newContext({
     storageState: { cookies: [], origins: [] },
     viewport: { width: 1440, height: 900 },
@@ -27,8 +29,9 @@ test("browser negotiation does not label untranslated copy or persist an implici
   try {
     const page = await context.newPage();
     await page.goto("/login", { waitUntil: "networkidle" });
-    await expect(page.getByRole("heading", { name: "Welcome back", exact: true })).toBeVisible();
-    await expect(page.getByText("Sign in to continue to OpenTag.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "欢迎回来", exact: true })).toBeVisible();
+    await expect(page.getByText("登录后继续使用 OpenTag。", { exact: true })).toBeVisible();
+    // Document metadata remains on the base locale until the ongoing visible-copy migration is complete.
     await expect(page.locator("html")).toHaveAttribute("lang", "en");
     await expect(page.locator("html")).toHaveAttribute("dir", "ltr");
 

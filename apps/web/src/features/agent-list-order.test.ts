@@ -1,9 +1,9 @@
 import type {
+  AccountComputerSummary,
   AgentAdminConfig,
   AgentSummary,
   ImBindingHandoffStatus,
   ImBindingSummary,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import { formatCompactNumber, formatElapsedCompact, formatRelativeTime, initials } from "../i18n/format.js";
@@ -77,7 +77,7 @@ describe("Agent availability model and presentation", () => {
     connectionStatus: "online",
     lastSeenAt: "2026-08-20T00:00:00.000Z",
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
-  } as unknown as WorkspaceComputerSummary;
+  } as unknown as AccountComputerSummary;
   const binding = (bindingState: string, provider = "feishu", displayName: string | null = "OpenTag") =>
     ({
       id: "33333333-3333-4333-8333-333333333333",

@@ -9,7 +9,6 @@ import {
   UpdateUserProfileRequestSchema,
   UserDisplayNameSchema,
   UserProfileSchema,
-  WorkspaceNameSchema,
 } from "../auth.js";
 
 describe("auth contracts", () => {
@@ -44,20 +43,11 @@ describe("auth contracts", () => {
   });
 
   it("rejects unexpected fields on every request", () => {
-    expect(() =>
-      ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", workspaceId: "authority" }),
-    ).toThrow();
+    expect(() => ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", role: "admin" })).toThrow();
     expect(() => RefreshTokenRequestSchema.parse({ refreshToken: "token", role: "admin" })).toThrow();
   });
 
-  it("enforces canonical workspace names", () => {
-    expect(WorkspaceNameSchema.parse("first-tree-1")).toBe("first-tree-1");
-    for (const invalid of ["", "Example", "example workspace", "example_workspace"]) {
-      expect(() => WorkspaceNameSchema.parse(invalid)).toThrow();
-    }
-  });
-
-  it("validates the current Account without a management Workspace projection", () => {
+  it("validates the current Account projection", () => {
     const response = {
       user: {
         id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
@@ -72,7 +62,6 @@ describe("auth contracts", () => {
       ...response,
       setupCompletedAt: "2026-08-20T00:00:00.000Z",
     });
-    expect(() => MeResponseSchema.parse({ ...response, workspaces: [] })).toThrow();
     expect(() => MeResponseSchema.parse({ ...response, state: "active" })).toThrow();
   });
 

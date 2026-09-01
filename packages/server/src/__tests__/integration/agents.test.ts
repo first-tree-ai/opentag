@@ -163,6 +163,7 @@ describe("Agent persistence and authorization", () => {
             definition: expect.stringContaining("ON DELETE RESTRICT"),
           }),
           expect.objectContaining({ conname: "agents_creation_intent_pair" }),
+          expect.objectContaining({ conname: "agents_computer_pair" }),
         ]),
       );
       expect(constraints).not.toEqual(
@@ -996,6 +997,58 @@ describe("Agent persistence and authorization", () => {
         createdByUserId: value.bootstrap.userId,
       });
       expect(created.computerId).toBe(exchange.computerId);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("creates an Agent with no Computer and binds one afterwards", async () => {
+    const value = await fixture();
+    try {
+      const created = await value.service.createForAccount(value.bootstrap.userId, {
+        displayName: "Code Reviewer",
+        name: "code-reviewer",
+        runtimeProvider: "codex",
+      });
+      expect(created).toMatchObject({ computerId: null, revision: 1, status: "active" });
+      const [stored] = await value.database.select().from(agents).where(eq(agents.id, created.id));
+      // Both Computer columns clear together, which is what the pair constraint holds the row to.
+      expect(stored?.computerId).toBeNull();
+      expect(stored?.workspaceComputerId).toBeNull();
+      // The Agent is listable and readable while unbound; only its Computer is absent.
+      expect((await value.service.listForAccount(value.bootstrap.userId)).agents).toEqual([
+        expect.objectContaining({ id: created.id, computer: null }),
+      ]);
+      await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
+        id: created.id,
+        computer: null,
+      });
+      await expect(value.service.getConfigById(value.bootstrap.userId, created.id)).resolves.toEqual(created);
+
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.workspaceId);
+      const bound = await value.service.rebindById(value.bootstrap.userId, created.id, computer.id);
+      expect(bound).toMatchObject({ computerId: computer.id, revision: 2 });
+      await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
+        computer: expect.objectContaining({ computerId: computer.id }),
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects binding an Agent to a Computer the caller does not own", async () => {
+    const value = await fixture();
+    try {
+      const created = await value.service.createForAccount(value.bootstrap.userId, {
+        displayName: "Code Reviewer",
+        name: "code-reviewer",
+        runtimeProvider: "codex",
+      });
+      const other = await createUser(value.database, value.bootstrap.workspaceId, "other@example.com");
+      const foreign = await createComputer(value.database, other.id, value.bootstrap.workspaceId);
+      await expect(value.service.rebindById(value.bootstrap.userId, created.id, foreign.id)).rejects.toMatchObject({
+        code: "COMPUTER_NOT_FOUND",
+      });
     } finally {
       await value.sql.end();
     }

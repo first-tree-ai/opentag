@@ -268,10 +268,12 @@ describe("RuntimeConnection", () => {
 
   it("covers failed queued sends, expiry, abort, and socket-wide rejection", async () => {
     const socket = new ControlledWebSocket();
-    const now = Date.now();
+    let currentTime = 10_000;
+    const scheduler = new ManualScheduler(() => currentTime);
     const connection = new RuntimeConnection({
       ...controlledOptions(socket),
-      now: () => now,
+      now: () => currentTime,
+      scheduler,
       queueLimits: { trace: 2 },
     });
     const running = connection.run();
@@ -285,7 +287,9 @@ describe("RuntimeConnection", () => {
     socket.releaseNextSend();
     await first;
 
-    const expiring = connection.send({ type: "test:expiring" }, { priority: "result", deadline: now + 1 });
+    const expiring = connection.send({ type: "test:expiring" }, { priority: "result", deadline: currentTime + 1 });
+    currentTime += 1;
+    scheduler.runDue();
     await expect(expiring).rejects.toMatchObject({ code: "deadline" });
     expect(socket.readyState).toBe(WebSocket.CLOSED);
     connection.stop();
@@ -346,14 +350,18 @@ describe("RuntimeConnection", () => {
       connectionId,
     };
     const received: RuntimeBusinessFrame[] = [];
-    connection.subscribeBusinessFrames((frame) => {
-      received.push(frame);
+    const allFramesReceived = new Promise<void>((resolve) => {
+      connection.subscribeBusinessFrames((frame) => {
+        received.push(frame);
+        if (received.length === 3) resolve();
+      });
     });
     const encoded = new TextEncoder().encode(JSON.stringify(business));
     socket.receiveData(encoded.buffer);
     socket.receiveData([Buffer.from(JSON.stringify(business))]);
     socket.receiveData(JSON.stringify(business));
-    await vi.waitFor(() => expect(received).toHaveLength(3));
+    await allFramesReceived;
+    expect(received).toHaveLength(3);
     connection.stop();
     await running;
   });
@@ -1362,6 +1370,37 @@ function controlledOptions(socket: ControlledWebSocket): ConstructorParameters<t
 
 function controlledConnection(socket: ControlledWebSocket, queueLimits: { trace: number }): RuntimeConnection {
   return new RuntimeConnection({ ...controlledOptions(socket), queueLimits });
+}
+
+class ManualScheduler {
+  readonly #now: () => number;
+  readonly #timers = new Map<ReturnType<typeof setTimeout>, { at: number; callback: () => void }>();
+  #nextId = 0;
+
+  constructor(now: () => number) {
+    this.#now = now;
+  }
+
+  setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout> {
+    const timer = this.#nextId++ as unknown as ReturnType<typeof setTimeout>;
+    this.#timers.set(timer, { at: this.#now() + milliseconds, callback });
+    return timer;
+  }
+
+  clearTimeout(timer: ReturnType<typeof setTimeout>): void {
+    this.#timers.delete(timer);
+  }
+
+  runDue(): void {
+    for (;;) {
+      const due = [...this.#timers.entries()]
+        .filter(([, timer]) => timer.at <= this.#now())
+        .sort(([, left], [, right]) => left.at - right.at)[0];
+      if (!due) return;
+      this.#timers.delete(due[0]);
+      due[1].callback();
+    }
+  }
 }
 
 async function registerControlled(

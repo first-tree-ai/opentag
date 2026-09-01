@@ -13,7 +13,7 @@ OpenTag 是一个全新的独立开源产品，用于连接即时通信与 AI �
 - 会校验 schema 的 Client 健康检查；
 - 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
 - 使用滑动续期无状态 refresh JWT 的一次性 Account 登录 code；
-- 独立认证的 Computer 连接与在线状态；
+- 独立认证的 Computer enrollment 与在线状态；
 - 带不可变 Computer/provider 绑定与 revision fencing 的 Agent Registry；
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
 - 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
@@ -25,70 +25,40 @@ OpenTag 是一个全新的独立开源产品，用于连接即时通信与 AI �
 
 ## 快速开始
 
-前置要求：Node.js 22.x（最低 22.13）、Node.js 24.x 或 Node.js 26.x，以及 Corepack 和 pnpm 10.12.1。
+OpenTag 当前处于 pre-alpha 阶段。仓库提供了一个用于本地 PostgreSQL 依赖的简单 Docker Compose 示例：
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: opentag
+      POSTGRES_USER: opentag
+      POSTGRES_PASSWORD: opentag
+    ports:
+      - "5432:5432"
+    volumes:
+      - opentag-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opentag -d opentag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  opentag-postgres-data:
+```
+
+启动依赖服务：
 
 ```bash
-corepack enable
-pnpm install
 docker compose up -d postgres
-export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
-export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
-export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
-export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
-pnpm build
-pnpm --filter @opentag/server start
 ```
 
-在另一个终端中 bootstrap 首个 Account，再兑换输出的 Account 登录 code：
-
-```bash
-export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
-export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-pnpm --filter @opentag/server bootstrap:admin
-./scripts/dev-install.sh
-export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
-```
-
-Account credential 只用于管理面，不会启动 daemon。打开 Web，从 Agents 区域生成 15 分钟有效的 Computer
-连接命令，再在执行主机运行其中的 `opentag-dev computer connect --server ... <code>`。该命令保存 Computer
-范围的 machine credential，并在 Linux/macOS 上安装或重启当前用户的 daemon service。将 `~/.local/bin` 放在
-`PATH` 最前，可保证 service definition 使用当前 checkout 刚构建的 CLI，而非旧 shim。运行
-`opentag-dev computer list` 可看到已连接的 Computer 为 online。使用 `daemon stop`、`start`、
-`restart`、`status` 与 `uninstall` 管理生命周期；只保存 machine credential 时使用
-`computer connect --no-start`。v0.1 不支持 Windows daemon 服务。
-
-daemon 注册后，可以创建并查看 Agent 配置：
-
-```bash
-pnpm --filter open-tag start agent create \
-  --name code-reviewer \
-  --display-name "Code Reviewer" \
-  --provider codex
-pnpm --filter open-tag start agent list
-```
-
-这会记录 Agent identity 和 Computer binding。Agent 收到已准入工作后，Agent Runtime turn 才会启动。
-
-已登录 Account 可在可用 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort
-和单个 Turn 的最长执行时间。model 或 reasoning 留空表示交由 Codex 管理；duration 留空则使用 OpenTag 的 30 分钟默认值。
-显式填写的 Codex-native 值会在绑定 Computer 准备 Runtime 时校验，OpenTag 不会静默替换。Claude Code 的
-Effective Runtime Snapshot 目前尚未支持。
-
-配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
-`http://127.0.0.1:8000/`。已登录 Account 管理自己拥有的 Agents、Computers、Tasks、Skills 与 Integrations；
-Computer 连接和诊断从 Agents 区域进入。产品模型是
-**Account → Computer → Agent → IM binding**，ownership 直接由 Account-native schema 强制保证。
-
-Internal Session collaboration 是 Agent Runtime 能力，不是 Workspace、Project 或其他管理实体。它不定义跨 Agent
-所有权，也不拥有共享文件、长期记忆、Tasks、Secrets 或 billing。Context Tree 可以独立保存长期上下文，与这条实时
-Session 消息边界正交。
-
-若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
-`OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，
-且不会创建 Account。
-
-完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
+Compose 服务只是本地开发依赖，不会启动 OpenTag Server 或 Agent Runtime。Node.js 配置、Server 启动、Account
+bootstrap、Computer enrollment、认证和 Agent 管理方式，请参阅[开发指南](./DEVELOPMENT.zh-CN.md)。
 
 ## 项目状态
 

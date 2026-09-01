@@ -13,6 +13,7 @@ import { registerImResourceRoute } from "./api/im-resources.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
+import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
@@ -61,6 +62,7 @@ export interface CreateAppOptions {
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
+  runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   /**
    * Undoing setup so onboarding can be walked again. Any staging deployment supplies it, and every
@@ -125,6 +127,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const readiness = options.readiness ?? new BootstrapReadiness();
 
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
+  if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
 
   app.register(fastifyOpenTelemetry, {
     wrapRoutes: true,

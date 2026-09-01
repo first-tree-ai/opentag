@@ -21,6 +21,7 @@ export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-message
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
+export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`;
 /**
  * Account-native management collections. Ownership comes only from the authenticated Account.
  */
@@ -60,6 +61,7 @@ export const HTTP_PATHS = {
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
+  runtimeDurableWork: RUNTIME_DURABLE_WORK_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
 } as const;
@@ -121,6 +123,10 @@ export function feishuSetupAttemptPath(attemptId: string): string {
   return `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/${encodeURIComponent(attemptId)}`;
 }
 
+export function feishuSetupAttemptCancelPath(attemptId: string): string {
+  return `${feishuSetupAttemptPath(attemptId)}/cancel`;
+}
+
 export function agentSlackOAuthStartPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding/slack/oauth/start`;
 }
@@ -154,4 +160,8 @@ export function runtimeWebSocketUrl(serverUrl: string): string {
   const url = new URL(HTTP_PATHS.computerRuntimeWebSocket, serverUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
+}
+
+export function runtimeDurableWorkPath(kind: string, key: string): string {
+  return `${RUNTIME_DURABLE_WORK_PATH}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`;
 }

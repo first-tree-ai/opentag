@@ -99,6 +99,15 @@ describe("projectAgentAvailability", () => {
     });
   });
 
+  it("separates an Agent with no Computer from one whose Computer could not be read", () => {
+    const [, , summary, handoff] = ready();
+    const unbound = projectAgentAvailability(agent({ computer: null }), undefined, summary, handoff, true, true);
+    // The Server said this Agent has no Computer, so the viewer is asked to connect one rather than
+    // told to wait for a read that would never change the answer.
+    expect(unbound).toMatchObject({ state: "action_required", reason: "computer_not_bound", lastConfirmedAt: null });
+    expect(unbound.dependencies.computer).toEqual({ state: "not_bound", lastConfirmedAt: null });
+  });
+
   it("cannot confirm anything without the Computer", () => {
     const [, , summary, handoff] = ready();
     const availability = projectAgentAvailability(agent(), undefined, summary, handoff, true, true);

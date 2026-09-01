@@ -26,7 +26,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
     <AsyncState state={state}>
       {(agent) => (
         <section className="grid gap-6">
-          <AgentObjectHeader agent={agent} />
+          <AgentObjectHeader agent={agent} showBackLink={false} />
           <div className="grid gap-6">
             <AgentLifecycleNotice agent={agent} />
             {/*
@@ -45,7 +45,15 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
   );
 }
 
-export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
+export function AgentObjectHeader({
+  agent,
+  backToSettings,
+  showBackLink = true,
+}: {
+  agent: AgentDetailView;
+  backToSettings?: boolean;
+  showBackLink?: boolean;
+}) {
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
   /*
@@ -56,13 +64,15 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
     agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack" ? undefined : agent.name;
   return (
     <header className="grid gap-4">
-      <Link
-        className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link"
-        {...(backToSettings ? agentDetailLink(agent.id) : ({ to: "/agents" } as const))}
-      >
-        <Icon name="arrow-left" />
-        {backToSettings ? agent.displayName : "Agents"}
-      </Link>
+      {showBackLink ? (
+        <Link
+          className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link"
+          {...(backToSettings ? agentDetailLink(agent.id) : ({ to: "/agents" } as const))}
+        >
+          <Icon name="arrow-left" />
+          {backToSettings ? agent.displayName : m.agents_title()}
+        </Link>
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
           <span
@@ -80,7 +90,7 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
             </div>
             <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
               {handle ? <span>@{handle}</span> : null}
-              {showCreator ? <span>Created by {agent.createdBy.displayName}</span> : null}
+              {showCreator ? <span>{m.agents_created_by({ name: agent.createdBy.displayName })}</span> : null}
             </p>
           </div>
         </div>
@@ -91,7 +101,7 @@ export function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetai
               state={{ agent }}
               {...agentSettingsLink(agent.id)}
             >
-              <Icon name="settings" /> Settings
+              <Icon name="settings" /> {m.agents_settings()}
             </Link>
           ) : null}
         </div>
@@ -116,15 +126,28 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
       aria-label={m.agents_status_region()}
       data-ui="agent-status-overview"
     >
-      <ul className="grid h-full content-start list-none">
+      <ul className="grid h-full list-none grid-rows-2">
         <AgentStatusRow
           agent={agent}
-          identity={`${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${runtimeName}`}
+          dependency="computer"
+          // No Computer, no identity line -- the row already says so in its status, and naming
+          // nothing would leave a bare separator where a machine should be. `identity` is
+          // optional for exactly this: the messaging row below omits it the same way.
+          identity={
+            agent.computer
+              ? m.agents_computer_identity({
+                  name: agent.computer.displayName,
+                  platform: platformLabel(agent.computer.platform),
+                  runtime: runtimeName,
+                })
+              : undefined
+          }
           name={m.agents_status_computer()}
           status={computer}
         />
         <AgentStatusRow
           agent={agent}
+          dependency="messaging"
           identity={binding ? messagingChannelLabel(agent, binding) : undefined}
           name={m.agents_status_message_channel()}
           status={messaging}
@@ -136,38 +159,51 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
 
 function AgentStatusRow({
   agent,
+  dependency,
   identity,
   name,
   status,
 }: {
   agent: AgentDetailView;
+  dependency: "computer" | "messaging";
   identity?: string;
   name: string;
   status: AgentDependencyStatus;
 }) {
-  const isMessageChannel = name === m.agents_status_message_channel();
-  const rowClassName = isMessageChannel
-    ? "grid content-start border-t border-kumo-line pt-4"
-    : "grid content-start pb-4";
-  const dataUi = isMessageChannel ? "agent-status-message-channel" : "agent-status-computer";
+  const isMessaging = dependency === "messaging";
+  const rowClassName = isMessaging
+    ? "grid content-center gap-2 border-t border-kumo-line pt-4"
+    : "grid content-center gap-2 pb-4";
+  const dataUi = isMessaging ? "agent-status-message-channel" : "agent-status-computer";
   return (
     <li className={rowClassName} data-ui={dataUi}>
-      <div className="grid gap-1">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <strong className="text-sm font-semibold text-kumo-strong">{name}</strong>
-          <span className={`text-sm font-medium ${dependencyStatusClassName(status.tone)}`}>{status.label}</span>
-        </div>
-        {identity ? <span className="min-w-0 truncate text-sm text-kumo-subtle">{identity}</span> : null}
-      </div>
-      {status.action ? (
-        <Link
-          className="mt-3 inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
-          state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
-          {...agentSettingsSectionLink(agent.id, status.action.section)}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <strong className="text-sm font-semibold text-kumo-strong">{name}</strong>
+        <span
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-kumo-default"
+          data-state={status.tone}
         >
-          {status.action.label}
-          <Icon className="size-3.5" name="chevron-right" />
-        </Link>
+          <span
+            aria-hidden="true"
+            className={`size-1.5 shrink-0 rounded-full bg-current ${dependencyStatusClassName(status.tone)}`}
+          />
+          {status.label}
+        </span>
+      </div>
+      {identity || status.action ? (
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1">
+          {identity ? <span className="min-w-0 flex-1 truncate text-sm text-kumo-subtle">{identity}</span> : null}
+          {status.action ? (
+            <Link
+              className="ml-auto inline-flex w-fit shrink-0 items-center gap-1 text-sm text-kumo-link"
+              state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
+              {...agentSettingsSectionLink(agent.id, status.action.section)}
+            >
+              {status.action.label}
+              <Icon className="size-3.5" name="chevron-right" />
+            </Link>
+          ) : null}
+        </div>
       ) : null}
     </li>
   );
@@ -209,7 +245,7 @@ export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
   return (
     <section
       className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-tint p-4"
-      aria-label={`Agent status: ${status.label}`}
+      aria-label={m.agents_lifecycle_aria({ status: status.label })}
       data-ui="agent-lifecycle-notice"
     >
       <div className="grid gap-1">

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
+import * as m from "../paraglide/messages.js";
 import { Button, Loader } from "../ui/design-system.js";
 import type { OnboardingBackend } from "./backend.js";
-import { COPY } from "./copy.js";
 import {
   type AgentDraft,
   type CloudComputerState,
@@ -23,6 +24,10 @@ const COMPLETE_ATTEMPTS = 3;
 /** Allocating the cloud Computer the Agent will be created on. */
 const ALLOCATE_COMPUTER_MS = 700;
 
+function localDraft(): AgentDraft {
+  return { ...emptyDraft(), destination: "local" };
+}
+
 /**
  * The redesigned onboarding flow, against the real Server.
  *
@@ -30,7 +35,13 @@ const ALLOCATE_COMPUTER_MS = 700;
  * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
  * given that after it runs.
  */
-export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string) => Promise<void> | void } = {}) {
+export function OnboardingV2Page({
+  onComplete,
+  reviewMode = false,
+}: {
+  onComplete?: (agentId: string) => Promise<void> | void;
+  reviewMode?: boolean;
+} = {}) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const backend = useServerBackend(draft);
 
@@ -67,7 +78,33 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
         <p className="text-sm text-kumo-danger m-0" role="alert">
           {backend.resumeError}
         </p>
-        <Button onClick={backend.retryResume}>{COPY.nav.retry}</Button>
+        <Button onClick={backend.retryResume}>{m.onboarding_v2_nav_retry()}</Button>
+      </div>
+    );
+  }
+
+  /*
+   * An Agent with no Computer is not a run this flow can finish, and pretending otherwise would
+   * report a connection and then stop at messaging. The choice is rendered here rather than linked
+   * to: Settings lives behind the same setup gate that put the reader on this screen, so sending
+   * them there returns them here. Once a Computer is chosen the Agent has one, and the resume that
+   * refused this run can be read again and continue.
+   */
+  if (backend.resumeBlocked) {
+    return (
+      <div
+        className="flex min-h-screen flex-col items-center justify-center gap-4 bg-kumo-canvas p-6"
+        data-ui="onboarding-v2-resume-blocked"
+      >
+        <p className="text-sm text-kumo-strong m-0" role="status">
+          {m.onboarding_v2_resume_blocked_title({ agentName: backend.resumeBlocked.agentName })}
+        </p>
+        <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">
+          {m.onboarding_v2_resume_blocked_detail()}
+        </p>
+        <div className="w-full max-w-2xl rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
+          <AgentComputerChoice agentId={backend.resumeBlocked.agentId} onBound={backend.retryResume} />
+        </div>
       </div>
     );
   }
@@ -80,7 +117,7 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
       >
         <Loader />
         <p className="text-sm text-kumo-subtle m-0" role="status">
-          {COPY.loading}
+          {m.onboarding_v2_loading()}
         </p>
       </div>
     );
@@ -93,6 +130,7 @@ export function OnboardingV2Page({ onComplete }: { onComplete?: (agentId: string
       draft={draft}
       onComplete={onComplete}
       onDraftChange={setDraft}
+      reviewMode={reviewMode}
     />
   );
 }
@@ -142,19 +180,25 @@ function OnboardingV2Flow({
   backend,
   cloudAvailable,
   draft,
+  destinationPreselected = false,
   lab,
   onComplete,
   onDraftChange,
+  reviewMode = false,
 }: {
   backend: OnboardingBackend;
   cloudAvailable: boolean;
   draft: AgentDraft;
+  /** Production currently supports only local Agents, so it begins at the Agent step. */
+  destinationPreselected?: boolean;
   lab?: React.ReactNode;
   /** Told when the flow has actually finished, so setup can be marked complete. */
   onComplete?: (agentId: string) => Promise<void> | void;
   onDraftChange: (draft: AgentDraft) => void;
+  /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
+  reviewMode?: boolean;
 }) {
-  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
+  const [destinationConfirmed, setDestinationConfirmed] = useState(destinationPreselected);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
   /*
    * The confirmations exist so a page is left deliberately rather than the moment its fields
@@ -175,9 +219,8 @@ function OnboardingV2Flow({
 
   const facts: FlowFacts = {
     draft,
-    destinationConfirmed: destinationConfirmed || resumed,
+    destinationConfirmed: destinationConfirmed || destinationPreselected || resumed,
     draftConfirmed: draftConfirmed || resumed,
-    connect: backend.connect,
     selectedComputerId: backend.selectedComputerId,
     readiness: backend.readiness,
     cloudComputer,
@@ -187,35 +230,34 @@ function OnboardingV2Flow({
   };
   const flow = deriveFlowState(facts);
 
-  // The connect code is issued when the page that shows it is first reached, not before: an
-  // unseen code would spend its validity in the background. A Computer that is already connected
-  // needs none, and `issueConnectCode` only acts on an idle connection.
-  //
-  // A run whose Account already has a Computer needs none either, and issuing one anyway would do
-  // more than waste it: the code enrols a *new* machine, so an Account meant to have one could end
-  // up with two.
-  const connectingNewComputer = backend.selectedComputerId === undefined;
   useEffect(() => {
-    if (flow.page === "computer" && connectingNewComputer) backend.issueConnectCode();
-  }, [backend.issueConnectCode, connectingNewComputer, flow.page]);
-
-  // Which step the reader is on is the page's to know. The connection is watched while they are on
-  // the one that can act on it, and left alone once they are past it.
-  useEffect(() => {
-    if (flow.page === "messaging" || flow.complete) backend.markPastConnectStep();
-  }, [backend.markPastConnectStep, flow.complete, flow.page]);
+    if (flow.page === "messaging" || flow.complete) backend.markPastComputerStep();
+  }, [backend.markPastComputerStep, flow.complete, flow.page]);
 
   /*
-   * Setup is completed from the finished flow, and exactly once. Reporting it from the render that
-   * first sees `complete` — rather than from the button that connected the messaging app — is what
-   * keeps it true for both routes and for a reader who arrives already finished.
+   * Setup is completed from the finished flow. Reporting it from the render that first sees
+   * `complete` — rather than from the button that connected the messaging app — keeps it true for
+   * both routes and for a reader who arrives already finished. Only one attempt runs at a time;
+   * failures get a small bounded retry budget before the reader is offered an explicit retry.
    */
   const reported = useRef<string | undefined>(undefined);
   const [completionAttempt, setCompletionAttempt] = useState(0);
   const [completionFailed, setCompletionFailed] = useState(false);
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const retryCompletion = useCallback(() => {
+    setCompletionAttempt(0);
+    setCompletionFailed(false);
+  }, []);
   useEffect(() => {
     const agentId = backend.agent?.id;
-    if (!flow.complete || !agentId || reported.current === agentId || completionFailed) return;
+    if (
+      !flow.complete ||
+      !agentId ||
+      reported.current === agentId ||
+      completionFailed ||
+      (reviewMode && !reviewConfirmed)
+    )
+      return;
     // Claimed before the call so a re-render cannot send it twice, and released if it fails.
     // Holding the claim through a refusal would leave the Account permanently un-onboarded: the
     // gate keeps sending them back here, and this is the only page that can let them out.
@@ -234,7 +276,7 @@ function OnboardingV2Flow({
     return () => {
       live = false;
     };
-  }, [backend.agent?.id, completionAttempt, completionFailed, flow.complete, onComplete]);
+  }, [backend.agent?.id, completionAttempt, completionFailed, flow.complete, onComplete, reviewConfirmed, reviewMode]);
 
   // Held so a restart or an unmount can cancel an allocation still in flight; otherwise the stale
   // timer lands on the next run and skips its confirmation step.
@@ -267,21 +309,23 @@ function OnboardingV2Flow({
 
   const startOver = useCallback(() => {
     window.clearTimeout(cloudTimer.current);
-    onDraftChange(emptyDraft());
-    setDestinationConfirmed(false);
+    onDraftChange(destinationPreselected ? localDraft() : emptyDraft());
+    setDestinationConfirmed(destinationPreselected);
     setDraftConfirmed(false);
     setCloudComputer("idle");
     setMessagingProvider(undefined);
     backend.reset();
-  }, [backend, onDraftChange]);
+  }, [backend, destinationPreselected, onDraftChange]);
 
   return (
-    <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas">
+    <div className={`otv2-shell flex min-h-screen flex-col bg-kumo-canvas ${lab ? "pb-20 sm:pb-0" : ""}`}>
       <header className="flex items-center justify-between p-6">
-        <span className="text-lg font-semibold text-kumo-strong">{COPY.brand}</span>
-        <Button onClick={startOver} variant="ghost">
-          Start over
-        </Button>
+        <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
+        {reviewMode ? null : (
+          <Button onClick={startOver} variant="ghost">
+            {m.onboarding_v2_start_over()}
+          </Button>
+        )}
       </header>
 
       <main className="otv2-frame flex flex-1 flex-col items-center gap-6 mx-auto p-6">
@@ -301,11 +345,21 @@ function OnboardingV2Flow({
               data-ui="onboarding-v2-error"
               role="alert"
             >
-              <p className="text-sm text-kumo-danger m-0">{backend.error ?? COPY.errors.completeSetup}</p>
+              <p className="text-sm text-kumo-danger m-0">{backend.error ?? m.onboarding_v2_error_complete_setup()}</p>
             </div>
           ) : null}
           {flow.complete ? (
-            <DoneStep name={backend.agent?.name ?? draft.name} />
+            <DoneStep
+              completion={
+                completionFailed
+                  ? { onFinish: retryCompletion, state: "failed" }
+                  : reviewMode
+                    ? { onFinish: () => setReviewConfirmed(true), state: reviewConfirmed ? "pending" : "ready" }
+                    : undefined
+              }
+              name={backend.agent?.name ?? draft.name}
+              provider={messagingProvider ?? backend.messagingProvider}
+            />
           ) : flow.page === "destination" ? (
             <DestinationStep
               cloudAvailable={cloudAvailable}
@@ -318,7 +372,7 @@ function OnboardingV2Flow({
               cloudComputer={cloudComputer}
               creation={backend.creation}
               draft={draft}
-              onBack={resumed ? undefined : backToDestination}
+              onBack={resumed || destinationPreselected ? undefined : backToDestination}
               onChange={onDraftChange}
               onSignIn={backend.startPlanSignIn}
               onSubmit={submitCloud}
@@ -333,13 +387,13 @@ function OnboardingV2Flow({
             />
           ) : flow.page === "computer" ? (
             <ComputerStep
+              adapter={backend.computerConnectAdapter}
               computer={accountComputer}
-              connect={backend.connect}
               creation={backend.creation}
               draft={draft}
               onBack={resumed ? undefined : backToAgent}
+              onComputerConnected={backend.computerConnected}
               onCreate={() => backend.createAgent(draft)}
-              onRefreshCommand={backend.refreshConnectCode}
               readiness={backend.readiness}
             />
           ) : (

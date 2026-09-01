@@ -164,7 +164,7 @@ describe("the Computer the Account already has", () => {
     expect(continueButton().disabled).toBe(false);
   });
 
-  it("repairs the asleep Computer instead of offering another one", async () => {
+  it("recovers the asleep Computer naturally before offering repair", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, offline");
     await reachComputerStep();
@@ -173,8 +173,11 @@ describe("the Computer the Account already has", () => {
     expect(machineLine()).toContain("Offline");
     expect(machineLine()).toContain("last seen 3 days ago");
     expect(
-      screen.getByText("This computer is offline. Reconnect it and this page will continue on its own."),
+      screen.getByText(
+        "MacBook Pro is offline. Start OpenTag on that Computer; this page will continue when it reconnects.",
+      ),
     ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeTruthy();
     // Connecting a second machine is not the way to repair the first.
     expect(connectCommandShown()).toBe(false);
     expect(asksWhichComputer()).toBe(false);

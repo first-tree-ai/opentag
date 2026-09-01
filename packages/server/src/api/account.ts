@@ -16,6 +16,8 @@ import {
   PROVIDER_READINESS_V1_HEADER,
   TASK_BY_ID_TEMPLATE,
   TaskDetailSchema,
+  TaskTitleUpdateRequestSchema,
+  TaskTitleUpdateResponseSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -111,6 +113,15 @@ export function registerAccountRoutes(
     app.get(HTTP_PATHS.accountTasks, { preHandler }, async (request, reply) => {
       const query = parseRequest(TaskListQuerySchema, request.query);
       const response = ListTasksResponseSchema.parse(await taskService.list(accountId(request), query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.patch(TASK_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const input = parseRequest(TaskTitleUpdateRequestSchema, request.body);
+      const response = TaskTitleUpdateResponseSchema.parse({
+        task: await taskService.updateTitle(accountId(request), sessionId, input.title),
+      });
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
 

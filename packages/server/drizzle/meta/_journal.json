@@ -229,8 +229,43 @@
     {
       "idx": 32,
       "version": "7",
-      "when": 1788176376881,
-      "tag": "0032_drop_workspace_ownership_persistence",
+      "when": 1788186258806,
+      "tag": "0032_durable_turn_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788196536534,
+      "tag": "0033_clear_default_agent_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788208560698,
+      "tag": "0034_legal_kat_farrell",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788220725651,
+      "tag": "0035_dark_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788226671075,
+      "tag": "0036_first_the_stranger",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788231695621,
+      "tag": "0037_drop_workspace_ownership_persistence",
       "breakpoints": true
     }
   ]

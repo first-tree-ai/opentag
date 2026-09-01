@@ -857,6 +857,10 @@ export class SessionService {
       )
       .limit(1);
     if (!binding) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
+    // Placement derives the Computer from the Agent, so an Agent that has none cannot host a Session.
+    if (agent.computerId === null) {
+      throw new SessionServiceError("AGENT_COMPUTER_NOT_BOUND", "The Agent is not bound to a Computer");
+    }
     return agent.computerId;
   }
 

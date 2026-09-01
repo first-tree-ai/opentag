@@ -83,6 +83,9 @@ export default defineConfig({
           if (normalizedId.includes("/node_modules/echarts/") || normalizedId.includes("/node_modules/zrender/")) {
             return "echarts";
           }
+          // Icons are shared by the Account shell and every Agent route. Keep that stable library
+          // cacheable without making the application entry absorb each route's icon set.
+          if (normalizedId.includes("/node_modules/@phosphor-icons/react/")) return "icons";
           return undefined;
         },
       },

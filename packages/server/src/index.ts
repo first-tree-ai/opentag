@@ -10,13 +10,19 @@ import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { agents, computers } from "./db/schema/index.js";
-import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
+import {
+  createBackgroundFailureSupervisor,
+  createServerDiagnosticReporter,
+  initTelemetry,
+  shutdownTelemetry,
+} from "./observability/index.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
+import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
 import { AgentRuntimeTestService, AgentService } from "./services/agents/index.js";
 import {
   AuthService,
@@ -29,6 +35,7 @@ import { ComputerService, MachineAuthService } from "./services/computers/index.
 import { ApplicationCipher } from "./services/crypto.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
   DefaultFeishuRegistrationGateway,
   FeishuConnectionManager,
@@ -82,6 +89,13 @@ export {
   type RuntimeDomainOwnerOptions,
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
+export {
+  DEFAULT_RUNTIME_DURABLE_WORK_RETENTION_MS,
+  DEFAULT_RUNTIME_DURABLE_WORK_TERMINAL_LIMIT,
+  PostgresRuntimeDurableWorkStore,
+  RuntimeDurableWorkConflictError,
+  type RuntimeDurableWorkStoreOptions,
+} from "./runtime/runtime-durable-work-store.js";
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
@@ -98,6 +112,11 @@ export async function startServer(): Promise<void> {
   let app: ReturnType<typeof createApp> | undefined;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
+  const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
+    logger: (payload, message) => app?.log.error(payload, message),
+    onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
+    onCounter: (name, labels) => app?.log.info({ name, ...labels }, "Background failure counter"),
+  });
 
   try {
     knownSecrets.push(
@@ -181,6 +200,9 @@ export async function startServer(): Promise<void> {
     });
     const accountSetupService = new AccountSetupService(database, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
+    const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
+    });
     const sessionService = new SessionService(database);
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
@@ -190,6 +212,7 @@ export async function startServer(): Promise<void> {
       prepareReconcile: (computerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
+    const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -216,6 +239,8 @@ export async function startServer(): Promise<void> {
       runtimeReady: runtimeReadyForAgent,
       onDiagnostic: reportDiagnostic,
       policy: imCallPolicy,
+      supervisor: backgroundFailureSupervisor,
+      receipts: feishuInboundReceipts,
     });
     const feishuSetupService = new FeishuSetupService({
       database,
@@ -225,6 +250,7 @@ export async function startServer(): Promise<void> {
       registrations: new DefaultFeishuRegistrationGateway(undefined, imCallPolicy),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
+      supervisor: backgroundFailureSupervisor,
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
@@ -252,6 +278,7 @@ export async function startServer(): Promise<void> {
       domain: domainOwner,
       registry,
       onDiagnostic: reportDiagnostic,
+      supervisor: backgroundFailureSupervisor,
     });
     const setupResetService = config.stagingSetupReset
       ? new OnboardingResetService({
@@ -302,6 +329,7 @@ export async function startServer(): Promise<void> {
       imResourceService,
       readiness,
       runtime: { registry, domainOwner, agentRuntimeTestOwner },
+      runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,

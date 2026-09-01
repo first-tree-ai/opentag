@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ApiError } from "../../api.js";
+import * as m from "../../paraglide/messages.js";
 import { Loader } from "../../ui/design-system.js";
 
 export type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -21,14 +22,14 @@ export function AsyncState<T>({
     return (
       loading ?? (
         <div
-          aria-label="Loading current server state"
+          aria-label={m.common_loading_current_server_state()}
           className="flex items-center gap-2 text-sm text-kumo-subtle"
           role="status"
         >
           <span aria-hidden="true">
             <Loader size="sm" />
           </span>
-          <span>Loading current Server state…</span>
+          <span>{m.common_loading_current_server_state_detail()}</span>
         </div>
       )
     );
@@ -74,7 +75,7 @@ export function toResourceState<TQuery extends ResourceQueryResult>(
 ): LoadState<Loaded<TQuery>> {
   const loaded = query.data as Loaded<TQuery> | undefined;
   if (query.isError) {
-    const error = query.error ?? new Error("The request failed");
+    const error = query.error ?? new Error(m.common_request_failed());
     if (loaded !== undefined && onBackgroundError && !isTerminalResourceError(error)) {
       return { kind: "ready", value: onBackgroundError(loaded, error) };
     }

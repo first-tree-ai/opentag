@@ -13,6 +13,7 @@ export type AgentAvailability = {
   reason:
     | "agent_suspended"
     | "agent_unconfirmed"
+    | "computer_not_bound"
     | "computer_offline"
     | "runtime_unavailable"
     | "runtime_unconfirmed"
@@ -27,7 +28,7 @@ export type AgentAvailability = {
     | null;
   lastConfirmedAt: string | null;
   dependencies: {
-    computer: { state: "ready" | "action_required" | "unconfirmed"; lastConfirmedAt: string | null };
+    computer: { state: "ready" | "action_required" | "not_bound" | "unconfirmed"; lastConfirmedAt: string | null };
     /** Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from this. */
     runtime: { provider: AgentSummary["runtimeProvider"]; status: ProviderReadinessStatus | null };
     handoff: {
@@ -78,7 +79,16 @@ export function projectAgentAvailability(
             : ("action_required" as const);
   const dependencies: AgentAvailability["dependencies"] = {
     computer: {
-      state: computer ? (computerReady ? "ready" : "action_required") : "unconfirmed",
+      // Not bound is a fact the Server states, so it is never reported as evidence we could not read:
+      // one is answered by binding a Computer and the other by waiting for a read to succeed.
+      state:
+        agent.computer === null
+          ? "not_bound"
+          : computer
+            ? computerReady
+              ? "ready"
+              : "action_required"
+            : "unconfirmed",
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
     runtime: { provider: agent.runtimeProvider, status: providerReadiness?.status ?? null },
@@ -94,6 +104,9 @@ export function projectAgentAvailability(
   };
   if (agent.status === "suspended") {
     return { state: "suspended", reason: "agent_suspended", lastConfirmedAt: agent.updatedAt, dependencies };
+  }
+  if (agent.computer === null) {
+    return { state: "action_required", reason: "computer_not_bound", lastConfirmedAt: null, dependencies };
   }
   if (!computer) {
     return { state: "unconfirmed", reason: "computer_unconfirmed", lastConfirmedAt: null, dependencies };

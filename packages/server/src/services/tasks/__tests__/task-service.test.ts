@@ -73,6 +73,8 @@ async function createSession(
     createdBySessionId?: string;
     endedAt?: Date | null;
     createdAt?: Date;
+    manualTitle?: string | null;
+    generatedTitle?: string | null;
   } = {},
 ) {
   const kind = options.kind ?? "channel";
@@ -88,6 +90,8 @@ async function createSession(
       runtimeModel: kind === "internal" ? "claude-sonnet" : null,
       runtimeReasoningEffort: kind === "internal" ? "medium" : null,
       runtimeMaxDurationMs: kind === "internal" ? 20_000 : null,
+      manualTitle: options.manualTitle,
+      generatedTitle: options.generatedTitle,
       endedAt: options.endedAt,
       createdAt: options.createdAt ?? BASE_TIME,
     })
@@ -210,6 +214,30 @@ describe("TaskService", () => {
     expect(next.tasks).toHaveLength(1);
     expect(next.tasks[0]).toMatchObject({ id: second.id, sessionKind: "thread" });
     expect(next.nextCursor).toBeNull();
+  });
+
+  it("resolves manual over generated over derived titles and supports clear", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const session = await createSession(binding.id, { manualTitle: "Manual title", generatedTitle: "Generated title" });
+    await createDelivery(binding.id, session.id, { reported: true });
+
+    await expect(service.list(bootstrap.userId, { limit: 50 })).resolves.toMatchObject({
+      tasks: [{ id: session.id, title: "Manual title" }],
+    });
+    await expect(service.updateTitle(bootstrap.userId, session.id, null)).resolves.toMatchObject({
+      id: session.id,
+      title: "Generated title",
+    });
+    await expect(service.saveGeneratedTitle(session.id, "Replacement title")).resolves.toBe(true);
+    await expect(service.updateTitle(bootstrap.userId, session.id, "  Final title  ")).resolves.toMatchObject({
+      id: session.id,
+      title: "Final title",
+    });
+    await expect(service.saveGeneratedTitle(session.id, "Ignored title")).resolves.toBe(false);
+    await expect(service.updateTitle(bootstrap.userId, session.id, null)).resolves.toMatchObject({
+      id: session.id,
+      title: "Replacement title",
+    });
   });
 
   it("maps every task status and normalizes summary dates", async () => {

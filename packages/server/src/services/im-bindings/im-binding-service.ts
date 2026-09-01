@@ -331,7 +331,7 @@ export class ImBindingService {
       .innerJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
-    return agent?.computerId;
+    return agent?.computerId ?? undefined;
   }
 
   async issueRuntimeCredentialGrant(
@@ -1375,6 +1375,15 @@ export class ImBindingService {
         .limit(1)
         .for("update");
       if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
+      // Messaging routes work to the Agent's Computer, so a binding that has none would be created
+      // ready to deliver to nowhere. The Account binds a Computer first.
+      if (agent.computerId === null) {
+        throw new ImBindingServiceError(
+          "AGENT_COMPUTER_NOT_BOUND",
+          409,
+          "The Agent must be bound to a Computer before messaging can be connected",
+        );
+      }
       const [currentRoute] = await transaction
         .select()
         .from(imBindings)
@@ -1801,12 +1810,21 @@ export class ImBindingService {
     const encryptedCredential = this.#cipher.encrypt(JSON.stringify(input.credential));
     const activate = async (transaction: DatabaseTransaction): Promise<ActivatedBinding> => {
       const [agent] = await transaction
-        .select({ id: agents.id })
+        .select({ computerId: agents.computerId, id: agents.id })
         .from(agents)
         .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
         .limit(1)
         .for("update");
       if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
+      // Messaging routes work to the Agent's Computer, so a binding that has none would be created
+      // ready to deliver to nowhere. The Account binds a Computer first.
+      if (agent.computerId === null) {
+        throw new ImBindingServiceError(
+          "AGENT_COMPUTER_NOT_BOUND",
+          409,
+          "The Agent must be bound to a Computer before messaging can be connected",
+        );
+      }
       const [current] = await transaction
         .select()
         .from(imBindings)

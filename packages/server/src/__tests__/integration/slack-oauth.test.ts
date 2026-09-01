@@ -105,7 +105,12 @@ async function fixture() {
     slack,
     state: new SlackOAuthStateService(jwtSecret, { now: () => now }),
   });
-  return { ...client, api, bootstrap, first, imBindingService, oauth, second, slack };
+  const unbound = await agentsService.createForAccount(bootstrap.userId, {
+    name: "unbound",
+    displayName: "Unbound",
+    runtimeProvider: "codex",
+  });
+  return { ...client, api, bootstrap, first, imBindingService, oauth, second, slack, unbound };
 }
 
 describe("Slack distributed OAuth adapter", () => {
@@ -125,6 +130,31 @@ describe("Slack distributed OAuth adapter", () => {
       ).rejects.toMatchObject({
         cause: { code: "23514", constraint_name: "slack_oauth_nonces_intent" },
       });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("refuses to start or finish a Slack install for an Agent that has no Computer", async () => {
+    const value = await fixture();
+    try {
+      // Refused before the Account installs anything. Learning this only at activation would mean
+      // asking someone to install a Slack App that could never have been bound to a route.
+      await expect(value.oauth.start(value.bootstrap.userId, value.unbound.id, "create")).rejects.toMatchObject({
+        code: "AGENT_COMPUTER_NOT_BOUND",
+        statusCode: 409,
+      });
+      expect(await value.database.select().from(slackOAuthNonces)).toHaveLength(0);
+      // And refused again at the commit, which is what covers an Agent unbound after start.
+      await expect(
+        value.slack.configure(value.bootstrap.userId, value.unbound.id, {
+          intent: "create",
+          expectedBinding: null,
+          appId: "A_OPENTAG",
+          botAccessToken: "xoxb-distributed",
+          signingSecret: "signing-secret",
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_COMPUTER_NOT_BOUND", statusCode: 409 });
     } finally {
       await value.sql.end();
     }

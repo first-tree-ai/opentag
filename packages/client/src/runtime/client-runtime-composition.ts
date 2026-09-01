@@ -58,6 +58,12 @@ import { ImCredentialEnvironmentManager } from "./im-credential-environment-mana
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
+import {
+  FileRuntimeDurabilityStore,
+  RuntimeDurabilityMetrics,
+  type RuntimeDurabilityStore,
+} from "./runtime-durability.js";
+import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
@@ -208,6 +214,11 @@ function resolveSharedProviderRefreshResult(
 
 export interface CreateClientRuntimeOptions {
   readonly api?: Pick<OpenTagApi, "openImResource">;
+  readonly serverDurability?: {
+    readonly api: Pick<OpenTagApi, "listRuntimeDurableWork" | "writeRuntimeDurableWork">;
+    readonly machineToken: string;
+    readonly now?: () => number;
+  };
   readonly capabilityRefreshIntervalMs?: number;
   readonly providerProbeDeadlineMs?: number;
   readonly clientVersion: string;
@@ -225,6 +236,8 @@ export interface CreateClientRuntimeOptions {
   readonly logger?: ClientLogger;
   readonly signal?: AbortSignal;
   readonly machineToken?: string;
+  readonly durabilityStore?: RuntimeDurabilityStore;
+  readonly durabilityMetrics?: RuntimeDurabilityMetrics;
 }
 
 export class ComposedClientRuntime {
@@ -234,6 +247,7 @@ export class ComposedClientRuntime {
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
   readonly reportOwner: TurnReportOwner;
+  readonly durabilityMetrics: RuntimeDurabilityMetrics;
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
   readonly workspace: AgentWorkspaceManager;
@@ -254,6 +268,7 @@ export class ComposedClientRuntime {
       reconciler: SessionReconciler;
       sessionMessageInbox: SessionMessageInbox;
       reportOwner: TurnReportOwner;
+      durabilityMetrics: RuntimeDurabilityMetrics;
       runner: AgentTurnRunner;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;
@@ -269,6 +284,7 @@ export class ComposedClientRuntime {
     this.reconciler = components.reconciler;
     this.sessionMessageInbox = components.sessionMessageInbox;
     this.reportOwner = components.reportOwner;
+    this.durabilityMetrics = components.durabilityMetrics;
     this.runner = components.runner;
     this.runtimeManager = components.runtimeManager;
     this.workspace = components.workspace;
@@ -471,7 +487,17 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
-  const reportOwner = new TurnReportOwner({ connection });
+  const durabilityStore =
+    options.durabilityStore ??
+    (options.serverDurability
+      ? new ServerRuntimeDurabilityStore(options.serverDurability)
+      : new FileRuntimeDurabilityStore(options.home));
+  const durabilityMetrics = options.durabilityMetrics ?? new RuntimeDurabilityMetrics();
+  const reportOwner = new TurnReportOwner({
+    connection,
+    metrics: durabilityMetrics,
+    persistence: durabilityStore,
+  });
   const credentialEnvironment = new ImCredentialEnvironmentManager({
     connection,
     home: options.home,
@@ -500,9 +526,12 @@ export async function createClientRuntime(
     cliCommand: options.cliCommand ?? "opentag",
     credentialEnvironment,
     imCredentialGrantVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imCredentialGrant),
+    metrics: durabilityMetrics,
+    persistence: durabilityStore,
     reconciler,
     runtimeManager,
   });
+  await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
   const resourceFetcher = new ImResourceFetcher({
     instanceId: connection.instanceId,
     api: options.api,
@@ -558,6 +587,7 @@ export async function createClientRuntime(
     sessionMessageInbox,
     reconciler,
     reportOwner,
+    durabilityMetrics,
     runner,
     runtimeManager,
     workspace,

@@ -2,6 +2,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialsPath, readCredentials, resolveComputerIdentity } from "@opentag/client";
+import { getChannelConfig } from "@opentag/shared";
 import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { executeLoginCommand, registerLoginCommand } from "../commands/login.js";
@@ -16,6 +17,49 @@ afterEach(async () => {
 });
 
 describe("runLogin", () => {
+  it("defaults the server to the bound Computer identity", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
+    temporaryDirectories.push(home);
+    await resolveComputerIdentity(home, "https://staging.example");
+    const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
+
+    await expect(executeLoginCommand("one-time-code", { home }, { login })).resolves.toBe(0);
+
+    expect(login).toHaveBeenCalledWith({
+      code: "one-time-code",
+      home,
+      serverUrl: "https://staging.example",
+    });
+  });
+
+  it("requires an explicit server for a channel without a default or bound Computer", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
+    temporaryDirectories.push(home);
+    const login = vi.fn();
+    const staging = getChannelConfig("staging", "/tmp");
+
+    await expect(
+      executeLoginCommand("one-time-code", { home }, { channelConfig: staging, environment: {}, login }),
+    ).rejects.toThrow("The staging channel has no server URL; pass --server <url> to opentag-staging login");
+    expect(login).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicit server override for runLogin validation", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
+    temporaryDirectories.push(home);
+    await resolveComputerIdentity(home, "https://staging.example");
+    const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
+
+    await expect(
+      executeLoginCommand("one-time-code", { home, server: "https://other.example" }, { login }),
+    ).resolves.toBe(0);
+    expect(login).toHaveBeenCalledWith({
+      code: "one-time-code",
+      home,
+      serverUrl: "https://other.example",
+    });
+  });
+
   it("parses a leading-hyphen connect code after the option terminator", async () => {
     const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
     const program = new Command().name("opentag").exitOverride();
@@ -37,6 +81,20 @@ describe("runLogin", () => {
         serverUrl: "https://opentag.example",
       }),
     );
+  });
+
+  it("presents login success as one JSON document", async () => {
+    const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
+    const output: string[] = [];
+    const program = new Command().name("opentag");
+    registerLoginCommand(program, { login, writeOutput: (message) => output.push(message) });
+    await program.parseAsync(["node", "opentag", "login", "code", "--server", "https://opentag.example", "--json"]);
+    expect(login).toHaveBeenCalledWith({
+      code: "code",
+      home: expect.any(String),
+      serverUrl: "https://opentag.example",
+    });
+    expect(output).toEqual([]);
   });
 
   it("stores credentials without returning or printing secrets", async () => {

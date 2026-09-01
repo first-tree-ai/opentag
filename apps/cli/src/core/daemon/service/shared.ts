@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { access, chmod, lstat, mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { ensurePrivateDirectory } from "@opentag/client";
+import { buildChildEnvironment } from "../../command/environment.js";
 import { resolveDaemonPaths } from "../paths.js";
 import {
   acquireProcessFileLease,
@@ -48,7 +49,7 @@ export const defaultServiceRunner: ServiceRunner = {
         [...args],
         {
           encoding: "utf8",
-          env: options.env,
+          env: options.env ?? buildChildEnvironment(process.env),
           maxBuffer: 1024 * 1024,
           timeout: options.timeoutMs,
         },

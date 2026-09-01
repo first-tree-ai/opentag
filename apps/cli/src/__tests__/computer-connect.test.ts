@@ -8,13 +8,16 @@ import {
   readComputerIdentity,
   readCredentials,
   readMachineCredentials,
+  resolveComputerIdentity,
   writeCredentialsAtomically,
 } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
+import { resolveCommandContext } from "../core/command/context.js";
 import * as computerCore from "../core/computer/connect.js";
 import { runComputerConnect } from "../core/computer/connect.js";
 import { formatComputerList } from "../core/computer/formatting.js";
+import * as computerQueries from "../core/computer/queries.js";
 import { listComputers } from "../core/computer/queries.js";
 import type { DaemonServiceManager } from "../core/daemon/service/index.js";
 
@@ -76,6 +79,43 @@ describe("computer connect", () => {
     }
   });
 
+  it("presents a successful Computer connect as JSON", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      credentialsPath: `${home}/config/computer-credentials.json`,
+      message: "Connected this Computer",
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home, "--json"]);
+      expect(stdout).toHaveBeenCalledWith(expect.stringContaining('"ok":true'));
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
+      stdout.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
+  it("presents a Computer connect transport failure as structured JSON", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockRejectedValue(new Error("connection refused"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home, "--json"]);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"category":"unavailable"'));
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = previousExitCode;
+      stderr.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
   it("formats empty and populated Computer lists", () => {
     expect(formatComputerList({ computers: [] })).toBe("No Computers registered");
     expect(
@@ -95,6 +135,44 @@ describe("computer connect", () => {
         ],
       }),
     ).toBe("Workstation\tcomputer-1\tonline\tlinux\t2026-08-19T00:00:00.000Z");
+  });
+
+  it("routes Computer list through the shared presenter in text and JSON modes", async () => {
+    const listSpy = vi.spyOn(computerQueries, "listComputers").mockResolvedValue({ computers: [] });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "list"]);
+      await createProgram().parseAsync(["node", "opentag", "computer", "list", "--json"]);
+      expect(listSpy).toHaveBeenCalledTimes(2);
+      expect(stdout).toHaveBeenCalledWith("No Computers registered\n");
+      expect(stdout).toHaveBeenCalledWith('{"ok":true,"result":{"computers":[]}}\n');
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
+      stdout.mockRestore();
+      listSpy.mockRestore();
+    }
+  });
+
+  it("presents an unauthenticated Computer list as a clean non-zero command result", async () => {
+    const listSpy = vi
+      .spyOn(computerQueries, "listComputers")
+      .mockRejectedValue(new Error("OpenTag is not logged in; run login first"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "list"]);
+      expect(process.exitCode).toBe(1);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("OpenTag is not logged in; run login first"));
+      expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining("at listComputers"));
+    } finally {
+      process.exitCode = previousExitCode;
+      stderr.mockRestore();
+      listSpy.mockRestore();
+    }
   });
 
   it("lists Computers through the authenticated Account client", async () => {
@@ -133,6 +211,19 @@ describe("computer connect", () => {
   it("requires Account login before listing Computers", async () => {
     const home = await temporaryHome();
     await expect(listComputers(home)).rejects.toThrow("OpenTag is not logged in; run login first");
+  });
+
+  it("explains how to finish Account login after Computer onboarding", async () => {
+    const home = await temporaryHome();
+    await resolveComputerIdentity(home, "https://opentag.example");
+
+    await expect(resolveCommandContext({ home, requireAuth: true })).rejects.toThrow(
+      "machine credentials (computer-credentials.json/computer.json) but no Account credentials (credentials.json)",
+    );
+    await expect(resolveCommandContext({ home, requireAuth: true })).rejects.toThrow(
+      "opentag-dev login --server https://opentag.example -- <code>",
+    );
+    await expect(resolveCommandContext({ home, requireAuth: true })).rejects.toThrow("POST /api/v1/me/connect-codes");
   });
 
   it("stores machine authority separately from Account credentials and binds one Account Computer", async () => {

@@ -204,14 +204,28 @@ export class SlackConfigurationService {
     }
   }
 
+  /**
+   * Reads the Agent every Slack configuration path needs, and refuses one that has no Computer.
+   * The check lives here rather than at the start of the flow because both ends need it: an Account
+   * that installs the Slack App first and only then learns the Agent has nowhere to run has been
+   * asked for work that could not have succeeded, and an Agent unbound between start and callback
+   * would otherwise commit a route to a Computer that no longer exists.
+   */
   async #agent(agentId: string, executor: QueryExecutor): Promise<{ displayName: string }> {
     const [agent] = await executor
-      .select({ displayName: agents.displayName })
+      .select({ computerId: agents.computerId, displayName: agents.displayName })
       .from(agents)
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!agent) throw new SlackConfigurationServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
-    return agent;
+    if (agent.computerId === null) {
+      throw new SlackConfigurationServiceError(
+        "AGENT_COMPUTER_NOT_BOUND",
+        409,
+        "Connect a Computer to this Agent before connecting Slack",
+      );
+    }
+    return { displayName: agent.displayName };
   }
 
   async #current(

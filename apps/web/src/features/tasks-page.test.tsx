@@ -274,6 +274,21 @@ describe("Tasks view", () => {
     expect(screen.queryByText(/150 tokens/)).toBeNull();
   });
 
+  it("supports inline title editing and reports a failed save", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+    const save = vi.spyOn(browserApi, "updateTaskTitle").mockRejectedValue(new Error("save failed"));
+
+    await renderInRouter(<TasksPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit title" }));
+    const input = screen.getByRole("textbox", { name: "Edit title" });
+    fireEvent.change(input, { target: { value: "Renamed Task" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+
+    expect(save).toHaveBeenCalledWith(task.id, { title: "Renamed Task" });
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not save the Task title. Try again.");
+    expect((screen.getByRole("textbox", { name: "Edit title" }) as HTMLInputElement).value).toBe("Renamed Task");
+  });
+
   it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
     const taskRequest = vi
       .spyOn(browserApi, "task")

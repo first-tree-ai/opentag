@@ -87,6 +87,7 @@ DROP INDEX "agents_creation_intent_unique";--> statement-breakpoint
 CREATE UNIQUE INDEX "agents_account_name_active_unique" ON "agents" USING btree ("created_by_user_id",lower("name")) WHERE "agents"."status" <> 'deleted';--> statement-breakpoint
 CREATE UNIQUE INDEX "agents_creation_intent_unique" ON "agents" USING btree ("created_by_user_id","creation_intent_id") WHERE "agents"."creation_intent_id" is not null;--> statement-breakpoint
 ALTER TABLE "agents" DROP CONSTRAINT "agents_computer_matches_enrollment";--> statement-breakpoint
+ALTER TABLE "agents" DROP CONSTRAINT "agents_computer_pair";--> statement-breakpoint
 ALTER TABLE "agents" DROP CONSTRAINT "agents_workspace_id_workspaces_id_fk";--> statement-breakpoint
 ALTER TABLE "agents" DROP CONSTRAINT "agents_workspace_enrollment_fk";--> statement-breakpoint
 ALTER TABLE "computer_connect_codes" DROP CONSTRAINT "computer_connect_codes_issued_by_account_pair";--> statement-breakpoint
@@ -115,6 +116,9 @@ ALTER TABLE "computer_connect_codes" DROP COLUMN "consumed_workspace_computer_id
 ALTER TABLE "session_cli_proofs" DROP COLUMN "workspace_computer_id";--> statement-breakpoint
 ALTER TABLE "session_placements" DROP COLUMN "workspace_computer_id";--> statement-breakpoint
 ALTER TABLE "slack_installations" DROP COLUMN "workspace_id";--> statement-breakpoint
+ALTER TABLE "runtime_durable_work" DROP CONSTRAINT "runtime_durable_work_workspace_computer_id_account_computers_id_fk";--> statement-breakpoint
+ALTER TABLE "runtime_durable_work" RENAME COLUMN "workspace_computer_id" TO "computer_id";--> statement-breakpoint
+ALTER TABLE "runtime_durable_work" ADD CONSTRAINT "runtime_durable_work_computer_id_computers_id_fk" FOREIGN KEY ("computer_id") REFERENCES "public"."computers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "computer_connect_codes" ADD CONSTRAINT "computer_connect_codes_consumption_pair" CHECK (("computer_connect_codes"."consumed_computer_id" is null) = ("computer_connect_codes"."consumed_at" is null));--> statement-breakpoint
 CREATE INDEX "computer_connect_codes_issued_by_account_created_idx" ON "computer_connect_codes" USING btree ("issued_by_account_id","created_at");--> statement-breakpoint
 -- Drop the management Workspace tables and the legacy credential shadows.

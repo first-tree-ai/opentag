@@ -45,6 +45,24 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("selects the Server durability adapter only when explicitly configured", async () => {
+    const home = await temporaryDirectory("opentag-client-server-durability-");
+    const api = {
+      listRuntimeDurableWork: vi.fn().mockResolvedValue([]),
+      writeRuntimeDurableWork: vi.fn().mockResolvedValue(undefined),
+    };
+    const runtime = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory("codex"),
+      home,
+      serverDurability: { api, machineToken: "machine-token", now: () => 1 },
+    });
+    await runtime.sessionMessageInbox.ready();
+    runtime.stop();
+    runtime.reportOwner.stop();
+  });
+
   it("allows the login-shell readiness callback to be invoked directly", () => {
     const loginShellDiscovery = createLoginShellDiscovery();
     const includeLoginShell = loginShellDiscovery.options.includeLoginShell;

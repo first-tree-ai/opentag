@@ -1,7 +1,24 @@
+import type { TaskSummary } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, BrowserApi } from "../api.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+const taskSummary = {
+  id: "11111111-1111-4111-8111-111111111111",
+  agent: {
+    id: "22222222-2222-4222-8222-222222222222",
+    name: "atlas",
+    displayName: "Atlas",
+    runtimeProvider: "codex",
+  },
+  source: { provider: "feishu", conversationKind: "dm", channelId: "oc_debug", threadKey: null },
+  sessionKind: "channel",
+  title: "Inspect the latest Turn",
+  status: "completed",
+  createdAt: "2030-01-01T00:00:00.000Z",
+  endedAt: null,
+  lastActivityAt: "2030-01-01T00:01:00.000Z",
+} satisfies TaskSummary;
 
 function setDocumentCookie(value: string): void {
   const setter = Object.getOwnPropertyDescriptor(Document.prototype, "cookie")?.set;
@@ -14,6 +31,24 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("BrowserApi", () => {
+  it("updates a Task title with the Account PATCH contract and CSRF header", async () => {
+    setDocumentCookie("opentag_csrf=task-csrf; Path=/");
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/sessions/${taskSummary.id}`);
+      expect(init?.method).toBe("PATCH");
+      expect(init?.body).toBe(JSON.stringify({ title: null }));
+      const headers = new Headers(init?.headers);
+      expect(headers.get("content-type")).toBe("application/json");
+      expect(headers.get("X-OpenTag-CSRF")).toBe("task-csrf");
+      return jsonResponse({ task: taskSummary });
+    });
+
+    await expect(new BrowserApi(fetchImpl).updateTaskTitle(taskSummary.id, { title: null })).resolves.toEqual(
+      taskSummary,
+    );
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
   it("updates the current user profile with PATCH, response parsing, and browser CSRF", async () => {
     setDocumentCookie("opentag_csrf=profile-csrf; Path=/");
     const profile = { id: userId, email: "ada@example.com", displayName: "Ada Lovelace" };
@@ -64,6 +99,7 @@ describe("BrowserApi", () => {
     const api = new BrowserApi(fetchImpl);
     await expect(api.suspendAgent(agentId)).resolves.toMatchObject({ status: "suspended" });
     await expect(api.reactivateAgent(agentId)).resolves.toMatchObject({ id: agentId });
+    await expect(api.rebindAgentComputer(agentId, config.computerId)).resolves.toMatchObject({ id: agentId });
     await expect(api.deleteAgent(agentId)).resolves.toBeUndefined();
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
@@ -278,6 +314,7 @@ describe("BrowserApi", () => {
       api.imBindingConfig(userId),
       api.createFeishuSetupAttempt(userId, "reauthorize"),
       api.feishuSetupAttempt(userId),
+      api.cancelFeishuSetupAttempt(userId),
       api.startSlackOAuth(userId, { intent: "create" }),
       api.imBindingDiagnostics(userId),
       api.computers(),
@@ -295,6 +332,7 @@ describe("BrowserApi", () => {
         { path: `/api/v1/sessions/${userId}?cursor=older`, method: undefined },
         { path: `/api/v1/agents/${userId}/config`, method: undefined },
         { path: `/api/v1/agents/${userId}`, method: "DELETE" },
+        { path: `/api/v1/im-bindings/feishu/setup-attempts/${userId}/cancel`, method: "POST" },
         { path: "/api/v1/auth/email/sign-up", method: "POST" },
         { path: "/api/v1/auth/browser/logout", method: "POST" },
       ]),

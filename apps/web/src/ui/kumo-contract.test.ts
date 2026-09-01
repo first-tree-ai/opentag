@@ -45,18 +45,30 @@ describe("Kumo integration contract", () => {
   });
 
   it("uses the Kumo compound sidebar layout for the application shell", () => {
-    const shell = readFileSync(resolve(root, "features/shell/app-shell.tsx"), "utf8");
-    expect(shell).toContain("<Sidebar.Header>");
+    const shell = ["app-shell.tsx", "agent-shell.tsx", "shell-main.tsx"]
+      .map((file) => readFileSync(resolve(root, "features/shell", file), "utf8"))
+      .join("\n");
+    expect(shell).toContain('<Sidebar.Header className="border-b-0">');
     expect(shell).toContain("<Sidebar.Content>");
     expect(shell).toContain("<Sidebar.Menu>");
     expect(shell).toContain("<Sidebar.MenuButton");
     expect(shell).toContain("<Sidebar.Footer>");
-    expect(shell).toContain('<Sidebar.Trigger title="Toggle sidebar"');
-    expect(shell).toContain('collapsible="icon"');
-    expect(shell).toContain("group-data-[state=collapsed]/sidebar:hidden");
+    expect(shell).toContain("<DropdownMenu.LinkItem");
+    expect(shell).toContain("<DropdownMenu.Separator />");
+    expect(shell).toContain("selected={candidate.id === agent?.id}");
+    expect(shell).toContain('className="flex w-8 shrink-0 items-center justify-center"');
+    expect(shell).not.toContain("accountMenuRef");
+    expect(shell).not.toContain("<Sidebar.Rail />");
+    expect(shell).toContain('collapsible={isMobileAgentShell ? "icon" : "none"}');
+    expect(shell).toContain('variant="floating"');
+    expect(shell).toContain('<Sidebar.Close className="sm:hidden" />');
     expect(shell).toContain('className="app-mobile-header');
-    expect(shell).toContain('className="h-full min-h-0 overflow-hidden"');
+    expect(shell).toContain('className="h-full min-h-0 overflow-hidden bg-kumo-canvas"');
     expect(shell).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
+    expect(shell).toContain(
+      'className="bg-kumo-canvas md:m-2 md:mr-0 md:h-[calc(100%-1rem)] md:rounded-lg md:shadow-xs"',
+    );
+    expect(shell).toContain('className="flex min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas md:ml-2"');
     expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");
     expect(shell).toContain(
       'className="@container/content mx-auto w-full min-w-0 max-w-5xl" data-ui="content-page-frame"',

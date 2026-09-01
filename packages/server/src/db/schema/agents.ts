@@ -16,9 +16,8 @@ export const agents = pgTable(
       .references(() => users.id, { onDelete: "restrict" }),
     creationIntentId: uuid("creation_intent_id"),
     creationIntentFingerprint: text("creation_intent_fingerprint"),
-    computerId: uuid("computer_id")
-      .notNull()
-      .references(() => computers.id, { onDelete: "restrict" }),
+    /** Null until the Agent is bound to a Computer owned by its Account. */
+    computerId: uuid("computer_id").references(() => computers.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),

@@ -113,7 +113,7 @@ function stubEvidence() {
 }
 
 async function confirmDelete() {
-  fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Delete Agent" }));
   const dialog = await screen.findByRole("dialog", { name: "Delete Reviewer?" });
   fireEvent.change(within(dialog).getByLabelText(/Type Reviewer to confirm/), { target: { value: "Reviewer" } });
   fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
@@ -202,11 +202,11 @@ describe("Agent lifecycle actions", () => {
       <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
     await screen.findByRole("alert");
-    expect(screen.getByRole("alert").textContent).toBe("pause conflict");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t pause this Agent. Try again.");
     fireEvent.click(screen.getByRole("button", { name: "Keep active" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
@@ -217,7 +217,7 @@ describe("Agent lifecycle actions", () => {
       <AgentManageSettings agent={idleActiveAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
-    expect((await screen.findByRole("status")).textContent).toBe("status update failed");
+    fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t pause this Agent. Try again.");
   });
 });

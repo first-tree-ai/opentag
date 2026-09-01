@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { SkillsPage } from "../../../../features/skills-page.js";
+import { Redirect } from "../../../../features/navigation/redirect.js";
 
 export const Route = createFileRoute("/_authenticated/_resources/_shell/skills")({
-  component: SkillsPage,
+  component: () => <Redirect replace to="/agents" />,
 });

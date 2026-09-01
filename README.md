@@ -12,7 +12,7 @@ This repository currently provides the engineering foundation and first control-
 - a schema-validating client health check;
 - provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
 - one-time Account login codes with sliding stateless refresh JWTs;
-- independently authenticated Computer connection and presence;
+- independently authenticated Computer enrollment and presence;
 - Agent registry with immutable Computer/provider binding and revision fencing;
 - durable Agent Runtime execution, delivery custody, reporting, and recovery;
 - Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
@@ -24,71 +24,42 @@ These runtime and messaging paths are implemented but remain pre-alpha. Installa
 
 ## Quick start
 
-Prerequisites: Node.js 22.13 or newer on the 22.x line, Node.js 24.x, or Node.js 26.x; Corepack; and pnpm 10.12.1.
+OpenTag is currently pre-alpha. The repository includes a small Docker Compose sample for the local PostgreSQL
+dependency:
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: opentag
+      POSTGRES_USER: opentag
+      POSTGRES_PASSWORD: opentag
+    ports:
+      - "5432:5432"
+    volumes:
+      - opentag-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opentag -d opentag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  opentag-postgres-data:
+```
+
+Start the dependency with:
 
 ```bash
-corepack enable
-pnpm install
 docker compose up -d postgres
-export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
-export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
-export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
-export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
-pnpm build
-pnpm --filter @opentag/server start
 ```
 
-In another terminal, bootstrap the first Account, then exchange the returned Account login code:
-
-```bash
-export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
-export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-pnpm --filter @opentag/server bootstrap:admin
-./scripts/dev-install.sh
-export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
-```
-
-Account credentials are management-only and never start the daemon. Open the Web, enter the Agents area, generate a
-15-minute Computer connection command, and run its `opentag-dev computer connect --server ... <code>` invocation on the
-execution host. That command stores a Computer-scoped machine credential and installs or restarts the per-user daemon
-service on Linux and macOS. Keeping `~/.local/bin` first in `PATH` ensures the service uses this checkout's newly built CLI
-instead of an older shim. `opentag-dev computer list` shows the connected Computer as online. Use `daemon stop`, `start`,
-`restart`, `status`, and `uninstall` for lifecycle management. Pass `computer connect --no-start` when only the machine
-credential should be stored. Daemon services are not supported on Windows in v0.1.
-
-With the daemon registered, create and inspect an Agent configuration:
-
-```bash
-pnpm --filter open-tag start agent create \
-  --name code-reviewer \
-  --display-name "Code Reviewer" \
-  --provider codex
-pnpm --filter open-tag start agent list
-```
-
-This records the Agent identity and Computer binding. Agent Runtime turns start when admitted work is delivered to that Agent.
-
-A signed-in Account can manage an available Codex Agent's model, reasoning effort, and maximum Turn duration from the
-Agent's **Runtime** tab or the corresponding `agent update` flags. A blank model or reasoning value leaves the choice to Codex; a blank
-duration uses OpenTag's 30-minute default. Explicit Codex-native values are validated by the bound Computer when it
-prepares the Runtime and never silently replaced by OpenTag. Claude Code Effective Runtime Snapshots are not yet
-supported.
-
-Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
-`http://127.0.0.1:8000/`. The signed-in Account manages the Agents, Computers, Tasks, Skills, and Integrations it owns.
-Computer connection and diagnosis live in the Agents area. The product model is
-**Account → Computer → Agent → IM binding**, with ownership enforced directly by the Account-native schema.
-
-Internal Session collaboration is an Agent Runtime feature, not a Workspace, Project, or other management entity. It
-does not define cross-Agent ownership or shared files, memory, tasks, secrets, or billing. Context Tree can preserve
-long-term context independently of that real-time Session messaging boundary.
-
-For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
-`OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the
-`dev` environment and never creates Accounts.
-
-See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
+The Compose service is a local development dependency; it does not start the OpenTag Server or any Agent runtime.
+For Node.js setup, server configuration, Account bootstrap, Computer enrollment, authentication, and Agent management,
+see the [development guide](./DEVELOPMENT.md).
 
 ## Project status
 

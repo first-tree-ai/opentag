@@ -2,11 +2,12 @@ import type { AccountSetupResetMode, UserProfile } from "@opentag/shared/browser
 import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { browserApi } from "../api.js";
+import * as m from "../paraglide/messages.js";
 import { Button, Dialog, Text } from "../ui/design-system.js";
 
 export interface InternalToolsPageProps {
   /** Runs after a completed reset: refresh authoritative `/me` state, then enter ordinary onboarding. */
-  readonly onResetSucceeded: () => Promise<void> | void;
+  readonly onResetSucceeded: (mode: AccountSetupResetMode) => Promise<void> | void;
   readonly user: UserProfile;
 }
 
@@ -29,37 +30,38 @@ interface ResetOperation {
  * act on the signed-in Account and nobody else's, so the copy names the Account rather than warning
  * about scope.
  */
-const RESET_OPERATIONS: readonly ResetOperation[] = [
-  {
-    action: "Re-board",
-    confirmDescription:
-      "Your Agents, Computers and messaging connections all stay. Onboarding opens again from the Agent you already have.",
-    confirmTitle: "Walk onboarding again?",
-    description:
-      "Opens onboarding again and keeps everything: Agents, Computers and messaging connections all stay. Because an Agent still exists, this walks the resume path rather than the first-run one.",
-    mode: "reboard",
-    title: "Re-board",
-  },
-  {
-    action: "Reset and start onboarding",
-    confirmDescription:
-      "This deletes your current Agents and revokes your Computer connections and messaging connections on staging. Nobody else's Account is touched.",
-    confirmTitle: "Reset your staging Account?",
-    description:
-      "Returns this Account to a genuine first-run state: its Agents are deleted and its Computer access revoked. Use it to test the create path — the next run needs a fresh Computer connect command.",
-    mode: "all",
-    title: "Reset all",
-  },
-];
+
+function resetOperations(): readonly ResetOperation[] {
+  return [
+    {
+      action: m.common_reboard(),
+      confirmDescription: m.common_reboard_confirm_description(),
+      confirmTitle: m.common_reboard_confirm_title(),
+      description: m.common_reboard_description(),
+      mode: "reboard",
+      title: m.common_reboard(),
+    },
+    {
+      action: m.common_reset_and_start_onboarding(),
+      confirmDescription: m.common_reset_all_confirm_description(),
+      confirmTitle: m.common_reset_all_confirm_title(),
+      description: m.common_reset_all_description(),
+      mode: "all",
+      title: m.common_reset_all(),
+    },
+  ];
+}
 
 /** Complex tools keep their own page; this index only points at them. */
-const TOOL_PAGES = [
-  {
-    description: "The onboarding flow against its in-page mock, reaching no Server.",
-    title: "Onboarding mock",
-    to: "/internal/onboarding-v2",
-  },
-] as const;
+function toolPages() {
+  return [
+    {
+      description: m.common_onboarding_mock_description(),
+      title: m.common_onboarding_mock(),
+      to: "/internal/onboarding-v2",
+    },
+  ] as const;
+}
 
 /**
  * The staging-only internal tools index. Simple operations — the ones that are a button and a
@@ -81,11 +83,11 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
     setResetState({ kind: "pending", mode: operation.mode });
     try {
       await browserApi.resetAccountSetup(operation.mode);
-      await onResetSucceeded();
+      await onResetSucceeded(operation.mode);
     } catch (cause) {
       setResetState({
         kind: "error",
-        error: cause instanceof Error ? cause : new Error("This Account could not be reset"),
+        error: cause instanceof Error ? cause : new Error(m.common_account_reset_failed()),
       });
     } finally {
       resetInFlight.current = false;
@@ -93,25 +95,24 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
   }
 
   const pending = resetState.kind === "pending";
+  const operations = resetOperations();
+  const pages = toolPages();
 
   return (
     <main className="mx-auto grid w-full max-w-2xl gap-8 p-6" data-ui="internal-tools">
       <header className="grid gap-1">
-        <span className="text-xs font-medium uppercase text-kumo-subtle">Staging only</span>
+        <span className="text-xs font-medium uppercase text-kumo-subtle">{m.common_staging_only()}</span>
         <Text as="h1" variant="heading">
-          Internal tools
+          {m.common_internal_tools()}
         </Text>
-        <p>
-          These act on the Account signed in as {user.email} and reach nothing of anyone else's. Another tester signed
-          in as themselves is unaffected.
-        </p>
+        <p>{m.common_internal_tools_scope({ email: user.email })}</p>
       </header>
 
-      <section aria-label="Account resets" className="grid gap-3">
+      <section aria-label={m.common_account_resets()} className="grid gap-3">
         <Text as="h2" variant="heading">
-          Account resets
+          {m.common_account_resets()}
         </Text>
-        {RESET_OPERATIONS.map((operation) => (
+        {operations.map((operation) => (
           <div className="grid gap-2 rounded-lg p-4 ring ring-kumo-line" key={operation.mode}>
             <Text as="h3" variant="heading">
               {operation.title}
@@ -141,12 +142,12 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
         ) : null}
       </section>
 
-      <section aria-label="Tools with their own page" className="grid gap-3">
+      <section aria-label={m.common_tools_with_own_page()} className="grid gap-3">
         <Text as="h2" variant="heading">
-          Tools with their own page
+          {m.common_tools_with_own_page()}
         </Text>
-        <nav aria-label="Internal tool pages" className="grid gap-2">
-          {TOOL_PAGES.map((page) => (
+        <nav aria-label={m.common_internal_tool_pages()} className="grid gap-2">
+          {pages.map((page) => (
             <Link className="grid gap-1 rounded-lg p-4 ring ring-kumo-line" key={page.to} to={page.to}>
               <strong className="text-kumo-strong">{page.title}</strong>
               <span className="text-sm text-kumo-subtle">{page.description}</span>
@@ -159,7 +160,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
         <Dialog
           busy={pending}
           description={confirming.confirmDescription}
-          eyebrow="Staging only"
+          eyebrow={m.common_staging_only()}
           returnFocusRef={{ current: triggerRefs.current.get(confirming.mode) ?? null }}
           title={confirming.confirmTitle}
           onClose={() => setConfirming(null)}
@@ -173,7 +174,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
               {confirming.action}
             </Button>
             <Button variant="secondary" onClick={() => setConfirming(null)}>
-              Cancel
+              {m.common_cancel()}
             </Button>
           </div>
         </Dialog>

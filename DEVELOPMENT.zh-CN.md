@@ -21,6 +21,17 @@ pnpm install
 `.npmrc` 设置了 `engine-strict=true`，因此不支持的 Node.js 版本会使依赖安装失败，而不是只显示 engine 警告。
 请勿使用 npm 或 Yarn 更新依赖。
 
+## 本地开发流程
+
+README 只保留产品概览和 Docker Compose 依赖示例；仓库相关的开发流程集中在本指南：
+
+1. 启动本地 PostgreSQL 服务，并运行 Server 健康检查链路。
+2. Bootstrap Account，安装开发 CLI，并兑换 Account 登录 code。
+3. Enrollment Computer，启动 daemon，并创建 Agent 配置。
+4. 需要使用 Web App 时，配置 Google 登录或 loopback development bypass。
+
+下面各章节包含每一步所需的命令和环境变量详情。
+
 ## Git hooks 与 worktree
 
 `pnpm install` 会执行根目录的 `prepare` 脚本，将三个 hook 安装到该 clone 的 hooks 目录：

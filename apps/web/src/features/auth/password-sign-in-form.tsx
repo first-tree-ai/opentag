@@ -1,6 +1,7 @@
 import { DEFAULT_SIGN_IN_DESTINATION, PASSWORD_MIN_LENGTH, resolveSignInDestination } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
+import * as m from "../../paraglide/messages.js";
 import { Button, Input } from "../../ui/design-system.js";
 
 /**
@@ -50,7 +51,7 @@ export function PasswordSignInForm({
        * The server's message is shown as it is. It is written to be shown — a rejected sign-in says only that the
        * address or password was wrong, so restating it here could only make it less accurate.
        */
-      setError(cause instanceof ApiError ? cause.message : "Sign-in failed. Try again.");
+      setError(cause instanceof ApiError ? cause.message : m.auth_sign_in_failed());
       setSubmitting(false);
     }
   };
@@ -58,7 +59,7 @@ export function PasswordSignInForm({
   return (
     <form className="grid gap-4" data-ui="login-password-form" onSubmit={submit}>
       <Input
-        label="Email"
+        label={m.auth_email_label()}
         autoComplete="email"
         id="login-email"
         name="email"
@@ -69,7 +70,7 @@ export function PasswordSignInForm({
       />
       {registering ? (
         <Input
-          label="Name"
+          label={m.auth_name_label()}
           autoComplete="name"
           id="login-display-name"
           name="displayName"
@@ -80,7 +81,7 @@ export function PasswordSignInForm({
         />
       ) : null}
       <Input
-        label="Password"
+        label={m.auth_password_label()}
         // Tells a password manager to offer a new secret rather than an existing one, and the reverse on sign-in.
         autoComplete={registering ? "new-password" : "current-password"}
         id="login-password"
@@ -93,7 +94,7 @@ export function PasswordSignInForm({
       />
       {registering ? (
         <p className="text-sm text-kumo-subtle" data-ui="login-password-hint">
-          At least {PASSWORD_MIN_LENGTH} characters.
+          {m.auth_password_min_length({ count: PASSWORD_MIN_LENGTH })}
         </p>
       ) : null}
       {error ? (
@@ -102,10 +103,10 @@ export function PasswordSignInForm({
         </p>
       ) : null}
       <Button disabled={submitting} type="submit">
-        {registering ? "Create account" : "Sign in"}
+        {registering ? m.auth_create_account() : m.auth_sign_in()}
       </Button>
       <p className="text-sm text-kumo-subtle" data-ui="login-mode-switch">
-        {registering ? "Already have an account?" : "No account yet?"}{" "}
+        {registering ? m.auth_already_have_account() : m.auth_no_account_yet()}{" "}
         <Button
           variant="inline"
           onClick={() => {
@@ -114,7 +115,7 @@ export function PasswordSignInForm({
           }}
           type="button"
         >
-          {registering ? "Sign in" : "Create one"}
+          {registering ? m.auth_sign_in() : m.auth_create_one()}
         </Button>
       </p>
     </form>

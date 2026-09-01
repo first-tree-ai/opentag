@@ -129,10 +129,12 @@ describe("repair and handoff at cabaf79", () => {
 
     render(<OnboardingV2Page />);
     await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    await settle();
     await tick(POLL_MS * 4);
 
     expect(screen.queryByText("Your computer is connected.")).toBeNull();
-    expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
+    expect(screen.getByText("Waiting for Ada's old Mac to connect…")).toBeTruthy();
   });
 
   it("accepts the named machine coming back", async () => {

@@ -331,12 +331,35 @@ export {
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export {
+  DEFAULT_RUNTIME_RETRY_POLICY,
+  type DurableFailure,
+  type DurableRetryability,
+  type DurableWorkKind,
+  type DurableWorkRecord,
+  type DurableWorkStatus,
+  defaultRuntimeRetryScheduler,
+  FileRuntimeDurabilityStore,
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityFailure,
+  RuntimeDurabilityMetrics,
+  type RuntimeDurabilityMetricsSnapshot,
+  type RuntimeDurabilityStore,
+  type RuntimeRetryPolicy,
+  type RuntimeRetryScheduler,
+  retryDelay,
+  retryExhausted,
+} from "./runtime/runtime-durability.js";
+export {
   type AgentRuntimePaths,
   agentRuntimePaths,
   deriveRuntimeKey,
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
+export {
+  ServerRuntimeDurabilityStore,
+  type ServerRuntimeDurabilityStoreOptions,
+} from "./runtime/server-runtime-durability-store.js";
 export {
   type CustodyResult,
   type LocalSessionBinding,

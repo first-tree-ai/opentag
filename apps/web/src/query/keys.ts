@@ -27,6 +27,7 @@ export const queryKeys = {
   },
 
   tasks: {
+    all: () => ["tasks"] as const,
     list: () => ["tasks", "list"] as const,
     /** One Agent's own Tasks. A sibling of the Account task list, so neither invalidates the other. */
     byAgent: (agentId: string) => ["tasks", "byAgent", agentId] as const,

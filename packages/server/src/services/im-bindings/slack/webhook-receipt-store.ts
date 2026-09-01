@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type StructuredError, StructuredErrorSchema } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { slackWebhookReceipts } from "../../../db/schema/index.js";
@@ -10,8 +11,9 @@ export class SlackWebhookReceiptError extends Error {
   declare readonly retryability: PolicyRetryability;
   declare readonly phase: PolicyPhase;
   declare readonly requestId: string;
+  readonly structuredError: StructuredError;
 
-  constructor(code: string, requestId = randomUUID()) {
+  constructor(code: string, requestId: string = randomUUID()) {
     super(code);
     this.name = "SlackWebhookReceiptError";
     this.code = code;
@@ -19,6 +21,18 @@ export class SlackWebhookReceiptError extends Error {
     this.retryability = "not_retryable";
     this.phase = "request";
     this.requestId = requestId;
+    this.structuredError = StructuredErrorSchema.parse({
+      code: this.code,
+      category: "validation",
+      retryability: "never",
+      phase: "request",
+      requestId: this.requestId,
+      message: this.message,
+    });
+  }
+
+  toStructuredError(): StructuredError {
+    return this.structuredError;
   }
 }
 

@@ -45,6 +45,45 @@ export const RuntimeOpaqueIdSchema = z
 export const RuntimeSequenceSchema = z.number().int().safe().nonnegative();
 export const RuntimeSha256Schema = z.string().regex(/^[a-f0-9]{64}$/, "Expected a lowercase SHA-256 digest");
 
+export const RuntimeDurableWorkKindSchema = z.enum(["session-message", "turn-report"]);
+export const RuntimeDurableWorkStatusSchema = z.enum([
+  "accepted",
+  "running",
+  "succeeded",
+  "retryable",
+  "failed",
+  "dead-letter",
+]);
+export const RuntimeDurableFailureSchema = z
+  .object({
+    category: z.string().min(1).max(64),
+    code: z.string().min(1).max(128),
+    message: z
+      .string()
+      .min(1)
+      .max(2 * 1024),
+    phase: z.string().min(1).max(64),
+    requestId: z.string().min(1).max(128),
+    retryability: z.enum(["retryable", "terminal"]),
+  })
+  .strict();
+export const RuntimeDurableWorkRecordSchema = z
+  .object({
+    attempts: RuntimeSequenceSchema,
+    acceptedAt: RuntimeSequenceSchema,
+    key: RuntimeOpaqueIdSchema,
+    kind: RuntimeDurableWorkKindSchema,
+    lastError: RuntimeDurableFailureSchema.optional(),
+    nextAttemptAt: RuntimeSequenceSchema.optional(),
+    payload: z.unknown(),
+    status: RuntimeDurableWorkStatusSchema,
+    updatedAt: RuntimeSequenceSchema,
+  })
+  .strict();
+export const RuntimeDurableWorkListResponseSchema = z
+  .object({ items: z.array(RuntimeDurableWorkRecordSchema).max(1024) })
+  .strict();
+
 export const RuntimeRevisionSchema = z
   .object({
     sequence: RuntimeSequenceSchema,
@@ -737,6 +776,11 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
 
 export type RuntimeRevision = z.infer<typeof RuntimeRevisionSchema>;
 export type RuntimeUsage = z.infer<typeof RuntimeUsageSchema>;
+export type RuntimeDurableWorkKind = z.infer<typeof RuntimeDurableWorkKindSchema>;
+export type RuntimeDurableWorkStatus = z.infer<typeof RuntimeDurableWorkStatusSchema>;
+export type RuntimeDurableFailure = z.infer<typeof RuntimeDurableFailureSchema>;
+export type RuntimeDurableWorkRecord = z.infer<typeof RuntimeDurableWorkRecordSchema>;
+export type RuntimeDurableWorkListResponse = z.infer<typeof RuntimeDurableWorkListResponseSchema>;
 export type EffectiveRuntimeSnapshot = z.infer<typeof EffectiveRuntimeSnapshotSchema>;
 export type InputRejectReason = z.infer<typeof InputRejectReasonSchema>;
 export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>;

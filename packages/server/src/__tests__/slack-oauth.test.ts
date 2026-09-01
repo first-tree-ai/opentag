@@ -65,7 +65,7 @@ async function oauthFixture() {
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingService = new ImBindingService(oauthDatabase.database, cipher, { now: () => now });
-  return { bootstrap, agent, cipher, imBindingService };
+  return { bootstrap, agent, computerId: workspaceComputer.id, cipher, imBindingService };
 }
 
 function inspection(overrides: Partial<SlackInstallationInspection> = {}): SlackInstallationInspection {
@@ -292,7 +292,7 @@ describe("SlackConfigurationService persistence", () => {
       name: "oauth-empty-agent",
       displayName: "OAuth Empty Agent",
       runtimeProvider: "codex",
-      computerId: value.agent.computerId,
+      computerId: value.computerId,
     });
     const emptyClient = apiClient();
     emptyClient.inspectInstallation.mockResolvedValue(inspection());

@@ -29,6 +29,8 @@ export const sessions = pgTable(
     conversationKind: imConversationKind("conversation_kind").notNull(),
     kind: sessionKind("kind").notNull(),
     threadKey: text("thread_key"),
+    manualTitle: text("manual_title"),
+    generatedTitle: text("generated_title"),
     createdBySessionId: uuid("created_by_session_id").references((): AnyPgColumn => sessions.id, {
       onDelete: "restrict",
     }),
@@ -67,6 +69,14 @@ export const sessions = pgTable(
       sql`${table.runtimeReasoningEffort} is null or octet_length(${table.runtimeReasoningEffort}) between 1 and 64`,
     ),
     check("sessions_revision_positive", sql`${table.revision} >= 1`),
+    check(
+      "sessions_manual_title_bounds",
+      sql`${table.manualTitle} is null or char_length(${table.manualTitle}) between 1 and 120`,
+    ),
+    check(
+      "sessions_generated_title_bounds",
+      sql`${table.generatedTitle} is null or char_length(${table.generatedTitle}) between 1 and 120`,
+    ),
   ],
 );
 

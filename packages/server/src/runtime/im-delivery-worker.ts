@@ -45,6 +45,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import {
   imAttrs,
   outcomeAttrs,
@@ -93,6 +94,7 @@ export class ImDeliveryWorker {
   readonly #afterClaimRowLocked?: () => Promise<void>;
   readonly #beforeDeliveryAdmission?: () => Promise<void>;
   readonly #onDiagnostic: (code: string) => void;
+  readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #clock: () => Date;
   readonly #now: () => number;
   readonly #operationTimeoutMs: number;
@@ -112,6 +114,7 @@ export class ImDeliveryWorker {
     this.#afterClaimRowLocked = input.afterClaimRowLocked;
     this.#beforeDeliveryAdmission = input.beforeDeliveryAdmission;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+    this.#supervisor = input.supervisor;
     this.#clock = input.now ?? (() => new Date());
     this.#now = () => this.#clock().getTime();
     this.#operationTimeoutMs = positiveWorkerLimit(input.operationTimeoutMs ?? 30_000, "operationTimeoutMs");
@@ -122,6 +125,7 @@ export class ImDeliveryWorker {
       maxQueuedPerKey: positiveWorkerLimit(input.maxQueuedPerAgent ?? 8, "maxQueuedPerAgent"),
       maxQueuedTotal: positiveWorkerLimit(input.maxQueuedTotal ?? 256, "maxQueuedTotal"),
       now: this.#now,
+      supervisor: this.#supervisor,
     });
     this.#onMetric = input.onMetric ?? (() => undefined);
   }
@@ -227,7 +231,21 @@ export class ImDeliveryWorker {
   }
 
   #schedule(): void {
-    void this.runOnce().catch(() => this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED"));
+    const operation = this.runOnce().catch((error: unknown) => {
+      this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
+      throw error;
+    });
+    if (this.#supervisor) {
+      this.#supervisor.track(operation, {
+        code: "IM_DELIVERY_WORKER_SCHEDULING_FAILED",
+        category: "internal",
+        retryability: "backoff",
+        phase: "worker",
+        operation: "im-delivery-worker.schedule",
+      });
+      return;
+    }
+    void operation.catch(() => undefined);
   }
 
   async #claim(): Promise<WorkerClaim | undefined> {

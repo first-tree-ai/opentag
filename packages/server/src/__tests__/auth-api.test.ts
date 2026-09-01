@@ -138,6 +138,7 @@ describe("auth HTTP API", () => {
       headers: { authorization: "Bearer access" },
     });
     expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()).toEqual({
       user: {
         id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",

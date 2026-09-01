@@ -1,4 +1,5 @@
 import type { DatabaseClient } from "../db/client.js";
+import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
@@ -33,6 +34,7 @@ export interface ImDeliveryWorkerInput {
   afterClaimRowLocked?: () => Promise<void>;
   beforeDeliveryAdmission?: () => Promise<void>;
   onDiagnostic?: (code: string) => void;
+  supervisor?: BackgroundFailureSupervisor;
   now?: () => Date;
   operationTimeoutMs?: number;
   maxQueueAgeMs?: number;

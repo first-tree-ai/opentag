@@ -19,6 +19,7 @@ import {
   slackInstallations,
   users,
 } from "../db/schema/index.js";
+import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -45,6 +46,41 @@ describe("ImDeliveryWorker diagnostics", () => {
     worker.stop();
     expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain("secret provider response");
+  });
+
+  it("supervises a detached scheduler failure with one event and counter", async () => {
+    const events: unknown[] = [];
+    const counters: unknown[] = [];
+    const supervisor = new BackgroundFailureSupervisor({
+      onEvent: (event) => events.push(event),
+      onCounter: (name, labels) => counters.push({ name, labels }),
+    });
+    const database = {
+      transaction: vi.fn().mockRejectedValue(new Error("claim failed")),
+    };
+    const worker = new ImDeliveryWorker({
+      assembler: { assembleForSession: vi.fn() },
+      database: database as never,
+      domain: {} as never,
+      registry: {} as never,
+      intervalMs: 60_000,
+      onDiagnostic: vi.fn(),
+      supervisor,
+    });
+
+    worker.start();
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(counters).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "diagnostic.error",
+      error: {
+        code: "IM_DELIVERY_WORKER_SCHEDULING_FAILED",
+        category: "internal",
+        retryability: "backoff",
+        phase: "worker",
+      },
+    });
+    worker.stop();
   });
 });
 

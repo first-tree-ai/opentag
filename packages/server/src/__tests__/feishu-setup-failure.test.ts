@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { computers, imBindings } from "../db/schema/index.js";
+import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import {
@@ -57,7 +58,7 @@ async function setupFixture() {
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindings = new ImBindingService(setupDatabase.database, cipher, { now: () => setupNow });
-  return { bootstrap, agent, cipher, imBindings };
+  return { bootstrap, agent, computerId: workspaceComputer.id, cipher, imBindings };
 }
 
 function registration(
@@ -255,6 +256,53 @@ describe("FeishuSetupService persistence", () => {
     expect(diagnostic).not.toHaveBeenCalled();
   });
 
+  it("supervises a detached setup heartbeat failure with one event and counter", async () => {
+    vi.useFakeTimers();
+    try {
+      const value = await setupFixture();
+      const pendingResult = new Promise<never>(() => undefined);
+      const gateway: FeishuRegistrationGateway = {
+        start: vi.fn(() => ({ ...registration(pendingResult, new Date()), abort: vi.fn() })),
+      };
+      const events: unknown[] = [];
+      const counters: unknown[] = [];
+      const supervisor = new BackgroundFailureSupervisor({
+        onEvent: (event) => events.push(event),
+        onCounter: (name, labels) => counters.push({ name, labels }),
+      });
+      const service = new FeishuSetupService({
+        database: setupDatabase.database,
+        cipher: value.cipher,
+        instanceId: crypto.randomUUID(),
+        imBindings: value.imBindings,
+        registrations: gateway,
+        activation: { activateAtomicAttempt: vi.fn() },
+        supervisor,
+      });
+      await service.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      const update = vi.spyOn(setupDatabase.database, "update").mockImplementation(() => {
+        throw new Error("heartbeat failed");
+      });
+      service.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      expect(counters).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: "diagnostic.error",
+        error: {
+          code: "FEISHU_SETUP_HEARTBEAT_FAILED",
+          category: "internal",
+          retryability: "backoff",
+          phase: "scheduler",
+        },
+      });
+      update.mockRestore();
+      await service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("classifies setup ownership as expired or restarted without mutating GET", async () => {
     const value = await setupFixture();
     const attemptId = crypto.randomUUID();
@@ -319,7 +367,7 @@ describe("FeishuSetupService persistence", () => {
       name: "unbound-agent",
       displayName: "Unbound Agent",
       runtimeProvider: "codex",
-      computerId: value.agent.computerId,
+      computerId: value.computerId,
     });
     await expect(service.createOrReuse(value.bootstrap.userId, noBindingAgent.id, "reauthorize")).rejects.toThrow(
       "FEISHU_REAUTHORIZATION_REQUIRES_BINDING",

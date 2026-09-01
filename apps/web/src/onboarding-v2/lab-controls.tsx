@@ -1,4 +1,5 @@
 import { useId, useState } from "react";
+import * as m from "../paraglide/messages.js";
 import { Button, KumoSelectControl } from "../ui/design-system.js";
 import type { MockBackend, MockInventory, MockScenario, MockSpeed } from "./mock-backend.js";
 import { INVENTORIES, INVENTORY_TITLES, MOCK_SPEEDS, SCENARIOS } from "./mock-backend.js";
@@ -42,7 +43,7 @@ export function LabControls({
 
   return (
     <div
-      className="fixed right-6 bottom-6 z-30 flex items-end gap-2"
+      className="fixed right-3 bottom-3 z-30 flex max-w-[calc(100vw-1.5rem)] items-end gap-2 sm:right-6 sm:bottom-6"
       data-open={open ? "true" : undefined}
       data-ui="onboarding-v2-lab"
     >
@@ -52,7 +53,7 @@ export function LabControls({
         state can be looked at for as long as it takes.
       */}
       <Button disabled={!pending} onClick={pending?.run}>
-        {pending?.label ?? "Nothing waiting"}
+        {pending?.label ?? m.onboarding_v2_lab_nothing_waiting()}
       </Button>
       <div className="flex flex-col items-end gap-2">
         <Button
@@ -61,7 +62,7 @@ export function LabControls({
           onClick={() => setOpen((value) => !value)}
           variant="secondary"
         >
-          Mock controls
+          {m.onboarding_v2_lab_mock_controls()}
         </Button>
         <div
           className="flex w-72 flex-col gap-3 rounded-xl bg-kumo-base p-4 ring ring-kumo-line"
@@ -69,7 +70,7 @@ export function LabControls({
           id={panelId}
         >
           <label className="text-xs font-medium text-kumo-strong" htmlFor={scenarioId}>
-            Readiness outcome
+            {m.onboarding_v2_lab_readiness_outcome()}
           </label>
           <KumoSelectControl
             id={scenarioId}
@@ -88,7 +89,7 @@ export function LabControls({
           <p className="text-xs text-kumo-subtle m-0">{scenario.description}</p>
 
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-medium text-kumo-strong">Speed</span>
+            <span className="text-xs font-medium text-kumo-strong">{m.onboarding_v2_lab_speed()}</span>
             <div className="flex gap-1">
               {MOCK_SPEEDS.map((candidate) => (
                 <Button
@@ -105,7 +106,7 @@ export function LabControls({
 
           <div className="grid gap-1">
             <label className="text-xs font-medium uppercase text-kumo-subtle" htmlFor={inventoryId}>
-              Computers on the account
+              {m.onboarding_v2_lab_computers_on_account()}
             </label>
             <KumoSelectControl
               id={inventoryId}
@@ -128,15 +129,15 @@ export function LabControls({
             size="compact"
             variant="outline"
           >
-            Offer the cloud computer
+            {m.onboarding_v2_lab_offer_cloud_computer()}
           </Button>
 
           <div className="flex flex-wrap gap-2">
             <Button onClick={backend.expireNow} size="compact" variant="outline">
-              Expire code
+              {m.onboarding_v2_lab_expire_code()}
             </Button>
             <Button onClick={backend.repairNow} size="compact" variant="outline">
-              Ran doctor --fix
+              {m.onboarding_v2_lab_ran_doctor_fix()}
             </Button>
           </div>
         </div>

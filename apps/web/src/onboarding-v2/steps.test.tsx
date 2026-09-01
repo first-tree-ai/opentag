@@ -23,6 +23,32 @@ describe("ComputerStep repair disclosure", () => {
     vi.useRealTimers();
   });
 
+  it("keeps the pending onboarding command channel-neutral", () => {
+    vi.useFakeTimers();
+    const adapter: ComputerConnectAdapter = {
+      issue: () => new Promise(() => undefined),
+      status: () => new Promise<ComputerConnectCodeStatus>(() => undefined),
+      computers: async () => ({ computers: [] }),
+    };
+
+    render(
+      <ComputerStep
+        adapter={adapter}
+        computer={undefined}
+        creation="idle"
+        draft={draft}
+        onComputerConnected={() => undefined}
+        onCreate={() => undefined}
+        readiness={undefined}
+      />,
+    );
+
+    const panel = document.querySelector('[data-ui="onboarding-v2-computer-connect"]');
+    expect(panel?.textContent).toContain("[connection command pending]");
+    expect(panel?.textContent).not.toContain("opentag.example.com");
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
+  });
+
   it("requires a fresh repair action after availability or target changes", async () => {
     vi.useFakeTimers();
     const issue = vi.fn().mockResolvedValue({

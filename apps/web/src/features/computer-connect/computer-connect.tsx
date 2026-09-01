@@ -6,7 +6,11 @@ import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } f
 import { Banner, Button, Loader, StatusIndicator } from "../../ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
-const COMMAND_SKELETON = "opentag computer connect --server https://opentag.example.com -- preparing-command";
+/**
+ * A non-command placeholder shown while the Server-derived bootstrap command is being issued.
+ * Keeping this channel-neutral prevents a loading state from implying a production package or URL.
+ */
+export const COMPUTER_CONNECT_COMMAND_PLACEHOLDER = "[connection command pending]";
 
 export type ComputerConnectIntent =
   | { readonly mode: "create" }
@@ -369,7 +373,7 @@ function ComputerConnectPresentation({
       {state.kind === "issuing" ? (
         <div aria-hidden="true" className="ots-command-pending" data-ui="computer-connect-command-skeleton">
           <CommandBlock
-            command={COMMAND_SKELETON}
+            command={COMPUTER_CONNECT_COMMAND_PLACEHOLDER}
             comment={comment}
             copiedLabel={m.computer_connect_copied()}
             copyLabel={m.computer_connect_copy()}

@@ -114,6 +114,34 @@ test("Agent settings persist a change across reload", async ({ page }) => {
   await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
 });
 
+test("Computer management removes an offline Computer and keeps it gone after reload", async ({ page, e2eRuntime }) => {
+  await e2eRuntime.setSetupComplete();
+  await e2eRuntime.seedRemovableComputer();
+  await page.goto("/agents/computers", { waitUntil: "networkidle" });
+
+  await expect(page.getByRole("heading", { name: "Your computers", exact: true })).toBeVisible();
+  await expect(page.getByText("Connect and manage the computers your Agents run on.", { exact: true })).toBeVisible();
+  const onlineComputer = page.getByRole("listitem").filter({ hasText: "E2E Computer" });
+  await expect(onlineComputer.getByText("Online", { exact: true })).toBeVisible();
+  const removableComputer = page.getByRole("listitem").filter({ hasText: "Disposable E2E Mac" });
+  await expect(removableComputer.getByText("Offline", { exact: true })).toBeVisible();
+  await expect(removableComputer.getByText("Last seen 2 hours ago", { exact: true })).toBeVisible();
+
+  const trigger = removableComputer.getByRole("button", { name: "Remove Disposable E2E Mac", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("alertdialog", { name: "Remove Disposable E2E Mac?", exact: true });
+  await expect(dialog).toContainText("This removes the Computer from your account and revokes its access.");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await dialog.getByRole("button", { name: "Remove Computer", exact: true }).click();
+  await expect(removableComputer).toBeHidden();
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.getByText("Disposable E2E Mac", { exact: true })).toHaveCount(0);
+});
+
 test("shell navigation reaches every primary destination", async ({ page }) => {
   const destinations = [
     { name: "Agents", heading: "Agents", path: "/agents" },

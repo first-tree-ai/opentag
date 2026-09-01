@@ -168,7 +168,12 @@ export async function startServer(): Promise<void> {
         await registry.closeEnrollment(workspaceComputerId);
       },
     });
-    const computerService = new ComputerService(database, authService, { providerReadiness: registry });
+    const computerService = new ComputerService(database, authService, {
+      onEnrollmentRemoved: async (computerId) => {
+        await registry.closeEnrollment(computerId);
+      },
+      providerReadiness: registry,
+    });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database

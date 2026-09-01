@@ -1,7 +1,11 @@
-import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { useState } from "react";
+import type { ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { browserApi } from "../../api.js";
+import { formatDateTime, formatRelativeTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
-import { Button, StatusIndicator, Text } from "../../ui/design-system.js";
+import { queryKeys } from "../../query/keys.js";
+import { Banner, Button, Dialog, StatusIndicator, Text } from "../../ui/design-system.js";
 import { ComputerConnect } from "../computer-connect/computer-connect.js";
 import { Page } from "../layout/page.js";
 import { AsyncState, toResourceState } from "../resource/resource-state.js";
@@ -82,24 +86,113 @@ export function ComputerList({ computers }: { computers: readonly WorkspaceCompu
 }
 
 function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) {
-  const online = computer.connectionStatus === "online";
+  const queryClient = useQueryClient();
+  const removeButtonRef = useRef<HTMLButtonElement>(null);
+  const [confirmingRemoval, setConfirmingRemoval] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState(false);
   const platform = computer.platform === "darwin" ? "macOS" : computer.platform === "win32" ? "Windows" : "Linux";
   const agentCount = computer.agentIds.length;
+  const status = computerStatus(computer);
+
+  async function removeComputer() {
+    try {
+      setRemoving(true);
+      setRemoveError(false);
+      await browserApi.removeComputer(computer.computerId);
+      // A confirmed removal is stronger than a Computers read that may have started before it.
+      // Cancel that read and evict the row locally; later watched reads confirm the new Server state.
+      await queryClient.cancelQueries({ queryKey: queryKeys.computers() });
+      queryClient.setQueryData<ListWorkspaceComputersResponse>(queryKeys.computers(), (current) =>
+        current
+          ? { ...current, computers: current.computers.filter((item) => item.computerId !== computer.computerId) }
+          : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.root() });
+    } catch {
+      setRemoveError(true);
+      setRemoving(false);
+    }
+  }
+
   return (
-    <li className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
-      <div className="grid min-w-0 gap-1">
-        <strong className="truncate text-sm font-medium text-kumo-strong">{computer.displayName}</strong>
-        <span className="text-sm text-kumo-subtle">
-          {platform} ·{" "}
-          {agentCount === 1
-            ? m.agents_computer_agent_count_single({ count: agentCount })
-            : m.agents_computer_agent_count_plural({ count: agentCount })}
-        </span>
-      </div>
-      <StatusIndicator
-        label={online ? m.agents_computer_online() : m.agents_computer_offline()}
-        tone={online ? "success" : "warning"}
-      />
-    </li>
+    <>
+      <li className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
+        <div className="grid min-w-0 gap-1">
+          <strong className="truncate text-sm font-medium text-kumo-strong">{computer.displayName}</strong>
+          <span className="text-sm text-kumo-subtle">
+            {platform} · {computerAgentCount(agentCount)}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          <StatusIndicator detail={status.detail} label={status.label} title={status.title} tone={status.tone} />
+          <Button
+            aria-label={m.agents_remove_computer_named({ name: computer.displayName })}
+            ref={removeButtonRef}
+            size="compact"
+            variant="ghost"
+            onClick={() => {
+              setRemoveError(false);
+              setConfirmingRemoval(true);
+            }}
+          >
+            {m.agents_remove_computer()}
+          </Button>
+        </div>
+      </li>
+      {confirmingRemoval ? (
+        <Dialog
+          busy={removing}
+          description={removeComputerDescription(agentCount)}
+          returnFocusRef={removeButtonRef}
+          role="alertdialog"
+          title={m.agents_remove_computer_confirm_title({ name: computer.displayName })}
+          onClose={() => {
+            setConfirmingRemoval(false);
+            setRemoveError(false);
+          }}
+        >
+          <div className="grid gap-4">
+            {removeError ? (
+              <Banner role="alert" variant="error" description={m.agents_remove_computer_failed()} />
+            ) : null}
+            <div className="flex flex-wrap justify-end gap-3">
+              <Button disabled={removing} variant="ghost" onClick={() => setConfirmingRemoval(false)}>
+                {m.common_cancel()}
+              </Button>
+              <Button disabled={removing} variant="danger" onClick={() => void removeComputer()}>
+                {removing ? m.agents_removing_computer() : m.agents_remove_computer()}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      ) : null}
+    </>
   );
+}
+
+function computerAgentCount(count: number): string {
+  return count === 1
+    ? m.agents_computer_agent_count_single({ count })
+    : m.agents_computer_agent_count_plural({ count });
+}
+
+function removeComputerDescription(agentCount: number): string {
+  if (agentCount === 0) return m.agents_remove_computer_confirm_description();
+  if (agentCount === 1) return m.agents_remove_computer_confirm_description_single();
+  return m.agents_remove_computer_confirm_description_plural({ count: agentCount });
+}
+
+function computerStatus(computer: WorkspaceComputerSummary) {
+  if (computer.connectionStatus === "online") {
+    return { detail: undefined, label: m.agents_computer_online(), title: undefined, tone: "success" as const };
+  }
+  return {
+    detail: computer.lastSeenAt
+      ? m.agents_computer_last_seen({ when: formatRelativeTime(computer.lastSeenAt) })
+      : m.agents_computer_never_online(),
+    label: m.agents_computer_offline(),
+    title: computer.lastSeenAt ? formatDateTime(computer.lastSeenAt) : undefined,
+    tone: "neutral" as const,
+  };
 }

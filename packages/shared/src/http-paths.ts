@@ -33,6 +33,7 @@ export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMP
  */
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
+export const ACCOUNT_COMPUTER_BY_ID_TEMPLATE = `${ACCOUNT_COMPUTERS_PATH}/:computerId`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
@@ -91,6 +92,10 @@ export function workspaceComputerConnectCodesPath(workspaceId: string): string {
 
 export function accountComputerConnectCodePath(connectCodeId: string): string {
   return `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/${encodeURIComponent(connectCodeId)}`;
+}
+
+export function accountComputerByIdPath(computerId: string): string {
+  return `${ACCOUNT_COMPUTERS_PATH}/${encodeURIComponent(computerId)}`;
 }
 
 export function workspaceAgentsPath(workspaceId: string): string {

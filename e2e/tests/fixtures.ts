@@ -33,6 +33,7 @@ export interface E2ERuntime {
   claudeStubStartCount(): Promise<number>;
   databaseURL: string;
   devEmail: string;
+  seedRemovableComputer(): Promise<string>;
   setClaudeStubMode(mode: ClaudeStubMode): Promise<void>;
   setSetupIncomplete(): Promise<void>;
   setSetupComplete(): Promise<void>;
@@ -223,6 +224,25 @@ async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> 
   return taskId;
 }
 
+async function seedRemovableComputer(runtime: RuntimeFile): Promise<string> {
+  const computerId = randomUUID();
+  const installationId = randomUUID();
+  const secretHash = `e2e-removable-${randomUUID()}`;
+  await psql(
+    runtime.databaseURL,
+    `insert into computers (id) values ('${installationId}');
+     insert into account_computers (
+       id, owner_account_id, current_installation_id, display_name, platform, arch, client_version, last_seen_at
+     ) values (
+       '${computerId}', '${runtime.userId}', '${installationId}', 'Disposable E2E Mac',
+       'darwin', 'arm64', 'e2e', now() - interval '2 hours'
+     );
+     insert into computer_credentials (computer_id, secret_hash, issued_by_user_id)
+       values ('${computerId}', '${secretHash}', '${runtime.userId}');`,
+  );
+  return computerId;
+}
+
 const browserTest = base.extend({
   page: async ({ page }, use, testInfo) => {
     const browserErrors: string[] = [];
@@ -276,6 +296,7 @@ export const test = browserTest.extend<Record<never, never>, { e2eRuntime: E2ERu
           claudeStubStartCount: () => claudeStubEventCount("started"),
           databaseURL: runtime.databaseURL,
           devEmail: runtime.devEmail,
+          seedRemovableComputer: () => seedRemovableComputer(runtime),
           setClaudeStubMode: async (mode) => {
             await writeFile(claudeModePath, `${mode}\n`);
           },

@@ -15,6 +15,7 @@ export const queryKeys = {
   computers: () => ["computers"] as const,
 
   agents: {
+    root: () => ["agents"] as const,
     listRoot: () => ["agents", "list"] as const,
     list: (accountId: string) => ["agents", "list", accountId] as const,
     detail: (agentId: string) => ["agents", agentId, "detail"] as const,

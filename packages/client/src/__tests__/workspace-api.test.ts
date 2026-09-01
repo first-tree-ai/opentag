@@ -28,6 +28,7 @@ describe("OpenTagApi Workspace surface", () => {
     expect("acceptAdminInvitation" in api).toBe(false);
     expect("issueComputerConnectCode" in api).toBe(true);
     expect("listAccountComputers" in api).toBe(true);
+    expect("removeAccountComputer" in api).toBe(true);
     expect("listWorkspaceComputers" in api).toBe(false);
     expect("createAgent" in api).toBe(true);
     expect("listAgents" in api).toBe(true);
@@ -60,6 +61,18 @@ describe("OpenTagApi Workspace surface", () => {
     await expect(api.getComputerConnectCodeStatus("access", status.connectCodeId)).resolves.toEqual(status);
     const [url, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(url)).toBe(`https://opentag.example.com/api/v1/computer-connect-codes/${status.connectCodeId}`);
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access");
+  });
+
+  it("removes an Account Computer with Account authority", async () => {
+    const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = new OpenTagApi("https://opentag.example.com", fetchImpl);
+
+    await expect(api.removeAccountComputer("access", computerId)).resolves.toBeUndefined();
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe(`https://opentag.example.com/api/v1/computers/${computerId}`);
+    expect(init?.method).toBe("DELETE");
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access");
   });
 });

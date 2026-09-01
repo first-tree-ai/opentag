@@ -159,6 +159,7 @@ export {
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENTS_PATH,
+  ACCOUNT_COMPUTER_BY_ID_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   ACCOUNT_COMPUTERS_PATH,
@@ -178,6 +179,7 @@ export {
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   API_V1_PREFIX,
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,

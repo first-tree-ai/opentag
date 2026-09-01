@@ -1,4 +1,5 @@
 import {
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
@@ -153,6 +154,7 @@ function services() {
     },
     computerService: {
       listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
+      removeFromAccount: vi.fn().mockResolvedValue(undefined),
     },
     workspaceSetupService: {
       complete: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
@@ -445,6 +447,18 @@ describe("Account-native management collections", () => {
 
     await app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization });
     expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
+  });
+
+  it("removes only the authenticated Account's named Computer", async () => {
+    const { app, service } = appWith();
+    const response = await app.inject({
+      method: "DELETE",
+      url: accountComputerByIdPath(computerId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(service.computerService.removeFromAccount).toHaveBeenCalledWith(userId, computerId);
   });
 
   it("rejects a client-selected scope on every creation route", async () => {

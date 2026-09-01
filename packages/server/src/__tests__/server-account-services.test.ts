@@ -432,6 +432,56 @@ describe("machine authentication and Computer services", () => {
     await expect(service.register(enrollment, frame)).rejects.toMatchObject({ code: "COMPUTER_NOT_REGISTERED" });
   });
 
+  it("removes an owned Computer by revoking access and unbinding its Agents", async () => {
+    const value = await machineFixture();
+    const enrollment = await value.machine.exchangeConnectCode(enrollmentInput(value.issued.code));
+    const repair = await value.machine.issueForAccount(value.bootstrap.userId, {
+      mode: "repair",
+      targetComputerId: enrollment.workspaceComputerId,
+    });
+    await unit.database.insert(agents).values({
+      workspaceId: enrollment.workspaceId,
+      createdByUserId: value.bootstrap.userId,
+      workspaceComputerId: enrollment.workspaceComputerId,
+      computerId: enrollment.workspaceComputerId,
+      name: "runner",
+      displayName: "Runner",
+      runtimeProvider: "codex",
+    });
+    const closed = vi.fn().mockResolvedValue(undefined);
+    const service = new ComputerService(
+      unit.database,
+      { getActiveUserById: vi.fn() },
+      { now: () => NOW, onEnrollmentRemoved: closed },
+    );
+
+    await service.removeFromAccount(value.bootstrap.userId, enrollment.workspaceComputerId);
+
+    await expect(service.listAccountComputers(value.bootstrap.userId)).resolves.toEqual({ computers: [] });
+    expect(closed).toHaveBeenCalledWith(enrollment.workspaceComputerId);
+    expect((await unit.database.select().from(computerCredentials))[0]).toMatchObject({
+      revokedAt: NOW,
+      revokedByUserId: value.bootstrap.userId,
+    });
+    expect((await unit.database.select().from(agents))[0]).toMatchObject({
+      computerId: null,
+      workspaceComputerId: null,
+      revision: 2,
+    });
+    expect(
+      (await unit.database.select().from(computerConnectCodes)).find((code) => code.id === repair.connectCodeId),
+    ).toMatchObject({ revokedAt: NOW, revokedByUserId: value.bootstrap.userId });
+
+    // DELETE is idempotent for the owner, but foreign and unknown ids remain indistinguishable.
+    await expect(
+      service.removeFromAccount(value.bootstrap.userId, enrollment.workspaceComputerId),
+    ).resolves.toBeUndefined();
+    await expect(service.removeFromAccount(randomUUID(), enrollment.workspaceComputerId)).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+  });
+
   it("projects readiness for online and offline Computers and detects missing ownership projections", async () => {
     const observed = new Date("2026-08-30T01:00:00.000Z");
     const source = {

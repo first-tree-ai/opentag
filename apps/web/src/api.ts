@@ -13,6 +13,7 @@ import {
   type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,
@@ -272,6 +273,13 @@ export class BrowserApi {
   computers(): Promise<ListWorkspaceComputersResponse> {
     return this.request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
       headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
+  }
+
+  removeComputer(computerId: string): Promise<void> {
+    return this.requestNoContent(accountComputerByIdPath(computerId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
     });
   }
 

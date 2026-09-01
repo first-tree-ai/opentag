@@ -451,7 +451,7 @@ describe("OpenTag Web App Shell", () => {
     expect(computers.getAttribute("href")).toBe("/agents/computers");
     fireEvent.click(computers);
     expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Your computers" })).toBeTruthy();
     expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/computers");

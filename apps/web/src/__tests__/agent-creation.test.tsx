@@ -122,7 +122,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
 
-    const listed = await screen.findByRole("region", { name: "Enrolled Computers" });
+    const listed = await screen.findByRole("region", { name: "Your computers" });
     // An Account may hold several, so the page shows all of them and adding one stays available
     // rather than disappearing once the first exists.
     expect(within(listed).getAllByRole("listitem")).toHaveLength(3);
@@ -137,6 +137,32 @@ describe("OpenTag Web App Shell", () => {
     ).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Connect a Computer" }));
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
+  });
+
+  it("removes a Computer after explaining the Agent impact", async () => {
+    installApi();
+    const fixtureFetch = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === `/api/v1/computers/${computerId}` && init?.method === "DELETE"
+        ? Promise.resolve(new Response(null, { status: 204 }))
+        : (fixtureFetch?.(input, init) ?? Promise.reject(new Error("The fixture fetch implementation is missing"))),
+    );
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    const trigger = await screen.findByRole("button", { name: "Remove Ada's Mac" });
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
+    expect(within(dialog).getByText(/disconnects 1 Agent/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+
+    await waitFor(() => expect(screen.queryByText("Ada's Mac")).toBeNull());
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([path, init]) => path === `/api/v1/computers/${computerId}` && init?.method === "DELETE"),
+    ).toBe(true);
   });
 
   it("does not resume a stored creation intent onto a Computer the reader moved away from", async () => {

@@ -1,4 +1,5 @@
 import {
+  ACCOUNT_COMPUTER_BY_ID_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
   AccountSetupResetRequestSchema,
@@ -49,6 +50,7 @@ const TaskDetailQuerySchema = z
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
+const ComputerParamsSchema = z.object({ computerId: z.string().uuid() }).strict();
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
@@ -145,6 +147,12 @@ export function registerAccountRoutes(
             await computerService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
           ),
         );
+    });
+
+    app.delete(ACCOUNT_COMPUTER_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { computerId } = parseRequest(ComputerParamsSchema, request.params);
+      await computerService.removeFromAccount(accountId(request), computerId);
+      return reply.code(204).send();
     });
   }
 

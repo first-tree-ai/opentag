@@ -9,6 +9,7 @@ import {
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
+  accountComputerByIdPath,
   accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,
@@ -264,6 +265,14 @@ export class OpenTagApi {
       {
         headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
       },
+      options,
+    );
+  }
+
+  removeAccountComputer(accessToken: string, computerId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      accountComputerByIdPath(computerId),
+      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
       options,
     );
   }

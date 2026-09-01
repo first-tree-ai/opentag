@@ -34,6 +34,7 @@ import {
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
+  accountComputerByIdPath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
@@ -450,6 +451,7 @@ describe("Agent contracts", () => {
     expect(imBindingDisablePath("binding/value")).toBe("/api/v1/im-bindings/binding%2Fvalue/disable");
     expect(imBindingDiagnosticsPath("binding/value")).toBe("/api/v1/im-bindings/binding%2Fvalue/diagnostics");
     expect(taskByIdPath("session/value")).toBe("/api/v1/sessions/session%2Fvalue");
+    expect(accountComputerByIdPath("computer/value")).toBe("/api/v1/computers/computer%2Fvalue");
     expect(workspaceSetupCompletePath("workspace/value")).toBe("/api/v1/workspaces/workspace%2Fvalue/setup/complete");
     expect(workspaceComputersPath("workspace/value")).toBe("/api/v1/workspaces/workspace%2Fvalue/computers");
     expect(workspaceComputerConnectCodesPath("workspace/value")).toBe(

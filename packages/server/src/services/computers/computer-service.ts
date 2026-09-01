@@ -1,7 +1,7 @@
 import type { ComputerRegisterFrame, ListWorkspaceComputersResponse, MeResponse } from "@opentag/shared";
-import { and, asc, eq, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { accountComputers, agents, computerCredentials } from "../../db/schema/index.js";
+import { accountComputers, agents, computerConnectCodes, computerCredentials } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
@@ -17,6 +17,7 @@ export interface ActiveUserResolver {
 
 export interface ComputerServiceOptions {
   now?: () => Date;
+  onEnrollmentRemoved?: (computerId: string) => Promise<void>;
   presenceTimeoutMs?: number;
   providerReadiness?: ProviderReadinessSource;
 }
@@ -24,12 +25,14 @@ export interface ComputerServiceOptions {
 export class ComputerService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
+  readonly #onEnrollmentRemoved?: (computerId: string) => Promise<void>;
   readonly #presenceTimeoutMs: number;
   readonly #providerReadiness?: ProviderReadinessSource;
 
   constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
+    this.#onEnrollmentRemoved = options.onEnrollmentRemoved;
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#providerReadiness = options.providerReadiness;
   }
@@ -97,6 +100,57 @@ export class ComputerService {
       });
     }
     return { computers: [...byId.values()] };
+  }
+
+  /**
+   * Removes an Account-owned Computer without erasing history that already refers to it. Active
+   * credentials and pending repair codes are revoked, while Agents are unbound so every reader sees
+   * that they need another Computer instead of retaining a dangling assignment.
+   *
+   * Repeating an owned removal succeeds. Besides making DELETE idempotent, this lets a caller retry
+   * if closing the live connection failed after the database transaction committed.
+   */
+  async removeFromAccount(accountId: string, computerId: string): Promise<void> {
+    const now = this.#now();
+    await this.#database.transaction(async (transaction) => {
+      const [owned] = await transaction
+        .select({ id: accountComputers.id })
+        .from(accountComputers)
+        .where(and(eq(accountComputers.id, computerId), eq(accountComputers.ownerAccountId, accountId)))
+        .limit(1)
+        .for("update");
+      if (!owned) throw computerNotFound();
+
+      await transaction
+        .update(computerConnectCodes)
+        .set({ revokedByUserId: accountId, revokedAt: now })
+        .where(
+          and(
+            eq(computerConnectCodes.issuedByAccountId, accountId),
+            eq(computerConnectCodes.targetComputerId, computerId),
+            isNull(computerConnectCodes.consumedAt),
+            isNull(computerConnectCodes.revokedAt),
+          ),
+        );
+      await transaction
+        .update(computerCredentials)
+        .set({ revokedByUserId: accountId, revokedAt: now })
+        .where(and(eq(computerCredentials.computerId, computerId), isNull(computerCredentials.revokedAt)));
+      await transaction
+        .update(agents)
+        .set({
+          computerId: null,
+          workspaceComputerId: null,
+          revision: sql`${agents.revision} + 1`,
+          updatedAt: now,
+        })
+        .where(and(eq(agents.computerId, computerId), ne(agents.status, "deleted")));
+      await transaction
+        .update(accountComputers)
+        .set({ currentInstanceId: null, connectedAt: null, updatedAt: now })
+        .where(eq(accountComputers.id, computerId));
+    });
+    await this.#onEnrollmentRemoved?.(computerId);
   }
 
   async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
@@ -206,4 +260,8 @@ function unavailableComputer(): AuthServiceError {
     "The Computer enrollment credential is unavailable",
     409,
   );
+}
+
+function computerNotFound(): AuthServiceError {
+  return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
 }

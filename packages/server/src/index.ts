@@ -146,6 +146,23 @@ export async function startServer(): Promise<void> {
       maxConcurrency: 16,
       onMetric: (metric) => app?.log.info({ metric }, "IM provider call metric"),
     });
+    /*
+     * Registration gets its own pool, because it is the one call here that waits on a person.
+     *
+     * The policy holds a concurrency slot for the whole call, and a registration is open from the
+     * moment the QR appears until someone has scanned, signed in and approved — or until the code
+     * expires an hour later, since closing a tab cancels nothing. Sharing the pool that carries
+     * message delivery would let people standing at a connect screen exhaust it, and ordinary
+     * delivery would then queue behind them and time out waiting for capacity.
+     *
+     * Its concurrency bounds how many people may be mid-connect at once, which is a different
+     * quantity from how many requests may be in flight, and deserves its own number.
+     */
+    const feishuRegistrationPolicy = new ExternalCallPolicy({
+      allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
+      maxConcurrency: 64,
+      onMetric: (metric) => app?.log.info({ metric }, "Feishu registration call metric"),
+    });
     const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
     const betterAuth = createBetterAuth(database, {
       onSessionCreating: async (userId) => {
@@ -242,7 +259,7 @@ export async function startServer(): Promise<void> {
       cipher: applicationCipher,
       instanceId,
       imBindings: imBindingService,
-      registrations: new DefaultFeishuRegistrationGateway(undefined, imCallPolicy),
+      registrations: new DefaultFeishuRegistrationGateway(undefined, feishuRegistrationPolicy),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,

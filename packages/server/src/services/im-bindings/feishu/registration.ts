@@ -99,7 +99,17 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
               resolveQr({ url, expiresAt: new Date(Date.now() + expireIn * 1000) });
             },
           }),
-        { maxAttempts: 1, timeoutMs: REGISTRATION_DEADLINE_MS, circuitKey: "feishu:registration" },
+        {
+          maxAttempts: 1,
+          timeoutMs: REGISTRATION_DEADLINE_MS,
+          circuitKey: "feishu:registration",
+          /*
+           * Handed to the policy rather than only to the SDK, so abandoning a registration reads as
+           * the caller withdrawing rather than the provider failing. Switching brand cancels and
+           * reissues, which makes cancellation an ordinary act here rather than an exceptional one.
+           */
+          signal: controller.signal,
+        },
       )
       .then((credentials) => ({
         appId: credentials.client_id,

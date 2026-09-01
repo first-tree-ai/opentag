@@ -567,6 +567,18 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
               throw error;
             }
             if (receiptId) await this.#receipts?.markProcessed(receiptId);
+            if (result.duplicate) {
+              emitRootSpan("feishu.inbound.deduplicated", {
+                ...imAttrs({
+                  provider: "feishu",
+                  bindingId: handoff.imBindingId,
+                  providerEventId: receiptEventId ?? event.providerEventId,
+                  externalMessageId: event.message.externalId,
+                  duplicate: true,
+                }),
+                ...outcomeAttrs("duplicate"),
+              });
+            }
             setActiveSpanAttributes({
               ...imAttrs({
                 messageId: result.messageId,

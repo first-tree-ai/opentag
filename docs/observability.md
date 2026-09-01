@@ -56,6 +56,32 @@ Asynchronous jobs intentionally use independent roots. Search by stable attribut
 
 Message text, raw provider events, mentions, resources, sender identity, provider response bodies, prompts, model output, tool payloads, authorization headers, cookies, tokens, secrets, and credentials are excluded or scrubbed.
 
+## Feishu inbound deduplication
+
+Feishu inbound delivery has two independent deduplication keys:
+
+- The in-memory adapter fast path scopes an envelope event ID and the message/revision identity to the
+  tenant and conversation. It is bounded to 10 minutes and 10,000 entries, so it only protects a live
+  process from immediate WebSocket retries.
+- The durable receipt claim uses `(im_binding_id, event_id)`. The unique index on
+  `feishu_inbound_receipts` is the cross-instance winner election. A successful claim is marked
+  `processed` after inbox persistence, or `failed` with a bounded diagnostic code when processing
+  fails.
+- Inbox persistence independently enforces `(im_binding_id, channel_id, external_message_id,
+  provider_revision_key)`. Therefore a different envelope event ID cannot create a second revision of
+  the same logical message, while an edited or recalled revision remains actionable.
+
+Feishu does not always include an envelope `event_id`. In that case normalization creates a stable
+message/revision fallback for the inbox only; no durable receipt row is claimed. The binding and
+conversation-scoped semantic unique key remains the authority for retries without an envelope ID.
+Receipt rows are operational evidence and should be retained for 30 days. A scheduled database
+maintenance job may delete only `processed` or `failed` rows older than that window; never delete
+`processing` rows as part of routine cleanup, because they identify an in-flight delivery.
+
+Duplicate outcomes are redacted and stable: the `feishu.inbound.deduplicated` span records the binding,
+provider event ID when available, external message ID, and `duplicate=true`, but never tokens or message
+content. A duplicate is acknowledged without a second inbox write, Session run, Task, or context entry.
+
 ## Troubleshooting a silent Feishu Bot
 
 Start with current state:

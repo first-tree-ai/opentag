@@ -251,6 +251,21 @@ export class FeishuSetupService {
     const row = await this.#load(attemptId);
     if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
     await this.#imBindings.assertCanManage(callerUserId, row.agentId);
+    return this.#projectAttempt(row);
+  }
+
+  /**
+   * The Agent-owned setup attempt as it stands right now, including expiry and owner-liveness
+   * projection, without taking on a caller. Readers that already established Account authority over
+   * the Agent (the setup snapshot) use this so the attempt's liveness rules stay in one place.
+   */
+  async observeForAgent(agentId: string): Promise<FeishuSetupAttempt | undefined> {
+    const row = await this.#currentForAgent(agentId);
+    if (!row?.setupAttemptId || !row.setupIntent || !row.setupState) return undefined;
+    return this.#projectAttempt(row);
+  }
+
+  #projectAttempt(row: typeof imBindings.$inferSelect): FeishuSetupAttempt {
     const attempt = this.#toAttempt(row);
     const now = new Date();
     if (row.setupState === "awaiting_user" && row.setupExpiresAt && row.setupExpiresAt <= now) {
@@ -265,7 +280,7 @@ export class FeishuSetupService {
     if (
       row.setupState &&
       ["awaiting_user", "validating"].includes(row.setupState) &&
-      ((row.setupOwnerInstanceId === this.#instanceId && !this.#running.has(attemptId)) ||
+      ((row.setupOwnerInstanceId === this.#instanceId && !this.#running.has(attempt.id)) ||
         !row.setupOwnerHeartbeatAt ||
         row.setupOwnerHeartbeatAt.getTime() < now.getTime() - OWNER_STALE_MS)
     ) {

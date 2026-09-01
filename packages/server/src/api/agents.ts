@@ -4,6 +4,7 @@ import {
   AGENT_CONFIG_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
+  AGENT_SETUP_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   AGENT_USAGE_WINDOW_DAYS,
@@ -11,6 +12,7 @@ import {
   AgentDetailSchema,
   AgentRuntimeTestRequestSchema,
   AgentRuntimeTestResponseSchema,
+  AgentSetupSnapshotSchema,
   AgentUsageDetailSchema,
   AgentUsageWindowDaysSchema,
   RebindAgentComputerRequestSchema,
@@ -19,7 +21,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
-import type { AgentRuntimeTestService, AgentService } from "../services/agents/index.js";
+import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
@@ -61,6 +63,7 @@ export function registerAgentRoutes(
   agentService: AgentService,
   authOptions?: UserAuthPreHandlerOptions,
   runtimeTest?: AgentRuntimeTestService,
+  agentSetup?: AgentSetupService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
@@ -126,6 +129,16 @@ export function registerAgentRoutes(
     await agentService.deleteById(authenticatedUserId(request), agentId);
     return reply.code(204).send();
   });
+
+  if (agentSetup) {
+    app.get(AGENT_SETUP_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const snapshot = AgentSetupSnapshotSchema.parse(
+        await agentSetup.getSetupById(authenticatedUserId(request), agentId),
+      );
+      return reply.code(200).send(snapshot);
+    });
+  }
 
   if (!runtimeTest) return;
 

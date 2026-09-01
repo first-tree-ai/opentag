@@ -115,6 +115,27 @@ interface CredentialInspection {
   missingCapabilities: string[];
 }
 
+/**
+ * The Messaging facts an Agent setup snapshot must name: the exact binding identity and Provider as
+ * stored, the public error code a blocked binding may surface, and the handoff readiness computed
+ * from live runtime observations.
+ */
+export interface AgentSetupBindingState {
+  bindingId: string;
+  provider: "feishu" | "slack";
+  errorCode: string | null;
+  handoff: ImBindingHandoffStatus;
+}
+
+interface ObservedAgentBinding {
+  id: string;
+  provider: "feishu" | "slack";
+  status: ImBindingState;
+  lastErrorCode: string | null;
+  credential: CredentialInspection;
+  readiness: ImBindingReadiness;
+}
+
 interface ActivatedBinding {
   id: string;
   agentId: string;
@@ -752,6 +773,29 @@ export class ImBindingService {
   }
 
   async getHandoffForAgent(callerUserId: string, agentId: string): Promise<ImBindingHandoffStatus | undefined> {
+    const observed = await this.#observeForAgent(callerUserId, agentId);
+    return observed?.readiness.handoff;
+  }
+
+  async getSetupBindingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupBindingState | undefined> {
+    const observed = await this.#observeForAgent(callerUserId, agentId);
+    if (!observed) return undefined;
+    return {
+      bindingId: observed.id,
+      provider: observed.provider,
+      errorCode: projectedErrorCode({
+        credentialStatus: observed.credential.status,
+        lastErrorCode: observed.lastErrorCode,
+        missingCapabilities: observed.credential.missingCapabilities,
+        provider: observed.provider,
+        reauthorizationRequired: observed.readiness.reauthorizationRequired,
+        status: observed.status,
+      }),
+      handoff: observed.readiness.handoff,
+    };
+  }
+
+  async #observeForAgent(callerUserId: string, agentId: string): Promise<ObservedAgentBinding | undefined> {
     await this.#assertCanRead(callerUserId, agentId);
     const [row] = await this.#database
       .select({
@@ -759,6 +803,7 @@ export class ImBindingService {
         agentId: imBindings.agentId,
         provider: imBindings.provider,
         status: imBindings.status,
+        lastErrorCode: imBindings.lastErrorCode,
         connectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
         observedConnectedAt: imBindings.observedConnectedAt,
         observedAt: imBindings.observedAt,
@@ -792,14 +837,20 @@ export class ImBindingService {
       row.provider === "slack" && row.slackInstallation?.status === "reauthorization_required"
         ? "reauthorization_required"
         : row.status;
-    return (
-      await this.#readiness(
-        this.#withCredentialStatus(
-          { ...row, status, observedConnectedAt, observedAt, grantedCapabilities, credentialGeneration },
-          credential.status,
-        ),
-      )
-    ).handoff;
+    const readiness = await this.#readiness(
+      this.#withCredentialStatus(
+        { ...row, status, observedConnectedAt, observedAt, grantedCapabilities, credentialGeneration },
+        credential.status,
+      ),
+    );
+    return {
+      id: row.id,
+      provider: row.provider,
+      status,
+      lastErrorCode: row.lastErrorCode,
+      credential,
+      readiness,
+    };
   }
 
   async getConfigForAgent(callerUserId: string, agentId: string): Promise<ImBindingAdminDetail | undefined> {

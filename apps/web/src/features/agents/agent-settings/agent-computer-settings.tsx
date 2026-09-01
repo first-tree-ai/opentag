@@ -88,8 +88,10 @@ export function AgentComputerSettings({
             <div className="grid gap-3">
               {computerState.lastConfirmedAt ? (
                 <p>
-                  Last seen {formatRelativeTime(computerState.lastConfirmedAt)} ·{" "}
-                  {formatDateTime(computerState.lastConfirmedAt)}
+                  {m.agent_settings_last_seen({
+                    relative: formatRelativeTime(computerState.lastConfirmedAt),
+                    date: formatDateTime(computerState.lastConfirmedAt),
+                  })}
                 </p>
               ) : null}
               <p>{computerRecoveryMessage(agent)}</p>
@@ -141,9 +143,7 @@ function AgentComputerRepair({
             }}
             onConnected={onAgentChanged}
           />
-          <p className="text-sm text-kumo-subtle">
-            Reconnecting restores this Computer for every Agent that runs on it.
-          </p>
+          <p className="text-sm text-kumo-subtle">{m.agent_settings_reconnecting_description()}</p>
         </div>
       ) : null}
     </>

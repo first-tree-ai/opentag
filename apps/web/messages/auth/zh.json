@@ -1,3 +1,21 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "auth_already_have_account": "已经有账号了？",
+  "auth_brand_name": "OpenTag",
+  "auth_continue_with_provider": "使用 {providerId} 继续",
+  "auth_create_account": "创建账号",
+  "auth_create_one": "创建账号",
+  "auth_email_label": "邮箱",
+  "auth_name_label": "名称",
+  "auth_no_account_yet": "还没有账号？",
+  "auth_no_sign_in_methods_available": "当前没有可用的登录方式。",
+  "auth_or": "或",
+  "auth_password_label": "密码",
+  "auth_password_min_length": "至少需要 {count} 个字符。",
+  "auth_sign_in": "登录",
+  "auth_sign_in_failed": "登录失败，请重试。",
+  "auth_sign_in_to_continue": "登录后继续使用 OpenTag。",
+  "auth_sign_in_to_manage_agents_and_computers": "登录以管理你的 Agent 和 Computer。",
+  "auth_sign_in_with_google": "使用 Google 登录",
+  "auth_welcome_back": "欢迎回来"
 }

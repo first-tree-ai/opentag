@@ -68,5 +68,6 @@ owns the recurring baseline measurement.
 - Keep Chinese mirrors synchronized with their canonical English documents.
 - Use explicit error handling; never swallow failures or log credentials.
 - Keep changes scoped and avoid adding empty packages or placeholder directories.
+- Run `pnpm check` before every commit to apply linting and formatting, so committed code conforms to repository standards.
 - Use Conventional Commits and an approved branch prefix from `CONTRIBUTING.md`.
 - Do not amend published commits or force-push shared branches.

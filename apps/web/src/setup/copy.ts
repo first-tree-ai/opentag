@@ -97,30 +97,9 @@ export const SETUP_COPY = {
      */
     feishu: { title: messagingProviderLabel("feishu"), description: "Your Feishu or Lark workspace" },
     slack: { title: messagingProviderLabel("slack"), description: "Your Slack workspace" },
-    /*
-     * Scanning is offered, not promised. A reader whose client will not open the code from a scan
-     * has been observed against a real tenant, and the same code opened as a link worked — the
-     * cause is not established, so this says only what is known. Telling someone to scan and
-     * giving them nothing else leaves them with no second route when the first one does not work.
-     */
-    feishuIntro: (brand: string) => `Scan this with ${brand}, or open it in your browser.`,
-    /*
-     * Brand-aware for the same reason as everything else the reader is told here: naming Feishu to
-     * a tenant we have just minted a Lark code for describes a product they do not use.
-     */
-    feishuPreparing: (brand: string) => `OpenTag is preparing a secure ${brand} authorization.`,
     qrAlt: (brand: string) => `Scan this QR code in ${brand}`,
     /** Says nothing about which brand, so it needs nothing from one. */
     generating: "Generating QR code…",
-    /** The second route to the same code, for a reader the first one did not work for. */
-    feishuOpenLink: (brand: string) => `Open the ${brand} authorization page`,
-    /**
-     * A code is minted against one of the two domains and cannot be authorized from the other, so
-     * the reader whose company is on the brand we guessed wrong needs a way out while they are
-     * looking at the code, not a step back they have to think to take. It names the other brand
-     * rather than saying "switch", because the reader knows which app they open.
-     */
-    feishuBrandSwitch: (brand: string) => `Use ${brand} instead`,
     waiting: "Waiting for you to scan…",
     cliMissing: (provider: string) =>
       `${provider} messages are sent through its CLI, which isn't installed on your computer yet. Run opentag doctor to add it.`,

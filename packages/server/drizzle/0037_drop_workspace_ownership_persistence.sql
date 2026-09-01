@@ -43,8 +43,11 @@ BEGIN
 		RAISE EXCEPTION 'Workspace ownership contract migration found a Computer whose owner or installation identity diverges';
 	END IF;
 
-	-- Every legacy credential must survive with identical id, Computer binding, secret hash, and
-	-- issue/revocation audit fields.
+	-- Every legacy credential must survive with identical immutable identity and issuance fields.
+	-- PR 5 stopped mutable credential-shadow writes, so the canonical credential may have advanced
+	-- from active to revoked while the frozen legacy shadow remains active. That one-way transition
+	-- is safe because the canonical row survives this migration. Any reverse or conflicting
+	-- revocation difference would discard state and must still fail closed.
 	IF EXISTS (
 		SELECT 1
 		FROM "workspace_computer_credentials" AS "legacy"
@@ -54,10 +57,20 @@ BEGIN
 			OR "canonical"."secret_hash" IS DISTINCT FROM "legacy"."secret_hash"
 			OR "canonical"."issued_by_user_id" IS DISTINCT FROM "legacy"."issued_by_user_id"
 			OR "canonical"."issued_at" IS DISTINCT FROM "legacy"."issued_at"
-			OR "canonical"."revoked_by_user_id" IS DISTINCT FROM "legacy"."revoked_by_user_id"
-			OR "canonical"."revoked_at" IS DISTINCT FROM "legacy"."revoked_at"
+			OR (
+				(
+					"canonical"."revoked_by_user_id" IS DISTINCT FROM "legacy"."revoked_by_user_id"
+					OR "canonical"."revoked_at" IS DISTINCT FROM "legacy"."revoked_at"
+				)
+				AND NOT (
+					"legacy"."revoked_by_user_id" IS NULL
+					AND "legacy"."revoked_at" IS NULL
+					AND "canonical"."revoked_by_user_id" IS NOT NULL
+					AND "canonical"."revoked_at" IS NOT NULL
+				)
+			)
 	) THEN
-		RAISE EXCEPTION 'Workspace ownership contract migration found a legacy Computer credential without an identical canonical credential';
+		RAISE EXCEPTION 'Workspace ownership contract migration found a legacy Computer credential without a safe canonical successor';
 	END IF;
 
 	-- A Slack installation's legacy scope must be its owning Agent's scope.

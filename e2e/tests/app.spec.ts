@@ -1,6 +1,7 @@
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
+import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
 import { expect, test } from "./fixtures.js";
 
 test.describe.configure({ mode: "serial" });
@@ -121,23 +122,64 @@ test("Computer management removes an offline Computer and keeps it gone after re
 
   await expect(page.getByRole("heading", { name: "Your computers", exact: true })).toBeVisible();
   await expect(page.getByText("Connect and manage the computers your Agents run on.", { exact: true })).toBeVisible();
-  const onlineComputer = page.getByRole("listitem").filter({ hasText: "E2E Computer" });
-  await expect(onlineComputer.getByText("Online", { exact: true })).toBeVisible();
+  const onlineComputer = page.getByRole("listitem").filter({ has: page.getByText("Online", { exact: true }) });
+  await expect(onlineComputer).toHaveCount(1);
   const removableComputer = page.getByRole("listitem").filter({ hasText: "Disposable E2E Mac" });
   await expect(removableComputer.getByText("Offline", { exact: true })).toBeVisible();
   await expect(removableComputer.getByText("Last seen 2 hours ago", { exact: true })).toBeVisible();
 
-  const trigger = removableComputer.getByRole("button", { name: "Remove Disposable E2E Mac", exact: true });
-  await trigger.click();
+  await mkdir(join(repositoryRoot, "e2e/screenshots"), { recursive: true });
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: width < 768 ? 844 : 900 });
+    await expectNoPageOverflow(page);
+    await expect(onlineComputer).toBeVisible();
+    await expect(removableComputer).toBeVisible();
+    await page.screenshot({
+      path: join(repositoryRoot, `e2e/screenshots/computers-${width}.png`),
+      fullPage: true,
+    });
+  }
+
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.evaluate(() => localStorage.setItem("PARAGLIDE_LOCALE", "zh"));
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "Computer", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "你的计算机", exact: true })).toBeVisible();
+  await expectNoPageOverflow(page);
+  const zhTrigger = page.getByRole("button", { name: "移除 Disposable E2E Mac", exact: true });
+  await zhTrigger.focus();
+  await page.keyboard.press("Enter");
+  const zhDialog = page.getByRole("alertdialog", { name: "移除 Disposable E2E Mac？", exact: true });
+  await expect(zhDialog).toBeVisible();
+  await expectNoPageOverflow(page);
+  await expectAccessible(page);
+  await page.screenshot({
+    path: join(repositoryRoot, "e2e/screenshots/computers-320-zh-removal.png"),
+    fullPage: true,
+  });
+  await page.keyboard.press("Escape");
+  await expect(zhDialog).toHaveCount(0);
+  await expect(zhTrigger).toBeFocused();
+
+  await page.evaluate(() => localStorage.setItem("PARAGLIDE_LOCALE", "en"));
+  await page.reload({ waitUntil: "networkidle" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expectAccessible(page);
+  const refreshedComputer = page.getByRole("listitem").filter({ hasText: "Disposable E2E Mac" });
+  const trigger = refreshedComputer.getByRole("button", { name: "Remove Disposable E2E Mac", exact: true });
+  await trigger.focus();
+  await page.keyboard.press("Enter");
   const dialog = page.getByRole("alertdialog", { name: "Remove Disposable E2E Mac?", exact: true });
   await expect(dialog).toContainText("This removes the Computer from your account and revokes its access.");
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(dialog).toBeHidden();
+  await expect(dialog.locator('[data-ui="dialog-heading"]')).toBeFocused();
+  await expectAccessible(page);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
 
-  await trigger.click();
+  await page.keyboard.press("Enter");
   await dialog.getByRole("button", { name: "Remove Computer", exact: true }).click();
-  await expect(removableComputer).toBeHidden();
+  await expect(refreshedComputer).toBeHidden();
   await page.reload({ waitUntil: "networkidle" });
   await expect(page.getByText("Disposable E2E Mac", { exact: true })).toHaveCount(0);
 });

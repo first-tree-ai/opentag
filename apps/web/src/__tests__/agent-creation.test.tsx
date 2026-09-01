@@ -166,6 +166,60 @@ describe("OpenTag Web App Shell", () => {
     ).toBe(true);
   });
 
+  it("shows the Computer empty state without hiding the connection action", async () => {
+    installApi({ computers: [] });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Your computers" })).toBeTruthy();
+    expect(screen.getByText("No computers yet.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect a Computer" })).toBeTruthy();
+  });
+
+  it("locks Computer removal while pending and allows retry after a transient failure", async () => {
+    installApi();
+    const fixtureFetch = vi.mocked(fetch).getMockImplementation();
+    let finishFirstAttempt: (() => void) | undefined;
+    let attempts = 0;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) !== `/api/v1/computers/${computerId}` || init?.method !== "DELETE") {
+        return fixtureFetch?.(input, init) ?? Promise.reject(new Error("The fixture fetch implementation is missing"));
+      }
+      attempts += 1;
+      if (attempts > 1) return Promise.resolve(new Response(null, { status: 204 }));
+      return new Promise((resolve) => {
+        finishFirstAttempt = () =>
+          resolve(
+            new Response(
+              JSON.stringify({
+                error: { code: "INTERNAL_ERROR", category: "transient", message: "Temporary failure" },
+              }),
+              { status: 500 },
+            ),
+          );
+      });
+    });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Ada's Mac" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Removing…" })).toBeTruthy());
+    expect(within(dialog).getByRole("button", { name: "Removing…" }).hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Close Remove Ada's Mac?" }).hasAttribute("disabled")).toBe(true);
+
+    await act(async () => finishFirstAttempt?.());
+    expect(await within(dialog).findByText("Couldn’t remove this Computer. Try again.")).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+    await waitFor(() => expect(screen.queryByText("Ada's Mac")).toBeNull());
+    expect(attempts).toBe(2);
+  });
+
   it("keeps the Computer visible when unresolved Agent work blocks removal", async () => {
     installApi();
     const fixtureFetch = vi.mocked(fetch).getMockImplementation();

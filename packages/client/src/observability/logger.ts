@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { redactSensitive } from "@opentag/shared";
+import { redactForLog, redactSensitive } from "@opentag/shared";
 import pino, { type DestinationStream, type Logger as PinoLogger } from "pino";
 import {
   CLIENT_LOG_MIN_RETENTION_MS,
@@ -140,7 +140,12 @@ function dualDestination(): DestinationStream {
 
 function adapt(logger: PinoLogger, bindings: ClientLogBindings): ClientLogger {
   const write = (method: "debug" | "error" | "info" | "warn", fields: ClientLogBindings, message: string) =>
-    safeWrite(() => logger[method](redactSensitive({ ...bindings, ...fields }), message));
+    safeWrite(() => {
+      // Redaction walks and rewrites every string, so it must not run for a line the level discards.
+      // Pino would drop the record anyway, but the arguments are evaluated before that call.
+      if (!logger.isLevelEnabled(method)) return;
+      logger[method](redactForLog({ ...bindings, ...fields }) as ClientLogBindings, redactForLog(message));
+    });
   return {
     child: (childBindings) => adapt(logger, { ...bindings, ...childBindings }),
     debug: (fields, message) => write("debug", fields, message),

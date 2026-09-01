@@ -21,6 +21,24 @@ afterEach(async () => {
 });
 
 describe("Client logger", () => {
+  it("redacts and caps the log message, not only the fields", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+    const logger = createLogger("provider-cli");
+
+    logger.error({ agentId: "agent-1" }, "spawn failed: Authorization: Bearer message-secret");
+    logger.error({ agentId: "agent-1" }, "z".repeat(20_000));
+
+    const lines = (await readFile(join(directory, "client.log"), "utf8")).trim().split("\n");
+    const first = JSON.parse(lines[0] as string);
+    expect(first.message).not.toContain("message-secret");
+    expect(first.message).toContain("[REDACTED]");
+
+    const second = JSON.parse(lines[1] as string);
+    expect(new TextEncoder().encode(second.message).byteLength).toBeLessThanOrEqual(4 * 1024);
+  });
+
   it("writes NDJSON child bindings and redacts sensitive structured fields", async () => {
     const directory = await temporaryDirectory();
     process.env.OPENTAG_LOG_LEVEL = "info";

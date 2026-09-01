@@ -33,12 +33,6 @@ RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts 
 
 FROM node:24-alpine AS runtime
 
-# Docker does not read a log-driver setting from an image. These labels keep the required
-# json-file limits discoverable for CapRover or another deployment controller that applies them.
-LABEL com.opentag.log-driver="json-file" \
-      com.opentag.log-max-size="10m" \
-      com.opentag.log-max-file="3"
-
 WORKDIR /app
 COPY --from=prod-deps /app ./
 COPY --from=build /app/packages/shared/dist packages/shared/dist

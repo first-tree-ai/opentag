@@ -13,6 +13,7 @@ import { accountComputers, agents } from "./db/schema/index.js";
 import {
   createBackgroundFailureSupervisor,
   createServerDiagnosticReporter,
+  createServiceLoggerPort,
   initTelemetry,
   shutdownTelemetry,
 } from "./observability/index.js";
@@ -114,6 +115,8 @@ export async function startServer(): Promise<void> {
   let app: ReturnType<typeof createApp> | undefined;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
+  const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
+  void serviceLogger;
   const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
     logger: (payload, message) => app?.log.error(payload, message),
     onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
@@ -349,6 +352,7 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     app = createApp({
+      loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,

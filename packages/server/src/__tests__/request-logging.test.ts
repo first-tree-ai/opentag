@@ -2,6 +2,26 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp, sanitizeRequestUrl } from "../app.js";
 
 describe("request logging", () => {
+  it("uses an inbound x-request-id and echoes it on the response", async () => {
+    const requestId = "request-id-from-client";
+    let observedRequestId: string | undefined;
+    const app = createApp({ loggerStream: { write: () => undefined } });
+    app.addHook("onRequest", async (request) => {
+      observedRequestId = request.id;
+    });
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/healthz",
+        headers: { "x-request-id": requestId },
+      });
+      expect(response.headers["x-request-id"]).toBe(requestId);
+      expect(observedRequestId).toBe(requestId);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("removes query credentials and invitation bearer path segments", () => {
     expect(sanitizeRequestUrl("/api/v1/auth/google/callback?code=secret-code&state=secret-state")).toBe(
       "/api/v1/auth/google/callback",

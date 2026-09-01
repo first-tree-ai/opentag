@@ -15,6 +15,7 @@ export const OPENTAG_ATTR = {
   IM_PROVIDER_EVENT_ID: "opentag.im.provider_event.id",
   OPERATION_OUTCOME: "opentag.operation.outcome",
   REQUEST_ID: "opentag.request.id",
+  WORKSPACE_ID: "opentag.workspace.id",
   RUNTIME_FRAME_TYPE: "opentag.runtime.frame.type",
   RUNTIME_INSTANCE_ID: "opentag.runtime.instance.id",
   RUNTIME_PLACEMENT_GENERATION: "opentag.runtime.placement_generation",

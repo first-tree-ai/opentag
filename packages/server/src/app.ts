@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
@@ -59,6 +60,7 @@ export interface CreateAppOptions {
   feishuSetupService?: FeishuSetupService;
   slackOAuth?: SlackOAuthRouteOptions;
   loggerStream?: FastifyLoggerOptions["stream"];
+  loggerLevel?: FastifyLoggerOptions["level"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
@@ -114,7 +116,10 @@ function contentTypeParserErrorStatus(error: unknown): number | undefined {
 
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
+    requestIdHeader: "x-request-id",
+    genReqId: () => randomUUID(),
     logger: {
+      level: options.loggerLevel ?? "info",
       ...(options.loggerStream ? { stream: options.loggerStream } : {}),
       serializers: {
         req: (request) => ({
@@ -156,6 +161,7 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.addHook("onRequest", async (_request, reply) => {
+    reply.header("x-request-id", _request.id);
     const traceId = currentTraceId();
     if (traceId) reply.header("x-trace-id", traceId);
   });

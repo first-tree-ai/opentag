@@ -33,6 +33,7 @@ export {
   withRootSpan,
   withSpan,
 } from "./otel-helpers.js";
+export { createServiceLoggerPort, type ServiceLogger } from "./service-logger.js";
 export {
   endRuntimeConnectionSpan,
   endRuntimeFrameSpan,

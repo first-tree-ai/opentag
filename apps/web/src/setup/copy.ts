@@ -12,7 +12,7 @@ import type { CheckRow, CheckState } from "./checks.js";
 /**
  * Copy for the numbered computer-check rows. Every row carries a line of detail in every state,
  * not only when it fails, so the list does not reflow as results land. A missing messaging CLI is
- * named later, as a sentence (`messagingCliMissingCopy`) rather than a third check line.
+ * named later, as a sentence — `messagingCliMissingCopy` in onboarding — rather than a third row.
  */
 export const CHECK_COPY: Record<
   CheckRow["id"],

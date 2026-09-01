@@ -18,10 +18,10 @@ export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable
  * that is not installed leaves sign-in genuinely unknown, which the `blocked` state says out loud
  * instead of guessing.
  *
- * The messaging CLI is not a row: which binary is needed depends on a provider chosen later, and
- * both onboarding and Agent settings name a missing one with a sentence
- * (`messagingCliMissingCopy`) rather than a third check line. `messagingCliCheck` returns
- * that sentence's `CheckState`.
+ * The messaging CLI is not a row: which binary is needed depends on a provider chosen later, so both
+ * surfaces name a missing one with a sentence rather than a third check line — onboarding through
+ * `messagingCliMissingCopy`, Agent settings through `providerCliRecoveryMessage`, which reports the
+ * handoff phase instead. `messagingCliCheck` returns that sentence's `CheckState`.
  */
 export type CheckState = "pending" | "passed" | "failed" | "blocked";
 

@@ -6,7 +6,7 @@ import {
   type ComputerConnectLifecycle,
   ComputerConnectLifecycleRoot,
 } from "../features/computer-connect/computer-connect.js";
-import { messagingProviderLabel } from "../im/provider-label.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import {
   CheckLine,
@@ -354,9 +354,15 @@ function MessagingPicker({
           >
             <BrandMark brand={candidate} label={messagingProviderLabel(candidate)} />
             <CardCopy
-              description={m.onboarding_v2_messaging_provider_description({
-                provider: messagingProviderLabel(candidate),
-              })}
+              description={
+                candidate === "feishu"
+                  ? m.onboarding_v2_messaging_feishu_description({
+                      provider: messagingProviderAlternateBrand(),
+                    })
+                  : m.onboarding_v2_messaging_provider_description({
+                      provider: messagingProviderLabel(candidate),
+                    })
+              }
               title={messagingProviderLabel(candidate)}
             />
           </Button>
@@ -1121,7 +1127,9 @@ export function DoneStep({
             installers to an app their Agent is not in.
           */}
           {provider
-            ? m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) })
+            ? spaceBrandInSentence(
+                m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) }),
+              )
             : m.onboarding_v2_done_description_any_app({ name })}
         </p>
       </header>

@@ -5,6 +5,7 @@ import { ApiError, browserApi } from "../api.js";
 import { formatDateTime } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button, buttonClassName, Dialog, Loader } from "../ui/design-system.js";
+import { messagingProviderLabel } from "./provider-label.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
@@ -112,7 +113,10 @@ function FeishuSetupLifecycle({
             } catch {
               attemptRef.current = started;
               setAttempt(started);
-              setError({ message: m.im_feishu_cancel_failed(), source: "start" });
+              setError({
+                message: m.im_feishu_cancel_failed({ provider: messagingProviderLabel("feishu") }),
+                source: "start",
+              });
               setDialogOpen(true);
               return false;
             }
@@ -140,7 +144,13 @@ function FeishuSetupLifecycle({
         return true;
       } catch (cause) {
         if (lifecycleRef.current !== lifecycle) return false;
-        setError({ message: normalizeError(cause, m.im_feishu_authorization_failed()), source: "start" });
+        setError({
+          message: normalizeError(
+            cause,
+            m.im_feishu_authorization_failed({ provider: messagingProviderLabel("feishu") }),
+          ),
+          source: "start",
+        });
         return false;
       } finally {
         if (lifecycleRef.current === lifecycle) {
@@ -181,7 +191,13 @@ function FeishuSetupLifecycle({
         setError((currentError) =>
           currentError?.source === "start"
             ? currentError
-            : { message: normalizeError(cause, m.im_feishu_authorization_failed()), source: "poll" },
+            : {
+                message: normalizeError(
+                  cause,
+                  m.im_feishu_authorization_failed({ provider: messagingProviderLabel("feishu") }),
+                ),
+                source: "poll",
+              },
         );
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       }
@@ -211,7 +227,7 @@ function FeishuSetupLifecycle({
       setAttempt(undefined);
       setDialogOpen(false);
     } catch {
-      setError({ message: m.im_feishu_cancel_failed(), source: "start" });
+      setError({ message: m.im_feishu_cancel_failed({ provider: messagingProviderLabel("feishu") }), source: "start" });
     } finally {
       setCanceling(false);
     }
@@ -368,7 +384,7 @@ function FeishuAwaitingUser({ attempt, onClose }: { attempt: FeishuSetupAttempt;
             rel="noreferrer"
             target="_blank"
           >
-            {m.im_feishu_open()}
+            {m.im_feishu_open({ provider: messagingProviderLabel("feishu") })}
           </a>
         ) : null}
       </div>
@@ -377,15 +393,18 @@ function FeishuAwaitingUser({ attempt, onClose }: { attempt: FeishuSetupAttempt;
 }
 
 function feishuDialogTitle(intent: FeishuSetupIntent): string {
-  if (intent === "replace") return m.im_feishu_dialog_change_title();
-  if (intent === "reauthorize") return m.im_feishu_dialog_permissions_title();
-  return m.im_feishu_dialog_connect_title();
+  if (intent === "replace") return m.im_feishu_dialog_change_title({ provider: messagingProviderLabel("feishu") });
+  if (intent === "reauthorize")
+    return m.im_feishu_dialog_permissions_title({ provider: messagingProviderLabel("feishu") });
+  return m.im_feishu_dialog_connect_title({ provider: messagingProviderLabel("feishu") });
 }
 
 function feishuDialogDescription(intent: FeishuSetupIntent): string {
-  if (intent === "replace") return m.im_feishu_dialog_change_description();
-  if (intent === "reauthorize") return m.im_feishu_dialog_permissions_description();
-  return m.im_feishu_dialog_connect_description();
+  if (intent === "replace")
+    return m.im_feishu_dialog_change_description({ provider: messagingProviderLabel("feishu") });
+  if (intent === "reauthorize")
+    return m.im_feishu_dialog_permissions_description({ provider: messagingProviderLabel("feishu") });
+  return m.im_feishu_dialog_connect_description({ provider: messagingProviderLabel("feishu") });
 }
 
 function FeishuSetupFeedback({
@@ -401,12 +420,17 @@ function FeishuSetupFeedback({
     <Banner data-ui="feishu-setup-feedback">
       {active ? (
         <span aria-hidden="true">
-          <Loader aria-label={m.im_feishu_waiting_for_authorization()} size="sm" />
+          <Loader
+            aria-label={m.im_feishu_waiting_for_authorization({ provider: messagingProviderLabel("feishu") })}
+            size="sm"
+          />
         </span>
       ) : null}
-      <strong>{m.im_feishu_setup_started()}</strong>
+      <strong>{m.im_feishu_setup_started({ provider: messagingProviderLabel("feishu") })}</strong>
       <br />
-      {attempt.intent === "reauthorize" ? m.im_feishu_reauthorize_instructions() : m.im_feishu_create_instructions()}
+      {attempt.intent === "reauthorize"
+        ? m.im_feishu_reauthorize_instructions({ provider: messagingProviderLabel("feishu") })
+        : m.im_feishu_create_instructions({ provider: messagingProviderLabel("feishu") })}
       <br />
       {m.im_feishu_state_expires({ state: attempt.state, expires: formatDateTime(attempt.expiresAt) })}
       {recovery ? (
@@ -420,14 +444,16 @@ function FeishuSetupFeedback({
           <br />
           <FeishuQrCode value={attempt.qrUrl} />
           <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-            {m.im_feishu_open_authorization()}
+            {m.im_feishu_open_authorization({ provider: messagingProviderLabel("feishu") })}
           </a>
         </>
       ) : null}
       {RETRYABLE_STATES.includes(attempt.state) ? (
         <>
           <br />
-          <Button onClick={() => void onRetry(attempt.intent)}>{m.im_feishu_retry_setup()}</Button>
+          <Button onClick={() => void onRetry(attempt.intent)}>
+            {m.im_feishu_retry_setup({ provider: messagingProviderLabel("feishu") })}
+          </Button>
         </>
       ) : null}
     </Banner>
@@ -447,7 +473,7 @@ function FeishuQrCode({ value }: { value: string }) {
   }, [value]);
   return source ? (
     <img
-      alt={m.im_feishu_qr_alt()}
+      alt={m.im_feishu_qr_alt({ provider: messagingProviderLabel("feishu") })}
       className="mx-auto my-3 size-60 max-w-full rounded-md bg-kumo-base p-2 ring ring-kumo-line"
       src={source}
     />
@@ -471,8 +497,9 @@ function FeishuQrExpiry({ expiresAt }: { expiresAt: string }) {
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
   if (attempt.errorCode) return feishuSetupMessage(attempt.errorCode);
   if (attempt.state === "expired") return m.im_feishu_authorization_expired();
-  if (attempt.state === "canceled") return m.im_feishu_setup_canceled();
-  if (attempt.state === "failed") return m.im_feishu_authorization_failed();
+  if (attempt.state === "canceled") return m.im_feishu_setup_canceled({ provider: messagingProviderLabel("feishu") });
+  if (attempt.state === "failed")
+    return m.im_feishu_authorization_failed({ provider: messagingProviderLabel("feishu") });
   return undefined;
 }
 
@@ -483,20 +510,27 @@ function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
 function normalizeError(cause: unknown, fallback: string): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
   if (code) return feishuSetupMessage(code);
-  if (cause instanceof Error && cause.message) return m.im_feishu_authorization_failed();
+  if (cause instanceof Error && cause.message)
+    return m.im_feishu_authorization_failed({ provider: messagingProviderLabel("feishu") });
   return fallback;
 }
 
 function feishuSetupMessage(code: string): string {
-  if (code === "FEISHU_APP_ALREADY_BOUND") return m.im_feishu_app_already_connected();
+  if (code === "FEISHU_APP_ALREADY_BOUND")
+    return m.im_feishu_app_already_connected({ provider: messagingProviderLabel("feishu") });
   if (code === "FEISHU_SCOPE_REAUTH_REQUIRED" || code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
-    return m.im_feishu_permissions_missing();
+    return m.im_feishu_permissions_missing({ provider: messagingProviderLabel("feishu") });
   }
-  if (code === "FEISHU_SETUP_DENIED") return m.im_feishu_authorization_declined();
+  if (code === "FEISHU_SETUP_DENIED")
+    return m.im_feishu_authorization_declined({ provider: messagingProviderLabel("feishu") });
   if (code === "FEISHU_SETUP_EXPIRED") return m.im_feishu_authorization_expired();
-  if (code === "FEISHU_SETUP_CANCELED") return m.im_feishu_setup_canceled();
-  if (code === "FEISHU_SETUP_OWNER_RESTARTED") return m.im_feishu_setup_interrupted();
-  if (code === "FEISHU_BINDING_IDENTITY_MISMATCH") return m.im_feishu_authorization_mismatch();
-  if (code === "FEISHU_UPSTREAM_UNAVAILABLE") return m.im_feishu_unavailable();
-  return m.im_feishu_authorization_failed();
+  if (code === "FEISHU_SETUP_CANCELED")
+    return m.im_feishu_setup_canceled({ provider: messagingProviderLabel("feishu") });
+  if (code === "FEISHU_SETUP_OWNER_RESTARTED")
+    return m.im_feishu_setup_interrupted({ provider: messagingProviderLabel("feishu") });
+  if (code === "FEISHU_BINDING_IDENTITY_MISMATCH")
+    return m.im_feishu_authorization_mismatch({ provider: messagingProviderLabel("feishu") });
+  if (code === "FEISHU_UPSTREAM_UNAVAILABLE")
+    return m.im_feishu_unavailable({ provider: messagingProviderLabel("feishu") });
+  return m.im_feishu_authorization_failed({ provider: messagingProviderLabel("feishu") });
 }

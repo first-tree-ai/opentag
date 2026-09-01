@@ -310,18 +310,18 @@ describe("Agent availability model and presentation", () => {
     expect(sharedConversationLabel("slack")).toBe("Channels");
     /*
      * Exact, and both branches in both numbers, so the complete visible sentence is pinned: anything
-     * added, dropped or reworded around the brand fails here, which `toContain("Feishu")` did not.
+     * added, dropped or reworded around the brand fails here, which `toContain("Lark")` did not.
      *
      * What they deliberately do not prove is where the brand came from. Replacing the helper call
      * with the same correctly-spelled literals leaves all four green, because the rendered text is
      * identical either way -- no assertion about output can see sourcing. That guarantee needs a
      * structural check (#335), not a stronger expectation here.
      */
-    expect(sharedConversationDestination("feishu")).toBe("a Feishu group chat");
-    expect(sharedConversationDestination("feishu", true)).toBe("connected Feishu group chats");
+    expect(sharedConversationDestination("feishu")).toBe("a Lark group chat");
+    expect(sharedConversationDestination("feishu", true)).toBe("connected Lark group chats");
     expect(sharedConversationDestination("slack")).toBe("a Slack channel");
     expect(sharedConversationDestination("slack", true)).toBe("connected Slack channels");
-    expect(agentAvailabilitySummary(base)).toBe("Available in Feishu");
+    expect(agentAvailabilitySummary(base)).toBe("Available in Lark");
     expect(
       agentAvailabilitySummary({
         ...base,
@@ -347,7 +347,7 @@ describe("Agent availability model and presentation", () => {
       agentRecoveryMessage({ ...base, availability: { ...base.availability, reason: null, state: "ready" } }),
     ).toContain("Available");
     expect(agentUseInstruction(base, "feishu")).toBe(
-      "Send @reviewer a direct message, or mention it in a Feishu group chat.",
+      "Send @reviewer a direct message, or mention it in a Lark group chat.",
     );
     expect(agentUseInstruction({ ...base, receiveMode: "all_message" }, "slack")).toContain(
       "every message in connected Slack channels",

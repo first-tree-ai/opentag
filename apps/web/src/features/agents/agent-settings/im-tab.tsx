@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
-import { messagingProviderLabel } from "../../../im/provider-label.js";
+import { messagingProviderLabel, spaceBrandInSentence } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
@@ -82,7 +82,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setConfirmation(undefined);
       onAgentChanged();
     } catch {
-      setConfirmationError(m.im_disconnect_failed({ providerName: messagingProviderLabel(provider) }));
+      setConfirmationError(
+        spaceBrandInSentence(m.im_disconnect_failed({ providerName: messagingProviderLabel(provider) })),
+      );
     } finally {
       setConfirmationBusy(false);
     }
@@ -105,7 +107,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         presentation="dialog"
         returnFocusRef={activeFeishuTriggerRef}
         onSuccess={() => {
-          setSuccessMessage(m.im_feishu_connected());
+          setSuccessMessage(m.im_feishu_connected({ provider: messagingProviderLabel("feishu") }));
           reload();
           onAgentChanged();
         }}
@@ -199,13 +201,19 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   });
                                 }}
                               >
-                                {m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) })}
+                                {spaceBrandInSentence(
+                                  m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) }),
+                                )}
                               </Button>
                             </div>
                           </>
                         ) : (
                           <>
-                            <p className="text-sm text-kumo-subtle">{m.im_messaging_connect_description()}</p>
+                            <p className="text-sm text-kumo-subtle">
+                              {m.im_messaging_connect_description({
+                                provider: messagingProviderLabel("feishu"),
+                              })}
+                            </p>
                             <div className="flex flex-wrap gap-3">
                               <Button
                                 loading={feishuSetup.loading}
@@ -215,7 +223,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   void connectFeishu();
                                 }}
                               >
-                                {m.im_connect_feishu()}
+                                {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
                               </Button>
                               <Button
                                 loading={slackConfiguration.loading}
@@ -292,9 +300,13 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
-          description={m.im_disconnect_description({ providerName: messagingProviderLabel(confirmation.provider) })}
+          description={spaceBrandInSentence(
+            m.im_disconnect_description({ providerName: messagingProviderLabel(confirmation.provider) }),
+          )}
           returnFocusRef={disableBindingButtonRef}
-          title={m.im_disconnect_title({ providerName: messagingProviderLabel(confirmation.provider) })}
+          title={spaceBrandInSentence(
+            m.im_disconnect_title({ providerName: messagingProviderLabel(confirmation.provider) }),
+          )}
           onClose={closeConfirmation}
         >
           {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
@@ -308,7 +320,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
               variant="danger"
               onClick={() => void disableBinding(confirmation.bindingId, confirmation.provider)}
             >
-              {m.im_disconnect({ providerName: messagingProviderLabel(confirmation.provider) })}
+              {spaceBrandInSentence(m.im_disconnect({ providerName: messagingProviderLabel(confirmation.provider) }))}
             </Button>
           </div>
         </Dialog>

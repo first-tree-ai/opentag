@@ -291,7 +291,7 @@ describe("Tasks view", () => {
     const row = (await screen.findByRole("link", { name: task.title })).closest("tr");
     if (!row) throw new Error("Expected the Task link to be inside a row");
     expect(within(row).getByText(task.agent.displayName)).toBeTruthy();
-    expect(within(row).getByText("Feishu · Direct message")).toBeTruthy();
+    expect(within(row).getByText("Lark · Direct message")).toBeTruthy();
     expect(within(row).getByText("Completed")).toBeTruthy();
     expect(within(row).queryByLabelText(/^Completed, updated/u)).toBeNull();
     expect(within(row).queryByText(task.source.channelId)).toBeNull();
@@ -770,7 +770,7 @@ describe("Tasks view", () => {
     await screen.findByText("Investigate the failed deployment");
 
     const source = container.querySelector('[data-label="Source"]');
-    expect(source?.textContent).toContain("Feishu");
+    expect(source?.textContent).toContain("Lark");
     expect(source?.textContent).not.toMatch(/feishu/);
   });
 
@@ -786,7 +786,7 @@ describe("Tasks view", () => {
      */
     const sourceTerm = await screen.findByText("Source");
     const sourceValue = sourceTerm.parentElement?.querySelector("dd");
-    expect(sourceValue?.textContent).toContain("Feishu");
+    expect(sourceValue?.textContent).toContain("Lark");
     expect(sourceValue?.textContent).not.toMatch(/feishu/);
   });
 });

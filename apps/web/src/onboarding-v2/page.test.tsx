@@ -420,7 +420,7 @@ describe("OnboardingV2Page", () => {
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("creates the Agent only after a runnable route is proven, then asks for Feishu", async () => {
+  it("creates the Agent only after a runnable route is proven, then asks for Lark", async () => {
     render(<OnboardingV2MockPage />);
     await reachConnectStep();
     await reachCheckStep();
@@ -430,7 +430,7 @@ describe("OnboardingV2Page", () => {
     await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
     await advance(ISSUE_MS);
     await advanceMock("Scan QR code");
     await advanceMock("Confirm reachable");
@@ -449,7 +449,7 @@ describe("OnboardingV2Page", () => {
       await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("button", { name: "Scan QR code" })).toBeTruthy();
     });
@@ -492,7 +492,7 @@ describe("OnboardingV2Page", () => {
         [...document.querySelectorAll('[data-ui="onboarding-v2-choices"] [data-ui="onboarding-v2-card-title"]')].map(
           (n) => n.textContent,
         ),
-      ).toEqual(["Slack", "Feishu"]);
+      ).toEqual(["Slack", "Lark"]);
       // The step is finished by scanning or installing, not by pressing anything on this page.
       expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
@@ -501,15 +501,15 @@ describe("OnboardingV2Page", () => {
       expect((screen.getByRole("button", { name: "Nothing waiting" }) as HTMLButtonElement).disabled).toBe(true);
     });
 
-    it("brings up the Feishu code in place, without leaving the step", async () => {
+    it("brings up the Lark code in place, without leaving the step", async () => {
       render(<OnboardingV2MockPage />);
       await reachMessagingStep();
 
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(ISSUE_MS);
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
       expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
-      expect(screen.getByRole("button", { name: /Feishu/ }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("button", { name: /Lark/ }).getAttribute("aria-pressed")).toBe("true");
     });
 
     it("installs Slack by sending the user there and bringing them back", async () => {
@@ -528,10 +528,10 @@ describe("OnboardingV2Page", () => {
       await advanceMock("Return from Slack");
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
-      // The completion line has to name the channel the reader just connected. It said Feishu for
+      // The completion line has to name the channel the reader just connected. It said Lark for
       // every route, which sent a Slack installer to an app their Agent is not in.
       expect(screen.getByText("Tag @opentag in Slack to put it to work.")).toBeTruthy();
-      expect(screen.queryByText(/in Feishu/)).toBeNull();
+      expect(screen.queryByText(/in Lark/)).toBeNull();
     });
 
     it("offers the same Slack install on the cloud route", async () => {
@@ -552,7 +552,7 @@ describe("OnboardingV2Page", () => {
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
       expect(screen.getByText("Tag @opentag in Slack to put it to work.")).toBeTruthy();
-      expect(screen.queryByText(/in Feishu/)).toBeNull();
+      expect(screen.queryByText(/in Lark/)).toBeNull();
     });
   });
 
@@ -651,13 +651,13 @@ describe("OnboardingV2Page", () => {
       await advance(CREATE_MS);
 
       expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
+      fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
       await advance(ISSUE_MS);
       await advanceMock("Scan QR code");
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
-      // The positive control for the Slack assertions above: this route really does say Feishu.
-      expect(screen.getByText("Tag @opentag in Feishu to put it to work.")).toBeTruthy();
+      // The positive control for the Slack assertions above: this route really does say Lark.
+      expect(screen.getByText("Tag @opentag in Lark to put it to work.")).toBeTruthy();
     });
 
     it("never names the runtime OpenTag uses for its own agent", async () => {

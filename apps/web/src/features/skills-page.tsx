@@ -1,38 +1,33 @@
-import { useRef, useState } from "react";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { skillPreviews } from "../mock/capability-data.js";
 import * as m from "../paraglide/messages.js";
-import { Button, Collapsible, Text } from "../ui/design-system.js";
+import { Badge, Button, Collapsible, Icon, LayerCard, Text, Tooltip } from "../ui/design-system.js";
 
 export function SkillsPage() {
-  const uploadInputRef = useRef<HTMLInputElement>(null);
-  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
-
   return (
     <section className="grid gap-6" aria-labelledby="skills-page-title" data-ui="skills-page">
       <PageHeader description={m.skills_page_description()} title={m.skills_page_title()} titleId="skills-page-title">
-        <div className="flex flex-wrap items-center gap-3" data-ui="skills-header-actions">
-          <Text as="span" data-ui="skills-demo-note" variant="secondary">
+        <div
+          className="flex w-full flex-wrap items-center justify-between gap-2 @min-[36rem]/workspace:w-auto @min-[36rem]/workspace:justify-start"
+          data-ui="skills-header-actions"
+        >
+          <Badge data-ui="skills-demo-note" variant="neutral">
             {m.skills_demo_data()}
-          </Text>
-          <div className="grid gap-2" data-ui="skills-upload-entry">
-            <Button size="compact" variant="secondary" type="button" onClick={() => uploadInputRef.current?.click()}>
-              {m.skills_upload()}
-            </Button>
-            <input
-              ref={uploadInputRef}
-              hidden
-              accept=".md,.zip"
-              aria-label={m.skills_upload_file()}
-              type="file"
-              onChange={(event) => setSelectedFileName(event.currentTarget.files?.[0]?.name ?? null)}
-            />
-            {selectedFileName ? (
-              <Text as="span" data-ui="skills-upload-status" role="status" variant="secondary">
-                {m.skills_upload_status({ fileName: selectedFileName })}
-              </Text>
-            ) : null}
-          </div>
+          </Badge>
+          <Tooltip
+            content={m.skills_upload_unavailable()}
+            render={
+              <Button
+                aria-disabled="true"
+                aria-label={`${m.skills_upload()}: ${m.skills_upload_unavailable()}`}
+                size="compact"
+                type="button"
+                variant="secondary"
+              />
+            }
+          >
+            {m.skills_upload()}
+          </Tooltip>
         </div>
       </PageHeader>
 
@@ -46,46 +41,58 @@ export function SkillsPage() {
           </Text>
         </div>
 
-        <ul className="grid gap-3" aria-label={m.skills_available()} data-ui="skills-list">
-          {skillPreviews.map((skill) => (
-            <li key={skill.name}>
-              <article className="rounded-lg bg-kumo-base ring ring-kumo-line" data-ui="skill-row">
-                <Collapsible.Root>
-                  <Collapsible.Trigger
-                    className="flex w-full cursor-pointer flex-wrap items-center gap-4 p-4 text-left"
-                    data-ui="skill-row-summary"
-                  >
-                    <div className="min-w-0 flex-1" data-ui="skill-row-copy">
-                      <div className="flex flex-wrap items-center gap-2" data-ui="skill-row-title">
-                        <Text as="h3" variant="heading">
-                          {skill.name}
+        <LayerCard className="overflow-hidden p-0" data-ui="skills-list-card">
+          <ul className="divide-y divide-kumo-line" aria-label={m.skills_available()} data-ui="skills-list">
+            {skillPreviews.map((skill) => (
+              <li key={skill.name}>
+                <article data-ui="skill-row">
+                  <Collapsible.Root>
+                    <div
+                      className="grid gap-3 p-4 @min-[48rem]/workspace:grid-cols-[minmax(0,1fr)_auto_auto] @min-[48rem]/workspace:items-center"
+                      data-ui="skill-row-summary"
+                    >
+                      <div className="min-w-0" data-ui="skill-row-copy">
+                        <div className="flex flex-wrap items-center gap-2" data-ui="skill-row-title">
+                          <Text as="h3" variant="heading">
+                            {skill.name}
+                          </Text>
+                          <Text as="span" size="sm" variant="secondary">
+                            {skill.source === "OpenTag" ? m.skills_built_by_opentag() : m.skills_shared()}
+                          </Text>
+                        </div>
+                        <Text as="p" variant="secondary">
+                          {skill.description}.
                         </Text>
-                        <span className="text-sm text-kumo-subtle">{skill.status}</span>
-                        {skill.source === "OpenTag" ? (
-                          <span className="text-sm text-kumo-subtle">{m.skills_built_by_opentag()}</span>
-                        ) : null}
                       </div>
-                      <p>{skill.description}.</p>
+                      <div className="whitespace-nowrap">
+                        <Text as="p" size="sm" variant="secondary">
+                          {m.skills_used_by()} {m.skills_agent_count({ count: skill.agentCount })}
+                        </Text>
+                      </div>
+                      <Collapsible.Trigger render={<Button size="compact" type="button" variant="ghost" />}>
+                        {m.skills_preview()}
+                        <Icon
+                          className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180"
+                          name="chevron-down"
+                        />
+                      </Collapsible.Trigger>
                     </div>
-                    <dl className="text-sm text-kumo-subtle" data-ui="skill-row-meta">
-                      <div>
-                        <dt>{m.skills_used_by()}</dt>
-                        <dd>{m.skills_agent_count({ count: skill.agentCount })}</dd>
+                    <Collapsible.Panel className="border-t border-kumo-line p-4" data-ui="skill-preview-panel">
+                      <div className="grid max-w-prose gap-2">
+                        <Text as="h4" variant="heading">
+                          {m.skills_instructions_preview()}
+                        </Text>
+                        <Text as="p" variant="secondary">
+                          {skill.instructions}
+                        </Text>
                       </div>
-                    </dl>
-                    <span className="text-sm text-kumo-link">{m.skills_preview()}</span>
-                  </Collapsible.Trigger>
-                  <Collapsible.Panel className="grid gap-2 border-t border-kumo-line p-4" data-ui="skill-preview-panel">
-                    <Text as="h4" variant="heading">
-                      {m.skills_instructions_preview()}
-                    </Text>
-                    <p>{skill.instructions}</p>
-                  </Collapsible.Panel>
-                </Collapsible.Root>
-              </article>
-            </li>
-          ))}
-        </ul>
+                    </Collapsible.Panel>
+                  </Collapsible.Root>
+                </article>
+              </li>
+            ))}
+          </ul>
+        </LayerCard>
       </section>
     </section>
   );

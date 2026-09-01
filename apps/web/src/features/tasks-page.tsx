@@ -9,12 +9,12 @@ import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import {
   Button,
+  buttonClassName,
   Icon,
   KumoInputControl,
-  KumoSelectControl,
   LayerCard,
   Loader,
-  type SelectControlChangeEvent,
+  Select,
   StatusIndicator,
   type StatusTone,
   Table,
@@ -108,7 +108,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
        */}
       {terminalTasksError ? null : (
         <form
-          className="flex flex-wrap items-end gap-3"
+          className="flex flex-col gap-3 @min-[48rem]/workspace:flex-row @min-[48rem]/workspace:items-center"
           aria-label={m.tasks_filter_tasks()}
           data-ui="task-toolbar"
           onSubmit={(event) => event.preventDefault()}
@@ -117,38 +117,51 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
             <span className="sr-only">{m.tasks_search_tasks()}</span>
             <KumoInputControl
               aria-label={m.tasks_search_tasks()}
+              className="w-full"
+              size="sm"
               value={query}
               type="search"
               placeholder={m.tasks_search_tasks()}
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          {!agentId ? (
+          <div className="flex w-full flex-col gap-3 @min-[36rem]/workspace:flex-row @min-[48rem]/workspace:ml-auto @min-[48rem]/workspace:w-auto">
+            {!agentId ? (
+              <TaskSelect
+                label={m.tasks_filter_by_agent()}
+                options={[
+                  { label: m.tasks_all_agents(), value: "all" },
+                  ...agents.map((agent) => ({ label: agent.displayName, value: agent.id })),
+                ]}
+                renderValue={(value) =>
+                  value === "all"
+                    ? m.tasks_all_agents()
+                    : m.tasks_agent_filter_value({
+                        agent: agents.find((agent) => agent.id === value)?.displayName ?? value,
+                      })
+                }
+                value={selectedAgentId}
+                onChange={setSelectedAgentId}
+              />
+            ) : null}
             <TaskSelect
-              label={m.tasks_filter_by_agent()}
-              value={selectedAgentId}
-              onChange={(event) => setSelectedAgentId(event.target.value)}
-            >
-              <option value="all">{m.tasks_all_agents()}</option>
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.displayName}
-                </option>
-              ))}
-            </TaskSelect>
-          ) : null}
-          <TaskSelect
-            label={m.tasks_filter_by_status()}
-            value={status}
-            onChange={(event) => setStatus(event.target.value as TaskFilter)}
-          >
-            <option value="all">{m.tasks_all_statuses()}</option>
-            {Object.keys(statusPresentation).map((value) => (
-              <option key={value} value={value}>
-                {taskStatusLabel(value as TaskStatus)}
-              </option>
-            ))}
-          </TaskSelect>
+              label={m.tasks_filter_by_status()}
+              options={[
+                { label: m.tasks_all_statuses(), value: "all" },
+                ...Object.keys(statusPresentation).map((value) => ({
+                  label: taskStatusLabel(value as TaskStatus),
+                  value,
+                })),
+              ]}
+              renderValue={(value) =>
+                value === "all"
+                  ? m.tasks_all_statuses()
+                  : m.tasks_status_filter_value({ status: taskStatusLabel(value as TaskStatus) })
+              }
+              value={status}
+              onChange={(value) => setStatus(value as TaskFilter)}
+            />
+          </div>
         </form>
       )}
       {showingDevelopmentExamples ? (
@@ -344,7 +357,7 @@ export function TaskDetailPage({
   const status = statusPresentation[task.status];
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
-      <nav className="flex items-center gap-3" aria-label={m.tasks_breadcrumb()}>
+      <nav className="-ml-2" aria-label={m.tasks_back_to_tasks()}>
         <TaskBackLink agentId={agentId ?? task.agent.id} showExamples={showExamples} />
       </nav>
 
@@ -353,7 +366,7 @@ export function TaskDetailPage({
           <Text as="h1" size="lg" variant="heading">
             {task.title}
           </Text>
-          <StatusIndicator label={taskStatusLabel(task.status)} tone={status.tone} />
+          <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
         </div>
         <dl
           className="grid gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-2 @min-[60rem]/content:grid-cols-4"
@@ -530,22 +543,36 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
 }
 
 function TaskSelect({
-  children,
   label,
+  options,
+  renderValue,
   onChange,
   value,
 }: {
-  children: ReactNode;
   label: string;
-  onChange: (event: SelectControlChangeEvent) => void;
+  options: readonly { label: string; value: string }[];
+  renderValue: (value: string) => ReactNode;
+  onChange: (value: string) => void;
   value: string;
 }) {
   return (
-    <div>
-      <span className="sr-only">{label}</span>
-      <KumoSelectControl aria-label={label} size="sm" value={value} onChange={onChange}>
-        {children}
-      </KumoSelectControl>
+    <div className="w-full @min-[36rem]/workspace:w-44">
+      <Select
+        aria-label={label}
+        className="w-full"
+        renderValue={renderValue}
+        size="sm"
+        value={value}
+        onValueChange={(nextValue) => {
+          if (nextValue !== null) onChange(nextValue);
+        }}
+      >
+        {options.map((option) => (
+          <Select.Option key={option.value} value={option.value}>
+            {option.label}
+          </Select.Option>
+        ))}
+      </Select>
     </div>
   );
 }
@@ -558,16 +585,17 @@ function TasksEmptyState({ hasLoadedTasks }: { hasLoadedTasks: boolean }) {
 }
 
 function TaskBackLink({ agentId, showExamples }: { agentId: string; showExamples: boolean }) {
+  const className = buttonClassName({ className: "w-fit", size: "compact", variant: "ghost" });
   if (showExamples) {
     return (
-      <Link to="/tasks">
+      <Link className={className} to="/tasks">
         <Icon name="arrow-left" />
         {m.tasks_title()}
       </Link>
     );
   }
   return (
-    <Link {...agentTasksLink(agentId)}>
+    <Link className={className} {...agentTasksLink(agentId)}>
       <Icon name="arrow-left" />
       {m.tasks_title()}
     </Link>
@@ -594,19 +622,19 @@ function TaskTable({
     >
       <Table
         aria-label={compact ? m.tasks_agent_tasks() : m.tasks_title()}
-        className={`block min-w-0 @min-[40rem]/content:table ${showAgent ? "@min-[40rem]/content:min-w-[52rem]" : "@min-[40rem]/content:min-w-[42rem]"}`}
+        className={`block min-w-0 @min-[40rem]/content:table ${showAgent ? "@min-[40rem]/content:min-w-[65rem]" : "@min-[40rem]/content:min-w-[54rem]"}`}
         data-ui="task-table"
         layout="fixed"
       >
         <colgroup className="hidden @min-[40rem]/content:table-column-group">
           <col />
           {showAgent ? <col className="w-44" /> : null}
-          <col className="w-44" />
-          <col className="w-32" />
+          <col className="w-60" />
           <col className="w-36" />
+          <col className="w-40" />
         </colgroup>
         <Table.Header
-          className="hidden @min-[40rem]/content:table-header-group"
+          className="sr-only @min-[40rem]/content:not-sr-only @min-[40rem]/content:table-header-group"
           variant={compact ? "compact" : undefined}
         >
           <Table.Row>
@@ -665,20 +693,20 @@ function TaskRow({
         </Table.Cell>
       ) : null}
       <Table.Cell className="col-start-1 row-start-2 min-w-0" data-label={m.tasks_source_label()}>
-        <span className="inline-flex items-center gap-2">
+        <span className={"inline-flex min-w-0 items-center gap-2 @min-[40rem]/content:whitespace-nowrap"}>
           <ProviderIcon className="size-5" provider={task.source.provider} />
           <span>{sourceLabel(task)}</span>
         </span>
       </Table.Cell>
       <Table.Cell className="col-start-2 row-start-1 justify-self-end" data-label={m.tasks_status_label()}>
-        <StatusIndicator label={taskStatusLabel(task.status)} tone={status.tone} />
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
       </Table.Cell>
       <Table.Cell
         className="col-start-2 row-start-2 justify-self-end self-center"
         data-label={m.tasks_last_activity_label()}
       >
         <time
-          className="text-sm text-kumo-subtle"
+          className="whitespace-nowrap text-sm text-kumo-subtle"
           dateTime={task.lastActivityAt}
           title={formatDateTime(task.lastActivityAt)}
         >
@@ -691,7 +719,7 @@ function TaskRow({
 
 function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: TaskSummary }) {
   const className =
-    "block break-words font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/content:truncate";
+    "line-clamp-2 max-w-[40rem] break-words font-medium text-kumo-default hover:text-kumo-link @min-[40rem]/content:line-clamp-1";
   if (showExamples) {
     return (
       <Link

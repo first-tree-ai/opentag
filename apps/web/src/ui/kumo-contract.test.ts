@@ -148,6 +148,7 @@ describe("Kumo integration contract", () => {
   it("keeps module-owned stylesheet imports at reviewed seams", () => {
     const allowedImports = new Set([
       "main.tsx -> ./app.css",
+      "onboarding-v2/agent-setup-page.tsx -> ./onboarding-v2.css",
       "onboarding-v2/page.tsx -> ./onboarding-v2.css",
       "setup/command-block.tsx -> ./setup.css",
       "setup/components.tsx -> ./setup.css",

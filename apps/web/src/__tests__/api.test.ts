@@ -467,6 +467,55 @@ describe("BrowserApi", () => {
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(abortFetch).toHaveBeenCalledOnce();
   });
+  it("reads the canonical Agent setup snapshot from its exact-Agent path", async () => {
+    const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const observedAt = "2026-09-01T10:00:00.000Z";
+    const snapshot = {
+      agent: {
+        id: agentId,
+        name: "reviewer",
+        displayName: "Reviewer",
+        runtimeProvider: "codex",
+        receiveMode: "mention_only",
+        status: "active",
+        createdAt: observedAt,
+        updatedAt: observedAt,
+        createdBy: { userId, displayName: "Owner" },
+        computer: { computerId, displayName: "Review Mac", platform: "darwin" },
+      },
+      stage: "needs-messaging",
+      computer: {
+        kind: "bound",
+        computerId,
+        displayName: "Review Mac",
+        platform: "darwin",
+        connectionStatus: "online",
+        lastSeenAt: null,
+        observedAt,
+      },
+      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "messaging-not-configured" }],
+      actions: [
+        { kind: "start-messaging", provider: "feishu" },
+        { kind: "start-messaging", provider: "slack" },
+      ],
+      observedAt,
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/agents/${agentId}/setup`);
+      expect(init?.method ?? "GET").toBe("GET");
+      return jsonResponse(snapshot);
+    });
+    await expect(new BrowserApi(fetchImpl).agentSetup(agentId)).resolves.toEqual(snapshot);
+
+    const invalidFetch = vi.fn<typeof fetch>(async () => jsonResponse({ stage: "mostly-ready" }));
+    await expect(new BrowserApi(invalidFetch).agentSetup(agentId)).rejects.toMatchObject({
+      status: 503,
+      message: "The server returned an invalid response",
+    });
+  });
 });
 
 function abortError(): Error {

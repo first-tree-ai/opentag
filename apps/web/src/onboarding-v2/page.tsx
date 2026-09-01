@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Loader } from "../ui/design-system.js";
+import { AgentSetupPage } from "./agent-setup-page.js";
 import type { OnboardingBackend } from "./backend.js";
 import {
   type AgentDraft,
@@ -16,6 +17,7 @@ import { LabControls } from "./lab-controls.js";
 import { type MockInventory, type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
 import { useServerBackend } from "./server-backend.js";
+import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
 /** How many times to ask before telling the reader the Server will not mark setup complete. */
@@ -31,11 +33,35 @@ function localDraft(): AgentDraft {
 /**
  * The redesigned onboarding flow, against the real Server.
  *
- * The draft is held here rather than inside the flow because the backend is built from it: a
- * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
- * given that after it runs.
+ * With an exact `agentId` the route is the Agent Setup surface, rendered from the canonical
+ * snapshot; without one it is the first-run creation flow. The two are separate components so
+ * switching between them remounts rather than reordering hooks.
  */
 export function OnboardingV2Page({
+  agentId,
+  onComplete,
+  reviewMode = false,
+  setupAdapter,
+}: {
+  /** The exact Agent being set up. Present, the page renders from its canonical setup snapshot. */
+  agentId?: string;
+  onComplete?: (agentId: string) => Promise<void> | void;
+  reviewMode?: boolean;
+  /** Review Lab and tests pass the in-memory adapter; production leaves the HTTP default. */
+  setupAdapter?: AgentSetupAdapter;
+} = {}) {
+  if (agentId) {
+    return <AgentSetupPage adapter={setupAdapter} agentId={agentId} onReady={onComplete} reviewMode={reviewMode} />;
+  }
+  return <OnboardingV2CreatePage onComplete={onComplete} reviewMode={reviewMode} />;
+}
+
+/**
+ * The first-run creation flow. The draft is held here rather than inside the flow because the
+ * backend is built from it: a readiness read has to ask about the Provider the reader actually
+ * chose, and a hook cannot be given that after it runs.
+ */
+function OnboardingV2CreatePage({
   onComplete,
   reviewMode = false,
 }: {

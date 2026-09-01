@@ -10,6 +10,8 @@ import {
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
   AgentRuntimeTestResponseSchema,
+  type AgentSetupSnapshot,
+  AgentSetupSnapshotSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -25,6 +27,7 @@ import {
   agentImBindingPath,
   agentReactivatePath,
   agentRuntimeTestPath,
+  agentSetupPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -156,6 +159,14 @@ export class BrowserApi {
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {
     return this.request(agentConfigPath(agentId), AgentAdminConfigSchema);
+  }
+
+  /**
+   * The canonical setup state of one exact Agent. Stage, blockers, and permitted actions all
+   * arrive derived by the Server; callers render them rather than re-deriving them locally.
+   */
+  agentSetup(agentId: string): Promise<AgentSetupSnapshot> {
+    return this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema);
   }
 
   createAgent(input: CreateAgentRequest): Promise<AgentAdminConfig> {

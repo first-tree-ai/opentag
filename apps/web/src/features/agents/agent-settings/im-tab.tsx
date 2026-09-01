@@ -105,7 +105,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         presentation="dialog"
         returnFocusRef={activeFeishuTriggerRef}
         onSuccess={() => {
-          setSuccessMessage(m.im_feishu_connected());
+          setSuccessMessage(m.im_feishu_connected({ provider: messagingProviderLabel("feishu") }));
           reload();
           onAgentChanged();
         }}
@@ -205,7 +205,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           </>
                         ) : (
                           <>
-                            <p className="text-sm text-kumo-subtle">{m.im_messaging_connect_description()}</p>
+                            <p className="text-sm text-kumo-subtle">
+                              {m.im_messaging_connect_description({ provider: messagingProviderLabel("feishu") })}
+                            </p>
                             <div className="flex flex-wrap gap-3">
                               <Button
                                 loading={feishuSetup.loading}
@@ -215,7 +217,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   void connectFeishu();
                                 }}
                               >
-                                {m.im_connect_feishu()}
+                                {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
                               </Button>
                               <Button
                                 loading={slackConfiguration.loading}

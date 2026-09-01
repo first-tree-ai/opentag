@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../../agent-creation/agent-creation-flow.js";
 import { FeishuSetup } from "../../im/feishu-setup.js";
+import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Button, Dialog, Text } from "../../ui/design-system.js";
@@ -225,11 +226,16 @@ export function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminCo
               {m.agents_connect_messaging()}
             </Text>
             <Text as="p" variant="secondary">
-              {m.agents_connect_messaging_description({ name: agent.displayName })}
+              {m.agents_connect_messaging_description({
+                provider: messagingProviderLabel("feishu"),
+                name: agent.displayName,
+              })}
             </Text>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button onClick={() => void setup.start()}>{m.agents_connect_feishu()}</Button>
+            <Button onClick={() => void setup.start()}>
+              {m.agents_connect_feishu({ provider: messagingProviderLabel("feishu") })}
+            </Button>
             <Button variant="secondary" onClick={onFinish}>
               {m.agents_set_up_later()}
             </Button>

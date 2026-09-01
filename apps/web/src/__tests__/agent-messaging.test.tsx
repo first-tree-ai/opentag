@@ -60,8 +60,8 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    expect(screen.getByText("Connect Feishu or Slack so teammates can send messages to this Agent.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Connect Feishu" })).toBeTruthy();
+    expect(screen.getByText("Connect Lark or Slack so teammates can send messages to this Agent.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
   });
 
@@ -324,7 +324,7 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Connect Feishu" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect Lark" })).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -332,10 +332,10 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect Feishu" }));
-    const dialog = await screen.findByRole("dialog", { name: "Connect Feishu" });
-    expect(within(dialog).getByText(/Scan the QR code in Feishu/)).toBeTruthy();
-    expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Lark" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect Lark" });
+    expect(within(dialog).getByText(/Scan the QR code in Lark/)).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Scan this QR code in Lark" })).toBeTruthy();
     await waitFor(() =>
       expect(
         vi
@@ -355,7 +355,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
-    expect(await screen.findByRole("dialog", { name: "Change Feishu bot" })).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Change Lark bot" })).toBeTruthy();
     const request = vi
       .mocked(fetch)
       .mock.calls.find(
@@ -396,9 +396,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Change bot" }));
-    const setupNotice = await screen.findByRole("dialog", { name: "Change Feishu bot" });
+    const setupNotice = await screen.findByRole("dialog", { name: "Change Lark bot" });
     expect(setupNotice?.textContent).toContain(
-      "This Feishu bot is already connected to another Agent. Choose a different bot and try again.",
+      "This Lark bot is already connected to another Agent. Choose a different bot and try again.",
     );
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await waitFor(() => {

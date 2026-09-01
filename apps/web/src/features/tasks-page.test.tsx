@@ -117,8 +117,14 @@ describe("Tasks view", () => {
     expect(await screen.findByRole("table", { name: "Tasks" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Tasks table" }).tabIndex).toBe(0);
     expect(screen.getAllByRole("row")).toHaveLength(3);
+    expect(screen.getByRole("columnheader", { name: "Task" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Agent" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Source" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Status" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Last activity" })).toBeTruthy();
     expect(screen.queryByText("Read-only debug view")).toBeNull();
     expect(screen.queryByText("Demo data")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit title" })).toBeNull();
 
     fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
     const failedOption = await screen.findByRole("option", { name: "Failed" });
@@ -274,19 +280,98 @@ describe("Tasks view", () => {
     expect(screen.queryByText(/150 tokens/)).toBeNull();
   });
 
-  it("supports inline title editing and reports a failed save", async () => {
+  it("keeps generated Task titles read-only and separates useful list metadata into columns", async () => {
     vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
-    const save = vi.spyOn(browserApi, "updateTaskTitle").mockRejectedValue(new Error("save failed"));
 
     await renderInRouter(<TasksPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit title" }));
-    const input = screen.getByRole("textbox", { name: "Edit title" });
-    fireEvent.change(input, { target: { value: "Renamed Task" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save title" }));
+    const row = (await screen.findByRole("link", { name: task.title })).closest("tr");
+    if (!row) throw new Error("Expected the Task link to be inside a row");
+    expect(within(row).getByText(task.agent.displayName)).toBeTruthy();
+    expect(within(row).getByText("Feishu · Direct message")).toBeTruthy();
+    expect(within(row).getByText("Completed")).toBeTruthy();
+    expect(within(row).queryByLabelText(/^Completed, updated/u)).toBeNull();
+    expect(within(row).queryByText(task.source.channelId)).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Edit title" })).toBeNull();
+  });
 
-    expect(save).toHaveBeenCalledWith(task.id, { title: "Renamed Task" });
-    expect((await screen.findByRole("alert")).textContent).toContain("Could not save the Task title. Try again.");
-    expect((screen.getByRole("textbox", { name: "Edit title" }) as HTMLInputElement).value).toBe("Renamed Task");
+  it("loads explicit development examples without replacing API-backed empty states", async () => {
+    const taskRequest = vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [], nextCursor: null });
+
+    const view = await renderInRouter(<TasksPage agentId={agentId} />);
+    expect(await screen.findByRole("heading", { name: "No Tasks yet" })).toBeTruthy();
+    expect(screen.getByText("Message this Agent in your chat app to put it to work.")).toBeTruthy();
+    expect(screen.queryByText("Review Q3 launch readiness and flag unowned work")).toBeNull();
+    expect(taskRequest).toHaveBeenCalledTimes(1);
+
+    view.rerender(<TasksPage showExamples />);
+    const example = await screen.findByRole("link", { name: "Review Q3 launch readiness and flag unowned work" });
+    expect(screen.getByText("Showing local example Tasks because this Agent has no Task history yet.")).toBeTruthy();
+    expect(example.getAttribute("href")).toBe("/tasks/10000000-0000-4000-8000-000000000001?examples=true");
+    expect(taskRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps filtered empty results distinct from an Agent with no Tasks", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<TasksPage agentId={agentId} />);
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search Tasks" }), {
+      target: { value: "does not exist" },
+    });
+
+    expect(screen.getByRole("heading", { name: "No Tasks found" })).toBeTruthy();
+    expect(screen.getByText("Try a different search or filter.")).toBeTruthy();
+  });
+
+  it("uses the local preview detail route without entering a synthetic Agent shell", async () => {
+    const taskRequest = vi.spyOn(browserApi, "task");
+
+    await renderInRouter(<TaskDetailPage showExamples taskId="10000000-0000-4000-8000-000000000001" />, {
+      path: "/tasks/10000000-0000-4000-8000-000000000001?examples=true",
+    });
+
+    expect(
+      await screen.findByRole("heading", { name: "Review Q3 launch readiness and flag unowned work" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Tasks" }).getAttribute("href")).toBe("/tasks");
+    expect(taskRequest).not.toHaveBeenCalled();
+  });
+
+  it("omits the repeated Agent column in an Agent-scoped Task list", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    await renderInRouter(<TasksPage agentId={agentId} />);
+
+    expect(await screen.findByRole("table", { name: "Tasks" })).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Agent" })).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Source" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: task.title }).closest("tr")?.className).toContain(
+      "grid-cols-[minmax(0,1fr)_auto]",
+    );
+  });
+
+  it("uses a user-facing author role when a sender name is unavailable", async () => {
+    const root = detail.turns[0];
+    if (!root) throw new Error("Expected the Task fixture to include a root Turn");
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      turns: [{ ...root, message: { ...root.message, authorDisplayName: null } }],
+    });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("User")).toBeTruthy();
+    expect(within(activity).queryByText("Human")).toBeNull();
+  });
+
+  it("announces Task status separately from the last activity time", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    expect(await screen.findByRole("heading", { name: task.title })).toBeTruthy();
+    expect(screen.queryByLabelText(/^Completed, updated/u)).toBeNull();
+    expect(screen.getByLabelText("Task details").textContent).toContain("Last activity");
   });
 
   it("surfaces a terminal detail refetch error instead of showing cached Task data", async () => {
@@ -539,7 +624,7 @@ describe("Tasks view", () => {
 
     expect(screen.getByRole("heading", { name: "Loading Tasks" })).toBeTruthy();
     resolve({ tasks: [], nextCursor: null });
-    await waitFor(() => expect(screen.getByRole("heading", { name: "No Tasks found" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "No Tasks yet" })).toBeTruthy());
   });
 
   it("renders Agent Tasks loading, empty, append success, and append failure states", async () => {
@@ -552,9 +637,7 @@ describe("Tasks view", () => {
     const view = await renderInRouter(<AgentTasksSection agentId={agentId} />);
     expect(screen.getByText("Loading Tasks…")).toBeTruthy();
     release({ tasks: [], nextCursor: null });
-    expect(
-      await screen.findByText("No Tasks yet. Message this Agent in your chat app to put it to work."),
-    ).toBeTruthy();
+    expect(await screen.findByText("Message this Agent in your chat app to put it to work.")).toBeTruthy();
 
     vi.mocked(browserApi.tasks)
       .mockResolvedValueOnce({ tasks: [task], nextCursor: "next" })

@@ -16,9 +16,13 @@
   --brand: #8fdd14; /* logo green — fills, color blocks, icons ONLY; never a text color */
   --brand-display: #649a0e; /* display green — text at >= 24px only (large headings) */
   --brand-ink: #3a5c04; /* body-level green — green text at normal sizes uses this */
-  --brand-100: #f1f8e1; /* light brand tint — backgrounds/edges */
+  --brand-soft: #edf5dc; /* selected/current surfaces only; never a generic hover or stripe */
   --bg: #f8f7f0; /* main app background (warm off-white, NOT pure white) */
   --card: #fdfcf6; /* card / surface background */
+  --surface-elevated: #fbfaf4; /* raised surfaces between the canvas and cards */
+  --surface-recessed: #f0efe7; /* code, disabled, and inset surfaces */
+  --surface-tint: #f6f5ee; /* table stripes and quiet neutral emphasis */
+  --surface-hover: #eeede5; /* transient hover/pressed feedback */
   --fg: #16211b; /* primary text */
   --fg-2: #3a453e; /* secondary text */
   --muted-fg: #626b60; /* muted text */
@@ -33,16 +37,16 @@
 :root[data-theme="opentag"],
 [data-theme="opentag"] {
   --color-kumo-canvas: var(--bg);
-  --color-kumo-elevated: var(--card);
-  --color-kumo-recessed: var(--brand-100);
+  --color-kumo-elevated: var(--surface-elevated);
+  --color-kumo-recessed: var(--surface-recessed);
   --color-kumo-base: var(--card);
-  --color-kumo-tint: var(--brand-100);
+  --color-kumo-tint: var(--surface-tint);
   --color-kumo-contrast: var(--fg);
   --color-kumo-overlay: var(--card);
   --color-kumo-control: var(--card);
   --color-kumo-interact: var(--border-strong);
   --color-kumo-fill: var(--border);
-  --color-kumo-fill-hover: var(--brand-100);
+  --color-kumo-fill-hover: var(--surface-hover);
   --color-kumo-line: var(--border);
   --color-kumo-hairline: var(--border);
   --color-kumo-focus: var(--brand-ink);

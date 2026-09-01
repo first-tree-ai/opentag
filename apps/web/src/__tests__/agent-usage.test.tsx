@@ -11,7 +11,8 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/usage`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
     expect(await screen.findByRole("img", { name: /428K Tokens used · Last 30 days/ })).toBeTruthy();
     expect(screen.getByText("Total tokens")).toBeTruthy();
     expect(screen.queryByText("Failed Tasks")).toBeNull();

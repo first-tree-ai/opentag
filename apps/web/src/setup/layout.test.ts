@@ -42,6 +42,14 @@ describe("setup piece layout", () => {
     });
   });
 
+  it("keeps the expired-command action legible over its dark scrim", () => {
+    expect(declarationValue(".ots-command__expired button", "color")).toBe("var(--on-dark)");
+    expect(declarationValue(".ots-command__expired button:hover", "background")).toBe(
+      "color-mix(in srgb, var(--on-dark) 14%, transparent)",
+    );
+    expect(declarationValue(".ots-command__expired button:hover", "color")).toBe("var(--on-dark)");
+  });
+
   /*
    * The reserved heights are declarations rather than utilities: this app compiles none of its own,
    * so a bracketed class would be inert. They are still measurements the surfaces depend on — each

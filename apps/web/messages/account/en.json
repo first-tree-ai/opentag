@@ -8,7 +8,6 @@
   "account_email_description": "Your sign-in email cannot be changed here.",
   "account_error_profile_save_failed": "Unable to save the account profile",
   "account_error_refresh_failed": "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
-  "account_hint_read_only": "Read only",
   "account_language_description": "Choose the language used throughout OpenTag.",
   "account_language_label": "Language",
   "account_page_description": "Manage your personal account details.",

@@ -265,6 +265,71 @@ describe("portable installer", () => {
     }
   });
 
+  it("rejects malformed manifests and asset records before downloading a payload", async () => {
+    const fixture = await createPayloadFixture(VERSION);
+    const h = await installHarness(fixture);
+    const valid = manifestFor(VERSION, h.payloadBytes, "https://download.test/x/payload.tar.gz");
+    const validAsset = valid.assets[0];
+    const malformedBodies: unknown[] = [
+      null,
+      [],
+      {},
+      { ...valid, assets: [null] },
+      { ...valid, assets: [{ ...validAsset, platform: 1 }] },
+      { ...valid, assets: [{ ...validAsset, fileName: 1 }] },
+      { ...valid, assets: [{ ...validAsset, url: 1 }] },
+      { ...valid, assets: [{ ...validAsset, sha256: "not-a-digest" }] },
+      { ...valid, assets: [{ ...validAsset, size: "1" }] },
+      { ...valid, assets: [{ ...validAsset, size: 1.5 }] },
+      { ...valid, assets: [{ ...validAsset, size: 0 }] },
+      { ...valid, schemaVersion: 2 },
+      { ...valid, channel: 1 },
+      { ...valid, version: 1 },
+      { ...valid, packageName: 1 },
+      { ...valid, binName: 1 },
+    ];
+
+    for (const body of malformedBodies) {
+      await expect(
+        installPortableTarget({
+          channel: CHANNEL,
+          targetVersion: VERSION,
+          root: h.root,
+          binDir: h.binDir,
+          binName: BIN_NAME,
+          packageName: PACKAGE_NAME,
+          downloadBaseUrl: "https://download.test/releases",
+          platform: PLATFORM,
+          fetchFn: (async () => new Response(JSON.stringify(body))) as typeof fetch,
+        }),
+      ).rejects.toThrow(PortableInstallError);
+    }
+  });
+
+  it("rejects a missing platform asset and a non-HTTP asset URL", async () => {
+    const fixture = await createPayloadFixture(VERSION);
+    const h = await installHarness(fixture);
+    const missingPlatform = manifestFor(VERSION, h.payloadBytes, "https://download.test/x/payload.tar.gz");
+    const [asset] = missingPlatform.assets;
+    if (!asset) throw new Error("Expected a manifest asset fixture");
+    asset.platform = "darwin-arm64";
+    for (const manifest of [missingPlatform, manifestFor(VERSION, h.payloadBytes, "file:///tmp/payload.tar.gz")]) {
+      await expect(
+        installPortableTarget({
+          channel: CHANNEL,
+          targetVersion: VERSION,
+          root: h.root,
+          binDir: h.binDir,
+          binName: BIN_NAME,
+          packageName: PACKAGE_NAME,
+          downloadBaseUrl: "https://download.test/releases",
+          platform: PLATFORM,
+          fetchFn: (async () => new Response(JSON.stringify(manifest))) as typeof fetch,
+        }),
+      ).rejects.toThrow(PortableInstallError);
+    }
+  });
+
   it("reuses an existing canonical version directory without rewriting it", async () => {
     const fixture = await createPayloadFixture(VERSION);
     const h = await installHarness(fixture);

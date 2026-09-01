@@ -75,7 +75,8 @@ portable 是唯一拥有完整支持的自动升级的安装模式；npm-global 
 
 daemon 的 updater 遵循严格的契约：
 
-- **只做单调 SemVer 比较。** 目标必须严格新于运行版本且属于 Client 自身 channel；其余一律忽略，绝不会自动降级。
+- **精确目标身份，单调 precedence。** 只有 version 字符串完全一致才算已是当前目标，因此仅 SemVer build metadata
+  不同的目标仍会安装。SemVer precedence 只用于拒绝更旧的目标；目标还必须属于 Client 自身 channel，且绝不会自动降级。
 - **受保护工作优先。** 安装之前，updater 会无限期等待，直到 Session 模块报告没有受保护的工作——交接不会丢失或
   重复任何已接受的 Turn、待完成的 Turn 完成/报告托管，或已接受的 IM 投递。Session 模块为每一类工作项都设定了
   上限（Turn 预算、投递截止时间、带终态结果的报告重试），因此 updater 自己不再添加强制超时。读取零工作快照前会

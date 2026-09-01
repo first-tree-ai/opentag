@@ -11,6 +11,7 @@ import {
 } from "../runtime/runtime-durability.js";
 import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
+import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 
 describe("SessionMessageInbox", () => {
   it("rejects new messages while quiesced but drains messages accepted before the pause", async () => {
@@ -72,6 +73,7 @@ describe("SessionMessageInbox", () => {
       expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId }),
       "Session message persistence failed",
     );
+    expect(inbox.pendingCount).toBe(0);
     inbox.stop();
   });
 
@@ -390,12 +392,37 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("retryable");
+    expect(inbox.queuedCount).toBe(0);
+    expect(inbox.pendingCount).toBe(1);
     expect(scheduled).toHaveLength(1);
+
+    let updaterState: UpdaterStateSnapshot | undefined;
+    const executeUpdate = vi.fn(async () => undefined);
+    const updater = new UpdateManager({
+      channel: "staging",
+      currentVersion: "0.0.2",
+      protectedWork: () => ({ total: inbox.pendingCount }),
+      quiesce: () => () => undefined,
+      executeUpdate,
+      onHandoff: () => undefined,
+      loadState: async () => updaterState,
+      saveState: async (state) => {
+        updaterState = structuredClone(state);
+      },
+      checkIntervalMs: 1,
+    });
+    updater.observe({ channel: "staging", version: "0.0.3" });
+    await vi.waitFor(() => expect(updaterState?.state).toBe("awaiting_protected_work"));
+    expect(executeUpdate).not.toHaveBeenCalled();
+
     scheduled.shift()?.();
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(inbox.pendingCount).toBe(0);
     expect(inbox.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 1 });
+    await vi.waitFor(() => expect(executeUpdate).toHaveBeenCalledWith("0.0.3"));
+    updater.stop();
     now += 1_000;
     inbox.stop();
   });

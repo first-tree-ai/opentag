@@ -49,7 +49,6 @@ export interface UpgradeResult {
 
 interface ResolvedTarget {
   version: string;
-  source: string;
 }
 
 async function resolveChannelTarget(
@@ -67,7 +66,7 @@ async function resolveChannelTarget(
     if (pointer.channel !== channel) {
       throw new UpgradeError("The channel release pointer belongs to another channel");
     }
-    return { version: requireSemVer(pointer.version, "the channel release pointer"), source: url };
+    return { version: requireSemVer(pointer.version, "the channel release pointer") };
   }
   const registry = (environment.OPENTAG_NPM_REGISTRY_URL ?? DEFAULT_NPM_REGISTRY_URL).replace(/\/+$/, "");
   const url = `${registry}/${packageName}`;
@@ -80,7 +79,7 @@ async function resolveChannelTarget(
     distTags && typeof distTags === "object" && !Array.isArray(distTags)
       ? (distTags as Record<string, unknown>).latest
       : undefined;
-  return { version: requireSemVer(latest, "the npm registry metadata"), source: url };
+  return { version: requireSemVer(latest, "the npm registry metadata") };
 }
 
 function requireSemVer(value: unknown, source: string): string {

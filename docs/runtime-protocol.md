@@ -55,7 +55,7 @@ Roll out Server v2 before Client v2. A v2 Client never falls back after a timeou
 
 ## Channel target advertisement
 
-The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client compares targets monotonically — a target that is not newer than the running version is ignored, and a target for another channel is rejected before any upgrade decision.
+The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.
 
 ## Adversarial checks
 

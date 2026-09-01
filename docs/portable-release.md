@@ -78,8 +78,9 @@ target to connected Clients on v2 heartbeat results (the `runtime.channelTarget`
 
 The daemon's updater follows a strict contract:
 
-- **Monotonic SemVer only.** A target must be strictly newer than the running version and belong to the Client's own
-  channel; anything else is ignored, and an automatic downgrade never happens.
+- **Exact target identity, monotonic precedence.** Only an exact version-string match is already current, so a target
+  that differs only by SemVer build metadata is still installed. SemVer precedence is used only to reject an older
+  target; the target must also belong to the Client's own channel, and an automatic downgrade never happens.
 - **Protected work comes first.** Before installing, the updater waits indefinitely until the Session module reports
   no protected work — no accepted Turn under local custody, no pending Turn completion or report, and no accepted
   IM delivery could be lost or duplicated by the handoff. The Session module bounds every one of those units (Turn

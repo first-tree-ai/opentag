@@ -208,11 +208,39 @@ async function prepareStagingLayout(options: PortableInstallOptions): Promise<Po
     tarball,
     newLink,
     cleanup: async () => {
-      await rm(tempVersionDir, { recursive: true, force: true }).catch(() => undefined);
-      await rm(tarball, { force: true }).catch(() => undefined);
-      await rm(newLink, { force: true }).catch(() => undefined);
+      const results = await Promise.allSettled([
+        rm(tempVersionDir, { recursive: true, force: true }),
+        rm(tarball, { force: true }),
+        rm(newLink, { force: true }),
+      ]);
+      const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (failures.length > 0) throw new AggregateError(failures, "Portable staging cleanup failed");
     },
   };
+}
+
+async function runWithStagingCleanup(layout: PortableStagingLayout, operation: () => Promise<void>): Promise<void> {
+  let operationFailed = false;
+  let operationError: unknown;
+  try {
+    await operation();
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  try {
+    await layout.cleanup();
+  } catch (cleanupError) {
+    if (operationFailed) {
+      throw new AggregateError(
+        [operationError, cleanupError],
+        "Portable installation failed and staging cleanup also failed",
+        { cause: operationError },
+      );
+    }
+    throw cleanupError;
+  }
+  if (operationFailed) throw operationError;
 }
 
 async function downloadVerifiedPayload(fetchFn: typeof fetch, asset: PortableManifestAsset): Promise<Buffer> {
@@ -299,12 +327,10 @@ export async function installPortableTarget(options: PortableInstallOptions): Pr
   const asset = selectPortableAsset(manifest, platform);
   const layout = await prepareStagingLayout(options);
 
-  try {
+  await runWithStagingCleanup(layout, async () => {
     await stagePortableVersion({ layout, manifest, asset, platform, fetchFn, extract, smoke });
     await activatePortableVersion(options, layout);
-  } finally {
-    await layout.cleanup();
-  }
+  });
   return { alreadyCurrent: false, versionDir: canonicalVersionDir };
 }
 

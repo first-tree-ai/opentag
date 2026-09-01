@@ -201,6 +201,7 @@ export class SessionMessageInbox {
     } catch {
       queue.pop();
       this.#queuedTotal -= 1;
+      this.#records.delete(key);
       this.#remember(key, { hash, status: "rejected", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
@@ -222,9 +223,21 @@ export class SessionMessageInbox {
     this.#queuedTotal = 0;
   }
 
-  /** Accepted Session messages still waiting for their drain to deliver them to an Agent Runtime. */
+  /** Accepted Session messages still waiting in an in-memory delivery queue. */
   get queuedCount(): number {
     return this.#queuedTotal;
+  }
+
+  /**
+   * Every accepted Session message that has not reached a terminal durable state. Unlike
+   * `queuedCount`, this includes a message that is running or waiting behind retry backoff.
+   */
+  get pendingCount(): number {
+    let count = 0;
+    for (const record of this.#records.values()) {
+      if (record.status === "accepted" || record.status === "running" || record.status === "retryable") count += 1;
+    }
+    return count;
   }
 
   async settled(): Promise<void> {

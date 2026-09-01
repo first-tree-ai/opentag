@@ -105,7 +105,7 @@ export interface ProtectedWorkSnapshot {
   activeTurns: number;
   /** Turn Reports awaiting Server confirmation. */
   pendingReports: number;
-  /** Accepted Session messages still queued for delivery to an Agent Runtime. */
+  /** Accepted Session messages that have not reached a terminal state, including retry backoff. */
   queuedSessionMessages: number;
   /** Total protected items; zero means no protected work remains. */
   total: number;
@@ -354,7 +354,7 @@ export class ComposedClientRuntime {
       custodyTurns: this.custody.liveTurnCount,
       activeTurns: this.runner.activeCount,
       pendingReports: this.reportOwner.pendingCount,
-      queuedSessionMessages: this.sessionMessageInbox.queuedCount,
+      queuedSessionMessages: this.sessionMessageInbox.pendingCount,
       total: 0,
     };
     snapshot.total =

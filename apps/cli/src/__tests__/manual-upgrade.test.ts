@@ -68,6 +68,57 @@ describe("manual upgrade", () => {
     expect(runNpm).not.toHaveBeenCalled();
   });
 
+  it("reports channel-target lookup and validation failures without installing", async () => {
+    const cases: Array<{
+      fetchFn: typeof fetch;
+      installMode?: { mode: "portable"; root: string; binDir: string };
+      message: string;
+    }> = [
+      {
+        fetchFn: (async () => jsonResponse({ channel: "prod", version: "0.0.3" })) as typeof fetch,
+        installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+        message: "belongs to another channel",
+      },
+      {
+        fetchFn: (async () => jsonResponse({ "dist-tags": [] })) as typeof fetch,
+        message: "missing or invalid",
+      },
+      {
+        fetchFn: (async () => jsonResponse(packument("not-semver"))) as typeof fetch,
+        message: "missing or invalid",
+      },
+      {
+        fetchFn: (async () => {
+          throw "network offline";
+        }) as typeof fetch,
+        message: "network offline",
+      },
+      {
+        fetchFn: (async () => new Response("unavailable", { status: 503 })) as typeof fetch,
+        message: "HTTP 503",
+      },
+      {
+        fetchFn: (async () => new Response("{")) as typeof fetch,
+        message: "not valid JSON",
+      },
+    ];
+    const runNpm = vi.fn();
+
+    for (const testCase of cases) {
+      const result = await runUpgrade({
+        channel: "staging",
+        home: await tempHome(),
+        environment: {},
+        fetchFn: testCase.fetchFn,
+        runNpm,
+        ...(testCase.installMode ? { installMode: testCase.installMode } : {}),
+      });
+      expect(result).toMatchObject({ exitCode: 1, status: "error" });
+      expect(result.message).toContain(testCase.message);
+    }
+    expect(runNpm).not.toHaveBeenCalled();
+  });
+
   it("installs the exact channel target through npm and refreshes the service (npm-global)", async () => {
     const home = await tempHome();
     const npmArgs: string[][] = [];
@@ -262,6 +313,25 @@ describe("manual upgrade", () => {
     expect(result.message).toContain("systemd unavailable");
     expect(result.message).toContain("state disk unavailable");
     expect(writeState).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a durable-state write failure after the target is installed", async () => {
+    const writeState = vi.fn<typeof writeUpdaterState>().mockRejectedValue(new Error("state disk unavailable"));
+    const reconcileService = vi.fn(async () => readyReconcile);
+    const result = await runUpgrade({
+      channel: "staging",
+      home: await tempHome(),
+      environment: {},
+      fetchFn: (async () => jsonResponse(packument("0.0.3"))) as typeof fetch,
+      runNpm: async () => undefined,
+      reconcileService,
+      writeState,
+    });
+
+    expect(result).toMatchObject({ exitCode: 1, status: "error", targetVersion: "0.0.3" });
+    expect(result.message).toContain("Installed 0.0.3 but could not record the upgrade state");
+    expect(result.message).toContain("state disk unavailable");
+    expect(reconcileService).not.toHaveBeenCalled();
   });
 
   it("repairs invalid updater state by recording the manual install", async () => {

@@ -4,6 +4,8 @@ import type { AgentDetailView } from "./agent-model.js";
 import { projectAgentAvailability } from "./agent-model.js";
 import {
   agentAvailabilityRecovery,
+  agentAvatarTone,
+  agentAvatarTones,
   agentRecoveryMessage,
   agentStatusPresentation,
   computerRecoveryMessage,
@@ -33,6 +35,12 @@ function unbound(): AgentDetailView {
 }
 
 describe("An Agent with no Computer, as the viewer reads it", () => {
+  it("assigns a stable avatar tone from the supported palette", () => {
+    const tone = agentAvatarTone(agentId);
+    expect(agentAvatarTones).toContain(tone);
+    expect(agentAvatarTone(agentId)).toBe(tone);
+  });
+
   it("names the state and the action that leaves it, rather than one about a Computer it does not have", () => {
     const agent = unbound();
 

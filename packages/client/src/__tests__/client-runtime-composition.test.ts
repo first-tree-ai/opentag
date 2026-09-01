@@ -701,7 +701,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         custody: { liveTurnCount: 1 },
         credentialEnvironment: {},
         reconciler: { protectedWorkSnapshot: () => ({ activities: [{}], recoveries: [{}, {}] }) },
-        sessionMessageInbox: { queuedCount: 2 },
+        sessionMessageInbox: { pendingCount: 2 },
         reportOwner: { pendingCount: 3 },
         runner: { activeCount: 4 },
         runtimeManager: {},

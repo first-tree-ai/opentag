@@ -535,7 +535,9 @@ describe("Computer enrollment persistence", () => {
         expect(issued.statusCode).toBe(201);
         expect(issued.headers["cache-control"]).toBe("no-store");
         const command = issued.json().bootstrapCommand as string;
-        expect(command).toContain("opentag-staging computer connect --server https://dev.example.com -- otcc_");
+        expect(command).toContain(
+          "npm i -g open-tag-staging && opentag-staging computer connect --server https://dev.example.com -- otcc_",
+        );
         const code = command.split(" -- ").at(-1);
         if (!code) throw new Error("Computer connect command did not contain a code");
 

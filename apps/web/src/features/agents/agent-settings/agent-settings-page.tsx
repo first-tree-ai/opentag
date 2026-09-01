@@ -145,7 +145,11 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                         const content = (
                           <>
                             <span
-                              className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint"
+                              className={
+                                item.group === "danger"
+                                  ? "grid size-8 shrink-0 place-items-center text-kumo-danger"
+                                  : "grid size-8 shrink-0 place-items-center text-kumo-subtle"
+                              }
                               aria-hidden="true"
                               data-ui="agent-settings-entry-icon"
                             >

@@ -6,10 +6,7 @@
   h4,
   h5,
   h6,
-  [role="heading"],
-  /* Kumo's heading variant renders a span with this stable semantic class pair when `as` is not
-   * supplied. Keep those heading-level UI labels on the display face as well. */
-  [class~="text-kumo-default"][class~="font-semibold"] {
+  [role="heading"] {
     font-family:
       "Sora", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", ui-sans-serif, system-ui, -apple-system,
       BlinkMacSystemFont, "Segoe UI", sans-serif;

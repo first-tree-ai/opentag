@@ -244,7 +244,7 @@ export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
   const recovery = agentAvailabilityRecovery(agent);
   return (
     <section
-      className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-tint p-4"
+      className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-recessed p-4 ring ring-kumo-line"
       aria-label={m.agents_lifecycle_aria({ status: status.label })}
       data-ui="agent-lifecycle-notice"
     >

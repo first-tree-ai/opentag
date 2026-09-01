@@ -29,6 +29,19 @@ describe("Kumo semantic adapter", () => {
     expect(screen.getByRole("button", { name: "Disconnect" }).className).toContain("text-kumo-danger");
   });
 
+  it("overrides Kumo's lightened emphasis mix with accessible button surfaces", () => {
+    render(
+      <>
+        <Button variant="primary">Create</Button>
+        <Button variant="danger">Delete</Button>
+      </>,
+    );
+    const primary = screen.getByRole("button", { name: "Create" });
+    const danger = screen.getByRole("button", { name: "Delete" });
+    expect(primary.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-primary-bg)");
+    expect(danger.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-danger-bg)");
+  });
+
   it("provides labelled Kumo tabs and settings rows", () => {
     render(
       <>

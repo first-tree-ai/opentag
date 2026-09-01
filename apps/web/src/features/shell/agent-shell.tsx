@@ -310,6 +310,7 @@ function AgentNavItem({
     <Sidebar.MenuButton
       active={active}
       aria-current={active ? "page" : undefined}
+      className="data-[active]:bg-(--brand-soft)"
       icon={
         <span className="flex w-8 shrink-0 items-center justify-center" aria-hidden="true">
           <Icon name={icon} />

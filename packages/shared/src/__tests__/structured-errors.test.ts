@@ -206,6 +206,38 @@ describe("structured error redaction", () => {
     expect(empty).toContain("X-Safe: ok");
   });
 
+  it("redacts indented headers and keeps non-header folds as continuations", () => {
+    const indented = redactForLog("headers:\n  Cookie: session=first-secret; admin=second-secret\nX-Safe: ok");
+    expect(indented).toBe("headers:\n  Cookie: [REDACTED]\nX-Safe: ok");
+    expect(indented).not.toContain("first-secret");
+    expect(indented).not.toContain("second-secret");
+
+    const folded = redactForLog("headers:\n  Cookie: session=first-secret\n    continuation-secret\nX-Safe: ok");
+    expect(folded).toBe("headers:\n  Cookie: [REDACTED]\nX-Safe: ok");
+    expect(folded).not.toContain("continuation-secret");
+
+    const ambiguous = redactForLog("Cookie: session=first-secret\n  Looks-Like: continuation-secret\nX-Safe: ok");
+    expect(ambiguous).toBe("Cookie: [REDACTED]\n  Looks-Like: continuation-secret\nX-Safe: ok");
+  });
+
+  it("consumes structured credential values and enclosing quoted headers", () => {
+    const array = redactForLog('{"set-cookie":["session=first-secret","admin=second-secret"]}');
+    expect(array).toBe('{"set-cookie":"[REDACTED]"}');
+    expect(() => JSON.parse(array)).not.toThrow();
+    expect(array).not.toContain("first-secret");
+    expect(array).not.toContain("second-secret");
+
+    const nestedHeader = redactForLog('{"headers":"Cookie: session=first-secret; admin=second-secret"}');
+    expect(nestedHeader).toBe('{"headers":"Cookie: [REDACTED]"}');
+    expect(() => JSON.parse(nestedHeader)).not.toThrow();
+    expect(nestedHeader).not.toContain("first-secret");
+    expect(nestedHeader).not.toContain("second-secret");
+
+    const indentedDigest = redactForLog('req:\n\tAuthorization: Digest u="x", nonce="deadbeef"\nX-Safe: ok');
+    expect(indentedDigest).toBe("req:\n\tAuthorization: [REDACTED]\nX-Safe: ok");
+    expect(indentedDigest).not.toContain("deadbeef");
+  });
+
   it("redacts compound credential headers without swallowing JSON-ish fragments", () => {
     const cookie = redactForLog("Cookie: session=first-secret; admin=second-secret");
     expect(cookie).toBe("Cookie: [REDACTED]");

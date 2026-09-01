@@ -95,6 +95,30 @@ describe("Client logger", () => {
     expect(new TextEncoder().encode(record.instanceId as string).byteLength).toBeLessThanOrEqual(4 * 1024);
   });
 
+  it("scrubs reproduced credential leaks at the emitted NDJSON boundary", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+    const logger = createLogger("boundary");
+    const messages = [
+      "headers:\n  Cookie: session=first-secret; admin=second-secret\nX-Safe: ok",
+      '{"set-cookie":["session=first-secret","admin=second-secret"]}',
+      '{"headers":"Cookie: session=first-secret; admin=second-secret"}',
+      'req:\n\tAuthorization: Digest u="x", nonce="deadbeef"\nX-Safe: ok',
+    ];
+
+    for (const message of messages) logger.error({}, message);
+
+    const lines = (await readFile(join(directory, "client.log"), "utf8")).trim().split("\n");
+    expect(lines).toHaveLength(messages.length);
+    const records = lines.map((line) => JSON.parse(line) as { message: string });
+    const emitted = records.map((record) => record.message).join("\n");
+    for (const secret of ["first-secret", "second-secret", "deadbeef"]) expect(emitted).not.toContain(secret);
+    expect(records[0]?.message).toContain("X-Safe: ok");
+    expect(records[3]?.message).toContain("X-Safe: ok");
+    expect(() => JSON.parse(records[1]?.message ?? "")).not.toThrow();
+  });
+
   it("treats repeated configuration as a no-op and rejects another directory", async () => {
     const first = await temporaryDirectory();
     const second = await temporaryDirectory();

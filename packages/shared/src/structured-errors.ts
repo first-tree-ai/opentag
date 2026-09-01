@@ -167,6 +167,27 @@ function lineBreakEnd(value: string, start: number): number {
   return start + 1;
 }
 
+function headerNameColonAt(value: string, from: number): boolean {
+  let cursor = from;
+  while (value[cursor] === " " || value[cursor] === "\t") cursor += 1;
+  const headerName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+[ \t]*:/u;
+  return headerName.test(value.slice(cursor));
+}
+
+function lineStart(value: string, from: number): number {
+  const carriageReturn = value.lastIndexOf("\r", from - 1);
+  const lineFeed = value.lastIndexOf("\n", from - 1);
+  return Math.max(carriageReturn, lineFeed) + 1;
+}
+
+function isLineAnchoredCredentialHeader(value: string, offset: number): boolean {
+  const start = lineStart(value, offset);
+  if (offset === start) return true;
+  let cursor = start;
+  while (value[cursor] === " " || value[cursor] === "\t") cursor += 1;
+  return cursor === offset && headerNameColonAt(value, offset);
+}
+
 function credentialHeaderValueEnd(value: string, from: number): number {
   let cursor = from;
   while (true) {
@@ -174,6 +195,7 @@ function credentialHeaderValueEnd(value: string, from: number): number {
     if (breakStart === -1) return value.length;
     const breakEnd = lineBreakEnd(value, breakStart);
     if (value[breakEnd] !== " " && value[breakEnd] !== "\t") return breakStart;
+    if (headerNameColonAt(value, breakEnd)) return breakStart;
     cursor = breakEnd;
   }
 }
@@ -184,34 +206,130 @@ function isCredentialQuote(character: string | undefined): character is Credenti
   return character === '"' || character === "'";
 }
 
-function inlineQuotedCredentialValueEnd(
+function isApostrophe(value: string, position: number, character: string): boolean {
+  return (
+    character === "'" &&
+    /[A-Za-z0-9]/u.test(value[position - 1] ?? "") &&
+    /[A-Za-z0-9]/u.test(value[position + 1] ?? "")
+  );
+}
+
+function advanceEnclosingQuote(
   value: string,
-  from: number,
-  quote: CredentialQuote,
-): { end: number; quote?: string } {
+  position: number,
+  quote: CredentialQuote | undefined,
+  character: string,
+): CredentialQuote | undefined {
+  if (character === "\r" || character === "\n") return undefined;
+  if (quote === undefined) {
+    if (!isCredentialQuote(character) || isApostrophe(value, position, character)) return undefined;
+    return character;
+  }
+  return quote === character ? undefined : quote;
+}
+
+function enclosingQuoteAt(value: string, position: number): CredentialQuote | undefined {
+  let quote: CredentialQuote | undefined;
+  for (let cursor = 0; cursor < position; cursor += 1) {
+    const character = value[cursor] ?? "";
+    if (character === "\\") {
+      cursor += 1;
+      continue;
+    }
+    quote = advanceEnclosingQuote(value, cursor, quote, character);
+  }
+  return quote;
+}
+
+function inlineQuotedCredentialValueEnd(value: string, from: number, quote: CredentialQuote): number {
   for (let cursor = from + 1; cursor < value.length; cursor += 1) {
     const character = value[cursor];
     if (character === "\\") {
       cursor += 1;
       continue;
     }
-    if (character === quote) return { end: cursor, quote };
-    if (character === "\r" || character === "\n") return { end: cursor };
+    if (character === quote) return cursor + 1;
+    if (character === "\r" || character === "\n") return cursor;
   }
-  return { end: value.length, quote };
+  return value.length;
 }
 
-function inlineUnquotedCredentialValueEnd(value: string, from: number): { end: number } {
+function enclosingQuotedCredentialValueEnd(value: string, from: number, quote: CredentialQuote): number {
   for (let cursor = from; cursor < value.length; cursor += 1) {
-    if (",;}\"'\r\n".includes(value[cursor] ?? "")) return { end: cursor };
+    const character = value[cursor];
+    if (character === "\\") {
+      cursor += 1;
+      continue;
+    }
+    if (character === quote) return cursor;
+    if (character === "\r" || character === "\n") return cursor;
   }
-  return { end: value.length };
+  return value.length;
 }
 
-function inlineCredentialValueEnd(value: string, from: number): { end: number; quote?: string } {
+function inlineUnquotedCredentialValueEnd(value: string, from: number): number {
+  for (let cursor = from; cursor < value.length; cursor += 1) {
+    if (",;}\"'\r\n".includes(value[cursor] ?? "")) return cursor;
+  }
+  return value.length;
+}
+
+type StructuralScanState = {
+  depth: number;
+  quote?: CredentialQuote;
+  escaped?: boolean;
+};
+
+function advanceStructuralScan(state: StructuralScanState, character: string, opener: string, closer: string): boolean {
+  if (state.quote !== undefined) {
+    if (state.escaped) {
+      state.escaped = false;
+    } else if (character === "\\") {
+      state.escaped = true;
+    } else if (character === state.quote) {
+      state.quote = undefined;
+    }
+    return false;
+  }
+  if (isCredentialQuote(character)) {
+    state.quote = character;
+  } else if (character === opener) {
+    state.depth += 1;
+  } else if (character === closer) {
+    state.depth -= 1;
+  }
+  return state.depth === 0;
+}
+
+function structuralCredentialValueEnd(value: string, from: number): number {
+  const opener = value[from];
+  if (opener !== "[") return from;
+  const closer = "]";
+  const state: StructuralScanState = { depth: 0 };
+  for (let cursor = from; cursor < value.length; cursor += 1) {
+    if (advanceStructuralScan(state, value[cursor] ?? "", opener, closer)) return cursor + 1;
+  }
+  return value.length;
+}
+
+function inlineCredentialValueEnd(
+  value: string,
+  from: number,
+  enclosingQuote: CredentialQuote | undefined,
+): { end: number; replacement: string } {
   const openingQuote = value[from];
-  if (isCredentialQuote(openingQuote)) return inlineQuotedCredentialValueEnd(value, from, openingQuote);
-  return inlineUnquotedCredentialValueEnd(value, from);
+  if (isCredentialQuote(openingQuote)) {
+    const end = inlineQuotedCredentialValueEnd(value, from, openingQuote);
+    return { end, replacement: `${openingQuote}${REDACTED}${openingQuote}` };
+  }
+  if (openingQuote === "[") {
+    return { end: structuralCredentialValueEnd(value, from), replacement: `"${REDACTED}"` };
+  }
+  if (enclosingQuote !== undefined) {
+    const end = enclosingQuotedCredentialValueEnd(value, from, enclosingQuote);
+    return { end, replacement: REDACTED };
+  }
+  return { end: inlineUnquotedCredentialValueEnd(value, from), replacement: REDACTED };
 }
 
 /*
@@ -225,13 +343,13 @@ function scrubCredentialHeaders(value: string): string {
   CREDENTIAL_HEADER_PATTERN.lastIndex = 0;
   for (let match = CREDENTIAL_HEADER_PATTERN.exec(value); match; match = CREDENTIAL_HEADER_PATTERN.exec(value)) {
     const offset = match.index;
-    const lineAnchored = offset === 0 || value[offset - 1] === "\n" || value[offset - 1] === "\r";
+    const lineAnchored = isLineAnchoredCredentialHeader(value, offset);
     const valueStart = offset + match[0].length;
     const valueEnd = lineAnchored
-      ? { end: credentialHeaderValueEnd(value, valueStart) }
-      : inlineCredentialValueEnd(value, valueStart);
+      ? { end: credentialHeaderValueEnd(value, valueStart), replacement: REDACTED }
+      : inlineCredentialValueEnd(value, valueStart, enclosingQuoteAt(value, offset));
     output += value.slice(cursor, offset);
-    output += `${match[0]}${valueEnd.quote ?? ""}[REDACTED]`;
+    output += `${match[0]}${valueEnd.replacement}`;
     cursor = valueEnd.end;
     CREDENTIAL_HEADER_PATTERN.lastIndex = cursor;
   }

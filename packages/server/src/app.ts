@@ -3,7 +3,7 @@ import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
 import Fastify, { type FastifyLoggerOptions } from "fastify";
-import { registerAccountRoutes } from "./api/account.js";
+import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
@@ -69,6 +69,7 @@ export interface CreateAppOptions {
    * deployment outside staging stays indistinguishable from one that never had the capability.
    */
   setupResetService?: OnboardingResetService;
+  internalNavigationService?: InternalNavigationVisibilityService;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
 }
@@ -241,6 +242,7 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
         ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
+        internalNavigationService: options.internalNavigationService,
         authOptions,
       });
     }

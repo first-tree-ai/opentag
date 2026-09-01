@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { ProviderReadinessStatus } from "@opentag/shared";
+import type { InternalNavigationVisibility, ProviderReadinessStatus } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -108,6 +108,19 @@ export {
   type SessionCollaborationServiceOptions,
   SessionService,
 } from "./services/sessions/index.js";
+
+class StagingInternalNavigationVisibilityService {
+  #value: InternalNavigationVisibility = { integrations: false, skills: false };
+
+  read(): InternalNavigationVisibility {
+    return this.#value;
+  }
+
+  update(value: InternalNavigationVisibility): InternalNavigationVisibility {
+    this.#value = { ...value };
+    return this.#value;
+  }
+}
 
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
@@ -348,6 +361,7 @@ export async function startServer(): Promise<void> {
           registry,
         })
       : undefined;
+    const internalNavigationService = new StagingInternalNavigationVisibilityService();
     app = createApp({
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
@@ -416,7 +430,7 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      ...(setupResetService ? { setupResetService } : {}),
+      ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,
     });
     feishuSetupService.start();

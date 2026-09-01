@@ -48,7 +48,7 @@ describe("OpenTag Web App Shell", () => {
   it.each([
     ["integrations", "Integrations"],
     ["skills", "Skills"],
-  ])("keeps Agent %s inside the selected Agent boundary", async (section, heading) => {
+  ])("keeps a direct Agent %s URL available without exposing its navigation preview", async (section, heading) => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/${section}`);
     render(<App />);
@@ -56,11 +56,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/${section}`);
     expect(screen.getByRole("complementary", { name: "Agent navigation" })).toBeTruthy();
-    expect(
-      screen
-        .getByRole("button", { name: section === "skills" ? "Skills" : "Integrations" })
-        .getAttribute("aria-current"),
-    ).toBe("page");
+    expect(screen.queryByRole("button", { name: section === "skills" ? "Skills" : "Integrations" })).toBeNull();
   });
 
   it("does not preserve the removed Agent Access surface", async () => {

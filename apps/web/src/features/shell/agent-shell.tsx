@@ -1,6 +1,7 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { initials } from "../../i18n/format.js";
+import { useInternalNavigationVisibility } from "../../internal/navigation-visibility.js";
 import * as m from "../../paraglide/messages.js";
 import {
   DropdownMenu,
@@ -61,6 +62,7 @@ function AgentShellContent({
   const agentsState = useAgentListView(me.user.id);
   const agents = agentsState.kind === "ready" ? agentsState.value.agents : [];
   const agent = agents.find((candidate) => candidate.id === agentId);
+  const internalNavigation = useInternalNavigationVisibility();
 
   function closeMobile() {
     setOpenMobile(false);
@@ -137,24 +139,28 @@ function AgentShellContent({
                     void navigate(agentTasksLink(agentId));
                   }}
                 />
-                <AgentNavItem
-                  active={isAgentSectionActive(pathname, agentId, "skills")}
-                  icon="shield"
-                  label={m.shell_skills()}
-                  onClick={() => {
-                    closeMobile();
-                    void navigate(agentSkillsLink(agentId));
-                  }}
-                />
-                <AgentNavItem
-                  active={isAgentSectionActive(pathname, agentId, "integrations")}
-                  icon="integrations"
-                  label={m.shell_integrations()}
-                  onClick={() => {
-                    closeMobile();
-                    void navigate(agentIntegrationsLink(agentId));
-                  }}
-                />
+                {internalNavigation.skills ? (
+                  <AgentNavItem
+                    active={isAgentSectionActive(pathname, agentId, "skills")}
+                    icon="shield"
+                    label={m.shell_skills()}
+                    onClick={() => {
+                      closeMobile();
+                      void navigate(agentSkillsLink(agentId));
+                    }}
+                  />
+                ) : null}
+                {internalNavigation.integrations ? (
+                  <AgentNavItem
+                    active={isAgentSectionActive(pathname, agentId, "integrations")}
+                    icon="integrations"
+                    label={m.shell_integrations()}
+                    onClick={() => {
+                      closeMobile();
+                      void navigate(agentIntegrationsLink(agentId));
+                    }}
+                  />
+                ) : null}
                 <AgentNavItem
                   active={isAgentSectionActive(pathname, agentId, "usage")}
                   icon="usage"

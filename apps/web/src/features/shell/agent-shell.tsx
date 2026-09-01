@@ -1,4 +1,4 @@
-import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { initials } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
@@ -176,9 +176,14 @@ function AgentShellContent({
       </Sidebar>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas md:ml-2" data-ui="app-main">
         <header className="app-mobile-header shrink-0 items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3">
-          <span className="min-w-0 truncate font-semibold text-kumo-strong">
-            {agent?.displayName ?? m.shell_agent()}
-          </span>
+          <Link
+            className="inline-flex min-w-0 items-center gap-2 rounded-sm font-semibold text-kumo-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand"
+            data-ui="agent-mobile-home"
+            {...agentDetailLink(agentId)}
+          >
+            <Icon className="shrink-0" name="home" />
+            <span className="truncate">{agent?.displayName ?? m.shell_agent()}</span>
+          </Link>
           <SidebarTrigger aria-label={m.shell_open_agent_navigation()} title={m.shell_open_agent_navigation()} />
         </header>
         <ShellMain>

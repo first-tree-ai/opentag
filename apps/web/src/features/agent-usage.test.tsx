@@ -50,6 +50,7 @@ describe("AgentUsageOverview", () => {
 
     await renderInRouter(<AgentUsageTab agentId="agent-1" />);
 
+    expect(screen.getByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
     expect(await screen.findByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Usage period" }).textContent).toBe("Last 30 days");
@@ -72,6 +73,10 @@ describe("AgentUsageOverview", () => {
     expect(await screen.findByText("Partial data")).toBeTruthy();
     expect(screen.getAllByText("Partial data")).toHaveLength(1);
     expect(loadUsage).toHaveBeenCalledTimes(1);
+    for (const period of screen.getAllByRole("combobox", { name: "Usage period" })) {
+      expect(period.classList.contains("w-full")).toBe(true);
+      expect(period.closest(".ml-auto")).toBeTruthy();
+    }
   });
 
   it("keeps the failure reason visible and retries the same usage request", async () => {

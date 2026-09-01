@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ComponentProps, lazy, Suspense, useCallback, useState } from "react";
 import { browserApi } from "../api.js";
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { formatCompactNumber, formatDay, formatNumber, formatPercent } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
@@ -24,7 +25,6 @@ import {
   Text,
   TimeseriesChart,
 } from "../ui/design-system.js";
-import type { AgentDetailView } from "./agents/agent-model.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
 
 const LazyTimeseriesChart = lazy(async () => {
@@ -48,14 +48,7 @@ export function usageWindowLabel(days: AgentUsageWindowDays): string {
   return days === 1 ? m.usage_window_24_hours() : m.usage_window_days({ days });
 }
 
-export function AgentUsageOverview({
-  agent,
-  agentId,
-}: {
-  /** Carried into history state so the usage page opens with the Agent already on screen. */
-  agent?: AgentDetailView;
-  agentId: string;
-}) {
+export function AgentUsageOverview({ agentId }: { agentId: string }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
   const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
@@ -75,10 +68,9 @@ export function AgentUsageOverview({
       <Link
         className="inline-flex items-center justify-self-end gap-1 text-sm text-kumo-link"
         params={{ agentId }}
-        state={{ agent }}
         to="/agents/$agentId/usage"
       >
-        {m.usage_view_details()}
+        {m.usage_view_usage()}
         <Icon className="size-3.5" name="chevron-right" />
       </Link>
     </LayerCard>
@@ -95,9 +87,10 @@ function UsageWindowSelect({
   value: AgentUsageWindowDays;
 }) {
   return (
-    <div className="w-40 shrink-0">
+    <div className="ml-auto w-40 shrink-0">
       <Select
         aria-label={m.usage_period_label()}
+        className="w-full"
         renderValue={(days) => usageWindowLabel(days)}
         size="sm"
         value={value}
@@ -120,17 +113,9 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
     <div className="grid gap-6" data-ui="usage-tab">
-      <div className="flex flex-wrap items-end justify-between gap-4" data-ui="usage-toolbar">
-        <div className="grid max-w-prose gap-1">
-          <Text as="h2" id="agent-usage-page-heading" variant="heading">
-            {m.usage_title()}
-          </Text>
-          <Text as="p" variant="secondary">
-            {m.usage_description()}
-          </Text>
-        </div>
+      <PageHeader description={m.usage_description()} title={m.usage_title()} titleId="agent-usage-page-heading">
         <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
-      </div>
+      </PageHeader>
       <UsageSummaryState state={state} onRetry={retry} />
     </div>
   );

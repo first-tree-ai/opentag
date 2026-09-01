@@ -15,7 +15,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View details" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
+    expect(screen.getByRole("link", { name: "View Usage" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
     /*
      * Status sits beside Usage without adding another visible card title. Its two rows name the
      * execution environment and messaging dependency directly, so Settings remains the header's only trailing
@@ -53,10 +53,27 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/Managed by/)).toBeNull();
   });
 
-  it.each([
-    ["View details", "Usage"],
-    ["Settings", "Agent settings"],
-  ])("keeps Agent context visible while opening %s", async (linkName, destinationHeading) => {
+  it("opens Usage as a sibling Agent section without rereading the full Agent detail", async () => {
+    let agentReads = 0;
+    installApi({
+      agentRead: () => {
+        agentReads += 1;
+      },
+      bound: true,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "View Usage" }));
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
+    expect(agentReads).toBe(1);
+    const agentNavigation = screen.getByRole("navigation", { name: "Agent" });
+    expect(within(agentNavigation).getByRole("button", { name: "Usage" }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("keeps Agent context visible while opening Settings", async () => {
     let agentReads = 0;
     let releaseAgentRead = () => {};
     const pendingAgentRead = new Promise<void>((resolve) => {
@@ -73,9 +90,9 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("link", { name: linkName }));
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
 
-    expect(await screen.findByRole("heading", { name: destinationHeading })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Account Agents" })).toBeNull();
     await waitFor(() => expect(agentReads).toBe(2));
     expect(screen.queryByLabelText("Loading current server state")).toBeNull();
@@ -95,8 +112,8 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("link", { name: "View details" }));
-    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
+    expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
     await waitFor(() => expect(agentReads).toBe(2));
     expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
     expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();

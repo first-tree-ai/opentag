@@ -16,11 +16,46 @@ import { threadRootExternalId } from "./provider-thread-context.js";
 
 const DIRECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AMBIENT_TTL_MS = 24 * 60 * 60 * 1000;
+const TASK_TITLE_GENERATION_TIMEOUT_MS = 3_000;
 
 export interface IngestResult {
   duplicate: boolean;
   messageId?: string;
   deliveryIds: string[];
+}
+
+export interface TaskTitleGenerationRequest {
+  sessionId: string;
+  sourceText: string;
+  signal?: AbortSignal;
+}
+
+interface ChatSessionPlacement {
+  id: string;
+  generation: number;
+}
+
+interface EnsureChatSessionInput {
+  imBindingId: string;
+  channelId: string;
+  conversationKind: "channel" | "dm" | "group_dm";
+  kind: "channel" | "thread";
+  threadKey?: string;
+  workspaceComputerId: string;
+  now: Date;
+}
+
+interface CreatedChatSession extends ChatSessionPlacement {
+  created: boolean;
+}
+
+function recordCreatedTask(
+  createdTasks: Map<string, TaskTitleGenerationRequest>,
+  session: CreatedChatSession,
+  sourceText: string,
+): void {
+  if (!session.created) return;
+  createdTasks.set(session.id, { sessionId: session.id, sourceText });
 }
 
 export type ImInboundPersistenceErrorCode =
@@ -50,6 +85,7 @@ export class ImMessageInbox {
   readonly #beforeSupersedeDeliveries: (() => Promise<void>) | undefined;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
+  readonly #onTaskCreated: ((request: TaskTitleGenerationRequest) => Promise<void> | void) | undefined;
   readonly #sessions: SessionService;
 
   constructor(
@@ -60,10 +96,12 @@ export class ImMessageInbox {
       afterMessageAuthority?: () => Promise<void>;
       beforeReliableThreadRootLookup?: () => void;
       beforeSupersedeDeliveries?: () => Promise<void>;
+      onTaskCreated?: (request: TaskTitleGenerationRequest) => Promise<void> | void;
     } = {},
   ) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
+    this.#onTaskCreated = options.onTaskCreated;
     this.#afterAdmissionFence = options.afterAdmissionFence;
     this.#afterMessageAuthority = options.afterMessageAuthority;
     this.#beforeReliableThreadRootLookup = options.beforeReliableThreadRootLookup;
@@ -89,8 +127,9 @@ export class ImMessageInbox {
         externalMessageId: event.message.externalId,
       }),
       async () => {
+        const createdTasks = new Map<string, TaskTitleGenerationRequest>();
         try {
-          return await this.#database.transaction(async (transaction) => {
+          const result = await this.#database.transaction(async (transaction) => {
             const finish = (result: IngestResult, outcome: string): IngestResult => {
               setActiveSpanAttributes({
                 ...imAttrs({
@@ -406,17 +445,16 @@ export class ImMessageInbox {
                   ? directContinuity || scope.agent.receiveMode === "all_message"
                   : direct || (!endedThreadExists && (rootWasDirect || scope.agent.receiveMode === "all_message"));
                 if (shouldDeliverThread) {
-                  const thread =
-                    existingThread ??
-                    (await this.#ensureChatSession(transaction, {
-                      imBindingId,
-                      channelId: event.conversation.externalId,
-                      conversationKind,
-                      kind: "thread",
-                      threadKey,
-                      workspaceComputerId: agentComputerId,
-                      now,
-                    }));
+                  const thread = await this.#ensureOrReuseChatSession(transaction, existingThread, {
+                    imBindingId,
+                    channelId: event.conversation.externalId,
+                    conversationKind,
+                    kind: "thread",
+                    threadKey,
+                    workspaceComputerId: agentComputerId,
+                    now,
+                  });
+                  recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
                   deliveries.push({
                     sessionId: thread.id,
                     attention: directContinuity ? "direct" : "ambient",
@@ -432,6 +470,7 @@ export class ImMessageInbox {
                     workspaceComputerId: agentComputerId,
                     now,
                   });
+                  recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
                   deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
                 }
               } else if (direct || scope.agent.receiveMode === "all_message") {
@@ -443,6 +482,7 @@ export class ImMessageInbox {
                   workspaceComputerId: agentComputerId,
                   now,
                 });
+                recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
                 deliveries.push({
                   sessionId: channel.id,
                   attention: direct ? "direct" : "ambient",
@@ -524,6 +564,7 @@ export class ImMessageInbox {
                   workspaceComputerId: agentComputerId,
                   now,
                 });
+                recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
                 const [upgraded] = await transaction
                   .update(imMessageDeliveries)
                   .set({
@@ -563,6 +604,18 @@ export class ImMessageInbox {
               deliveryIds.length > 0 ? "persisted" : "no_delivery",
             );
           });
+          for (const request of createdTasks.values()) {
+            const controller = new AbortController();
+            const timer = setTimeout(
+              () => controller.abort("task_title_generation_timeout"),
+              TASK_TITLE_GENERATION_TIMEOUT_MS,
+            );
+            timer.unref();
+            void Promise.resolve(this.#onTaskCreated?.({ ...request, signal: controller.signal }))
+              .catch(() => undefined)
+              .finally(() => clearTimeout(timer));
+          }
+          return result;
         } catch (error) {
           setActiveSpanAttributes(outcomeAttrs("failed", classifyImInboundPersistenceError(error)));
           throw error;
@@ -643,18 +696,26 @@ export class ImMessageInbox {
 
   async #ensureChatSession(
     transaction: DatabaseTransaction,
-    input: {
-      imBindingId: string;
-      channelId: string;
-      conversationKind: "channel" | "dm" | "group_dm";
-      kind: "channel" | "thread";
-      threadKey?: string;
-      workspaceComputerId: string;
-      now: Date;
-    },
-  ): Promise<{ id: string; generation: number }> {
+    input: EnsureChatSessionInput,
+  ): Promise<CreatedChatSession> {
+    const existing = await this.#findChatSession(
+      transaction,
+      input.imBindingId,
+      input.channelId,
+      input.kind,
+      input.threadKey ?? null,
+    );
     const result = await this.#sessions.ensureChatSessionInTransaction(transaction, input);
-    return { id: result.session.id, generation: result.placement.generation };
+    return { id: result.session.id, generation: result.placement.generation, created: existing === undefined };
+  }
+
+  async #ensureOrReuseChatSession(
+    transaction: DatabaseTransaction,
+    existing: ChatSessionPlacement | undefined,
+    input: EnsureChatSessionInput,
+  ): Promise<CreatedChatSession> {
+    if (existing) return { ...existing, created: false };
+    return this.#ensureChatSession(transaction, input);
   }
 
   async #hasEndedThreadSession(

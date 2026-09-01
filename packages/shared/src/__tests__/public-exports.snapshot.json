@@ -285,6 +285,8 @@
   "TaskStatusSchema",
   "TaskSummarySchema",
   "TaskTitleSchema",
+  "TaskTitleUpdateRequestSchema",
+  "TaskTitleUpdateResponseSchema",
   "TaskTurnSchema",
   "TurnFailureReasonSchema",
   "TurnReportRequestSchema",

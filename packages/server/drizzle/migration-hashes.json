@@ -180,6 +180,11 @@
       "idx": 35,
       "tag": "0035_dark_devos",
       "sha256": "9c74656526572bc97d52a77261fe2d4ae6817585821d5141871a501c5c23b9cf"
+    },
+    {
+      "idx": 36,
+      "tag": "0036_first_the_stranger",
+      "sha256": "961d97e5e1e0bd399ef6b4e99d577d51e5acd9c14ee1b40f13bbcbf2eb3f4608"
     }
   ]
 }

@@ -22,10 +22,14 @@ function taskTitleLength(value: string): number {
 
 export const TaskTitleSchema = z
   .string()
+  .trim()
   .min(1)
   .refine((value) => taskTitleLength(value) <= TASK_TITLE_MAX_LENGTH, {
     message: `Task title must contain at most ${TASK_TITLE_MAX_LENGTH} characters`,
   });
+
+/** Manual Task title input. `null` explicitly clears the manual override. */
+export const TaskTitleUpdateRequestSchema = z.object({ title: TaskTitleSchema.nullable() }).strict();
 
 export const TaskSummarySchema = z
   .object({
@@ -58,6 +62,8 @@ export const TaskSummarySchema = z
 export const ListTasksResponseSchema = z
   .object({ tasks: z.array(TaskSummarySchema), nextCursor: z.string().min(1).nullable() })
   .strict();
+
+export const TaskTitleUpdateResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
 export const TaskTurnSchema = z
   .object({
@@ -159,6 +165,8 @@ export const TaskDetailSchema = z
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 export type ListTasksResponse = z.infer<typeof ListTasksResponseSchema>;
+export type TaskTitleUpdateRequest = z.infer<typeof TaskTitleUpdateRequestSchema>;
+export type TaskTitleUpdateResponse = z.infer<typeof TaskTitleUpdateResponseSchema>;
 export type TaskTurn = z.infer<typeof TaskTurnSchema>;
 export type TaskInternalSession = z.infer<typeof TaskInternalSessionSchema>;
 export type TaskCollaborationMessage = z.infer<typeof TaskCollaborationMessageSchema>;

@@ -226,6 +226,94 @@ async function pendingDelivery(
 }
 
 describe("Computer repair and Agent rebind boundaries", () => {
+  it.each(["create", "rebind"] as const)(
+    "rejects an Agent %s that was waiting while its target Computer was removed",
+    async (operation) => {
+      const value = await fixture();
+      const blocker = createDatabaseClient(databaseUrl, { max: 1 });
+      const observer = createDatabaseClient(databaseUrl, { max: 1 });
+      const credentialLocked = deferred<void>();
+      const releaseCredential = deferred<void>();
+      let credentialBarrier: Promise<unknown> | undefined;
+      try {
+        const target = await enroll(value);
+        const source = operation === "rebind" ? await enroll(value) : undefined;
+        const agent = source ? await createAgent(value, source.workspaceComputerId, "reverse-rebind") : undefined;
+        const computerService = new ComputerService(value.database, {
+          getActiveUserById: async () => {
+            throw new Error("Computer removal does not resolve an active user");
+          },
+        });
+
+        credentialBarrier = blocker.sql.begin(async (transaction) => {
+          await transaction`
+            select id
+            from computer_credentials
+            where computer_id = ${target.workspaceComputerId} and revoked_at is null
+            for update
+          `;
+          credentialLocked.resolve();
+          await releaseCredential.promise;
+        });
+        await credentialLocked.promise;
+
+        const removal = computerService.removeFromAccount(value.bootstrap.userId, target.workspaceComputerId);
+        await waitUntil(async () => {
+          const result = await observer.sql<{ waiting: boolean }[]>`
+            select exists (
+              select 1
+              from pg_stat_activity
+              where datname = current_database()
+                and wait_event_type = 'Lock'
+                and wait_event = 'transactionid'
+                and query like 'update "computer_credentials"%'
+            ) as waiting
+          `;
+          return result[0]?.waiting ?? false;
+        });
+
+        const mutation = agent
+          ? value.agents.rebindById(value.bootstrap.userId, agent.id, target.workspaceComputerId)
+          : createAgent(value, target.workspaceComputerId, "reverse-create");
+        await waitUntil(async () => {
+          const result = await observer.sql<{ waiting: boolean }[]>`
+            select exists (
+              select 1
+              from pg_stat_activity
+              where datname = current_database()
+                and wait_event_type = 'Lock'
+                and wait_event = 'transactionid'
+                and query like '%from "account_computers"%for update%'
+            ) as waiting
+          `;
+          return result[0]?.waiting ?? false;
+        });
+
+        releaseCredential.resolve();
+        await credentialBarrier;
+        const [removalResult, mutationResult] = await Promise.allSettled([removal, mutation]);
+        expect(removalResult.status).toBe("fulfilled");
+        expect(mutationResult).toMatchObject({
+          status: "rejected",
+          reason: { code: "COMPUTER_NOT_FOUND", statusCode: 404 },
+        });
+        expect(
+          await value.database.select().from(agents).where(eq(agents.computerId, target.workspaceComputerId)),
+        ).toEqual([]);
+        if (agent && source) {
+          expect((await value.database.select().from(agents).where(eq(agents.id, agent.id)))[0]).toMatchObject({
+            computerId: source.workspaceComputerId,
+            workspaceComputerId: source.workspaceComputerId,
+          });
+        }
+      } finally {
+        releaseCredential.resolve();
+        if (credentialBarrier) await Promise.allSettled([credentialBarrier]);
+        await Promise.all([value.sql.end(), blocker.sql.end(), observer.sql.end()]);
+      }
+    },
+  );
+
   it("serializes Computer removal with an exact-target Agent rebind without a lock-order deadlock", async () => {
     const value = await fixture();
     const observer = createDatabaseClient(databaseUrl, { max: 1 });

@@ -1007,18 +1007,27 @@ export class AgentService {
     accountId: string,
     computerId: string,
   ): Promise<{ id: string; workspaceId: string }> {
-    // Historical rows remain repairable, but an Agent target must have live enrollment access.
+    // Lock ownership first, then re-read and lock the active credential in a new statement. Under
+    // READ COMMITTED, a joined FOR UPDATE can keep the snapshot from before it waited on the
+    // Computer row and accept a credential that removal revoked while holding that lock.
     const [computer] = await transaction
       .select({ id: accountComputers.id })
       .from(accountComputers)
-      .innerJoin(
-        computerCredentials,
-        and(eq(computerCredentials.computerId, accountComputers.id), isNull(computerCredentials.revokedAt)),
-      )
       .where(and(eq(accountComputers.id, computerId), eq(accountComputers.ownerAccountId, accountId)))
       .limit(1)
-      .for("update", { of: accountComputers });
+      .for("update");
     if (!computer) {
+      throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+    }
+    // Historical Computer rows remain repairable, but an Agent target must keep live enrollment
+    // access until this Agent transaction commits.
+    const [credential] = await transaction
+      .select({ id: computerCredentials.id })
+      .from(computerCredentials)
+      .where(and(eq(computerCredentials.computerId, computer.id), isNull(computerCredentials.revokedAt)))
+      .limit(1)
+      .for("update");
+    if (!credential) {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }
     const schemaWorkspaceId = await schemaWorkspaceIdForComputer(transaction, computer.id);

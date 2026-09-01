@@ -21,28 +21,85 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "@babel/parser";
+import { ImProviderSchema } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
+import { locales, overwriteGetLocale } from "../paraglide/runtime.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel } from "./provider-label.js";
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const sourceRoot = resolve(webRoot, "src");
 const messagesRoot = resolve(webRoot, "messages");
 
-/** Every brand this product may ever show for a messaging channel, in either script. */
-const BRANDS = /Feishu|Lark|Slack|飞书/;
+/**
+ * The names to look for, asked of the helper rather than listed here.
+ *
+ * A written-out list would need somebody to remember to extend it, which is the failure this guard
+ * exists to remove: the exhaustive `switch` forces a new provider to be given a name, but it cannot
+ * force a separate list of spellings to learn about it. Adding a provider — or a second brand for
+ * an existing one — therefore widens this set on its own, in every locale a reader can read.
+ */
+function guardedBrands(): string[] {
+  const names = new Set<string>();
+  const restore = () => overwriteGetLocale(() => "en");
+  try {
+    for (const locale of locales) {
+      overwriteGetLocale(() => locale);
+      for (const provider of ImProviderSchema.options) names.add(messagingProviderLabel(provider));
+      names.add(messagingProviderAlternateBrand());
+    }
+  } finally {
+    restore();
+  }
+  return [...names];
+}
+
+const BRANDS = new RegExp(
+  guardedBrands()
+    .map((name) => name.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|"),
+);
 
 /**
- * Files that may spell a brand, and the reason each is exempt. A path leaves this list by having
- * its copy moved behind the helper, not by being deleted from here.
+ * The one file where a brand may be written, because it is where a provider becomes a name.
  */
-const ALLOWED = new Map<string, string>([
-  ["im/provider-label.ts", "the naming point itself: this is where a provider becomes a name"],
-  ["setup/copy.ts", "pre-i18n copy that never moved into a catalogue; tracked by #241"],
+const NAMING_POINT = "im/provider-label.ts";
+
+/**
+ * Everywhere else, exemptions are exact strings rather than whole files.
+ *
+ * A file-level exemption hides the next literal somebody adds to that file, which is precisely the
+ * accident this guard is for. Listing the text means a new brand-bearing string is caught even in a
+ * module that already has one, and it makes each exemption a sentence somebody chose to keep.
+ */
+const ALLOWED_TEXT = new Map<string, { readonly reason: string; readonly text: ReadonlySet<string> }>([
   [
-    "features/agents/agent-presentation.ts",
-    "three recovery sentences that no longer render at all; deletion tracked by #336",
+    "setup/copy.ts",
+    {
+      reason: "pre-i18n copy that never moved into a catalogue; migration tracked by #241",
+      text: new Set([
+        "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
+        "Add to Slack",
+        "Waiting for you to finish in Slack\u2026",
+      ]),
+    },
   ],
-  ["mock/task-data.ts", "demo fixtures, not product copy"],
-  ["onboarding-v2/mock-backend.ts", "demo fixtures, not product copy"],
+  [
+    "mock/task-data.ts",
+    {
+      reason: "demo fixtures standing in for real Task sources, not product copy",
+      text: new Set([
+        "Feishu \u00b7 Product Launch",
+        "Feishu \u00b7 Customer Feedback",
+        "Feishu \u00b7 Engineering onboarding",
+        "Searched 12 Feishu messages",
+        "Read 2 Feishu sources",
+      ]),
+    },
+  ],
+  [
+    "onboarding-v2/mock-backend.ts",
+    { reason: "demo fixture for the Slack return step", text: new Set(["Return from Slack"]) },
+  ],
 ]);
 
 interface Finding {
@@ -80,7 +137,7 @@ function sourceFindings(): Finding[] {
 
   for (const file of files) {
     const path = relative(sourceRoot, file).replaceAll("\\", "/");
-    if (path.startsWith("__tests__/") || path.startsWith("paraglide/") || ALLOWED.has(path)) continue;
+    if (path.startsWith("__tests__/") || path.startsWith("paraglide/") || path === NAMING_POINT) continue;
     const syntax = parse(readFileSync(file, "utf8"), { plugins: ["typescript", "jsx"], sourceType: "module" });
 
     walk(syntax, (node) => {
@@ -114,8 +171,8 @@ function describeFindings(findings: readonly Finding[]): string {
 
 describe("only the label helper names a messaging channel", () => {
   it("finds no brand spelled in reader-facing source", () => {
-    const findings = sourceFindings();
-    expect(describeFindings(findings)).toBe("");
+    const unexplained = sourceFindings().filter((finding) => !ALLOWED_TEXT.get(finding.path)?.text.has(finding.text));
+    expect(describeFindings(unexplained)).toBe("");
   });
 
   /*
@@ -128,12 +185,29 @@ describe("only the label helper names a messaging channel", () => {
     expect(describeFindings(findings)).toBe("");
   });
 
-  /** An exemption that no longer matches a real file is an exemption nobody is being asked about. */
-  it("keeps every allowlist entry pointing at a file that still spells a brand", () => {
-    const stale = [...ALLOWED.keys()].filter((path) => {
-      const file = resolve(sourceRoot, path);
-      return !BRANDS.test(readFileSync(file, "utf8"));
-    });
+  /*
+   * Staleness is read from the same parsed reader text the guard itself uses, not from the file's
+   * bytes. A brand left in a comment or an identifier would keep a byte-level check green forever,
+   * so an exemption could outlive the literal it was granted for and leave the module unguarded —
+   * the exact state this assertion claims to prevent.
+   */
+  it("keeps every exempted string matching a literal the guard still sees", () => {
+    const seen = new Map<string, Set<string>>();
+    for (const finding of sourceFindings()) {
+      (seen.get(finding.path) ?? seen.set(finding.path, new Set()).get(finding.path))?.add(finding.text);
+    }
+    const stale: string[] = [];
+    for (const [path, { text }] of ALLOWED_TEXT) {
+      for (const exempt of text) {
+        if (!seen.get(path)?.has(exempt)) stale.push(`${path}: ${JSON.stringify(exempt)}`);
+      }
+    }
     expect(stale).toEqual([]);
+  });
+
+  /** The set the guard looks for has to be the set the helper can produce, or it guards nothing. */
+  it("looks for every name the label helper can return", () => {
+    expect(guardedBrands().toSorted()).toEqual(["Feishu", "Lark", "Slack", "飞书"].toSorted());
+    for (const brand of guardedBrands()) expect(BRANDS.test(brand)).toBe(true);
   });
 });

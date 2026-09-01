@@ -24,7 +24,10 @@ The pull-request smoke path is intentionally separate from that serial journey:
 pnpm test:e2e:smoke
 ```
 
-It runs the four read-only browser smoke flows with four workers. Run only this package after a build with
+It runs read-only browser smoke flows with four workers. The responsive contract maps the four product acceptance widths
+to one stable purpose each: minimum-width sign-in at 320px, touch dialog behavior at 390px, the Account layout transition
+at 768px, and the bounded desktop content frame at 1440px. Each path checks page overflow and axe accessibility in
+addition to its width-specific behavior. Run only this package after a build with
 `pnpm --filter @opentag/e2e test:e2e:smoke` or `pnpm --filter @opentag/e2e e2e:journey`. Set `OPENTAG_E2E_CHROMIUM` only
 when a specific Chromium executable is required. The default uses the Chromium binary managed by Playwright.
 

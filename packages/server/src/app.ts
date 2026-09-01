@@ -3,7 +3,7 @@ import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
-import Fastify, { type FastifyLoggerOptions } from "fastify";
+import Fastify, { type FastifyLoggerOptions, LogController } from "fastify";
 import { registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
@@ -149,7 +149,7 @@ export function createApp(options: CreateAppOptions = {}) {
      * straight into Pino and OTel. Doing the read here keeps the header contract but validates it.
      */
     requestIdHeader: false,
-    requestIdLogLabel: "requestId",
+    logController: new LogController({ requestIdLogLabel: "requestId" }),
     genReqId: (request) => safeInboundRequestId(request.headers["x-request-id"]) ?? randomUUID(),
     logger: createFastifyLoggerOptions(options),
   });

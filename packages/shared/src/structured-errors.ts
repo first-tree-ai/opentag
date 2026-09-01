@@ -516,6 +516,7 @@ function fallbackSerializedValueEnd(value: string, from: number): number {
 type SerializedCredentialValueSpan = {
   complete: boolean;
   end: number;
+  kind?: "quoted" | "structural" | "unquoted";
 };
 
 function serializedCredentialValueSpan(value: string, from: number): SerializedCredentialValueSpan {
@@ -523,18 +524,22 @@ function serializedCredentialValueSpan(value: string, from: number): SerializedC
   if (firstCharacter === undefined) return { complete: false, end: fallbackSerializedValueEnd(value, from) };
 
   let end: number | undefined;
+  let kind: SerializedCredentialValueSpan["kind"];
   if (isCredentialQuote(firstCharacter.value)) {
+    kind = "quoted";
     end = serializedQuotedValueEnd(value, firstCharacter.next, firstCharacter.value);
   } else if (firstCharacter.value === "[" || firstCharacter.value === "{") {
+    kind = "structural";
     const closer = firstCharacter.value === "[" ? "]" : "}";
     end = serializedStructuralValueEnd(value, from, firstCharacter.value, closer);
   } else if (firstCharacter.value !== "\\") {
+    kind = "unquoted";
     end = serializedUnquotedValueEnd(value, from);
   }
 
   return end === undefined
     ? { complete: false, end: fallbackSerializedValueEnd(value, from) }
-    : { complete: true, end };
+    : { complete: true, end, kind };
 }
 
 type CredentialHeaderScrub = {
@@ -576,6 +581,7 @@ function scrubSerializedCredentialField(
 ): string {
   const failClosed = `${value.slice(fieldStart, valueStart)}${SERIALIZED_REDACTED_VALUE}`;
   if (!valueSpan.complete) return failClosed;
+  if (valueSpan.kind === "quoted" || valueSpan.kind === "structural") return failClosed;
 
   const field = value.slice(fieldStart, valueSpan.end);
   const decoded = decodeOneSerializationLayer(field);

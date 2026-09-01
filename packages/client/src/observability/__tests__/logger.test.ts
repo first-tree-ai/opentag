@@ -185,6 +185,44 @@ describe("Client logger", () => {
     expect(emitted).toContain("2. X-Safe: ok");
   });
 
+  it("scrubs encoded line breaks inside serialized credential values at the emitted NDJSON boundary", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+    const cases = [
+      [
+        String.raw`{\"cookie\":\"a=1\r\nb=deep-secret\",\"other\":\"keep\"}`,
+        String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      ],
+      [
+        String.raw`{\"cookie\":\"a=1\nb=deep-secret\",\"other\":\"keep\"}`,
+        String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      ],
+      [
+        String.raw`{\"cookie\":\"a=1\n  b=deep-secret\",\"other\":\"keep\"}`,
+        String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      ],
+      [
+        String.raw`{\"authorization\":\"Bearer x\nnonce=deep-secret\",\"other\":\"keep\"}`,
+        String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      ],
+      [
+        String.raw`{\"set-cookie\":[\"a=1\nb=deep-secret\"],\"other\":\"keep\"}`,
+        String.raw`{\"set-cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      ],
+    ] as const;
+
+    const logger = createLogger("encoded-line-breaks");
+    for (const [message] of cases) logger.error({}, message);
+
+    const lines = (await readFile(join(directory, "client.log"), "utf8")).trim().split("\n");
+    const records = lines.map((line) => JSON.parse(line) as { message: string });
+    expect(records.map((record) => record.message)).toEqual(cases.map(([, expected]) => expected));
+    const emitted = records.map((record) => record.message).join("\n");
+    expect(emitted).not.toContain("deep-secret");
+    expect(emitted).toContain(String.raw`\"other\":\"keep\"`);
+  });
+
   it("scopes serialized credential scrubbing at the emitted NDJSON boundary", async () => {
     const directory = await temporaryDirectory();
     process.env.OPENTAG_LOG_LEVEL = "info";

@@ -308,6 +308,34 @@ describe("structured error redaction", () => {
 
   it.each([
     [
+      String.raw`{\"cookie\":\"a=1\r\nb=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"cookie\":\"a=1\nb=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"cookie\":\"a=1\n  b=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"authorization\":\"Bearer x\nnonce=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"set-cookie\":[\"a=1\nb=deep-secret\"],\"other\":\"keep\"}`,
+      String.raw`{\"set-cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+  ])("redacts encoded line breaks as content of one serialized credential value", (input, expected) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).not.toContain("deep-secret");
+    expect(redacted).toContain(String.raw`\"other\":\"keep\"`);
+  });
+
+  it.each([
+    [
       String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
       String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
       String.raw`C:\Users\me\bin`,

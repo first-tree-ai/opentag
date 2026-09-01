@@ -151,26 +151,70 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 
+const CREDENTIAL_HEADER_PATTERN = /\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*/giu;
+
+function lineBreakStart(value: string, from: number): number {
+  const carriageReturn = value.indexOf("\r", from);
+  const lineFeed = value.indexOf("\n", from);
+  if (carriageReturn === -1) return lineFeed;
+  if (lineFeed === -1) return carriageReturn;
+  return Math.min(carriageReturn, lineFeed);
+}
+
+function lineBreakEnd(value: string, start: number): number {
+  if (value[start] === "\r" && value[start + 1] === "\n") return start + 2;
+  return start + 1;
+}
+
+function credentialHeaderValueEnd(value: string, from: number): number {
+  let cursor = from;
+  while (true) {
+    const breakStart = lineBreakStart(value, cursor);
+    if (breakStart === -1) return value.length;
+    const breakEnd = lineBreakEnd(value, breakStart);
+    if (value[breakEnd] !== " " && value[breakEnd] !== "\t") return breakStart;
+    cursor = breakEnd;
+  }
+}
+
+function isInlineCredentialHeader(value: string, offset: number): boolean {
+  if (offset === 0 || value[offset - 1] === "\n" || value[offset - 1] === "\r") return true;
+  let cursor = offset - 1;
+  while (cursor >= 0 && (value[cursor] === " " || value[cursor] === "\t")) cursor -= 1;
+  return cursor < 0 || !["{", ",", ";", "}"].includes(value[cursor] ?? "");
+}
+
+/*
+ * Consume a credential header through the end of its line and any RFC 7230 obs-fold continuation.
+ * A non-folded line break is left intact so the next genuine header remains visible. Inline matches
+ * are accepted only outside JSON-ish punctuation; this keeps `{authorization: x, other: y}` intact.
+ */
+function scrubCredentialHeaders(value: string): string {
+  let output = "";
+  let cursor = 0;
+  CREDENTIAL_HEADER_PATTERN.lastIndex = 0;
+  for (let match = CREDENTIAL_HEADER_PATTERN.exec(value); match; match = CREDENTIAL_HEADER_PATTERN.exec(value)) {
+    const offset = match.index;
+    if (!isInlineCredentialHeader(value, offset)) continue;
+    output += value.slice(cursor, offset);
+    output += `${match[0]}[REDACTED]`;
+    cursor = credentialHeaderValueEnd(value, offset + match[0].length);
+    CREDENTIAL_HEADER_PATTERN.lastIndex = cursor;
+  }
+  return output + value.slice(cursor);
+}
+
 function scrubString(value: string): string {
-  return (
+  return scrubCredentialHeaders(
     value
       .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
       .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")
-      /*
-       * Consume RFC 7230 obs-fold continuations after a credential header. A continuation line starts
-       * with SP or HTAB and belongs to the preceding header value, so the whole line is redacted; a
-       * line starting with anything else is the next genuine header and is preserved.
-       */
-      .replace(
-        /(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*)[^\r\n,;}]*(?:\r?\n[ \t][^\r\n]*)*/giu,
-        "$1[REDACTED]",
-      )
       .replace(
         /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
         "$1[REDACTED]",
       )
       .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
-      .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@")
+      .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@"),
   );
 }
 

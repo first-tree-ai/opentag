@@ -203,6 +203,19 @@ describe("structured error redaction", () => {
     expect(cookie.message).toContain("Content-Type: text/plain");
   });
 
+  it("redacts compound credential headers without swallowing JSON-ish fragments", () => {
+    const cookie = redactForLog("Cookie: session=first-secret; admin=second-secret");
+    expect(cookie).toBe("Cookie: [REDACTED]");
+    expect(cookie).not.toContain("second-secret");
+
+    const authorization = redactForLog('Authorization: Digest username="u", realm="r", nonce="deadbeef"');
+    expect(authorization).toBe("Authorization: [REDACTED]");
+    expect(authorization).not.toContain("realm");
+    expect(authorization).not.toContain("deadbeef");
+
+    expect(redactForLog("{authorization: x, other: y}")).toBe("{authorization: x, other: y}");
+  });
+
   it("scrubs and caps a bare string, which is how log messages cross the boundary", () => {
     expect(redactForLog("Authorization: Bearer message-secret")).not.toContain("message-secret");
     expect(new TextEncoder().encode(redactForLog("x".repeat(20_000))).byteLength).toBeLessThanOrEqual(

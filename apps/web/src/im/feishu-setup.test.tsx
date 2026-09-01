@@ -71,14 +71,14 @@ describe("FeishuSetup", () => {
     render(<Harness presentation="dialog" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    const dialog = await screen.findByRole("dialog", { name: "Connect Feishu" });
-    expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Open in Feishu" })).toBeTruthy();
+    const dialog = await screen.findByRole("dialog", { name: "Connect Lark" });
+    expect(await screen.findByRole("img", { name: "Scan this QR code in Lark" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open in Lark" })).toBeTruthy();
     expect(dialog.textContent).not.toContain("State:");
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(cancel).toHaveBeenCalledWith(firstAttemptId));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connect Feishu" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connect Lark" })).toBeNull());
   });
 
   it("shows a non-cancellable finishing state without the QR code", async () => {
@@ -89,10 +89,10 @@ describe("FeishuSetup", () => {
     render(<Harness presentation="dialog" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
-    await screen.findByRole("dialog", { name: "Update Feishu permissions" });
+    await screen.findByRole("dialog", { name: "Update Lark permissions" });
     expect(screen.getByText("Finishing connection…")).toBeTruthy();
-    expect(screen.queryByRole("img", { name: "Scan this QR code in Feishu" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Close Update Feishu permissions" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByRole("img", { name: "Scan this QR code in Lark" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close Update Lark permissions" }).hasAttribute("disabled")).toBe(true);
     expect(cancel).not.toHaveBeenCalled();
   });
 
@@ -111,9 +111,9 @@ describe("FeishuSetup", () => {
     fireEvent.click(button);
     fireEvent.click(button);
 
-    const link = (await screen.findByRole("link", { name: "Open Feishu authorization" })) as HTMLAnchorElement;
+    const link = (await screen.findByRole("link", { name: "Open Lark authorization" })) as HTMLAnchorElement;
     expect(link.href).toBe("https://open.feishu.cn/setup");
-    expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Scan this QR code in Lark" })).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("Loading setup")).toBeNull();
   });
@@ -158,7 +158,7 @@ describe("FeishuSetup", () => {
     await act(async () => undefined);
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
 
-    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Lark. Try scanning a new QR code.");
     expect(poll).toHaveBeenCalledTimes(1);
 
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
@@ -213,7 +213,7 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     expect(await screen.findByText(/already connected to another Agent/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry Lark setup" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
     expect(create.mock.calls.map(([, intent]) => intent)).toEqual(["replace", "replace"]);
@@ -234,12 +234,12 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     expect(await screen.findByText(/already connected to another Agent/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry Lark setup" }));
 
-    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t connect Lark. Try scanning a new QR code.");
     expect(screen.getByText(/State: failed/)).toBeTruthy();
     expect(screen.getByText(/already connected to another Agent/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry Feishu setup" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry Lark setup" })).toBeTruthy();
   });
 
   it("does not regress a terminal poll with a late reused start snapshot", async () => {
@@ -285,11 +285,11 @@ describe("FeishuSetup", () => {
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     await act(async () => undefined);
-    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Lark. Try scanning a new QR code.");
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
 
     expect(screen.getByText(/State: validating/)).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Lark. Try scanning a new QR code.");
     expect(poll).toHaveBeenCalledTimes(1);
   });
 
@@ -309,7 +309,7 @@ describe("FeishuSetup", () => {
     await act(async () => undefined);
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
-    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
+    expect(screen.getByRole("alert").textContent).toBe("Couldn’t connect Lark. Try scanning a new QR code.");
     await act(async () =>
       resolveReplacement(attempt({ id: secondAttemptId, intent: "replace", state: "awaiting_user" })),
     );
@@ -324,11 +324,11 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
-    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t connect Feishu. Try scanning a new QR code.");
+    expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t connect Lark. Try scanning a new QR code.");
   });
 
   it("explains a Server-reported failure the same way whether or not an attempt exists", async () => {
-    const unavailable = "Feishu is unavailable right now. Check the connection and try again.";
+    const unavailable = "Lark is unavailable right now. Check the connection and try again.";
     const start = vi
       .spyOn(browserApi, "createFeishuSetupAttempt")
       .mockRejectedValueOnce(
@@ -349,7 +349,7 @@ describe("FeishuSetup", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
-    expect(screen.getByText(/Feishu is unavailable right now/)).toBeTruthy();
+    expect(screen.getByText(/Lark is unavailable right now/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -363,7 +363,7 @@ describe("FeishuSetup", () => {
 
     const failedState = await screen.findByText(/State: failed/);
     expect(failedState.closest('[data-ui="feishu-setup-feedback"]')?.textContent).toContain(
-      "Couldn’t connect Feishu. Try scanning a new QR code.",
+      "Couldn’t connect Lark. Try scanning a new QR code.",
     );
   });
 });

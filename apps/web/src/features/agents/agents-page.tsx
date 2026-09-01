@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
+import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
@@ -9,7 +10,7 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
-import { agentCardStatus, titleCase } from "./agent-presentation.js";
+import { agentCardStatus } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
@@ -100,7 +101,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           <strong className="truncate text-base">{agent.displayName}</strong>
           <span className="flex items-center gap-1.5 text-sm text-kumo-subtle">
             {channel ? <ProviderIcon className="size-4" provider={channel} /> : null}
-            {channel ? titleCase(channel) : m.agents_messaging_not_connected()}
+            {channel ? messagingProviderLabel(channel) : m.agents_messaging_not_connected()}
           </span>
         </div>
       </div>

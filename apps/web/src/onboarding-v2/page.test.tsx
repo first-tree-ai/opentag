@@ -528,7 +528,10 @@ describe("OnboardingV2Page", () => {
       await advanceMock("Return from Slack");
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+      // The completion line has to name the channel the reader just connected. It said Lark for
+      // every route, which sent a Slack installer to an app their Agent is not in.
       expect(screen.getByText("Tag @opentag in Slack to put it to work.")).toBeTruthy();
+      expect(screen.queryByText(/in Lark/)).toBeNull();
     });
 
     it("offers the same Slack install on the cloud route", async () => {
@@ -548,6 +551,8 @@ describe("OnboardingV2Page", () => {
       await advanceMock("Return from Slack");
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+      expect(screen.getByText("Tag @opentag in Slack to put it to work.")).toBeTruthy();
+      expect(screen.queryByText(/in Lark/)).toBeNull();
     });
   });
 
@@ -651,6 +656,8 @@ describe("OnboardingV2Page", () => {
       await advanceMock("Scan QR code");
       await advanceMock("Confirm reachable");
       expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
+      // The positive control for the Slack assertions above: this route really does say Lark.
+      expect(screen.getByText("Tag @opentag in Lark to put it to work.")).toBeTruthy();
     });
 
     it("never names the runtime OpenTag uses for its own agent", async () => {

@@ -18,13 +18,13 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { SETUP_COPY } from "../setup/copy.js";
 import type { MessagingProvider, ReadinessFacts } from "./flow.js";
+import { messagingCliMissingCopy } from "./messaging-readiness-copy.js";
 import { MessagingStep } from "./steps.js";
 
 /** One set of facts that answers differently per provider: Lark's CLI is missing, Slack's is not. */
 const readiness: ReadinessFacts = { runtime: "ready", messagingCli: { feishu: "unavailable", slack: "ready" } };
 
-const warningFor = (provider: MessagingProvider): string =>
-  SETUP_COPY.messaging.cliMissing(SETUP_COPY.messaging[provider].title);
+const warningFor = (provider: MessagingProvider): string => messagingCliMissingCopy(provider);
 
 function renderStep(provider: MessagingProvider) {
   render(

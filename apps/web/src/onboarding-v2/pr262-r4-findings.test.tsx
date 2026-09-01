@@ -128,9 +128,9 @@ describe("resume at a4e2662", () => {
     render(<OnboardingV2Page onComplete={onComplete} />);
     await settle();
     await tick(5_000);
-    const lark = screen.queryByRole("button", { name: /Lark/ });
-    if (lark) {
-      fireEvent.click(lark);
+    const feishuButton = screen.queryByRole("button", { name: /Feishu/ });
+    if (feishuButton) {
+      fireEvent.click(feishuButton);
       await settle();
       await tick(5_000);
     }

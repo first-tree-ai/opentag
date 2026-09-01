@@ -163,11 +163,13 @@ describe("Agent persistence and authorization", () => {
             definition: expect.stringContaining("ON DELETE RESTRICT"),
           }),
           expect.objectContaining({ conname: "agents_creation_intent_pair" }),
-          expect.objectContaining({ conname: "agents_computer_pair" }),
         ]),
       );
       expect(constraints).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ conname: "agents_manager_computer_owner_fk" })]),
+        expect.arrayContaining([
+          expect.objectContaining({ conname: "agents_computer_pair" }),
+          expect.objectContaining({ conname: "agents_manager_computer_owner_fk" }),
+        ]),
       );
 
       const [activeNameIndex] = await value.sql<{ indexdef: string }[]>`

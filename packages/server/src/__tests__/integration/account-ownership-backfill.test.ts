@@ -820,7 +820,9 @@ describe("account-owned resource backfill migrations", () => {
         migrations: journal.entries.length,
         computers: 0,
         computer_credentials: 0,
-        agents_nullable: "NO",
+        // Current Agent creation intentionally permits an unbound row; execution remains blocked
+        // until the creator Account binds one of its Computers.
+        agents_nullable: "YES",
         slack_nullable: "NO",
       });
     } finally {

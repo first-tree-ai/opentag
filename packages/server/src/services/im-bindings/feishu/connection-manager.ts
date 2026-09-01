@@ -16,11 +16,13 @@ import {
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { classifyImInboundPersistenceError, type ImMessageInbox } from "../../im/index.js";
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
-import { FeishuAdapter } from "./adapter.js";
+import { FeishuAdapter, feishuEnvelopeEventId } from "./adapter.js";
 import { FeishuOperationError, safeFeishuConnectionErrorCode } from "./errors.js";
+import type { FeishuInboundReceiptStore } from "./inbound-receipt-store.js";
 import type { FeishuBindingActivation } from "./setup-service.js";
 
 type FeishuActivationInput = Parameters<FeishuBindingActivation["activateAtomicAttempt"]>[0];
+type FeishuInboundReceiptStoreLike = Pick<FeishuInboundReceiptStore, "claim" | "markProcessed" | "markFailed">;
 
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAINTENANCE_MS = 10_000;
@@ -55,6 +57,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #runtimeReady: (agentId: string) => Promise<boolean>;
   readonly #policy: ExternalCallPolicy;
+  readonly #receipts: FeishuInboundReceiptStoreLike | undefined;
   readonly #maintenanceBackoffBaseMs: number;
   readonly #maintenanceBackoffMaxMs: number;
   readonly #now: () => Date;
@@ -84,6 +87,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     runtimeReady?: (agentId: string) => Promise<boolean> | boolean;
     onDiagnostic?: (code: string) => void;
     supervisor?: BackgroundFailureSupervisor;
+    receipts?: FeishuInboundReceiptStoreLike;
     afterActivationAgentLocked?: () => Promise<void>;
     /* type-only */ policy?: ExternalCallPolicy;
     /* type-only */ maintenanceBackoffBaseMs?: number;
@@ -104,6 +108,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#now = input.now ?? (() => new Date());
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
     this.#supervisor = input.supervisor;
+    this.#receipts = input.receipts;
     this.#afterActivationAgentLocked = input.afterActivationAgentLocked;
   }
 
@@ -506,6 +511,39 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
                 externalMessageId: event.message.externalId,
               }),
             );
+            const receiptEventId = feishuEnvelopeEventId(event);
+            let receiptId: string | undefined;
+            if (this.#receipts && receiptEventId) {
+              setFailureCode("FEISHU_INBOUND_DATABASE_FAILED");
+              const claim = await this.#receipts.claim({
+                bindingId: handoff.imBindingId,
+                credentialGeneration: handoff.generation,
+                eventId: receiptEventId,
+              });
+              if (!claim.accepted || !claim.receiptId) {
+                emitRootSpan("feishu.inbound.deduplicated", {
+                  ...imAttrs({
+                    provider: "feishu",
+                    bindingId: handoff.imBindingId,
+                    providerEventId: receiptEventId,
+                    externalMessageId: event.message.externalId,
+                    duplicate: true,
+                  }),
+                  ...outcomeAttrs("duplicate"),
+                });
+                setActiveSpanAttributes({
+                  ...imAttrs({
+                    providerEventId: receiptEventId,
+                    externalMessageId: event.message.externalId,
+                    duplicate: true,
+                  }),
+                  ...outcomeAttrs("duplicate"),
+                });
+                continue;
+              }
+              receiptId = claim.receiptId;
+            }
+
             let result: Awaited<ReturnType<ImMessageInbox["ingest"]>>;
             try {
               setFailureCode("FEISHU_INBOUND_DATABASE_FAILED");
@@ -515,6 +553,9 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
                 fencingEpoch: handoff.epoch,
               });
             } catch (error) {
+              if (receiptId) {
+                await this.#receipts?.markFailed(receiptId, processingErrorCode(error)).catch(() => undefined);
+              }
               const code = classifyImInboundPersistenceError(error);
               setFailureCode(
                 code === "IM_INBOUND_FENCE_STALE" || code === "IM_INBOUND_BINDING_STALE"
@@ -525,6 +566,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
               );
               throw error;
             }
+            if (receiptId) await this.#receipts?.markProcessed(receiptId);
             setActiveSpanAttributes({
               ...imAttrs({
                 messageId: result.messageId,
@@ -672,6 +714,18 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   }
 }
 
+function processingErrorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
+    return error.code;
+  }
+  return "FEISHU_EVENT_PROCESSING_FAILED";
+}
+
+/**
+ * The Feishu adapter keeps a deterministic providerEventId when the envelope omits event_id so the
+ * inbox semantic key remains stable. That synthetic value is deliberately not claimed as a receipt:
+ * only a provider envelope event ID is a durable delivery receipt identity.
+ */
 function connectionOutcome(code: string): string {
   if (code.includes("STALE") || code.includes("FENCE") || code.includes("LEASE")) return "stale";
   if (code.includes("SCOPE") || code.includes("IDENTITY") || code.includes("CREDENTIAL")) {

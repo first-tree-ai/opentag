@@ -102,7 +102,12 @@ function knownFeishuSetupErrorCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
   if (error.code === "access_denied") return "FEISHU_SETUP_DENIED";
   if (error.code === "expired_token") return "FEISHU_SETUP_EXPIRED";
-  if (error.code === "abort") return "FEISHU_SETUP_CANCELED";
+  /*
+   * Two shapes for one event. The SDK reports its own abort as `abort`; when the cancellation is
+   * declared to the call policy — so that withdrawing a call is not counted as the provider failing
+   * — the policy surfaces it under its own code instead. Both mean the reader stopped.
+   */
+  if (error.code === "abort" || error.code === "IM_PROVIDER_CALL_ABORTED") return "FEISHU_SETUP_CANCELED";
   return undefined;
 }
 

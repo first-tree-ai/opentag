@@ -108,7 +108,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
        */}
       {terminalTasksError ? null : (
         <form
-          className="flex flex-col gap-3 @min-[48rem]/workspace:flex-row @min-[48rem]/workspace:items-center"
+          className="flex flex-col gap-3 @min-[48rem]/content:flex-row @min-[48rem]/content:items-center"
           aria-label={m.tasks_filter_tasks()}
           data-ui="task-toolbar"
           onSubmit={(event) => event.preventDefault()}
@@ -125,7 +125,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          <div className="flex w-full flex-col gap-3 @min-[36rem]/workspace:flex-row @min-[48rem]/workspace:ml-auto @min-[48rem]/workspace:w-auto">
+          <div className="flex w-full flex-col gap-3 @min-[36rem]/content:flex-row @min-[48rem]/content:ml-auto @min-[48rem]/content:w-auto">
             {!agentId ? (
               <TaskSelect
                 label={m.tasks_filter_by_agent()}
@@ -556,7 +556,7 @@ function TaskSelect({
   value: string;
 }) {
   return (
-    <div className="w-full @min-[36rem]/workspace:w-44">
+    <div className="w-full @min-[36rem]/content:w-44">
       <Select
         aria-label={label}
         className="w-full"

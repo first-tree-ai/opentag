@@ -2,7 +2,8 @@ import { paraglideVitePlugin } from "@inlang/paraglide-js";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig, type Plugin, type Rollup } from "vite";
+import type { Plugin, Rollup } from "vite";
+import { defineConfig } from "vitest/config";
 
 const ENTRY_CHUNK_BUDGET_BYTES = 600 * 1024;
 const ECHARTS_CHUNK_BUDGET_BYTES = 600 * 1024;
@@ -14,7 +15,7 @@ const ECHARTS_CHUNK_BUDGET_BYTES = 600 * 1024;
 const bundleBudgetPlugin: Plugin = {
   name: "opentag-bundle-budget",
   apply: "build",
-  generateBundle(_options: Rollup.OutputOptions, bundle: Rollup.OutputBundle) {
+  generateBundle(_options: Rollup.NormalizedOutputOptions, bundle: Rollup.OutputBundle) {
     const breaches = Object.values(bundle)
       .filter((output): output is Rollup.OutputChunk => output.type === "chunk")
       .flatMap((chunk) => {

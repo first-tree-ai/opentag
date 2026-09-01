@@ -150,15 +150,17 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: /^Pause or delete/ })).toBeTruthy();
     expect(dangerZone.querySelector('[data-ui="agent-settings-entry-icon"]')?.className).toContain("text-kumo-danger");
     expect(screen.queryByRole("heading", { name: "How it works" })).toBeNull();
-    const instructionsLink = screen.getByRole("link", { name: /^Instructions / });
+    // jsdom 30 no longer contributes inter-element whitespace to accessible names, so the
+    // label/value boundary may collapse; \s? keeps these queries engine-agnostic.
+    const instructionsLink = screen.getByRole("link", { name: /^Instructions\s?\S/ });
     expect(instructionsLink.className).toContain("focus-visible:ring-2");
     expect(within(instructionsLink).getByText("No custom instructions").className).toContain("text-kumo-subtle");
-    expect(screen.getByRole("link", { name: /^Model / })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /^Model\s?\S/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /^Name Reviewer$/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /^Name\s?Reviewer$/ })).toBeTruthy();
     expect(screen.getByText("Computer")).toBeTruthy();
     // Every row in the list opens; a row that is a link only sometimes cannot be predicted.
-    expect(screen.getByRole("link", { name: /^Computer / })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /^Computer\s?\S/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Pause or delete/ })).toBeTruthy();
     expect(screen.getByText("No custom instructions")).toBeTruthy();
     expect(screen.getByText("Codex · Provider defaults")).toBeTruthy();

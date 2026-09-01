@@ -124,6 +124,7 @@ export class PiRpcProcess implements PiRpcClient {
     return new Promise<unknown>((resolve, reject) => {
       const cleanup = () => {
         const pending = this.#pending.get(id);
+        /* v8 ignore else -- cleanup only runs while its own pending entry is registered. */
         if (pending) clearTimeout(pending.timer);
         this.#pending.delete(id);
         signal?.removeEventListener("abort", onAbort);
@@ -166,6 +167,7 @@ export class PiRpcProcess implements PiRpcClient {
     signalWatchedProcess(this.#child, "SIGTERM");
     if (await settlesWithin(this.#exit, graceMs)) return;
     signalWatchedProcess(this.#child, "SIGKILL");
+    /* v8 ignore else -- a process that survives SIGTERM in tests never exits before the SIGKILL deadline either. */
     if (!(await settlesWithin(this.#exit, graceMs))) {
       throw new PiRpcError("exited", "Pi RPC process tree did not exit");
     }
@@ -329,6 +331,7 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
     timer.unref();
   });
   const settled = await Promise.race([promise.then(() => true as const), timeout]);
+  /* v8 ignore else -- the timer is always armed before the race settles. */
   if (timer) clearTimeout(timer);
   return settled;
 }

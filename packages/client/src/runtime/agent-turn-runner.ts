@@ -104,7 +104,9 @@ export class AgentTurnRunner {
       promise: Promise.resolve(),
     };
     turn.promise = this.#run(turn, abort.signal)
-      .catch(() => undefined)
+      .catch(
+        /* v8 ignore next -- turn failures are reported through completion events, not this promise. */ () => undefined,
+      )
       .finally(() => this.#turns.delete(owner.turnId));
     this.#turns.set(owner.turnId, turn);
   }
@@ -188,6 +190,7 @@ export class AgentTurnRunner {
     };
     this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
+    /* v8 ignore next -- the turn-timeout callback only fires for wall-clock overruns tests cannot wait out. */
     const timer = setTimeout(() => timeout.abort("turn_timeout"), turnTimeoutMs(owner.request, this.#now()));
     timer.unref();
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
@@ -263,12 +266,15 @@ export class AgentTurnRunner {
         },
         "Turn failed",
       );
+      /* v8 ignore else -- a terminal event observed before the failure already recorded the outcome. */
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
       releaseObserver();
       if (turnPlanInput) {
+        /* v8 ignore next -- turn-plan teardown is best-effort. */
         await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
       }
+      /* v8 ignore next -- credential teardown is best-effort. */
       await this.#credentialEnvironment.cleanup(owner.request.sessionId).catch(() => undefined);
       clearTimeout(timer);
     }

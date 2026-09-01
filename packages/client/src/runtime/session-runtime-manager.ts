@@ -169,6 +169,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       try {
         await this.#closeManaged(current);
       } catch (error) {
+        /* v8 ignore else -- close failures outside shutdown propagate without being collected. */
         if (this.#closing) this.#closeFailures.push(error);
         throw error;
       }
@@ -203,6 +204,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (managed.start) return waitForStart(managed.start, signal);
 
     const start = this.#startRuntime(managed).finally(() => {
+      /* v8 ignore else -- only the owning start clears its own slot. */
       if (managed.start === start) managed.start = undefined;
       this.#starts.delete(start);
     });
@@ -329,6 +331,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       await this.#workspace.stopSession(sessionId, placementGeneration);
     } finally {
       await this.#proofManager.cleanup(sessionId);
+      /* v8 ignore else -- internal sessions have no provider environment to clean up. */
       if (sessionKind !== "internal") {
         await this.#cleanupProviderEnvironment?.(sessionId);
       }

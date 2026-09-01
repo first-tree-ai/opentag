@@ -151,7 +151,8 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 
-const CREDENTIAL_HEADER_PATTERN = /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*[:=][ \t]*/giu;
+const CREDENTIAL_HEADER_PATTERN =
+  /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*["']?[ \t]*[:=][ \t]*/giu;
 
 function lineBreakStart(value: string, from: number): number {
   const carriageReturn = value.indexOf("\r", from);
@@ -177,17 +178,46 @@ function credentialHeaderValueEnd(value: string, from: number): number {
   }
 }
 
-function isInlineCredentialHeader(value: string, offset: number): boolean {
-  if (offset === 0 || value[offset - 1] === "\n" || value[offset - 1] === "\r") return true;
-  let cursor = offset - 1;
-  while (cursor >= 0 && (value[cursor] === " " || value[cursor] === "\t")) cursor -= 1;
-  return cursor < 0 || !["{", ",", ";", "}"].includes(value[cursor] ?? "");
+type CredentialQuote = '"' | "'";
+
+function isCredentialQuote(character: string | undefined): character is CredentialQuote {
+  return character === '"' || character === "'";
+}
+
+function inlineQuotedCredentialValueEnd(
+  value: string,
+  from: number,
+  quote: CredentialQuote,
+): { end: number; quote?: string } {
+  for (let cursor = from + 1; cursor < value.length; cursor += 1) {
+    const character = value[cursor];
+    if (character === "\\") {
+      cursor += 1;
+      continue;
+    }
+    if (character === quote) return { end: cursor, quote };
+    if (character === "\r" || character === "\n") return { end: cursor };
+  }
+  return { end: value.length, quote };
+}
+
+function inlineUnquotedCredentialValueEnd(value: string, from: number): { end: number } {
+  for (let cursor = from; cursor < value.length; cursor += 1) {
+    if (",;}\"'\r\n".includes(value[cursor] ?? "")) return { end: cursor };
+  }
+  return { end: value.length };
+}
+
+function inlineCredentialValueEnd(value: string, from: number): { end: number; quote?: string } {
+  const openingQuote = value[from];
+  if (isCredentialQuote(openingQuote)) return inlineQuotedCredentialValueEnd(value, from, openingQuote);
+  return inlineUnquotedCredentialValueEnd(value, from);
 }
 
 /*
  * Consume a credential header through the end of its line and any RFC 7230 obs-fold continuation.
  * A non-folded line break is left intact so the next genuine header remains visible. Inline matches
- * are accepted only outside JSON-ish punctuation; this keeps `{authorization: x, other: y}` intact.
+ * stop at the delimiter for their surrounding JSON-ish or list value so sibling fields remain intact.
  */
 function scrubCredentialHeaders(value: string): string {
   let output = "";
@@ -195,10 +225,14 @@ function scrubCredentialHeaders(value: string): string {
   CREDENTIAL_HEADER_PATTERN.lastIndex = 0;
   for (let match = CREDENTIAL_HEADER_PATTERN.exec(value); match; match = CREDENTIAL_HEADER_PATTERN.exec(value)) {
     const offset = match.index;
-    if (!isInlineCredentialHeader(value, offset)) continue;
+    const lineAnchored = offset === 0 || value[offset - 1] === "\n" || value[offset - 1] === "\r";
+    const valueStart = offset + match[0].length;
+    const valueEnd = lineAnchored
+      ? { end: credentialHeaderValueEnd(value, valueStart) }
+      : inlineCredentialValueEnd(value, valueStart);
     output += value.slice(cursor, offset);
-    output += `${match[0]}[REDACTED]`;
-    cursor = credentialHeaderValueEnd(value, offset + match[0].length);
+    output += `${match[0]}${valueEnd.quote ?? ""}[REDACTED]`;
+    cursor = valueEnd.end;
     CREDENTIAL_HEADER_PATTERN.lastIndex = cursor;
   }
   return output + value.slice(cursor);

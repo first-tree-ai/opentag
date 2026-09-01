@@ -216,7 +216,23 @@ describe("structured error redaction", () => {
     expect(authorization).not.toContain("realm");
     expect(authorization).not.toContain("deadbeef");
 
-    expect(redactForLog("{authorization: x, other: y}")).toBe("{authorization: x, other: y}");
+    expect(redactForLog("{authorization: x, other: y}")).toBe("{authorization: [REDACTED], other: y}");
+  });
+
+  it("redacts inline credential values while preserving JSON and list siblings", () => {
+    const unquoted = redactForLog("{cookie: session=abc123secret, other: keepme}");
+    expect(unquoted).toBe("{cookie: [REDACTED], other: keepme}");
+    expect(unquoted).not.toContain("abc123secret");
+
+    const quoted = redactForLog('{"cookie":"session=abc123secret","other":"keepme"}');
+    expect(quoted).toBe('{"cookie":"[REDACTED]","other":"keepme"}');
+    expect(quoted).not.toContain("abc123secret");
+    expect(quoted).toContain("keepme");
+
+    const semicolonList = redactForLog("ctx: a=1; authorization=tok_live_SECRET; b=2");
+    expect(semicolonList).toBe("ctx: a=1; authorization=[REDACTED]; b=2");
+    expect(semicolonList).not.toContain("tok_live_SECRET");
+    expect(semicolonList).toContain("b=2");
   });
 
   it("scrubs and caps a bare string, which is how log messages cross the boundary", () => {

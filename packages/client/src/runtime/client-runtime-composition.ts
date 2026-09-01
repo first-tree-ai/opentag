@@ -1,16 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, mkdir, realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { delimiter, join, resolve } from "node:path";
 import {
   type AgentRuntimeProvider,
   computeRuntimeSnapshotHashes,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
-  type RuntimeImCliReadinessObservation,
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
@@ -80,7 +76,6 @@ import { TurnReportOwner } from "./turn-report-owner.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
 const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
-const execFileAsync = promisify(execFile);
 
 interface SharedProviderRefresh {
   readonly controller: AbortController;
@@ -255,8 +250,6 @@ export interface CreateClientRuntimeOptions {
   readonly codexHome?: string;
   readonly claudeCodeCommand?: string;
   readonly claudeCodeHome?: string;
-  readonly larkCliCommand?: string;
-  readonly slackCliCommand?: string;
   readonly cliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
@@ -726,56 +719,6 @@ export function providerReadiness(
   return { provider, status: "unavailable" };
 }
 
-export async function refreshImCliReadiness(
-  connection: Pick<RuntimeConnection, "setImCliReadiness">,
-  provider: RuntimeImCliReadinessObservation["provider"],
-  configuredCommand: string,
-  environment: NodeJS.ProcessEnv,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (signal?.aborted) return;
-  connection.setImCliReadiness({ provider, status: "checking" });
-  const probe = (async () => {
-    let command: string;
-    try {
-      command = await resolveExecutable(configuredCommand, environment);
-    } catch {
-      return "install" as const;
-    }
-    const execution = { env: environment, signal, timeout: 10_000, windowsHide: true } as const;
-    try {
-      if (provider === "feishu") {
-        await execFileAsync(command, ["--version"], execution);
-        await execFileAsync(command, ["im", "--help"], execution);
-      } else {
-        await execFileAsync(command, ["version"], execution);
-        await execFileAsync(command, ["api", "--help"], execution);
-      }
-      return "ready" as const;
-    } catch {
-      return "unavailable" as const;
-    }
-  })();
-  let onAbort: (() => void) | undefined;
-  const status = await (signal
-    ? Promise.race([
-        probe,
-        new Promise<"aborted">((resolve) => {
-          if (signal.aborted) {
-            resolve("aborted");
-            return;
-          }
-          onAbort = () => resolve("aborted");
-          signal.addEventListener("abort", onAbort, { once: true });
-        }),
-      ]).finally(() => {
-        if (onAbort) signal.removeEventListener("abort", onAbort);
-      })
-    : probe);
-  if (status === "aborted" || signal?.aborted) return;
-  connection.setImCliReadiness({ provider, status });
-}
-
 export interface ResolvedCodexFactoryOptions {
   readonly clientVersion: string;
   readonly codexHome: string;
@@ -1016,30 +959,6 @@ function requireReadyClaudeCodeFactory(
 
 export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
-}
-
-export async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
-  if (isAbsolute(command)) {
-    await access(command, constants.X_OK);
-    return realpath(command);
-  }
-  const path = environment.PATH;
-  if (!path) throw new Error("PATH is unavailable while locating an Agent Runtime provider");
-  /* v8 ignore next -- executable suffix probing is a Windows-only branch. */
-  const extensions = process.platform === "win32" ? (environment.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
-  for (const directory of path.split(delimiter)) {
-    if (!directory) continue;
-    for (const extension of extensions) {
-      const candidate = join(directory, `${command}${extension}`);
-      try {
-        await access(candidate, constants.X_OK);
-        return await realpath(candidate);
-      } catch {
-        // Continue through the explicit PATH allowlist.
-      }
-    }
-  }
-  throw new Error("A compatible Agent Runtime provider executable is unavailable");
 }
 
 interface ClientRuntimePreflightDependencies {

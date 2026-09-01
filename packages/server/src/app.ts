@@ -127,10 +127,30 @@ function contentTypeParserErrorStatus(error: unknown): number | undefined {
   return typeof statusCode === "number" && statusCode >= 400 && statusCode < 500 ? statusCode : undefined;
 }
 
+/** Bounded, log-safe shape for a caller-supplied correlation id: the shared request-id contract. */
+const SAFE_REQUEST_ID = /^[A-Za-z0-9._:-]{1,256}$/;
+
+/**
+ * Accept an inbound `x-request-id` only when it matches the bounded identifier contract shared with
+ * `StructuredError.requestId`. Anything longer, multi-valued, or carrying characters that would be
+ * awkward in a log or span attribute is rejected so the caller gets a minted UUID instead.
+ */
+export function safeInboundRequestId(header: string | string[] | undefined): string | undefined {
+  if (typeof header !== "string") return undefined;
+  const candidate = header.trim();
+  return SAFE_REQUEST_ID.test(candidate) ? candidate : undefined;
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
-    requestIdHeader: "x-request-id",
-    genReqId: () => randomUUID(),
+    /*
+     * requestIdHeader is deliberately false. When it names a header, Fastify adopts that value
+     * verbatim and never calls genReqId, so an unbounded or colliding caller-chosen id would flow
+     * straight into Pino and OTel. Doing the read here keeps the header contract but validates it.
+     */
+    requestIdHeader: false,
+    requestIdLogLabel: "requestId",
+    genReqId: (request) => safeInboundRequestId(request.headers["x-request-id"]) ?? randomUUID(),
     logger: createFastifyLoggerOptions(options),
   });
   const readiness = options.readiness ?? new BootstrapReadiness();

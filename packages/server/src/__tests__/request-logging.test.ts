@@ -22,6 +22,40 @@ describe("request logging", () => {
     }
   });
 
+  it("rejects an inbound request id that breaks the bounded contract", async () => {
+    const oversized = "a".repeat(1024);
+    let observed: string | undefined;
+    const app = createApp({ loggerStream: { write: () => undefined } });
+    app.addHook("onRequest", async (request) => {
+      observed = request.id;
+    });
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/healthz",
+        headers: { "x-request-id": oversized },
+      });
+      expect(observed).not.toBe(oversized);
+      expect((observed ?? "").length).toBeLessThanOrEqual(256);
+      expect(response.headers["x-request-id"]).not.toBe(oversized);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("names the request id field as the documented requestId", async () => {
+    const chunks: string[] = [];
+    const app = createApp({ loggerStream: { write: (chunk) => chunks.push(String(chunk)) } });
+    try {
+      await app.inject({ method: "GET", url: "/healthz", headers: { "x-request-id": "probe-1" } });
+    } finally {
+      await app.close();
+    }
+    const logs = chunks.join("");
+    expect(logs).toContain('"requestId"');
+    expect(logs).not.toContain('"reqId"');
+  });
+
   it("removes query credentials from logged URLs", () => {
     expect(sanitizeRequestUrl("/api/v1/auth/google/callback?code=secret-code&state=secret-state")).toBe(
       "/api/v1/auth/google/callback",

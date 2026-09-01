@@ -55,11 +55,13 @@ export class ProviderCliReconciler {
   readonly #grants = new Map<string, GrantState>();
   readonly #manager: ProviderCliReconcilerOptions["manager"];
   readonly #now: () => number;
+  readonly #frameJobs = new Set<Promise<void>>();
   readonly #providerJobs = new Map<ProviderCliProvider, Promise<ProviderCliArtifactStatusFrame["status"]>>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
   readonly #unsubscribe: () => void;
   readonly #validation: ProviderCliReconcilerOptions["validation"];
+  #closePromise?: Promise<void>;
   #closed = false;
 
   constructor(options: ProviderCliReconcilerOptions) {
@@ -68,15 +70,28 @@ export class ProviderCliReconciler {
     this.#now = options.now ?? Date.now;
     this.#signal = options.signal;
     this.#validation = options.validation;
-    this.#unsubscribe = this.#connection.subscribeBusinessFrames((frame) => this.#handleFrame(frame));
+    this.#unsubscribe = this.#connection.subscribeBusinessFrames((frame) => this.#trackFrame(frame));
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    this.#closePromise ??= this.#performClose();
+    return this.#closePromise;
+  }
+
+  async #performClose(): Promise<void> {
     this.#closed = true;
     this.#unsubscribe();
     this.#abortAll();
+    await Promise.allSettled([...this.#frameJobs]);
     await this.#validation.cleanupAll();
+  }
+
+  #trackFrame(frame: RuntimeBusinessFrame): Promise<void> {
+    const job = this.#handleFrame(frame).finally(() => {
+      this.#frameJobs.delete(job);
+    });
+    this.#frameJobs.add(job);
+    return job;
   }
 
   /**

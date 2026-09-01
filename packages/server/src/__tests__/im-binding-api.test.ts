@@ -1040,6 +1040,13 @@ describe("ImBindingService persistence", () => {
       agentId: agent.id,
       workspaceComputerId: workspaceComputer.id,
     });
+    const slack = await service.activateSlack(slackInput(agent.id), "B1");
+    changed.mockClear();
+    await expect(service.requireReauthorization(slack.imBindingId, 1, "SLACK_TOKEN_REVOKED")).resolves.toBe(true);
+    expect(changed).toHaveBeenCalledWith({
+      agentId: agent.id,
+      workspaceComputerId: workspaceComputer.id,
+    });
   });
 
   it("fails closed when Provider CLI observation callbacks are omitted", async () => {

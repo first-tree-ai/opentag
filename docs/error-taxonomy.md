@@ -1,5 +1,7 @@
 # Error taxonomy and background supervision
 
+[简体中文](./zh-CN/error-taxonomy.md)
+
 OpenTag reports operational failures as a small, structured diagnostic event. The event is safe to
 send to a log sink, metric exporter, or trace because the payload is redacted before it crosses that
 boundary. A structured error is an operational contract, not an API response contract: keep the
@@ -63,6 +65,21 @@ Redaction is a last boundary, not permission to put secrets in a diagnostic obje
 complete request bodies, prompts, provider responses, cookies, authorization headers, access
 tokens, passwords, or connection strings. Preserve the original exception for the business path;
 only the derived structured error is observable.
+
+## Logging vocabulary and levels
+
+Operational logs use one fixed Pino key per concept. Use `module`, `operation`, `requestId`, `workspaceId`, `agentId`,
+`computerId`, `sessionId`, `deliveryId`, `provider`, `outcome`, `errorCode`, `attempt`, `durationMs`, and `status` for
+their corresponding values. In particular, `errorCode` is the only field for a structured failure identity; do not use
+`reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` as synonyms. `error` means terminal or unrecoverable,
+`warn` means handled or degraded, `info` means a state transition, and `debug` means per-request detail.
+
+The client `OPENTAG_LOG_LEVEL` behavior is: an unset test logger is `silent`, an unset service or explicit file/dual logger
+is `info`, an unset one-shot logger is `warn`, a valid level selects that level, and an invalid value falls back to `info`
+with one safe warning. The supported values are `trace`, `debug`, `info`, `warn`, `error`, `fatal`, and `silent`.
+
+`imAttrs()` and `runtimeAttrs()` emit dotted OpenTelemetry span keys. They are not Pino payloads. Convert their values to
+the fixed log vocabulary before writing a log record.
 
 ## Adoption guide
 

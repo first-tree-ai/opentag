@@ -20,9 +20,9 @@
 - Shared redaction now caps recursively redacted string values at 4 KiB UTF-8 and is available from both package barrels; the focused shared suite and Web build pass, with the Web entry chunk below the 600 KiB budget.
 - Shared and server foundations are committed (`d0cb63ac`, `e3b89f9c`). Focused request, observability, service-logger, and type checks pass. The existing span contract requires generic `INTERNAL_ERROR` status while the exception event now carries scrubbed error type/message.
 - A follow-up extracted Fastify logger option construction from `createApp`; the complexity ratchet now passes for this changed function without altering business behavior.
-- Client logger work is implemented and its focused logger, rotation, public-export, and type checks pass (15 tests); its coherent commit is next.
-- Item 11 vocabulary, English/Chinese documentation, and Docker caps are implemented locally and will be committed after the client unit.
-- `pnpm check` currently fails on pre-existing Biome cognitive-complexity diagnostics in unrelated CLI/Web files. This is recorded as a baseline deviation; no unrelated business modules were changed.
+- Client logger work is committed (`6e50e246`); its focused logger, rotation, public-export, and type checks pass (16 tests).
+- Item 11 vocabulary, English/Chinese documentation, and Docker caps are implemented locally; the docs unit is next.
+- `pnpm check` now passes after extracting logger option construction from `createApp`; it reports existing complexity diagnostics as warnings and the complexity ratchet passes.
 
 ## Decisions / deviations
 

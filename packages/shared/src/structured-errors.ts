@@ -154,7 +154,8 @@ function isSensitiveKey(key: string): boolean {
 const CREDENTIAL_HEADER_PATTERN =
   /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*["']?[ \t]*[:=][ \t]*/giu;
 const SERIALIZED_CREDENTIAL_FIELD_PATTERN =
-  /\\+(?:["'])(?:authorization|proxy-authorization|cookie|set-cookie)\\+(?:["'])[ \t]*[:=]/iu;
+  /\\+(?:["'])(?:authorization|proxy-authorization|cookie|set-cookie)\\+(?:["'])[ \t]*[:=][ \t]*/giu;
+const SERIALIZED_SIBLING_FIELD_PATTERN = /^[ \t]*\\+(?:["'])[A-Za-z0-9_.-]+\\+(?:["'])[ \t]*:/u;
 
 function lineBreakStart(value: string, from: number): number {
   const carriageReturn = value.indexOf("\r", from);
@@ -384,20 +385,20 @@ function decodeSerializationEscape(value: string, position: number): { next: num
   return { next: position + 6, value: String.fromCharCode(Number.parseInt(hexadecimal, 16)) };
 }
 
+function decodeSerializationCharacter(value: string, position: number): { next: number; value: string } | undefined {
+  const character = value[position];
+  if (character === undefined) return undefined;
+  return character === "\\" ? decodeSerializationEscape(value, position) : { next: position + 1, value: character };
+}
+
 function decodeOneSerializationLayer(value: string): string | undefined {
   let output = "";
   let cursor = 0;
   while (cursor < value.length) {
-    const character = value[cursor] ?? "";
-    if (character !== "\\") {
-      output += character;
-      cursor += 1;
-      continue;
-    }
-    const decodedEscape = decodeSerializationEscape(value, cursor);
-    if (decodedEscape === undefined) return undefined;
-    output += decodedEscape.value;
-    cursor = decodedEscape.next;
+    const decodedCharacter = decodeSerializationCharacter(value, cursor);
+    if (decodedCharacter === undefined) return undefined;
+    output += decodedCharacter.value;
+    cursor = decodedCharacter.next;
   }
   return output;
 }
@@ -418,6 +419,122 @@ function encodeOneSerializationLayer(value: string): string {
   let output = "";
   for (const character of value) output += encodeSerializationCharacter(character);
   return output;
+}
+
+function serializedQuotedValueEnd(value: string, from: number, quote: CredentialQuote): number | undefined {
+  let cursor = from;
+  let escaped = false;
+  while (cursor < value.length) {
+    const decodedCharacter = decodeSerializationCharacter(value, cursor);
+    if (decodedCharacter === undefined) return undefined;
+    cursor = decodedCharacter.next;
+    if (escaped) {
+      escaped = false;
+    } else if (decodedCharacter.value === "\\") {
+      escaped = true;
+    } else if (decodedCharacter.value === quote) {
+      return cursor;
+    }
+  }
+  return undefined;
+}
+
+function serializedStructuralValueEnd(value: string, from: number, opener: string, closer: string): number | undefined {
+  const state: StructuralScanState = { depth: 0 };
+  let cursor = from;
+  while (cursor < value.length) {
+    const decodedCharacter = decodeSerializationCharacter(value, cursor);
+    if (decodedCharacter === undefined) return undefined;
+    cursor = decodedCharacter.next;
+    if (advanceStructuralScan(state, decodedCharacter.value, opener, closer)) return cursor;
+  }
+  return undefined;
+}
+
+function serializedUnquotedValueEnd(value: string, from: number): number | undefined {
+  let cursor = from;
+  while (cursor < value.length) {
+    const decodedCharacter = decodeSerializationCharacter(value, cursor);
+    if (decodedCharacter === undefined) return undefined;
+    if (",;}\"'\r\n".includes(decodedCharacter.value)) return cursor;
+    cursor = decodedCharacter.next;
+  }
+  return cursor;
+}
+
+type SerializedQuoteDelimiter = {
+  end: number;
+  quote: CredentialQuote;
+  slashCount: number;
+};
+
+function serializedQuoteDelimiterAt(value: string, from: number): SerializedQuoteDelimiter | undefined {
+  let cursor = from;
+  while (value[cursor] === "\\") cursor += 1;
+  const quote = value[cursor];
+  if (!isCredentialQuote(quote)) return undefined;
+  return { end: cursor + 1, quote, slashCount: cursor - from };
+}
+
+function isSerializedValueBoundary(value: string, from: number): boolean {
+  let cursor = from;
+  while (value[cursor] === " " || value[cursor] === "\t") cursor += 1;
+  return (
+    cursor === value.length || ",}]".includes(value[cursor] ?? "") || value[cursor] === "\r" || value[cursor] === "\n"
+  );
+}
+
+function fallbackSerializedQuotedValueEnd(value: string, opening: SerializedQuoteDelimiter): number | undefined {
+  let cursor = opening.end;
+  while (cursor < value.length) {
+    const candidate = serializedQuoteDelimiterAt(value, cursor);
+    if (
+      candidate !== undefined &&
+      candidate.quote === opening.quote &&
+      candidate.slashCount === opening.slashCount &&
+      isSerializedValueBoundary(value, candidate.end)
+    ) {
+      return candidate.end;
+    }
+    cursor = candidate?.end ?? cursor + 1;
+  }
+  return undefined;
+}
+
+function fallbackSerializedValueEnd(value: string, from: number): number {
+  const openingQuote = serializedQuoteDelimiterAt(value, from);
+  if (openingQuote !== undefined) return fallbackSerializedQuotedValueEnd(value, openingQuote) ?? value.length;
+
+  for (let cursor = from; cursor < value.length; cursor += 1) {
+    const character = value[cursor];
+    if (character === "," && SERIALIZED_SIBLING_FIELD_PATTERN.test(value.slice(cursor + 1))) return cursor;
+    if (character === "}" || character === "\r" || character === "\n") return cursor;
+  }
+  return value.length;
+}
+
+type SerializedCredentialValueSpan = {
+  complete: boolean;
+  end: number;
+};
+
+function serializedCredentialValueSpan(value: string, from: number): SerializedCredentialValueSpan {
+  const firstCharacter = decodeSerializationCharacter(value, from);
+  if (firstCharacter === undefined) return { complete: false, end: fallbackSerializedValueEnd(value, from) };
+
+  let end: number | undefined;
+  if (isCredentialQuote(firstCharacter.value)) {
+    end = serializedQuotedValueEnd(value, firstCharacter.next, firstCharacter.value);
+  } else if (firstCharacter.value === "[" || firstCharacter.value === "{") {
+    const closer = firstCharacter.value === "[" ? "]" : "}";
+    end = serializedStructuralValueEnd(value, from, firstCharacter.value, closer);
+  } else if (firstCharacter.value !== "\\") {
+    end = serializedUnquotedValueEnd(value, from);
+  }
+
+  return end === undefined
+    ? { complete: false, end: fallbackSerializedValueEnd(value, from) }
+    : { complete: true, end };
 }
 
 type CredentialHeaderScrub = {
@@ -449,15 +566,47 @@ function scrubDecodedCredentialHeaders(value: string): CredentialHeaderScrub {
   return { matched, value: output + value.slice(cursor) };
 }
 
-function scrubSerializedCredentialLayer(value: string): string {
-  const decoded = decodeOneSerializationLayer(value);
-  if (decoded === undefined || encodeOneSerializationLayer(decoded) !== value) return REDACTED;
+const SERIALIZED_REDACTED_VALUE = encodeOneSerializationLayer(`"${REDACTED}"`);
+
+function scrubSerializedCredentialField(
+  value: string,
+  fieldStart: number,
+  valueStart: number,
+  valueSpan: SerializedCredentialValueSpan,
+): string {
+  const failClosed = `${value.slice(fieldStart, valueStart)}${SERIALIZED_REDACTED_VALUE}`;
+  if (!valueSpan.complete) return failClosed;
+
+  const field = value.slice(fieldStart, valueSpan.end);
+  const decoded = decodeOneSerializationLayer(field);
+  if (decoded === undefined || encodeOneSerializationLayer(decoded) !== field) return failClosed;
 
   const scrubbed = scrubDecodedCredentialHeaders(decoded);
-  if (!scrubbed.matched) return REDACTED;
+  if (!scrubbed.matched) return failClosed;
 
   const encoded = encodeOneSerializationLayer(scrubbed.value);
-  return decodeOneSerializationLayer(encoded) === scrubbed.value ? encoded : REDACTED;
+  return decodeOneSerializationLayer(encoded) === scrubbed.value ? encoded : failClosed;
+}
+
+function scrubSerializedCredentialFields(value: string): string {
+  let output = "";
+  let cursor = 0;
+  SERIALIZED_CREDENTIAL_FIELD_PATTERN.lastIndex = 0;
+  for (
+    let match = SERIALIZED_CREDENTIAL_FIELD_PATTERN.exec(value);
+    match;
+    match = SERIALIZED_CREDENTIAL_FIELD_PATTERN.exec(value)
+  ) {
+    const fieldStart = match.index;
+    if (fieldStart < cursor) continue;
+    const valueStart = fieldStart + match[0].length;
+    const valueSpan = serializedCredentialValueSpan(value, valueStart);
+    output += value.slice(cursor, fieldStart);
+    output += scrubSerializedCredentialField(value, fieldStart, valueStart, valueSpan);
+    cursor = valueSpan.end;
+    SERIALIZED_CREDENTIAL_FIELD_PATTERN.lastIndex = cursor;
+  }
+  return output + value.slice(cursor);
 }
 
 /*
@@ -466,8 +615,7 @@ function scrubSerializedCredentialLayer(value: string): string {
  * stop at the delimiter for their surrounding JSON-ish or list value so sibling fields remain intact.
  */
 function scrubCredentialHeaders(value: string): string {
-  if (SERIALIZED_CREDENTIAL_FIELD_PATTERN.test(value)) return scrubSerializedCredentialLayer(value);
-  return scrubDecodedCredentialHeaders(value).value;
+  return scrubDecodedCredentialHeaders(scrubSerializedCredentialFields(value)).value;
 }
 
 function scrubString(value: string): string {

@@ -295,7 +295,74 @@ describe("structured error redaction", () => {
     expect(arrayRedacted).toContain(String.raw`\"other\":\"keep\"`);
 
     const doubleSerialized = String.raw`\\\"cookie\\\":\\\"nested-secret\\\"`;
-    expect(redactForLog(doubleSerialized)).toBe("[REDACTED]");
+    const doubleSerializedRedacted = redactForLog(doubleSerialized);
+    expect(doubleSerializedRedacted).toBe(String.raw`\\\"cookie\\\":\"[REDACTED]\"`);
+    expect(doubleSerializedRedacted).toContain(String.raw`\\\"cookie\\\":`);
+    expect(doubleSerializedRedacted).not.toContain("nested-secret");
+
+    const unterminatedArray = String.raw`{\"set-cookie\":[\"session=first-secret\",\"admin=second-secret\"`;
+    const unterminatedRedacted = redactForLog(unterminatedArray);
+    expect(unterminatedRedacted).not.toContain("first-secret");
+    expect(unterminatedRedacted).not.toContain("second-secret");
+  });
+
+  it.each([
+    [
+      String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+      String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      String.raw`C:\Users\me\bin`,
+    ],
+    [
+      String.raw`{\"cookie\":\"session=first-secret\",\"url\":\"https:\/\/api.example.com\/v1\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"url\":\"https:\/\/api.example.com\/v1\"}`,
+      String.raw`https:\/\/api.example.com\/v1`,
+    ],
+    [
+      String.raw`line one
+{\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+      String.raw`line one
+{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      "line one\n",
+    ],
+    [
+      String.raw`col1${"\t"}col2 {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+      String.raw`col1${"\t"}col2 {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      "col1\tcol2",
+    ],
+  ])("scopes serialized credential redaction without changing surrounding context", (input, expected, context) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).toContain(context);
+    expect(redacted).not.toContain("first-secret");
+    expect(redacted).not.toBe("[REDACTED]");
+  });
+
+  it.each([
+    [
+      String.raw`prefix {\"cookie\":\"session=first-secret\/tail\",\"other\":\"keep\"} suffix`,
+      String.raw`prefix {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"} suffix`,
+    ],
+    [
+      String.raw`prefix {\\\"cookie\\\":\\\"nested-secret\\\",\\\"other\\\":\\\"keep\\\"} suffix`,
+      String.raw`prefix {\\\"cookie\\\":\"[REDACTED]\",\\\"other\\\":\\\"keep\\\"} suffix`,
+    ],
+    [
+      String.raw`prefix {\"cookie\":\"invalid\q-secret\",\"other\":\"keep\"} suffix`,
+      String.raw`prefix {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"} suffix`,
+    ],
+    [
+      String.raw`prefix {\"cookie\":\"invalid\q-first-secret
+second-secret\",\"other\":\"keep\"} suffix`,
+      String.raw`prefix {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"} suffix`,
+    ],
+  ])("fails closed within a rejected serialized value span", (input, expected) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).toContain("other");
+    expect(redacted).toContain("keep");
+    expect(redacted).toContain("prefix");
+    expect(redacted).toContain("suffix");
+    expect(redacted).not.toContain("secret");
   });
 
   it("redacts list-prefixed headers as complete physical fields", () => {

@@ -185,6 +185,49 @@ describe("Client logger", () => {
     expect(emitted).toContain("2. X-Safe: ok");
   });
 
+  it("scopes serialized credential scrubbing at the emitted NDJSON boundary", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+    const cases = [
+      [
+        String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+        String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+        String.raw`C:\Users\me\bin`,
+      ],
+      [
+        String.raw`{\"cookie\":\"session=first-secret\",\"url\":\"https:\/\/api.example.com\/v1\"}`,
+        String.raw`{\"cookie\":\"[REDACTED]\",\"url\":\"https:\/\/api.example.com\/v1\"}`,
+        String.raw`https:\/\/api.example.com\/v1`,
+      ],
+      [
+        String.raw`line one
+{\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+        String.raw`line one
+{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+        "line one\n",
+      ],
+      [
+        String.raw`col1${"\t"}col2 {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+        String.raw`col1${"\t"}col2 {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+        "col1\tcol2",
+      ],
+    ] as const;
+
+    const logger = createLogger("serialized-field-scope");
+    for (const [message] of cases) logger.error({}, message);
+
+    const lines = (await readFile(join(directory, "client.log"), "utf8")).trim().split("\n");
+    expect(lines).toHaveLength(cases.length);
+    const records = lines.map((line) => JSON.parse(line) as { message: string });
+    expect(records.map((record) => record.message)).toEqual(cases.map(([, expected]) => expected));
+    for (const [index, [, , context]] of cases.entries()) {
+      expect(records[index]?.message).toContain(context);
+      expect(records[index]?.message).not.toBe("[REDACTED]");
+    }
+    expect(records.map((record) => record.message).join("\n")).not.toContain("first-secret");
+  });
+
   it("treats repeated configuration as a no-op and rejects another directory", async () => {
     const first = await temporaryDirectory();
     const second = await temporaryDirectory();

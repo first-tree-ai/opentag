@@ -1,7 +1,7 @@
 # 为 OpenTag 贡献
 
 > Canonical source: [CONTRIBUTING.md](./CONTRIBUTING.md)
-> Last synced with: 2026-08-29
+> Last synced with: 2026-09-01
 
 OpenTag 处于 pre-alpha 阶段。请保持改动聚焦，说明其解决的用户或贡献者问题，并避免在没有既定设计时增加产品能力。
 
@@ -24,6 +24,10 @@ fix: classify client connection failures
 ## Pull Request
 
 Pull Request 应说明改动、验证方式、破坏性行为和重要非目标。无关重构不要混入同一个 Pull Request，合并前 CI 必须通过。
+
+`Stale Pull Requests` workflow 每天巡检所有开放的 Pull Request。静默五天的 Pull Request 会收到一条评论，@ 其作者与
+reviewer；若静默满七天，且距该评论已过至少两天，bot 会将其关闭。推送 commit、发表评论或提交 review 都会重置计时。
+草稿 Pull Request 不在巡检范围内，`keep-open` 标签可永久豁免。关闭是可逆的：分支不受影响，任何有写权限的人都可以重新打开。
 
 代码、代码注释、GitHub 模板和技术文档以英文为 canonical source。英文文档存在中文镜像时，应在同一个 Pull Request
 中同步更新，并刷新镜像的同步日期。

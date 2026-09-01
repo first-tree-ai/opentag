@@ -151,6 +151,10 @@ function unbound(id = UNBOUND_AGENT_ID): AgentDetailView {
 describe("An Agent with no Computer", () => {
   beforeEach(() => vi.useRealTimers());
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("gives the Agent the Computer this Account has, without asking which", async () => {
     // An Account has one Computer, so there is nothing to disambiguate and nothing to click: the
     // read that finds it is the whole decision.

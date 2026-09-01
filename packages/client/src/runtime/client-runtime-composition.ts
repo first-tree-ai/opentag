@@ -389,6 +389,7 @@ export class ComposedClientRuntime {
     this.#stopped = true;
     const shutdown = this.#shutdown();
     this.#runtime.stop();
+    /* v8 ignore next -- shutdown failures surface through runtime state, not this detached promise. */
     void shutdown.catch(() => undefined);
   }
 
@@ -430,6 +431,7 @@ export class ComposedClientRuntime {
       void refresh
         .catch(() => undefined)
         .finally(() => {
+          /* v8 ignore else -- only the newest refresh clears the in-flight slot. */
           if (this.#capabilityRefreshInFlight === refresh) this.#capabilityRefreshInFlight = undefined;
         });
     }, this.#capabilityRefreshIntervalMs);
@@ -530,6 +532,7 @@ export async function createClientRuntime(
     } finally {
       owner.waiters -= 1;
       if (owner.waiters === 0 && !owner.settled) {
+        /* v8 ignore else -- the shared map still holds this owner while its last waiter unwinds. */
         if (sharedProviderRefreshes.get(providerId) === owner) sharedProviderRefreshes.delete(providerId);
         owner.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
       }

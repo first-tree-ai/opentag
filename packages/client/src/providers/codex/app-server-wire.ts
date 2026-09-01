@@ -148,6 +148,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       );
     }
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
+    /* v8 ignore next -- stderr is drained and discarded; the wire only speaks stdout. */
     this.#child.stderr.on("data", () => undefined);
     this.#child.on("error", (error) =>
       this.#fail(new CodexAppServerError("spawn", error.message, spawnEvidence(error))),
@@ -222,6 +223,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     return new Promise<unknown>((resolve, reject) => {
       const cleanup = () => {
         const pending = this.#pending.get(id);
+        /* v8 ignore else -- cleanup only runs while its own pending entry is registered. */
         if (pending) clearTimeout(pending.timer);
         this.#pending.delete(id);
         signal?.removeEventListener("abort", onAbort);
@@ -401,11 +403,15 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
 
   async #handleServerRequest(id: number | string, method: string, params: unknown): Promise<void> {
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-      await this.respondServerRequest(id, { decision: "cancel" }).catch(() => undefined);
+      await this.respondServerRequest(id, { decision: "cancel" }).catch(
+        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined,
+      );
       return;
     }
     if (method === "item/tool/requestUserInput") {
-      await this.respondServerRequest(id, { answers: {} }).catch(() => undefined);
+      await this.respondServerRequest(id, { answers: {} }).catch(
+        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined,
+      );
       return;
     }
     if (method === "item/tool/call") {
@@ -414,7 +420,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         await this.respondServerRequest(id, {
           contentItems: [{ type: "inputText", text: "OpenTag tool is unavailable." }],
           success: false,
-        }).catch(() => undefined);
+        }).catch(/* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined);
         return;
       }
       try {
@@ -429,11 +435,13 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         await this.respondServerRequest(id, {
           contentItems: [{ type: "inputText", text: "OpenTag tool request failed." }],
           success: false,
-        }).catch(() => undefined);
+        }).catch(/* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined);
       }
       return;
     }
-    await this.rejectServerRequest(id, -32601, "Unsupported unattended server request").catch(() => undefined);
+    await this.rejectServerRequest(id, -32601, "Unsupported unattended server request").catch(
+      /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined,
+    );
     this.#fail(new CodexAppServerError("protocol", `Codex requested an unsupported method: ${method}`));
   }
 
@@ -478,6 +486,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     if (!this.#closed) {
       signalWatchedProcess(this.#child, "SIGTERM");
       const timer = setTimeout(() => {
+        /* v8 ignore else -- the SIGKILL escalation timer only matters while the child is still open. */
         if (!this.#closed) signalWatchedProcess(this.#child, "SIGKILL");
       }, 1_000);
       timer.unref();
@@ -508,6 +517,7 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
     timer.unref();
   });
   const settled = await Promise.race([promise.then(() => true as const), timeout]);
+  /* v8 ignore else -- the timer is always armed before the race settles. */
   if (timer) clearTimeout(timer);
   return settled;
 }

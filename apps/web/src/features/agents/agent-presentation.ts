@@ -1,5 +1,5 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
-import { messagingProviderLabel } from "../../im/provider-label.js";
+import { messagingProviderLabel, messagingProviderLabelInSentence } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { SETUP_COPY } from "../../setup/copy.js";
 import type { StatusTone } from "../../ui/design-system.js";
@@ -219,7 +219,7 @@ export function agentAvailabilitySummary(agent: AgentDetailView): string {
   if (agent.availability.state === "ready") {
     const provider = agent.availability.dependencies.channel.provider;
     return provider
-      ? m.agents_available_in_channel({ provider: messagingProviderLabel(provider) })
+      ? m.agents_available_in_channel({ provider: messagingProviderLabelInSentence(provider) })
       : m.agents_ready_for_new_work();
   }
   return {

@@ -47,3 +47,26 @@ function assertNeverProvider(provider: never): never {
 export function messagingProviderAlternateBrand(): string {
   return getLocale() === "zh" ? "Lark" : "Feishu";
 }
+
+/**
+ * The label as it should sit *inside* a Chinese sentence.
+ *
+ * Chinese sets no space between Chinese characters and one space either side of Latin text, so a
+ * template cannot carry the spacing: the same `{provider}` slot receives 飞书 in one branch and
+ * Slack in the next. The label knows its own script, so it carries its own boundary — CJK joins the
+ * sentence directly, Latin brings the spaces Chinese typography expects. In `en` this is the label
+ * unchanged, because English already spaces every word.
+ *
+ * Only interpolation sites use this. A label rendered on its own — an Agent card, a button — wants
+ * `messagingProviderLabel`, which has no padding to trim.
+ */
+export function messagingProviderLabelInSentence(provider: MessagingProvider): string {
+  const label = messagingProviderLabel(provider);
+  return getLocale() === "zh" && !/^[\u3400-\u9fff]/.test(label) ? ` ${label} ` : label;
+}
+
+/** The counterpart brand, spaced for a Chinese sentence on the same rule. */
+export function messagingProviderAlternateBrandInSentence(): string {
+  const brand = messagingProviderAlternateBrand();
+  return getLocale() === "zh" ? ` ${brand} ` : brand;
+}

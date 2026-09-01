@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { overwriteGetLocale } from "../paraglide/runtime.js";
-import { messagingProviderAlternateBrand, messagingProviderLabel } from "./provider-label.js";
+import {
+  messagingProviderAlternateBrand,
+  messagingProviderAlternateBrandInSentence,
+  messagingProviderLabel,
+  messagingProviderLabelInSentence,
+} from "./provider-label.js";
 
 /** Mirrors the helper in i18n/format.test.ts: run one assertion under a locale, then restore. */
 function withLocale(locale: "en" | "zh", callback: () => void): void {
@@ -47,5 +52,27 @@ describe("messagingProviderLabel", () => {
     // Only reachable if a provider joins the schema without being given a label here. The switch
     // makes that a compile error first; this covers the runtime edge behind the cast.
     expect(() => messagingProviderLabel("telepathy" as "slack")).toThrow(/Unlabelled messaging provider/);
+  });
+
+  /*
+   * Chinese sets no space between Chinese characters and one space either side of Latin text, and
+   * the same {provider} slot receives both. The template cannot decide that; the label knows its own
+   * script, so it carries its own boundary.
+   */
+  it("spaces a Latin brand inside a Chinese sentence and a Chinese one not at all", () => {
+    withLocale("zh", () => {
+      expect(messagingProviderLabelInSentence("feishu")).toBe("飞书");
+      expect(messagingProviderLabelInSentence("slack")).toBe(" Slack ");
+      expect(messagingProviderAlternateBrandInSentence()).toBe(" Lark ");
+    });
+  });
+
+  /** English already spaces every word, so the in-sentence form must add nothing. */
+  it("leaves English untouched", () => {
+    withLocale("en", () => {
+      expect(messagingProviderLabelInSentence("feishu")).toBe("Lark");
+      expect(messagingProviderLabelInSentence("slack")).toBe("Slack");
+      expect(messagingProviderAlternateBrandInSentence()).toBe("Feishu");
+    });
   });
 });

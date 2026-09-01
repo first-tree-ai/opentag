@@ -1,5 +1,5 @@
 import type { ProviderCliHandoffProgress } from "@opentag/shared/browser";
-import { messagingProviderLabel } from "../im/provider-label.js";
+import { messagingProviderLabelInSentence } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import type { MessagingProvider, MessagingState } from "./flow.js";
 
@@ -17,7 +17,7 @@ function providerCliWaitingCopy(progress: ProviderCliHandoffProgress): string {
 
 export function messagingCliMissingCopy(provider: MessagingProvider): string {
   return m.onboarding_v2_messaging_cli_missing({
-    provider: messagingProviderLabel(provider),
+    provider: messagingProviderLabelInSentence(provider),
   });
 }
 

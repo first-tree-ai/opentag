@@ -210,7 +210,7 @@
       "id": "apps/web/src/im/feishu-setup.tsx#FeishuSetupDialog",
       "path": "apps/web/src/im/feishu-setup.tsx",
       "symbol": "FeishuSetupDialog",
-      "complexity": 16
+      "complexity": 18
     },
     {
       "id": "apps/web/src/im/feishu-setup.tsx#poll",

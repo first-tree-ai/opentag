@@ -37,6 +37,7 @@
   "im_feishu_finishing": "Finishing connection…",
   "im_feishu_open": "Open in {brand}",
   "im_feishu_open_authorization": "Open {brand} authorization",
+  "im_feishu_open_first_intro": "Open this in your browser to authorize. Scanning it in {brand} will not get you there.",
   "im_feishu_permissions_missing": "Feishu permissions are incomplete. Try again and approve all requested permissions.",
   "im_feishu_preparing": "Preparing QR code…",
   "im_feishu_qr_alt": "Scan this QR code in {brand}",

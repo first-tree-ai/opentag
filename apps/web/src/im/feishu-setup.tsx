@@ -356,6 +356,18 @@ function FeishuSetupDialog({
         ) : null}
         {attempt?.state === "awaiting_user" ? (
           <>
+            {/*
+              A Lark reader is told the code will not get them there, because it will not: the Lark
+              client cannot complete this flow from a scan, and the Open action below is their route.
+              The ordering matters less here than in onboarding — Open is already a button in the
+              action row — but saying nothing would let them scan and meet `link expired`, which is
+              the experience this whole change exists to remove. See opentag#435.
+            */}
+            {attempt.brand === "lark" ? (
+              <p className="text-sm text-kumo-subtle">
+                {m.im_feishu_open_first_intro({ brand: messagingProviderLabel("feishu", attempt.brand) })}
+              </p>
+            ) : null}
             {attempt.qrUrl ? <FeishuQrCode brand={attempt.brand} value={attempt.qrUrl} /> : null}
             <p className="text-sm text-kumo-subtle">
               {m.im_feishu_qr_expires({ date: formatDateTime(attempt.expiresAt) })}
@@ -453,6 +465,13 @@ function FeishuSetupFeedback({
       {attempt.qrUrl ? (
         <>
           <br />
+          {/* Same reason as the dialog: a Lark reader should not be left to scan a code that cannot work. */}
+          {attempt.brand === "lark" ? (
+            <>
+              {m.im_feishu_open_first_intro({ brand: messagingProviderLabel("feishu", attempt.brand) })}
+              <br />
+            </>
+          ) : null}
           <FeishuQrCode brand={attempt.brand} value={attempt.qrUrl} />
           <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
             {m.im_feishu_open_authorization({ brand: messagingProviderLabel("feishu", attempt.brand) })}

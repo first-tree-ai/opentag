@@ -37,6 +37,7 @@
   "im_feishu_finishing": "正在完成连接…",
   "im_feishu_open": "在 {brand} 中打开",
   "im_feishu_open_authorization": "打开 {brand} 授权",
+  "im_feishu_open_first_intro": "在浏览器中打开以完成授权。在{brand}里扫这个码到不了那一步。",
   "im_feishu_permissions_missing": "飞书权限不完整。请重试并批准所有所需权限。",
   "im_feishu_preparing": "正在准备二维码…",
   "im_feishu_qr_alt": "在 {brand} 中扫描此二维码",

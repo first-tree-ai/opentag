@@ -356,6 +356,49 @@ describe("FeishuSetup", () => {
   });
 
   /*
+   * A Lark reader cannot complete this flow by scanning: the Lark client refuses the launcher page
+   * for any valid code, while opening it in a browser works. So the settings surface says so rather
+   * than leaving a code sitting there with no explanation. A Feishu reader, whose scan does work, is
+   * told nothing extra — the asymmetry is deliberate and is the assertion here. See opentag#435.
+   */
+  it.each(["inline", "dialog"] as const)(
+    "warns a Lark reader that scanning will not get them there (%s), and does not warn a Feishu one",
+    async (presentation) => {
+      vi.spyOn(browserApi, "createFeishuSetupAttempt").mockImplementation(async (_agentId, intent, brand) =>
+        attempt({
+          id: firstAttemptId,
+          intent: intent ?? "create",
+          brand: brand ?? "lark",
+          state: "awaiting_user",
+          qrUrl: "https://accounts.example/setup",
+        }),
+      );
+      const warning = /will not get you there/;
+
+      const { unmount } = render(<Harness presentation={presentation} />);
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+      expect(await screen.findByText(warning)).toBeTruthy();
+      unmount();
+
+      vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
+        attempt({
+          id: secondAttemptId,
+          intent: "create",
+          brand: "feishu",
+          state: "awaiting_user",
+          qrUrl: "https://accounts.example/setup",
+        }),
+      );
+      render(<Harness presentation={presentation} />);
+      fireEvent.click(screen.getByRole("button", { name: "Create" }));
+      await screen.findByRole(presentation === "dialog" ? "dialog" : "img", {
+        ...(presentation === "dialog" ? {} : { name: /Scan this QR code/ }),
+      });
+      expect(screen.queryByText(warning)).toBeNull();
+    },
+  );
+
+  /*
    * A bound team's brand is settled, and the Server returns to the domain its App was created on
    * whatever a caller asks for. Offering the switch there would cancel a working code and mint an
    * identical one — an affordance that contradicts what the request can do.

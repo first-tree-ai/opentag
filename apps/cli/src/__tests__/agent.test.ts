@@ -671,6 +671,24 @@ describe("Agent CLI core", () => {
     }
   });
 
+  it("presents unauthenticated Agent bind failures without a rejected Commander action", async () => {
+    const bindSpy = vi
+      .spyOn(agentMutations, "runAgentBind")
+      .mockRejectedValue(new Error("OpenTag is not logged in; run login first"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "agent", "bind", agentId]);
+      expect(process.exitCode).toBe(1);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("OpenTag is not logged in; run login first"));
+    } finally {
+      process.exitCode = previousExitCode;
+      stderr.mockRestore();
+      bindSpy.mockRestore();
+    }
+  });
+
   it("deletes the explicit Agent without an interactive prompt", async () => {
     const client = api();
     await expect(runAgentDelete(agentId, { accessToken: "access", api: client })).resolves.toBe(

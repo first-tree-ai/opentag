@@ -1,4 +1,5 @@
 import * as client from "@opentag/client";
+import { channelConfig } from "../channel/config.js";
 import { resolveChannelEnvironment } from "../channel/environment.js";
 
 type CommandContextAuthOptions = { accessToken?: string; api?: client.OpenTagApi; requireAuth?: boolean };
@@ -24,7 +25,19 @@ export async function resolveCommandContext(options: CommandContextOptions = {})
     throw new Error("Command context test dependencies must provide both api and accessToken");
   }
   const credentials = await client.readCredentials(home);
-  if (!credentials) throw new Error("OpenTag is not logged in; run login first");
+  if (!credentials) {
+    const [computerIdentity, machineCredentials] = await Promise.all([
+      client.readComputerIdentity(home),
+      client.readMachineCredentials(home),
+    ]);
+    const recordedServerUrl = computerIdentity?.serverUrl ?? machineCredentials?.computer.serverUrl;
+    if (recordedServerUrl) {
+      throw new Error(
+        `OpenTag is not logged in: this OpenTag home has machine credentials (computer-credentials.json/computer.json) but no Account credentials (credentials.json). Get an Account login code issued by the server (today via POST /api/v1/me/connect-codes), then run ${channelConfig.binName} login --server ${recordedServerUrl} -- <code>.`,
+      );
+    }
+    throw new Error("OpenTag is not logged in; run login first");
+  }
   const accessToken = await new client.AccessTokenProvider({ home }).getAccessToken();
   return { accessToken, api: new client.OpenTagApi(credentials.serverUrl), credentials, environment, home };
 }

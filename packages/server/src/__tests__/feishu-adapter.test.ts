@@ -234,6 +234,19 @@ describe("Feishu adapter", () => {
     expect(received.map((message) => message.messageId)).toEqual(["message-distinct-1", "message-distinct-2"]);
   });
 
+  it("does not let an event ID from one conversation suppress another conversation", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const first = rawMessage("event-reused", "message-chat-a", "13");
+    const second = rawMessage("event-reused", "message-chat-b", "13");
+    second.event.message.chat_id = "oc_other_chat";
+    await dispatcher.invoke(first, { needCheck: false });
+    await dispatcher.invoke(second, { needCheck: false });
+    expect(received.map((message) => message.chatId)).toEqual(["oc_1", "oc_other_chat"]);
+  });
+
   it("falls back to user sender ids and maps raw mentions", async () => {
     let received: NormalizedMessage | undefined;
     const dispatcher = createReliableFeishuDispatcher((message) => {
@@ -603,6 +616,16 @@ describe("FeishuConnectionManager", () => {
     const inbox = {
       ingest: vi.fn().mockResolvedValue({ messageId: "msg-1", deliveryIds: ["delivery-1"], duplicate: false }),
     };
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({
+        accepted: true,
+        duplicate: false,
+        receiptId: "receipt-1",
+        status: "processing",
+      }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
+    };
     const diagnostics = vi.fn();
     const manager = new FeishuConnectionManager({
       database: connectionDatabase.database,
@@ -613,6 +636,7 @@ describe("FeishuConnectionManager", () => {
       runtimeReady: vi.fn().mockResolvedValue(true),
       onDiagnostic: diagnostics,
       leaseMs: 60_000,
+      receipts,
     });
     const verified = await manager.activateAtomicAttempt({
       attemptId,
@@ -677,6 +701,12 @@ describe("FeishuConnectionManager", () => {
       expect.objectContaining({ providerEventId: "ev_conn" }),
       expect.objectContaining({ provider: "feishu" }),
     );
+    expect(receipts.claim).toHaveBeenCalledWith({
+      bindingId: expect.any(String),
+      credentialGeneration: expect.any(Number),
+      eventId: "ev_conn",
+    });
+    expect(receipts.markProcessed).toHaveBeenCalledWith("receipt-1");
     inbox.ingest.mockRejectedValueOnce(new Error("database unavailable"));
     await expect(
       fake.getHandlers().message?.({
@@ -694,6 +724,67 @@ describe("FeishuConnectionManager", () => {
         raw: { header: { event_id: "ev_conn_error", tenant_key: "tenant_1" } },
       } as never),
     ).rejects.toThrow("database unavailable");
+    expect(receipts.markFailed).toHaveBeenCalledWith("receipt-1", "FEISHU_EVENT_PROCESSING_FAILED");
+    fake.adapter.normalizeInbound = vi.fn().mockReturnValue(
+      normalizeFeishuMessage({
+        appId: "cli_conn",
+        teamId: "tenant_1",
+        message: {
+          messageId: "om_missing_event",
+          chatId: "oc_conn",
+          chatType: "group",
+          senderId: "ou_human",
+          content: "hello",
+          rawContentType: "text",
+          resources: [],
+          mentions: [],
+          mentionAll: false,
+          mentionedBot: false,
+          createTime: 2,
+          raw: { header: { tenant_key: "tenant_1" } },
+        },
+      }),
+    );
+    const claimCountBeforeMissingEvent = receipts.claim.mock.calls.length;
+    await fake.getHandlers().message?.({
+      messageId: "om_missing_event",
+      chatId: "oc_conn",
+      chatType: "group",
+      senderId: "ou_human",
+      content: "hello",
+      rawContentType: "text",
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      createTime: 2,
+      raw: { header: { tenant_key: "tenant_1" } },
+    } as never);
+    expect(receipts.claim).toHaveBeenCalledTimes(claimCountBeforeMissingEvent);
+    receipts.claim.mockResolvedValueOnce({ accepted: false, duplicate: true, receiptId: "receipt-duplicate" });
+    const ingestCountBeforeDuplicate = inbox.ingest.mock.calls.length;
+    fake.adapter.normalizeInbound = vi.fn().mockReturnValue(
+      normalizeFeishuMessage({
+        appId: "cli_conn",
+        teamId: "tenant_1",
+        message: {
+          messageId: "om_duplicate_event",
+          chatId: "oc_conn",
+          chatType: "group",
+          senderId: "ou_human",
+          content: "hello",
+          rawContentType: "text",
+          resources: [],
+          mentions: [],
+          mentionAll: false,
+          mentionedBot: false,
+          createTime: 3,
+          raw: { header: { event_id: "ev_duplicate", tenant_key: "tenant_1" } },
+        },
+      }),
+    );
+    await fake.getHandlers().message?.({} as never);
+    expect(inbox.ingest).toHaveBeenCalledTimes(ingestCountBeforeDuplicate);
     await fake.getHandlers().reconnecting?.();
     await fake.getHandlers().reconnected?.();
     await fake.getHandlers().error?.(new FeishuOperationError("FEISHU_CONNECTION_LEASE_STALE"));

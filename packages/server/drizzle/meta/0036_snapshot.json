@@ -1,6 +1,6 @@
 {
-  "id": "e729788e-7696-4a12-86c0-36b98fc8ce16",
-  "prevId": "b203cb95-2fa0-41bc-819d-a0124e816082",
+  "id": "3bedbcc9-81db-4fbf-9ab0-e7b598003b78",
+  "prevId": "e729788e-7696-4a12-86c0-36b98fc8ce16",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4435,6 +4435,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "manual_title": {
+          "name": "manual_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "generated_title": {
+          "name": "generated_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by_session_id": {
           "name": "created_by_session_id",
           "type": "uuid",
@@ -4637,6 +4649,14 @@
         "sessions_revision_positive": {
           "name": "sessions_revision_positive",
           "value": "\"sessions\".\"revision\" >= 1"
+        },
+        "sessions_manual_title_bounds": {
+          "name": "sessions_manual_title_bounds",
+          "value": "\"sessions\".\"manual_title\" is null or char_length(\"sessions\".\"manual_title\") between 1 and 120"
+        },
+        "sessions_generated_title_bounds": {
+          "name": "sessions_generated_title_bounds",
+          "value": "\"sessions\".\"generated_title\" is null or char_length(\"sessions\".\"generated_title\") between 1 and 120"
         }
       },
       "isRLSEnabled": false

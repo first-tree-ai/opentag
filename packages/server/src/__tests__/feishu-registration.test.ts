@@ -45,6 +45,50 @@ describe("Feishu registration", () => {
     expect(options.addons.scopes.user).toBeUndefined();
   });
 
+  /*
+   * The registration promise settles only after a person has scanned, signed in, approved and let the
+   * app be created. A deadline short enough to time a request therefore times the human instead, and
+   * fails them part-way through doing what the QR code asked. This is the regression test for that:
+   * a registration nobody has finished yet is still alive well past any request-shaped budget.
+   */
+  it("keeps a registration alive while the person is still authorizing", async () => {
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      const register = vi.fn(
+        (rawOptions: unknown) =>
+          new Promise(() => {
+            // Never settles: the reader is still in the vendor's pages, which is the normal case.
+            (rawOptions as RegistrationOptions).onQRCodeReady({ url: "https://open.feishu.cn/qr", expireIn: 3600 });
+          }),
+      );
+      const registration = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
+        profile: { name: "Assistant", description: "OpenTag Agent: Assistant" },
+        intent: "create",
+        receiveMode: "all_message",
+      });
+      registration.result.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await registration.qrReady;
+
+      // Ten minutes: far past a request budget, and a perfectly ordinary pace for a person who has to
+      // find their phone. The device code the vendor issued is good for an hour.
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
+      await Promise.resolve();
+
+      expect(settled).toBe(false);
+      registration.abort();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("pins reauthorization to the existing App and forwards cancellation", async () => {
     const register = vi.fn(
       (rawOptions: unknown) =>

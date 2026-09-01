@@ -21,8 +21,10 @@
 - Shared and server foundations are committed (`d0cb63ac`, `e3b89f9c`). Focused request, observability, service-logger, and type checks pass. The existing span contract requires generic `INTERNAL_ERROR` status while the exception event now carries scrubbed error type/message.
 - A follow-up extracted Fastify logger option construction from `createApp`; the complexity ratchet now passes for this changed function without altering business behavior.
 - Client logger work is committed (`6e50e246`); its focused logger, rotation, public-export, and type checks pass (16 tests).
-- Item 11 vocabulary, English/Chinese documentation, and Docker caps are implemented locally; the docs unit is next.
-- `pnpm check` now passes after extracting logger option construction from `createApp`; it reports existing complexity diagnostics as warnings and the complexity ratchet passes.
+- Item 11 vocabulary, English/Chinese documentation, Docker caps, and the documented `OPENTAG_LOG_LEVEL` configuration are committed (`8c269804`, `c3ec154b`).
+- Acceptance verification is green: `pnpm check`, `pnpm typecheck`, `pnpm test`, `pnpm build`, the standalone Web build (entry `index` 273.91 kB < 600 KiB), all three package test commands, and both public-export tests.
+- The zero-adoption diff audit found no new business-module logging calls; only observability diagnostics and tests contain added logger calls. No migration files or integration ratchet files changed.
+- Worktree is clean after the acceptance runs. The final `.dispatch/DONE` marker is the remaining completion action.
 
 ## Decisions / deviations
 

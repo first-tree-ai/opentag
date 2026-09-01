@@ -61,6 +61,8 @@ export interface PortableInstallResult {
   /** True when the target already was the live install and nothing was downloaded. */
   alreadyCurrent: boolean;
   versionDir: string;
+  /** Cleanup failed after the atomic activation commit; the target is live and must not be retried. */
+  cleanupFailure?: string;
 }
 
 const execFileAsync = promisify(execFile);
@@ -219,7 +221,10 @@ async function prepareStagingLayout(options: PortableInstallOptions): Promise<Po
   };
 }
 
-async function runWithStagingCleanup(layout: PortableStagingLayout, operation: () => Promise<void>): Promise<void> {
+async function runWithStagingCleanup(
+  layout: PortableStagingLayout,
+  operation: () => Promise<void>,
+): Promise<string | undefined> {
   let operationFailed = false;
   let operationError: unknown;
   try {
@@ -238,9 +243,10 @@ async function runWithStagingCleanup(layout: PortableStagingLayout, operation: (
         { cause: operationError },
       );
     }
-    throw cleanupError;
+    return cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
   }
   if (operationFailed) throw operationError;
+  return undefined;
 }
 
 async function downloadVerifiedPayload(fetchFn: typeof fetch, asset: PortableManifestAsset): Promise<Buffer> {
@@ -327,11 +333,15 @@ export async function installPortableTarget(options: PortableInstallOptions): Pr
   const asset = selectPortableAsset(manifest, platform);
   const layout = await prepareStagingLayout(options);
 
-  await runWithStagingCleanup(layout, async () => {
+  const cleanupFailure = await runWithStagingCleanup(layout, async () => {
     await stagePortableVersion({ layout, manifest, asset, platform, fetchFn, extract, smoke });
     await activatePortableVersion(options, layout);
   });
-  return { alreadyCurrent: false, versionDir: canonicalVersionDir };
+  return {
+    alreadyCurrent: false,
+    versionDir: canonicalVersionDir,
+    ...(cleanupFailure ? { cleanupFailure } : {}),
+  };
 }
 
 async function fetchManifest(fetchFn: typeof fetch, url: string): Promise<PortableManifest> {

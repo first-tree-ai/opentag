@@ -29,7 +29,7 @@ export interface UpgradeOptions {
   /** Injectable npm runner (tests); defaults to executing `npm` on PATH. */
   runNpm?: (args: readonly string[]) => Promise<void>;
   /** Injectable portable install step (tests). */
-  installPortable?: (target: string) => Promise<void>;
+  installPortable?: (target: string) => Promise<undefined | { cleanupFailure?: string }>;
   /** Injectable service reconciliation (tests). */
   reconcileService?: () => Promise<DaemonServiceReconcileResult>;
   /** Injectable durable-state writer (tests). */
@@ -196,19 +196,23 @@ async function noInstallResult(
   return undefined;
 }
 
-async function installResolvedTarget(context: UpgradeContext, target: string, options: UpgradeOptions): Promise<void> {
+async function installResolvedTarget(
+  context: UpgradeContext,
+  target: string,
+  options: UpgradeOptions,
+): Promise<string | undefined> {
   // The exact target is already running. Manual upgrade repairs durable state and the supervisor
   // definition without reinstalling identical bytes.
-  if (target === context.currentVersion) return;
+  if (target === context.currentVersion) return undefined;
   if (context.installMode.mode === "npm-global") {
     await (options.runNpm ?? defaultRunNpm)(["install", "-g", `${context.channelConfig.packageName}@${target}`]);
-    return;
+    return undefined;
   }
   if (options.installPortable) {
-    await options.installPortable(target);
-    return;
+    const result = await options.installPortable(target);
+    return result?.cleanupFailure;
   }
-  await installPortableTarget({
+  const result = await installPortableTarget({
     channel: context.channel,
     targetVersion: target,
     root: context.installMode.root,
@@ -219,6 +223,7 @@ async function installResolvedTarget(context: UpgradeContext, target: string, op
       ? { downloadBaseUrl: context.environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL }
       : {}),
   });
+  return result.cleanupFailure;
 }
 
 async function recordInstalledUpgrade(
@@ -314,8 +319,9 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
   const noInstall = await noInstallResult(context, target, comparison, options.check ?? false);
   if (noInstall) return noInstall;
 
+  let installWarning: string | undefined;
   try {
-    await installResolvedTarget(context, target.version, options);
+    installWarning = await installResolvedTarget(context, target.version, options);
   } catch (error) {
     return finishUpgrade(context, {
       exitCode: 1,
@@ -355,6 +361,6 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
     status: "installed",
     targetVersion: target.version,
     serviceRefresh,
-    message: `OpenTag ${target.version} installed (${context.installMode.mode})${serviceMessage}`,
+    message: `OpenTag ${target.version} installed (${context.installMode.mode})${serviceMessage}${installWarning ? `; warning: ${installWarning}` : ""}`,
   });
 }

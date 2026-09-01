@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { UpdaterStateSnapshot } from "@opentag/client";
+import type { ClientLogger, UpdaterStateSnapshot } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHANNEL } from "../build-info.js";
 import { channelConfig } from "../core/channel/config.js";
@@ -48,12 +48,30 @@ function targetVersion(): string {
   return "999.0.0";
 }
 
+function testLogger(): { logger: ClientLogger; warn: ReturnType<typeof vi.fn> } {
+  const warn = vi.fn();
+  const logger = {
+    child: () => logger,
+    debug: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+    warn,
+  } as ClientLogger;
+  return { logger, warn };
+}
+
 describe("portable automatic-upgrade defaults", () => {
   it("passes the exact advertised target and configured download base to the portable installer", async () => {
     const layout = await tempLayout();
     const store = memoryStore();
     const onHandoff = vi.fn();
-    installerMocks.installPortableTarget.mockResolvedValue({ alreadyCurrent: false });
+    const refreshService = vi.fn(async () => undefined);
+    const { logger, warn } = testLogger();
+    installerMocks.installPortableTarget.mockResolvedValue({
+      alreadyCurrent: false,
+      versionDir: join(layout.root, "versions", targetVersion()),
+      cleanupFailure: "Portable staging cleanup failed",
+    });
     const manager = createPortableAutoUpdater({
       home: layout.home,
       installMode: { mode: "portable", root: layout.root, binDir: layout.binDir },
@@ -61,7 +79,8 @@ describe("portable automatic-upgrade defaults", () => {
       protectedWork: () => ({ total: 0 }),
       quiesce: () => () => undefined,
       onHandoff,
-      refreshService: async () => undefined,
+      logger,
+      refreshService,
       stateStore: store,
     });
 
@@ -77,7 +96,12 @@ describe("portable automatic-upgrade defaults", () => {
       packageName: channelConfig.packageName,
       downloadBaseUrl: "https://download.test/releases",
     });
+    expect(refreshService).toHaveBeenCalledOnce();
     expect(onHandoff).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      { target: targetVersion(), cleanupFailure: "Portable staging cleanup failed" },
+      "Portable update activated but staging cleanup failed",
+    );
     manager.stop();
   });
 

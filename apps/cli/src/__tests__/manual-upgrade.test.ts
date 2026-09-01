@@ -240,6 +240,23 @@ describe("manual upgrade", () => {
     expect(installed).toEqual(["0.0.3-staging.1.1"]);
   });
 
+  it("finishes portable service reconciliation while surfacing a post-activation cleanup failure", async () => {
+    const reconcileService = vi.fn(async () => readyReconcile);
+    const result = await runUpgrade({
+      channel: "staging",
+      home: await tempHome(),
+      environment: {},
+      installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+      fetchFn: (async () => jsonResponse({ channel: "staging", version: "0.0.3-staging.1.1" })) as typeof fetch,
+      installPortable: async () => ({ cleanupFailure: "Portable staging cleanup failed" }),
+      reconcileService,
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, status: "installed", serviceRefresh: "ready" });
+    expect(result.message).toContain("warning: Portable staging cleanup failed");
+    expect(reconcileService).toHaveBeenCalledOnce();
+  });
+
   it("surfaces a deferred service refresh without failing the upgrade", async () => {
     const result = await runUpgrade({
       channel: "staging",

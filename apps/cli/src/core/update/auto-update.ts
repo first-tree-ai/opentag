@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   type ClientLogger,
+  createLogger,
   type ProtectedWorkCount,
   UpdateManager,
   type UpdateManagerOptions,
@@ -60,10 +61,11 @@ async function refreshServiceThroughShim(binDir: string, binName: string): Promi
  */
 export function createPortableAutoUpdater(options: PortableAutoUpdateOptions): UpdateManager {
   const environment = options.environment ?? process.env;
+  const logger = options.logger ?? createLogger("updater");
   const installTarget =
     options.installTarget ??
     (async (target: string) => {
-      await installPortableTarget({
+      const result = await installPortableTarget({
         channel: CHANNEL,
         targetVersion: target,
         root: options.installMode.root,
@@ -74,6 +76,12 @@ export function createPortableAutoUpdater(options: PortableAutoUpdateOptions): U
           ? { downloadBaseUrl: environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL }
           : {}),
       });
+      if (result.cleanupFailure) {
+        logger.warn(
+          { target, cleanupFailure: result.cleanupFailure },
+          "Portable update activated but staging cleanup failed",
+        );
+      }
     });
   const refreshService =
     options.refreshService ?? (() => refreshServiceThroughShim(options.installMode.binDir, channelConfig.binName));
@@ -81,7 +89,7 @@ export function createPortableAutoUpdater(options: PortableAutoUpdateOptions): U
   return new UpdateManager({
     channel: CHANNEL,
     currentVersion: CLI_VERSION,
-    logger: options.logger,
+    logger,
     protectedWork: options.protectedWork,
     quiesce: options.quiesce,
     executeUpdate: async (target) => {

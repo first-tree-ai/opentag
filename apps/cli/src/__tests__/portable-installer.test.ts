@@ -265,6 +265,95 @@ describe("portable installer", () => {
     }
   });
 
+  it("reports manifest transport, HTTP, and JSON failures", async () => {
+    const fixture = await createPayloadFixture(VERSION);
+    const h = await installHarness(fixture);
+    const failures: Array<[typeof fetch, string]> = [
+      [
+        (async () => {
+          throw "metadata network offline";
+        }) as typeof fetch,
+        "metadata network offline",
+      ],
+      [(async () => new Response("unavailable", { status: 503 })) as typeof fetch, "HTTP 503"],
+      [(async () => new Response("{")) as typeof fetch, "not valid JSON"],
+    ];
+
+    for (const [fetchFn, message] of failures) {
+      await expect(
+        installPortableTarget({
+          channel: CHANNEL,
+          targetVersion: VERSION,
+          root: h.root,
+          binDir: h.binDir,
+          binName: BIN_NAME,
+          packageName: PACKAGE_NAME,
+          downloadBaseUrl: "https://download.test/releases",
+          platform: PLATFORM,
+          fetchFn,
+        }),
+      ).rejects.toThrow(message);
+    }
+  });
+
+  it("reports payload transport, HTTP, and size failures", async () => {
+    const fixture = await createPayloadFixture(VERSION);
+    const h = await installHarness(fixture);
+    const manifest = manifestFor(VERSION, h.payloadBytes, "https://download.test/x/payload.tar.gz");
+    const payloadFailures: Array<[() => Promise<Response>, string]> = [
+      [async () => Promise.reject("payload network offline"), "payload network offline"],
+      [async () => new Response("unavailable", { status: 503 }), "HTTP 503"],
+      [async () => new Response(new Uint8Array(h.payloadBytes.subarray(1))), "size mismatch"],
+    ];
+
+    for (const [payloadResponse, message] of payloadFailures) {
+      const fetchFn = (async (url: string | URL | Request) =>
+        String(url).endsWith("manifest.json")
+          ? new Response(JSON.stringify(manifest))
+          : payloadResponse()) as typeof fetch;
+      await expect(
+        installPortableTarget({
+          channel: CHANNEL,
+          targetVersion: VERSION,
+          root: h.root,
+          binDir: h.binDir,
+          binName: BIN_NAME,
+          packageName: PACKAGE_NAME,
+          downloadBaseUrl: "https://download.test/releases",
+          platform: PLATFORM,
+          fetchFn,
+          extractTarball: async () => undefined,
+        }),
+      ).rejects.toThrow(message);
+    }
+  });
+
+  it("rejects a payload that omits its INSTALL metadata", async () => {
+    const fixture = await createPayloadFixture(VERSION);
+    const h = await installHarness(fixture);
+    const manifest = manifestFor(VERSION, h.payloadBytes, "https://download.test/x/payload.tar.gz");
+    const fetchFn = (async (url: string | URL | Request) =>
+      String(url).endsWith("manifest.json")
+        ? new Response(JSON.stringify(manifest))
+        : new Response(new Uint8Array(h.payloadBytes))) as typeof fetch;
+
+    await expect(
+      installPortableTarget({
+        channel: CHANNEL,
+        targetVersion: VERSION,
+        root: h.root,
+        binDir: h.binDir,
+        binName: BIN_NAME,
+        packageName: PACKAGE_NAME,
+        downloadBaseUrl: "https://download.test/releases",
+        platform: PLATFORM,
+        fetchFn,
+        extractTarball: async () => undefined,
+        runSmokeCheck: async () => undefined,
+      }),
+    ).rejects.toThrow("missing INSTALL.json");
+  });
+
   it("rejects malformed manifests and asset records before downloading a payload", async () => {
     const fixture = await createPayloadFixture(VERSION);
     const h = await installHarness(fixture);

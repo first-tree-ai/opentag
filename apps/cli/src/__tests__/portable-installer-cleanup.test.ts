@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +26,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => actualFs.rm(path, { recursive: true, force: true })));
 });
 
-async function cleanupFailureInstall(smokeFailure?: Error): Promise<unknown> {
+async function cleanupFailureInstall(smokeFailure?: Error) {
   const directory = await mkdtemp(join(tmpdir(), "opentag-portable-cleanup-"));
   directories.push(directory);
   const root = join(directory, "portable");
@@ -88,10 +88,12 @@ async function cleanupFailureInstall(smokeFailure?: Error): Promise<unknown> {
 
 describe("portable installer cleanup failures", () => {
   it("attempts every cleanup and reports a cleanup failure after a successful activation", async () => {
-    await expect(cleanupFailureInstall()).rejects.toMatchObject({
-      name: "AggregateError",
-      message: "Portable staging cleanup failed",
+    const result = await cleanupFailureInstall();
+    expect(result).toMatchObject({
+      alreadyCurrent: false,
+      cleanupFailure: "Portable staging cleanup failed",
     });
+    expect(await readlink(join(directories[0] ?? "", "portable", "current"))).toContain("/versions/0.0.3-staging.1.1");
     const removedPaths = fsMocks.rm.mock.calls.map(([path]) => String(path));
     expect(removedPaths.some((path) => path.includes("/.tmp/0.0.3-staging.1.1."))).toBe(true);
     expect(removedPaths.some((path) => path.endsWith(".tar.gz"))).toBe(true);

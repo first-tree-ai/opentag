@@ -303,14 +303,14 @@ describe("Computer repair and Agent rebind boundaries", () => {
         .where(eq(computerConnectCodes.id, issued.connectCodeId));
       expect(connectCode).toMatchObject({ consumedAt: null });
       expect(connectCode?.revokedAt).not.toBeNull();
-      expect(
-        await value.database
-          .select()
-          .from(computerCredentials)
-          .where(eq(computerCredentials.computerId, computer.computerId)),
-      ).toSatisfy((credentials: (typeof computerCredentials.$inferSelect)[]) =>
-        credentials.every(({ revokedAt }) => revokedAt !== null),
-      );
+      const credentials = await value.database
+        .select()
+        .from(computerCredentials)
+        .where(eq(computerCredentials.computerId, computer.computerId));
+      const originalCredential = credentials.find(({ id }) => id === computer.credentialId);
+      expect(originalCredential).toBeDefined();
+      expect(originalCredential?.revokedAt).not.toBeNull();
+      expect(credentials.filter(({ revokedAt }) => revokedAt === null)).toHaveLength(0);
     } finally {
       releaseComputer.resolve();
       await Promise.allSettled(

@@ -643,7 +643,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       collaboration: { close: vi.fn() },
       sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       reconciler: {},
-      reportOwner: { stop: vi.fn() },
+      reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runtimeManager: { close: vi.fn(async () => undefined) },
       workspace: {},

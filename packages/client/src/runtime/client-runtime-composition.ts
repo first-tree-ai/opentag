@@ -412,6 +412,7 @@ export class ComposedClientRuntime {
       await this.runtimeManager.close();
     } finally {
       this.reportOwner.stop();
+      await this.reportOwner.settled();
       await this.credentialEnvironment.close();
       // Recovery may remove PATH sentinels, so it must run only after all Runs
       // and Agent Runtime processes have stopped using their launch bin.

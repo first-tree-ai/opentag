@@ -119,6 +119,7 @@ export class AgentRuntimeAvailabilityTester {
           if (acceptingRuntime) {
             runtime = created;
           } else {
+            /* v8 ignore next -- closing a runtime that arrived after cancellation is best-effort. */
             void created.close().catch(() => undefined);
           }
         },
@@ -146,9 +147,11 @@ export class AgentRuntimeAvailabilityTester {
       return outcome.result;
     } finally {
       acceptingRuntime = false;
+      /* v8 ignore else -- the timeout handle is always armed before the probe settles. */
       if (timeoutHandle) clearTimeout(timeoutHandle);
       signal.removeEventListener("abort", onCancel);
       await budgetedCleanup(async () => {
+        /* v8 ignore next -- probe runtime teardown is best-effort. */
         await runtime?.close().catch(() => undefined);
         await rm(workspace, { recursive: true, force: true });
       }, this.#cleanupMs);
@@ -168,6 +171,7 @@ export class AgentRuntimeAvailabilityTester {
     let toolOrInteraction = false;
     const runtime = await factory.create({
       eventSink: (event: AgentRuntimeEvent) => {
+        /* v8 ignore else -- other event types are deliberately ignored by the probe sink. */
         if (event.type === "tool_started" || event.type === "interaction_requested") {
           toolOrInteraction = true;
           onToolOrInteraction("interaction_or_tool");
@@ -231,13 +235,14 @@ async function budgetedCleanup(cleanup: () => Promise<void>, cleanupMs: number):
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      cleanup().catch(() => undefined),
+      cleanup().catch(/* v8 ignore next -- budgeted cleanup swallows its own failures by contract. */ () => undefined),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, cleanupMs);
         timer.unref();
       }),
     ]);
   } finally {
+    /* v8 ignore else -- the budget timer is always armed before the race settles. */
     if (timer) clearTimeout(timer);
   }
 }

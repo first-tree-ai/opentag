@@ -187,8 +187,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - node: "22.13.0"
-            name: Node 22.13.0 Compatibility
+          - node: "22.22.2"
+            name: Node 22.22.2 Compatibility
           - node: "24"
             name: Node 24 Compatibility
           - node: "26"

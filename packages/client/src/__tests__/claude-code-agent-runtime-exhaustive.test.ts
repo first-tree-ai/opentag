@@ -881,6 +881,8 @@ function comprehensiveMessages(): readonly Record<string, unknown>[] {
         content: [
           { type: "text", text: "" },
           { type: "text", text: "fallback" },
+          // Unrecognized assistant block types (e.g. thinking) are silently ignored.
+          { type: "thinking", thinking: "internal" },
         ],
       },
     },

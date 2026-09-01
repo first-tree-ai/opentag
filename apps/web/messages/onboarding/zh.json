@@ -1,3 +1,11 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_target_choice_detail": "设置每次针对一个 Agent 继续。请选择本次要设置的 Agent。",
+  "onboarding_target_choice_title": "选择要设置的 Agent",
+  "onboarding_target_loading": "正在加载你的 Agent…",
+  "onboarding_target_read_failed_detail": "无法读取你的 Agent。请检查网络连接，然后重试。",
+  "onboarding_target_read_failed_title": "无法读取你的 Agent",
+  "onboarding_target_retry": "重试",
+  "onboarding_target_unavailable_detail": "此设置链接指向的 Agent 不是当前账号下的活跃 Agent。请检查链接，或使用拥有该 Agent 的账号登录。",
+  "onboarding_target_unavailable_title": "无法设置该 Agent"
 }

@@ -5,6 +5,7 @@ import { vi } from "vitest";
 export const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 export const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 export const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+export const secondAgentId = "2b74b32f-a7d8-4585-92fb-5ecbf1677b35";
 export const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 export const taskSessionId = "11111111-1111-4111-8111-111111111111";
 export const secondComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
@@ -64,6 +65,13 @@ export const agentListItem = {
   activity: { state: "idle" as const },
   usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
 };
+/** A second active Agent the Account could own, for surfaces that resolve cardinality. */
+export const secondAgentListItem = {
+  ...agentListItem,
+  id: secondAgentId,
+  name: "helper",
+  displayName: "Helper",
+};
 export const taskSummary = {
   id: taskSessionId,
   agent: { id: agentId, name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex" },
@@ -92,6 +100,8 @@ export function installApi(
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     multipleMemberships?: boolean;
     agentCreateError?: "conflict" | "generic" | "name";
+    /** Exact members of the Account's Agent list, replacing the default single-Agent answer. */
+    agentList?: readonly Record<string, unknown>[];
     /** Serves an Agent the Server says has no Computer, which is not the same as one it cannot read. */
     agentUnbound?: boolean;
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
@@ -163,6 +173,26 @@ export function installApi(
   let meFailuresRemaining = options.meFailuresAfterProfileUpdate ?? 0;
   let computerConnectCodeIssued = false;
   const connectCodeId = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+  /** The Account's Agents, in the Server's own order; an exact list installed by a test wins verbatim. */
+  const serveAgentList = () => {
+    const failureStatus = options.agentListStatus?.();
+    if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
+    if (options.agentList) return json({ agents: options.agentList });
+    return json({
+      agents: options.emptyAgents
+        ? []
+        : [
+            {
+              ...agentListItem,
+              createdBy: options.agentCreator ?? agentListItem.createdBy,
+              activity: options.agentActivity ?? agentListItem.activity,
+              status: lifecycleStatus,
+              runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+              ...(agentUnbound ? { computer: null } : {}),
+            },
+          ],
+    });
+  };
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -315,24 +345,7 @@ export function installApi(
       await options.agentCreate?.(body);
       return json(adminConfig(), 201);
     }
-    if (path === "/api/v1/agents" && init?.method === undefined) {
-      const failureStatus = options.agentListStatus?.();
-      if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
-      return json({
-        agents: options.emptyAgents
-          ? []
-          : [
-              {
-                ...agentListItem,
-                createdBy: options.agentCreator ?? agentListItem.createdBy,
-                activity: options.agentActivity ?? agentListItem.activity,
-                status: lifecycleStatus,
-                runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
-                ...(agentUnbound ? { computer: null } : {}),
-              },
-            ],
-      });
-    }
+    if (path === "/api/v1/agents" && init?.method === undefined) return serveAgentList();
     const normalizeComputer = (computer: Record<string, unknown>) => ({
       computerId: computer.computerId ?? computer.id,
       displayName: computer.displayName,

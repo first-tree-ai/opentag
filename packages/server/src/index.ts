@@ -256,7 +256,7 @@ export async function startServer(): Promise<void> {
       },
       onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
     });
-    const accountSetupService = new AccountSetupService(database, imBindingService);
+    const accountSetupService = new AccountSetupService(database);
     const imMessageInbox = new ImMessageInbox(database);
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),

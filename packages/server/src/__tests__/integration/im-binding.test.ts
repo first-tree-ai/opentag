@@ -561,31 +561,19 @@ function slackThreadEvent(input: {
 }
 
 describe("IM binding persistence", () => {
-  it("completes Account setup only from a ready handoff and never reopens it", async () => {
+  it("admits an owned active Agent without a handoff or runtime gate, and never reopens", async () => {
     const value = await fixture();
     try {
       const completedAt = new Date("2026-08-20T12:00:00.000Z");
+      // The same binding read through unavailable runtime CLIs reports a handoff that is not ready.
+      // Admission no longer consults it: adopting the Agent is ownership plus active status alone.
       const runtimeUnavailable = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
         imCliReadiness: () => "unavailable",
       });
-      const unavailableSetup = new AccountSetupService(value.database, runtimeUnavailable, {
-        now: () => completedAt,
-      });
+      const handoff = await runtimeUnavailable.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
+      expect(handoff?.handoffReady).toBe(false);
 
-      await expect(unavailableSetup.completeForAccount(value.bootstrap.userId, value.agent.id)).rejects.toMatchObject({
-        code: "ACCOUNT_SETUP_NOT_READY",
-        statusCode: 409,
-      });
-      await expect(
-        value.database
-          .select({ setupCompletedAt: users.setupCompletedAt })
-          .from(users)
-          .where(eq(users.id, value.bootstrap.userId)),
-      ).resolves.toEqual([{ setupCompletedAt: null }]);
-
-      const setup = new AccountSetupService(value.database, value.imBindingService, {
-        now: () => completedAt,
-      });
+      const setup = new AccountSetupService(value.database, { now: () => completedAt });
       await expect(setup.completeForAccount(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
         setupCompletedAt: completedAt.toISOString(),
       });
@@ -596,8 +584,10 @@ describe("IM binding persistence", () => {
           .where(eq(users.id, value.bootstrap.userId)),
       ).resolves.toEqual([{ setupCompletedAt: completedAt }]);
 
+      // Admission never reopens: once granted, suspending the adopted Agent and asking with an
+      // unknown id both keep the original completion instead of failing closed.
       await value.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
-      await expect(unavailableSetup.completeForAccount(value.bootstrap.userId, crypto.randomUUID())).resolves.toEqual({
+      await expect(setup.completeForAccount(value.bootstrap.userId, crypto.randomUUID())).resolves.toEqual({
         setupCompletedAt: completedAt.toISOString(),
       });
 

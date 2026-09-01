@@ -1,3 +1,11 @@
 {
-  "$schema": "https://inlang.com/schema/inlang-message-format"
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "onboarding_target_choice_detail": "Setup continues with one agent at a time. Choose which agent this run is for.",
+  "onboarding_target_choice_title": "Choose an agent to set up",
+  "onboarding_target_loading": "Loading your agents…",
+  "onboarding_target_read_failed_detail": "Your agents could not be read. Check your connection, then try again.",
+  "onboarding_target_read_failed_title": "Could not read your agents",
+  "onboarding_target_retry": "Try again",
+  "onboarding_target_unavailable_detail": "This setup link names an agent that is not active on this account. Check the link, or sign in with the account that owns it.",
+  "onboarding_target_unavailable_title": "This agent cannot be set up"
 }

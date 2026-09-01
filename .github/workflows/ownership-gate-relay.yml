@@ -1,0 +1,30 @@
+name: Ownership Gate Relay
+
+# A deliberately powerless tripwire. Its only job is to exist so that submitting,
+# editing or dismissing a review produces a completed workflow run, which the
+# privileged `Ownership Gate` workflow observes through `workflow_run` and uses
+# to re-evaluate the gate without a new push.
+#
+# Assume the body of this file is hostile. `pull_request_review` is one of the
+# few events whose workflow file is loaded from the pull request's own merge ref
+# rather than from the default branch, so a pull request can rewrite, rename or
+# delete everything below. That is why it holds no token scopes, no secrets, no
+# checkout and no decision: rewriting it gains an attacker nothing, and deleting
+# it only stops the gate from being refreshed, which leaves the required status
+# on its last verdict and therefore fails closed.
+#
+# Nothing downstream trusts anything this workflow produces. The handler reads
+# only `workflow_run.head_sha`, which GitHub sets.
+on:
+  pull_request_review:
+    types: [submitted, dismissed, edited]
+
+permissions: {}
+
+jobs:
+  relay:
+    name: Relay review activity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record the review event
+        run: echo "A review changed; the Ownership Gate workflow re-evaluates this pull request."

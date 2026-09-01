@@ -6,6 +6,38 @@ OpenTag Server 可选地通过 OTLP/HTTP 导出 OpenTelemetry traces。该能力
 
 Tracing 不等于日志上传。Pino 仍将 server 日志写到 stdout；本能力不会把全部 stdout 日志上传到 Logfire。Logfire 只接收 spans、span attributes 和有界的 exception events。
 
+## 日志契约
+
+日志使用固定词表。每个概念只用一个 key，避免 dashboard 与后续采纳 lane 还要合并同义字段：
+
+| 概念 | Pino 字段 | 说明 |
+| --- | --- | --- |
+| 模块 | `module` | 所属 package 或 service 边界。 |
+| 操作 | `operation` | 稳定的操作名，不是自由描述。 |
+| 请求关联 | `requestId` | HTTP 或 client 请求标识符。 |
+| Account 边界 | `accountId` | Agent 及其资源的租户边界。 |
+| Agent、Computer、Session、Delivery | `agentId`、`computerId`、`sessionId`、`deliveryId` | 稳定的资源标识符。 |
+| Provider | `provider` | provider 名称，例如 `feishu` 或 `slack`。 |
+| 结果 | `outcome` | 稳定的状态转换，例如 `accepted`、`failed` 或 `rejected`。 |
+| 错误标识 | `errorCode` | 使用 structured error code。不要为同一概念另造 `reason`、`errorReason`、`failureReason`、`dropReason` 或 `detail`。 |
+| 尝试次数 | `attempt` | 数值型重试或执行次数。 |
+| 耗时 | `durationMs` | 毫秒耗时。 |
+| 状态 | `status` | 非 outcome 的协议或 provider 状态。 |
+
+级别具有运维含义：`error` 表示终止或不可恢复，`warn` 表示已处理或降级，`info` 表示状态转换，`debug` 表示单请求细节。message 保持简短，可查询的值放进上表字段。
+
+Client logger 遵循以下 `OPENTAG_LOG_LEVEL` 矩阵：
+
+| 环境 | OPENTAG_LOG_LEVEL | 生效级别 |
+| --- | --- | --- |
+| 测试 | 未设置 | `silent` |
+| Service 模式或显式 `file`/`dual` 目标 | 未设置 | `info` |
+| 未配置目标的一次性 client | 未设置 | `warn` |
+| 任意模式 | 合法的 `trace`、`debug`、`info`、`warn`、`error`、`fatal` 或 `silent` | 所选级别 |
+| 任意模式 | 非法值 | `info`，并输出一条安全告警 |
+
+`imAttrs()` 与 `runtimeAttrs()` 是 OpenTelemetry helper，产出的是点分 span key，例如 `opentag.im.binding.id` 与 `opentag.runtime.connection.id`；**不要**把它们的返回值直接作为 Pino payload，应改为映射到上面固定的 camelCase Pino 词表。
+
 ## 配置
 
 `OPENTAG_OTEL_ENDPOINT` 为空时 tracing 关闭。Exporter 会精确使用配置的 URL，并接受任意有效的 OTLP collector headers。

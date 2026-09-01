@@ -15,7 +15,7 @@ export function registerWebApp(app: FastifyInstance, root: string): void {
     if (path.startsWith("/api/") || path === "/healthz" || path === "/readyz") return;
     reply.header(
       "content-security-policy",
-      "default-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     );
     reply.header("x-content-type-options", "nosniff");
     reply.header("x-frame-options", "DENY");

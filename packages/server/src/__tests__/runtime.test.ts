@@ -359,7 +359,7 @@ describe("Computer runtime WebSocket", () => {
         type: "computer:register",
         requestId: randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V2,
-        computerId: machineContext.computerId,
+        installationId: machineContext.installationId,
         instanceId: randomUUID(),
         displayName: "workstation",
         platform: "linux",
@@ -378,7 +378,7 @@ describe("Computer runtime WebSocket", () => {
           requestId: heartbeatRequestId,
           protocolVersion: RUNTIME_PROTOCOL_V2,
           connectionId: registered.connectionId,
-          computerId: register.computerId,
+          installationId: register.installationId,
           instanceId: register.instanceId,
           capabilities: { imCredentialGrant: 0 },
         }),
@@ -420,7 +420,7 @@ describe("Computer runtime WebSocket", () => {
     const register = {
       type: "computer:register",
       requestId: randomUUID(),
-      computerId: machineContext.computerId,
+      installationId: machineContext.installationId,
       instanceId: randomUUID(),
       displayName: "workstation",
       platform: "linux",
@@ -433,7 +433,7 @@ describe("Computer runtime WebSocket", () => {
       JSON.stringify({
         type: "heartbeat",
         requestId: randomUUID(),
-        computerId: register.computerId,
+        installationId: register.installationId,
         instanceId: register.instanceId,
       }),
     );

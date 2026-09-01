@@ -223,9 +223,7 @@ describe("AgentService", () => {
        malformed projection to the Account. */
     await unitDatabase.database.update(computers).set({ displayName: "" }).where(eq(computers.id, computer.id));
 
-    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow(
-      "missing its creator audit record or bound Computer",
-    );
+    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow("missing its bound Computer");
 
     await unitDatabase.database.delete(agents).where(eq(agents.id, created.id));
     await expect(service.listForAccount(bootstrap.userId)).resolves.toEqual({ agents: [] });

@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useId, useState } from "react";
 import {
+  COMPUTER_CONNECT_COMMAND_PLACEHOLDER,
   type ComputerConnectAdapter,
   type ComputerConnectIntent,
   type ComputerConnectLifecycle,
@@ -41,7 +42,6 @@ import {
   tokenChoiceApplies,
   validateAgentName,
 } from "./flow.js";
-import { PLACEHOLDER_CONNECT_COMMAND } from "./mock-backend.js";
 
 /** One step's worth of vertical rhythm. Every gap on every step is one of 4, 12 or 24px. */
 const STEP = "flex flex-col gap-6";
@@ -1024,7 +1024,7 @@ function ConnectCommand({ lifecycle, repairTarget }: { lifecycle: ComputerConnec
     return (
       <div aria-hidden="true" className="ots-command-pending">
         <CommandBlock
-          command={PLACEHOLDER_CONNECT_COMMAND}
+          command={COMPUTER_CONNECT_COMMAND_PLACEHOLDER}
           comment={
             repairTarget
               ? m.onboarding_v2_connect_repair_command_comment({ computerName: repairTarget })

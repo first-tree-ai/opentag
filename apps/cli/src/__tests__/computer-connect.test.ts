@@ -8,10 +8,12 @@ import {
   readComputerIdentity,
   readCredentials,
   readMachineCredentials,
+  resolveComputerIdentity,
   writeCredentialsAtomically,
 } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
+import { resolveCommandContext } from "../core/command/context.js";
 import * as computerCore from "../core/computer/connect.js";
 import { runComputerConnect } from "../core/computer/connect.js";
 import { formatComputerList } from "../core/computer/formatting.js";
@@ -154,6 +156,25 @@ describe("computer connect", () => {
     }
   });
 
+  it("presents an unauthenticated Computer list as a clean non-zero command result", async () => {
+    const listSpy = vi
+      .spyOn(computerQueries, "listComputers")
+      .mockRejectedValue(new Error("OpenTag is not logged in; run login first"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "list"]);
+      expect(process.exitCode).toBe(1);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("OpenTag is not logged in; run login first"));
+      expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining("at listComputers"));
+    } finally {
+      process.exitCode = previousExitCode;
+      stderr.mockRestore();
+      listSpy.mockRestore();
+    }
+  });
+
   it("lists Computers through the authenticated Account client", async () => {
     const home = await temporaryHome();
     const response = {
@@ -190,6 +211,19 @@ describe("computer connect", () => {
   it("requires Account login before listing Computers", async () => {
     const home = await temporaryHome();
     await expect(listComputers(home)).rejects.toThrow("OpenTag is not logged in; run login first");
+  });
+
+  it("explains how to finish Account login after Computer onboarding", async () => {
+    const home = await temporaryHome();
+    await resolveComputerIdentity(home, "https://opentag.example");
+
+    await expect(resolveCommandContext({ home, requireAuth: true })).rejects.toThrow(
+      "machine credentials (computer-credentials.json/computer.json) but no Account credentials (credentials.json)",
+    );
+    await expect(resolveCommandContext({ home, requireAuth: true })).rejects.toThrow(
+      "opentag-dev login --server https://opentag.example -- <code>",
+    );
+    await expect(resolveCommandContext({ home, requireAuth: true })).rejects.toThrow("POST /api/v1/me/connect-codes");
   });
 
   it("stores machine authority separately from Account credentials and binds one Account Computer", async () => {

@@ -80,6 +80,9 @@ describe("ComputerConnect", () => {
     const skeleton = document.querySelector('[data-ui="computer-connect-command-skeleton"]');
     expect(skeleton?.getAttribute("aria-hidden")).toBe("true");
     expect(skeleton?.classList.contains("ots-command-pending")).toBe(true);
+    expect(skeleton?.textContent).toContain("[connection command pending]");
+    expect(skeleton?.textContent).not.toContain("opentag.example.com");
+    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
     expect(screen.queryByRole("code")).toBeNull();
 
     issued.resolve({ connectCodeId: CONNECT_CODE_ID, bootstrapCommand: COMMAND, expiresIn: 900, issuedAt: NOW });
@@ -363,6 +366,8 @@ describe("ComputerConnect", () => {
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
     expect(screen.getByRole("alert").textContent).toContain("Issuance unavailable");
+    expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
+    expect(screen.queryByText("opentag.example.com")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await flushAsync();
     expect(commandIsShown(COMMAND)).toBe(true);

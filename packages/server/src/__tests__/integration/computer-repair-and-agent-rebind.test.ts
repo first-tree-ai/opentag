@@ -6,6 +6,7 @@ import {
   accountComputers,
   agents,
   computerConnectCodes,
+  computerCredentials,
   computers,
   imBindings,
   imMessageDeliveries,
@@ -16,7 +17,7 @@ import {
   workspaceComputers,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
-import { MachineAuthService } from "../../services/computers/index.js";
+import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -70,6 +71,23 @@ async function createAgent(value: Awaited<ReturnType<typeof fixture>>, computerI
     runtimeProvider: "codex",
     computerId,
   });
+}
+
+function deferred<T>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for the database lock barrier");
 }
 
 async function bindSession(
@@ -208,6 +226,61 @@ async function pendingDelivery(
 }
 
 describe("Computer repair and Agent rebind boundaries", () => {
+  it("serializes Computer removal with an exact-target Agent rebind without a lock-order deadlock", async () => {
+    const value = await fixture();
+    const observer = createDatabaseClient(databaseUrl, { max: 1 });
+    const agentLocked = deferred<void>();
+    const releaseRebind = deferred<void>();
+    try {
+      const computer = await enroll(value);
+      const agent = await createAgent(value, computer.workspaceComputerId, "concurrent-removal");
+      const rebindService = new AgentService(value.database, {
+        afterAgentLocked: async () => {
+          agentLocked.resolve();
+          await releaseRebind.promise;
+        },
+      });
+      const computerService = new ComputerService(value.database, { getActiveUserById: async () => value.bootstrap });
+
+      const rebind = rebindService.rebindById(value.bootstrap.userId, agent.id, computer.workspaceComputerId);
+      await agentLocked.promise;
+      const removal = computerService.removeFromAccount(value.bootstrap.userId, computer.workspaceComputerId);
+      await waitUntil(async () => {
+        const result = await observer.sql<{ waiting: boolean }[]>`
+          select exists (
+            select 1
+            from pg_stat_activity
+            where datname = current_database()
+              and wait_event_type = 'Lock'
+              and wait_event = 'transactionid'
+              and query like '%"agents"%for update%'
+          ) as waiting
+        `;
+        return result[0]?.waiting ?? false;
+      });
+
+      releaseRebind.resolve();
+      const [rebindResult, removalResult] = await Promise.allSettled([rebind, removal]);
+      expect(rebindResult.status).toBe("fulfilled");
+      expect(removalResult.status).toBe("fulfilled");
+      expect(
+        (
+          await value.database
+            .select()
+            .from(computerCredentials)
+            .where(eq(computerCredentials.computerId, computer.workspaceComputerId))
+        )[0]?.revokedAt,
+      ).not.toBeNull();
+      expect((await value.database.select().from(agents).where(eq(agents.id, agent.id)))[0]).toMatchObject({
+        computerId: null,
+        workspaceComputerId: null,
+      });
+    } finally {
+      releaseRebind.resolve();
+      await Promise.all([value.sql.end(), observer.sql.end()]);
+    }
+  });
+
   it("repairs the named Computer without inferring identity or moving Session placement", async () => {
     const value = await fixture();
     try {

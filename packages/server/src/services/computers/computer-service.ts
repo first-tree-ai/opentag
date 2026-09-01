@@ -124,6 +124,16 @@ export class ComputerService {
   async removeFromAccount(accountId: string, computerId: string): Promise<void> {
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
+      const [candidate] = await transaction
+        .select({ id: accountComputers.id })
+        .from(accountComputers)
+        .where(and(eq(accountComputers.id, computerId), eq(accountComputers.ownerAccountId, accountId)))
+        .limit(1);
+      if (!candidate) throw computerNotFound();
+
+      // Agent mutations and inbound persistence lock Agent before Computer. Removal follows the same
+      // order so an exact-target rebind or inbound write cannot form a cross-table deadlock.
+      await this.#lockBoundAgents(transaction, computerId);
       const [owned] = await transaction
         .select({ id: accountComputers.id })
         .from(accountComputers)
@@ -131,7 +141,10 @@ export class ComputerService {
         .limit(1)
         .for("update");
       if (!owned) throw computerNotFound();
-      await this.#assertRemovalSafe(transaction, computerId);
+      // A rebind that committed before the Computer lock may have added another Agent after the
+      // initial scan. Revalidate the complete locked set before checking custody or mutating state.
+      const boundAgents = await this.#lockBoundAgents(transaction, computerId);
+      await this.#assertRemovalSafe(transaction, boundAgents);
 
       await transaction
         .update(computerConnectCodes)
@@ -165,13 +178,16 @@ export class ComputerService {
     await this.#onEnrollmentRemoved?.(computerId);
   }
 
-  async #assertRemovalSafe(transaction: DatabaseTransaction, computerId: string): Promise<void> {
-    const boundAgents = await transaction
+  async #lockBoundAgents(transaction: DatabaseTransaction, computerId: string): Promise<{ id: string }[]> {
+    return transaction
       .select({ id: agents.id })
       .from(agents)
       .where(and(eq(agents.computerId, computerId), ne(agents.status, "deleted")))
       .orderBy(asc(agents.id))
       .for("update");
+  }
+
+  async #assertRemovalSafe(transaction: DatabaseTransaction, boundAgents: readonly { id: string }[]): Promise<void> {
     if (boundAgents.length === 0) return;
 
     const activeSessions = await transaction

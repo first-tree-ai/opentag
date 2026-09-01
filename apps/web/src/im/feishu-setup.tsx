@@ -231,7 +231,7 @@ function FeishuSetupLifecycle({
         if (current && ACTIVE_STATES.includes(current.state)) {
           try {
             await browserApi.cancelFeishuSetupAttempt(current.id);
-          } catch (cause) {
+          } catch {
             setError({ message: m.im_feishu_cancel_failed(), source: "start" });
             return false;
           }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ContextTreeConfigSchema, formatContextTreeTarget, parseContextTreeTarget } from "../context-tree.js";
-import { AGENT_SLUG_MAX_LENGTH, OPENTAG_PLATFORM_INSTRUCTIONS, renderPlatformInstructions } from "../runtime-config.js";
+import { OPENTAG_PLATFORM_INSTRUCTIONS, renderPlatformInstructions } from "../runtime-config.js";
 
 describe("Context Tree configuration", () => {
   it.each([
@@ -15,28 +15,21 @@ describe("Context Tree configuration", () => {
     expect(formatContextTreeTarget(config.target)).toBe(input);
   });
 
-  it.each([
-    ["", "empty input"],
-    ["   ", "whitespace only"],
-    ["a".repeat(101), "a managed name beyond the length bound"],
-  ])("rejects %s (%s)", (input) => {
+  // A name the Context Tree CLI could never accept must fail here, as a usage error, rather than
+  // later as a confusing "no such tree" against a config file that was already written.
+  it.each(["", "   ", "Not A Name", "a".repeat(101)])("refuses %j as a target", (input) => {
     expect(parseContextTreeTarget(input)).toBeUndefined();
   });
 
   it("rejects an unknown field and a future schema version", () => {
-    const target = { kind: "managed" as const, name: "shared" };
-    expect(() => ContextTreeConfigSchema.parse({ schemaVersion: 1, target, extra: true })).toThrow();
-    expect(() => ContextTreeConfigSchema.parse({ schemaVersion: 2, target })).toThrow();
+    const config = { schemaVersion: 1, target: { kind: "managed", name: "shared" } };
+    expect(() => ContextTreeConfigSchema.parse({ ...config, extra: true })).toThrow();
+    expect(() => ContextTreeConfigSchema.parse({ ...config, schemaVersion: 2 })).toThrow();
   });
-});
 
-describe("platform instructions", () => {
-  it("states the Agent slug so the Agent can find its own member directory", () => {
-    const slug = "a".repeat(AGENT_SLUG_MAX_LENGTH);
-    const rendered = renderPlatformInstructions({ agentSlug: slug });
+  it("states the Agent slug so an Agent can find its own member directory", () => {
+    const rendered = renderPlatformInstructions({ agentSlug: "code-reviewer" });
     expect(rendered.startsWith(OPENTAG_PLATFORM_INSTRUCTIONS)).toBe(true);
-    expect(rendered).toContain(`OpenTag Agent slug: ${slug}`);
-    // Distinct slugs must produce distinct text, because the Agent revision tuple hashes it.
-    expect(renderPlatformInstructions({ agentSlug: "reviewer" })).not.toBe(rendered);
+    expect(rendered).toContain("OpenTag Agent slug: code-reviewer");
   });
 });

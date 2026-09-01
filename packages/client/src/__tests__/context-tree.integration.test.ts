@@ -7,11 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ContextTreeManager, resolveContextTreePackage } from "../runtime/context-tree.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
-/**
- * End-to-end against the real packaged CLI and a real Git tree, offline throughout: the tree is a
- * local checkout, and `HOME` is redirected so the CLI's connection store, managed namespace, and
- * Codex skill directory are isolated from the developer's own.
- */
+/** End-to-end against the real packaged CLI and a real Git tree, offline and under a redirected HOME. */
 
 const execFileAsync = promisify(execFile);
 const contextTreePackage = resolveContextTreePackage();
@@ -49,7 +45,6 @@ async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv): 
  */
 async function isolatedAccount(prefix: string): Promise<{
   accountHome: string;
-  openTagHome: string;
   treePath: string;
   environment: NodeJS.ProcessEnv;
   manager: ContextTreeManager;
@@ -80,7 +75,20 @@ async function isolatedAccount(prefix: string): Promise<{
     home: openTagHome,
     ...(contextTreePackage ? { contextTreePackage } : {}),
   });
-  return { accountHome, openTagHome, treePath, environment, manager };
+  return { accountHome, treePath, environment, manager };
+}
+
+/** Write one member memory node through the real isolated-worktree protocol. */
+async function recordMemberMemory(worktreePath: string, slug: string, memory: string): Promise<void> {
+  const directory = join(worktreePath, "members", slug);
+  await mkdir(directory, { recursive: true });
+  const node = (title: string, body: string) => `---\ntitle: "${title}"\n---\n\n# ${title}\n\n${body}\n`;
+  await writeFile(join(directory, "NODE.md"), node(slug, "- **[memory.md](memory.md)** — private working memory."));
+  await writeFile(join(directory, "memory.md"), node(`${slug} Memory`, memory));
+  await writeFile(
+    join(worktreePath, "members", "NODE.md"),
+    node("Members", `- **[${slug}/](${slug}/NODE.md)** — ${slug} memory.`),
+  );
 }
 
 describe("Context Tree end-to-end", () => {
@@ -121,37 +129,13 @@ describe("Context Tree end-to-end", () => {
     await expect(manager.ensureAgent(writer)).resolves.toMatchObject({ status: "ready" });
     await expect(manager.ensureAgent(reader)).resolves.toMatchObject({ status: "ready" });
 
-    // Agent A writes its own member memory through the real isolated-worktree protocol.
     const { worktreePath } = (await runCli(["prepare-write", "--project-path", writer], environment)) as {
       worktreePath: string;
     };
-    const memberDirectory = join(worktreePath, "members", "researcher-agent");
-    await mkdir(memberDirectory, { recursive: true });
-    await writeFile(
-      join(memberDirectory, "NODE.md"),
-      '---\ntitle: "Researcher Agent"\n---\n\n# Researcher Agent\n\n- **[memory.md](memory.md)** — private working memory.\n',
-      "utf8",
-    );
-    await writeFile(
-      join(memberDirectory, "memory.md"),
-      '---\ntitle: "Researcher Agent Memory"\n---\n\n# Researcher Agent Memory\n\nPrefer the repository formatter over ad-hoc tooling.\n',
-      "utf8",
-    );
-    await writeFile(
-      join(worktreePath, "members", "NODE.md"),
-      '---\ntitle: "Members"\n---\n\n# Members\n\n- **[researcher-agent/](researcher-agent/NODE.md)** — Researcher Agent memory.\n',
-      "utf8",
-    );
+    await recordMemberMemory(worktreePath, "researcher-agent", "Prefer the repository formatter.");
+    const message = "docs(memory): record the formatter preference";
     await runCli(
-      [
-        "finish-write",
-        "--worktree-path",
-        worktreePath,
-        "--message",
-        "docs(memory): record the formatter preference",
-        "--project-path",
-        writer,
-      ],
+      ["finish-write", "--worktree-path", worktreePath, "--message", message, "--project-path", writer],
       environment,
     );
 
@@ -159,9 +143,7 @@ describe("Context Tree end-to-end", () => {
     const read = (await runCli(
       ["read", "members/researcher-agent/memory.md", "--tree-path", treePath],
       environment,
-    )) as {
-      node: { body: string };
-    };
+    )) as { node: { body: string } };
     expect(read.node.body).toContain("Prefer the repository formatter");
   });
 

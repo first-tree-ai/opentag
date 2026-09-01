@@ -231,7 +231,7 @@ async function recordInstalledUpgrade(
   target: string,
   now: number,
   writeState: typeof writeUpdaterState,
-): Promise<UpdaterStateSnapshot> {
+): Promise<{ persistenceFailure?: string; state: UpdaterStateSnapshot }> {
   const loaded = await readUpdaterState(home);
   const state: UpdaterStateSnapshot =
     loaded.status === "ok" ? loaded.state : { schemaVersion: 1, currentVersion: target, state: "idle", attempts: {} };
@@ -246,8 +246,12 @@ async function recordInstalledUpgrade(
   state.target = target;
   state.attempts[target] = attempt;
   state.lastAttempt = attempt;
-  await writeState(home, state);
-  return state;
+  try {
+    await writeState(home, state);
+    return { state };
+  } catch (error) {
+    return { state, persistenceFailure: errorMessage(error) };
+  }
 }
 
 async function refreshDaemonService(
@@ -331,22 +335,12 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
     });
   }
 
-  let state: UpdaterStateSnapshot;
-  try {
-    state = await recordInstalledUpgrade(
-      context.home,
-      target.version,
-      (options.now ?? Date.now)(),
-      options.writeState ?? writeUpdaterState,
-    );
-  } catch (error) {
-    return finishUpgrade(context, {
-      exitCode: 1,
-      status: "error",
-      targetVersion: target.version,
-      message: `Installed ${target.version} but could not record the upgrade state: ${errorMessage(error)}`,
-    });
-  }
+  const { state, persistenceFailure } = await recordInstalledUpgrade(
+    context.home,
+    target.version,
+    (options.now ?? Date.now)(),
+    options.writeState ?? writeUpdaterState,
+  );
 
   const { serviceRefresh, serviceMessage } = await refreshDaemonService(
     context.home,
@@ -357,10 +351,10 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
   );
 
   return finishUpgrade(context, {
-    exitCode: serviceRefresh === "failed" ? 1 : 0,
+    exitCode: serviceRefresh === "failed" || persistenceFailure ? 1 : 0,
     status: "installed",
     targetVersion: target.version,
     serviceRefresh,
-    message: `OpenTag ${target.version} installed (${context.installMode.mode})${serviceMessage}${installWarning ? `; warning: ${installWarning}` : ""}`,
+    message: `OpenTag ${target.version} installed (${context.installMode.mode})${serviceMessage}${persistenceFailure ? `; recording the installed updater state failed: ${persistenceFailure}` : ""}${installWarning ? `; warning: ${installWarning}` : ""}`,
   });
 }

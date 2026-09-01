@@ -345,10 +345,15 @@ describe("manual upgrade", () => {
       writeState,
     });
 
-    expect(result).toMatchObject({ exitCode: 1, status: "error", targetVersion: "0.0.3" });
-    expect(result.message).toContain("Installed 0.0.3 but could not record the upgrade state");
+    expect(result).toMatchObject({
+      exitCode: 1,
+      status: "installed",
+      targetVersion: "0.0.3",
+      serviceRefresh: "ready",
+    });
+    expect(result.message).toContain("recording the installed updater state failed");
     expect(result.message).toContain("state disk unavailable");
-    expect(reconcileService).not.toHaveBeenCalled();
+    expect(reconcileService).toHaveBeenCalledOnce();
   });
 
   it("repairs invalid updater state by recording the manual install", async () => {

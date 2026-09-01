@@ -319,7 +319,14 @@ export class UpdateManager {
     started.result = "installed";
     state.state = "installed";
     state.lastAttempt = started;
-    await this.#options.saveState(state);
+    try {
+      await this.#options.saveState(state);
+    } catch (error) {
+      this.#logger.warn(
+        { target, error: error instanceof Error ? error.message : String(error) },
+        "The update was installed but its durable state could not be recorded; continuing supervisor handoff",
+      );
+    }
     return true;
   }
 

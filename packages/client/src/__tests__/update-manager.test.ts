@@ -6,6 +6,7 @@ import { recordingLogger } from "./recording-logger.js";
 interface Harness {
   manager: UpdateManager;
   state: () => UpdaterStateSnapshot | undefined;
+  logs: Parameters<typeof recordingLogger>[0];
   installs: string[];
   handoffs: number;
   isQuiesced(): boolean;
@@ -16,7 +17,13 @@ interface Harness {
   failNextInstall(reason: string): void;
 }
 
-function harness(overrides: { currentVersion?: string; stored?: UpdaterStateSnapshot } = {}): Harness {
+function harness(
+  overrides: {
+    currentVersion?: string;
+    failSaveForState?: UpdaterStateSnapshot["state"];
+    stored?: UpdaterStateSnapshot;
+  } = {},
+): Harness {
   let stored = overrides.stored ? structuredClone(overrides.stored) : undefined;
   const installs: string[] = [];
   const entries: Parameters<typeof recordingLogger>[0] = [];
@@ -52,6 +59,7 @@ function harness(overrides: { currentVersion?: string; stored?: UpdaterStateSnap
     },
     loadState: async () => stored,
     saveState: async (state) => {
+      if (state.state === overrides.failSaveForState) throw new Error("state disk unavailable");
       stored = structuredClone(state);
     },
     checkIntervalMs: 10,
@@ -63,6 +71,7 @@ function harness(overrides: { currentVersion?: string; stored?: UpdaterStateSnap
   return {
     manager,
     state: () => stored,
+    logs: entries,
     installs,
     get handoffs() {
       return handoffs;
@@ -145,6 +154,25 @@ describe("UpdateManager", () => {
       target: "0.0.3-staging.1.1",
     });
     expect(h.state()?.attempts["0.0.3-staging.1.1"]).toMatchObject({ result: "installed" });
+  });
+
+  it("continues handoff when the installed-state write fails after the update commits", async () => {
+    const h = harness({ failSaveForState: "installed" });
+    h.manager.observe(target("0.0.3-staging.1.1"));
+    await h.settle();
+
+    expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+    expect(h.handoffs).toBe(1);
+    expect(h.isQuiesced()).toBe(true);
+    expect(h.logs).toContainEqual({
+      level: "warn",
+      fields: {
+        channel: "staging",
+        target: "0.0.3-staging.1.1",
+        error: "state disk unavailable",
+      },
+      message: "The update was installed but its durable state could not be recorded; continuing supervisor handoff",
+    });
   });
 
   it("installs an exact target that differs only by SemVer build metadata", async () => {

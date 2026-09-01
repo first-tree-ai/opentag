@@ -160,12 +160,12 @@ function isBotAuthor(login, isBot) {
 
 /**
  * On a public repository every signed-in stranger comes back as `read`, and the
- * `maintain` role comes back as `write`, so "not none" is not a write test.
- * `permissions.push` is the authoritative field; the coarse `permission` string
- * is the fallback for responses that omit the object.
+ * `maintain` role comes back as `write`, so "not none" is not a write test. The
+ * booleans hang off `user.permissions` in this response, not off the top level;
+ * the coarse `permission` string is the fallback for responses that omit them.
  */
 function grantsWriteAccess(payload) {
-  if (payload?.permissions?.push === true) {
+  if (payload?.user?.permissions?.push === true) {
     return true;
   }
   const permission = String(payload?.permission ?? "").toLowerCase();
@@ -187,33 +187,38 @@ function describeLookupFailure(status, isFork) {
 }
 
 /**
- * Associations that imply write access here. The collaborators endpoint needs
- * push access on the *calling* token, which a workflow token does not always
- * have, so this is the fallback: it is coarser -- COLLABORATOR also covers a
- * read-only or triage collaborator, and MEMBER is organization membership
- * rather than repository write -- but it is computed by GitHub and cannot be
- * spoofed by the pull request.
+ * The last resort when the collaborators endpoint is unavailable. Only `OWNER`
+ * is accepted: `MEMBER` is organization membership rather than repository
+ * write, and `COLLABORATOR` also covers read-only and triage collaborators, so
+ * either one would hand the untrusted-author floor to people the policy means
+ * to catch. Everything else resolves to "no write access", which costs an
+ * outside pull request one owner approval it was going to need anyway.
  */
-const WRITE_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const WRITE_ASSOCIATIONS = new Set(["OWNER"]);
 
 function accessFromAssociation(association, reason) {
   const normalized = String(association ?? "").toUpperCase();
   if (!WRITE_ASSOCIATIONS.has(normalized)) {
     return { hasWriteAccess: false, reason: `${reason}; author association is ${normalized || "unknown"}` };
   }
-  return { hasWriteAccess: true, reason: `${reason}; falling back to author association ${normalized}` };
+  return { hasWriteAccess: true, reason: `${reason}; author association is ${normalized}` };
 }
 
 /**
  * Whether the pull request author may merge here, and why.
  *
- * Never throws. The collaborators endpoint requires push access on the *calling*
- * token, which a workflow token does not always carry, so a failure is expected
- * rather than exceptional and falls back to the author association GitHub put on
- * the pull request. Treating every failure as "no write access" instead would be
- * fail-safe but would also revoke the `apps/web` exemption for every member the
- * moment the endpoint became unavailable, which is a policy change disguised as
- * an outage.
+ * Never throws, and answers without an API call in the two cases that matter
+ * most. A bot is never treated as having write access, whatever it can push. A
+ * pull request whose head branch lives in this repository was pushed here, which
+ * already takes write access -- and that is the case where the `apps/web`
+ * exemption has to stay frictionless, so it must not hang on an endpoint that
+ * can be unavailable.
+ *
+ * That leaves fork pull requests, where the collaborators endpoint is both the
+ * right answer and the one that can fail: it requires push access on the
+ * *calling* token. A failure falls back to the author association, which accepts
+ * only `OWNER`, so an unresolvable fork author is treated as untrusted and picks
+ * up the single owner approval the policy asks of outside contributors anyway.
  */
 export async function fetchAuthorAccess(
   client,
@@ -224,6 +229,9 @@ export async function fetchAuthorAccess(
   }
   if (isBotAuthor(login, isBot)) {
     return { hasWriteAccess: false, reason: "author is a bot account" };
+  }
+  if (!isFork) {
+    return { hasWriteAccess: true, reason: "the head branch is in this repository, which takes write access" };
   }
 
   const path = `${repositoryPath(owner, name)}/collaborators/${encodeSegment(login)}/permission`;

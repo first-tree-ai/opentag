@@ -527,6 +527,24 @@ test("an ownerless rule resolves to an empty owner set without falling through",
   assert.equal(matchRule(rules, "packages/server/src/index.ts"), rules[0]);
 });
 
+test("matchNaming skips a rule that reaches a path only through the implicit descendant suffix", () => {
+  const rules = rulesFor("*", "*.md", "/apps/web/");
+  const matcher = createMatcher(rules);
+
+  // GitHub's reach is reproduced exactly...
+  assert.equal(matcher.match("packages/notes.md/index.ts"), rules[1]);
+  assert.equal(matcher.namesPath(rules[1], "packages/notes.md/index.ts"), false);
+  // ...but the rule that NAMES the path is the repository-wide default.
+  assert.equal(matcher.matchNaming("packages/notes.md/index.ts"), rules[0]);
+
+  // A markdown file is named by the markdown rule, and a trailing-slash rule
+  // names every descendant, so neither is affected.
+  assert.equal(matcher.matchNaming("docs/guide.md"), rules[1]);
+  assert.equal(matcher.namesPath(rules[1], "docs/guide.md"), true);
+  assert.equal(matcher.matchNaming("apps/web/src/main.tsx"), rules[2]);
+  assert.equal(matcher.namesPath(rules[2], "apps/web/src/main.tsx"), true);
+});
+
 test("last match wins even when an earlier rule would also have matched", () => {
   const rules = rulesFor("*", "*.md", "/apps/web/");
   const matcher = createMatcher(rules);

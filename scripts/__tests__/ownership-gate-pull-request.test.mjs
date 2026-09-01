@@ -196,6 +196,7 @@ test("logins are lowercased and reviews without a user are ignored", async () =>
 
 // --- Author access ----------------------------------------------------------
 
+/** Defaults to a fork, which is the only case that reaches the API at all. */
 function authorAccess(handler, options, logger = silentLogger) {
   const { client, requests } = clientFor(handler, logger);
   return {
@@ -204,6 +205,7 @@ function authorAccess(handler, options, logger = silentLogger) {
       owner: "first-tree-ai",
       name: "opentag",
       login: "carol",
+      isFork: true,
       logger,
       ...options,
     }),
@@ -213,6 +215,23 @@ function authorAccess(handler, options, logger = silentLogger) {
 function permissionResponse(payload, status = 200) {
   return () => fakeResponse(payload, status);
 }
+
+test("a same-repository pull request settles write access without an api call", async () => {
+  // Pushing the head branch here already took write access, and this is the
+  // path where the apps/web exemption has to stay frictionless, so it must not
+  // depend on an endpoint the workflow token may not reach.
+  const { result, requests } = authorAccess(permissionResponse({ permission: "none" }), { isFork: false });
+
+  assert.equal((await result).hasWriteAccess, true);
+  assert.equal(requests.length, 0);
+});
+
+test("a bot is still not an owner even when it pushes to a branch in this repository", async () => {
+  const { result, requests } = authorAccess(permissionResponse({}), { isFork: false, login: "dependabot[bot]" });
+
+  assert.deepEqual(await result, { hasWriteAccess: false, reason: "author is a bot account" });
+  assert.equal(requests.length, 0);
+});
 
 test("a bot author never counts as an owner and costs no api call", async () => {
   const byLogin = authorAccess(permissionResponse({}), { login: "dependabot[bot]" });
@@ -243,7 +262,9 @@ test("the maintain role and an explicit push permission both count as write", as
   const maintain = authorAccess(permissionResponse({ permission: "write" }), {});
   assert.equal((await maintain.result).hasWriteAccess, true);
 
-  const push = authorAccess(permissionResponse({ permissions: { pull: true, push: true } }), {});
+  // The booleans hang off `user`, which is where this response actually puts
+  // them; reading them from the top level would silently never fire.
+  const push = authorAccess(permissionResponse({ user: { permissions: { pull: true, push: true } } }), {});
   assert.equal((await push.result).hasWriteAccess, true);
 
   const admin = authorAccess(permissionResponse({ permission: "admin" }), {});
@@ -282,20 +303,26 @@ test("an unexpected failure falls back to the author association instead of thro
   assert.match(access.reason, /permission lookup failed with 500; author association is NONE/);
 });
 
-test("a lookup failure for a member falls back to write access rather than revoking the web exemption", async () => {
-  // Treating an outage as "no write access" would silently require an owner
-  // approval on every apps/web pull request, which is a policy change wearing
-  // the costume of a fail-safe.
+test("organization membership does not stand in for write access when the lookup fails", async () => {
+  // MEMBER is organization membership and COLLABORATOR also covers read-only
+  // and triage collaborators, so accepting either would hand the external-author
+  // floor to exactly the people it exists to catch.
   const { logger } = recordingLogger();
-  const { result } = authorAccess(
+  for (const association of ["MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE"]) {
+    const { result } = authorAccess(
+      permissionResponse({ message: "Resource not accessible by integration" }, 403),
+      { authorAssociation: association },
+      logger,
+    );
+    assert.equal((await result).hasWriteAccess, false, `${association} must not imply write access`);
+  }
+
+  const owner = authorAccess(
     permissionResponse({ message: "Resource not accessible by integration" }, 403),
-    { authorAssociation: "MEMBER" },
+    { authorAssociation: "OWNER" },
     logger,
   );
-
-  const access = await result;
-  assert.equal(access.hasWriteAccess, true);
-  assert.match(access.reason, /falling back to author association MEMBER/);
+  assert.equal((await owner.result).hasWriteAccess, true);
 });
 
 test("a lookup failure for an outside contributor stays at no write access", async () => {

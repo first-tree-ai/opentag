@@ -51,8 +51,8 @@ npm 发布、绕开受保护流程创建 production tag，以及回退到 token 
 - `exempt`：该规则刻意不列出任何 owner。匹配的文件无需批准，也不会自动请求 reviewer。
 
 `apps/web` 为 exempt。任何有写权限的人提交的 web 改动，在 CI 通过后即可合并，无需批准，也不会自动请求 reviewer。
-按 commit 数量计算，这覆盖了仓库的大部分改动，也就是说对成员而言，大部分代码面没有人工评审要求。这是为迭代速度做出的
-有意取舍，支撑它的是 CI 和事后评审。
+它约占受版本控制文件的四分之一，但占改动量的大多数——仓库最初 290 个 commit 中有 173 个触及 `apps/web`——因此就日常
+工作而言，成员写的大部分内容都没有人工评审要求。这是为迭代速度做出的有意取舍，支撑它的是 CI 和事后评审。
 
 `apps/web` 之外的 Markdown 为 territory，owner 范围更宽，包括 yuezengwu、bestony、Gandy2025 和 liuchao-001，
 但根目录的策略与 agent 指令文件除外：`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`SECURITY.md` 以及后两者的中文镜像。

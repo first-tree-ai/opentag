@@ -8,13 +8,23 @@ name: Ownership Gate Relay
 # Assume the body of this file is hostile. `pull_request_review` is one of the
 # few events whose workflow file is loaded from the pull request's own merge ref
 # rather than from the default branch, so a pull request can rewrite, rename or
-# delete everything below. That is why it holds no token scopes, no secrets, no
-# checkout and no decision: rewriting it gains an attacker nothing, and deleting
-# it only stops the gate from being refreshed, which leaves the required status
-# on its last verdict and therefore fails closed.
+# delete everything below. It therefore holds no token scopes, no secrets, no
+# checkout and no decision, and nothing downstream trusts what it produces: the
+# privileged workflow reads only `workflow_run.head_sha`, which GitHub sets.
+# Deleting or renaming it only stops the gate from being refreshed, which leaves
+# the required status on its last verdict and so fails closed.
 #
-# Nothing downstream trusts anything this workflow produces. The handler reads
-# only `workflow_run.head_sha`, which GitHub sets.
+# What this does NOT defend against, stated plainly because the empty
+# `permissions` block above reads like it does: on a pull request from a fork,
+# GitHub forces this run's token read-only, so a rewritten body can post nothing.
+# On a branch in THIS repository it does not, and a collaborator can already
+# reach the same place without touching this file at all -- pushing any branch
+# with a workflow that declares `statuses: write` mints a token that can write
+# the `ownership-gate` context. A commit status is not an unforgeable signal
+# against someone who already has push access; the gate constrains mistakes and
+# ordinary work, not a collaborator who sets out to defeat it. Closing that gap
+# means posting the status from a dedicated GitHub App and pinning the ruleset's
+# required check to that app id, so a GITHUB_TOKEN cannot satisfy it.
 on:
   pull_request_review:
     types: [submitted, dismissed, edited]

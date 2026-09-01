@@ -113,6 +113,28 @@ function checkPins(config, matcher, files, failures) {
   }
 }
 
+/**
+ * No tracked path may resolve differently for GitHub than for the gate. Every
+ * CODEOWNERS pattern implicitly reaches descendants, so `*.md` also covers every
+ * file inside a directory called `notes.md`; GitHub would attribute that file to
+ * the docs owners, while the gate judges it by the rule that names it. The gate
+ * is the fail-safe of the two, but the disagreement is confusing and it is how a
+ * contributor's choice of directory name silently moves ownership, so it fails
+ * the pull request that introduces the path.
+ */
+function checkNamingAgreement(matcher, files, failures) {
+  for (const path of files) {
+    const reached = matcher.match(path);
+    if (reached === null || matcher.namesPath(reached, path)) {
+      continue;
+    }
+    const naming = matcher.matchNaming(path);
+    failures.push(
+      `${CODEOWNERS_PATH}: ${path} is reached by ${reached.pattern} only as a descendant, so GitHub attributes it there while the gate judges it under ${naming?.pattern ?? "no rule"}; rename the path or narrow the rule`,
+    );
+  }
+}
+
 function resolutionCounts(rules, matcher, files) {
   const counts = new Map(rules.map((rule) => [rule.pattern, 0]));
   let unmatched = 0;
@@ -161,6 +183,7 @@ export function checkOwnershipPolicy({ repositoryRoot = process.cwd(), files } =
   const matcher = createMatcher(rules);
   const tracked = files ?? listTrackedFiles(root);
   checkPins(config, matcher, tracked, failures);
+  checkNamingAgreement(matcher, tracked, failures);
   const { counts, unmatched } = resolutionCounts(rules, matcher, tracked);
   checkCoverage(unmatched, failures);
 

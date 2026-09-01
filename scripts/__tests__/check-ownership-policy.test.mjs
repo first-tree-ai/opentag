@@ -82,6 +82,24 @@ test("the same pin below the overriding rule passes", () => {
   assert.deepEqual(result.failures, []);
 });
 
+test("a path a rule only reaches as a descendant is reported, because GitHub and the gate would disagree", () => {
+  // `*.md` implicitly reaches every file inside a directory called `notes.md`.
+  // GitHub attributes those files to the docs owners; the gate judges them under
+  // the rule that names them. The disagreement fails the pull request that
+  // creates the directory.
+  const result = check(
+    {
+      codeowners: [`* ${OWNERS}`, "*.md @gandy2025"].join("\n"),
+      rules: [
+        { pattern: "*", mode: "gate" },
+        { pattern: "*.md", mode: "territory" },
+      ],
+    },
+    ["docs/real.md", "packages/notes.md/index.ts"],
+  );
+  assertFails(result, /packages\/notes\.md\/index\.ts is reached by \*\.md only as a descendant/);
+});
+
 test("a pin that protects nothing is reported", () => {
   const result = check(
     {

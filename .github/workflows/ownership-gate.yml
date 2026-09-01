@@ -44,7 +44,7 @@ on:
 # verdict, and cancelling one mid-flight would leave the required status on
 # whatever the previous run wrote.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.workflow_run.head_sha || inputs.pull_request }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || inputs.pull_request }}
   cancel-in-progress: false
 
 permissions:
@@ -83,10 +83,11 @@ jobs:
       - name: Evaluate the ownership gate
         env:
           GH_TOKEN: ${{ github.token }}
-          # Absent on `workflow_run`; the gate then resolves the pull request
-          # from the relay run's head SHA, which GitHub sets and no pull request
-          # can influence.
+          # Absent on `workflow_run`; the gate then resolves the pull requests
+          # from the head SHA, which GitHub sets and no pull request can
+          # influence. The SHA is supplied on every trigger that has one, so an
+          # operational failure still has a commit to report itself on.
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number || inputs.pull_request }}
-          RELAY_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
           OWNERSHIP_GATE_LOG_LEVEL: ${{ runner.debug == '1' && 'debug' || 'info' }}
         run: node scripts/ownership-gate.mjs

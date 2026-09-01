@@ -80,9 +80,9 @@ function optionalSha(raw) {
 export function buildConfig(argv, env = {}) {
   const { values } = parseArgs({ args: argv, options: CLI_OPTIONS, allowPositionals: false });
   const number = optionalPullRequestNumber(values["pull-request"] ?? env.PULL_REQUEST_NUMBER);
-  const headSha = optionalSha(values["head-sha"] ?? env.RELAY_HEAD_SHA);
+  const headSha = optionalSha(values["head-sha"] ?? env.HEAD_SHA);
   if (number === null && headSha === null) {
-    throw new TypeError("A pull request number or a head SHA is required; set PULL_REQUEST_NUMBER or RELAY_HEAD_SHA");
+    throw new TypeError("A pull request number or a head SHA is required; set PULL_REQUEST_NUMBER or HEAD_SHA");
   }
   return {
     repository: values.repository ?? env.GITHUB_REPOSITORY,
@@ -134,34 +134,31 @@ async function publishSummary(summary, env, logger) {
 }
 
 /**
- * On `workflow_run` the payload carries no pull request -- `workflow_run.
- * pull_requests` is empty for pull requests from forks, which is exactly the
- * case this path exists to serve. The relay run's head SHA is the one piece of
- * GitHub-supplied metadata that survives, so the pull request is resolved from
- * it rather than from anything the relay produced.
+ * Every open pull request whose head is this commit.
+ *
+ * A commit status belongs to a commit, but a verdict is computed against one
+ * pull request's base. Two open pull requests can share a head commit -- the
+ * same branch proposed into two bases -- and they would then share this one
+ * status, so a permissive verdict computed for the second would satisfy the
+ * required check on the first. The gate therefore judges all of them and
+ * publishes the worst answer.
+ *
+ * On `workflow_run` this is also how the pull request is identified at all:
+ * `workflow_run.pull_requests` is empty for pull requests from forks, which is
+ * exactly the case that path exists to serve, so the relay run's head SHA is the
+ * only usable handle -- and it is set by GitHub, not by the relay.
  */
-async function resolvePullRequestNumber(client, { owner, name, config, logger }) {
-  if (config.number !== null) {
-    return config.number;
-  }
-  const associated = await client.rest("GET", `/repos/${owner}/${name}/commits/${config.headSha}/pulls?per_page=100`);
+async function listPullRequestsForCommit(client, { owner, name, sha, logger }) {
+  const associated = await client.rest("GET", `/repos/${owner}/${name}/commits/${sha}/pulls?per_page=100`);
   const open = (Array.isArray(associated) ? associated : []).filter(
-    (candidate) => candidate?.state === "open" && candidate?.head?.sha === config.headSha,
+    (candidate) => candidate?.state === "open" && candidate?.head?.sha === sha,
   );
-  logger.info("Resolved pull requests from the relay head SHA", {
-    headSha: config.headSha,
+  logger.info("Listed open pull requests for the head commit", {
+    sha,
     associated: Array.isArray(associated) ? associated.length : 0,
     open: open.length,
   });
-  if (open.length === 1) {
-    return open[0].number;
-  }
-  if (open.length === 0) {
-    return null;
-  }
-  throw new Error(
-    `Head SHA ${config.headSha} belongs to ${open.length} open pull requests, which share one commit status; re-run the gate for each with workflow_dispatch`,
-  );
+  return open.map((candidate) => candidate.number);
 }
 
 async function readPullRequest(client, { owner, name, number, logger }) {
@@ -193,13 +190,7 @@ async function collectInputs(client, { owner, name, number, pullRequest, logger 
   return { files, approvals, access, isFork };
 }
 
-export async function evaluate({ client, config, policy, logger }) {
-  const { owner, name } = parseRepository(config.repository);
-  const number = await resolvePullRequestNumber(client, { owner, name, config, logger });
-  if (number === null) {
-    logger.info("No open pull request has this head commit; nothing to report", { headSha: config.headSha });
-    return null;
-  }
+async function judgePullRequest(client, { owner, name, number, policy, logger }) {
   const pullRequest = await readPullRequest(client, { owner, name, number, logger });
   const { files, approvals, access, isFork } = await collectInputs(client, {
     owner,
@@ -220,6 +211,7 @@ export async function evaluate({ client, config, policy, logger }) {
   });
 
   logger.info("Decided", {
+    number,
     state: decision.state,
     files: decision.files.length,
     blocking: decision.blocking.length,
@@ -228,41 +220,78 @@ export async function evaluate({ client, config, policy, logger }) {
 
   return {
     decision,
-    owner,
-    name,
     pullRequest: {
       number,
       url: pullRequest.html_url,
       headSha: pullRequest.head?.sha,
+      baseRef: pullRequest.base?.ref,
       isFork,
       accessReason: access.reason,
     },
   };
 }
 
+/**
+ * Judges the head commit, not a single pull request: whichever trigger asked,
+ * the answer published is the worst verdict across every open pull request that
+ * shares the commit the status is written to.
+ */
+export async function evaluate({ client, config, policy, logger }) {
+  const { owner, name } = parseRepository(config.repository);
+  const seed =
+    config.number === null
+      ? null
+      : await judgePullRequest(client, { owner, name, number: config.number, policy, logger });
+  const headSha = seed?.pullRequest.headSha ?? config.headSha;
+  if (!headSha) {
+    throw new Error(`Pull request #${config.number} has no head commit to report on`);
+  }
+
+  const numbers = await listPullRequestsForCommit(client, { owner, name, sha: headSha, logger });
+  const siblings = numbers.filter((number) => number !== seed?.pullRequest.number);
+  const results = [
+    ...(seed === null ? [] : [seed]),
+    ...(await Promise.all(siblings.map((number) => judgePullRequest(client, { owner, name, number, policy, logger })))),
+  ];
+
+  if (results.length === 0) {
+    logger.info("No open pull request has this head commit; nothing to report", { headSha });
+    return null;
+  }
+
+  return {
+    owner,
+    name,
+    headSha,
+    results,
+    state: results.every((result) => result.decision.state === STATE_SUCCESS) ? STATE_SUCCESS : STATE_FAILURE,
+  };
+}
+
 async function report({ client, config, env, logger, result }) {
-  const { decision, owner, name, pullRequest } = result;
+  const { owner, name, headSha, results, state } = result;
   const summary = renderSummary({
     repository: `${owner}/${name}`,
-    pullRequest,
-    decision,
+    headSha,
+    results,
+    state,
     codeownersPath: CODEOWNERS_PATH,
     modesPath: MODES_PATH,
   });
   await publishSummary(summary, env, logger);
 
   if (config.dryRun) {
-    logger.info("Dry run: no commit status was posted", { state: decision.state });
+    logger.info("Dry run: no commit status was posted", { state });
     return;
   }
   try {
     await postCommitStatus(client, {
       owner,
       name,
-      sha: pullRequest.headSha,
-      state: decision.state === STATE_SUCCESS ? STATE_SUCCESS : STATE_FAILURE,
+      sha: headSha,
+      state,
       context: config.context,
-      description: renderStatusDescription(decision),
+      description: renderStatusDescription(results, state),
       targetUrl: targetUrl(env),
       logger,
     });
@@ -328,18 +357,20 @@ async function main() {
   logger.debug("Resolved configuration", config);
 
   const client = createGitHubClient({ token: env.GH_TOKEN ?? env.GITHUB_TOKEN, logger });
-  const policy = await loadPolicy(config.root);
-  logger.info("Loaded policy", { rules: policy.rules.length, owners: policy.owners });
 
-  // Remembered outside the try so a failure after the pull request was read can
-  // still report itself on the right commit.
-  let headSha = config.headSha;
+  // The workflow supplies the head SHA on every trigger, so a failure anywhere
+  // below -- including in the policy itself -- still has a commit to report on.
+  // Without it the run would fail silently and leave whatever status the commit
+  // already carried, which after a base-branch retarget is a verdict computed
+  // against a different base.
+  const headSha = config.headSha;
   try {
+    const policy = await loadPolicy(config.root);
+    logger.info("Loaded policy", { rules: policy.rules.length, owners: policy.owners });
     const result = await evaluate({ client, config, policy, logger });
     if (result === null) {
       return 0;
     }
-    headSha = result.pullRequest.headSha ?? headSha;
     await report({ client, config, env, logger, result });
     return 0;
   } catch (error) {

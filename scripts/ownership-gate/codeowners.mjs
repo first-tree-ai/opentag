@@ -86,15 +86,15 @@ function globstarSource(index, lastIndex) {
  * `/docs` is recursive while `/docs/*` is one level deep. A lone `*` is not a
  * literal and so does not get the suffix.
  */
-function plainSegmentSource(segment, isLast) {
+function plainSegmentSource(segment, isLast, withDescendants) {
   if (segment === "*") {
     return "[^/]+";
   }
   const source = literalSegmentSource(segment);
-  return isLast ? `${source}(?:/.*)?` : source;
+  return isLast && withDescendants ? `${source}(?:/.*)?` : source;
 }
 
-function buildPatternSource(segments) {
+function buildPatternSource(segments, withDescendants) {
   const lastIndex = segments.length - 1;
   let source = "";
   let needSlash = false;
@@ -107,7 +107,7 @@ function buildPatternSource(segments) {
       needSlash = index !== 0 && index !== lastIndex;
       continue;
     }
-    source += (needSlash ? "/" : "") + plainSegmentSource(segment, index === lastIndex);
+    source += (needSlash ? "/" : "") + plainSegmentSource(segment, index === lastIndex, withDescendants);
     needSlash = true;
   }
   return source;
@@ -140,9 +140,16 @@ function normalizeSegments(pattern) {
  * The result carries no `i` flag on purpose: CODEOWNERS matching is case
  * sensitive unconditionally, so `/README.md` does not own `/readme.md`.
  *
+ * `withDescendants: false` drops the implicit descendant suffix of step 7 and so
+ * compiles the paths the pattern NAMES, rather than those plus everything
+ * beneath them. GitHub has no such mode; it exists because the difference is
+ * load-bearing for a caller that hands out different authority to the two --
+ * `*.md` names markdown files but also owns every file inside a directory
+ * called `notes.md`.
+ *
  * @throws {TypeError} when the pattern is not a usable CODEOWNERS pattern.
  */
-export function compilePattern(pattern) {
+export function compilePattern(pattern, { withDescendants = true } = {}) {
   if (typeof pattern !== "string" || pattern.length === 0) {
     throw new TypeError(`Pattern must be a non-empty string, received ${JSON.stringify(pattern)}`);
   }
@@ -154,7 +161,7 @@ export function compilePattern(pattern) {
     // are never empty, so an empty-string-only expression is that "nothing".
     return /^$/;
   }
-  return new RegExp(`^${buildPatternSource(normalizeSegments(pattern))}$`);
+  return new RegExp(`^${buildPatternSource(normalizeSegments(pattern), withDescendants)}$`);
 }
 
 /** True for the three owner spellings GitHub accepts: user, team, email. */
@@ -314,7 +321,12 @@ function normalizePath(path) {
  * @throws {TypeError} when a rule carries a pattern that cannot be compiled.
  */
 export function createMatcher(rules) {
-  const compiled = rules.map((rule) => ({ rule, regexp: compilePattern(rule.pattern) }));
+  const compiled = rules.map((rule) => ({
+    rule,
+    regexp: compilePattern(rule.pattern),
+    named: compilePattern(rule.pattern, { withDescendants: false }),
+  }));
+  const namedByRule = new Map(compiled.map((entry) => [entry.rule, entry.named]));
   return {
     /** The last matching rule, or null. Owner sets are never unioned across rules. */
     match(path) {
@@ -325,6 +337,30 @@ export function createMatcher(rules) {
         }
       }
       return null;
+    },
+    /**
+     * The last rule that NAMES this path, ignoring rules that reach it only
+     * through the implicit descendant suffix.
+     *
+     * The two answers differ exactly when a pattern extends past what it spells
+     * out: `*.md` names markdown files, but its implicit reach also covers every
+     * file inside a directory called `notes.md`. A caller that grants a rule
+     * more than "these owners review this" -- a self-merge lane, say -- must ask
+     * this rather than {@link match}, or a directory name chosen by a
+     * contributor decides who owns the code inside it.
+     */
+    matchNaming(path) {
+      const candidate = normalizePath(path);
+      for (let index = compiled.length - 1; index >= 0; index -= 1) {
+        if (compiled[index].named.test(candidate)) {
+          return compiled[index].rule;
+        }
+      }
+      return null;
+    },
+    /** True when `rule` names `path` rather than only reaching it as a descendant. */
+    namesPath(rule, path) {
+      return namedByRule.get(rule)?.test(normalizePath(path)) ?? false;
     },
   };
 }

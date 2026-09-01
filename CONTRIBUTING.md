@@ -59,9 +59,10 @@ declared in [.github/ownership-modes.json](./.github/ownership-modes.json), and 
   reviewer.
 
 `apps/web` is exempt. Web changes from anyone with write access merge on green CI with no approval and no automatic
-reviewer request. This covers the majority of repository changes by commit volume, so most of the code surface has no
-human-review requirement for members. That is a deliberate trade for iteration speed, and CI plus after-the-fact review
-are what stand behind it.
+reviewer request. That is roughly a quarter of the tracked files but the majority of the change volume — 173 of the
+repository's first 290 commits touched `apps/web` — so in day-to-day terms most of what members write here carries no
+human-review requirement. It is a deliberate trade for iteration speed, and CI plus after-the-fact review are what stand
+behind it.
 
 Markdown outside `apps/web` is `territory` with a wider owner pool of yuezengwu, bestony, Gandy2025, and liuchao-001,
 except for the root policy and agent-instruction files: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, and

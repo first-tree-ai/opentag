@@ -62,6 +62,31 @@ function policy() {
 
 const OWNERS = ["bestony", "yuezengwu", "gandy2025", "liuchao-001"];
 
+/** Wraps a decision in the per-pull-request shape the reporter consumes. */
+function judged(decision, number = 7, accessReason = "the head branch is in this repository") {
+  return {
+    decision,
+    pullRequest: {
+      number,
+      url: `https://example.invalid/pull/${number}`,
+      headSha: "abc123",
+      baseRef: "main",
+      accessReason,
+    },
+  };
+}
+
+function summarize(results, state) {
+  return renderSummary({
+    repository: "first-tree-ai/opentag",
+    headSha: "abc123",
+    results,
+    state,
+    codeownersPath: ".github/CODEOWNERS",
+    modesPath: ".github/ownership-modes.json",
+  });
+}
+
 function decide({ files, author, approvals = [], hasWriteAccess = true }) {
   const { matcher, modeConfig } = policy();
   return decidePullRequest({
@@ -262,14 +287,50 @@ test("blocking files are grouped by the rule that blocked them", () => {
   assert.equal(groups.find((group) => group.pattern === "*").paths.length, 2);
 });
 
-test("the status description stays inside the commit-status limit", () => {
+test("a relaxation does not reach past the paths its rule names", () => {
+  // `*.md` implicitly owns everything inside a directory called `notes.md`, so
+  // a docs-lane owner could otherwise self-merge arbitrary code by choosing a
+  // directory name. The match still happens; the territory grant does not.
   const result = decide({
+    files: ["packages/notes.md/package.json", "docs/real.md"],
+    author: "gandy2025",
+  });
+  assert.equal(result.state, STATE_FAILURE);
+  assert.equal(result.blocking.length, 1);
+  assert.equal(result.blocking[0].path, "packages/notes.md/package.json");
+  assert.equal(result.blocking[0].pattern, "*", "authority falls to the rule that names the path");
+  assert.equal(result.blocking[0].mode, MODE_GATE);
+  assert.deepEqual(result.blocking[0].eligible, ["bestony", "yuezengwu"]);
+});
+
+test("the status description stays inside the commit-status limit", () => {
+  const decision = decide({
     files: Array.from({ length: 400 }, (_value, index) => `packages/server/src/file-${index}.ts`),
     author: "bestony",
   });
-  const description = renderStatusDescription(result);
+  const description = renderStatusDescription([judged(decision)], STATE_FAILURE);
   assert.ok(description.length <= MAX_DESCRIPTION_LENGTH, `description was ${description.length} characters`);
   assert.match(description, /awaiting approval/);
+});
+
+test("the description counts separate requirements instead of unioning them into one 'or'", () => {
+  // The docs lane and the gate need different approvers, and one approval from
+  // the union of the two would not clear either requirement.
+  const decision = decide({
+    files: ["packages/shared/src/index.ts", "docs/guide.md"],
+    author: "outsider",
+  });
+  assert.equal(decision.blocking.length, 2);
+  const description = renderStatusDescription([judged(decision)], STATE_FAILURE);
+  assert.match(description, /Needs 2 separate approvals\./);
+});
+
+test("the description names the blocker when several pull requests share the commit", () => {
+  const blocked = judged(decide({ files: ["packages/shared/src/index.ts"], author: "bestony" }), 7);
+  const passing = judged(decide({ files: ["apps/web/src/app.tsx"], author: "gandy2025" }), 8);
+  const description = renderStatusDescription([blocked, passing], STATE_FAILURE);
+  assert.match(description, /1 of 2 pull requests on this commit await approval/);
+  assert.ok(description.length <= MAX_DESCRIPTION_LENGTH);
 });
 
 test("truncateDescription marks the cut", () => {
@@ -278,24 +339,39 @@ test("truncateDescription marks the cut", () => {
 });
 
 test("a green run says so in one line", () => {
-  const result = decide({ files: ["apps/web/src/app.tsx"], author: "gandy2025" });
-  assert.match(renderStatusDescription(result), /^Ownership satisfied for 1 changed file\.$/);
+  const decision = decide({ files: ["apps/web/src/app.tsx"], author: "gandy2025" });
+  assert.match(
+    renderStatusDescription([judged(decision)], STATE_SUCCESS),
+    /^Ownership satisfied for 1 changed file\.$/,
+  );
 });
 
 test("the summary names the rule, the mode and who can unblock it", () => {
-  const result = decide({ files: ["packages/shared/src/index.ts"], author: "bestony" });
-  const summary = renderSummary({
-    repository: "first-tree-ai/opentag",
-    pullRequest: { number: 7, url: "https://example.invalid/pull/7", headSha: "abc123", accessReason: "write access" },
-    decision: result,
-    codeownersPath: ".github/CODEOWNERS",
-    modesPath: ".github/ownership-modes.json",
-  });
+  const decision = decide({ files: ["packages/shared/src/index.ts"], author: "bestony" });
+  const summary = summarize([judged(decision)], STATE_FAILURE);
   assert.match(summary, /## Ownership gate/);
   assert.match(summary, /packages\/shared\/src\/index\.ts/);
   assert.match(summary, /yuezengwu/);
   assert.match(summary, /never approves on anyone's behalf/);
   assert.match(summary, /not dismissed on a new push/);
+});
+
+test("the summary covers every pull request that shares the commit and says why", () => {
+  const blocked = judged(decide({ files: ["packages/shared/src/index.ts"], author: "bestony" }), 7);
+  const passing = judged(decide({ files: ["apps/web/src/app.tsx"], author: "gandy2025" }), 8);
+  const summary = summarize([blocked, passing], STATE_FAILURE);
+  assert.match(summary, /2 open pull requests share this commit/);
+  assert.match(summary, /#7/);
+  assert.match(summary, /#8/);
+  assert.match(summary, /Verdict: \*\*failure\*\*/);
+});
+
+test("a path chosen by the pull request cannot break out of the summary table", () => {
+  // Git allows almost anything in a filename, and this text lands in a
+  // privileged job summary.
+  const decision = decide({ files: ["packages/a|b`c.ts"], author: "bestony" });
+  const summary = summarize([judged(decision)], STATE_FAILURE);
+  assert.match(summary, /a\\\|b\\`c\.ts/);
 });
 
 test("every action in both workflows is pinned to a full commit SHA", async () => {
@@ -340,16 +416,25 @@ test("the privileged workflow checks out the default branch and never pull reque
 
 test("the relay holds nothing an attacker could use, because a pull request supplies its body", async () => {
   const relay = await readFile(relayPath, "utf8");
-  assert.match(relay, /^ {2}pull_request_review:\n {4}types: \[submitted, dismissed, edited\]$/m);
-  assert.match(relay, /^permissions: \{\}$/m, "the relay must hold no token scopes at all");
-  assert.doesNotMatch(relay, /uses: actions\/checkout/, "the relay must not check anything out");
-  assert.doesNotMatch(relay, /secrets\./);
-  assert.doesNotMatch(relay, /statuses: write/);
+  // Compare against the YAML only: the comment block deliberately names the
+  // scopes the relay must never hold.
+  const yaml = relay
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+  assert.match(yaml, /^ {2}pull_request_review:\n {4}types: \[submitted, dismissed, edited\]$/m);
+  assert.match(yaml, /^permissions: \{\}$/m, "the relay must hold no token scopes at all");
+  assert.doesNotMatch(yaml, /uses:/, "the relay must not check anything out or run an action");
+  assert.doesNotMatch(yaml, /secrets\./);
+  assert.doesNotMatch(yaml, /statuses:/);
 });
 
 test("the gate resolves the pull request from GitHub-supplied metadata, not from the relay", async () => {
   const workflow = await readFile(workflowPath, "utf8");
-  assert.match(workflow, /RELAY_HEAD_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/);
+  assert.match(
+    workflow,
+    /HEAD_SHA: \$\{\{ github\.event\.pull_request\.head\.sha \|\| github\.event\.workflow_run\.head_sha \}\}/,
+  );
   assert.doesNotMatch(workflow, /download-artifact/, "an artifact would be pull-request-supplied input");
 });
 
@@ -378,13 +463,13 @@ test("neither workflow carries a paths filter, which would wedge unrelated pull 
   }
 });
 
-test("the gate accepts either a pull request number or a relay head SHA", () => {
+test("the gate accepts either a pull request number or a head SHA", () => {
   assert.equal(buildConfig([], { PULL_REQUEST_NUMBER: "42" }).number, 42);
-  const relayed = buildConfig([], { RELAY_HEAD_SHA: "a".repeat(40) });
+  const relayed = buildConfig([], { HEAD_SHA: "a".repeat(40) });
   assert.equal(relayed.number, null);
   assert.equal(relayed.headSha, "a".repeat(40));
   assert.throws(() => buildConfig([], {}), /pull request number or a head SHA is required/);
-  assert.throws(() => buildConfig([], { RELAY_HEAD_SHA: "nope" }), /40 hexadecimal characters/);
+  assert.throws(() => buildConfig([], { HEAD_SHA: "nope" }), /40 hexadecimal characters/);
   assert.throws(() => buildConfig([], { PULL_REQUEST_NUMBER: "0" }), /positive integer/);
 });
 
@@ -405,20 +490,11 @@ test("the shipped policy files agree with each other", async () => {
   assert.equal(modeForPattern(config, rules.at(-1).pattern), MODE_EXEMPT);
 });
 
-test("the summary states the external-author floor when it applies", () => {
-  const result = decide({ files: ["apps/web/src/app.tsx"], author: "outsider", hasWriteAccess: false });
-  const summary = renderSummary({
-    repository: "first-tree-ai/opentag",
-    pullRequest: {
-      number: 8,
-      url: "https://example.invalid/pull/8",
-      headSha: "def456",
-      accessReason: "fork pull request",
-    },
-    decision: result,
-    codeownersPath: ".github/CODEOWNERS",
-    modesPath: ".github/ownership-modes.json",
-  });
+test("the summary states the external-author floor without claiming files are blocking", () => {
+  const decision = decide({ files: ["apps/web/src/app.tsx"], author: "outsider", hasWriteAccess: false });
+  const summary = summarize([judged(decision, 8, "fork pull request")], STATE_FAILURE);
   assert.match(summary, /External-author floor: \*\*not satisfied\*\*/);
   assert.match(summary, /fork pull request/);
+  assert.match(summary, /only the external-author floor is unmet/);
+  assert.doesNotMatch(summary, /Needs approval from/, "there is no blocking table to render");
 });

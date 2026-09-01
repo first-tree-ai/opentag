@@ -34,7 +34,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
              * dependency belongs beside the work it is stopping rather than in a banner above it.
              */}
             <div className="grid gap-6 @min-[48rem]/workspace:grid-cols-2">
-              <AgentUsageOverview agent={agent} agentId={agent.id} />
+              <AgentUsageOverview agentId={agent.id} />
               <AgentStatusCard agent={agent} />
             </div>
             <AgentTasksSection agentId={agent.id} />

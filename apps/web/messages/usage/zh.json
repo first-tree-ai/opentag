@@ -28,7 +28,7 @@
   "usage_retry": "重试",
   "usage_title": "用量",
   "usage_trend_title": "Token 用量趋势",
-  "usage_view_details": "查看详情",
+  "usage_view_usage": "查看用量",
   "usage_window_24_hours": "过去 24 小时",
   "usage_window_days": "过去 {days} 天"
 }

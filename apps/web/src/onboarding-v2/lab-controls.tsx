@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import * as m from "../paraglide/messages.js";
 import { Button, KumoSelectControl } from "../ui/design-system.js";
 import type { MockBackend, MockInventory, MockScenario, MockSpeed } from "./mock-backend.js";
@@ -38,6 +38,7 @@ export function LabControls({
   const scenarioId = useId();
   const inventoryId = useId();
   const panelId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
 
   const pending = backend.pending;
 
@@ -68,11 +69,13 @@ export function LabControls({
           className="flex w-72 flex-col gap-3 rounded-xl bg-kumo-base p-4 ring ring-kumo-line"
           hidden={!open}
           id={panelId}
+          ref={panelRef}
         >
           <label className="text-xs font-medium text-kumo-strong" htmlFor={scenarioId}>
             {m.onboarding_v2_lab_readiness_outcome()}
           </label>
           <KumoSelectControl
+            container={panelRef}
             id={scenarioId}
             onChange={(event) => {
               const next = SCENARIOS.find((candidate) => candidate.id === event.target.value);
@@ -93,10 +96,10 @@ export function LabControls({
             <div className="flex gap-1">
               {MOCK_SPEEDS.map((candidate) => (
                 <Button
-                  variant="ghost"
                   aria-pressed={speed === candidate}
                   key={candidate}
                   onClick={() => onSpeedChange(candidate)}
+                  variant={speed === candidate ? "secondary" : "ghost"}
                 >
                   {candidate}
                 </Button>
@@ -109,6 +112,7 @@ export function LabControls({
               {m.onboarding_v2_lab_computers_on_account()}
             </label>
             <KumoSelectControl
+              container={panelRef}
               id={inventoryId}
               onChange={(event) => onInventoryChange(event.target.value as MockInventory)}
               value={inventory}
@@ -127,7 +131,7 @@ export function LabControls({
             className="justify-start"
             onClick={() => onCloudAvailableChange(!cloudAvailable)}
             size="compact"
-            variant="outline"
+            variant={cloudAvailable ? "secondary" : "outline"}
           >
             {m.onboarding_v2_lab_offer_cloud_computer()}
           </Button>

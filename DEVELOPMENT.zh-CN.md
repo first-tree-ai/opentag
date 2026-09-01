@@ -1,11 +1,11 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-31
+> Last synced with: 2026-09-01
 
 ## 前置要求
 
-- Node.js 24.19.0（仓库固定的开发版本；支持范围仍为 Node.js 22.x（最低 22.13）、Node.js 24.x 或 Node.js 26.x，
+- Node.js 24.19.0（仓库固定的开发版本；支持范围为 Node.js 22.x（最低 22.22.2）、Node.js 24.x（最低 24.15）或 Node.js 26.x，
   主力版本为 Node.js 24）
 - Corepack 和 pnpm 10.12.1
 - Docker 及 Compose 支持（仅运行本地 PostgreSQL 服务时需要）
@@ -100,7 +100,7 @@ Pull Request 必过 CI 仍会运行全部离线单测。Agent Runtime 继续使�
 `pnpm --filter @opentag/client test:agent-runtime:coverage` 执行。
 
 Pull Request 的必过检查是稳定的 `CI` fan-in job。它会覆盖上述必需命令、source/staging CLI tarball 安装、生产容器
-健康检查和受支持的 Node.js 版本。完整验证与发布使用 Node.js 24；兼容 job 会在精确下限 Node.js 22.13.0 和
+健康检查和受支持的 Node.js 版本。完整验证与发布使用 Node.js 24；兼容 job 会在精确下限 Node.js 22.22.2 和
 最新 Node.js 26 上运行 `pnpm check:node-compat`，完成构建、测试和 CLI tarball 安装。Node.js 23 与 25 已 EOL，
 不在支持范围内。构建后可在本地验证当前 source tarball：
 

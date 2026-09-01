@@ -1,6 +1,6 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../../api.js";
 import { GeneralConfigForm } from "./general-config-form.js";
 
@@ -26,6 +26,10 @@ const config: AgentAdminConfig = {
 };
 
 describe("GeneralConfigForm", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("saves and discards a changed display name", async () => {
     const updated = { ...config, displayName: "Reviewer Bot", revision: 5 };
     const updateAgent = vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);

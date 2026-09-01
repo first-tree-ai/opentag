@@ -204,6 +204,7 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
       return await task();
     } finally {
       release();
+      /* v8 ignore else -- the tail map still holds this task while it unwinds. */
       if (this.#tails.get(kind) === tail) this.#tails.delete(kind);
     }
   }

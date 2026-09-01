@@ -36,7 +36,6 @@ export default defineConfig({
       }),
     ],
     coverage: {
-      all: true,
       enabled: true,
       exclude: [...coverageConfigDefaults.exclude, "**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"],
       include: [

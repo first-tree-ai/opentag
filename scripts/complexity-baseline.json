@@ -90,7 +90,7 @@
       "id": "apps/web/src/__tests__/support/app-fixtures.tsx#callback",
       "path": "apps/web/src/__tests__/support/app-fixtures.tsx",
       "symbol": "callback",
-      "complexity": 193
+      "complexity": 186
     },
     {
       "id": "apps/web/src/agent-creation/agent-creation-flow.tsx#AgentCreationFlow",
@@ -109,6 +109,12 @@
       "path": "apps/web/src/agent-creation/agent-creation-flow.tsx",
       "symbol": "RuntimeRouteSection",
       "complexity": 56
+    },
+    {
+      "id": "apps/web/src/api.csrf.test.ts#it",
+      "path": "apps/web/src/api.csrf.test.ts",
+      "symbol": "it",
+      "complexity": 21
     },
     {
       "id": "apps/web/src/features/agents/agent-computer-choice.tsx#AgentComputerChoice",
@@ -918,7 +924,7 @@
       "id": "packages/server/src/services/im/external-call-policy.ts#callback",
       "path": "packages/server/src/services/im/external-call-policy.ts",
       "symbol": "callback",
-      "complexity": 19
+      "complexity": 18
     },
     {
       "id": "packages/server/src/services/im/im-message-inbox.ts#callback",

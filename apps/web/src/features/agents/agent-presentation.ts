@@ -1,4 +1,5 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import { messagingProviderLabel, spaceBrandInSentence } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { SETUP_COPY } from "../../setup/copy.js";
 import type { StatusTone } from "../../ui/design-system.js";
@@ -61,15 +62,21 @@ export function computerRecoveryMessage(agent: AgentDetailView): string {
   if (agent.availability.reason === "runtime_unavailable") {
     const { provider, status } = agent.availability.dependencies.runtime;
     const providerName = provider === "codex" ? "Codex" : "Claude Code";
-    if (status === "install") return `${providerName} is not installed on ${computerName}.`;
-    if (status === "sign-in") return `${providerName} is not signed in on ${computerName}.`;
-    if (status === "checking") return `OpenTag is still checking ${providerName} on ${computerName}.`;
-    return `${providerName} is unavailable on ${computerName}.`;
+    if (status === "install") {
+      return m.agent_settings_computer_recovery_provider_not_installed({ computerName, providerName });
+    }
+    if (status === "sign-in") {
+      return m.agent_settings_computer_recovery_provider_not_signed_in({ computerName, providerName });
+    }
+    if (status === "checking") {
+      return m.agent_settings_computer_recovery_provider_checking({ computerName, providerName });
+    }
+    return m.agent_settings_computer_recovery_provider_unavailable({ computerName, providerName });
   }
   if (agent.availability.dependencies.computer.state !== "action_required") {
-    return "OpenTag could not confirm this Computer's current connection.";
+    return m.agent_settings_computer_recovery_unconfirmed();
   }
-  return `OpenTag is not running on ${computerName}. Start it there to bring it back online.`;
+  return m.agent_settings_computer_recovery_offline({ computerName });
 }
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {
@@ -178,9 +185,27 @@ export function sharedConversationLabel(provider: ImBindingSummary["provider"]):
   return provider === "feishu" ? "Group chats" : "Channels";
 }
 
+/**
+ * The brand comes from `messagingProviderLabel`; only the noun is chosen here. Writing "Feishu" and
+ * "Slack" out by hand read as harmless -- the words were correct -- but it made this a second place
+ * a channel gets named, which is the thing this file stopped doing everywhere else. A brand spelled
+ * at the call site cannot follow a rename, and it is invisible to a search for a provider id
+ * reaching a reader, because no id is ever converted: the literal was simply chosen by a branch.
+ */
 export function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
-  if (provider === "feishu") return plural ? "connected Feishu group chats" : "a Feishu group chat";
-  return plural ? "connected Slack channels" : "a Slack channel";
+  const brand = messagingProviderLabel(provider);
+  if (provider === "feishu") {
+    return spaceBrandInSentence(
+      plural
+        ? m.agents_shared_destination_group_chats({ provider: brand })
+        : m.agents_shared_destination_group_chat({ provider: brand }),
+    );
+  }
+  return spaceBrandInSentence(
+    plural
+      ? m.agents_shared_destination_channels({ provider: brand })
+      : m.agents_shared_destination_channel({ provider: brand }),
+  );
 }
 
 /**
@@ -188,7 +213,7 @@ export function sharedConversationDestination(provider: ImBindingSummary["provid
  * so the verified Bot name is used and no per-Agent handle is synthesized.
  */
 export function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {
-  const provider = titleCase(binding.provider);
+  const provider = messagingProviderLabel(binding.provider);
   if (binding.provider === "feishu") return `${provider} · @${agent.name}`;
   return binding.bot.displayName ? `${provider} · ${binding.bot.displayName}` : provider;
 }
@@ -203,14 +228,16 @@ export function agentUseInstruction(agent: AgentDetailView, provider: ImBindingS
 export function agentAvailabilitySummary(agent: AgentDetailView): string {
   if (agent.availability.state === "ready") {
     const provider = agent.availability.dependencies.channel.provider;
-    return provider ? `Available in ${titleCase(provider)}` : "Ready for new work";
+    return provider
+      ? spaceBrandInSentence(m.agents_available_in_channel({ provider: messagingProviderLabel(provider) }))
+      : m.agents_ready_for_new_work();
   }
   return {
-    action_required: "Cannot receive new work",
-    setting_up: "Messaging setup in progress",
-    not_connected: "Messaging is not connected",
-    suspended: "Not receiving new work",
-    unconfirmed: "Status temporarily unavailable",
+    action_required: m.agents_cannot_receive_new_work(),
+    setting_up: m.agents_messaging_setup_in_progress(),
+    not_connected: m.agents_messaging_not_connected_summary(),
+    suspended: m.agents_not_receiving_new_work(),
+    unconfirmed: m.agents_status_temporarily_unavailable(),
   }[agent.availability.state];
 }
 
@@ -221,13 +248,13 @@ export function messagingAgentStatusDescription(
   if (agent.availability.state === "ready") {
     return agent.activity.state === "working"
       ? "This Agent is handling a request and remains connected for new messages."
-      : `Ready to receive new messages from ${titleCase(provider)}.`;
+      : `Ready to receive new messages from ${messagingProviderLabel(provider)}.`;
   }
   if (agent.availability.reason === "computer_offline" || agent.availability.reason === "runtime_unavailable") {
     return computerRecoveryMessage(agent);
   }
   if (agent.availability.reason === "handoff_unavailable") {
-    return `${titleCase(provider)} is connected, but messages cannot currently be handed off to this Agent.`;
+    return `${messagingProviderLabel(provider)} is connected, but messages cannot currently be handed off to this Agent.`;
   }
   return agentRecoveryMessage(agent);
 }

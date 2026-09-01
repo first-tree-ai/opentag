@@ -13,6 +13,9 @@ export const AccountSetupCompletionSchema = z.object({ setupCompletedAt: z.strin
 export const AccountSetupResetModeSchema = z.enum(["all", "reboard"]);
 export const AccountSetupResetRequestSchema = z.object({ mode: AccountSetupResetModeSchema }).strict();
 
+/** Staging-wide visibility for product areas that are not ready for public navigation. */
+export const InternalNavigationVisibilitySchema = z.object({ integrations: z.boolean(), skills: z.boolean() }).strict();
+
 export const AccountComputerSummarySchema = z
   .object({
     computerId: z.string().uuid(),
@@ -37,5 +40,6 @@ export type CompleteAccountSetupRequest = z.infer<typeof CompleteAccountSetupReq
 export type AccountSetupCompletion = z.infer<typeof AccountSetupCompletionSchema>;
 export type AccountSetupResetMode = z.infer<typeof AccountSetupResetModeSchema>;
 export type AccountSetupResetRequest = z.infer<typeof AccountSetupResetRequestSchema>;
+export type InternalNavigationVisibility = z.infer<typeof InternalNavigationVisibilitySchema>;
 export type AccountComputerSummary = z.infer<typeof AccountComputerSummarySchema>;
 export type ListAccountComputersResponse = z.infer<typeof ListAccountComputersResponseSchema>;

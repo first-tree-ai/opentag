@@ -26,6 +26,7 @@ describe("Web App static serving", () => {
       expect(spa.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
       expect(spa.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
       expect(spa.headers["content-security-policy"]).toContain("img-src 'self' data: https://platform.slack-edge.com");
+      expect(spa.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
       expect(spa.headers["cache-control"]).toBe("no-store");
 
       const asset = await app.inject({ method: "GET", url: "/assets/app.js" });

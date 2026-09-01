@@ -74,7 +74,7 @@ export const SCENARIOS: readonly MockScenario[] = [
   {
     id: "all-ready",
     title: "Everything ready",
-    description: "The runtime and the Lark CLI are both installed and signed in.",
+    description: "The runtime is installed and signed in, and the messaging CLI is present.",
     runtime: "ready",
     messagingCli: "ready",
   },
@@ -94,14 +94,14 @@ export const SCENARIOS: readonly MockScenario[] = [
   },
   {
     id: "messaging-install",
-    title: "Lark CLI missing",
+    title: "Messaging CLI missing",
     description: "The easiest failure to miss: the agent is perfect but nothing can be delivered.",
     runtime: "ready",
     messagingCli: "install",
   },
   {
     id: "both-failing",
-    title: "Runtime and Lark CLI missing",
+    title: "Runtime and Messaging CLI missing",
     description: "Two failures at once, to check the plural copy and the list rhythm.",
     runtime: "install",
     messagingCli: "install",
@@ -441,7 +441,7 @@ export function useMockBackend(
     setCheckResult({ runtime: "ready", messagingCli: { feishu: "ready", slack: "ready" } });
   }, []);
 
-  /** Only Lark has something to issue up front; Slack waits for the user to start its install. */
+  /** Only Feishu has something to issue up front; Slack waits for the user to start its install. */
   const startMessaging = useCallback(
     (provider: "feishu" | "slack") => {
       if (provider !== "feishu") return;

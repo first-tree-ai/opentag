@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
+import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
@@ -9,7 +10,7 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
-import { agentCardStatus, titleCase } from "./agent-presentation.js";
+import { agentCardStatus } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 import { NewAgentDialog } from "./new-agent-page.js";
@@ -68,7 +69,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
           ? m.agents_list_summary_single({ count: agents.length, workingCount })
           : m.agents_list_summary_plural({ count: agents.length, workingCount })}
       </p>
-      <div className="grid gap-3" data-ui="agent-roster">
+      <div className="@container/agent-roster grid gap-3" data-ui="agent-roster">
         {order.map((id) => {
           const agent = byId.get(id);
           return agent ? <AgentRow agent={agent} key={agent.id} /> : null;
@@ -84,11 +85,11 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
   const statusDetail = agentStatusDetail(agent);
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[48rem]/workspace:grid-cols-[minmax(0,1.25fr)_minmax(12rem,1fr)_5rem_7rem_1rem] @min-[48rem]/workspace:items-center"
+      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.25fr)_minmax(12rem,1fr)_5rem_7rem_1rem] @min-[42rem]/agent-roster:items-center"
       data-tone={status.tone}
       data-ui="agent-row"
     >
-      <div className="flex min-w-0 items-center gap-3 pr-6 @min-[48rem]/workspace:pr-0" data-ui="agent-row-identity">
+      <div className="flex min-w-0 items-center gap-3 pr-6 @min-[42rem]/agent-roster:pr-0" data-ui="agent-row-identity">
         <span
           className="grid size-10 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold text-kumo-strong"
           data-ui="agent-row-avatar"
@@ -100,7 +101,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           <strong className="truncate text-base">{agent.displayName}</strong>
           <span className="flex items-center gap-1.5 text-sm text-kumo-subtle">
             {channel ? <ProviderIcon className="size-4" provider={channel} /> : null}
-            {channel ? titleCase(channel) : m.agents_messaging_not_connected()}
+            {channel ? messagingProviderLabel(channel) : m.agents_messaging_not_connected()}
           </span>
         </div>
       </div>
@@ -110,7 +111,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           {statusDetail}
         </p>
       </div>
-      <dl className="grid grid-cols-2 gap-4 @min-[48rem]/workspace:contents" data-ui="agent-row-facts">
+      <dl className="grid grid-cols-2 gap-4 @min-[42rem]/agent-roster:contents" data-ui="agent-row-facts">
         <AgentFact
           label={m.agents_fact_tasks_window({ days: agent.usage.windowDays })}
           value={formatCompactNumber(agent.usage.tasks)}
@@ -121,7 +122,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
         />
       </dl>
       <Icon
-        className="absolute right-5 top-5 text-kumo-subtle @min-[48rem]/workspace:static @min-[48rem]/workspace:justify-self-end"
+        className="absolute right-5 top-5 text-kumo-subtle @min-[42rem]/agent-roster:static @min-[42rem]/agent-roster:justify-self-end"
         name="chevron-right"
       />
       <Link

@@ -1,5 +1,9 @@
 # OpenTag Kumo UI
 
+The canonical product composition and acceptance rules live in
+[`docs/design/web-ui-contract.md`](../../../../docs/design/web-ui-contract.md). This document records the Kumo-specific
+implementation choices behind that interface.
+
 OpenTag uses Kumo `2.12.0` with Tailwind CSS v4. `src/app.css` is the only
 application stylesheet entry: it registers Kumo's distribution as a Tailwind
 source, imports Kumo's Tailwind styles before Tailwind itself, then loads the
@@ -15,7 +19,8 @@ table, code, or log surface rather than the application scroll viewport.
 
 ## Component boundary
 
-`design-system.tsx` is the semantic adapter used by product pages. It maps the
+Product pages use two parallel seams: `design-system.tsx` for semantic primitives
+and `src/components/kumo` for deeper owned blocks. The semantic adapter maps the
 existing product vocabulary to Kumo primitives:
 
 - `Button` maps `danger` to Kumo `destructive`, `compact` to `sm`, and `inline`
@@ -38,6 +43,13 @@ Use Kumo `Input`, `InputArea`, `Select`, `Checkbox`, `Switch`, `Table`,
 for new controls. The only native control exception is the hidden file input
 required by the browser file picker.
 
+Feature modules do not import `@cloudflare/kumo` directly. Direct imports belong
+to application provider wiring, `design-system.tsx`, and owned blocks under
+`src/components/kumo`; tests may provide their own provider wiring. Add an owned
+block only when it hides meaningful shared behavior, not merely to forward Kumo
+props or utility classes. Owned-block interfaces use OpenTag types and do not
+expose Kumo-specific types or composition to callers.
+
 ## Theme
 
 `kumo-theme.tokens.ts` is the source configuration. `kumo-theme.css` is its
@@ -51,8 +63,10 @@ danger gradients. The theme contrast test verifies every rendered gradient
 endpoint for normal-text WCAG AA, not only the source accent.
 
 The theme uses explicit `data-theme="opentag"` and `data-mode="light|dark"`
-attributes. Brand values were chosen for readable text and button contrast in
-both modes; do not add raw colour literals to page components.
+attributes. The product currently ships light mode; dark values remain available
+for compatibility and future completion, not as a supported product theme.
+Brand values were chosen for readable text and button contrast in both modes;
+do not add raw colour literals to page components.
 
 ## Router links and overlays
 
@@ -72,9 +86,11 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm test:e2e:smoke
 ```
 
 Static contract tests reject legacy stylesheet imports, legacy token and class
 names, tracking utility classes, `font-bold`, application-level interactive
-HTML controls, and page-level CSS. Browser visual and accessibility checks must
-use local fixtures and must not call public services.
+HTML controls, feature-level Kumo imports, and unreviewed stylesheet seams.
+Browser visual and accessibility checks must use local fixtures and must not call
+public services.

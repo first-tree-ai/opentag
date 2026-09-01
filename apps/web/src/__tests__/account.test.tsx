@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { installApi, json, openAccountMenu, resetWebAppState, userId } from "./support/app-fixtures.js";
+import { agentId, installApi, json, openAccountMenu, resetWebAppState, userId } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
@@ -207,7 +207,7 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/onboarding");
   });
 
-  it("lets an Account with no finished setup bind a Computer without leaving onboarding", async () => {
+  it("lets an Account with no finished setup connect the unbound Agent without leaving onboarding", async () => {
     /*
      * The recovery for an Agent that has no Computer has to work from inside the setup gate. It
      * once linked to that Agent's Computer settings, which lives under the shell that redirects
@@ -219,19 +219,21 @@ describe("OpenTag Web App Shell", () => {
     installApi({ setupCompletedAt: null, agentUnbound: true });
     render(<App />);
 
-    expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
-    // Reachable and resolved right here, not merely advertised: the Account has one Computer, so
-    // the Agent is put on it without the reader being asked which.
-
-    // The reader is out: the Agent has a Computer, the resume that refused this run reads again and
-    // continues. Asserting the blocked screen is gone is what a redirect loop could never satisfy.
-    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
-    // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
+    expect(await screen.findByText(/opentag connect --server/)).toBeTruthy();
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "/api/v1/computer-connect-codes",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ mode: "create", targetAgentId: agentId }),
+      }),
+    );
+    // The explicit connect command stays inside the setup gate and names the Agent it will bind.
     expect(window.location.pathname).toBe("/onboarding");
   });
 
-  it("lets an Account with several Computers choose one without leaving onboarding", async () => {
+  it("does not silently adopt an unrelated Computer for an unbound Agent", async () => {
     /*
      * Which machine an Agent runs on is the reader's question when the Account holds more than one,
      * and this screen sits inside the setup gate -- so the choice has to be answerable here. A
@@ -259,14 +261,11 @@ describe("OpenTag Web App Shell", () => {
     });
     render(<App />);
 
-    expect(await screen.findByText("Reviewer has no computer yet.")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
-
-    // The second row, so this cannot pass by binding whichever Computer happens to be first.
-    fireEvent.click(await screen.findByRole("button", { name: "Use Spare" }));
-
-    await waitFor(() => expect(screen.queryByText("Reviewer has no computer yet.")).toBeNull());
-    // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
+    expect(screen.queryByRole("button", { name: "Use Ada's Mac" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use Spare" })).toBeNull();
+    expect(await screen.findByText(/opentag connect --server/)).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
   });
 

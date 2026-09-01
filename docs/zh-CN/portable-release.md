@@ -223,8 +223,9 @@ bucket 必须在 download base URL 上公开提供 release prefix。在此之前
 
 - installer 需要 `curl` 或 `wget`、`tar`，以及 `sha256sum` 或 `shasum`。支持 x64 与 arm64 上的 Linux 和 macOS；不支持
   Windows。
-- 激活之后 installer 会运行 `daemon ensure-service`。exit code 3 表示 CLI 把 service 安装推迟到 `login` 创建
-  credential 之后，这是首次安装的正常路径，不是失败。
+- installer 只负责安装或升级 OpenTag。onboarding 命令随后运行 `opentag connect`：兑换一次性 Computer code，绑定其中
+  明确指定的 Agent / Computer，并安装或重启 daemon service。Provider CLI 的检测与安装由活跃 daemon 负责，绝不属于
+  `install.sh`。
 - 任何已发布的 version 都可以用 `sh install.sh --version <version>` 直接安装，它读取该 version 的不可变 manifest，
   完全不查 channel 指针。回滚就是这样做的，release gate 也用同一条路径在对外宣称之前先安装一次。
 - 已存在的 version 目录永不就地改写，因为 `current` 可能经由它解析。强制重装会落到一个新目录，`current` 原子地移到

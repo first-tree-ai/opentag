@@ -274,26 +274,30 @@ describe("Server-backed onboarding: the defects it had", () => {
     expect(calls).toBe(1);
   });
 
-  it("refuses to resume an Agent that has no Computer rather than reporting someone else's machine", async () => {
+  it("resumes an unbound Agent with a targeted connect code rather than adopting another machine", async () => {
     /*
-     * An unbound Agent is not resumed at all. Reporting a Computer for it would have to come from
-     * an arrival -- a machine on the Account that connected or reconnected -- which identifies a
-     * machine but not one this Agent was ever given, and the run would then advance into messaging,
-     * which refuses an Agent with nowhere to run. So the reader is handed the page where the Agent
-     * gets a Computer instead, and nothing durable is written on a guess.
+     * The first durable setup write is now the Agent. A refresh between steps must resume that
+     * Agent and issue a code whose target is explicit; an unrelated Computer already on the
+     * Account is not evidence that it belongs to this Agent.
      */
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem({ computer: null })] });
     computersReturning([
       computer({ computerId: "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f", displayName: "Someone else's laptop" }),
     ]);
+    const issue = issuing();
     const rebind = vi.spyOn(browserApi, "rebindAgentComputer");
 
     const view = mount();
     await settle();
 
-    expect(view.result.current.resumeBlocked).toEqual({ agentId: AGENT_ID, agentName: "opentag" });
+    expect(view.result.current.agent).toMatchObject({ id: AGENT_ID, name: "opentag" });
+    expect(view.result.current.creation).toBe("created");
+    expect(view.result.current.selectedComputerId).toBeUndefined();
+    expect(view.result.current.computerPreviouslyConfirmed).toBe(false);
     expect(rebind).not.toHaveBeenCalled();
-    // Not silently created either, so nothing advances toward messaging.
-    expect(view.result.current.creation).not.toBe("created");
+    await act(async () => {
+      await view.result.current.computerConnectAdapter?.issue({ mode: "create" });
+    });
+    expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: AGENT_ID });
   });
 });

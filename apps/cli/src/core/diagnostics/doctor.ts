@@ -282,7 +282,7 @@ function localCheck(code: string, label: string, status: "pass" | "fail" | "unkn
     detail,
     ...(status === "fail"
       ? {
-          remediation: `Review this OpenTag Home and run '${channelConfig.binName} computer connect' with a valid connect code`,
+          remediation: `Review this OpenTag Home and run '${channelConfig.binName} connect' with a valid connect code`,
         }
       : {}),
   };

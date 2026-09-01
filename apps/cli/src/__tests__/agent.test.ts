@@ -353,7 +353,7 @@ describe("Agent CLI core", () => {
       name: "code-reviewer",
       runtimeProvider: "codex",
     });
-    expect(result.warning).toContain("opentag computer connect");
+    expect(result.warning).toContain("opentag connect");
     expect(formatAgentCreated(result)).toContain("without a Computer");
   });
 

@@ -1,14 +1,16 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION } from "@opentag/shared";
+import { IM_CLI_PROVIDERS, RUNTIME_CAPABILITY, RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   computeFileIdentity,
   computeTargetFingerprint,
+  type ProviderCliInspection,
   ProviderCliReconciler,
   type ProviderCliReconcilerOptions,
   ProviderCliValidationRunner,
+  type RuntimeBusinessFrame,
   resolveProviderCliAccountLayout,
   writeProviderCliSelection,
 } from "../index.js";
@@ -30,28 +32,45 @@ const requirement = {
   expectedIdentity: { provider: "slack" as const, teamId: "T1", botUserId: "U1", botId: "B1" },
 };
 
-function connection(): ProviderCliReconcilerOptions["connection"] & {
-  emit(frame: { readonly type: string } & Record<string, unknown>): Promise<unknown[]>;
-  send: ReturnType<typeof vi.fn>;
-} {
+function connection(options: { capabilityVersion?: (capability: string) => number | undefined } = {}) {
   const listeners = new Set<(frame: { readonly type: string } & Record<string, unknown>) => void | Promise<void>>();
+  const send = vi.fn<ProviderCliReconcilerOptions["connection"]["send"]>(async () => undefined);
+  const setImCliReadiness = vi.fn(
+    (..._args: Parameters<ProviderCliReconcilerOptions["connection"]["setImCliReadiness"]>) => undefined,
+  );
   return {
-    send: vi.fn(async () => undefined),
-    subscribeBusinessFrames: (listener) => {
+    send,
+    subscribeBusinessFrames: (
+      listener: Parameters<ProviderCliReconcilerOptions["connection"]["subscribeBusinessFrames"]>[0],
+    ) => {
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
       };
     },
-    capabilityVersion: () => 1,
-    emit(frame) {
+    capabilityVersion: options.capabilityVersion ?? (() => 1),
+    setImCliReadiness,
+    emit(frame: { readonly type: string } & Record<string, unknown>) {
       return Promise.all([...listeners].map((listener) => listener(frame)));
     },
   };
 }
 
-function readyInspect(overrides: Record<string, unknown> = {}) {
+const prewarm = {
+  type: "provider-cli:prewarm" as const,
+  requestId,
+  providers: [...IM_CLI_PROVIDERS],
+};
+
+type ReadyInspection = ProviderCliInspection & {
+  readonly fingerprint: string;
+  readonly selection: NonNullable<ProviderCliInspection["selection"]>;
+};
+
+function readyInspect(overrides: Partial<ReadyInspection> = {}): ReadyInspection {
   return {
+    provider: "slack",
+    state: "ready",
     readiness: "ready" as const,
     fingerprint: "v1:abc",
     selection: {
@@ -61,7 +80,26 @@ function readyInspect(overrides: Record<string, unknown> = {}) {
       generation: 1,
       trust: "catalog-verified" as const,
     },
+    launcher: { path: "/bin/true", status: "valid" },
+    globalCommand: { active: true, path: "/bin/true", resolvedPath: "/bin/true" },
+    warnings: [],
     ...overrides,
+  };
+}
+
+function notReadyInspect(
+  provider: "feishu" | "slack",
+  readiness: "install" | "unavailable",
+  diagnostic: ProviderCliInspection["diagnostic"],
+): ProviderCliInspection {
+  return {
+    provider,
+    state: readiness === "install" ? "absent" : "unavailable",
+    readiness,
+    launcher: { path: `/tmp/${provider}`, status: "missing" },
+    globalCommand: { active: false },
+    warnings: [],
+    ...(diagnostic ? { diagnostic } : {}),
   };
 }
 
@@ -171,7 +209,9 @@ describe("provider CLI reconciler", () => {
     await runtime.emit(requirement);
     const stable = await reconciler.readySelectionForRun("slack");
     expect(stable).toMatchObject({ generation: fixture.selection.generation, path: fixture.inspection.selection.path });
-    expect(runtime.send.mock.calls.filter((call) => call[0].status === "checking")).toHaveLength(1);
+    expect(
+      runtime.send.mock.calls.filter((call) => (call[0] as RuntimeBusinessFrame).status === "checking"),
+    ).toHaveLength(1);
 
     const replacement = join(dirname(fixture.inspection.selection.path), "slack-next");
     await writeFile(replacement, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
@@ -203,7 +243,9 @@ describe("provider CLI reconciler", () => {
     );
 
     await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
-    expect(runtime.send.mock.calls.filter((call) => call[0].status === "checking")).toHaveLength(2);
+    expect(
+      runtime.send.mock.calls.filter((call) => (call[0] as RuntimeBusinessFrame).status === "checking"),
+    ).toHaveLength(2);
     expect(runtime.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
       expect.anything(),
@@ -301,7 +343,9 @@ describe("provider CLI reconciler", () => {
     expect(
       [
         ...new Set(
-          runtime.send.mock.calls.filter((call) => call[0].status === "ready").map((call) => call[0].requestId),
+          runtime.send.mock.calls
+            .filter((call) => (call[0] as RuntimeBusinessFrame).status === "ready")
+            .map((call) => (call[0] as RuntimeBusinessFrame).requestId),
         ),
       ].sort(),
     ).toEqual(["11111111-1111-4111-8111-111111111111", "77777777-7777-4777-8777-777777777777"].sort());
@@ -343,7 +387,7 @@ describe("provider CLI reconciler", () => {
     release();
     await Promise.all([handling, closing]);
     expect(cleanupAll).toHaveBeenCalledOnce();
-    expect(runtime.send.mock.calls.some((call) => call[0].status === "ready")).toBe(false);
+    expect(runtime.send.mock.calls.some((call) => (call[0] as RuntimeBusinessFrame).status === "ready")).toBe(false);
   });
 
   it("rejects stale, duplicate, and expired grants before spawning validation", async () => {
@@ -572,7 +616,11 @@ describe("provider CLI reconciler", () => {
       credentialGeneration: 2,
     });
     await grant;
-    expect(runtime.send.mock.calls.some((call) => call[0].type === "provider-cli:validation:result")).toBe(false);
+    expect(
+      runtime.send.mock.calls.some(
+        (call) => (call[0] as RuntimeBusinessFrame).type === "provider-cli:validation:result",
+      ),
+    ).toBe(false);
     await runtime.emit({
       type: "provider-cli:cancel",
       requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -613,6 +661,64 @@ describe("provider CLI reconciler", () => {
     await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
     shutdown.abort();
     await grant;
-    expect(runtime.send.mock.calls.some((call) => call[0].type === "provider-cli:validation:result")).toBe(false);
+    expect(
+      runtime.send.mock.calls.some(
+        (call) => (call[0] as RuntimeBusinessFrame).type === "provider-cli:validation:result",
+      ),
+    ).toBe(false);
+  });
+
+  it("prewarms both official CLIs independently without credential validation", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const ensure = vi.fn().mockResolvedValue({ ok: false, action: "failed" });
+    const inspect = vi.fn(async (provider: "feishu" | "slack") => {
+      if (provider === "slack") return fixture.inspection;
+      if (ensure.mock.calls.some((call) => call[0] === "feishu")) {
+        return notReadyInspect("feishu", "unavailable", { code: "install_incomplete" });
+      }
+      return notReadyInspect("feishu", "install", { code: "not_installed" });
+    });
+    const run = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(prewarm);
+    expect(ensure).toHaveBeenCalledWith("feishu", { mode: "auto" });
+    expect(ensure).not.toHaveBeenCalledWith("slack", expect.anything());
+    expect(run).not.toHaveBeenCalled();
+    expect(runtime.send).not.toHaveBeenCalled();
+    const published = runtime.setImCliReadiness.mock.calls.map(([observation]) => observation);
+    expect(published).toContainEqual({ provider: "feishu", status: "checking" });
+    expect(published).toContainEqual({ provider: "feishu", status: "install" });
+    expect(published).toContainEqual({ provider: "feishu", status: "unavailable" });
+    expect(published).toContainEqual({ provider: "slack", status: "checking" });
+    expect(published).toContainEqual({ provider: "slack", status: "ready" });
+    expect(
+      published.filter((observation) => observation.provider === "slack" && observation.status === "install"),
+    ).toHaveLength(0);
+    reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "feishu", status: "unavailable" });
+    expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "slack", status: "ready" });
+    await reconciler.close();
+  });
+
+  it("ignores setup prewarm when the capability was not negotiated", async () => {
+    const runtime = connection({
+      capabilityVersion: (capability) => (capability === RUNTIME_CAPABILITY.providerCliPrewarm ? undefined : 1),
+    });
+    const inspect = vi.fn();
+    const ensure = vi.fn();
+    new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: { root: "/tmp" } as never },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(prewarm);
+    expect(inspect).not.toHaveBeenCalled();
+    expect(ensure).not.toHaveBeenCalled();
+    expect(runtime.setImCliReadiness).not.toHaveBeenCalled();
   });
 });

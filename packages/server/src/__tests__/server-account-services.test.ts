@@ -306,6 +306,106 @@ describe("machine authentication and Computer services", () => {
     expect(await unit.database.select().from(computerCredentials)).toHaveLength(2);
   });
 
+  it("embeds an explicit Agent target in the opaque code and binds it atomically at redemption", async () => {
+    const bootstrap = await account();
+    const [target] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        displayName: "Setup Agent",
+        name: "setup-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!target) throw new Error("Agent insert did not return a row");
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const issued = await machine.issueForAccount(bootstrap.userId, { targetAgentId: target.id });
+    expect(issued.code).toMatch(new RegExp(`\\.${target.id}$`, "u"));
+    expect((await unit.database.select().from(computerConnectCodes))[0]?.tokenHash).toBe(hashSecret(issued.code));
+
+    const connected = await machine.exchangeConnectCode(exchangeInput(issued.code));
+    expect(connected).toMatchObject({ agentId: target.id, computerId: expect.any(String) });
+    const [bound] = await unit.database.select().from(agents).where(eq(agents.id, target.id));
+    expect(bound).toMatchObject({ computerId: connected.computerId, revision: 2 });
+  });
+
+  it("rejects a bound or foreign Agent before issuing a targeted create code", async () => {
+    const bootstrap = await account();
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const generic = await machine.issueForAccount(bootstrap.userId, {});
+    const connected = await machine.exchangeConnectCode(exchangeInput(generic.code));
+    const [bound] = await unit.database
+      .insert(agents)
+      .values({
+        computerId: connected.computerId,
+        createdByUserId: bootstrap.userId,
+        displayName: "Bound Agent",
+        name: "bound-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!bound) throw new Error("bound Agent fixture missing");
+    await expect(machine.issueForAccount(bootstrap.userId, { targetAgentId: bound.id })).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+      statusCode: 409,
+    });
+
+    const [other] = await unit.database
+      .insert(users)
+      .values({ email: "target-owner@example.com", displayName: "Other" })
+      .returning({ id: users.id });
+    if (!other) throw new Error("target owner fixture missing");
+    const [foreign] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: other.id,
+        displayName: "Foreign Agent",
+        name: "foreign-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!foreign) throw new Error("foreign Agent fixture missing");
+    await expect(machine.issueForAccount(bootstrap.userId, { targetAgentId: foreign.id })).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+  });
+
+  it("rolls back Computer creation when a targeted Agent changes before redemption", async () => {
+    const bootstrap = await account();
+    const [target] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        displayName: "Setup Agent",
+        name: "setup-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!target) throw new Error("Agent insert did not return a row");
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const targeted = await machine.issueForAccount(bootstrap.userId, { targetAgentId: target.id });
+    const generic = await machine.issueForAccount(bootstrap.userId, {});
+    const existing = await machine.exchangeConnectCode(exchangeInput(generic.code));
+    await unit.database.update(agents).set({ computerId: existing.computerId }).where(eq(agents.id, target.id));
+    const computersBefore = await unit.database.select().from(computers);
+    const credentialsBefore = await unit.database.select().from(computerCredentials);
+
+    await expect(machine.exchangeConnectCode(exchangeInput(targeted.code))).rejects.toMatchObject({
+      code: "AUTH_INVALID_CODE",
+    });
+
+    expect(await unit.database.select().from(computers)).toHaveLength(computersBefore.length);
+    expect(await unit.database.select().from(computerCredentials)).toHaveLength(credentialsBefore.length);
+    const [code] = await unit.database
+      .select()
+      .from(computerConnectCodes)
+      .where(eq(computerConnectCodes.tokenHash, hashSecret(targeted.code)));
+    expect(code?.consumedAt).toBeNull();
+    const [unchanged] = await unit.database.select().from(agents).where(eq(agents.id, target.id));
+    expect(unchanged?.computerId).toBe(existing.computerId);
+  });
+
   it("reports expiry, duplicate installation, and repaired ownership conflicts", async () => {
     const value = await machineFixture();
     const expired = await value.machine.issueForAccount(value.bootstrap.userId, {});
@@ -422,7 +522,15 @@ describe("machine authentication and Computer services", () => {
     const { buildComputerConnectCommand } = await import("../services/computers/machine-auth-service.js");
     expect(
       buildComputerConnectCommand({ code: "abc", environment: "staging", publicUrl: "https://dev.example.com" }),
-    ).toContain("opentag-staging computer connect");
+    ).toContain('"$HOME/.local/bin/opentag-staging" connect');
+    expect(
+      buildComputerConnectCommand({
+        code: "abc",
+        downloadBaseUrl: "https://mirror.example/releases/",
+        environment: "staging",
+        publicUrl: "https://dev.example.com",
+      }),
+    ).toContain("curl -fsSL https://mirror.example/releases/staging/install.sh | sh");
     expect(
       buildComputerConnectCommand({ code: "a'; echo nope", environment: "prod", publicUrl: "https://example.com/a b" }),
     ).toContain("'a'\\''; echo nope'");
@@ -483,6 +591,8 @@ describe("machine authentication and Computer services", () => {
       { getActiveUserById: vi.fn() },
       { now: () => NOW, presenceTimeoutMs: 1000 },
     );
+    expect(await service.accountInFirstSetup(exchange.computerId)).toBe(true);
+    expect(await service.accountInFirstSetup(randomUUID())).toBe(false);
     const frame = {
       type: "computer:register" as const,
       requestId: randomUUID(),
@@ -534,6 +644,8 @@ describe("machine authentication and Computer services", () => {
       providerReadiness: expect.any(Array),
       imCliReadiness: expect.any(Array),
     });
+    await unit.database.update(users).set({ setupCompletedAt: NOW }).where(eq(users.id, value.bootstrap.userId));
+    expect(await service.accountInFirstSetup(exchange.computerId)).toBe(false);
     await expect(service.assertActiveCredential(exchange)).resolves.toBeUndefined();
     await unit.database
       .update(computerCredentials)

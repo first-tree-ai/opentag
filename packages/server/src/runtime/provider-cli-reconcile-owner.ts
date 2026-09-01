@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
+  IM_CLI_PROVIDERS,
   type ImCliProvider,
   PROVIDER_CLI_VALIDATION_RETRY_REASONS,
   type ProviderCliArtifactStatusFrame,
   ProviderCliArtifactStatusFrameSchema,
   type ProviderCliCancelFrame,
   type ProviderCliExpectedIdentity,
+  type ProviderCliPrewarmFrame,
   type ProviderCliRequirementFrame,
   type ProviderCliValidationGrantFrame,
   type ProviderCliValidationResultFrame,
@@ -43,6 +45,7 @@ export interface ProviderCliReconcileBindingSource {
     provider: ImCliProvider;
   }): Promise<IntegrationCliValidationGrantMaterial | undefined>;
   listActiveProviderCliRequirements(computerId: string): Promise<readonly ProviderCliRequirementSnapshot[]>;
+  shouldPrewarmOfficialProviderClis?(computerId: string): Promise<boolean>;
 }
 
 type ProviderCliArtifactReadiness = ReturnType<ConnectionRegistry["providerCliArtifactReadiness"]>;
@@ -145,6 +148,7 @@ export class ProviderCliReconcileOwner {
   async onComputerRegistered(input: { computerId: string; installationId: string; instanceId: string }): Promise<void> {
     if (this.#closed) return;
     await this.#resetComputer(input.computerId);
+    await this.#dispatchSetupPrewarm(input);
     const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
     if (
       !this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliReconcile)
@@ -169,6 +173,33 @@ export class ProviderCliReconcileOwner {
     }
     for (const requirement of requirements) {
       await this.#dispatchRequirement(input.computerId, input.installationId, input.instanceId, requirement);
+    }
+  }
+
+  async #dispatchSetupPrewarm(input: {
+    computerId: string;
+    installationId: string;
+    instanceId: string;
+  }): Promise<void> {
+    if (!this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliPrewarm)) {
+      return;
+    }
+    let shouldPrewarm = false;
+    try {
+      shouldPrewarm = (await this.#bindings.shouldPrewarmOfficialProviderClis?.(input.computerId)) === true;
+    } catch {
+      return;
+    }
+    if (!shouldPrewarm) return;
+    const frame: ProviderCliPrewarmFrame = {
+      type: "provider-cli:prewarm",
+      requestId: randomUUID(),
+      providers: [...IM_CLI_PROVIDERS],
+    };
+    try {
+      await this.#registry.send(input.computerId, input.instanceId, frame);
+    } catch {
+      return;
     }
   }
 

@@ -30,6 +30,7 @@ async function reachConnectStep() {
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  await advance(CREATE_MS);
   await advance(ISSUE_MS);
 }
 
@@ -230,14 +231,12 @@ describe("OnboardingV2Page", () => {
   it("installs through the portable installer, which needs nothing already on the machine", async () => {
     render(<OnboardingV2MockPage />);
     await reachConnectStep();
-    const command = screen.getByText(/opentag computer connect/).textContent ?? "";
+    const command = screen.getByText(/opentag connect/).textContent ?? "";
     // No `npm`: that would require a working Node before OpenTag could be installed at all.
     expect(command).not.toContain("npm");
     expect(command).toContain("curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh");
     // The shim is not on this shell's PATH yet, so the connect call has to name its directory.
-    expect(command).toMatch(
-      /PATH="\$HOME\/\.local\/bin\S* opentag computer connect --server \S+ -- [A-Za-z0-9_-]{32}$/,
-    );
+    expect(command).toMatch(/PATH="\$HOME\/\.local\/bin\S* opentag connect --server \S+ -- [A-Za-z0-9_-]{32}$/);
   });
 
   it("copies the comment together with the command", async () => {
@@ -298,10 +297,10 @@ describe("OnboardingV2Page", () => {
     await settleCheck();
 
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
-    // The messaging CLI is not a computer-step row: no provider has been chosen yet, and a
-    // missing one is named later as a sentence on the messaging step, not a third check line.
-    expect(screen.queryByText(/lark-cli/i)).toBeNull();
+    expect(screen.getByText("Lark CLI")).toBeTruthy();
+    expect(screen.getByText("Slack CLI")).toBeTruthy();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("hands a failing check to the terminal rather than offering a retry button", async () => {
@@ -386,6 +385,9 @@ describe("OnboardingV2Page", () => {
     expect(next().disabled).toBe(false);
     fireEvent.click(next());
 
+    const creating = screen.getByRole("button", { name: "Creating…" }) as HTMLButtonElement;
+    expect(creating.disabled).toBe(true);
+    await advance(CREATE_MS);
     await advance(ISSUE_MS);
     expect(next().disabled).toBe(true);
     await advanceMock("Connect computer");
@@ -420,14 +422,13 @@ describe("OnboardingV2Page", () => {
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("creates the Agent only after a runnable route is proven, then asks for Lark", async () => {
+  it("uses the Agent created in step one after the Computer route is proven", async () => {
     render(<OnboardingV2MockPage />);
     await reachConnectStep();
     await reachCheckStep();
     await settleCheck();
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
@@ -480,7 +481,6 @@ describe("OnboardingV2Page", () => {
       await reachCheckStep();
       await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-      await advance(CREATE_MS);
     }
 
     it("asks which app before showing any connection, and offers no footer", async () => {
@@ -683,24 +683,17 @@ describe("OnboardingV2Page", () => {
       expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("helper");
     });
 
-    it("returns from the connect step to the agent step", async () => {
+    it("does not offer a back action after the Agent has been created", async () => {
       render(<OnboardingV2MockPage />);
       await reachConnectStep();
-      fireEvent.click(screen.getByRole("button", { name: "Go back" }));
-      expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
     });
 
-    it("keeps the Computer when returning to the computer step", async () => {
+    it("keeps the connected Computer visible until the reader continues", async () => {
       render(<OnboardingV2MockPage />);
       await reachConnectStep();
       await reachCheckStep();
       await settleCheck();
-
-      // Back to the agent step and forward again: the connection is durable, so it is still here.
-      fireEvent.click(screen.getByRole("button", { name: "Go back" }));
-      expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-      await advance(ISSUE_MS);
       expect(screen.getByText("MacBook Pro")).toBeTruthy();
       expect(screen.getByText("Online")).toBeTruthy();
       expect(screen.queryByText("Waiting for your computer…")).toBeNull();
@@ -712,17 +705,15 @@ describe("OnboardingV2Page", () => {
       await reachCheckStep();
       await settleCheck();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-      await advance(CREATE_MS);
       expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
     });
   });
 
   it("cancels a creation still in flight when the flow is restarted", async () => {
     render(<OnboardingV2MockPage />);
-    await reachConnectStep();
-    await reachCheckStep();
-    await settleCheck();
-
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Start over" }));
     await advance(CREATE_MS);
@@ -735,10 +726,9 @@ describe("OnboardingV2Page", () => {
     expect(screen.queryByRole("heading", { name: "Connect your messaging app" })).toBeNull();
   });
 
-  it("returns to the first step when the flow is restarted", async () => {
+  it("hides Start over after Agent creation becomes durable", async () => {
     render(<OnboardingV2MockPage />);
     await reachConnectStep();
-    fireEvent.click(screen.getByRole("button", { name: "Start over" }));
-    expect(screen.getByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start over" })).toBeNull();
   });
 });

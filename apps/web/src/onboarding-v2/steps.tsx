@@ -44,6 +44,7 @@ import {
   tokenChoiceApplies,
   validateAgentName,
 } from "./flow.js";
+import { ImCliReadinessList, ImCliStatusText } from "./im-cli-status.js";
 import { messagingCliMissingCopy, messagingWaitingReason } from "./messaging-readiness-copy.js";
 
 /** One step's worth of vertical rhythm. Every gap on every step is one of 4, 12 or 24px. */
@@ -339,9 +340,11 @@ function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draf
 function MessagingPicker({
   onChoose,
   provider,
+  readiness,
 }: {
   onChoose: (provider: MessagingProvider) => void;
   provider: MessagingProvider | undefined;
+  readiness: ReadinessFacts | undefined;
 }) {
   return (
     <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
@@ -366,6 +369,9 @@ function MessagingPicker({
               }
               title={messagingProviderLabel(candidate)}
             />
+            <span className="ml-auto text-xs text-kumo-subtle shrink-0">
+              <ImCliStatusText provider={candidate} status={readiness?.messagingCli[candidate]} />
+            </span>
           </Button>
         </li>
       ))}
@@ -514,11 +520,13 @@ function MessagingConnection({
 }
 
 export function AgentStep({
+  creation,
   draft,
   onBack,
   onChange,
   onSubmit,
 }: {
+  creation: CreationState;
   draft: AgentDraft;
   onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
@@ -543,12 +551,12 @@ export function AgentStep({
       <form className="flex flex-col gap-6" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
         <RuntimePicker draft={draft} onChange={onChange} />
-        {/*
-          Continue is held only while a *choice* is outstanding. An invalid name leaves it
-          pressable on purpose: pressing it is how the reason gets explained, and a dead button
-          that says nothing is worse than one that answers.
-        */}
-        <StepNav back={onBack} disabled={draft.runtime === undefined} submit />
+        <StepNav
+          back={onBack}
+          disabled={draft.runtime === undefined || creation !== "idle"}
+          label={creation === "creating" ? m.onboarding_v2_check_creating() : m.onboarding_v2_nav_next()}
+          submit
+        />
       </form>
     </section>
   );
@@ -760,29 +768,22 @@ function PlanSignInPanel({
   );
 }
 
-/**
- * Connecting the Computer and reporting what is on it, on one page. The check settles within about
- * a hundred milliseconds of the Computer arriving, so splitting them would put a screen change in
- * front of a result that is already there.
- */
 export function ComputerStep({
   adapter,
   computer,
-  creation,
   draft,
   onBack,
   onComputerConnected,
-  onCreate,
+  onContinue,
   readiness,
 }: {
   adapter?: ComputerConnectAdapter;
   /** The Computer the Account has, when it has one. An Account has one machine, never a list. */
   computer?: KnownComputer | undefined;
-  creation: CreationState;
   draft: AgentDraft;
   onBack?: () => void;
   onComputerConnected: OnboardingBackend["computerConnected"];
-  onCreate: () => void;
+  onContinue: () => void;
   readiness: ReadinessFacts | undefined;
 }) {
   /*
@@ -845,6 +846,7 @@ export function ComputerStep({
               <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
             ))}
           </ol>
+          <ImCliReadinessList readiness={readiness} />
           <div className="otv2-slot--outcome flex flex-col justify-start" data-ui="onboarding-v2-check-outcome">
             {resolving ? (
               <p className={WAITING_LINE} role="status">
@@ -870,12 +872,7 @@ export function ComputerStep({
         </>
       ) : null}
 
-      <StepNav
-        back={onBack}
-        disabled={!ready || !passed || creation !== "idle"}
-        label={creation === "creating" ? m.onboarding_v2_check_creating() : m.onboarding_v2_nav_next()}
-        onNext={onCreate}
-      />
+      <StepNav back={onBack} disabled={!ready || !passed} label={m.onboarding_v2_nav_next()} onNext={onContinue} />
     </section>
   );
 }
@@ -1083,7 +1080,7 @@ export function MessagingStep({
         <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_description()}</p>
       </header>
 
-      <MessagingPicker onChoose={onChoose} provider={provider} />
+      <MessagingPicker onChoose={onChoose} provider={provider} readiness={readiness} />
       <MessagingConnection
         computerOnline={computerOnline}
         messaging={messaging}

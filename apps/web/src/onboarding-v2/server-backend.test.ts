@@ -52,7 +52,7 @@ function existingAgent(): AgentListItem {
   };
 }
 
-function createdAgent(): AgentAdminConfig {
+function createdAgent(computerId: string | null = COMPUTER_ID): AgentAdminConfig {
   return {
     id: AGENT_ID,
     name: "opentag",
@@ -63,7 +63,7 @@ function createdAgent(): AgentAdminConfig {
     createdAt: NOW,
     updatedAt: NOW,
     createdByUserId: USER_ID,
-    computerId: COMPUTER_ID,
+    computerId,
     revision: 1,
     runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
   };
@@ -105,6 +105,7 @@ describe("useServerBackend", () => {
     ]);
     expect(view.result.current.computerOnline).toBe(false);
     expect(view.result.current.selectedComputerId).toBe(COMPUTER_ID);
+    expect(view.result.current.computerPreviouslyConfirmed).toBe(true);
     expect(issue).not.toHaveBeenCalled();
   });
 
@@ -150,6 +151,31 @@ describe("useServerBackend", () => {
       expect.objectContaining({ computerId: COMPUTER_ID, name: "opentag", runtimeProvider: "codex" }),
     );
     expect(view.result.current.creation).toBe("created");
+  });
+
+  it("creates the Agent before a Computer exists, then targets it from the connect adapter", async () => {
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(createdAgent(null));
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
+      bootstrapCommand: "opentag connect -- code",
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    const view = renderHook(() => useServerBackend(draft));
+    await settle();
+
+    act(() => view.result.current.createAgent(draft));
+    await settle();
+    expect(create).toHaveBeenCalledWith({
+      displayName: "opentag",
+      name: "opentag",
+      runtimeProvider: "codex",
+    });
+
+    await act(async () => {
+      await view.result.current.computerConnectAdapter?.issue({ mode: "create" });
+    });
+    expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: AGENT_ID });
   });
 
   it("preserves the durable selected Computer on Start over", async () => {

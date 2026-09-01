@@ -250,14 +250,14 @@ async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform
   try {
     credentials = await readMachineCredentials(home);
   } catch (error) {
-    throw new DaemonRuntimeConfigurationError("OpenTag Computer credentials are invalid; run computer connect again", {
+    throw new DaemonRuntimeConfigurationError("OpenTag Computer credentials are invalid; run opentag connect again", {
       cause: error,
     });
   }
   signal.throwIfAborted();
   const bound = resolveBoundAccountComputer(credentials);
   if (bound.status === "disconnected") {
-    throw new DaemonRuntimeConfigurationError("This Computer is not connected; run computer connect first");
+    throw new DaemonRuntimeConfigurationError("This Computer is not connected; run opentag connect first");
   }
   let identity: Awaited<ReturnType<typeof resolveComputerIdentity>>;
   try {
@@ -326,14 +326,14 @@ function isExpectedDaemonStop(error: unknown): boolean {
 
 function daemonOperatorMessage(error: unknown): string {
   if (error instanceof DaemonRuntimeConfigurationError) {
-    return "Daemon configuration is invalid; run computer connect or inspect daemon status";
+    return "Daemon configuration is invalid; run opentag connect or inspect daemon status";
   }
   if (error instanceof DaemonOwnerStartupError) {
     return error.code === "BUSY"
       ? "Daemon is already running; inspect daemon status"
       : "Daemon ownership prevented startup; inspect daemon status";
   }
-  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run computer connect again";
+  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run opentag connect again";
   return "Daemon service configuration prevented startup; inspect daemon status";
 }
 

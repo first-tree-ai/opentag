@@ -145,13 +145,13 @@ const INSTALLER_URL = "https://download.opentag.build/releases/prod/install.sh";
  * The shim lands in `~/.local/bin`, which the installer adds to future shells but not to the one
  * running this line, so the connect call names that directory explicitly.
  *
- * Note this deliberately differs from what the Server's `buildComputerConnectCommand` produces
- * today. The Server still emits the npm form; changing it is a separate change to real behaviour.
+ * This mirrors the Server's production bootstrap command: install only, then let `opentag connect`
+ * exchange the one-time code, bind the Agent/Computer, and start the daemon.
  */
 function connectCommand(code: string): string {
   return [
     `curl -fsSL ${INSTALLER_URL} | sh`,
-    `PATH="$HOME/.local/bin\${PATH:+:$PATH}" opentag computer connect --server ${SERVER_URL} -- ${code}`,
+    `PATH="$HOME/.local/bin\${PATH:+:$PATH}" opentag connect --server ${SERVER_URL} -- ${code}`,
   ].join(" && ");
 }
 
@@ -474,13 +474,6 @@ export function useMockBackend(
   /** The Agent the real backend would have created, on the same seam and the same states. */
   const createAgent = useCallback(
     (draft: AgentDraft) => {
-      // The Server creates on a Computer it can name, and refuses when it cannot. The mock holds
-      // itself to the same rule so this step cannot produce an Agent that runs nowhere — the
-      // already-owned machine counts, which is the whole point of offering it.
-      //
-      // The cloud route names one too, it just does not come from this step: OpenTag allocates the
-      // machine, so there is neither an arrival nor an Account's own here to point at.
-      if (draft.destination !== "cloud" && preparedComputerId === undefined) return;
       setCreation((current) => {
         if (current !== "idle") return current;
         later(() => {
@@ -490,7 +483,7 @@ export function useMockBackend(
         return "creating";
       });
     },
-    [later, preparedComputerId],
+    [later],
   );
 
   const reset = useCallback(() => {
@@ -578,7 +571,6 @@ export function useMockBackend(
       // The mock has nothing to read back; it is the flow as it runs the first time.
       resuming: false,
       resumeError: undefined,
-      resumeBlocked: undefined,
       retryResume: () => undefined,
       startPlanSignIn,
       startMessaging,

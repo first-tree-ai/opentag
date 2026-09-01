@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { CLI_VERSION } from "../build-info.js";
 import { registerAgentCommand } from "../commands/agent/index.js";
+import { registerComputerConnectCommand } from "../commands/computer/connect.js";
 import { registerComputerCommand } from "../commands/computer/index.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { registerDoctorCommand } from "../commands/doctor.js";
@@ -17,6 +18,9 @@ export function createProgram(): Command {
     .description("OpenTag command-line interface")
     .version(CLI_VERSION)
     .showHelpAfterError();
+  // The onboarding command is top-level so an Agent can run the copied setup command without
+  // needing to know the CLI's resource hierarchy. Keep `computer connect` as a compatible alias.
+  registerComputerConnectCommand(program);
   registerComputerCommand(program);
   registerAgentCommand(program);
   registerDaemonCommand(program);

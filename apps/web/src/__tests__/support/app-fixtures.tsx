@@ -407,7 +407,7 @@ export function installApi(
       return json(
         {
           connectCodeId,
-          bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- example",
+          bootstrapCommand: "opentag connect --server https://opentag.example.com -- example",
           expiresIn: 900,
           issuedAt: "2026-08-20T00:00:00.000Z",
         },

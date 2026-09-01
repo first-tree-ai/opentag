@@ -1,14 +1,18 @@
 import type {
+  ImCliReadinessStatus,
   ProviderCliArtifactStatusFrame,
   ProviderCliCancelFrame,
+  ProviderCliPrewarmFrame,
   ProviderCliRequirementFrame,
   ProviderCliValidationGrantFrame,
   ProviderCliValidationResultFrame,
 } from "@opentag/shared";
 import {
   ProviderCliCancelFrameSchema,
+  ProviderCliPrewarmFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
+  RUNTIME_CAPABILITY,
 } from "@opentag/shared";
 import type { RuntimeBusinessFrame, RuntimeConnection } from "../runtime-connection.js";
 import type { ProviderCliManager } from "./manager.js";
@@ -25,7 +29,10 @@ const UNREPAIRABLE = new Set(["unsupported_platform", "global_bin_unavailable"])
 const GRANT_REPLAY_RETENTION_MS = 60_000;
 
 export interface ProviderCliReconcilerOptions {
-  readonly connection: Pick<RuntimeConnection, "send" | "subscribeBusinessFrames" | "capabilityVersion">;
+  readonly connection: Pick<
+    RuntimeConnection,
+    "send" | "subscribeBusinessFrames" | "capabilityVersion" | "setImCliReadiness"
+  >;
   readonly manager: Pick<ProviderCliManager, "ensure" | "inspect" | "layout">;
   readonly now?: () => number;
   readonly signal?: AbortSignal;
@@ -56,6 +63,7 @@ export class ProviderCliReconciler {
   readonly #manager: ProviderCliReconcilerOptions["manager"];
   readonly #now: () => number;
   readonly #frameJobs = new Set<Promise<void>>();
+  readonly #imCliPublished = new Map<ProviderCliProvider, ImCliReadinessStatus>();
   readonly #providerJobs = new Map<ProviderCliProvider, Promise<ProviderCliArtifactStatusFrame["status"]>>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
@@ -78,9 +86,18 @@ export class ProviderCliReconciler {
     return this.#closePromise;
   }
 
+  /** Re-publish the last prewarm observation so heartbeat freshness does not lapse. */
+  refreshPublishedImCliReadiness(): void {
+    if (this.#closed || this.#signal?.aborted) return;
+    for (const [provider, status] of this.#imCliPublished) {
+      this.#connection.setImCliReadiness({ provider, status });
+    }
+  }
+
   async #performClose(): Promise<void> {
     this.#closed = true;
     this.#unsubscribe();
+    this.#imCliPublished.clear();
     this.#abortAll();
     await Promise.allSettled([...this.#frameJobs]);
     await this.#validation.cleanupAll();
@@ -128,8 +145,46 @@ export class ProviderCliReconciler {
       await this.#handleRequirement(requirement.data);
       return;
     }
+    const prewarm = ProviderCliPrewarmFrameSchema.safeParse(frame);
+    if (prewarm.success) {
+      await this.#handlePrewarm(prewarm.data);
+      return;
+    }
     const grant = ProviderCliValidationGrantFrameSchema.safeParse(frame);
     if (grant.success) await this.#handleGrant(grant.data);
+  }
+
+  async #handlePrewarm(frame: ProviderCliPrewarmFrame): Promise<void> {
+    if (this.#closed || this.#signal?.aborted) return;
+    if (this.#connection.capabilityVersion(RUNTIME_CAPABILITY.providerCliPrewarm) === undefined) return;
+    await Promise.all(frame.providers.map((provider) => this.#prewarmProvider(provider)));
+  }
+
+  async #prewarmProvider(provider: ProviderCliProvider): Promise<void> {
+    this.#publishImCli(provider, "checking");
+    try {
+      const inspection = await this.#manager.inspect(provider);
+      if (inspection.readiness === "ready") {
+        const status = await this.#reconcileProvider(provider, "auto");
+        this.#publishImCli(provider, status);
+        return;
+      }
+      if (inspection.diagnostic && UNREPAIRABLE.has(inspection.diagnostic.code)) {
+        this.#publishImCli(provider, "unavailable");
+        return;
+      }
+      this.#publishImCli(provider, "install");
+      const status = await this.#reconcileProvider(provider, "auto");
+      this.#publishImCli(provider, status);
+    } catch {
+      this.#publishImCli(provider, "unavailable");
+    }
+  }
+
+  #publishImCli(provider: ProviderCliProvider, status: ImCliReadinessStatus): void {
+    if (this.#closed || this.#signal?.aborted) return;
+    this.#imCliPublished.set(provider, status);
+    this.#connection.setImCliReadiness({ provider, status });
   }
 
   #handleCancel(frame: ProviderCliCancelFrame): void {
@@ -168,22 +223,28 @@ export class ProviderCliReconciler {
     await this.#publishCurrentProvider(frame.provider, status);
   }
 
-  async #reconcileProvider(provider: ProviderCliProvider): Promise<ProviderCliArtifactStatusFrame["status"]> {
+  async #reconcileProvider(
+    provider: ProviderCliProvider,
+    mode: "auto" | "managed-only" = "managed-only",
+  ): Promise<ProviderCliArtifactStatusFrame["status"]> {
     const existing = this.#providerJobs.get(provider);
     if (existing) return existing;
-    const job = this.#runProvider(provider).finally(() => {
+    const job = this.#runProvider(provider, mode).finally(() => {
       if (this.#providerJobs.get(provider) === job) this.#providerJobs.delete(provider);
     });
     this.#providerJobs.set(provider, job);
     return job;
   }
 
-  async #runProvider(provider: ProviderCliProvider): Promise<ProviderCliArtifactStatusFrame["status"]> {
+  async #runProvider(
+    provider: ProviderCliProvider,
+    mode: "auto" | "managed-only",
+  ): Promise<ProviderCliArtifactStatusFrame["status"]> {
     try {
       let inspection = await this.#manager.inspect(provider);
       if (inspection.readiness !== "ready") {
         if (inspection.diagnostic && UNREPAIRABLE.has(inspection.diagnostic.code)) return "unavailable";
-        await this.#manager.ensure(provider, { mode: "managed-only" });
+        await this.#manager.ensure(provider, { mode });
         inspection = await this.#manager.inspect(provider);
       }
       if (inspection.readiness === "ready") {

@@ -378,14 +378,14 @@ export class RuntimeConnection {
               { attempt: attempt + 1, category: error.category, state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run computer connect again`, true);
+            throw new RuntimeConnectionError(`${error.message}; run opentag connect again`, true);
           }
           if (error instanceof Error && error.message.includes("not logged in")) {
             this.#logger.error(
               { attempt: attempt + 1, category: "credential", state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run computer connect first`, true);
+            throw new RuntimeConnectionError(`${error.message}; run opentag connect first`, true);
           }
           attempt += 1;
           const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));

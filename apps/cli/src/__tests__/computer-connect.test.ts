@@ -31,6 +31,7 @@ describe("computer connect", () => {
   it("executes the Computer connect command and reports service state", async () => {
     const home = await temporaryHome();
     const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      computerId: "computer-1",
       credentialsPath: `${home}/config/computer-credentials.json`,
       message: "Connected this Computer",
       service: {
@@ -56,9 +57,36 @@ describe("computer connect", () => {
     }
   });
 
+  it("exposes connect as the agent-first top-level onboarding command", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      computerId: "computer-1",
+      credentialsPath: `${home}/config/computer-credentials.json`,
+      message: "Connected Computer computer-1 and bound Agent 11111111-1111-4111-8111-111111111111",
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync(["node", "opentag", "connect", "code", "--home", home]);
+      expect(runSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "code", home, noStart: false, serverUrl: channelServerUrl() }),
+      );
+      expect(stdout).toHaveBeenCalledWith(
+        "Connected Computer computer-1 and bound Agent 11111111-1111-4111-8111-111111111111\n",
+      );
+    } finally {
+      stdout.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
   it("preserves credentials and returns a clean error when daemon reload fails", async () => {
     const home = await temporaryHome();
-    const connectResult = { credentialsPath: `${home}/credentials.json`, message: "Connected this Computer" };
+    const connectResult = {
+      computerId: "computer-1",
+      credentialsPath: `${home}/credentials.json`,
+      message: "Connected this Computer",
+    };
     const runSpy = vi
       .spyOn(computerCore, "runComputerConnect")
       .mockRejectedValue(new computerCore.ComputerConnectServiceInstallError(connectResult));
@@ -82,6 +110,7 @@ describe("computer connect", () => {
   it("presents a successful Computer connect as JSON", async () => {
     const home = await temporaryHome();
     const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      computerId: "computer-1",
       credentialsPath: `${home}/config/computer-credentials.json`,
       message: "Connected this Computer",
     });
@@ -250,8 +279,7 @@ describe("computer connect", () => {
       noStart: true,
       serverUrl: "https://opentag.example",
     });
-    expect(result.message).toBe("Connected this Computer");
-    expect(result.message).not.toContain(firstComputerId);
+    expect(result.message).toBe(`Connected Computer ${firstComputerId}`);
     await runComputerConnect({
       api: { exchangeComputerConnectCode },
       code: "second-code",

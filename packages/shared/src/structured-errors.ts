@@ -152,16 +152,26 @@ function isSensitiveKey(key: string): boolean {
 }
 
 function scrubString(value: string): string {
-  return value
-    .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
-    .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")
-    .replace(/(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*)[^\r\n,;}]+/giu, "$1[REDACTED]")
-    .replace(
-      /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
-      "$1[REDACTED]",
-    )
-    .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
-    .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@");
+  return (
+    value
+      .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
+      .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")
+      /*
+       * Consume RFC 7230 obs-fold continuations after a credential header. A continuation line starts
+       * with SP or HTAB and belongs to the preceding header value, so the whole line is redacted; a
+       * line starting with anything else is the next genuine header and is preserved.
+       */
+      .replace(
+        /(\b(?:authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*)[^\r\n,;}]*(?:\r?\n[ \t][^\r\n]*)*/giu,
+        "$1[REDACTED]",
+      )
+      .replace(
+        /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
+        "$1[REDACTED]",
+      )
+      .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
+      .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@")
+  );
 }
 
 function redactErrorValue(value: Error, seen: WeakSet<object>, depth: number): Record<string, unknown> {

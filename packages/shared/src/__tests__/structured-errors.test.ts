@@ -187,4 +187,26 @@ describe("structured error redaction", () => {
     );
     expect(redacted.nested.value).toContain("[TRUNCATED]");
   });
+
+  it("redacts folded header continuations while preserving the next header", () => {
+    const folded = "Authorization: Bearer first\r\n\tsecond-secret\r\nX-Safe: ok";
+    const redacted = redactForLog({ message: folded }) as { message: string };
+
+    expect(redacted.message).not.toContain("second-secret");
+    expect(redacted.message).not.toContain("first");
+    expect(redacted.message).toContain("X-Safe: ok");
+
+    const cookie = redactForLog({ message: "Set-Cookie: a=1\r\n  b=leaked\r\nContent-Type: text/plain" }) as {
+      message: string;
+    };
+    expect(cookie.message).not.toContain("b=leaked");
+    expect(cookie.message).toContain("Content-Type: text/plain");
+  });
+
+  it("scrubs and caps a bare string, which is how log messages cross the boundary", () => {
+    expect(redactForLog("Authorization: Bearer message-secret")).not.toContain("message-secret");
+    expect(new TextEncoder().encode(redactForLog("x".repeat(20_000))).byteLength).toBeLessThanOrEqual(
+      STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
+    );
+  });
 });

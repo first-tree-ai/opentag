@@ -167,6 +167,73 @@ test("Agent navigation reaches every Agent-owned destination", async ({ page }) 
   await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
 });
 
+test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", async ({ page }) => {
+  expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
+  const usageMetrics = page.locator('[data-ui="usage-metrics"] > div');
+  await expect(usageMetrics).toHaveCount(2);
+  const [tokensMetric, tasksMetric] = await Promise.all([
+    usageMetrics.nth(0).boundingBox(),
+    usageMetrics.nth(1).boundingBox(),
+  ]);
+  expect(tokensMetric).not.toBeNull();
+  expect(tasksMetric).not.toBeNull();
+  if (!tokensMetric || !tasksMetric) throw new Error("Usage metrics did not produce layout boxes");
+  expect(tokensMetric.y).toBeCloseTo(tasksMetric.y, 1);
+
+  await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
+  const usageSummaryMetrics = page.locator('[data-ui="usage-summary"] [data-ui="usage-metrics"] > div');
+  await expect(usageSummaryMetrics).toHaveCount(2);
+  const [summaryTokens, summaryTasks] = await Promise.all([
+    usageSummaryMetrics.nth(0).boundingBox(),
+    usageSummaryMetrics.nth(1).boundingBox(),
+  ]);
+  if (!summaryTokens || !summaryTasks) throw new Error("Usage summary metrics did not produce layout boxes");
+  expect(summaryTokens.y).toBeCloseTo(summaryTasks.y, 1);
+
+  await page.goto(`/agents/${agentId}/tasks`, { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "Tasks", exact: true })).toBeVisible();
+  await expect(page.getByRole("searchbox", { name: "Search Tasks" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Task", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("link", { name: "Review the seeded E2E task" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    await page.evaluate(() => document.documentElement.clientWidth),
+  );
+
+  await page.goto(`/agents/${agentId}/skills`, { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: "Skills", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Upload skill:/ })).toHaveAttribute("aria-disabled", "true");
+  await page.getByRole("button", { name: "Preview" }).first().click();
+  await expect(page.getByRole("heading", { name: "Instructions preview" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    await page.evaluate(() => document.documentElement.clientWidth),
+  );
+});
+
+test("Agents and Usage keep their compact composition when their own containers have room", async ({ page }) => {
+  expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
+  await page.setViewportSize({ width: 1100, height: 900 });
+
+  await page.goto("/agents", { waitUntil: "networkidle" });
+  const agentRow = page.locator('[data-ui="agent-row"]').first();
+  await expect(agentRow).toBeVisible();
+  const agentRowBox = await agentRow.boundingBox();
+  if (!agentRowBox) throw new Error("Agent row did not produce a layout box");
+  expect(agentRowBox.height).toBeLessThan(110);
+
+  await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
+  const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');
+  await expect(usageAnalysisCards).toHaveCount(2);
+  const [trendCard, breakdownCard] = await Promise.all([
+    usageAnalysisCards.nth(0).boundingBox(),
+    usageAnalysisCards.nth(1).boundingBox(),
+  ]);
+  if (!trendCard || !breakdownCard) throw new Error("Usage analysis cards did not produce layout boxes");
+  expect(trendCard.y).toBeCloseTo(breakdownCard.y, 1);
+});
+
 test("an unauthenticated protected visit redirects to login", async ({ browser }) => {
   const context = await browser.newContext({
     storageState: { cookies: [], origins: [] },
@@ -182,7 +249,7 @@ test("an unauthenticated protected visit redirects to login", async ({ browser }
   }
 });
 
-test("the screenshot pass captures every addressable page and writes a contact sheet", async ({
+test("the screenshot pass captures every primary page and writes a contact sheet", async ({
   page,
   browser,
   e2eRuntime,

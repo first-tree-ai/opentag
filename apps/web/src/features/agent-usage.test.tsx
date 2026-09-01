@@ -43,6 +43,10 @@ describe("AgentUsageOverview", () => {
 
     expect(await screen.findByText("428K")).toBeTruthy();
     expect(screen.queryByText("Partial data")).toBeNull();
+    const metrics = screen.getByLabelText(/Last 30 days/);
+    expect(metrics.classList.contains("grid-cols-2")).toBe(true);
+    expect(metrics.classList.contains("divide-x")).toBe(true);
+    expect(metrics.classList.contains("divide-y")).toBe(false);
   });
 
   it("uses chart headings without repeating their meaning in helper copy", async () => {
@@ -54,6 +58,9 @@ describe("AgentUsageOverview", () => {
     expect(await screen.findByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Usage period" }).textContent).toBe("Last 30 days");
+    expect(screen.getByLabelText(/Last 30 days/).classList.contains("grid-cols-2")).toBe(true);
+    expect(document.querySelector('[data-ui="usage-tab"]')?.classList.contains("@container/usage-tab")).toBe(true);
+    expect(document.querySelector('[data-ui="usage-analysis"]')?.className).toContain("/usage-tab:grid-cols-");
     expect(screen.getByRole("table", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Type", "Usage"]);
     expect(screen.queryByText("Total Tokens recorded each day.")).toBeNull();
@@ -75,7 +82,9 @@ describe("AgentUsageOverview", () => {
     expect(loadUsage).toHaveBeenCalledTimes(1);
     for (const period of screen.getAllByRole("combobox", { name: "Usage period" })) {
       expect(period.classList.contains("w-full")).toBe(true);
-      expect(period.closest(".ml-auto")).toBeTruthy();
+      const wrapper = period.closest('[data-ui="usage-window-select"]');
+      expect(wrapper?.classList.contains("w-40")).toBe(true);
+      expect(wrapper?.classList.contains("ml-auto")).toBe(true);
     }
   });
 

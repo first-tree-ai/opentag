@@ -21,7 +21,6 @@ export function LoginPage({ next: requested }: { next?: string }) {
         aria-labelledby="login-title"
         className="grid w-full max-w-md gap-6 rounded-lg bg-kumo-base p-6 ring ring-kumo-line"
         data-ui="login-card"
-        style={{ maxWidth: "28rem" }}
       >
         <OpenTagBrandLockup />
         <header className="grid gap-1" data-ui="login-copy">

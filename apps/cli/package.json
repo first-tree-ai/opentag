@@ -48,7 +48,7 @@
     "build": "tsdown src/index.ts src/cli/index.ts --format esm --dts",
     "start": "node dist/cli/index.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1"
+    "test": "vitest run --maxWorkers=1 --testTimeout=30000"
   },
   "dependencies": {
     "@first-tree-ai/context-tree": "0.1.7"

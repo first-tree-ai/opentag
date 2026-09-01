@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { redactForLog, redactSensitive } from "@opentag/shared";
+import { redactForLog } from "@opentag/shared";
 import pino, { type DestinationStream, type Logger as PinoLogger } from "pino";
 import {
   CLIENT_LOG_MIN_RETENTION_MS,
@@ -60,7 +60,7 @@ export function configureClientLoggerForService(logDirectory: string): void {
 }
 
 export function configureClientLoggerContext(bindings: ClientLogBindings): void {
-  clientLoggerContext = { ...clientLoggerContext, ...redactSensitive(bindings) };
+  clientLoggerContext = { ...clientLoggerContext, ...redactForLog(bindings) };
   rootLogger = undefined;
 }
 

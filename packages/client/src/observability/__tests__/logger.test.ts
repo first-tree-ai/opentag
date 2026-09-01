@@ -82,6 +82,19 @@ describe("Client logger", () => {
     expect(raw).not.toContain("embedded-secret");
   });
 
+  it("caps an over-long process context value in the emitted record", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerContext({ instanceId: "x".repeat(20_000) });
+    configureClientLoggerForService(directory);
+    createLogger("daemon").info({}, "Context bounded");
+
+    const raw = await readFile(join(directory, "client.log"), "utf8");
+    const record = JSON.parse(raw) as Record<string, unknown>;
+    expect(record.instanceId).toEqual(expect.stringContaining("[TRUNCATED]"));
+    expect(new TextEncoder().encode(record.instanceId as string).byteLength).toBeLessThanOrEqual(4 * 1024);
+  });
+
   it("treats repeated configuration as a no-op and rejects another directory", async () => {
     const first = await temporaryDirectory();
     const second = await temporaryDirectory();

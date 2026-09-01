@@ -303,6 +303,80 @@ describe("SessionRuntimeManager", () => {
     await isolatedManager.close();
   });
 
+  it("prepares Context Tree once per Agent workspace and names the tree as a writable root", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-runtime-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const treePath = resolve(home, "shared-context-tree");
+    const contextTree = { ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })) };
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      cliCommand: "opentag-dev",
+      contextTree,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+
+    const created = factory.created[0];
+    const cwd = await workspace.cwd(request.agentId);
+    expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd);
+    // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
+    expect(created?.workspace.writableRoots).toEqual([cwd, treePath]);
+    expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
+    expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
+    await manager.close();
+  });
+
+  it("starts a Session and says durable memory is inactive when Context Tree is unavailable", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-unavailable-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const contextTree = {
+      ensureAgent: vi.fn(async () => ({ status: "unavailable" as const, reason: "DIRTY_TREE" })),
+    };
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      contextTree,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+
+    const created = factory.created[0];
+    const cwd = await workspace.cwd(request.agentId);
+    expect(created?.workspace.writableRoots).toEqual([cwd]);
+    expect(created?.systemPrompt).toContain("Context Tree unavailable (DIRTY_TREE)");
+    expect(created?.systemPrompt).toContain("Do not assume earlier decisions were recorded");
+    await manager.close();
+  });
+
   it("fails closed when a reconcile carries a proof but no proof manager is configured", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-missing-proof-manager-"));
     homes.push(home);

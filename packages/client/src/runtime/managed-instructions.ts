@@ -1,4 +1,5 @@
 import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
+import type { ContextTreeStatus } from "./context-tree.js";
 
 export interface ManagedSessionContext {
   sessionId: string;
@@ -6,6 +7,36 @@ export interface ManagedSessionContext {
   creatorSessionId?: string;
   cliCommand: string;
   sessionCliAvailable: boolean;
+  contextTree?: ContextTreeStatus;
+}
+
+/**
+ * The Agent is told plainly when durable memory is absent, so it cannot mistake a failed
+ * connection for an empty tree and start re-deriving decisions. Its own slug is not repeated
+ * here — the trusted Platform section above already states it.
+ */
+function renderContextTree(status: ContextTreeStatus, cliCommand: string): readonly string[] {
+  if (status.status === "ready") {
+    return [
+      `Context Tree: ${status.treePath}`,
+      "This is durable shared memory for every Agent on this Computer. Read the decisions that bear on a task before planning or changing code, and record durable decisions there.",
+      "Use the context-tree-read and context-tree-write skills rather than editing the tree by hand.",
+      "`members/<your Agent slug>/` is your own private working memory; the Agent slug is stated in the Platform section above. Do not write to another Agent's member directory.",
+      "",
+    ];
+  }
+  if (status.status === "unconfigured") {
+    return [
+      `Context Tree: not configured on this Computer (${cliCommand} context-tree connect).`,
+      "Durable memory is not active. Do not assume earlier decisions were recorded, and do not attempt to create a tree yourself.",
+      "",
+    ];
+  }
+  return [
+    `Context Tree unavailable (${status.reason}).`,
+    "Durable memory is not active for this Session. Do not assume earlier decisions were recorded, and do not attempt to repair the tree yourself.",
+    "",
+  ];
 }
 
 export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, context?: ManagedSessionContext): string {
@@ -40,6 +71,7 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
             ]
           : ["Session collaboration commands are unavailable because managed Session context is missing."]),
         "",
+        ...(context.contextTree ? renderContextTree(context.contextTree, context.cliCommand) : []),
       ]
     : [];
   return [

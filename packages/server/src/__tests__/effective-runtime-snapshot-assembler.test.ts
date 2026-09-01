@@ -1,4 +1,4 @@
-import { OPENTAG_PLATFORM_INSTRUCTIONS } from "@opentag/shared";
+import { computeRuntimeSnapshotHashes, renderPlatformInstructions } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
 import {
@@ -9,11 +9,13 @@ import {
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const sessionId = "b077f77b-ad35-4031-8628-aee73f9a7ca8";
+const agentName = "code-reviewer";
 
 function authority(overrides: Record<string, unknown> = {}) {
   return {
     agentStatus: "active",
     agentId,
+    agentName,
     imBindingStatus: "active",
     runtimeConfig: {
       revision: 7,
@@ -51,7 +53,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       provider: "codex",
       model: "gpt-5",
       reasoningEffort: "high",
-      instructions: { platform: OPENTAG_PLATFORM_INSTRUCTIONS, agent: "Review the change." },
+      instructions: { platform: renderPlatformInstructions({ agentSlug: agentName }), agent: "Review the change." },
       budget: { maxDurationMs: 30_000 },
       revision: {
         agent: { sequence: 7, id: expect.stringMatching(/^[a-f0-9]{64}$/) },
@@ -86,6 +88,40 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     expect(modelChanged.revision.session.id).not.toBe(original.revision.session.id);
     expect(modelChanged.revision.agent.sequence).toBe(9);
     expect(modelChanged.revision.session.sequence).toBe(9);
+  });
+
+  it("renders the Agent slug into the platform layer and folds it into Agent revision identity", async () => {
+    const original = await assembler(async () => authority()).assembleForSession(sessionId);
+    const renamed = await assembler(async () => authority({ agentName: "researcher-agent" })).assembleForSession(
+      sessionId,
+    );
+
+    expect(original.instructions.platform).toContain(`OpenTag Agent slug: ${agentName}`);
+    expect(renamed.instructions.platform).toContain("OpenTag Agent slug: researcher-agent");
+    // Two Agents must never share an Agent revision, or one could resume against the other's
+    // identity and write to the wrong `members/<agent-slug>/` directory in a shared tree.
+    expect(renamed.revision.agent.id).not.toBe(original.revision.agent.id);
+    expect(renamed.revision.session.id).toBe(original.revision.session.id);
+  });
+
+  it("changes the effective snapshot hash when only the Agent slug differs", async () => {
+    const original = await assembler(async () => authority()).assembleForSession(sessionId);
+    const renamed = await assembler(async () => authority({ agentName: "researcher-agent" })).assembleForSession(
+      sessionId,
+    );
+
+    expect(computeRuntimeSnapshotHashes(renamed).agentConfigHash).not.toBe(
+      computeRuntimeSnapshotHashes(original).agentConfigHash,
+    );
+    expect(computeRuntimeSnapshotHashes(renamed).effectiveSnapshotHash).not.toBe(
+      computeRuntimeSnapshotHashes(original).effectiveSnapshotHash,
+    );
+  });
+
+  it("fails closed when the stored Agent name is not a usable slug", async () => {
+    await expect(
+      assembler(async () => authority({ agentName: "Not A Slug" })).assembleForSession(sessionId),
+    ).rejects.toBeInstanceOf(EffectiveRuntimeSnapshotAssemblerError);
   });
 
   it("omits nullable runtime fields when compiling the stored default configuration", async () => {

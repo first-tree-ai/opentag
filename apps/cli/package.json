@@ -53,8 +53,8 @@
   "devDependencies": {
     "@opentag/client": "workspace:*",
     "@opentag/shared": "workspace:*",
-    "commander": "^13.1.0",
-    "vitest": "^3.2.0",
+    "commander": "^15.0.0",
+    "vitest": "^4.1.11",
     "ws": "^8.21.3"
   }
 }

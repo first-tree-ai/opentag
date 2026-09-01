@@ -4,8 +4,8 @@
 
 ## Prerequisites
 
-- Node.js 24.19.0 for the pinned development toolchain (the supported range remains Node.js 22.13 or newer on 22.x,
-  Node.js 24.x, or Node.js 26.x; Node.js 24 is primary)
+- Node.js 24.19.0 for the pinned development toolchain (the supported range is Node.js 22.22.2 or newer on 22.x,
+  Node.js 24.15 or newer on 24.x, or Node.js 26.x; Node.js 24 is primary)
 - Corepack and pnpm 10.12.1
 - Docker with Compose support, only when running the local PostgreSQL service
 
@@ -107,7 +107,7 @@ Required pull request CI still runs all offline unit tests. Agent Runtime keeps 
 
 The required pull request check is the stable `CI` fan-in job. It covers the required commands above, source and staging CLI
 tarball installation, a production-container health smoke, and the supported Node.js lines. Full validation and releases
-run on Node.js 24. Compatibility jobs run `pnpm check:node-compat` on the exact Node.js 22.13.0 floor and the latest
+run on Node.js 24. Compatibility jobs run `pnpm check:node-compat` on the exact Node.js 22.22.2 floor and the latest
 Node.js 26 release; that command builds, tests, and installs the packed CLI. Node.js 23 and 25 are end-of-life and are not
 supported. To exercise the current source tarball locally after a build:
 

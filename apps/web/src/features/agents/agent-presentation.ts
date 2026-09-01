@@ -6,16 +6,6 @@ import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSour
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
-export const agentAvatarTones = ["brand", "amber", "blue", "neutral"] as const;
-
-export function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[number] {
-  let hash = 0;
-  for (let index = 0; index < agentId.length; index += 1) {
-    hash = (hash * 31 + agentId.charCodeAt(index)) >>> 0;
-  }
-  return agentAvatarTones[hash % agentAvatarTones.length] ?? "brand";
-}
-
 /**
  * The card states what is true and how urgent it is; it carries no exit of its own. Opening the
  * Agent is the single follow-up, and the Agent page is where each failed dependency is explained.

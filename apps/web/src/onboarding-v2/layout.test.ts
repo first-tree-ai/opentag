@@ -36,6 +36,15 @@ describe("onboarding flow layout", () => {
     expect(declarationValue(".otv2-choice", "white-space")).toBe("normal");
   });
 
+  it("lets destination and runtime choice cards grow beyond Kumo's single-line button height", () => {
+    expect(declarationValue(".otv2-shell .otv2-choice", "height")).toBe("auto");
+    expect(declarationValue(".otv2-shell .otv2-choice", "min-height")).toBe("80px");
+  });
+
+  it("keeps unavailable choice-card explanations readable", () => {
+    expect(declarationValue(".otv2-choice:disabled", "opacity")).toBe("1");
+  });
+
   it("answers a press with colour rather than shrinking the control", () => {
     // Nothing on this surface may shrink under a click.
     expect(declarationValue(".otv2-shell button:active", "transform")).toBe("none");
@@ -47,6 +56,12 @@ describe("onboarding flow layout", () => {
         expect(declaration.value).not.toContain("scale");
       });
     });
+  });
+
+  it("distinguishes selected choices from neutral hover and disabled states", () => {
+    expect(declarationValue('.otv2-choice[aria-pressed="true"]', "background")).toBe("var(--brand-soft)");
+    expect(declarationValue(".otv2-choice:hover:not(:disabled)", "background")).toBe("var(--color-kumo-fill-hover)");
+    expect(declarationValue(".otv2-choice:disabled", "background")).toBe("var(--color-kumo-recessed)");
   });
 
   /*

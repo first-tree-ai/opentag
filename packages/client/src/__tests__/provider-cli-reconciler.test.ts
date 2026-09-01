@@ -307,6 +307,45 @@ describe("provider CLI reconciler", () => {
     ).toEqual(["11111111-1111-4111-8111-111111111111", "77777777-7777-4777-8777-777777777777"].sort());
   });
 
+  it("joins an in-flight managed repair before close and validation cleanup settle", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const inspect = vi
+      .fn()
+      .mockResolvedValueOnce({ readiness: "install", diagnostic: { code: "not_installed" } })
+      .mockResolvedValue(fixture.inspection);
+    const ensure = vi.fn(async () => {
+      await gate;
+      return { ok: true, action: "installed-managed" } as never;
+    });
+    const cleanupAll = vi.fn(async () => undefined);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll },
+    });
+
+    const handling = runtime.emit(requirement);
+    await vi.waitFor(() => expect(ensure).toHaveBeenCalledOnce());
+    const closing = reconciler.close();
+    let settled = false;
+    void closing.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(cleanupAll).not.toHaveBeenCalled();
+
+    release();
+    await Promise.all([handling, closing]);
+    expect(cleanupAll).toHaveBeenCalledOnce();
+    expect(runtime.send.mock.calls.some((call) => call[0].status === "ready")).toBe(false);
+  });
+
   it("rejects stale, duplicate, and expired grants before spawning validation", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();

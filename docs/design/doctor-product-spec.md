@@ -1,6 +1,6 @@
 # Doctor 产品需求与 P0 技术规格
 
-状态：提案
+状态：已实施（P0 基线及 Integration CLI install-only 扩展）
 
 最后更新：2026-09-01
 
@@ -381,6 +381,8 @@ Checks
   ✓ Agent Runtime CLI: at least one supported Runtime is installed
   ✓ Codex CLI: installed at /Applications/ChatGPT.app/.../codex (desktop-app)
   - Claude Code CLI: not installed
+
+IM Provider CLIs
   ✓ Lark CLI: installed at /usr/local/bin/lark-cli (caller-path)
   - Slack CLI: not installed
 
@@ -537,8 +539,10 @@ P0 至少需要使用确定性测试覆盖以下场景：
 
 ## 8. 对当前工作的影响
 
-OpenTag `main` 当前只实现调用方选择的 Server `/healthz` 检查，并接受 `--server-url` /
-`OPENTAG_SERVER_URL`。该行为不符合本规格。
+OpenTag `main` 已实现本文 P0 基线。Issue [#248](https://github.com/first-tree-ai/opentag/issues/248)
+进一步增加本规格 F 节定义的 non-blocking、install-only Integration CLI artifact 观察；
+它不改变 baseline 退出码，也不读取 selection/configuration，不执行 CLI，且不把
+credential 或 active-binding readiness 纳入 Doctor。
 
 PR [#246](https://github.com/first-tree-ai/opentag/pull/246) 在
 `1f241dc42097471e2e194a4efbf8fba8098ba00e` 上已将 Server 选择改为本地 enrollment，
@@ -553,7 +557,7 @@ PR [#246](https://github.com/first-tree-ai/opentag/pull/246) 在
 - 没有披露 Runtime detection 使用调用进程上下文；
 - 使用 `All required checks passed.` 作为汇总。
 
-后续实现应以本文作为 P0 source of truth，在合理情况下把共享 Runtime discovery 与 doctor
+后续实现应以本文作为 Doctor source of truth，在合理情况下把共享 Runtime discovery 与 doctor
 presentation 拆分。Authentication 仍留在 follow-up issue。Integration CLI 的 install-only
 观察由 [#248](https://github.com/first-tree-ai/opentag/issues/248) 覆盖，不得扩展成
 readiness、selection 或端到端契约。

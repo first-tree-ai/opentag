@@ -1,0 +1,58 @@
+name: Stale Pull Requests
+
+# Review attention is the scarce resource. A pull request nobody has touched for
+# a week is noise in every listing and a false signal that work is in flight, so
+# the sweep notifies the people who can act on it and then closes it. Closing is
+# reversible: the branch survives and anyone with write access can reopen.
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report the decisions without commenting, labelling or closing; defaults to true for manual runs"
+        required: false
+        type: boolean
+        default: true
+
+# Never cancel a sweep in flight: it mutates pull requests one at a time, and a
+# half-applied run would leave a notice posted with no matching label.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Notify And Close Stale Pull Requests
+    # Forks inherit the schedule; without this guard every fork would start
+    # closing its own pull requests.
+    if: github.repository == 'first-tree-ai/opentag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # The sweep imports only node: builtins, so there is nothing to install.
+      - name: Notify and close stale pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          STALE_PR_LOG_LEVEL: ${{ runner.debug == '1' && 'debug' || 'info' }}
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            node scripts/stale-pull-requests.mjs --dry-run
+          else
+            node scripts/stale-pull-requests.mjs
+          fi

@@ -24,6 +24,7 @@ describe("Web App static serving", () => {
       expect(spa.statusCode).toBe(200);
       expect(spa.body).toContain("OpenTag");
       expect(spa.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      expect(spa.headers["content-security-policy"]).toContain("img-src 'self' data: https://platform.slack-edge.com");
       expect(spa.headers["cache-control"]).toBe("no-store");
 
       const asset = await app.inject({ method: "GET", url: "/assets/app.js" });

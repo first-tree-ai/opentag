@@ -1085,7 +1085,7 @@ export class ImBindingService {
   ): Promise<boolean> {
     const now = this.#now();
     const lastErrorCode = errorCode.slice(0, 120);
-    return this.#database.transaction(async (transaction) => {
+    const result = await this.#database.transaction(async (transaction) => {
       const [updated] = await transaction
         .update(slackInstallations)
         .set({ status: "reauthorization_required", lastErrorCode, updatedAt: now })
@@ -1096,8 +1096,8 @@ export class ImBindingService {
             eq(slackInstallations.credentialGeneration, generation),
           ),
         )
-        .returning({ id: slackInstallations.id });
-      if (!updated) return false;
+        .returning({ agentId: slackInstallations.agentId });
+      if (!updated) return { agentId: undefined, changed: false };
       await transaction
         .update(imBindings)
         .set({ status: "reauthorization_required", lastErrorCode, updatedAt: now })
@@ -1108,8 +1108,12 @@ export class ImBindingService {
             eq(imBindings.status, "active"),
           ),
         );
-      return true;
+      return { agentId: updated.agentId, changed: true };
     });
+    if (result.changed && result.agentId) {
+      await this.#notifyActiveBindingChanged(result.agentId).catch(() => undefined);
+    }
+    return result.changed;
   }
 
   async disableSlackInstallationFromProvider(installationId: string, generation: number): Promise<boolean> {

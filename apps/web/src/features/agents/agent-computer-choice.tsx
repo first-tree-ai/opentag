@@ -167,7 +167,9 @@ export function AgentComputerChoice({
       {error ? <Banner variant="error" role="alert" description={error} /> : null}
       {enrolled.length > 0 ? (
         <div className="grid gap-2">
-          <Text variant="heading">{m.agents_computer_choice_existing_heading()}</Text>
+          <Text as="h3" variant="heading">
+            {m.agents_computer_choice_existing_heading()}
+          </Text>
           <ul className="grid gap-2">
             {enrolled.map((computer) => (
               <li className="flex flex-wrap items-center justify-between gap-3" key={computer.computerId}>
@@ -191,7 +193,7 @@ export function AgentComputerChoice({
         </div>
       ) : null}
       <div className="grid gap-2">
-        <Text variant="heading">
+        <Text as="h3" variant="heading">
           {enrolled.length > 0 ? m.agents_computer_choice_connect_new() : m.agents_computer_choice_connect_first()}
         </Text>
         {/*

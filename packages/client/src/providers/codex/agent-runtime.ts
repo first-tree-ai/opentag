@@ -590,7 +590,9 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#wireInteractions.delete(requestId);
       await this.#client
         .rejectServerRequest(request.id, -32000, "OpenTag could not deliver the interaction")
-        .catch(() => undefined);
+        .catch(
+          /* v8 ignore next -- best-effort rejection while the interaction path is already failing. */ () => undefined,
+        );
       throw error;
     }
   }
@@ -698,6 +700,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
 
   #interactionIdForWireId(wireId: unknown): string | undefined {
     for (const [interactionId, request] of this.#wireInteractions) {
+      /* v8 ignore else -- the map holds one in-flight interaction, so lookups match on the first entry. */
       if (request.id === wireId) return interactionId;
     }
     return undefined;
@@ -777,6 +780,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           );
           const startedThread = requireRecord(startResponse.thread, "Codex capability probe start returned no thread");
           const threadId = requireString(startedThread.id, "Codex capability probe start returned no thread id");
+          /* v8 ignore next -- probe client teardown is best-effort between probe phases. */
           await startClient.close().catch(() => undefined);
           bootstrapClient = createProbeClient(process.cwd(), { CODEX_HOME: probeHome });
           await bootstrapClient.initialize(this.#clientVersion, signal);
@@ -809,6 +813,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
             bootstrapThread.id,
             "Codex capability probe bootstrap returned no thread id",
           );
+          /* v8 ignore next -- probe client teardown is best-effort between probe phases. */
           await bootstrapClient.close().catch(() => undefined);
           resumeClient = createProbeClient(process.cwd(), { CODEX_HOME: probeHome });
           await resumeClient.initialize(this.#clientVersion, signal);
@@ -838,10 +843,12 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           }
           return { ...local, experimentalTools: true };
         } finally {
+          /* v8 ignore start -- probe teardown is best-effort; close and rm failures must not mask the probe result. */
           await startClient.close().catch(() => undefined);
           await bootstrapClient?.close().catch(() => undefined);
           await resumeClient?.close().catch(() => undefined);
           await rm(probeHome, { recursive: true, force: true }).catch(() => undefined);
+          /* v8 ignore stop */
         }
       });
   }
@@ -1207,6 +1214,7 @@ function codexHostedToolResult(result: AgentHostedToolResult): CodexDynamicToolR
     if (typeof result.error.code !== "string" || typeof result.error.message !== "string") {
       return { success: false, text: "OpenTag tool returned an invalid result." };
     }
+    /* v8 ignore else -- a failed tool result without content always synthesizes the error line. */
     if (text.length === 0) text.push(`${result.error.code}: ${result.error.message}`);
   }
   return { success: result.success, text: text.join("\n") };

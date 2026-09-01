@@ -67,7 +67,7 @@ function runtimeAuthState(status: RuntimeStatus): CheckState {
 }
 
 function messagingCliState(status: MessagingCliStatus): CheckState {
-  if (status === "checking") return "pending";
+  if (status === "checking" || status === "install") return "pending";
   if (status === "ready") return "passed";
   return "failed";
 }

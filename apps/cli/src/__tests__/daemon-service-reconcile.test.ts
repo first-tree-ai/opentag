@@ -69,6 +69,7 @@ function fakeManager(
   return {
     installAndStart: vi.fn(async () => ({ ...info, state: "active" as const })),
     preflight: vi.fn(async () => undefined),
+    refreshDefinition: vi.fn(async () => ({ ...info, state: "active" as const })),
     restart: vi.fn(async () => ({ ...info, state: "active" as const })),
     start: vi.fn(async () => ({ ...info, state: "active" as const })),
     status: vi.fn(async () => info),

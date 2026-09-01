@@ -2,7 +2,7 @@ OpenTag Third-Party Notices
 
 This distribution includes source code from the following packages.
 
-## commander@13.1.0
+## commander@15.0.0
 
 Source: https://github.com/tj/commander.js
 License: MIT
@@ -307,7 +307,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
-## zod@4.4.3
+## zod@4.5.4
 
 Source: https://github.com/colinhacks/zod
 License: MIT

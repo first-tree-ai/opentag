@@ -8,7 +8,6 @@
   "account_email_description": "此处无法修改登录邮箱。",
   "account_error_profile_save_failed": "无法保存账户资料",
   "account_error_refresh_failed": "显示名称已保存。OpenTag 无法刷新账户，因此页面其余部分仍显示之前的名称。",
-  "account_hint_read_only": "只读",
   "account_language_description": "选择 OpenTag 界面使用的语言。",
   "account_language_label": "语言",
   "account_page_description": "管理个人账户详情。",

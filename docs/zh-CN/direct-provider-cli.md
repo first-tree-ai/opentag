@@ -8,6 +8,11 @@ Turn 才会取得 OpenTag 投影的临时凭证。
 
 OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影和 provider 原生入站引用，不提供消息发送、回复、Reaction 或上传 API。
 
+有效的 Feishu/Lark 或 Slack binding 才会产生对应依赖。Daemon 只可修复该 binding 所需的
+OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证同一个精确 CLI；不得替换
+外部安装或非 OpenTag shim。`opentag doctor` 与 portable installer 只报告 account-global
+静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。
+
 每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的
 `0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方
 `lark-cli` 或 `slack api`。Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的

@@ -22,6 +22,12 @@ export interface SessionActivity extends SessionTurnIdentity {
   phase: SessionActivityPhase;
 }
 
+/** Authoritative protected-work snapshot: live Turn activity and unresolved recovered Turns. */
+export interface SessionProtectedWorkSnapshot {
+  activities: Array<SessionActivity & { sessionId: string }>;
+  recoveries: Array<SessionTurnIdentity & { sessionId: string }>;
+}
+
 export interface RuntimePreparation {
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
   verifyAgent?(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
@@ -100,6 +106,19 @@ export class SessionReconciler {
 
   getAgent(agentId: string): AgentRuntimeState | undefined {
     return this.#agents.get(agentId);
+  }
+
+  /**
+   * The authoritative local record of work whose interruption could lose or duplicate an accepted
+   * Turn: live per-Session Turn activity plus unresolved Turns recovered from durable state that
+   * still owe the Server a completion report. Accepted-but-undrained Session messages are owned by
+   * the Session message inbox, which registers its drains here as activity.
+   */
+  protectedWorkSnapshot(): SessionProtectedWorkSnapshot {
+    return {
+      activities: [...this.#activities.entries()].map(([sessionId, activity]) => ({ sessionId, ...activity })),
+      recoveries: [...this.#recoveries.entries()].map(([sessionId, turn]) => ({ sessionId, ...turn })),
+    };
   }
 
   getSession(sessionId: string): SessionRuntimeState | undefined {

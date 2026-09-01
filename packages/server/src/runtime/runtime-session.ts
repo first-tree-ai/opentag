@@ -7,6 +7,7 @@ import {
   type HeartbeatFrame,
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
+  RUNTIME_CAPABILITY,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
@@ -14,6 +15,7 @@ import {
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   RUNTIME_V0_CAPABILITIES,
+  type RuntimeChannelTarget,
   type RuntimeErrorFrame,
   RuntimeFrameEnvelopeSchema,
   type RuntimeNegotiatedCapabilities,
@@ -66,9 +68,19 @@ export interface RuntimeBusinessOptions {
 export interface RuntimeSessionOptions {
   authTimeoutMs?: number;
   business?: RuntimeBusinessOptions;
+  /**
+   * Exact channel latest target to advertise on v2 heartbeat results. Consulted per heartbeat, and
+   * only sent when the `runtime.channelTarget` capability was negotiated.
+   */
+  channelTarget?: () => RuntimeChannelTarget | undefined;
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
   now?: () => Date;
+  onRegistered?: (input: {
+    computerId: string;
+    instanceId: string;
+    workspaceComputerId: string;
+  }) => Promise<void> | void;
   providerReadiness?: readonly AgentRuntimeProvider[];
   registerTimeoutMs?: number;
 }
@@ -78,9 +90,11 @@ export class RuntimeSession {
   readonly #computers: ComputerService;
   readonly #registry: ConnectionRegistry;
   readonly #socket: WebSocket;
-  readonly #options: Required<Omit<RuntimeSessionOptions, "business" | "now">> & {
+  readonly #options: Required<Omit<RuntimeSessionOptions, "business" | "channelTarget" | "now" | "onRegistered">> & {
     business?: RuntimeBusinessOptions;
+    channelTarget?: () => RuntimeChannelTarget | undefined;
     now: () => Date;
+    onRegistered?: RuntimeSessionOptions["onRegistered"];
   };
   readonly #abort = new AbortController();
   readonly #businessScheduler?: KeyedTaskScheduler;
@@ -118,9 +132,11 @@ export class RuntimeSession {
     this.#options = {
       authTimeoutMs: positiveTimeout(options.authTimeoutMs ?? 5_000, "authTimeoutMs"),
       business: options.business,
+      channelTarget: options.channelTarget,
       heartbeatIntervalMs: heartbeat.heartbeatIntervalMs,
       heartbeatTimeoutMs: heartbeat.heartbeatTimeoutMs,
       now: options.now ?? (() => new Date()),
+      onRegistered: options.onRegistered,
       providerReadiness: Object.freeze([...(options.providerReadiness ?? [])]),
       registerTimeoutMs: positiveTimeout(options.registerTimeoutMs ?? 5_000, "registerTimeoutMs"),
     };
@@ -411,7 +427,15 @@ export class RuntimeSession {
           );
           if (!this.#registry.activate(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
             this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced during registration", 4409);
+            return;
           }
+          void Promise.resolve(
+            this.#options.onRegistered?.({
+              computerId: frame.computerId,
+              instanceId: frame.instanceId,
+              workspaceComputerId: authContext.workspaceComputerId,
+            }),
+          ).catch(() => undefined);
         },
       );
       if (this.#isClosing()) {
@@ -460,6 +484,7 @@ export class RuntimeSession {
         return;
       }
       if (this.#isClosing()) return;
+      const channelTarget = this.#channelTarget();
       this.#send(
         this.#protocolVersion === RUNTIME_PROTOCOL_V2
           ? {
@@ -469,12 +494,23 @@ export class RuntimeSession {
               serverTime: this.#options.now().toISOString(),
               protocolVersion: RUNTIME_PROTOCOL_V2,
               connectionId: this.#connectionId,
+              ...(channelTarget ? { channelTarget } : {}),
             }
           : { type: "heartbeat:result", requestId, ok: true, serverTime: this.#options.now().toISOString() },
       );
     } catch (error) {
       this.#handleRequestError(error, requestId);
     }
+  }
+
+  #channelTarget(): RuntimeChannelTarget | undefined {
+    if (
+      this.#protocolVersion !== RUNTIME_PROTOCOL_V2 ||
+      this.#negotiatedCapabilities[RUNTIME_CAPABILITY.channelTarget] === undefined
+    ) {
+      return undefined;
+    }
+    return this.#options.channelTarget?.();
   }
 
   #acceptsProviderReadiness(providerReadiness: RuntimeProviderReadinessCollection | undefined): boolean {

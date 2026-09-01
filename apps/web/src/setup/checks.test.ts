@@ -30,7 +30,8 @@ describe("deriveChecks", () => {
 
 describe("messagingCliCheck", () => {
   it("reports the CLI it is given, whichever provider it belongs to", () => {
-    expect(messagingCliCheck("install")).toBe("failed");
+    expect(messagingCliCheck("install")).toBe("pending");
+    expect(messagingCliCheck("unavailable")).toBe("failed");
     expect(messagingCliCheck("ready")).toBe("passed");
   });
 

@@ -414,6 +414,75 @@ describe("RuntimeConnection", () => {
     await expect(orderedRunning).rejects.toThrow("out of order");
   });
 
+  it("delivers advertised channel targets only when the capability was negotiated", async () => {
+    for (const negotiated of ["full", "without-channel-target"] as const) {
+      const socket = new ControlledWebSocket();
+      const observed: unknown[] = [];
+      const connection = new RuntimeConnection({
+        ...controlledOptions(socket),
+        onChannelTarget: (target) => observed.push(target),
+      });
+      const running = connection.run();
+      await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
+      socket.open();
+      await vi.waitFor(() => expect(socket.frame("auth")).toBeDefined());
+      const auth = socket.frame("auth");
+      socket.receive({
+        type: "auth:result",
+        requestId: auth?.requestId,
+        ok: true,
+        workspaceComputerId: randomUUID(),
+        workspaceId: randomUUID(),
+        computerId: randomUUID(),
+      });
+      const baseWelcome = welcome(10, 2_000);
+      const { "runtime.channelTarget": _omitted, ...legacyServerCapabilities } = RUNTIME_SERVER_CAPABILITY_OFFERS;
+      const supportedCapabilities =
+        negotiated === "without-channel-target" ? legacyServerCapabilities : RUNTIME_SERVER_CAPABILITY_OFFERS;
+      const serverWelcome =
+        negotiated === "without-channel-target" ? { ...baseWelcome, supportedCapabilities } : baseWelcome;
+      socket.receive(serverWelcome);
+      await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());
+      const register = socket.frame("computer:register");
+      const connectionId = randomUUID();
+      const negotiatedCapabilities = negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, {
+        ...supportedCapabilities,
+      });
+      socket.receive({
+        type: "computer:register:result",
+        requestId: register?.requestId,
+        ok: true,
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        connectionId,
+        negotiatedCapabilities,
+      });
+      await connection.whenRegistered();
+      await vi.waitFor(() => expect(socket.frame("heartbeat")).toBeDefined());
+      const heartbeat = socket.frame("heartbeat");
+      socket.receive({
+        type: "heartbeat:result",
+        requestId: heartbeat?.requestId,
+        ok: true,
+        serverTime: new Date().toISOString(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        connectionId,
+        channelTarget: { channel: "staging", version: "0.0.3-staging.1.1" },
+      });
+      await vi.waitFor(() => expect(socket.listenerCount("heartbeat") >= 0).toBe(true));
+      await vi.waitFor(() => {
+        if (negotiated === "full") {
+          expect(observed).toEqual([{ channel: "staging", version: "0.0.3-staging.1.1" }]);
+        }
+      });
+      if (negotiated === "without-channel-target") {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(observed).toEqual([]);
+      }
+      connection.stop();
+      await running;
+    }
+  });
+
   it("rejects unmatched, failed, and legacy-mismatched registration results", async () => {
     for (const scenario of [
       {

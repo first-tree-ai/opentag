@@ -1,16 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, mkdir, realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { delimiter, join, resolve } from "node:path";
 import {
   type AgentRuntimeProvider,
   computeRuntimeSnapshotHashes,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
-  type RuntimeImCliReadinessObservation,
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
@@ -57,6 +53,12 @@ import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
+import { resolveAccountHome } from "./provider-cli/account-layout.js";
+import { ProviderCliManager } from "./provider-cli/manager.js";
+import { ProviderCliReconciler } from "./provider-cli/reconciler.js";
+import { ProviderCliTurnPlanManager } from "./provider-cli/turn-plan-manager.js";
+import { resolveProviderCliTurnRunnerInvocation } from "./provider-cli/turn-runner.js";
+import { ProviderCliValidationRunner } from "./provider-cli/validation-runner.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import {
   FileRuntimeDurabilityStore,
@@ -74,7 +76,6 @@ import { TurnReportOwner } from "./turn-report-owner.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
 const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
-const execFileAsync = promisify(execFile);
 
 interface SharedProviderRefresh {
   readonly controller: AbortController;
@@ -86,6 +87,29 @@ interface SharedProviderRefresh {
 export interface LoginShellDiscovery {
   readonly options: ResolveAgentRuntimeExecutableOptions;
   enable(): void;
+}
+
+/**
+ * Every local state whose interruption could lose or duplicate an accepted Turn, pending Turn
+ * completion/report custody, or an accepted IM delivery — aggregated from the authoritative owners
+ * (Session reconciler activity and recoveries, Turn custody, Turn runner, Turn reports, and the
+ * Session message inbox) rather than from any heuristic. `total === 0` is the only upgrade gate.
+ */
+export interface ProtectedWorkSnapshot {
+  /** Live per-Session Turn activity recorded by the Session reconciler. */
+  sessionActivities: number;
+  /** Unresolved Turns recovered from durable state that still owe a completion report. */
+  pendingRecoveries: number;
+  /** Accepted Turns still under local custody (not yet recorded as reported). */
+  custodyTurns: number;
+  /** Turns the runner is currently executing or reporting. */
+  activeTurns: number;
+  /** Turn Reports awaiting Server confirmation. */
+  pendingReports: number;
+  /** Accepted Session messages that have not reached a terminal state, including retry backoff. */
+  queuedSessionMessages: number;
+  /** Total protected items; zero means no protected work remains. */
+  total: number;
 }
 
 export function createLoginShellDiscovery(): LoginShellDiscovery {
@@ -226,8 +250,6 @@ export interface CreateClientRuntimeOptions {
   readonly codexHome?: string;
   readonly claudeCodeCommand?: string;
   readonly claudeCodeHome?: string;
-  readonly larkCliCommand?: string;
-  readonly slackCliCommand?: string;
   readonly cliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
@@ -241,6 +263,7 @@ export interface CreateClientRuntimeOptions {
 }
 
 export class ComposedClientRuntime {
+  readonly #admission: AdmissionController;
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: ImCredentialEnvironmentManager;
@@ -251,17 +274,21 @@ export class ComposedClientRuntime {
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
   readonly workspace: AgentWorkspaceManager;
+  readonly #providerCliReconciler?: { close(): Promise<void> };
+  readonly #providerCliTurnPlans?: { recover(): Promise<void> };
   readonly #runtime: ClientRuntime;
   readonly #refreshCapability: () => Promise<void>;
   readonly #capabilityRefreshIntervalMs: number;
   readonly #capabilityAbort: AbortController;
   #capabilityTimer?: ReturnType<typeof setInterval>;
   #capabilityRefreshInFlight?: Promise<void>;
+  #shutdownPromise?: Promise<void>;
   #stopped = false;
 
   constructor(
     runtime: ClientRuntime,
     components: {
+      admission: AdmissionController;
       bindingStore: SessionBindingStore;
       custody: TurnCustodyOwner;
       credentialEnvironment: ImCredentialEnvironmentManager;
@@ -275,9 +302,14 @@ export class ComposedClientRuntime {
       refreshCapability: () => Promise<void>;
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
+      providerCliReconciler?: { close(): Promise<void> };
+      providerCliTurnPlans?: { recover(): Promise<void> };
     },
   ) {
     this.#runtime = runtime;
+    this.#admission = components.admission;
+    this.#providerCliReconciler = components.providerCliReconciler;
+    this.#providerCliTurnPlans = components.providerCliTurnPlans;
     this.bindingStore = components.bindingStore;
     this.custody = components.custody;
     this.credentialEnvironment = components.credentialEnvironment;
@@ -298,31 +330,89 @@ export class ComposedClientRuntime {
     try {
       await this.#runtime.run();
     } finally {
-      this.#stopCapabilityMonitor();
-      this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
-      await this.#capabilityRefreshInFlight?.catch(() => undefined);
-      this.sessionMessageInbox.stop();
-      this.runner.stop();
-      await this.runner.settled();
-      await this.sessionMessageInbox.settled();
-      try {
-        await this.runtimeManager.close();
-      } finally {
-        this.reportOwner.stop();
-        await this.credentialEnvironment.close();
-      }
+      await this.#shutdown();
     }
+  }
+
+  /**
+   * Authoritative protected-work snapshot for the automatic-upgrade gate. The Session module owns
+   * the bounded lifetime of every counted unit (Turn budgets, delivery deadlines, report retries
+   * with terminal outcomes), so a caller may wait on `total === 0` indefinitely without adding a
+   * force timeout of its own.
+   */
+  protectedWork(): ProtectedWorkSnapshot {
+    const reconcilerWork = this.reconciler.protectedWorkSnapshot();
+    const snapshot = {
+      sessionActivities: reconcilerWork.activities.length,
+      pendingRecoveries: reconcilerWork.recoveries.length,
+      custodyTurns: this.custody.liveTurnCount,
+      activeTurns: this.runner.activeCount,
+      pendingReports: this.reportOwner.pendingCount,
+      queuedSessionMessages: this.sessionMessageInbox.pendingCount,
+      total: 0,
+    };
+    snapshot.total =
+      snapshot.sessionActivities +
+      snapshot.pendingRecoveries +
+      snapshot.custodyTurns +
+      snapshot.activeTurns +
+      snapshot.pendingReports +
+      snapshot.queuedSessionMessages;
+    return snapshot;
+  }
+
+  /**
+   * Close admission before the updater reads its zero-work snapshot. Already accepted Session
+   * messages may still reserve capacity and drain; every new direct or Session delivery receives a
+   * retryable `client_busy` result. The returned release function is used only when the attempt is
+   * abandoned or fails — a successful install stays quiesced until supervisor handoff.
+   */
+  quiesceForUpdate(): () => void {
+    this.#admission.pause();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#admission.resume();
+    };
   }
 
   stop(): void {
     if (this.#stopped) return;
     this.#stopped = true;
+    const shutdown = this.#shutdown();
+    this.#runtime.stop();
+    /* v8 ignore next -- shutdown failures surface through runtime state, not this detached promise. */
+    void shutdown.catch(() => undefined);
+  }
+
+  #shutdown(): Promise<void> {
+    this.#stopped = true;
+    this.#shutdownPromise ??= this.#performShutdown();
+    return this.#shutdownPromise;
+  }
+
+  async #performShutdown(): Promise<void> {
     this.#stopCapabilityMonitor();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
     this.runner.stop();
-    void Promise.allSettled([this.runtimeManager.close(), this.credentialEnvironment.close()]);
-    this.#runtime.stop();
+    await Promise.all([
+      this.#capabilityRefreshInFlight?.catch(() => undefined),
+      this.runner.settled(),
+      this.sessionMessageInbox.settled(),
+    ]);
+    try {
+      await this.runtimeManager.close();
+    } finally {
+      this.reportOwner.stop();
+      await this.reportOwner.settled();
+      await this.credentialEnvironment.close();
+      // Recovery may remove PATH sentinels, so it must run only after all Runs
+      // and Agent Runtime processes have stopped using their launch bin.
+      await this.#providerCliTurnPlans?.recover();
+      await this.#providerCliReconciler?.close();
+    }
   }
 
   #startCapabilityMonitor(): void {
@@ -334,6 +424,7 @@ export class ComposedClientRuntime {
       void refresh
         .catch(() => undefined)
         .finally(() => {
+          /* v8 ignore else -- only the newest refresh clears the in-flight slot. */
           if (this.#capabilityRefreshInFlight === refresh) this.#capabilityRefreshInFlight = undefined;
         });
     }, this.#capabilityRefreshIntervalMs);
@@ -434,6 +525,7 @@ export async function createClientRuntime(
     } finally {
       owner.waiters -= 1;
       if (owner.waiters === 0 && !owner.settled) {
+        /* v8 ignore else -- the shared map still holds this owner while its last waiter unwinds. */
         if (sharedProviderRefreshes.get(providerId) === owner) sharedProviderRefreshes.delete(providerId);
         owner.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
       }
@@ -442,20 +534,6 @@ export async function createClientRuntime(
   const refreshCapability = async (): Promise<void> => {
     const results = await Promise.allSettled([
       ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
-      refreshImCliReadiness(
-        connection,
-        "feishu",
-        options.larkCliCommand ?? "lark-cli",
-        sourceEnvironment,
-        readinessSignal,
-      ),
-      refreshImCliReadiness(
-        connection,
-        "slack",
-        options.slackCliCommand ?? "slack",
-        sourceEnvironment,
-        readinessSignal,
-      ),
     ]);
     readinessSignal.throwIfAborted();
     const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
@@ -503,6 +581,20 @@ export async function createClientRuntime(
     home: options.home,
     logger: moduleLogger("im-credential-environment"),
   });
+  const providerCliReconciler = new ProviderCliReconciler({
+    connection,
+    manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
+    signal: readinessSignal,
+    validation: new ProviderCliValidationRunner({ home: options.home }),
+  });
+  await mkdir(options.home, { recursive: true, mode: 0o700 });
+  const providerCliTurnPlans = new ProviderCliTurnPlanManager({
+    accountHome: resolveAccountHome(),
+    openTagHome: options.home,
+    readySelection: providerCliReconciler.readySelectionForRun.bind(providerCliReconciler),
+    runnerInvocation: resolveProviderCliTurnRunnerInvocation(),
+  });
+  await providerCliTurnPlans.recover();
   const proofManager = new SessionCliProofManager(options.home);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
@@ -512,6 +604,9 @@ export async function createClientRuntime(
     home: options.home,
     providers,
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
+    providerCliLaunchPath: (sessionId) => providerCliTurnPlans.sessionDir(sessionId),
+    inheritedPath: sourceEnvironment.PATH,
+    slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
     workspace,
   });
@@ -530,6 +625,7 @@ export async function createClientRuntime(
     persistence: durabilityStore,
     reconciler,
     runtimeManager,
+    turnPlan: providerCliTurnPlans,
   });
   await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
   const resourceFetcher = new ImResourceFetcher({
@@ -569,6 +665,7 @@ export async function createClientRuntime(
     resourceFetcher,
     runtimeManager,
     credentialEnvironment,
+    turnPlan: providerCliTurnPlans,
   });
   const availabilityTester = new AgentRuntimeAvailabilityTester({
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
@@ -581,6 +678,7 @@ export async function createClientRuntime(
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {
+    admission,
     bindingStore,
     custody,
     credentialEnvironment,
@@ -592,6 +690,8 @@ export async function createClientRuntime(
     runtimeManager,
     workspace,
     refreshCapability,
+    providerCliReconciler,
+    providerCliTurnPlans,
     capabilityAbort,
     capabilityRefreshIntervalMs: Math.max(
       10,
@@ -620,56 +720,6 @@ export function providerReadiness(
     return { provider, status: "sign-in" };
   }
   return { provider, status: "unavailable" };
-}
-
-export async function refreshImCliReadiness(
-  connection: Pick<RuntimeConnection, "setImCliReadiness">,
-  provider: RuntimeImCliReadinessObservation["provider"],
-  configuredCommand: string,
-  environment: NodeJS.ProcessEnv,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (signal?.aborted) return;
-  connection.setImCliReadiness({ provider, status: "checking" });
-  const probe = (async () => {
-    let command: string;
-    try {
-      command = await resolveExecutable(configuredCommand, environment);
-    } catch {
-      return "install" as const;
-    }
-    const execution = { env: environment, signal, timeout: 10_000, windowsHide: true } as const;
-    try {
-      if (provider === "feishu") {
-        await execFileAsync(command, ["--version"], execution);
-        await execFileAsync(command, ["im", "--help"], execution);
-      } else {
-        await execFileAsync(command, ["version"], execution);
-        await execFileAsync(command, ["api", "--help"], execution);
-      }
-      return "ready" as const;
-    } catch {
-      return "unavailable" as const;
-    }
-  })();
-  let onAbort: (() => void) | undefined;
-  const status = await (signal
-    ? Promise.race([
-        probe,
-        new Promise<"aborted">((resolve) => {
-          if (signal.aborted) {
-            resolve("aborted");
-            return;
-          }
-          onAbort = () => resolve("aborted");
-          signal.addEventListener("abort", onAbort, { once: true });
-        }),
-      ]).finally(() => {
-        if (onAbort) signal.removeEventListener("abort", onAbort);
-      })
-    : probe);
-  if (status === "aborted" || signal?.aborted) return;
-  connection.setImCliReadiness({ provider, status });
 }
 
 export interface ResolvedCodexFactoryOptions {
@@ -912,30 +962,6 @@ function requireReadyClaudeCodeFactory(
 
 export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
-}
-
-export async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
-  if (isAbsolute(command)) {
-    await access(command, constants.X_OK);
-    return realpath(command);
-  }
-  const path = environment.PATH;
-  if (!path) throw new Error("PATH is unavailable while locating an Agent Runtime provider");
-  /* v8 ignore next -- executable suffix probing is a Windows-only branch. */
-  const extensions = process.platform === "win32" ? (environment.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
-  for (const directory of path.split(delimiter)) {
-    if (!directory) continue;
-    for (const extension of extensions) {
-      const candidate = join(directory, `${command}${extension}`);
-      try {
-        await access(candidate, constants.X_OK);
-        return await realpath(candidate);
-      } catch {
-        // Continue through the explicit PATH allowlist.
-      }
-    }
-  }
-  throw new Error("A compatible Agent Runtime provider executable is unavailable");
 }
 
 interface ClientRuntimePreflightDependencies {

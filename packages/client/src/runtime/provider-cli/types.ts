@@ -6,6 +6,19 @@ import type { ImCliProvider } from "@opentag/shared";
  */
 export type ProviderCliProvider = ImCliProvider;
 
+/**
+ * Exact local selection that the daemon has inspected and accepted. This value
+ * never leaves the machine; visible Runs use it to fence their immutable plan
+ * to the same artifact generation that readiness verified.
+ */
+export interface ProviderCliReadySelection {
+  readonly fingerprint: string;
+  readonly generation: number;
+  readonly managedDigest?: string;
+  readonly path: string;
+  readonly version: string;
+}
+
 export type ProviderCliTrust = "catalog-verified" | "compatible-unverified";
 
 /** Local Provider CLI state machine from the management design; `checking` is an in-flight observation. */

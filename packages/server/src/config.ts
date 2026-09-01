@@ -53,6 +53,27 @@ const PublicUrlSchema = z
     return url.origin;
   });
 
+const DownloadBaseUrlSchema = z
+  .string()
+  .trim()
+  .transform((value, context) => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      context.addIssue({ code: "custom", message: "Must be an HTTP(S) URL" });
+      return z.NEVER;
+    }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      context.addIssue({
+        code: "custom",
+        message: "Must be an HTTP(S) URL without credentials, query, or fragment",
+      });
+      return z.NEVER;
+    }
+    return url.toString().replace(/\/+$/, "");
+  });
+
 const EncryptionKeySchema = z
   .string()
   .min(1)
@@ -94,6 +115,13 @@ const ServerEnvironmentSchema = z
     OPENTAG_SLACK_REDIRECT_URL: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
     OPENTAG_JWT_SECRET: z.string().min(32),
+    /*
+     * Where the Server polls the channel's exact latest target for Client upgrade advertisement.
+     * This is the same authority the portable installer consumes; release tooling keeps the npm
+     * dist-tag at the same coordinate, so one target serves both install modes.
+     */
+    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: DownloadBaseUrlSchema.default("https://download.opentag.build/releases"),
+    OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(300_000),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
     OPENTAG_PUBLIC_URL: PublicUrlSchema,
     OPENTAG_OTEL_ENDPOINT: OtlpEndpointSchema,
@@ -209,6 +237,8 @@ export interface ServerConfig {
   autoMigrate: boolean;
   /** Signs every Account session and its cookies. */
   betterAuthSecret: string;
+  /** Where the Server reads the channel's exact latest Client target, and how often. */
+  channelTarget: { downloadBaseUrl: string; pollIntervalMs: number };
   databaseUrl: string;
   encryptionKey: Uint8Array;
   channel: ChannelConfig;
@@ -287,6 +317,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SLACK_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_SLACK_REDIRECT_URL),
     OPENTAG_HOST: environment.OPENTAG_HOST,
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
+    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
+    OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: environment.OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS,
     OPENTAG_PORT: environment.OPENTAG_PORT,
     OPENTAG_PUBLIC_URL: environment.OPENTAG_PUBLIC_URL,
     OPENTAG_OTEL_ENDPOINT: environment.OPENTAG_OTEL_ENDPOINT,
@@ -299,6 +331,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
   return {
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
     betterAuthSecret: parsed.BETTER_AUTH_SECRET,
+    channelTarget: {
+      downloadBaseUrl: parsed.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
+      pollIntervalMs: parsed.OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS,
+    },
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,

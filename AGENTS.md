@@ -9,7 +9,7 @@ historical feature with the same name in the First Tree repository. Do not copy 
 
 ## Toolchain
 
-- Node.js `^22.13.0 || ^24.0.0 || ^26.0.0` (Node.js 24 primary), ESM, strict TypeScript
+- Node.js `^22.22.2 || ^24.15.0 || ^26.0.0` (Node.js 24 primary), ESM, strict TypeScript
 - pnpm 10.12.1 and Turborepo
 - Biome for formatting and linting
 - lefthook for the local `pre-commit` and `pre-push` gates, installed by `pnpm install`

@@ -194,6 +194,7 @@ describe("SlackConfigurationService persistence", () => {
     client.inspectInstallation.mockResolvedValue(inspection());
     const before = vi.fn().mockResolvedValue(undefined);
     const after = vi.fn().mockResolvedValue(undefined);
+    const notify = vi.spyOn(value.imBindingService, "notifyProviderCliRequirementChanged");
     const service = new SlackConfigurationService({
       api: client.api,
       database: oauthDatabase.database,
@@ -220,6 +221,7 @@ describe("SlackConfigurationService persistence", () => {
     });
     expect(before).toHaveBeenCalledTimes(1);
     expect(after).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(value.agent.id);
     expect(await service.currentBinding(value.bootstrap.userId, value.agent.id)).toEqual({
       id: result.imBindingId,
       credentialGeneration: 1,

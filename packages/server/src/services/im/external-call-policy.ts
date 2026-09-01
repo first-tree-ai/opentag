@@ -116,6 +116,17 @@ function isRetryable(error: unknown): boolean {
   return !(error instanceof ExternalCallPolicyError) || error.retryability === "retryable";
 }
 
+/**
+ * A caller withdrawing its own call is not the provider failing.
+ *
+ * The breaker exists to stop hammering something that is broken. Counting cancellations toward it
+ * means a caller that legitimately abandons work — a reader who changes their mind mid-flow — trips
+ * a breaker against a provider that never misbehaved, and takes the next caller down with them.
+ */
+function isCancellation(error: unknown): boolean {
+  return error instanceof ExternalCallPolicyError && error.code === "IM_PROVIDER_CALL_ABORTED";
+}
+
 function hostAllowed(url: URL, allowedHosts: readonly string[]): boolean {
   if (allowedHosts.length === 0) return true;
   return allowedHosts.some((allowed) => {
@@ -204,12 +215,7 @@ export class ExternalCallPolicy {
           await this.#sleep(delay);
         }
       }
-      circuit.failures += 1;
-      if (circuit.failures >= this.#circuitFailureThreshold) {
-        circuit.state = "open";
-        circuit.openedAt = this.#clock().getTime();
-        this.#onMetric({ type: "circuit", operation, requestId, state: "open" });
-      }
+      this.#recordFailure(circuit, operation, requestId, lastError);
       const code = errorCode(lastError);
       this.#onMetric({
         type: "call",
@@ -351,6 +357,22 @@ export class ExternalCallPolicy {
     const created: CircuitEntry = { failures: 0, state: "closed" };
     this.#circuits.set(key, created);
     return created;
+  }
+
+  /**
+   * Books a failure against the breaker, unless the caller withdrew the call itself.
+   *
+   * A cancellation says nothing about the provider, so counting it would open the breaker against
+   * something that never misbehaved — and where cancelling is ordinary, as it is while someone is
+   * choosing which messaging app to connect, it would take the next caller down with it.
+   */
+  #recordFailure(circuit: CircuitEntry, operation: string, requestId: string, error: unknown): void {
+    if (isCancellation(error)) return;
+    circuit.failures += 1;
+    if (circuit.failures < this.#circuitFailureThreshold) return;
+    circuit.state = "open";
+    circuit.openedAt = this.#clock().getTime();
+    this.#onMetric({ type: "circuit", operation, requestId, state: "open" });
   }
 
   async #acquire(operation: string, requestId: string, options: ExternalCallOptions): Promise<void> {

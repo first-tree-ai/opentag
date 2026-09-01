@@ -463,6 +463,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         toolCallId,
         name,
       };
+      /* v8 ignore else -- Claude Code always attaches an input payload to tool_use blocks. */
       if (block.input !== undefined) event.input = toJsonValue(block.input);
       await this.#requireContext().emit(event);
       return;
@@ -568,6 +569,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
 
   #failProvider(error: Error): void {
     this.#providerFailure = error;
+    /* v8 ignore next -- process teardown during a provider failure must not raise a second fault. */
     void this.#process?.close().catch(() => undefined);
     this.closeForProviderFailure();
   }

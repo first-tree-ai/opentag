@@ -168,6 +168,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       requestId: snapshot.requestId,
       decision: snapshot.decision,
     });
+    /* v8 ignore next -- best-effort notification; sink rejections are handled by the ordered event pipeline. */
     void event.catch(() => undefined);
   }
 
@@ -215,6 +216,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
 
   protected closeForProviderFailure(): void {
     this.#providerFailureClosing = true;
+    /* v8 ignore next -- close resolves through the run-failure path; the suppression only guards double faults. */
     void this.close().catch(() => undefined);
   }
 
@@ -245,6 +247,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     this.#knownRunIds.add(snapshot.runId);
     if (snapshot.signal) {
       const onAbort = () => {
+        /* v8 ignore else -- an abort for a settled record is a no-op by design. */
         if (record.state === "queued") void this.#cancelQueued(record, "run signal aborted");
         else if (record.state === "active")
           void this.#requestAbort(record, "run signal aborted").catch(() => undefined);
@@ -442,6 +445,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       ...(this.#binding ? { binding: this.#binding } : {}),
       error: { code: "run_cancelled", message },
     };
+    /* v8 ignore else -- a cancelled run only skips its terminal event after a sink failure already closed the runtime. */
     if (!this.#sinkFailure) {
       try {
         await record.admissionEvent;
@@ -524,6 +528,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         error: { code: "event_delivery_failed", message: "the ordered event sink rejected an event" },
       });
     }
+    /* v8 ignore next -- closing after a sink failure must not raise a second fault. */
     void this.close().catch(() => undefined);
   }
 

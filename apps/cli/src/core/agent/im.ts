@@ -86,6 +86,8 @@ export function formatImBindingDiagnostics(value: ImBindingDiagnostics): string 
     `slackIdentityClosure\t${value.slackIdentityClosure ? `${value.slackIdentityClosure.status}${value.slackIdentityClosure.verifiedAt ? ` (${value.slackIdentityClosure.verifiedAt})` : ""}` : "-"}`,
     `agentRuntimeReadiness\t${value.agentRuntimeReadiness}`,
     `providerCliReadiness\t${value.providerCliReadiness}`,
+    `credentialExecutionReadiness\t${value.credentialExecutionReadiness}`,
+    `credentialExecutionReason\t${value.credentialExecutionReason ?? "-"}`,
     `connection\t${value.connection ? `${value.connection.state} (observed ${value.connection.observedAt})` : "not applicable"}`,
     `lastInboundAt\t${value.lastInboundAt ?? "-"}`,
     `lastValidatedAt\t${value.lastValidatedAt ?? "-"}`,

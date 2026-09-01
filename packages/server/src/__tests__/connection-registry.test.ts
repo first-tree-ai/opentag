@@ -4,6 +4,8 @@ import {
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V2,
+  RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
+  RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -611,6 +613,64 @@ describe("ConnectionRegistry", () => {
     );
     finishSend?.();
     await expect(sending).rejects.toMatchObject({ code: "instance_replaced" });
+  });
+
+  it("expires stale in-flight Provider CLI evidence but retains exact terminal attention", async () => {
+    const registry = new ConnectionRegistry();
+    const workspaceComputerId = randomUUID();
+    const instanceId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId: randomUUID(),
+        instanceId,
+        workspaceComputerId,
+        workspaceId: randomUUID(),
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => undefined,
+    );
+    registry.activate(workspaceComputerId, instanceId, runtimeSocket);
+    const observation = {
+      agentId: randomUUID(),
+      integrationId: randomUUID(),
+      provider: "slack" as const,
+      credentialGeneration: 1,
+      requestId: randomUUID(),
+    };
+    expect(
+      registry.setProviderCliArtifactObservation(
+        workspaceComputerId,
+        instanceId,
+        { ...observation, status: "checking" },
+        10,
+      ),
+    ).toBe(true);
+    expect(
+      registry.setProviderCliCredentialObservation(
+        workspaceComputerId,
+        instanceId,
+        { ...observation, status: "retrying", reason: "provider_unreachable" },
+        10,
+      ),
+    ).toBe(true);
+    expect(
+      registry.providerCliArtifactReadiness(workspaceComputerId, 10 + RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS + 1),
+    ).toEqual([]);
+    expect(
+      registry.providerCliCredentialReadiness(workspaceComputerId, 10 + RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS + 1),
+    ).toEqual([]);
+    registry.setProviderCliCredentialObservation(
+      workspaceComputerId,
+      instanceId,
+      { ...observation, status: "needs_attention", reason: "credential_rejected" },
+      20,
+    );
+    expect(
+      registry.providerCliCredentialReadiness(workspaceComputerId, 20 + RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS + 1)[0]
+        ?.observation,
+    ).toMatchObject({ status: "needs_attention", reason: "credential_rejected" });
   });
 
   it("does not publish or retain a registration when persistence fails", async () => {

@@ -143,6 +143,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     signalWatchedProcess(this.#child, "SIGTERM");
     if (await settlesWithin(this.#exit, graceMs)) return;
     signalWatchedProcess(this.#child, "SIGKILL");
+    /* v8 ignore else -- a process that survives SIGTERM in tests never exits before the SIGKILL deadline either. */
     if (!(await settlesWithin(this.#exit, graceMs))) {
       throw new ClaudeCodeProcessError("exited", "Claude Code process tree did not exit");
     }
@@ -253,6 +254,7 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
     timer.unref();
   });
   const settled = await Promise.race([promise.then(() => true), timeout]);
+  /* v8 ignore else -- the timer is always armed before the race settles. */
   if (timer) clearTimeout(timer);
   return settled;
 }

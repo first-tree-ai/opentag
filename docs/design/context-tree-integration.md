@@ -284,11 +284,12 @@ and mode; serialized concurrent preparation; prompt rendering for ready, unconfi
 unavailable; `writableRoots` composition alongside the Slack config root; and doctor's
 non-blocking behaviour in every state.
 
-Two end-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
+Three end-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
 and `OPENTAG_HOME` redirected: two Agent workspaces on one Computer resolving to the same
-checkout and invoking `context-tree` by name through the shim, and one Agent writing
+checkout and invoking `context-tree` by name through the shim; one Agent writing
 `members/<slug>/memory.md` through the real isolated-worktree protocol while a second Agent in a
-different workspace reads it back.
+different workspace reads it back; and a Session still starting after the configured tree is
+deleted from underneath it.
 
 Beyond the repository gates, the packaged CLI was installed from its own tarball into a throwaway
 consumer and driven through `connect`, `doctor` on a configured Computer, an unconfigured

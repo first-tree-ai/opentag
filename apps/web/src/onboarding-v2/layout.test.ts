@@ -36,6 +36,15 @@ describe("onboarding flow layout", () => {
     expect(declarationValue(".otv2-choice", "white-space")).toBe("normal");
   });
 
+  it("lets destination and runtime choice cards grow beyond Kumo's single-line button height", () => {
+    expect(declarationValue(".otv2-shell .otv2-choice", "height")).toBe("auto");
+    expect(declarationValue(".otv2-shell .otv2-choice", "min-height")).toBe("80px");
+  });
+
+  it("keeps unavailable choice-card explanations readable", () => {
+    expect(declarationValue(".otv2-choice:disabled", "opacity")).toBe("1");
+  });
+
   it("answers a press with colour rather than shrinking the control", () => {
     // Nothing on this surface may shrink under a click.
     expect(declarationValue(".otv2-shell button:active", "transform")).toBe("none");

@@ -61,6 +61,13 @@
     background 120ms ease;
 }
 
+/* Kumo's base Button is 36px tall. The shell scope gives this rule enough specificity to replace
+   that utility height: a choice is a two-line card and must grow with its copy. */
+.otv2-shell .otv2-choice {
+  height: auto;
+  min-height: 80px;
+}
+
 .otv2-choice:hover:not(:disabled) {
   background: var(--color-kumo-fill-hover);
 }
@@ -68,6 +75,9 @@
 .otv2-choice:disabled {
   background: var(--color-kumo-recessed);
   cursor: not-allowed;
+  /* Kumo dims disabled buttons as a whole. This card already communicates its unavailable state
+     through its surface and muted copy, so keep the explanatory text readable. */
+  opacity: 1;
 }
 
 .otv2-choice[aria-pressed="true"] {

@@ -108,8 +108,10 @@ describe("OnboardingV2Page", () => {
     render(<OnboardingV2MockPage />);
     fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByRole("button", { name: /Codex/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Claude Code/ })).toBeTruthy();
+    const codex = screen.getByRole("button", { name: /Codex/ });
+    const claudeCode = screen.getByRole("button", { name: /Claude Code/ });
+    expect(codex.classList).toContain("otv2-choice");
+    expect(claudeCode.classList).toContain("otv2-choice");
     expect(screen.getByText("More runtimes coming soon.")).toBeTruthy();
   });
 

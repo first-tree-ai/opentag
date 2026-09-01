@@ -71,7 +71,7 @@ describe("OpenTag Web App Shell", () => {
     expect(switcher.closest('[data-sidebar="header"]')).toBeTruthy();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Agent" });
     expect(workspaceNavigation.closest('[data-sidebar="content"]')?.className).toContain(
-      "md:[&_[data-sidebar=viewport]]:pt-2",
+      "md:[&_[data-sidebar=viewport]]:pt-0",
     );
     expect(
       within(workspaceNavigation)

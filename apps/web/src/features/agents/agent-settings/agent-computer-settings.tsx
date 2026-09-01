@@ -6,6 +6,7 @@ import { ComputerConnect } from "../../computer-connect/computer-connect.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
+import { AgentSettingsPageHeader } from "./settings-layout.js";
 
 /**
  * The panel an Agent that has no Computer gets. It is a distinct screen rather than the repair flow
@@ -16,9 +17,7 @@ import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js
 function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   return (
     <div className="grid gap-6">
-      <Text as="h1" id="computer-heading" size="lg" variant="heading">
-        {m.agents_status_computer()}
-      </Text>
+      <AgentSettingsPageHeader id="computer-heading" title={m.agents_status_computer()} />
       <section
         aria-labelledby="computer-heading"
         className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
@@ -61,9 +60,7 @@ export function AgentComputerSettings({
   if (!agent.computer) return <AgentComputerBinding agent={agent} onAgentChanged={onAgentChanged} />;
   return (
     <div className="grid gap-6">
-      <Text as="h1" id="computer-heading" size="lg" variant="heading">
-        {m.agents_status_computer()}
-      </Text>
+      <AgentSettingsPageHeader id="computer-heading" title={m.agents_status_computer()} />
       <section
         aria-labelledby="computer-device-heading"
         className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
@@ -72,11 +69,13 @@ export function AgentComputerSettings({
           <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
             <Icon name="laptop" />
           </span>
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-            <Text as="h2" id="computer-device-heading" variant="heading">
-              {agent.computer.displayName}
-            </Text>
-            <span aria-hidden="true" className="text-sm text-kumo-subtle">
+          <div className="grid min-w-0 gap-0.5 @min-[32rem]/content:flex @min-[32rem]/content:items-baseline @min-[32rem]/content:gap-x-1.5">
+            <div className="min-w-0 break-words @min-[32rem]/content:truncate">
+              <Text as="h2" id="computer-device-heading" variant="heading">
+                {agent.computer.displayName}
+              </Text>
+            </div>
+            <span aria-hidden="true" className="hidden text-sm text-kumo-subtle @min-[32rem]/content:inline">
               ·
             </span>
             <span className="text-sm text-kumo-subtle">{platformLabel(agent.computer.platform)}</span>

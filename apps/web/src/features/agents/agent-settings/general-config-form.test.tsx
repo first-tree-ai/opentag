@@ -36,7 +36,11 @@ describe("GeneralConfigForm", () => {
     const onAgentChanged = vi.fn();
     render(<GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />);
 
-    fireEvent.submit(screen.getByRole("heading", { name: "Name" }).closest("form") as HTMLFormElement);
+    expect(screen.getByRole("heading", { name: "Name" }).closest("form")).toBeNull();
+    const displayName = screen.getByLabelText("Display name");
+    expect(displayName.parentElement?.className).toContain("[&>input]:w-full");
+    const form = displayName.closest("form") as HTMLFormElement;
+    fireEvent.submit(form);
     expect(updateAgent).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Reviewer Bot" } });
     expect(screen.getByText("Unsaved changes")).toBeTruthy();

@@ -206,7 +206,7 @@ describe("structured error redaction", () => {
     expect(empty).toContain("X-Safe: ok");
   });
 
-  it("redacts indented headers and keeps non-header folds as continuations", () => {
+  it("uses relative indentation for folded headers and preserves equal-indent siblings", () => {
     const indented = redactForLog("headers:\n  Cookie: session=first-secret; admin=second-secret\nX-Safe: ok");
     expect(indented).toBe("headers:\n  Cookie: [REDACTED]\nX-Safe: ok");
     expect(indented).not.toContain("first-secret");
@@ -216,8 +216,14 @@ describe("structured error redaction", () => {
     expect(folded).toBe("headers:\n  Cookie: [REDACTED]\nX-Safe: ok");
     expect(folded).not.toContain("continuation-secret");
 
-    const ambiguous = redactForLog("Cookie: session=first-secret\n  Looks-Like: continuation-secret\nX-Safe: ok");
-    expect(ambiguous).toBe("Cookie: [REDACTED]\n  Looks-Like: continuation-secret\nX-Safe: ok");
+    const colonContinuation = redactForLog(
+      "Cookie: session=first-secret\n  Looks-Like: continuation-secret\nX-Safe: ok",
+    );
+    expect(colonContinuation).toBe("Cookie: [REDACTED]\nX-Safe: ok");
+    expect(colonContinuation).not.toContain("continuation-secret");
+
+    const siblings = redactForLog("headers:\n  Cookie: x\n  Set-Cookie: y");
+    expect(siblings).toBe("headers:\n  Cookie: [REDACTED]\n  Set-Cookie: [REDACTED]");
   });
 
   it("consumes structured credential values and enclosing quoted headers", () => {

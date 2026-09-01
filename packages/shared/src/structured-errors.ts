@@ -180,6 +180,12 @@ function lineStart(value: string, from: number): number {
   return Math.max(carriageReturn, lineFeed) + 1;
 }
 
+function lineIndentation(value: string, from: number): number {
+  let cursor = from;
+  while (value[cursor] === " " || value[cursor] === "\t") cursor += 1;
+  return cursor - from;
+}
+
 function isLineAnchoredCredentialHeader(value: string, offset: number): boolean {
   const start = lineStart(value, offset);
   if (offset === start) return true;
@@ -188,14 +194,13 @@ function isLineAnchoredCredentialHeader(value: string, offset: number): boolean 
   return cursor === offset && headerNameColonAt(value, offset);
 }
 
-function credentialHeaderValueEnd(value: string, from: number): number {
+function credentialHeaderValueEnd(value: string, from: number, headerIndentation: number): number {
   let cursor = from;
   while (true) {
     const breakStart = lineBreakStart(value, cursor);
     if (breakStart === -1) return value.length;
     const breakEnd = lineBreakEnd(value, breakStart);
-    if (value[breakEnd] !== " " && value[breakEnd] !== "\t") return breakStart;
-    if (headerNameColonAt(value, breakEnd)) return breakStart;
+    if (lineIndentation(value, breakEnd) <= headerIndentation) return breakStart;
     cursor = breakEnd;
   }
 }
@@ -346,7 +351,10 @@ function scrubCredentialHeaders(value: string): string {
     const lineAnchored = isLineAnchoredCredentialHeader(value, offset);
     const valueStart = offset + match[0].length;
     const valueEnd = lineAnchored
-      ? { end: credentialHeaderValueEnd(value, valueStart), replacement: REDACTED }
+      ? {
+          end: credentialHeaderValueEnd(value, valueStart, lineIndentation(value, lineStart(value, offset))),
+          replacement: REDACTED,
+        }
       : inlineCredentialValueEnd(value, valueStart, enclosingQuoteAt(value, offset));
     output += value.slice(cursor, offset);
     output += `${match[0]}${valueEnd.replacement}`;

@@ -119,6 +119,20 @@ describe("Client logger", () => {
     expect(() => JSON.parse(records[1]?.message ?? "")).not.toThrow();
   });
 
+  it("scrubs a colon-bearing folded continuation at the emitted NDJSON boundary", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+    createLogger("boundary").error({}, "Cookie: a=first-secret\r\n  b: second-secret\r\nX-Safe: ok");
+
+    const raw = await readFile(join(directory, "client.log"), "utf8");
+    const record = JSON.parse(raw.trim()) as { message: string };
+    expect(record.message).toBe("Cookie: [REDACTED]\r\nX-Safe: ok");
+    expect(raw).not.toContain("first-secret");
+    expect(raw).not.toContain("second-secret");
+    expect(record.message).toContain("X-Safe: ok");
+  });
+
   it("treats repeated configuration as a no-op and rejects another directory", async () => {
     const first = await temporaryDirectory();
     const second = await temporaryDirectory();

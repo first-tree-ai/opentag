@@ -23,6 +23,7 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_HEADERS` | 空 | 逗号分隔的 `key=value` headers，原样传给 OTLP trace exporter |
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | `deployment.environment.name` resource 标签 |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `[0,1]` 范围内的全局 head sample rate |
+| `OPENTAG_LOG_LEVEL` | `info` | Server Pino level：`trace`、`debug`、`info`、`warn`、`error`、`fatal` 或 `silent` |
 
 服务 resource 固定为 `service.name=opentag-server`。每个进程还会把随机启动标识写入 `service.instance.id`，用于区分 replica 和重启。
 

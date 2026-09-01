@@ -163,10 +163,15 @@ function services() {
 function appWith(
   overrides: Partial<ReturnType<typeof services>> = {},
   setupReset?: { enabled?: boolean; reboard: ReturnType<typeof vi.fn>; resetOnboarding: ReturnType<typeof vi.fn> },
+  internalNavigationService?: {
+    read: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+  },
 ) {
   const service = { ...services(), ...overrides };
   const app = createApp({
     ...(setupReset ? { setupResetService: setupReset as never } : {}),
+    ...(internalNavigationService ? { internalNavigationService: internalNavigationService as never } : {}),
     authService: authService(),
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
@@ -178,6 +183,83 @@ function appWith(
   apps.push(app);
   return { app, service };
 }
+
+describe("staging-wide internal navigation", () => {
+  function navigationService() {
+    let value = { integrations: false, skills: false };
+    return {
+      read: vi.fn(() => value),
+      update: vi.fn((updated: typeof value) => {
+        value = { ...updated };
+        return value;
+      }),
+    };
+  }
+
+  it("reads and updates one deployment-wide value", async () => {
+    const navigation = navigationService();
+    const { app } = appWith({}, undefined, navigation);
+
+    const initial = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+    });
+    const updated = await app.inject({
+      method: "PUT",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+      payload: { integrations: true, skills: false },
+    });
+    const nextRead = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+    });
+
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toEqual({ integrations: false, skills: false });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toEqual({ integrations: true, skills: false });
+    expect(nextRead.json()).toEqual({ integrations: true, skills: false });
+    expect(navigation.update).toHaveBeenCalledExactlyOnceWith({ integrations: true, skills: false });
+  });
+
+  it("is absent when the staging-only service is not supplied", async () => {
+    const { app } = appWith();
+
+    const response = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("requires authentication and a complete setting", async () => {
+    const navigation = navigationService();
+    const { app } = appWith({}, undefined, navigation);
+
+    const [unauthenticated, malformed] = await Promise.all([
+      app.inject({
+        method: "PUT",
+        url: HTTP_PATHS.internalNavigationVisibility,
+        payload: { integrations: true, skills: true },
+      }),
+      app.inject({
+        method: "PUT",
+        url: HTTP_PATHS.internalNavigationVisibility,
+        headers: authorization,
+        payload: { skills: true },
+      }),
+    ]);
+
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(malformed.statusCode).toBe(400);
+    expect(navigation.update).not.toHaveBeenCalled();
+  });
+});
 
 describe("undoing setup on the authenticated Account", () => {
   function resetService(enabled = true) {

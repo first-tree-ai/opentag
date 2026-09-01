@@ -137,6 +137,7 @@
   "InputRejectReasonSchema",
   "IntegrationCredentialExecutionReasonSchema",
   "IntegrationCredentialExecutionStatusSchema",
+  "InternalNavigationVisibilitySchema",
   "InternalSessionRuntimeOverridesSchema",
   "ListAccountComputersResponseSchema",
   "ListAgentsResponseSchema",

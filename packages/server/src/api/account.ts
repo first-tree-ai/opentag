@@ -11,6 +11,8 @@ import {
   ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
   HTTP_PATHS,
+  type InternalNavigationVisibility,
+  InternalNavigationVisibilitySchema,
   ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
   ListTasksResponseSchema,
@@ -65,6 +67,8 @@ export interface AccountRoutesOptions {
    * like one that never registered them.
    */
   setupResetService?: AccountSetupResetService;
+  /** Process-wide staging preview state; absent everywhere the internal tools are absent. */
+  internalNavigationService?: InternalNavigationVisibilityService | undefined;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
 }
@@ -75,6 +79,11 @@ export interface AccountSetupResetService {
   readonly enabled: boolean;
   reboard(accountId: string): Promise<void>;
   resetOnboarding(accountId: string): Promise<void>;
+}
+
+export interface InternalNavigationVisibilityService {
+  read(): InternalNavigationVisibility;
+  update(value: InternalNavigationVisibility): InternalNavigationVisibility;
 }
 
 function accountId(request: FastifyRequest): string {
@@ -230,6 +239,25 @@ export function registerAccountRoutes(
       if (mode === "all") await setupResetService.resetOnboarding(account);
       else await setupResetService.reboard(account);
       return reply.code(204).send();
+    });
+  }
+
+  if (options.internalNavigationService) {
+    const internalNavigationService = options.internalNavigationService;
+
+    app.get(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (_request, reply) =>
+      reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.read())),
+    );
+
+    app.put(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (request, reply) => {
+      const input = parseRequest(InternalNavigationVisibilitySchema, request.body);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.update(input)));
     });
   }
 }

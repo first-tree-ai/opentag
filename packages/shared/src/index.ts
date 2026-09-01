@@ -9,6 +9,8 @@ export {
   AccountSetupResetRequestSchema,
   type CompleteAccountSetupRequest,
   CompleteAccountSetupRequestSchema,
+  type InternalNavigationVisibility,
+  InternalNavigationVisibilitySchema,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
 } from "./account.js";

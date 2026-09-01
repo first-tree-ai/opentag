@@ -62,6 +62,20 @@ depend on the public network, external providers, or a running PostgreSQL instan
 the root coverage configuration or investigating repository-wide coverage gaps; the scheduled `Unit Coverage` workflow
 owns the recurring baseline measurement.
 
+## Database migrations
+
+Adding a migration under `packages/server/drizzle` requires two extra steps, or CI fails even when
+`pnpm check` passes locally:
+
+- Bump `CURRENT_MIGRATION_COUNT` in `packages/server/src/__tests__/integration/setup-completion-backfill.test.ts`
+  by one. The constant is a deliberate ratchet over the migration journal; the migration drift check
+  in `pnpm check` does not cover it, only the PostgreSQL integration suite does.
+- Run `pnpm --filter @opentag/server test:integration` (Docker with testcontainers) before opening
+  the pull request.
+
+Two concurrent pull requests that each add a migration also collide on the migration number itself:
+whichever merges second must renumber its migration and journal entry, then bump the count again.
+
 ## Code and Git conventions
 
 - Use English for code, comments, GitHub files, and canonical repository documentation.

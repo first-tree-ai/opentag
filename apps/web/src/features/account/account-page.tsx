@@ -105,24 +105,12 @@ export function AccountSettings({
       </Text>
       <SettingsList>
         <SettingsRow label={m.account_email()} description={m.account_email_description()}>
-          <Field
-            hint={m.account_hint_read_only()}
-            hintId="account-email-hint"
-            htmlFor="account-email"
-            label={m.account_email()}
-          >
-            <KumoInputControl
-              aria-describedby="account-email-hint"
-              id="account-email"
-              name="email"
-              readOnly
-              type="email"
-              value={user.email}
-            />
+          <Field hideLabel htmlFor="account-email" label={m.account_email()}>
+            <KumoInputControl id="account-email" name="email" readOnly type="email" value={user.email} />
           </Field>
         </SettingsRow>
         <SettingsRow label={m.account_display_name()} description={m.account_display_name_description()}>
-          <Field htmlFor="account-display-name" label={m.account_display_name()}>
+          <Field hideLabel htmlFor="account-display-name" label={m.account_display_name()}>
             <KumoInputControl
               autoComplete="name"
               // Editing during a refresh-only retry could open a save that races it.
@@ -141,9 +129,9 @@ export function AccountSettings({
           </Field>
         </SettingsRow>
         <SettingsRow label={m.account_language_label()} description={m.account_language_description()}>
-          <Field htmlFor="account-language" label={m.account_language_label()}>
+          <Field hideLabel htmlFor="account-language" label={m.account_language_label()}>
             <Select
-              aria-label={m.account_language_label()}
+              className="w-full"
               id="account-language"
               renderValue={(locale) => LOCALE_LABELS[locale]}
               value={getLocale()}

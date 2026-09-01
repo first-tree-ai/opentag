@@ -28,6 +28,13 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
+type ProviderCliResultFrame = Extract<
+  ClientRuntimeBusinessFrame,
+  { type: "provider-cli:artifact:status" | "provider-cli:validation:result" }
+>;
+
+type ResidualRuntimeFrame = ProviderCliResultFrame | RuntimeImCredentialGrantRequest | TurnReportRequest;
+
 export class RuntimeDomainConflictError extends Error {
   readonly code = "conflict" as const;
 
@@ -598,6 +605,16 @@ export class RuntimeDomainOwner {
       }
       return undefined;
     }
+    return this.#handleResidualFrame(frame, context);
+  }
+
+  async #handleResidualFrame(
+    frame: ResidualRuntimeFrame,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
+    if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
+      return undefined;
+    }
     if (frame.type === "im:credential") {
       if (!this.#options.onImCredentialGrant) return businessFailureResult(frame);
       const version = this.#registry.capabilityVersion(
@@ -1023,6 +1040,9 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;
+  }
+  if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
+    return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;
   }
   return `turn:${frame.turnId}`;
 }

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { gzipSync } from "node:zlib";
 import type {
   ProviderCliCatalogArtifact,
@@ -21,6 +21,44 @@ import { PROVIDER_CLI_CATALOG } from "@opentag/client";
 
 export async function makeTempDir(prefix: string): Promise<string> {
   return mkdtemp(join(tmpdir(), prefix));
+}
+
+export interface FileTreeSnapshotEntry {
+  readonly hash: string;
+  readonly mode: number;
+  readonly mtimeMs: number;
+  readonly rel: string;
+}
+
+/** Recursively snapshot regular files under `root` by relative path, digest, mode, and mtime. */
+export async function snapshotFileTree(root: string): Promise<readonly FileTreeSnapshotEntry[]> {
+  const entries: FileTreeSnapshotEntry[] = [];
+  async function walk(path: string): Promise<void> {
+    let info: Awaited<ReturnType<typeof stat>>;
+    try {
+      info = await stat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    if (info.isDirectory()) {
+      const children = await readdir(path, { withFileTypes: true });
+      children.sort((left, right) => left.name.localeCompare(right.name));
+      for (const child of children) await walk(join(path, child.name));
+      return;
+    }
+    if (!info.isFile()) return;
+    entries.push({
+      hash: createHash("sha256")
+        .update(await readFile(path))
+        .digest("hex"),
+      mode: info.mode,
+      mtimeMs: info.mtimeMs,
+      rel: relative(root, path) || ".",
+    });
+  }
+  await walk(root);
+  return entries.sort((left, right) => left.rel.localeCompare(right.rel));
 }
 
 function shellQuote(value: string): string {

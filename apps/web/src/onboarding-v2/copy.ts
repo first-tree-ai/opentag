@@ -6,10 +6,9 @@
  * setup copy, so the same work says the same thing on both surfaces.
  */
 
-import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { SETUP_COPY } from "../setup/copy.js";
-import type { CloudRuntime, Destination, MessagingProvider, Runtime, StepId, TokenSource } from "./flow.js";
+import type { CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {
   agent: "Create agent",
@@ -138,17 +137,6 @@ export const COPY = {
 
   done: {
     title: (name: string) => `${name} is ready.`,
-    /*
-     * The channel has to be named, because "go tag it somewhere" is not an instruction — but it has
-     * to be the channel the reader actually connected. This sentence named Feishu outright while
-     * the step above it accepts Slack too, so a Slack install ended by pointing the reader at an app
-     * their Agent is not in. When the provider is somehow unknown the sentence stays vague rather
-     * than guessing, since a confidently wrong channel is worse than an unspecific one.
-     */
-    description: (name: string, provider: MessagingProvider | undefined) =>
-      provider
-        ? `Tag @${name} in ${messagingProviderLabel(provider)} to put it to work.`
-        : `Tag @${name} in your messaging app to put it to work.`,
     finishReboard: "Finish re-board",
     finishing: "Finishing…",
     retryFinish: "Try again",
@@ -163,7 +151,6 @@ export const COPY = {
     computers: "We lost contact while waiting for your computer.",
     createAgent: "We couldn't create your agent.",
     messaging: "We couldn't start connecting your messaging app.",
-    feishuAttempt: "That code is no longer usable. Pick Feishu again to get a new one.",
     resume: "We couldn't check what your account already has.",
     completeSetup: "Your agent is ready, but we couldn't finish setting up your account.",
   },

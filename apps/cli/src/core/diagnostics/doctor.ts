@@ -4,7 +4,10 @@ import {
   checkServerHealth,
   inspectLocalComputerConfiguration,
   type LocalComputerConfigurationInspection,
+  type ProviderCliInspection,
+  ProviderCliManager,
   probeAgentRuntimeCliInstallations,
+  resolveAccountHome,
   ServerHealthConfigurationError,
   ServerHealthHttpError,
   ServerHealthNetworkError,
@@ -20,7 +23,13 @@ import { canonicalizeServiceHome } from "../daemon/service/shared.js";
 import type { DaemonServiceInfo } from "../daemon/service/types.js";
 
 export type DoctorCheckStatus = "pass" | "fail" | "unknown" | "info" | "skipped";
-export type DoctorCheckScope = "target" | "local-configuration" | "daemon-service" | "server" | "agent-runtime";
+export type DoctorCheckScope =
+  | "target"
+  | "local-configuration"
+  | "daemon-service"
+  | "server"
+  | "agent-runtime"
+  | "provider-cli";
 
 export interface DoctorCheck {
   code: string;
@@ -62,6 +71,11 @@ export type RuntimeDetector = (options: {
   environment: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
 }) => Promise<AgentRuntimeCliInstallation[]>;
+export type ProviderCliInspector = (options: {
+  environment: NodeJS.ProcessEnv;
+  platform: NodeJS.Platform;
+  arch: string;
+}) => Promise<ProviderCliInspection[]>;
 
 export interface DoctorOptions {
   env?: NodeJS.ProcessEnv;
@@ -73,6 +87,7 @@ export interface DoctorOptions {
   healthChecker?: HealthChecker;
   inspectLocalConfiguration?: LocalConfigurationInspector;
   inspectDaemonService?: DaemonServiceInspector;
+  providerCliInspector?: ProviderCliInspector;
   runtimeDetector?: RuntimeDetector;
 }
 
@@ -81,7 +96,7 @@ export const DOCTOR_NOT_EVALUATED = [
   "Agent Runtime version or protocol compatibility",
   "Agent Runtime visibility from the installed daemon environment",
   "machine-token authentication or WebSocket registration",
-  "Integration CLI availability or authentication",
+  "Integration CLI credential validity and active-binding readiness",
   "end-to-end Turn or handoff delivery",
 ] as const;
 
@@ -112,11 +127,25 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
         environment: request.environment,
         platform: request.platform,
       }));
+  const providerCliInspector =
+    options.providerCliInspector ??
+    (async (request) => {
+      const manager = new ProviderCliManager({
+        accountHome: resolveAccountHome(),
+        env: request.environment,
+        platform: request.platform,
+        arch: request.arch,
+      });
+      return Promise.all([manager.inspect("feishu"), manager.inspect("slack")]);
+    });
   const healthChecker = options.healthChecker ?? checkServerHealth;
 
   const localPromise = settle(localInspector(target.home));
   const daemonPromise = settle(daemonInspector(target.home));
   const runtimePromise = settle(runtimeDetector({ environment, platform }));
+  const providerCliPromise = settle(
+    providerCliInspector({ environment, platform, arch: options.arch ?? process.arch }),
+  );
   const healthPromise = localPromise.then(async (localResult) => {
     if (localResult.status === "rejected") return { status: "skipped" as const };
     const serverUrl = localResult.value.binding.serverUrl;
@@ -124,11 +153,12 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
     return settle(healthChecker(serverUrl));
   });
 
-  const [localResult, daemonResult, healthResult, runtimeResult] = await Promise.all([
+  const [localResult, daemonResult, healthResult, runtimeResult, providerCliResult] = await Promise.all([
     localPromise,
     daemonPromise,
     healthPromise,
     runtimePromise,
+    providerCliPromise,
   ]);
   const checks: DoctorCheck[] = [
     targetCheck(target),
@@ -136,6 +166,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
     daemonCheck(daemonResult, target.home),
     serverCheck(healthResult, localResult),
     ...runtimeChecks(runtimeResult),
+    ...providerCliChecks(providerCliResult),
   ];
   const exitCode: 0 | 1 = checks.some(
     (check) => check.blocking && (check.status === "fail" || check.status === "unknown"),
@@ -188,6 +219,7 @@ export function renderDoctorReport(report: DoctorReport): string {
     ["Daemon service", "daemon-service"],
     ["Server", "server"],
     ["Agent Runtime CLIs", "agent-runtime"],
+    ["IM Provider CLIs", "provider-cli"],
   ] as const) {
     lines.push("", heading);
     for (const check of report.checks.filter((candidate) => candidate.scope === scope)) {
@@ -389,6 +421,68 @@ function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[
     runtimeProviderCheck(codex),
     runtimeProviderCheck(claude),
   ];
+}
+
+function providerCliChecks(result: PromiseSettledResult<ProviderCliInspection[]>): DoctorCheck[] {
+  if (result.status === "rejected") {
+    const detail = safeErrorDetail(result.reason, "Provider CLI state could not be inspected");
+    return [providerCliUnknown("feishu", "Lark CLI", detail), providerCliUnknown("slack", "Slack CLI", detail)];
+  }
+  const byProvider = new Map(result.value.map((inspection) => [inspection.provider, inspection]));
+  return [
+    providerCliCheck(byProvider.get("feishu"), "feishu", "Lark CLI"),
+    providerCliCheck(byProvider.get("slack"), "slack", "Slack CLI"),
+  ];
+}
+
+function providerCliCheck(
+  inspection: ProviderCliInspection | undefined,
+  provider: "feishu" | "slack",
+  label: string,
+): DoctorCheck {
+  if (!inspection) return providerCliUnknown(provider, label, "Inspector did not return a result");
+  const common = {
+    code: `provider-cli.${provider}.installation`,
+    scope: "provider-cli" as const,
+    blocking: false,
+    label,
+    observedFrom: "operating-system account Provider CLI state",
+  };
+  if (inspection.readiness === "ready" && inspection.selection) {
+    return {
+      ...common,
+      status: "pass",
+      detail: `${inspection.selection.kind} ${inspection.selection.version} selected at ${inspection.selection.path}`,
+      path: inspection.selection.path,
+    };
+  }
+  if (inspection.readiness === "install") {
+    return {
+      ...common,
+      status: "info",
+      detail: "not prepared for this operating-system account",
+      remediation:
+        "No action is required until this provider is bound; the daemon prepares required CLIs automatically",
+    };
+  }
+  return {
+    ...common,
+    status: "fail",
+    detail: inspection.diagnostic?.code ?? "local Provider CLI selection is unavailable",
+    ...(inspection.diagnostic?.remediation ? { remediation: inspection.diagnostic.remediation } : {}),
+  };
+}
+
+function providerCliUnknown(provider: "feishu" | "slack", label: string, detail: string): DoctorCheck {
+  return {
+    code: `provider-cli.${provider}.installation`,
+    scope: "provider-cli",
+    status: "unknown",
+    blocking: false,
+    label,
+    detail: truncate(detail),
+    observedFrom: "operating-system account Provider CLI state",
+  };
 }
 
 function runtimeProviderCheck(entry: AgentRuntimeCliInstallation): DoctorCheck {

@@ -70,6 +70,12 @@ vi.mock("../runtime/connection-registry.js", () => ({
     imCliReadiness(computerId: string) {
       return state.registryImCliReadiness(computerId);
     }
+    providerCliArtifactReadiness(computerId: string) {
+      return state.registryImCliReadiness(computerId);
+    }
+    providerCliCredentialReadiness() {
+      return [];
+    }
     closeEnrollment() {}
   },
   RuntimeRegistrySendError: class extends Error {},
@@ -90,6 +96,16 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
   },
 }));
 vi.mock("../runtime/agent-runtime-test-owner.js", () => ({ AgentRuntimeTestOwner: class {} }));
+vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
+  ProviderCliReconcileOwner: class {
+    ensureActiveReadiness() {
+      return Promise.resolve();
+    }
+    onAgentPlacementChanged() {
+      return Promise.resolve();
+    }
+  },
+}));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
 vi.mock("../runtime/runtime-domain-owner.js", () => ({
   RuntimeDomainConflictError: class extends Error {},
@@ -120,6 +136,14 @@ vi.mock("../services/auth/index.js", () => ({
     return detail;
   },
   PostAuthenticationService: class {},
+}));
+vi.mock("../services/channel-target/index.js", () => ({
+  createChannelTargetPoller: () => ({
+    get: () => undefined,
+    start: () => undefined,
+    stop: () => undefined,
+    refresh: async () => undefined,
+  }),
 }));
 vi.mock("../services/computers/index.js", () => ({
   ComputerService: class {},
@@ -206,6 +230,10 @@ const originalExitCode = process.exitCode;
 function defaultConfig() {
   return {
     autoMigrate: true,
+    channelTarget: {
+      downloadBaseUrl: "https://download.test/releases",
+      pollIntervalMs: 300_000,
+    },
     databaseUrl: "postgres://db-user:db-password@localhost/opentag",
     encryptionKey: new Uint8Array(32),
     channel: {
@@ -367,7 +395,7 @@ describe("Server startup", () => {
       }
     ).imCliReadiness;
     state.registryImCliReadiness.mockReturnValue([
-      { observation: { provider: "feishu", status: "ready" }, observedAt: Date.now() },
+      { observation: { agentId: "agent-1", provider: "feishu", status: "ready" }, observedAt: Date.now() },
     ]);
     await expect(imCliReadiness("agent-1", "feishu")).resolves.toBe("ready");
     state.registryImCliReadiness.mockReturnValue([]);

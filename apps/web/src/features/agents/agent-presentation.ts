@@ -1,20 +1,11 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { messagingProviderChoices, messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
+import { SETUP_COPY } from "../../setup/copy.js";
 import type { StatusTone } from "../../ui/design-system.js";
 import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
-
-export const agentAvatarTones = ["brand", "amber", "blue", "neutral"] as const;
-
-export function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[number] {
-  let hash = 0;
-  for (let index = 0; index < agentId.length; index += 1) {
-    hash = (hash * 31 + agentId.charCodeAt(index)) >>> 0;
-  }
-  return agentAvatarTones[hash % agentAvatarTones.length] ?? "brand";
-}
 
 /**
  * The card states what is true and how urgent it is; it carries no exit of its own. Opening the
@@ -197,8 +188,14 @@ export function sharedConversationLabel(provider: ImBindingSummary["provider"]):
  */
 export function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
   const brand = messagingProviderLabel(provider);
-  const noun = provider === "feishu" ? "group chat" : "channel";
-  return plural ? `connected ${brand} ${noun}s` : `a ${brand} ${noun}`;
+  if (provider === "feishu") {
+    return plural
+      ? m.agents_shared_destination_group_chats({ provider: brand })
+      : m.agents_shared_destination_group_chat({ provider: brand });
+  }
+  return plural
+    ? m.agents_shared_destination_channels({ provider: brand })
+    : m.agents_shared_destination_channel({ provider: brand });
 }
 
 /**
@@ -221,14 +218,16 @@ export function agentUseInstruction(agent: AgentDetailView, provider: ImBindingS
 export function agentAvailabilitySummary(agent: AgentDetailView): string {
   if (agent.availability.state === "ready") {
     const provider = agent.availability.dependencies.channel.provider;
-    return provider ? `Available in ${messagingProviderLabel(provider)}` : "Ready for new work";
+    return provider
+      ? m.agents_available_in_channel({ provider: messagingProviderLabel(provider) })
+      : m.agents_ready_for_new_work();
   }
   return {
-    action_required: "Cannot receive new work",
-    setting_up: "Messaging setup in progress",
-    not_connected: "Messaging is not connected",
-    suspended: "Not receiving new work",
-    unconfirmed: "Status temporarily unavailable",
+    action_required: m.agents_cannot_receive_new_work(),
+    setting_up: m.agents_messaging_setup_in_progress(),
+    not_connected: m.agents_messaging_not_connected_summary(),
+    suspended: m.agents_not_receiving_new_work(),
+    unconfirmed: m.agents_status_temporarily_unavailable(),
   }[agent.availability.state];
 }
 
@@ -292,7 +291,7 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
     im_error: `The messaging connection failed. Reconnect ${messagingProviderChoices()} to receive messages.`,
     im_disabled: `Messaging is turned off for this Agent. Reconnect ${messagingProviderChoices()} to receive messages.`,
-    handoff_unavailable: "Messages cannot be sent to this Agent.",
+    handoff_unavailable: providerCliRecoveryMessage(agent),
   };
   return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);
 }
@@ -308,6 +307,14 @@ function runtimeRecoveryMessage(agent: AgentDetailView): string {
   if (status === "install") return `Install ${providerName} on this agent's computer.`;
   if (status === "sign-in") return `Sign in to ${providerName} on this agent's computer.`;
   return `${providerName} is not available on this agent's computer.`;
+}
+
+function providerCliRecoveryMessage(agent: AgentDetailView): string {
+  const progress = agent.availability.dependencies.handoff.providerCli;
+  if (!progress) return "Messages cannot be sent to this Agent.";
+  if (progress.phase === "preparing_cli") return SETUP_COPY.messaging.preparingCli;
+  if (progress.phase === "checking_credentials") return SETUP_COPY.messaging.checkingCredentials;
+  return progress.reason ? SETUP_COPY.messaging.needsAttention[progress.reason] : SETUP_COPY.messaging.cliUnavailable;
 }
 /**
  * The two dependencies an Agent needs to do any work, each presented on its own terms. They are

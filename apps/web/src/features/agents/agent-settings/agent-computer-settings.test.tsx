@@ -220,7 +220,8 @@ describe("An Agent with no Computer", () => {
 
     await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={onAgentChanged} />);
 
-    expect(await screen.findByText("Choose the Computer this Agent should run on")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Choose the Computer this Agent should run on" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect another Computer" })).toBeTruthy();
     // Nothing is decided for the reader while the question is open.
     expect(rebind).not.toHaveBeenCalled();
 

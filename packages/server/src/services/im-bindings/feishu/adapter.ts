@@ -125,11 +125,13 @@ function providerEventIdentity(raw: FeishuRawInboundEvent): {
   externalMessageId: string | null;
 } | null {
   const providerEventId = raw.header?.event_id ?? raw.event_id ?? null;
+  const tenantKey = raw.header?.tenant_key ?? raw.tenant_key ?? ("sender" in raw ? raw.sender.tenant_key : null);
   if ("message" in raw) {
     const externalMessageId = raw.message.message_id;
-    const messageKey = `message:${externalMessageId}:${raw.message.create_time}`;
+    const scope = `${tenantKey ?? "unknown"}:${raw.message.chat_id}`;
+    const messageKey = `message:${scope}:${externalMessageId}:${raw.message.create_time}`;
     if (providerEventId) {
-      return { keys: [`event:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+      return { keys: [`event:${scope}:${providerEventId}`, messageKey], providerEventId, externalMessageId };
     }
     return {
       keys: [messageKey],
@@ -139,9 +141,10 @@ function providerEventIdentity(raw: FeishuRawInboundEvent): {
   }
   const externalMessageId = raw.message_id ?? null;
   if (!externalMessageId && !providerEventId) return null;
-  const messageKey = `recall:${externalMessageId}:${raw.recall_time ?? "unknown"}`;
+  const scope = `${tenantKey ?? "unknown"}:${raw.chat_id ?? "unknown"}`;
+  const messageKey = `recall:${scope}:${externalMessageId}:${raw.recall_time ?? "unknown"}`;
   if (providerEventId) {
-    return { keys: [`event:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+    return { keys: [`event:${scope}:${providerEventId}`, messageKey], providerEventId, externalMessageId };
   }
   return {
     keys: [messageKey],
@@ -391,6 +394,20 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
       mentions,
     }),
   ];
+}
+
+/**
+ * Return the provider envelope event ID when one was supplied. Normalization retains a deterministic
+ * fallback in `providerEventId` for the inbox semantic key, but that fallback is not a delivery receipt.
+ */
+export function feishuEnvelopeEventId(event: NormalizedInboundImEvent): string | null {
+  const messageId = event.message.externalId;
+  const occurredAt = event.message.occurredAt.getTime();
+  const syntheticCreatedId = `${messageId}:${occurredAt}`;
+  const syntheticRecallId = `${messageId}:${occurredAt}:recalled`;
+  return event.providerEventId === syntheticCreatedId || event.providerEventId === syntheticRecallId
+    ? null
+    : event.providerEventId;
 }
 
 export function createReliableFeishuDispatcher(

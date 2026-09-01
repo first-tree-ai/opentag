@@ -246,6 +246,20 @@
       "when": 1788208560698,
       "tag": "0034_legal_kat_farrell",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788220725651,
+      "tag": "0035_dark_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788226671075,
+      "tag": "0036_first_the_stranger",
+      "breakpoints": true
     }
   ]
 }

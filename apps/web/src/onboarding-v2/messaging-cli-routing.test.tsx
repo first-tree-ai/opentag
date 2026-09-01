@@ -21,7 +21,7 @@ import type { MessagingProvider, ReadinessFacts } from "./flow.js";
 import { MessagingStep } from "./steps.js";
 
 /** One set of facts that answers differently per provider: Feishu's CLI is missing, Slack's is not. */
-const readiness: ReadinessFacts = { runtime: "ready", messagingCli: { feishu: "install", slack: "ready" } };
+const readiness: ReadinessFacts = { runtime: "ready", messagingCli: { feishu: "unavailable", slack: "ready" } };
 
 const warningFor = (provider: MessagingProvider): string =>
   SETUP_COPY.messaging.cliMissing(SETUP_COPY.messaging[provider].title);

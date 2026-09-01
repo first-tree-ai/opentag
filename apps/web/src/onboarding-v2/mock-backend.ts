@@ -156,14 +156,6 @@ function connectCommand(code: string): string {
 }
 
 /**
- * A command of exactly the shape a real one has, for the moment before one has been issued. Built
- * from the same parts and the same code length, so the block it renders is the same height at any
- * width. That identity is what keeps the arrival of the real command from moving anything — there
- * is no reserved height doing the work, and none is needed.
- */
-export const PLACEHOLDER_CONNECT_COMMAND = connectCommand("0".repeat(32));
-
-/**
  * Matches the Server's connect code: `generateSecret(24)`, so 24 random bytes rendered base64url,
  * which is 32 characters. The exact shape matters here because it is what sets the length of the
  * command block the whole step is built around.

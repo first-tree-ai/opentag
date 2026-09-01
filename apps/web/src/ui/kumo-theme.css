@@ -5,7 +5,15 @@
   --color-kumo-brand-hover: #2f4a03;
   --text-color-kumo-brand: #3a5c04;
   --kumo-button-emphasis-bg: #3a5c04;
-  --kumo-button-emphasis-ring: #3a5c04;
+  --kumo-button-emphasis-ring: #2f4a03;
+  --opentag-button-primary-bg: #3a5c04;
+  --opentag-button-primary-gradient-start: #4b7308;
+  --opentag-button-primary-gradient-end: #3a5c04;
+  --opentag-button-primary-ring: #2f4a03;
+  --opentag-button-danger-bg: #b42318;
+  --opentag-button-danger-gradient-start: #c12c20;
+  --opentag-button-danger-gradient-end: #a61b13;
+  --opentag-button-danger-ring: #88180f;
 }
 
 :root[data-theme="opentag"][data-mode="dark"],
@@ -14,6 +22,14 @@
   --color-kumo-brand: #8fdd14;
   --color-kumo-brand-hover: #a8ec45;
   --text-color-kumo-brand: #8fdd14;
-  --kumo-button-emphasis-bg: #8fdd14;
+  --kumo-button-emphasis-bg: #466d05;
   --kumo-button-emphasis-ring: #8fdd14;
+  --opentag-button-primary-bg: #466d05;
+  --opentag-button-primary-gradient-start: #527f08;
+  --opentag-button-primary-gradient-end: #466d05;
+  --opentag-button-primary-ring: #8fdd14;
+  --opentag-button-danger-bg: #b42318;
+  --opentag-button-danger-gradient-start: #c12c20;
+  --opentag-button-danger-gradient-end: #a61b13;
+  --opentag-button-danger-ring: #e65a4f;
 }

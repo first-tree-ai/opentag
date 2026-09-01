@@ -7,6 +7,7 @@ import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerLoginCommand } from "../commands/login.js";
 import { registerProviderCliCommand } from "../commands/provider-cli.js";
 import { registerSessionCommand } from "../commands/session/index.js";
+import { registerUpgradeCommand } from "../commands/upgrade.js";
 import { channelConfig } from "../core/channel/config.js";
 
 export function createProgram(): Command {
@@ -23,5 +24,6 @@ export function createProgram(): Command {
   registerLoginCommand(program);
   registerProviderCliCommand(program);
   registerSessionCommand(program);
+  registerUpgradeCommand(program);
   return program;
 }

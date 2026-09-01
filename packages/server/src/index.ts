@@ -20,6 +20,7 @@ import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
+import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
@@ -31,10 +32,12 @@ import {
   formatStartupError,
   PostAuthenticationService,
 } from "./services/auth/index.js";
+import { createChannelTargetPoller } from "./services/channel-target/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
   DefaultFeishuRegistrationGateway,
   FeishuConnectionManager,
@@ -162,6 +165,15 @@ export async function startServer(): Promise<void> {
     const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database));
     const connectCodeService = new ConnectCodeService(database);
     const registry = new ConnectionRegistry();
+    const channelTargetPoller = createChannelTargetPoller({
+      channel: config.environment,
+      downloadBaseUrl: config.channelTarget.downloadBaseUrl,
+      intervalMs: config.channelTarget.pollIntervalMs,
+      logger: {
+        info: (bindings: Record<string, unknown>, message: string) => app?.log.info(bindings, message),
+        warn: (bindings: Record<string, unknown>, message: string) => app?.log.warn(bindings, message),
+      },
+    });
     const machineAuthService = new MachineAuthService(database, {
       onCredentialRotated: async (workspaceComputerId) => {
         await registry.closeEnrollment(workspaceComputerId);
@@ -186,19 +198,52 @@ export async function startServer(): Promise<void> {
     };
     const runtimeReadyForAgent = async (agentId: string): Promise<boolean> =>
       (await agentRuntimeReadinessForAgent(agentId)) === "ready";
+    let providerCliReconcileOwner: ProviderCliReconcileOwner | undefined;
+    const refreshProviderCliReadiness = (agentId: string, workspaceComputerId: string): void => {
+      void providerCliReconcileOwner?.ensureActiveReadiness({ agentId, workspaceComputerId }).catch(() => {
+        reportDiagnostic("PROVIDER_CLI_READINESS_REFRESH_FAILED");
+      });
+    };
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
-      imCliReadiness: async (agentId, provider) => {
+      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
         const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
         if (!workspaceComputerId) return "unavailable";
-        const observations = registry.imCliReadiness(workspaceComputerId);
+        refreshProviderCliReadiness(agentId, workspaceComputerId);
+        const observations = registry.providerCliArtifactReadiness(workspaceComputerId);
         return (
-          observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
+          observations.find(
+            ({ observation }) =>
+              observation.agentId === agentId &&
+              observation.provider === provider &&
+              observation.integrationId === integrationId &&
+              observation.credentialGeneration === credentialGeneration,
+          )?.observation.status ?? "checking"
         );
       },
+      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+        const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
+        if (!workspaceComputerId) return { status: "unconfirmed" };
+        refreshProviderCliReadiness(agentId, workspaceComputerId);
+        const observations = registry.providerCliCredentialReadiness(workspaceComputerId);
+        const observation = observations.find(
+          ({ observation }) =>
+            observation.agentId === agentId &&
+            observation.provider === provider &&
+            observation.integrationId === integrationId &&
+            observation.credentialGeneration === credentialGeneration,
+        )?.observation;
+        return observation
+          ? { status: observation.status, ...(observation.reason ? { reason: observation.reason } : {}) }
+          : { status: "unconfirmed" };
+      },
+      onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
     });
     const workspaceSetupService = new WorkspaceSetupService(database, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
+    const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
+    });
     const sessionService = new SessionService(database);
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
@@ -209,6 +254,7 @@ export async function startServer(): Promise<void> {
         sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
+    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, imBindingService);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -219,6 +265,7 @@ export async function startServer(): Promise<void> {
     });
     const agentService = new AgentService(database, {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
+      onProviderCliPlacementChanged: (input) => providerCliReconcileOwner?.onAgentPlacementChanged(input),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {
           currentInstanceId: (workspaceComputerId) => registry.currentInstanceId(workspaceComputerId),
@@ -236,6 +283,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       policy: imCallPolicy,
       supervisor: backgroundFailureSupervisor,
+      receipts: feishuInboundReceipts,
     });
     const feishuSetupService = new FeishuSetupService({
       database,
@@ -323,7 +371,13 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
-      runtime: { registry, domainOwner, agentRuntimeTestOwner },
+      runtime: {
+        registry,
+        domainOwner,
+        agentRuntimeTestOwner,
+        providerCliReconcileOwner,
+        channelTarget: () => channelTargetPoller.get(),
+      },
       runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
@@ -351,6 +405,7 @@ export async function startServer(): Promise<void> {
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    channelTargetPoller.start();
     const closeForSignal = () => {
       void app?.close();
     };
@@ -359,6 +414,7 @@ export async function startServer(): Promise<void> {
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
+      channelTargetPoller.stop();
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();

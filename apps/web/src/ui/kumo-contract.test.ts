@@ -34,6 +34,13 @@ describe("Kumo integration contract", () => {
     );
   });
 
+  it("keeps generic Kumo surfaces neutral and reserves brand soft for selection", () => {
+    expect(appCss).toContain("--color-kumo-recessed: var(--surface-recessed)");
+    expect(appCss).toContain("--color-kumo-tint: var(--surface-tint)");
+    expect(appCss).toContain("--color-kumo-fill-hover: var(--surface-hover)");
+    expect(appCss).not.toMatch(/--color-kumo-(?:recessed|tint|fill-hover): var\(--brand-soft\)/);
+  });
+
   it("uses the semantic adapter and real Kumo controls", () => {
     const adapter = readFileSync(resolve(root, "ui/design-system.tsx"), "utf8");
     expect(adapter).toContain("@cloudflare/kumo");

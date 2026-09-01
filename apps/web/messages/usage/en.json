@@ -28,7 +28,7 @@
   "usage_retry": "Try again",
   "usage_title": "Usage",
   "usage_trend_title": "Token usage over time",
-  "usage_view_details": "View details",
+  "usage_view_usage": "View Usage",
   "usage_window_24_hours": "Last 24 hours",
   "usage_window_days": "Last {days} days"
 }

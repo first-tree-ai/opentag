@@ -153,10 +153,11 @@
 }
 
 .ots-command__expired button {
-  color: var(--brand-100);
+  color: var(--on-dark);
 }
 
 .ots-command__expired button:hover {
+  background: color-mix(in srgb, var(--on-dark) 14%, transparent);
   color: var(--on-dark);
 }
 

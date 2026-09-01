@@ -4,6 +4,7 @@
  * data. The page derives what to render from `deriveFlowState`; it never keeps a step cursor.
  */
 
+import type { ProviderCliHandoffProgress } from "@opentag/shared/browser";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 
 export const RUNTIMES = ["codex", "claude-code"] as const;
@@ -77,7 +78,7 @@ export type MessagingState =
    * setup cannot complete before it has — so this is the wait between "the app is connected" and
    * "the Agent can actually be reached through it".
    */
-  | { readonly kind: "waiting-handoff" }
+  | { readonly kind: "waiting-handoff"; readonly providerCli?: ProviderCliHandoffProgress }
   /**
    * A refused or expired attempt rests here rather than returning to `idle`. Idle is the state the
    * step starts an attempt from, so a failure that returned to it would be retried on sight, for

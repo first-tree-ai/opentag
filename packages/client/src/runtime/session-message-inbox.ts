@@ -10,7 +10,11 @@ import {
 import type { AgentInput } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
-import type { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
+import type {
+  ImCredentialEnvironmentManager,
+  PreparedImCredentialEnvironment,
+} from "./im-credential-environment-manager.js";
+import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import {
   DEFAULT_RUNTIME_RETRY_POLICY,
@@ -43,6 +47,10 @@ export interface SessionMessageInboxOptions {
   admission: AdmissionController;
   cliCommand?: string;
   credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
+  turnPlan?: {
+    cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
+    prepare(input: ProviderCliTurnPlanPrepareInput): Promise<unknown>;
+  };
   imCredentialGrantVersion(): number | undefined;
   logger?: Pick<ClientLogger, "warn">;
   maxQueuedPerSession?: number;
@@ -66,6 +74,7 @@ export class SessionMessageInbox {
   readonly #admission: AdmissionController;
   readonly #cliCommand: string;
   readonly #credentialEnvironment: SessionMessageInboxOptions["credentialEnvironment"];
+  readonly #turnPlan: SessionMessageInboxOptions["turnPlan"];
   readonly #imCredentialGrantVersion: SessionMessageInboxOptions["imCredentialGrantVersion"];
   readonly #logger: Pick<ClientLogger, "warn">;
   readonly #maxQueuedPerSession: number;
@@ -93,6 +102,7 @@ export class SessionMessageInbox {
     this.#admission = options.admission;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#credentialEnvironment = options.credentialEnvironment;
+    this.#turnPlan = options.turnPlan;
     this.#imCredentialGrantVersion = options.imCredentialGrantVersion;
     this.#logger = options.logger ?? createLogger("session-message-inbox");
     this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 64, "maxQueuedPerSession");
@@ -164,6 +174,7 @@ export class SessionMessageInbox {
   }
 
   #acceptanceReason(request: SessionMessageDeliveryRequest): InputRejectReason | undefined {
+    if (this.#admission.paused) return "client_busy";
     const authorityReason = this.#reconciler.checkSessionMessageDelivery(request);
     if (authorityReason) return authorityReason;
     if (
@@ -200,6 +211,7 @@ export class SessionMessageInbox {
     } catch {
       queue.pop();
       this.#queuedTotal -= 1;
+      this.#records.delete(key);
       this.#remember(key, { hash, status: "rejected", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
@@ -219,6 +231,23 @@ export class SessionMessageInbox {
     this.#retryTimers.clear();
     this.#queues.clear();
     this.#queuedTotal = 0;
+  }
+
+  /** Accepted Session messages still waiting in an in-memory delivery queue. */
+  get queuedCount(): number {
+    return this.#queuedTotal;
+  }
+
+  /**
+   * Every accepted Session message that has not reached a terminal durable state. Unlike
+   * `queuedCount`, this includes a message that is running or waiting behind retry backoff.
+   */
+  get pendingCount(): number {
+    let count = 0;
+    for (const record of this.#records.values()) {
+      if (record.status === "accepted" || record.status === "running" || record.status === "retryable") count += 1;
+    }
+    return count;
   }
 
   async settled(): Promise<void> {
@@ -243,10 +272,10 @@ export class SessionMessageInbox {
         this.#queues.delete(sessionId);
         return;
       }
-      let reservation = this.#admission.reserve(sessionId, next.request.agentId);
+      let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       while (!reservation.accepted) {
         await this.#admission.waitForRelease(this.#abort.signal);
-        reservation = this.#admission.reserve(sessionId, next.request.agentId);
+        reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       }
       queue?.shift();
       this.#queuedTotal -= 1;
@@ -264,6 +293,7 @@ export class SessionMessageInbox {
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
     let credentialPrepared = false;
+    let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let phase = "runtime";
     try {
       if (current) current = await this.#transition(current, "running");
@@ -288,6 +318,7 @@ export class SessionMessageInbox {
           throw new Error("The credential grant did not include visible Session outbox context");
         }
         outboxContext = prepared.outboxContext;
+        turnPlanInput = await this.#prepareTurnPlan(sessionId, runId, prepared);
       }
       phase = "runtime";
       const runtime = await this.#runtimeManager.ensureRuntime(sessionId, this.#abort.signal);
@@ -323,6 +354,7 @@ export class SessionMessageInbox {
     } catch (error) {
       if (current) await this.#handleFailure(current, next.hash, phase, error);
     } finally {
+      await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) await this.#credentialEnvironment.cleanup(sessionId).catch(() => undefined);
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
         this.#reconciler.clearActivity(sessionId, runId);
@@ -349,6 +381,27 @@ export class SessionMessageInbox {
       );
       throw error;
     }
+  }
+
+  async #prepareTurnPlan(
+    sessionId: string,
+    runId: string,
+    prepared: PreparedImCredentialEnvironment,
+  ): Promise<ProviderCliTurnPlanPrepareInput | undefined> {
+    if (!this.#turnPlan) return undefined;
+    const input: ProviderCliTurnPlanPrepareInput = {
+      provider: prepared.provider,
+      sessionId,
+      runId,
+      ...(prepared.slackConfigDir ? { configDir: prepared.slackConfigDir } : {}),
+    };
+    await this.#turnPlan.prepare(input);
+    return input;
+  }
+
+  async #cleanupTurnPlan(input: ProviderCliTurnPlanPrepareInput | undefined): Promise<void> {
+    if (!input) return;
+    await this.#turnPlan?.cleanup(input).catch(() => undefined);
   }
 
   async #hydrate(): Promise<void> {

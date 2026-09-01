@@ -58,6 +58,7 @@
   "im_messaging_page_title": "消息",
   "im_no_messaging_app": "未连接消息应用",
   "im_permissions_required": "需要权限",
+  "im_qr_scan_alt": "在 {provider} 中扫描此二维码",
   "im_receive_mode_failed": "无法更新消息设置，请重试。",
   "im_reconnect": "重新连接",
   "im_slack_agent_computer_not_bound": "先为该智能体连接一台计算机，再连接 Slack。",

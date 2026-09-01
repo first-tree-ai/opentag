@@ -299,6 +299,13 @@ export class AgentService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #onDiagnostic: (code: string) => void;
+  readonly #onProviderCliPlacementChanged?:
+    | ((input: {
+        agentId: string;
+        previousWorkspaceComputerId?: string;
+        workspaceComputerId?: string;
+      }) => Promise<void> | void)
+    | undefined;
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
 
   constructor(
@@ -308,6 +315,11 @@ export class AgentService {
       afterMembershipLocked?: () => Promise<void>;
       now?: () => Date;
       onDiagnostic?: (code: string) => void;
+      onProviderCliPlacementChanged?: (input: {
+        agentId: string;
+        previousWorkspaceComputerId?: string;
+        workspaceComputerId?: string;
+      }) => Promise<void> | void;
       stopSessions?: (targets: AgentSessionStopTarget[]) => Promise<void>;
     } = {},
   ) {
@@ -316,6 +328,7 @@ export class AgentService {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
+    this.#onProviderCliPlacementChanged = options.onProviderCliPlacementChanged;
     this.#stopSessions = options.stopSessions ?? (async () => undefined);
   }
 
@@ -793,14 +806,22 @@ export class AgentService {
         .where(and(eq(agents.id, agentId), eq(agents.status, "active")))
         .returning();
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before suspension");
-      return { config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId), targets };
+      return {
+        config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId),
+        computerId: scope.computerId,
+        targets,
+      };
+    });
+    await this.#notifyProviderCliPlacement({
+      agentId,
+      previousWorkspaceComputerId: result.computerId ?? undefined,
     });
     await this.#stopSessionsBestEffort(result.targets);
     return result.config;
   }
 
   async reactivateById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
-    return this.#database.transaction(async (transaction) => {
+    const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.status !== "suspended") {
@@ -814,12 +835,14 @@ export class AgentService {
         .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))
         .returning();
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before reactivation");
-      return toAgentAdminConfig(updated, runtimeConfig, scope.computerId);
+      return { computerId: scope.computerId, config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
     });
+    await this.#notifyProviderCliPlacement({ agentId, workspaceComputerId: result.computerId ?? undefined });
+    return result.config;
   }
 
   async rebindById(callerUserId: string, agentId: string, computerId: string): Promise<AgentAdminConfig> {
-    return this.#database.transaction(async (transaction) => {
+    const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
@@ -840,7 +863,12 @@ export class AgentService {
       const changesAgent = scope.agent.computerId !== target.id;
       const changesPlacement = active.some(({ workspaceComputerId }) => workspaceComputerId !== target.id);
       if (!changesAgent && !changesPlacement) {
-        return toAgentAdminConfig(scope.agent, runtimeConfig, target.id);
+        return {
+          changedComputer: false,
+          computerId: target.id,
+          config: toAgentAdminConfig(scope.agent, runtimeConfig, target.id),
+          previousComputerId: scope.computerId,
+        };
       }
       const sessionIds = active.map((row) => row.sessionId);
       if (sessionIds.length > 0) {
@@ -906,12 +934,25 @@ export class AgentService {
           );
         }
       }
-      return toAgentAdminConfig(updated, runtimeConfig, target.id);
+      return {
+        changedComputer: changesAgent,
+        computerId: target.id,
+        config: toAgentAdminConfig(updated, runtimeConfig, target.id),
+        previousComputerId: scope.computerId,
+      };
     });
+    if (result.changedComputer) {
+      await this.#notifyProviderCliPlacement({
+        agentId,
+        previousWorkspaceComputerId: result.previousComputerId ?? undefined,
+        workspaceComputerId: result.computerId,
+      });
+    }
+    return result.config;
   }
 
   async deleteById(callerUserId: string, agentId: string): Promise<void> {
-    const targets = await this.#database.transaction(async (transaction) => {
+    const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.status !== "suspended") {
@@ -934,9 +975,13 @@ export class AgentService {
         .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))
         .returning({ id: agents.id });
       if (!deleted) throw this.#lifecycleConflict("The Agent lifecycle changed before deletion");
-      return activeTargets;
+      return { computerId: scope.computerId, targets: activeTargets };
     });
-    await this.#stopSessionsBestEffort(targets);
+    await this.#notifyProviderCliPlacement({
+      agentId,
+      previousWorkspaceComputerId: result.computerId ?? undefined,
+    });
+    await this.#stopSessionsBestEffort(result.targets);
   }
 
   async #lockAgentScopeForMutation(
@@ -1046,6 +1091,19 @@ export class AgentService {
       await this.#stopSessions(targets);
     } catch {
       this.#onDiagnostic("AGENT_SESSION_STOP_FAILED");
+    }
+  }
+
+  async #notifyProviderCliPlacement(input: {
+    agentId: string;
+    previousWorkspaceComputerId?: string;
+    workspaceComputerId?: string;
+  }): Promise<void> {
+    if (!this.#onProviderCliPlacementChanged) return;
+    try {
+      await this.#onProviderCliPlacementChanged(input);
+    } catch {
+      this.#onDiagnostic("PROVIDER_CLI_PLACEMENT_NOTIFY_FAILED");
     }
   }
 }

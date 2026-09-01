@@ -205,11 +205,29 @@ describe("IM binding contracts", () => {
       ImBindingHandoffStatusSchema.parse({ bindingState: "reauthorization_required", handoffReady: false }),
     ).toEqual({ bindingState: "reauthorization_required", handoffReady: false });
     expect(() => ImBindingHandoffStatusSchema.parse({ bindingState: "error", handoffReady: true })).toThrow();
+    expect(
+      ImBindingHandoffStatusSchema.parse({
+        bindingState: "active",
+        handoffReady: false,
+        providerCli: { phase: "preparing_cli" },
+      }),
+    ).toEqual({
+      bindingState: "active",
+      handoffReady: false,
+      providerCli: { phase: "preparing_cli" },
+    });
     expect(() =>
       ImBindingHandoffStatusSchema.parse({
         bindingState: "active",
         handoffReady: false,
         credentialGeneration: 1,
+      }),
+    ).toThrow();
+    expect(() =>
+      ImBindingHandoffStatusSchema.parse({
+        bindingState: "active",
+        handoffReady: false,
+        providerCli: { phase: "needs_attention", path: "/usr/bin/slack" },
       }),
     ).toThrow();
     expect(() =>
@@ -236,6 +254,7 @@ describe("IM binding contracts", () => {
       ready: false,
       agentRuntimeReadiness: "ready" as const,
       providerCliReadiness: "ready" as const,
+      credentialExecutionReadiness: "unconfirmed" as const,
       credentialGeneration: 0,
       credentialStatus: "invalid" as const,
       requiredCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],

@@ -393,6 +393,7 @@ describe("OpenTagApi Agent methods", () => {
           ready: false,
           agentRuntimeReadiness: "ready",
           providerCliReadiness: "install",
+          credentialExecutionReadiness: "unconfirmed",
           credentialGeneration: 1,
           credentialStatus: "valid",
           requiredCapabilities: [],

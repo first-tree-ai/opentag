@@ -18,6 +18,11 @@ describe("AccountSettings language selector", () => {
 
     const selector = screen.getByRole("combobox", { name: "Language" });
     expect(selector.textContent).toContain(locale.LOCALE_LABELS[locale.getLocale()]);
+    expect(selector.className.split(/\s+/)).toContain("w-full");
+    expect(selector.className.split(/\s+/)).not.toContain("w-max");
+    expect(selector.getAttribute("aria-labelledby")).toBe("account-language-label");
+    expect(selector.getAttribute("aria-label")).toBeNull();
+    expect(selector.closest('[data-ui="field"]')?.querySelector("label")?.classList.contains("sr-only")).toBe(true);
 
     fireEvent.click(selector);
     const options = await screen.findAllByRole("option");

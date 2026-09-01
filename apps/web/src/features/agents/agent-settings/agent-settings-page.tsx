@@ -16,6 +16,7 @@ import { ImTab } from "./im-tab.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import type { AgentSettingsSection } from "./sections.js";
 import { agentSettingsGroups, agentSettingsSections, agentSettingsSummary } from "./sections.js";
+import { AgentSettingsPageHeader } from "./settings-layout.js";
 
 export function AgentSettingsPage({ agentId, section }: { agentId: string; section?: string }) {
   const routeState = useRouterState({ select: (state) => state.location.state });
@@ -116,11 +117,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
   );
   return (
     <div className="grid gap-6">
-      <header className="grid gap-2">
-        <Text as="h1" size="lg" variant="heading">
-          {m.agent_settings_title()}
-        </Text>
-      </header>
+      <AgentSettingsPageHeader title={m.agent_settings_title()} />
       <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>
         {(config) => (
           <div className="grid gap-6">

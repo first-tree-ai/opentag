@@ -18,6 +18,12 @@
   "agent_settings_computer_not_ready": "Not ready",
   "agent_settings_computer_offline": "Offline",
   "agent_settings_computer_online": "Online",
+  "agent_settings_computer_recovery_offline": "OpenTag is not running on {computerName}. Start it there to bring it back online.",
+  "agent_settings_computer_recovery_provider_checking": "OpenTag is still checking {providerName} on {computerName}.",
+  "agent_settings_computer_recovery_provider_not_installed": "{providerName} is not installed on {computerName}.",
+  "agent_settings_computer_recovery_provider_not_signed_in": "{providerName} is not signed in on {computerName}.",
+  "agent_settings_computer_recovery_provider_unavailable": "{providerName} is unavailable on {computerName}.",
+  "agent_settings_computer_recovery_unconfirmed": "OpenTag could not confirm this Computer's current connection.",
   "agent_settings_computer_repair_hide": "Hide repair command",
   "agent_settings_computer_repair_show": "Need to reinstall? Generate a repair command.",
   "agent_settings_computer_unconfirmed": "Unable to confirm",
@@ -50,6 +56,7 @@
   "agent_settings_instructions_saved": "Instructions saved.",
   "agent_settings_instructions_title": "Instructions",
   "agent_settings_keep_active": "Keep active",
+  "agent_settings_keep_editing": "Keep editing",
   "agent_settings_last_seen": "Last seen {relative} · {date}",
   "agent_settings_loading_title": "Loading Agent settings",
   "agent_settings_model": "Model",
@@ -127,5 +134,7 @@
   "agent_settings_status_working_description": "This Agent is handling a request. Pausing stops new requests; the current request may continue until a safe stopping point.",
   "agent_settings_title": "Agent settings",
   "agent_settings_troubleshooting": "Troubleshooting",
-  "agent_settings_unsaved_changes": "Unsaved changes"
+  "agent_settings_unsaved_changes": "Unsaved changes",
+  "agent_settings_unsaved_confirm_description": "If you leave this page, your unsaved changes will be lost.",
+  "agent_settings_unsaved_confirm_title": "Discard unsaved changes?"
 }

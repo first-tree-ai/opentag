@@ -15,6 +15,7 @@ import { migrateDatabase } from "../../db/migrate.js";
 import {
   accountComputers,
   agents,
+  computerCredentials,
   computers,
   imBindings,
   sessionMessages,
@@ -620,6 +621,11 @@ describe("Session collaboration authority", () => {
         clientVersion: "0.0.2",
         currentInstanceId: connectionInstanceId,
       });
+      await fixture.database.insert(computerCredentials).values({
+        computerId: otherWorkspaceComputer.id,
+        secretHash: `integration-collaboration-other-${otherComputerId}`,
+        issuedByUserId: fixture.userId,
+      });
       proof = await mint();
       await fixture.database
         .update(sessionPlacements)
@@ -879,6 +885,11 @@ async function createFixture() {
     arch: "x64",
     clientVersion: "0.0.2",
     currentInstanceId: connectionInstanceId,
+  });
+  await client.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `integration-collaboration-${computerId}`,
+    issuedByUserId: bootstrap.userId,
   });
   const agent = await new AgentService(client.database).createForAccount(bootstrap.userId, {
     name: "assistant",

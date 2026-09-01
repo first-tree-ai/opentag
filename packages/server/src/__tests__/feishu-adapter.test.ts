@@ -9,7 +9,13 @@ import {
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { accountComputers, computers, imBindings, workspaceComputers } from "../db/schema/index.js";
+import {
+  accountComputers,
+  computerCredentials,
+  computers,
+  imBindings,
+  workspaceComputers,
+} from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import {
@@ -65,6 +71,11 @@ async function connectionFixture() {
     platform: "linux",
     arch: "x64",
     clientVersion: "0.0.1",
+  });
+  await connectionDatabase.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `feishu-adapter-${computer.id}`,
+    issuedByUserId: bootstrap.userId,
   });
   const agent = await new AgentService(connectionDatabase.database).createForAccount(bootstrap.userId, {
     name: "connection-agent",

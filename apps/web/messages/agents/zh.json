@@ -58,6 +58,7 @@
   "agents_preview_data": "预览数据",
   "agents_refreshing_computers": "正在刷新 Computer",
   "agents_remove_computer": "移除计算机",
+  "agents_remove_computer_blocked": "这台计算机仍在完成 Agent 任务。任务结束后再试。",
   "agents_remove_computer_confirm_description": "这会从你的账户中移除该计算机并撤销其访问权限。如需再次使用，请重新连接。",
   "agents_remove_computer_confirm_description_plural": "这会从你的账户中移除该计算机，并断开 {count} 个 Agent。在连接到其他计算机之前，它们将无法运行。",
   "agents_remove_computer_confirm_description_single": "这会从你的账户中移除该计算机，并断开 1 个 Agent。在连接到其他计算机之前，它将无法运行。",

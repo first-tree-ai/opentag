@@ -58,6 +58,7 @@
   "agents_preview_data": "Preview data",
   "agents_refreshing_computers": "Refreshing Computers",
   "agents_remove_computer": "Remove Computer",
+  "agents_remove_computer_blocked": "This Computer is still finishing Agent work. Try again after it completes.",
   "agents_remove_computer_confirm_description": "This removes the Computer from your account and revokes its access. To use it again, reconnect it.",
   "agents_remove_computer_confirm_description_plural": "This removes the Computer from your account and disconnects {count} Agents. They cannot run until you connect them to another Computer.",
   "agents_remove_computer_confirm_description_single": "This removes the Computer from your account and disconnects 1 Agent. It cannot run until you connect it to another Computer.",

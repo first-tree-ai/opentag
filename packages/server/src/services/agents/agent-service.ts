@@ -27,6 +27,7 @@ import {
   accountComputers,
   agentRuntimeConfigs,
   agents,
+  computerCredentials,
   imBindings,
   imMessageDeliveries,
   sessionPlacements,
@@ -41,6 +42,7 @@ import {
 } from "../../db/schema-required-legacy.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
+import { unresolvedSessionCustody } from "../sessions/session-custody.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -844,22 +846,11 @@ export class AgentService {
       }
       const sessionIds = active.map((row) => row.sessionId);
       if (sessionIds.length > 0) {
-        const deliveries = await transaction
-          .select({
-            dispatchRequestId: imMessageDeliveries.dispatchRequestId,
-            placementGeneration: imMessageDeliveries.placementGeneration,
-            reportedAt: imMessageDeliveries.reportedAt,
-            sessionId: imMessageDeliveries.sessionId,
-            state: imMessageDeliveries.state,
-          })
+        const [blocked] = await transaction
+          .select({ id: imMessageDeliveries.id })
           .from(imMessageDeliveries)
-          .where(inArray(imMessageDeliveries.sessionId, sessionIds));
-        const blocked = deliveries.some(
-          (delivery) =>
-            delivery.state === "pending" ||
-            (delivery.state === "accepted" && delivery.reportedAt === null) ||
-            (delivery.state === "expired" && delivery.dispatchRequestId !== null),
-        );
+          .where(and(inArray(imMessageDeliveries.sessionId, sessionIds), unresolvedSessionCustody()))
+          .limit(1);
         if (blocked) {
           throw new AgentServiceError(
             "AGENT_REBIND_BLOCKED",
@@ -971,12 +962,17 @@ export class AgentService {
     accountId: string,
     computerId: string,
   ): Promise<{ id: string; workspaceId: string }> {
+    // Historical rows remain repairable, but an Agent target must have live enrollment access.
     const [computer] = await transaction
       .select({ id: accountComputers.id })
       .from(accountComputers)
+      .innerJoin(
+        computerCredentials,
+        and(eq(computerCredentials.computerId, accountComputers.id), isNull(computerCredentials.revokedAt)),
+      )
       .where(and(eq(accountComputers.id, computerId), eq(accountComputers.ownerAccountId, accountId)))
       .limit(1)
-      .for("update");
+      .for("update", { of: accountComputers });
     if (!computer) {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }

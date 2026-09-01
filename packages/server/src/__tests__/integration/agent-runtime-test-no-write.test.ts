@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import WebSocket from "ws";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { accountComputers, computers, workspaceComputers } from "../../db/schema/index.js";
+import { accountComputers, computerCredentials, computers, workspaceComputers } from "../../db/schema/index.js";
 import { AgentRuntimeTestOwner } from "../../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
@@ -176,6 +176,11 @@ async function createComputer(
     ownerAccountId: ownerUserId,
     currentInstallationId: computer.id,
     ...profile,
+  });
+  await database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `integration-runtime-test-${computer.id}`,
+    issuedByUserId: ownerUserId,
   });
   return {
     id: workspaceComputer.id,

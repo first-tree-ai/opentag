@@ -5,6 +5,7 @@ import { createDatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
   agents,
+  computerCredentials,
   computers,
   imBindings,
   sessions,
@@ -73,6 +74,11 @@ async function fixture() {
     platform: "linux",
     arch: "x64",
     clientVersion: "0.0.2",
+  });
+  await client.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `integration-slack-oauth-${computer.id}`,
+    issuedByUserId: bootstrap.userId,
   });
   const agentsService = new AgentService(client.database);
   const first = await agentsService.createForAccount(bootstrap.userId, {

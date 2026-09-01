@@ -1,8 +1,18 @@
 import type { ComputerRegisterFrame, ListWorkspaceComputersResponse, MeResponse } from "@opentag/shared";
-import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { accountComputers, agents, computerConnectCodes, computerCredentials } from "../../db/schema/index.js";
+import {
+  accountComputers,
+  agents,
+  computerConnectCodes,
+  computerCredentials,
+  imBindings,
+  imMessageDeliveries,
+  sessionPlacements,
+  sessions,
+} from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { unresolvedSessionCustody } from "../sessions/session-custody.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
 import {
@@ -105,7 +115,8 @@ export class ComputerService {
   /**
    * Removes an Account-owned Computer without erasing history that already refers to it. Active
    * credentials and pending repair codes are revoked, while Agents are unbound so every reader sees
-   * that they need another Computer instead of retaining a dangling assignment.
+   * that they need another Computer instead of retaining a dangling assignment. Removal waits until
+   * active Sessions no longer hold a pending dispatch or an accepted, unreported Turn.
    *
    * Repeating an owned removal succeeds. Besides making DELETE idempotent, this lets a caller retry
    * if closing the live connection failed after the database transaction committed.
@@ -120,6 +131,7 @@ export class ComputerService {
         .limit(1)
         .for("update");
       if (!owned) throw computerNotFound();
+      await this.#assertRemovalSafe(transaction, computerId);
 
       await transaction
         .update(computerConnectCodes)
@@ -151,6 +163,49 @@ export class ComputerService {
         .where(eq(accountComputers.id, computerId));
     });
     await this.#onEnrollmentRemoved?.(computerId);
+  }
+
+  async #assertRemovalSafe(transaction: DatabaseTransaction, computerId: string): Promise<void> {
+    const boundAgents = await transaction
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.computerId, computerId), ne(agents.status, "deleted")))
+      .orderBy(asc(agents.id))
+      .for("update");
+    if (boundAgents.length === 0) return;
+
+    const activeSessions = await transaction
+      .select({ id: sessions.id })
+      .from(sessions)
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .where(
+        and(
+          inArray(
+            imBindings.agentId,
+            boundAgents.map(({ id }) => id),
+          ),
+          isNull(sessions.endedAt),
+        ),
+      )
+      .orderBy(asc(sessions.id))
+      .for("update", { of: sessionPlacements });
+    if (activeSessions.length === 0) return;
+
+    const [blocked] = await transaction
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .where(
+        and(
+          inArray(
+            imMessageDeliveries.sessionId,
+            activeSessions.map(({ id }) => id),
+          ),
+          unresolvedSessionCustody(),
+        ),
+      )
+      .limit(1);
+    if (blocked) throw computerRemovalBlocked();
   }
 
   async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
@@ -264,4 +319,13 @@ function unavailableComputer(): AuthServiceError {
 
 function computerNotFound(): AuthServiceError {
   return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+}
+
+function computerRemovalBlocked(): AuthServiceError {
+  return new AuthServiceError(
+    "COMPUTER_REMOVAL_BLOCKED",
+    "deterministic",
+    "The Computer cannot be removed while Agents have pending delivery, unreported Turns, or uncertain custody",
+    409,
+  );
 }

@@ -165,6 +165,38 @@ describe("OpenTag Web App Shell", () => {
     ).toBe(true);
   });
 
+  it("keeps the Computer visible when unresolved Agent work blocks removal", async () => {
+    installApi();
+    const fixtureFetch = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === `/api/v1/computers/${computerId}` && init?.method === "DELETE"
+        ? Promise.resolve(
+            new Response(
+              JSON.stringify({
+                error: {
+                  code: "COMPUTER_REMOVAL_BLOCKED",
+                  category: "deterministic",
+                  message: "Computer removal is blocked",
+                },
+              }),
+              { status: 409 },
+            ),
+          )
+        : (fixtureFetch?.(input, init) ?? Promise.reject(new Error("The fixture fetch implementation is missing"))),
+    );
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Ada's Mac" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+
+    expect(
+      await within(dialog).findByText("This Computer is still finishing Agent work. Try again after it completes."),
+    ).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+  });
+
   it("does not resume a stored creation intent onto a Computer the reader moved away from", async () => {
     // The reader's own selection is the divergence: the intent names a machine that cannot run an
     // Agent, so nothing is sent, the reader picks another — and then the abandoned machine comes

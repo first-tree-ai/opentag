@@ -14,9 +14,15 @@ import {
   authSessions,
   computerConnectCodes,
   computerCredentials,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  sessionPlacements,
+  sessions,
   users,
   workspaceComputers,
 } from "../db/schema/index.js";
+import { AgentService } from "../services/agents/index.js";
 import {
   AuthService,
   AuthServiceError,
@@ -480,6 +486,162 @@ describe("machine authentication and Computer services", () => {
       code: "RESOURCE_NOT_FOUND",
       statusCode: 404,
     });
+  });
+
+  it("keeps a removed Computer unavailable to stale Agent create and rebind requests until repair", async () => {
+    const value = await machineFixture();
+    const enrollment = await value.machine.exchangeConnectCode(enrollmentInput(value.issued.code));
+    const agentsService = new AgentService(unit.database, { now: () => NOW });
+    const unbound = await agentsService.createForAccount(value.bootstrap.userId, {
+      name: "unbound",
+      displayName: "Unbound",
+      runtimeProvider: "codex",
+    });
+    const computersService = new ComputerService(unit.database, { getActiveUserById: vi.fn() }, { now: () => NOW });
+
+    await computersService.removeFromAccount(value.bootstrap.userId, enrollment.workspaceComputerId);
+
+    const staleCreate = await agentsService
+      .createForAccount(value.bootstrap.userId, {
+        name: "stale-create",
+        displayName: "Stale create",
+        runtimeProvider: "codex",
+        computerId: enrollment.workspaceComputerId,
+      })
+      .catch((error: unknown) => error);
+    const staleRebind = await agentsService
+      .rebindById(value.bootstrap.userId, unbound.id, enrollment.workspaceComputerId)
+      .catch((error: unknown) => error);
+    expect(staleCreate).toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
+    expect(staleRebind).toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
+
+    const repair = await value.machine.issueForAccount(value.bootstrap.userId, {
+      mode: "repair",
+      targetComputerId: enrollment.workspaceComputerId,
+    });
+    await value.machine.exchangeConnectCode(enrollmentInput(repair.code, randomUUID()));
+    await expect(
+      agentsService.rebindById(value.bootstrap.userId, unbound.id, enrollment.workspaceComputerId),
+    ).resolves.toMatchObject({ computerId: enrollment.workspaceComputerId });
+  });
+
+  it("refuses Computer removal while an active Session has unresolved runtime custody", async () => {
+    const value = await machineFixture();
+    const enrollment = await value.machine.exchangeConnectCode(enrollmentInput(value.issued.code));
+    const [agent] = await unit.database
+      .insert(agents)
+      .values({
+        workspaceId: enrollment.workspaceId,
+        createdByUserId: value.bootstrap.userId,
+        workspaceComputerId: enrollment.workspaceComputerId,
+        computerId: enrollment.workspaceComputerId,
+        name: "working-runner",
+        displayName: "Working Runner",
+        runtimeProvider: "codex",
+      })
+      .returning();
+    if (!agent) throw new Error("Agent fixture was not created");
+    const [binding] = await unit.database
+      .insert(imBindings)
+      .values({ agentId: agent.id, provider: "feishu", status: "provisioning" })
+      .returning();
+    if (!binding) throw new Error("IM binding fixture was not created");
+    const [session] = await unit.database
+      .insert(sessions)
+      .values({
+        imBindingId: binding.id,
+        channelId: "removal-custody",
+        conversationKind: "channel",
+        kind: "channel",
+      })
+      .returning();
+    if (!session) throw new Error("Session fixture was not created");
+    await unit.database.insert(sessionPlacements).values({
+      sessionId: session.id,
+      workspaceComputerId: enrollment.workspaceComputerId,
+      computerId: enrollment.workspaceComputerId,
+      generation: 1,
+    });
+    const createMessage = async (label: string) => {
+      const [message] = await unit.database
+        .insert(imMessages)
+        .values({
+          imBindingId: binding.id,
+          providerEventId: `event-${label}`,
+          channelId: "removal-custody",
+          externalMessageId: `message-${label}`,
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "reviewer",
+          content: { version: 1, fallbackText: label, blocks: [{ type: "text", text: label }], truncated: false },
+          providerContext: { provider: "feishu", chatType: "group" },
+          occurredAt: NOW,
+        })
+        .returning();
+      if (!message) throw new Error("Message fixture was not created");
+      return message;
+    };
+    const pendingMessage = await createMessage("pending");
+    const [pending] = await unit.database
+      .insert(imMessageDeliveries)
+      .values({
+        messageId: pendingMessage.id,
+        sessionId: session.id,
+        attention: "direct",
+        state: "pending",
+        placementGeneration: 1,
+        dispatchRequestId: randomUUID(),
+        dispatchInputHash: "d".repeat(64),
+        dispatchPayload: {} as never,
+        expiresAt: new Date(NOW.getTime() + 60_000),
+      })
+      .returning();
+    if (!pending) throw new Error("Pending delivery fixture was not created");
+    const closed = vi.fn().mockResolvedValue(undefined);
+    const service = new ComputerService(
+      unit.database,
+      { getActiveUserById: vi.fn() },
+      { now: () => NOW, onEnrollmentRemoved: closed },
+    );
+
+    await expect(
+      service.removeFromAccount(value.bootstrap.userId, enrollment.workspaceComputerId),
+    ).rejects.toMatchObject({ code: "COMPUTER_REMOVAL_BLOCKED", statusCode: 409 });
+    expect(closed).not.toHaveBeenCalled();
+    expect((await unit.database.select().from(computerCredentials))[0]?.revokedAt).toBeNull();
+    expect((await unit.database.select().from(agents).where(eq(agents.id, agent.id)))[0]?.computerId).toBe(
+      enrollment.workspaceComputerId,
+    );
+
+    await unit.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, pending.id));
+    const acceptedMessage = await createMessage("accepted");
+    const [accepted] = await unit.database
+      .insert(imMessageDeliveries)
+      .values({
+        messageId: acceptedMessage.id,
+        sessionId: session.id,
+        attention: "direct",
+        state: "accepted",
+        placementGeneration: 1,
+        inputHash: "a".repeat(64),
+        turnId: "turn-removal-custody",
+        reportOwnerInstanceId: randomUUID(),
+        acceptedAt: NOW,
+        expiresAt: new Date(NOW.getTime() + 60_000),
+      })
+      .returning();
+    if (!accepted) throw new Error("Accepted delivery fixture was not created");
+    await expect(
+      service.removeFromAccount(value.bootstrap.userId, enrollment.workspaceComputerId),
+    ).rejects.toMatchObject({ code: "COMPUTER_REMOVAL_BLOCKED", statusCode: 409 });
+
+    await unit.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, accepted.id));
+    await expect(
+      service.removeFromAccount(value.bootstrap.userId, enrollment.workspaceComputerId),
+    ).resolves.toBeUndefined();
+    expect(closed).toHaveBeenCalledWith(enrollment.workspaceComputerId);
   });
 
   it("projects readiness for online and offline Computers and detects missing ownership projections", async () => {

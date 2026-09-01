@@ -6,6 +6,7 @@ import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
   accountComputers,
   agents,
+  computerCredentials,
   computers,
   imBindings,
   imMessageDeliveries,
@@ -87,6 +88,11 @@ async function createComputer(database: DatabaseClient, ownerUserId: string, wor
     ownerAccountId: ownerUserId,
     currentInstallationId: computer.id,
     ...profile,
+  });
+  await database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `integration-agents-${computer.id}`,
+    issuedByUserId: ownerUserId,
   });
   return {
     id: workspaceComputer.id,
@@ -1041,6 +1047,11 @@ describe("Agent persistence and authorization", () => {
         platform: computer.platform,
         arch: computer.arch,
         clientVersion: computer.clientVersion,
+      });
+      await value.database.insert(computerCredentials).values({
+        computerId: otherEnrollment.id,
+        secretHash: `integration-agents-other-${otherEnrollment.id}`,
+        issuedByUserId: value.bootstrap.userId,
       });
       await expect(
         value.service.createForAccount(value.bootstrap.userId, {

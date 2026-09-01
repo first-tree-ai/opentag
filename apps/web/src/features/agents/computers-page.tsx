@@ -1,7 +1,7 @@
 import type { ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import { browserApi } from "../../api.js";
+import { ApiError, browserApi } from "../../api.js";
 import { formatDateTime, formatRelativeTime } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
@@ -90,7 +90,7 @@ function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) 
   const removeButtonRef = useRef<HTMLButtonElement>(null);
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const [removeError, setRemoveError] = useState(false);
+  const [removeError, setRemoveError] = useState<"blocked" | "failed" | undefined>();
   const platform = computer.platform === "darwin" ? "macOS" : computer.platform === "win32" ? "Windows" : "Linux";
   const agentCount = computer.agentIds.length;
   const status = computerStatus(computer);
@@ -98,7 +98,7 @@ function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) 
   async function removeComputer() {
     try {
       setRemoving(true);
-      setRemoveError(false);
+      setRemoveError(undefined);
       await browserApi.removeComputer(computer.computerId);
       // A confirmed removal is stronger than a Computers read that may have started before it.
       // Cancel that read and evict the row locally; later watched reads confirm the new Server state.
@@ -109,8 +109,8 @@ function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) 
           : current,
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.root() });
-    } catch {
-      setRemoveError(true);
+    } catch (error) {
+      setRemoveError(error instanceof ApiError && error.code === "COMPUTER_REMOVAL_BLOCKED" ? "blocked" : "failed");
       setRemoving(false);
     }
   }
@@ -132,7 +132,7 @@ function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) 
             size="compact"
             variant="ghost"
             onClick={() => {
-              setRemoveError(false);
+              setRemoveError(undefined);
               setConfirmingRemoval(true);
             }}
           >
@@ -149,12 +149,18 @@ function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) 
           title={m.agents_remove_computer_confirm_title({ name: computer.displayName })}
           onClose={() => {
             setConfirmingRemoval(false);
-            setRemoveError(false);
+            setRemoveError(undefined);
           }}
         >
           <div className="grid gap-4">
             {removeError ? (
-              <Banner role="alert" variant="error" description={m.agents_remove_computer_failed()} />
+              <Banner
+                role="alert"
+                variant="error"
+                description={
+                  removeError === "blocked" ? m.agents_remove_computer_blocked() : m.agents_remove_computer_failed()
+                }
+              />
             ) : null}
             <div className="flex flex-wrap justify-end gap-3">
               <Button disabled={removing} variant="ghost" onClick={() => setConfirmingRemoval(false)}>

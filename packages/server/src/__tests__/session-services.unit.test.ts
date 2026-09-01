@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import {
   accountComputers,
   agents,
+  computerCredentials,
   computers,
   imBindings,
   imMessageDeliveries,
@@ -1448,6 +1449,12 @@ async function seedFixture(db: UnitDatabase) {
     currentInstanceId: instanceId,
     createdAt: now,
     updatedAt: now,
+  });
+  await db.database.insert(computerCredentials).values({
+    computerId: workspaceComputerId,
+    secretHash: `session-services-${computerId}`,
+    issuedByUserId: bootstrap.userId,
+    issuedAt: now,
   });
   const agent = await new AgentService(db.database).createForAccount(bootstrap.userId, {
     name: "assistant",

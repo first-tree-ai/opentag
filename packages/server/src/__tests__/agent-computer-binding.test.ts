@@ -11,7 +11,14 @@ import { FEISHU_REQUIRED_TENANT_SCOPES, SLACK_REQUIRED_BOT_SCOPES } from "@opent
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
-import { accountComputers, agents, computers, users, workspaceComputers } from "../db/schema/index.js";
+import {
+  accountComputers,
+  agents,
+  computerCredentials,
+  computers,
+  users,
+  workspaceComputers,
+} from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
@@ -59,6 +66,11 @@ async function enrollComputer(database: DatabaseClient, ownerAccountId: string, 
     ownerAccountId,
     currentInstallationId: computer.id,
     ...computerProfile,
+  });
+  await database.insert(computerCredentials).values({
+    computerId: enrollment.id,
+    secretHash: `agent-binding-${computer.id}`,
+    issuedByUserId: ownerAccountId,
   });
   return { id: enrollment.id, installationId: computer.id };
 }

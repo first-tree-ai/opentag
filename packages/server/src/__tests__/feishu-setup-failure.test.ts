@@ -1,7 +1,13 @@
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { accountComputers, computers, imBindings, workspaceComputers } from "../db/schema/index.js";
+import {
+  accountComputers,
+  computerCredentials,
+  computers,
+  imBindings,
+  workspaceComputers,
+} from "../db/schema/index.js";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -61,6 +67,11 @@ async function setupFixture() {
     platform: "linux",
     arch: "x64",
     clientVersion: "0.0.1",
+  });
+  await setupDatabase.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `feishu-setup-${computer.id}`,
+    issuedByUserId: bootstrap.userId,
   });
   const agent = await new AgentService(setupDatabase.database).createForAccount(bootstrap.userId, {
     name: "setup-agent",

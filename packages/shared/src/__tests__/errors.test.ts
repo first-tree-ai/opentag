@@ -63,6 +63,7 @@ describe("error contracts", () => {
     "AGENT_REVISION_CONFLICT",
     "AGENT_REBIND_BLOCKED",
     "COMPUTER_NOT_FOUND",
+    "COMPUTER_REMOVAL_BLOCKED",
     "RESOURCE_NOT_FOUND",
   ])("accepts Agent control-plane error code %s", (code) => {
     expect(

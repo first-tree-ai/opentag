@@ -26,6 +26,7 @@ import {
   accountComputers,
   agentRuntimeConfigs,
   agents,
+  computerCredentials,
   computers,
   feishuInboundReceipts,
   imBindings,
@@ -138,6 +139,11 @@ async function fixture() {
     currentInstallationId: computer.id,
     ...computerProfile,
   });
+  await client.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `integration-im-binding-${computer.id}`,
+    issuedByUserId: bootstrap.userId,
+  });
   const agent = await new AgentService(client.database).createForAccount(bootstrap.userId, {
     name: "assistant",
     displayName: "Assistant",
@@ -215,6 +221,11 @@ async function unboundFixture() {
     ownerAccountId: bootstrap.userId,
     currentInstallationId: computer.id,
     ...computerProfile,
+  });
+  await client.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `integration-feishu-${computer.id}`,
+    issuedByUserId: bootstrap.userId,
   });
   const created = await new AgentService(client.database).createForAccount(bootstrap.userId, {
     name: "assistant",

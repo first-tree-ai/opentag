@@ -5,6 +5,7 @@ import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/suppor
 import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
 import {
   accountComputers,
+  computerCredentials,
   computers,
   imBindings,
   imMessageDeliveries,
@@ -58,6 +59,11 @@ async function createComputer(ownerUserId: string, workspaceId: string, label = 
     platform: "linux",
     arch: "x64",
     clientVersion: "0.0.2",
+  });
+  await unitDatabase.database.insert(computerCredentials).values({
+    computerId: enrollment.id,
+    secretHash: `agent-service-${installationId}`,
+    issuedByUserId: ownerUserId,
   });
   return { id: enrollment.id, installationId };
 }

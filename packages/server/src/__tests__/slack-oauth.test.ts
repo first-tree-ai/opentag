@@ -7,7 +7,13 @@ import {
 import { decodeJwt } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { accountComputers, computers, slackOAuthNonces, workspaceComputers } from "../db/schema/index.js";
+import {
+  accountComputers,
+  computerCredentials,
+  computers,
+  slackOAuthNonces,
+  workspaceComputers,
+} from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { AuthServiceError } from "../services/auth/errors.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -68,6 +74,11 @@ async function oauthFixture() {
     platform: "linux",
     arch: "x64",
     clientVersion: "0.0.1",
+  });
+  await oauthDatabase.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `slack-oauth-${computer.id}`,
+    issuedByUserId: bootstrap.userId,
   });
   const agent = await new AgentService(oauthDatabase.database).createForAccount(bootstrap.userId, {
     name: "oauth-agent",

@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createApp } from "../app.js";
 import {
   accountComputers,
+  computerCredentials,
   computers,
   imBindings,
   sessionPlacements,
@@ -132,6 +133,11 @@ async function persistedFixture() {
     platform: "linux",
     arch: "x64",
     clientVersion: "0.0.1",
+  });
+  await unitDatabase.database.insert(computerCredentials).values({
+    computerId: workspaceComputer.id,
+    secretHash: `im-binding-${computer.id}`,
+    issuedByUserId: bootstrap.userId,
   });
   const agent = await new AgentService(unitDatabase.database).createForAccount(bootstrap.userId, {
     name: "assistant",

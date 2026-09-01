@@ -300,6 +300,7 @@ export function Field({
   className,
   error,
   errorId,
+  hideLabel = false,
   hint,
   hintId,
   htmlFor: _htmlFor,
@@ -309,6 +310,7 @@ export function Field({
   className?: string;
   error?: ReactNode;
   errorId?: string;
+  hideLabel?: boolean;
   hint?: ReactNode;
   hintId?: string;
   htmlFor: string;
@@ -321,14 +323,21 @@ export function Field({
   };
   const child = isValidElement<LabelableControlProps>(children) ? children : undefined;
   const isKumoControl =
-    child?.type === KumoInputControl || child?.type === KumoInputAreaControl || child?.type === KumoSelectControl;
+    child?.type === KumoInputControl ||
+    child?.type === KumoInputAreaControl ||
+    child?.type === KumoSelect ||
+    child?.type === KumoSelectControl;
   const labelledChildren =
     isKumoControl && !child.props["aria-label"] && !child.props["aria-labelledby"]
       ? cloneElement(child, { "aria-labelledby": labelId })
       : children;
   return (
     <div className={classes("min-w-0", className)} data-ui="field">
-      <label className="mb-1 block text-sm font-medium text-kumo-default" htmlFor={_htmlFor} id={labelId}>
+      <label
+        className={classes(hideLabel ? "sr-only" : "mb-1 block text-sm font-medium text-kumo-default")}
+        htmlFor={_htmlFor}
+        id={labelId}
+      >
         {label}
       </label>
       <KumoField

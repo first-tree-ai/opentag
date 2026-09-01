@@ -10,6 +10,7 @@ import {
   Icon,
   type KumoInputControlProps,
   KumoSelectControl,
+  Select,
   SettingsList,
   SettingsRow,
   StatusIndicator,
@@ -91,6 +92,20 @@ describe("Kumo semantic adapter", () => {
       </KumoSelectControl>,
     );
     expect(screen.getByRole("combobox", { name: "Usage period" })).toBeTruthy();
+  });
+
+  it("associates a direct Kumo select with the visible Field label", () => {
+    render(
+      <Field htmlFor="locale" label="Language">
+        <Select id="locale" value="en">
+          <Select.Option value="en">English</Select.Option>
+          <Select.Option value="zh">简体中文</Select.Option>
+        </Select>
+      </Field>,
+    );
+    const selector = screen.getByRole("combobox", { name: "Language" });
+    expect(selector.getAttribute("aria-labelledby")).toBe("locale-label");
+    expect(selector.getAttribute("aria-label")).toBeNull();
   });
 
   it("normalizes non-string option identities for controlled selection", () => {

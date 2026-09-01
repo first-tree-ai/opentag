@@ -337,7 +337,7 @@ describe("Agent CLI core", () => {
     expect(formatAgentCreated(result)).toContain(agentId);
   });
 
-  it("creates an Agent with no Computer and names the command that binds one", async () => {
+  it("creates an Agent with no Computer and names the command that connects one", async () => {
     const client = api();
     client.listAccountComputers.mockResolvedValue({ computers: [] });
     client.createAgent.mockResolvedValue({ ...agent, computerId: null });
@@ -353,7 +353,7 @@ describe("Agent CLI core", () => {
       name: "code-reviewer",
       runtimeProvider: "codex",
     });
-    expect(result.warning).toContain("opentag agent bind");
+    expect(result.warning).toContain("opentag computer connect");
     expect(formatAgentCreated(result)).toContain("without a Computer");
   });
 

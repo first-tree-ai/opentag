@@ -99,6 +99,22 @@ export function ignoreHttpTraceRoute(path: string): boolean {
   );
 }
 
+function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOptions {
+  return {
+    level: options.loggerLevel ?? "info",
+    ...(options.loggerStream ? { stream: options.loggerStream } : {}),
+    serializers: {
+      req: (request) => ({
+        method: request.method,
+        url: sanitizeRequestUrl(request.url),
+        host: request.hostname,
+        remoteAddress: request.ip,
+        remotePort: request.socket.remotePort,
+      }),
+    },
+  };
+}
+
 function contentTypeParserErrorStatus(error: unknown): number | undefined {
   if (
     typeof error !== "object" ||
@@ -118,19 +134,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
     requestIdHeader: "x-request-id",
     genReqId: () => randomUUID(),
-    logger: {
-      level: options.loggerLevel ?? "info",
-      ...(options.loggerStream ? { stream: options.loggerStream } : {}),
-      serializers: {
-        req: (request) => ({
-          method: request.method,
-          url: sanitizeRequestUrl(request.url),
-          host: request.hostname,
-          remoteAddress: request.ip,
-          remotePort: request.socket.remotePort,
-        }),
-      },
-    },
+    logger: createFastifyLoggerOptions(options),
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
 

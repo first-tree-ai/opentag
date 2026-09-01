@@ -180,26 +180,20 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Ada")).toBeTruthy();
   });
 
-  it("routes an Account with incomplete setup into onboarding without a Workspace grant", async () => {
+  it("routes an Account with incomplete setup into onboarding without a legacy management scope", async () => {
     installApi({ workspaceless: true });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
-    expect(
-      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
-    ).toBe(false);
   });
 
-  it("keeps standalone onboarding reachable without a management Workspace", async () => {
+  it("keeps standalone onboarding reachable for an Account without completed setup", async () => {
     installApi({ workspaceless: true });
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
-    expect(
-      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
-    ).toBe(false);
   });
 
   it("routes an Account with incomplete setup into onboarding", async () => {
@@ -337,22 +331,10 @@ describe("OpenTag Web App Shell", () => {
     ).toBe(true);
   });
 
-  it("does not preserve the retired self-serve Workspace creation route", async () => {
-    installApi();
-    window.history.replaceState({}, "", "/workspaces/new");
-    render(<App />);
-    expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
-    expect(
-      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
-    ).toBe(false);
-  });
-
   it("keeps account controls personal and signs out from the account menu", async () => {
     installApi();
     render(<App />);
     const { menu } = await openAccountMenu();
-    expect(within(menu).queryByRole("group", { name: "Workspaces" })).toBeNull();
-    expect(within(menu).queryByRole("menuitem", { name: "Workspace management" })).toBeNull();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Account" }));
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
     expect(window.location.pathname).toBe("/account");
@@ -451,7 +433,7 @@ describe("OpenTag Web App Shell", () => {
     expect(computers.getAttribute("href")).toBe("/agents/computers");
     fireEvent.click(computers);
     expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Enrolled Computers" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connected Computers" })).toBeTruthy();
     expect(screen.getByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/computers");

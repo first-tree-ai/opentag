@@ -538,8 +538,8 @@ PR [#246](https://github.com/first-tree-ai/opentag/pull/246) 在
 `1f241dc42097471e2e194a4efbf8fba8098ba00e` 上已将 Server 选择改为本地 Computer credential，
 并增加 install-only Runtime 观察，但不能按现状直接合并，原因包括：
 
-- 将多个不同 enrolled Server 视为有效，但 Daemon 会拒绝这种配置；
-- 未验证本地 Computer identity 与 enrollment binding；
+- 将多个不同的已连接 Server 视为有效，但 Daemon 会拒绝这种配置；
+- 未验证本地 Computer identity 与 Account Computer binding；
 - 缺少 Daemon service 基线检查；
 - Server 请求没有 deadline；
 - 可能把具有执行位的目录当成 Runtime artifact；

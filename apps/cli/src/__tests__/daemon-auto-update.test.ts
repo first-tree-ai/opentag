@@ -49,10 +49,10 @@ function computerIdentity() {
 
 function machineCredentials() {
   return {
-    version: 2 as const,
+    version: 3 as const,
     computer: {
-      workspaceComputerId: "00000000-0000-4000-8000-000000000002",
-      computerId: computerIdentity().computerId,
+      computerId: "00000000-0000-4000-8000-000000000002",
+      installationId: computerIdentity().computerId,
       machineToken: `otmc_${"a".repeat(64)}`,
       serverUrl: computerIdentity().serverUrl,
     },

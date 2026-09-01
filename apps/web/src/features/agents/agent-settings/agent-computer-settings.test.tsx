@@ -232,7 +232,7 @@ describe("An Agent with no Computer", () => {
     await waitFor(() => expect(onAgentChanged).toHaveBeenCalled());
   });
 
-  it("does not bind by itself while several Computers are enrolled", async () => {
+  it("does not bind by itself while several Computers are connected", async () => {
     // The automatic bind belongs to the unambiguous case only.
     vi.spyOn(browserApi, "computers").mockResolvedValue({
       computers: [accountComputer, { ...accountComputer, computerId: OTHER_COMPUTER_ID, displayName: "Spare" }],
@@ -265,7 +265,7 @@ describe("An Agent with no Computer", () => {
 
   it("keeps a newly connected Computer's bind failure visible and retryable", async () => {
     /*
-     * The Computer that just enrolled is known to the connect step and not to the shared inventory
+     * The Computer that just connected is known to the connect step and not to the shared inventory
      * query -- the connect step reads through its own adapter and never refills that cache. A bind
      * target derived from the inventory therefore does not exist for a Computer that has only just
      * arrived, which used to hide the failure entirely and leave the reader on "Connect a Computer"

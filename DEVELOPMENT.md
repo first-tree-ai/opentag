@@ -27,7 +27,7 @@ workflow in this guide:
 
 1. Start the local PostgreSQL service and run the Server health-check path.
 2. Bootstrap an Account, install the development CLI, and exchange the Account login code.
-3. Enroll a Computer, start its daemon, and create an Agent configuration.
+3. Connect a Computer, start its daemon, and create an Agent configuration.
 4. Configure Google sign-in or the loopback development bypass when the Web App is needed.
 
 The sections below contain the commands and environment details for each step.

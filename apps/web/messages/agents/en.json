@@ -25,7 +25,7 @@
   "agents_computer_offline": "Offline",
   "agents_computer_online": "Online",
   "agents_computer_refresh_failed": "Computer refresh failed",
-  "agents_computers_description": "Enroll and recover the Computers used by your Agents.",
+  "agents_computers_description": "Connect and recover the Computers used by your Agents.",
   "agents_computers_title": "Computers",
   "agents_connect_feishu": "Connect Feishu",
   "agents_connect_messaging": "Connect messaging",

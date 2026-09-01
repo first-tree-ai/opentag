@@ -122,7 +122,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
 
-    const listed = await screen.findByRole("region", { name: "Enrolled Computers" });
+    const listed = await screen.findByRole("region", { name: "Connected Computers" });
     // An Account may hold several, so the page shows all of them and adding one stays available
     // rather than disappearing once the first exists.
     expect(within(listed).getAllByRole("listitem")).toHaveLength(3);

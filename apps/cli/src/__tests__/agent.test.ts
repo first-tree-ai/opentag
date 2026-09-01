@@ -300,7 +300,7 @@ describe("Agent CLI core", () => {
 
   it("resolves an owned Computer and rejects ambiguous or unknown choices", () => {
     expect(selectComputer({ computers: [computer] })).toEqual(computer);
-    // Nothing enrolled is an answer, not a failure: the Agent is created and bound later.
+    // No connected Computer is an answer, not a failure: the Agent is created and bound later.
     expect(selectComputer({ computers: [] })).toBeUndefined();
     expect(() =>
       selectComputer({

@@ -39,7 +39,7 @@ async function walk(directory: string): Promise<string[]> {
         if (entry.name === "node_modules" || entry.name === "dist") return [];
         return walk(path);
       }
-      return [".md", ".mjs", ".ts", ".tsx", ".yaml", ".yml"].includes(extname(entry.name)) ? [path] : [];
+      return [".json", ".md", ".mjs", ".ts", ".tsx", ".yaml", ".yml"].includes(extname(entry.name)) ? [path] : [];
     }),
   );
   return files.flat();
@@ -53,6 +53,7 @@ describe("retired ownership persistence allowlist", () => {
       resolve(repoRoot, "packages/shared/src"),
       resolve(repoRoot, "apps/cli/src"),
       resolve(repoRoot, "apps/web/src"),
+      resolve(repoRoot, "apps/web/messages"),
       resolve(repoRoot, "docs"),
       resolve(repoRoot, "e2e"),
       resolve(repoRoot, "scripts"),

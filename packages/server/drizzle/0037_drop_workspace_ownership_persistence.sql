@@ -17,7 +17,8 @@ BEGIN
 		"agents",
 		"slack_installations",
 		"session_placements",
-		"session_cli_proofs"
+		"session_cli_proofs",
+		"runtime_durable_work"
 	IN SHARE ROW EXCLUSIVE MODE;
 
 	-- Every legacy Workspace enrollment and every Account Computer must pair exactly one-to-one on
@@ -118,7 +119,6 @@ ALTER TABLE "session_placements" DROP COLUMN "workspace_computer_id";--> stateme
 ALTER TABLE "slack_installations" DROP COLUMN "workspace_id";--> statement-breakpoint
 ALTER TABLE "runtime_durable_work" DROP CONSTRAINT "runtime_durable_work_workspace_computer_id_account_computers_id_fk";--> statement-breakpoint
 ALTER TABLE "runtime_durable_work" RENAME COLUMN "workspace_computer_id" TO "computer_id";--> statement-breakpoint
-ALTER TABLE "runtime_durable_work" ADD CONSTRAINT "runtime_durable_work_computer_id_computers_id_fk" FOREIGN KEY ("computer_id") REFERENCES "public"."computers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "computer_connect_codes" ADD CONSTRAINT "computer_connect_codes_consumption_pair" CHECK (("computer_connect_codes"."consumed_computer_id" is null) = ("computer_connect_codes"."consumed_at" is null));--> statement-breakpoint
 CREATE INDEX "computer_connect_codes_issued_by_account_created_idx" ON "computer_connect_codes" USING btree ("issued_by_account_id","created_at");--> statement-breakpoint
 -- Drop the management Workspace tables and the legacy credential shadows.
@@ -139,6 +139,7 @@ ALTER TABLE "computer_connect_codes" RENAME CONSTRAINT "computer_connect_codes_c
 ALTER TABLE "computer_credentials" RENAME CONSTRAINT "computer_credentials_computer_id_account_computers_id_fk" TO "computer_credentials_computer_id_computers_id_fk";--> statement-breakpoint
 ALTER TABLE "session_cli_proofs" RENAME CONSTRAINT "session_cli_proofs_computer_id_account_computers_id_fk" TO "session_cli_proofs_computer_id_computers_id_fk";--> statement-breakpoint
 ALTER TABLE "session_placements" RENAME CONSTRAINT "session_placements_computer_id_account_computers_id_fk" TO "session_placements_computer_id_computers_id_fk";--> statement-breakpoint
+ALTER TABLE "runtime_durable_work" ADD CONSTRAINT "runtime_durable_work_computer_id_computers_id_fk" FOREIGN KEY ("computer_id") REFERENCES "public"."computers"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER INDEX "account_computers_owner_account_id_idx" RENAME TO "computers_owner_account_id_idx";--> statement-breakpoint
 DROP INDEX "account_computers_current_installation_id_idx";--> statement-breakpoint
 CREATE UNIQUE INDEX "computers_current_installation_id_unique" ON "computers" USING btree ("current_installation_id");

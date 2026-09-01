@@ -14,7 +14,7 @@ import { SessionCliProofService, SessionService } from "../../services/sessions/
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
-const THROUGH_PREVIOUS_COUNT = 32;
+const THROUGH_PREVIOUS_COUNT = 37;
 
 const ACCOUNT_A = "00000000-0000-4000-8000-0000000000a1";
 const ACCOUNT_B = "00000000-0000-4000-8000-0000000000a2";
@@ -43,6 +43,7 @@ const DELIVERY_PENDING = "00000000-0000-4000-8000-00000000002d";
 const DELIVERY_ACCEPTED = "00000000-0000-4000-8000-00000000002e";
 const INSTANCE_CURRENT = "00000000-0000-4000-8000-00000000003a";
 const INSTANCE_STALE = "00000000-0000-4000-8000-00000000003b";
+const DURABLE_WORK = "00000000-0000-4000-8000-00000000003c";
 
 const EARLY = new Date("2026-08-20T00:00:00.000Z");
 const LATE = new Date("2026-08-21T00:00:00.000Z");
@@ -91,11 +92,11 @@ async function truncatedMigrations(lastIndex: number): Promise<string> {
 }
 
 /**
- * A populated 0030 database: active and terminal records across every table the contract
+ * A populated 0036 database: active and terminal records across every table the contract
  * migration touches, including a stale Session CLI proof instance and unconsumed codes.
  * This is an explicit historical upgrade fixture, so it writes pre-contract legacy rows.
  */
-async function populateActive0030(sql: postgres.Sql): Promise<void> {
+async function populateActive0036(sql: postgres.Sql): Promise<void> {
   await sql`
     insert into users (id, email, display_name, setup_completed_at)
     values
@@ -290,6 +291,14 @@ async function populateActive0030(sql: postgres.Sql): Promise<void> {
       ${EARLY}, ${LATE}, ${EARLY}, 'turn-matrix', ${"9".repeat(64)}, ${INSTANCE_CURRENT}
     )
   `;
+  await sql`
+    insert into runtime_durable_work (
+      id, workspace_computer_id, kind, record_key, payload, status, attempts, accepted_at, updated_at
+    )
+    values (
+      ${DURABLE_WORK}, ${COMP_A1}, 'session-message', 'matrix:pending', '{}'::jsonb, 'accepted', 0, 1, 1
+    )
+  `;
 }
 
 interface FinalShape {
@@ -305,6 +314,7 @@ interface FinalShape {
   placements: number;
   proofs: number;
   deliveries: number;
+  durable_work: number;
 }
 
 async function finalShape(sql: postgres.Sql): Promise<FinalShape> {
@@ -332,7 +342,8 @@ async function finalShape(sql: postgres.Sql): Promise<FinalShape> {
       (select count(*)::int from sessions) as sessions,
       (select count(*)::int from session_placements) as placements,
       (select count(*)::int from session_cli_proofs) as proofs,
-      (select count(*)::int from im_message_deliveries) as deliveries
+      (select count(*)::int from im_message_deliveries) as deliveries,
+      (select count(*)::int from runtime_durable_work) as durable_work
   `;
   if (!row) throw new Error("Final shape query returned no row");
   return row;
@@ -453,6 +464,12 @@ async function expectCanonicalDataPreserved(sql: postgres.Sql): Promise<void> {
     { id: ACCOUNT_A, setup: EARLY },
     { id: ACCOUNT_B, setup: null },
   ]);
+
+  const durableWork = await sql<{ id: string; computer: string; key: string; status: string }[]>`
+    select id::text as id, computer_id::text as computer, record_key as key, status::text as status
+    from runtime_durable_work
+  `;
+  expect(durableWork).toEqual([{ id: DURABLE_WORK, computer: COMP_A1, key: "matrix:pending", status: "accepted" }]);
 }
 
 async function expectFinalSchema(sql: postgres.Sql, migrations: number): Promise<void> {
@@ -470,6 +487,7 @@ async function expectFinalSchema(sql: postgres.Sql, migrations: number): Promise
     placements: 2,
     proofs: 1,
     deliveries: 2,
+    durable_work: 1,
   });
   const constraints = await sql<{ conname: string }[]>`
     select conname from pg_constraint
@@ -479,7 +497,8 @@ async function expectFinalSchema(sql: postgres.Sql, migrations: number): Promise
       'session_placements_computer_id_computers_id_fk',
       'session_cli_proofs_computer_id_computers_id_fk',
       'computer_connect_codes_target_computer_id_computers_id_fk',
-      'computer_connect_codes_consumed_computer_id_computers_id_fk'
+      'computer_connect_codes_consumed_computer_id_computers_id_fk',
+      'runtime_durable_work_computer_id_computers_id_fk'
     )
     order by conname
   `;
@@ -488,6 +507,7 @@ async function expectFinalSchema(sql: postgres.Sql, migrations: number): Promise
     "computer_connect_codes_consumed_computer_id_computers_id_fk",
     "computer_connect_codes_target_computer_id_computers_id_fk",
     "computer_credentials_computer_id_computers_id_fk",
+    "runtime_durable_work_computer_id_computers_id_fk",
     "session_cli_proofs_computer_id_computers_id_fk",
     "session_placements_computer_id_computers_id_fk",
   ]);
@@ -641,14 +661,14 @@ describe("workspace ownership contract migration", () => {
     }
   });
 
-  it("migrates the immediately previous 0031 level with populated active and terminal records", async () => {
+  it("migrates the immediately previous 0036 level with populated active and terminal records", async () => {
     const journal = await readJournal();
-    const through0031 = await truncatedMigrations(31);
+    const through0036 = await truncatedMigrations(36);
     try {
-      await migrateDatabase(databaseUrl, through0031);
+      await migrateDatabase(databaseUrl, through0036);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        await populateActive0030(sql);
+        await populateActive0036(sql);
         await migrateDatabase(databaseUrl, migrationsFolder);
         await expect(verifyDatabaseMigrations(databaseUrl, migrationsFolder)).resolves.toBeUndefined();
         await expectFinalSchema(sql, journal.entries.length);
@@ -657,7 +677,7 @@ describe("workspace ownership contract migration", () => {
         await sql.end();
       }
     } finally {
-      await rm(through0031, { force: true, recursive: true });
+      await rm(through0036, { force: true, recursive: true });
     }
   });
 
@@ -704,13 +724,13 @@ describe("workspace ownership contract migration", () => {
     }
   });
 
-  it.each(FAIL_CASES)("fail-closes on $name and leaves the database exactly at 0030", async ({ error, inject }) => {
-    const through0031 = await truncatedMigrations(31);
+  it.each(FAIL_CASES)("fail-closes on $name and leaves the database exactly at 0036", async ({ error, inject }) => {
+    const through0036 = await truncatedMigrations(36);
     try {
-      await migrateDatabase(databaseUrl, through0031);
+      await migrateDatabase(databaseUrl, through0036);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        await populateActive0030(sql);
+        await populateActive0036(sql);
         await inject(sql);
         await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(error);
         const [state] = await sql<{ migrations: number; legacy_tables: number; legacy_columns: number }[]>`
@@ -735,18 +755,18 @@ describe("workspace ownership contract migration", () => {
         await sql.end();
       }
     } finally {
-      await rm(through0031, { force: true, recursive: true });
+      await rm(through0036, { force: true, recursive: true });
     }
   });
 
   it("rolls back a failed contract migration and retries cleanly after the damage is removed", async () => {
     const journal = await readJournal();
-    const through0031 = await truncatedMigrations(31);
+    const through0036 = await truncatedMigrations(36);
     try {
-      await migrateDatabase(databaseUrl, through0031);
+      await migrateDatabase(databaseUrl, through0036);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        await populateActive0030(sql);
+        await populateActive0036(sql);
         await sql`delete from computer_credentials where id = ${CRED_REVOKED}`;
         await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(
           /without an identical canonical credential/,
@@ -776,17 +796,17 @@ describe("workspace ownership contract migration", () => {
         await sql.end();
       }
     } finally {
-      await rm(through0031, { force: true, recursive: true });
+      await rm(through0036, { force: true, recursive: true });
     }
   });
 
   it("serves startup verification and canonical reads and writes after a populated upgrade", async () => {
-    const through0031 = await truncatedMigrations(31);
+    const through0036 = await truncatedMigrations(36);
     try {
-      await migrateDatabase(databaseUrl, through0031);
+      await migrateDatabase(databaseUrl, through0036);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        await populateActive0030(sql);
+        await populateActive0036(sql);
       } finally {
         await sql.end();
       }
@@ -876,7 +896,7 @@ describe("workspace ownership contract migration", () => {
         await client.sql.end();
       }
     } finally {
-      await rm(through0031, { force: true, recursive: true });
+      await rm(through0036, { force: true, recursive: true });
     }
   });
 });

@@ -429,9 +429,8 @@ describe("RuntimeConnection", () => {
         type: "auth:result",
         requestId: auth?.requestId,
         ok: true,
-        workspaceComputerId: randomUUID(),
-        workspaceId: randomUUID(),
         computerId: randomUUID(),
+        installationId: randomUUID(),
       });
       const baseWelcome = welcome(10, 2_000);
       const { "runtime.channelTarget": _omitted, ...legacyServerCapabilities } = RUNTIME_SERVER_CAPABILITY_OFFERS;

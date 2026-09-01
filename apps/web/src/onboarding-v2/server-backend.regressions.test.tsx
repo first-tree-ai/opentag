@@ -277,7 +277,7 @@ describe("Server-backed onboarding: the defects it had", () => {
   it("refuses to resume an Agent that has no Computer rather than reporting someone else's machine", async () => {
     /*
      * An unbound Agent is not resumed at all. Reporting a Computer for it would have to come from
-     * an arrival -- a machine on the Account that enrolled or reconnected -- which identifies a
+     * an arrival -- a machine on the Account that connected or reconnected -- which identifies a
      * machine but not one this Agent was ever given, and the run would then advance into messaging,
      * which refuses an Agent with nowhere to run. So the reader is handed the page where the Agent
      * gets a Computer instead, and nothing durable is written on a guess.

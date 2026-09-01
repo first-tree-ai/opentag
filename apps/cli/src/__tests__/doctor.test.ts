@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  probeIntegrationCliInstallations,
   ServerHealthConfigurationError,
   ServerHealthHttpError,
   ServerHealthNetworkError,
@@ -438,39 +439,117 @@ describe("doctor Agent Runtime CLI observations", () => {
 });
 
 describe("doctor IM Provider CLI observations", () => {
-  it("reports account-global selections without installing or making either provider globally required", async () => {
+  it("reports installed Lark CLI and Slack CLI canonical paths without blocking", async () => {
     const home = await createHome();
-    const providerCliInspector = vi.fn().mockResolvedValue([
-      readyProviderCli("feishu", "/account/.opentag/provider-cli/bin/lark-cli", "1.0.92"),
-      {
-        ...readyProviderCli("slack", "/account/.opentag/provider-cli/bin/slack", "4.7.0"),
-        state: "absent",
-        readiness: "install",
-        selection: undefined,
-        fingerprint: undefined,
-        diagnostic: { code: "not_installed" },
-      },
-    ]);
+    const result = await runHealthyDoctor(home, {
+      integrationCliDetector: vi.fn().mockResolvedValue([
+        {
+          cli: "feishu",
+          displayName: "Lark CLI",
+          path: "/usr/local/bin/lark-cli",
+          source: "caller-path",
+          status: "installed",
+        },
+        {
+          cli: "slack",
+          displayName: "Slack CLI",
+          path: "/opt/homebrew/bin/slack",
+          source: "well-known",
+          status: "installed",
+        },
+      ]),
+    });
 
-    const result = await runHealthyDoctor(home, { providerCliInspector });
-
-    expect(providerCliInspector).toHaveBeenCalledOnce();
     expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
       blocking: false,
-      path: "/account/.opentag/provider-cli/bin/lark-cli",
+      detail: "installed at /usr/local/bin/lark-cli (caller-path)",
+      observedFrom: "current CLI process environment and operating-system account locations",
+      path: "/usr/local/bin/lark-cli",
       status: "pass",
+    });
+    expect(check(result.checks, "provider-cli.slack.installation")).toMatchObject({
+      blocking: false,
+      detail: "installed at /opt/homebrew/bin/slack (well-known)",
+      path: "/opt/homebrew/bin/slack",
+      status: "pass",
+    });
+    expect(result.message).toContain("/usr/local/bin/lark-cli (caller-path)");
+    expect(result.message).toContain("/opt/homebrew/bin/slack (well-known)");
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("reports a missing Integration CLI as non-blocking info", async () => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home);
+
+    expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
+      blocking: false,
+      detail: "not installed",
+      status: "info",
     });
     expect(check(result.checks, "provider-cli.slack.installation")).toMatchObject({
       blocking: false,
       status: "info",
     });
+    expect(result.message).toContain("Lark CLI: not installed");
     expect(result.exitCode).toBe(0);
   });
 
-  it("keeps unsafe or unreadable Provider CLI state visible without mutating it", async () => {
+  it("keeps Integration CLI unknown results non-blocking", async () => {
     const home = await createHome();
     const result = await runHealthyDoctor(home, {
-      providerCliInspector: vi.fn().mockRejectedValue(new Error("account-global inspection failed")),
+      integrationCliDetector: vi.fn().mockResolvedValue([
+        {
+          cli: "feishu",
+          detail: "filesystem inspection failed",
+          displayName: "Lark CLI",
+          status: "unknown",
+        },
+        { cli: "slack", displayName: "Slack CLI", status: "not-installed" },
+      ]),
+    });
+
+    expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
+      blocking: false,
+      status: "unknown",
+    });
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("observes Integration CLIs through install-only discovery without executing them", async () => {
+    const home = await createHome();
+    const bin = join(home, "bin");
+    await mkdir(bin);
+    const sentinel = join(home, "executed");
+    const lark = join(bin, "lark-cli");
+    await writeFile(lark, `#!/bin/sh\ntouch "${sentinel}"\nexit 0\n`, { mode: 0o700 });
+    const result = await runHealthyDoctor(home, {
+      env: { HOME: home, OPENTAG_HOME: home, PATH: bin },
+      integrationCliDetector: (request) =>
+        probeIntegrationCliInstallations({
+          candidateAllowed: () => true,
+          desktopAppDirs: () => [],
+          environment: request.environment,
+          home,
+          platform: "linux",
+          wellKnownDirs: () => [],
+        }),
+      platform: "linux",
+    });
+
+    expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
+      blocking: false,
+      path: await realpath(lark),
+      status: "pass",
+    });
+    await expect(realpath(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("does not add an Integration readiness or blocking contract when the detector fails", async () => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home, {
+      integrationCliDetector: vi.fn().mockRejectedValue(new Error("provider selection unavailable")),
     });
 
     expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
@@ -481,6 +560,8 @@ describe("doctor IM Provider CLI observations", () => {
       blocking: false,
       status: "unknown",
     });
+    expect(result.checks.some((item) => item.code.startsWith("provider-cli.") && item.blocking)).toBe(false);
+    expect(result.message).not.toMatch(/Integration (?:CLI )?ready/iu);
     expect(result.exitCode).toBe(0);
   });
 });
@@ -513,7 +594,8 @@ describe("doctor report and exit contract", () => {
       "Agent Runtime version or protocol compatibility",
       "Agent Runtime visibility from the installed daemon environment",
       "machine-token authentication or WebSocket registration",
-      "Integration CLI credential validity and active-binding readiness",
+      "Integration CLI version compatibility, authentication, credentials, installation configuration, or network availability",
+      "Integration CLI visibility from the installed daemon environment",
       "end-to-end Turn or handoff delivery",
     ]);
     expect(result.checks.map((item) => item.code)).toEqual([
@@ -563,15 +645,10 @@ async function runHealthyDoctor(home: string, overrides: Partial<DoctorOptions> 
     env: { OPENTAG_HOME: home },
     healthChecker: vi.fn().mockResolvedValue({ service: "opentag-server", status: "ok" } as const),
     inspectDaemonService: vi.fn().mockResolvedValue(activeService(home)),
+    integrationCliDetector: vi.fn().mockResolvedValue(missingIntegrationClis()),
     nodeVersion: "v24.0.0",
     platform: "darwin",
     runtimeDetector: vi.fn().mockResolvedValue(installedCodex()),
-    providerCliInspector: vi
-      .fn()
-      .mockResolvedValue([
-        readyProviderCli("feishu", "/account/.opentag/provider-cli/bin/lark-cli", "1.0.92"),
-        readyProviderCli("slack", "/account/.opentag/provider-cli/bin/slack", "4.7.0"),
-      ]),
     ...overrides,
   });
 }
@@ -604,23 +681,11 @@ function installedCodex() {
   ];
 }
 
-function readyProviderCli(provider: "feishu" | "slack", path: string, version: string) {
-  return {
-    provider,
-    state: "ready" as const,
-    readiness: "ready" as const,
-    selection: {
-      kind: "managed" as const,
-      path,
-      version,
-      trust: "catalog-verified" as const,
-      generation: 1,
-    },
-    fingerprint: `v1:${"a".repeat(64)}`,
-    launcher: { path, status: "valid" as const },
-    globalCommand: { active: true, path, resolvedPath: path },
-    warnings: [],
-  };
+function missingIntegrationClis() {
+  return [
+    { cli: "feishu" as const, displayName: "Lark CLI", status: "not-installed" as const },
+    { cli: "slack" as const, displayName: "Slack CLI", status: "not-installed" as const },
+  ];
 }
 
 interface EnrollmentOverrides {

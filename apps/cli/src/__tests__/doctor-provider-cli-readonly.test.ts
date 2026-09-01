@@ -1,16 +1,8 @@
-import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import {
-  computeFileIdentity,
-  computeTargetFingerprint,
-  ProviderCliManager,
-  resolveProviderCliAccountLayout,
-  writeProviderCliSelection,
-} from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DOCTOR_NOT_EVALUATED, type DoctorCheck, runDoctor } from "../core/diagnostics/doctor.js";
-import { runProviderCliInspect } from "../core/provider-cli/inspect.js";
-import { fakeCliScript, makeTempDir, snapshotFileTree } from "./provider-cli-fixtures.js";
+import { makeTempDir, snapshotFileTree } from "./provider-cli-fixtures.js";
 
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const serverUrl = "https://server.example";
@@ -21,98 +13,63 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("doctor and inspect Provider CLI read-only contract", () => {
-  it("leaves account-global files, hashes, and mtimes unchanged and never downloads, ensures, grants, or calls Provider APIs", async () => {
+describe("doctor Provider CLI install-only contract", () => {
+  it("reports paths without executing CLIs or inspecting configuration, credentials, versions, or the network", async () => {
     const openTagHome = await createHome();
     const accountHome = await makeTempDir("opentag-doctor-account-");
     homes.push(accountHome);
     const tools = join(accountHome, "tools");
     const invocationLog = join(accountHome, "cli-invocations.log");
-    await writeLoggingCli(tools, "feishu", "1.0.92", invocationLog);
-    const target = join(tools, "lark-cli");
-    const layout = resolveProviderCliAccountLayout(accountHome);
-    await mkdir(layout.state, { recursive: true, mode: 0o700 });
-    const identity = await computeFileIdentity(target);
-    await writeProviderCliSelection(
-      layout,
-      "feishu",
-      {
-        kind: "external",
-        executablePath: identity.path,
-        fingerprint: computeTargetFingerprint(identity, "1.0.92"),
-        trust: "catalog-verified",
-        version: "1.0.92",
-      },
-      undefined,
-    );
+    const lark = await writeLoggingCli(tools, "lark-cli", invocationLog);
+    const slack = await writeLoggingCli(tools, "slack", invocationLog);
+    const providerState = join(accountHome, ".opentag", "provider-cli", "state");
+    await mkdir(providerState, { recursive: true, mode: 0o700 });
+    await writeFile(join(providerState, "feishu.json"), "not valid provider selection json\n", { mode: 0o600 });
+    await writeFile(join(accountHome, "credentials.json"), '{"token":"must-not-be-read"}\n', { mode: 0o600 });
     await writeFile(invocationLog, "", { mode: 0o600 });
 
-    const fetcher = vi.fn(async () => {
-      throw new Error("doctor/inspect must not download Provider CLI artifacts");
-    });
-    const manager = new ProviderCliManager({
-      accountHome,
-      env: { PATH: tools },
-      fetcher,
-    });
-    const ensure = vi.spyOn(manager, "ensure");
-    const before = await snapshotFileTree(layout.root);
-
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const before = await snapshotFileTree(accountHome);
     const result = await runDoctor({
       arch: "arm64",
       channel: "stable",
       cliVersion: "0.1.0",
-      env: { OPENTAG_HOME: openTagHome, PATH: tools },
+      env: { HOME: accountHome, OPENTAG_HOME: openTagHome, PATH: tools },
       healthChecker: vi.fn().mockResolvedValue({ service: "opentag-server", status: "ok" } as const),
       inspectDaemonService: vi.fn().mockResolvedValue(activeService(openTagHome)),
       nodeVersion: "v24.0.0",
       platform: process.platform,
       runtimeDetector: vi.fn().mockResolvedValue(installedCodex()),
-      providerCliInspector: async () => Promise.all([manager.inspect("feishu"), manager.inspect("slack")]),
     });
 
     expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
       blocking: false,
-      status: "fail",
+      detail: `installed at ${await realpath(lark)} (caller-path)`,
+      observedFrom: "current CLI process environment and operating-system account locations",
+      path: await realpath(lark),
+      status: "pass",
     });
     expect(check(result.checks, "provider-cli.slack.installation")).toMatchObject({
       blocking: false,
-      status: "info",
+      detail: `installed at ${await realpath(slack)} (caller-path)`,
+      path: await realpath(slack),
+      status: "pass",
     });
     expect(result.exitCode).toBe(0);
     expect(result.notEvaluated).toEqual(DOCTOR_NOT_EVALUATED);
-    expect(result.message).toContain("Integration CLI credential validity and active-binding readiness");
+    expect(result.message).toContain("version compatibility, authentication, credentials, installation configuration");
     expect(result.message).not.toMatch(/auth\.test|validation grant|chat\.postMessage|im\.message/i);
-    expect(result.message).toContain("Not evaluated");
-
-    const inspect = await runProviderCliInspect({
-      accountHome,
-      env: { PATH: tools },
-      fetcher,
-      provider: "all",
-      json: true,
-      stdout: () => undefined,
-      stderr: () => undefined,
-    });
-    expect(inspect.exitCode).toBe(1);
-    expect(inspect.results.map((entry) => entry.provider)).toEqual(["feishu", "slack"]);
-
-    expect(ensure).not.toHaveBeenCalled();
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(await snapshotFileTree(layout.root)).toEqual(before);
-    const invocations = await readFile(invocationLog, "utf8");
-    expect(invocations).not.toMatch(/auth\.test|auth status|--verify|chat\.postMessage|im\.message/);
-    expect(invocations).not.toContain("ensure");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(await readFile(invocationLog, "utf8")).toBe("");
+    expect(await snapshotFileTree(accountHome)).toEqual(before);
   });
 });
 
-async function writeLoggingCli(directory: string, provider: "feishu" | "slack", version: string, logPath: string) {
+async function writeLoggingCli(directory: string, command: string, logPath: string): Promise<string> {
   const quoted = `'${logPath.replaceAll("'", `'"'"'`)}'`;
-  const body = fakeCliScript(provider, version).replace("#!/bin/sh\n", `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quoted}\n`);
   await mkdir(directory, { recursive: true });
-  const path = join(directory, provider === "feishu" ? "lark-cli" : "slack");
-  await writeFile(path, body, { mode: 0o755 });
-  await chmod(path, 0o755);
+  const path = join(directory, command);
+  await writeFile(path, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quoted}\n`, { mode: 0o755 });
   return path;
 }
 

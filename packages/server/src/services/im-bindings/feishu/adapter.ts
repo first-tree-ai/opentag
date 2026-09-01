@@ -10,6 +10,7 @@ import {
   WSClient,
 } from "@larksuiteoapi/node-sdk";
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
+import { emitRootSpan, imAttrs, outcomeAttrs } from "../../../observability/index.js";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
@@ -29,6 +30,7 @@ interface FeishuRawEnvelope {
 }
 
 interface RawFeishuMessageEvent {
+  header?: { event_id?: string; tenant_key?: string };
   event_id?: string;
   tenant_key?: string;
   sender: {
@@ -56,6 +58,7 @@ interface RawFeishuMessageEvent {
 }
 
 interface RawFeishuRecallEvent {
+  header?: { event_id?: string; tenant_key?: string };
   event_id?: string;
   tenant_key?: string;
   message_id?: string;
@@ -110,6 +113,95 @@ const REDACTING_SDK_LOGGER = {
   debug: () => undefined,
   trace: () => undefined,
 };
+
+const DEDUPLICATION_TTL_MS = 10 * 60 * 1000;
+const DEDUPLICATION_MAX_ENTRIES = 10_000;
+
+type FeishuRawInboundEvent = RawFeishuMessageEvent | RawFeishuRecallEvent;
+
+function providerEventIdentity(raw: FeishuRawInboundEvent): {
+  keys: string[];
+  providerEventId: string | null;
+  externalMessageId: string | null;
+} | null {
+  const providerEventId = raw.header?.event_id ?? raw.event_id ?? null;
+  if ("message" in raw) {
+    const externalMessageId = raw.message.message_id;
+    const messageKey = `message:${externalMessageId}:${raw.message.create_time}`;
+    if (providerEventId) {
+      return { keys: [`event:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+    }
+    return {
+      keys: [messageKey],
+      providerEventId: null,
+      externalMessageId,
+    };
+  }
+  const externalMessageId = raw.message_id ?? null;
+  if (!externalMessageId && !providerEventId) return null;
+  const messageKey = `recall:${externalMessageId}:${raw.recall_time ?? "unknown"}`;
+  if (providerEventId) {
+    return { keys: [`event:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+  }
+  return {
+    keys: [messageKey],
+    providerEventId: null,
+    externalMessageId,
+  };
+}
+
+function createFeishuInboundDeduplicator() {
+  const entries = new Map<string, { expiresAt: number; promise?: Promise<void> }>();
+
+  const prune = (now: number): void => {
+    for (const [key, entry] of entries) {
+      if (entry.expiresAt <= now) entries.delete(key);
+    }
+    while (entries.size > DEDUPLICATION_MAX_ENTRIES) {
+      const oldest = entries.keys().next().value;
+      if (oldest === undefined) break;
+      entries.delete(oldest);
+    }
+  };
+
+  return async (raw: FeishuRawInboundEvent, onMessage: () => Promise<void>): Promise<void> => {
+    const identity = providerEventIdentity(raw);
+    if (!identity) return onMessage();
+    const now = Date.now();
+    prune(now);
+    const existing = identity.keys.map((key) => entries.get(key)).find((entry) => entry !== undefined);
+    if (existing) {
+      emitRootSpan("feishu.inbound.deduplicated", {
+        ...imAttrs({
+          provider: "feishu",
+          providerEventId: identity.providerEventId,
+          externalMessageId: identity.externalMessageId,
+          duplicate: true,
+        }),
+        ...outcomeAttrs("duplicate"),
+      });
+      if (existing.promise) await existing.promise;
+      return;
+    }
+    const promise = onMessage();
+    const entry = { expiresAt: now + DEDUPLICATION_TTL_MS, promise };
+    for (const key of identity.keys) entries.set(key, entry);
+    try {
+      await promise;
+    } catch (error) {
+      for (const key of identity.keys) {
+        const current = entries.get(key);
+        if (current?.promise === promise) entries.delete(key);
+      }
+      throw error;
+    } finally {
+      for (const key of identity.keys) {
+        const current = entries.get(key);
+        if (current?.promise === promise) entries.set(key, { expiresAt: current.expiresAt });
+      }
+    }
+  };
+}
 
 export function feishuDomainForWorkspaceBrand(teamBrand?: "feishu" | "lark" | null): Domain {
   return teamBrand === "lark" ? Domain.Lark : Domain.Feishu;
@@ -178,6 +270,8 @@ function parseRawContent(message: RawFeishuMessageEvent["message"]): {
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
   const parsed = parseRawContent(raw.message);
   const senderId = raw.sender.sender_id?.open_id ?? raw.sender.sender_id?.user_id ?? "system";
+  const eventId = raw.header?.event_id ?? raw.event_id;
+  const tenantKey = raw.header?.tenant_key ?? raw.tenant_key ?? raw.sender.tenant_key;
   return {
     messageId: raw.message.message_id,
     chatId: raw.message.chat_id,
@@ -200,8 +294,8 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
     replyToMessageId: raw.message.parent_id,
     createTime: Number(raw.message.create_time),
     raw: {
-      event_id: raw.event_id,
-      tenant_key: raw.tenant_key,
+      event_id: eventId,
+      tenant_key: tenantKey,
       event: { sender: { sender_type: raw.sender.sender_type, tenant_key: raw.sender.tenant_key } },
       opentagOperation: "created",
     } satisfies FeishuRawEnvelope,
@@ -223,8 +317,8 @@ function rawRecallToNormalized(raw: RawFeishuRecallEvent): NormalizedMessage | u
     mentionedBot: false,
     createTime: Number(raw.recall_time ?? Date.now()),
     raw: {
-      event_id: raw.event_id ?? `${raw.message_id}:${raw.recall_time ?? "unknown"}:recalled`,
-      tenant_key: raw.tenant_key,
+      event_id: raw.header?.event_id ?? raw.event_id ?? `${raw.message_id}:${raw.recall_time ?? "unknown"}:recalled`,
+      tenant_key: raw.header?.tenant_key ?? raw.tenant_key,
       opentagOperation: "deleted",
       opentagConversationKind: "unknown",
     } satisfies FeishuRawEnvelope,
@@ -303,15 +397,16 @@ export function createReliableFeishuDispatcher(
   onMessage: (message: NormalizedMessage) => Promise<void> | void,
 ): EventDispatcher {
   const dispatcher = new EventDispatcher({ logger: REDACTING_SDK_LOGGER, loggerLevel: LoggerLevel.error });
+  const deduplicate = createFeishuInboundDeduplicator();
   dispatcher.register({
     "im.message.receive_v1": async (raw: RawFeishuMessageEvent) => {
       // Deliberately bypass LarkChannel's SafetyPipeline. EventDispatcher
       // awaits this promise, and WSClient maps rejection to a 500 ACK.
-      await onMessage(rawReceiveToNormalized(raw));
+      await deduplicate(raw, async () => onMessage(rawReceiveToNormalized(raw)));
     },
     "im.message.recalled_v1": async (raw: RawFeishuRecallEvent) => {
       const normalized = rawRecallToNormalized(raw);
-      if (normalized) await onMessage(normalized);
+      if (normalized) await deduplicate(raw, async () => onMessage(normalized));
     },
   });
   return dispatcher;

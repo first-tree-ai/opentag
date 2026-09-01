@@ -1,5 +1,6 @@
 import { lstat, readFile } from "node:fs/promises";
 import { validatePrivateDirectory } from "@opentag/client";
+import { buildChildEnvironment } from "../command/environment.js";
 import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
 
@@ -73,11 +74,12 @@ export async function applyDaemonEnvironment(
   home: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<DaemonEnvironmentResult> {
-  const result = await loadDaemonEnvironment(home, environment);
-  for (const [key, value] of Object.entries(result.env)) {
-    if (value !== undefined) environment[key] = value;
-  }
-  return result;
+  return loadDaemonEnvironment(home, environment);
+}
+
+/** Build the daemon child environment as a detached object. */
+export function buildDaemonChildEnvironment(result: DaemonEnvironmentResult): NodeJS.ProcessEnv {
+  return buildChildEnvironment(result.env);
 }
 
 function parseEnvironmentValue(rawValue: string): string | undefined {

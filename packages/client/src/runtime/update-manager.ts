@@ -113,7 +113,7 @@ export class UpdateManager {
       state.currentVersion = this.#options.currentVersion;
       if (state.target) {
         const comparison = compareSemVer(state.target, this.#options.currentVersion);
-        if (comparison === 0 && state.state !== "installed") {
+        if (state.target === this.#options.currentVersion && state.state !== "installed") {
           state.state = "installed";
           const attempt = state.attempts[state.target];
           if (attempt) {
@@ -148,8 +148,7 @@ export class UpdateManager {
       );
       return;
     }
-    const comparison = compareSemVer(advertisement.version, this.#options.currentVersion);
-    if (comparison === 0) {
+    if (advertisement.version === this.#options.currentVersion) {
       this.#latestTarget = advertisement.version;
       this.#logger.debug({ version: advertisement.version }, "Server target matches the running version");
       this.#deciding ??= this.#recordSatisfiedTarget(advertisement.version).finally(() => {
@@ -163,6 +162,7 @@ export class UpdateManager {
       });
       return;
     }
+    const comparison = compareSemVer(advertisement.version, this.#options.currentVersion);
     if (comparison < 0) {
       // Monotonic forward motion only: an older advertisement is never an automatic downgrade.
       this.#logger.info(
@@ -171,7 +171,8 @@ export class UpdateManager {
       );
       return;
     }
-    if (this.#latestTarget && compareSemVer(advertisement.version, this.#latestTarget) <= 0) return;
+    if (this.#latestTarget === advertisement.version) return;
+    if (this.#latestTarget && compareSemVer(advertisement.version, this.#latestTarget) < 0) return;
     this.#latestTarget = advertisement.version;
     this.#logger.info(
       { current: this.#options.currentVersion, target: advertisement.version },
@@ -226,9 +227,12 @@ export class UpdateManager {
   }
 
   async #settleNonNewerTarget(target: string): Promise<boolean> {
+    if (target === this.#options.currentVersion) {
+      await this.#recordSatisfiedTarget(target);
+      return true;
+    }
     const comparison = compareSemVer(target, this.#options.currentVersion);
-    if (comparison === 0) await this.#recordSatisfiedTarget(target);
-    return comparison <= 0;
+    return comparison < 0;
   }
 
   async #settleExistingAttempt(target: string, state: UpdaterStateSnapshot): Promise<boolean> {

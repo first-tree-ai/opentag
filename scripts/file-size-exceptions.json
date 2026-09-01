@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "maxLines": 500,
+  "exceptions": [
+    {
+      "path": "apps/web/src/agent-creation/agent-creation-flow.tsx",
+      "lines": 1021,
+      "owner": "@bestony",
+      "expires": "2026-10-31"
+    },
+    {
+      "path": "apps/web/src/onboarding-v2/steps.tsx",
+      "lines": 1157,
+      "owner": "@bestony",
+      "expires": "2026-10-31"
+    },
+    {
+      "path": "packages/client/src/runtime/runtime-connection.ts",
+      "lines": 1078,
+      "owner": "@bestony",
+      "expires": "2026-10-31"
+    },
+    {
+      "path": "packages/server/src/runtime/im-delivery-worker.ts",
+      "lines": 1509,
+      "owner": "@bestony",
+      "expires": "2026-10-31"
+    },
+    {
+      "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
+      "lines": 2043,
+      "owner": "@bestony",
+      "expires": "2026-10-31"
+    }
+  ]
+}

@@ -1,12 +1,13 @@
 import {
   credentialsPath,
   normalizeServerUrl,
-  OpenTagApi,
+  type OpenTagApi,
   readComputerIdentity,
   resolveOpenTagHome,
   type StoredCredentials,
   writeCredentialsAtomically,
 } from "@opentag/client";
+import { resolveCommandContext } from "../command/context.js";
 
 export interface LoginOptions {
   api?: Pick<OpenTagApi, "exchangeConnectCode">;
@@ -29,7 +30,8 @@ export async function runLogin(options: LoginOptions): Promise<LoginResult> {
   if (computer && computer.serverUrl !== serverUrl) {
     throw new Error("This OpenTag home is bound to another server; choose a different OPENTAG_HOME");
   }
-  const api = options.api ?? new OpenTagApi(serverUrl);
+  const api = options.api ?? (await resolveCommandContext({ home, serverUrl })).api;
+  if (!api) throw new Error("Command context did not resolve an API");
   const response = await api.exchangeConnectCode(options.code);
   const credentials: StoredCredentials = {
     accessToken: response.accessToken,

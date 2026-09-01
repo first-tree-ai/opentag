@@ -147,6 +147,16 @@ describe("UpdateManager", () => {
     expect(h.state()?.attempts["0.0.3-staging.1.1"]).toMatchObject({ result: "installed" });
   });
 
+  it("installs an exact target that differs only by SemVer build metadata", async () => {
+    const h = harness({ currentVersion: "1.2.3+build.1" });
+    h.manager.observe(target("1.2.3+build.2"));
+    await h.settle();
+
+    expect(h.installs).toEqual(["1.2.3+build.2"]);
+    expect(h.handoffs).toBe(1);
+    expect(h.state()).toMatchObject({ state: "installed", target: "1.2.3+build.2" });
+  });
+
   it("records an equal target for status, ignores older targets, and never auto-downgrades", async () => {
     const h = harness();
     h.manager.observe(target("0.0.2-staging.1.1"));

@@ -1,5 +1,6 @@
 import { type ErrorComponentProps, Link, useRouter } from "@tanstack/react-router";
 import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "react";
+import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
 
 type BoundaryError = Error & { digest?: string };
@@ -42,7 +43,7 @@ export class AppErrorBoundary extends ErrorBoundaryComponent {
 
   override render() {
     if (this.state.error) {
-      return <StandaloneErrorPage actionLabel="Try again" onAction={this.reload} />;
+      return <StandaloneErrorPage actionLabel={m.errors_try_again()} onAction={this.reload} />;
     }
     return this.props.children;
   }
@@ -69,15 +70,15 @@ export function RouteErrorPage({ reset }: ErrorComponentProps) {
         OpenTag
       </Text>
       <Text as="h1" size="lg" variant="heading">
-        Something went wrong
+        {m.errors_something_went_wrong()}
       </Text>
       <Text as="p" variant="secondary">
-        OpenTag could not load this page. Try again, or return to Agents and continue from there.
+        {m.errors_route_description()}
       </Text>
       <div className="flex flex-wrap items-center gap-3">
-        <Button onClick={retry}>Try again</Button>
+        <Button onClick={retry}>{m.errors_try_again()}</Button>
         <Link className="text-sm font-medium text-kumo-brand underline-offset-4 hover:underline" to="/agents">
-          Back to Agents
+          {m.errors_back_to_agents()}
         </Link>
       </div>
     </BoundaryCard>
@@ -92,15 +93,15 @@ export function StandaloneErrorPage({ actionLabel, onAction }: { actionLabel: st
           OpenTag
         </Text>
         <Text as="h1" size="lg" variant="heading">
-          Something went wrong
+          {m.errors_something_went_wrong()}
         </Text>
         <Text as="p" variant="secondary">
-          OpenTag could not load the application. Reload the page and try again.
+          {m.errors_application_description()}
         </Text>
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={onAction}>{actionLabel}</Button>
           <a className="text-sm font-medium text-kumo-brand underline-offset-4 hover:underline" href="/agents">
-            Back to Agents
+            {m.errors_back_to_agents()}
           </a>
         </div>
       </BoundaryCard>
@@ -121,7 +122,7 @@ function BoundaryCard({ children, ...props }: { children: ReactNode } & HTMLAttr
 
 function normalizeError(value: unknown): BoundaryError {
   if (value instanceof Error) return value;
-  return new Error(typeof value === "string" ? value : "Unknown application error");
+  return new Error(typeof value === "string" ? value : m.errors_unknown_application_error());
 }
 
 /** Logs diagnostics without copying credential-shaped values into the browser console. */

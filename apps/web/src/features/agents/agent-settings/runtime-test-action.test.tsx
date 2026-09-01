@@ -33,26 +33,41 @@ describe("RuntimeTestAction", () => {
     vi.restoreAllMocks();
   });
 
-  it("warns that the test makes a real Provider request and does not run until clicked", () => {
+  it("explains that the test uses saved settings and provider quota without running until clicked", () => {
     const testRuntime = vi.spyOn(browserApi, "testAgentRuntime");
     renderAction();
 
-    expect(screen.getByText(/real Provider request/)).toBeTruthy();
-    expect(screen.getByText(/consume quota/)).toBeTruthy();
-    expect(screen.getByText(/retained or billed by the Provider/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Test runtime" })).toBeTruthy();
+    expect(screen.getByText(/saved model settings/)).toBeTruthy();
+    expect(screen.getByText(/provider quota/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Run test" })).toBeTruthy();
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(testRuntime).not.toHaveBeenCalled();
   });
 
-  it("shows the exact-invocation pass disclaimer from component state only", async () => {
+  it("explains and enforces a disabled state", () => {
+    const testRuntime = vi.spyOn(browserApi, "testAgentRuntime");
+    render(
+      <RuntimeTestAction
+        agentId={agentId}
+        disabledReason="Save changes before testing."
+        expectedRevision={4}
+        expectedRuntimeConfigRevision={7}
+      />,
+    );
+
+    expect(screen.getByText("Save changes before testing.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
+    expect(testRuntime).not.toHaveBeenCalled();
+  });
+
+  it("shows a concise connection success from component state only", async () => {
     const testRuntime = vi.spyOn(browserApi, "testAgentRuntime").mockResolvedValue({ status: "passed" });
     renderAction();
 
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
     expect((await screen.findByRole("status")).textContent).toBe(
-      "Passed. This proves only that this exact invocation succeeded with the saved configuration in the selected Computer environment. It is not a durable authentication or readiness claim.",
+      "Connection succeeded. The saved model settings worked for this request.",
     );
     expect(testRuntime).toHaveBeenCalledOnce();
     expect(testRuntime).toHaveBeenCalledWith(
@@ -75,7 +90,7 @@ describe("RuntimeTestAction", () => {
     for (const code of AGENT_RUNTIME_TEST_FAILURE_CODES) {
       testRuntime.mockResolvedValueOnce({ status: "failed", code });
       const view = renderAction();
-      fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+      fireEvent.click(screen.getByRole("button", { name: "Run test" }));
       const alert = await screen.findByRole("alert");
       expect(alert.textContent).toBe(runtimeTestFailureMessage(code));
       expect(alert.textContent).not.toBe(code);
@@ -85,8 +100,10 @@ describe("RuntimeTestAction", () => {
 
     testRuntime.mockRejectedValueOnce(new Error("ECONNRESET super-secret-provider-dump"));
     renderAction();
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
-    expect((await screen.findByRole("alert")).textContent).toBe("The Runtime test failed.");
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Couldn’t run the model connection test. Check the connection, then try again.",
+    );
     expect(screen.queryByText(/super-secret-provider-dump/)).toBeNull();
   });
 
@@ -95,15 +112,15 @@ describe("RuntimeTestAction", () => {
     vi.spyOn(browserApi, "testAgentRuntime").mockReturnValue(hang.promise);
     renderAction();
 
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
     const pending = await screen.findByRole("button", { name: "Testing…" });
     expect(pending.hasAttribute("disabled")).toBe(true);
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
 
     hang.resolve({ status: "passed" });
-    expect((await screen.findByRole("status")).textContent).toMatch(/^Passed\./);
-    expect(screen.getByRole("button", { name: "Test runtime" }).hasAttribute("disabled")).toBe(false);
+    expect((await screen.findByRole("status")).textContent).toMatch(/^Connection succeeded\./);
+    expect(screen.getByRole("button", { name: "Run test" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("shows the stale configuration failure without retrying", async () => {
@@ -112,9 +129,9 @@ describe("RuntimeTestAction", () => {
       .mockResolvedValue({ status: "failed", code: "stale_configuration" });
     renderAction();
 
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
     expect((await screen.findByRole("alert")).textContent).toBe(
-      "The saved Agent Runtime configuration changed. Test again to use the current configuration.",
+      "The saved model settings changed. Run the test again to use the current settings.",
     );
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(testRuntime).toHaveBeenCalledOnce();
@@ -126,7 +143,7 @@ describe("RuntimeTestAction", () => {
       .spyOn(browserApi, "testAgentRuntime")
       .mockImplementation((_id, _input, signal) => withAbort(hang.promise, signal));
     const view = renderAction();
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
     await screen.findByRole("button", { name: "Testing…" });
     const signal = testRuntime.mock.calls[0]?.[2];
 
@@ -134,7 +151,7 @@ describe("RuntimeTestAction", () => {
 
     expect(signal?.aborted).toBe(true);
     expect(screen.queryByRole("button", { name: "Testing…" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Test runtime" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Run test" }).hasAttribute("disabled")).toBe(false);
     expect(screen.queryByRole("status")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
 
@@ -150,7 +167,7 @@ describe("RuntimeTestAction", () => {
       .spyOn(browserApi, "testAgentRuntime")
       .mockImplementation((_id, _input, signal) => withAbort(hang.promise, signal));
     const view = renderAction();
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
     await screen.findByRole("button", { name: "Testing…" });
     const signal = testRuntime.mock.calls[0]?.[2];
 
@@ -160,7 +177,7 @@ describe("RuntimeTestAction", () => {
     hang.resolve({ status: "passed" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Test runtime" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Run test" })).toBeNull();
   });
 
   it("clears a previous result when a new test starts and never writes storage or retries", async () => {
@@ -171,12 +188,14 @@ describe("RuntimeTestAction", () => {
     const storageSet = vi.spyOn(window.localStorage, "setItem");
     renderAction();
 
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
-    expect((await screen.findByRole("status")).textContent).toMatch(/^Passed\./);
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
+    expect((await screen.findByRole("status")).textContent).toMatch(/^Connection succeeded\./);
 
-    fireEvent.click(screen.getByRole("button", { name: "Test runtime" }));
+    fireEvent.click(screen.getByRole("button", { name: "Run test" }));
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
-    expect((await screen.findByRole("alert")).textContent).toBe("The Provider request failed.");
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "The model request failed. Check provider access and quota, then try again.",
+    );
     expect(testRuntime).toHaveBeenCalledTimes(2);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(testRuntime).toHaveBeenCalledTimes(2);
@@ -184,24 +203,20 @@ describe("RuntimeTestAction", () => {
     expect(window.localStorage.length).toBe(0);
   });
 
-  it("localizes the warning, pending state, pass disclaimer, and sanitized failures", async () => {
+  it("localizes the description, pending state, success, and sanitized failures", async () => {
     overwriteGetLocale(() => "zh");
     const hang = deferred<AgentRuntimeTestResponse>();
     vi.spyOn(browserApi, "testAgentRuntime").mockReturnValueOnce(hang.promise);
     const pendingView = renderAction();
-    expect(
-      screen.getByText("此操作会向 Provider 发起真实请求。可能会消耗配额，并且 Provider 可能会保留或计费该请求。"),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "测试运行时" }));
-    expect(await screen.findByRole("button", { name: "测试中…" })).toBeTruthy();
+    expect(screen.getByText("使用已保存的模型设置发送一个简短请求。此操作可能会消耗 Provider 配额。")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "运行测试" }));
+    expect(await screen.findByRole("button", { name: "正在测试…" })).toBeTruthy();
     pendingView.unmount();
 
     vi.spyOn(browserApi, "testAgentRuntime").mockResolvedValueOnce({ status: "passed" });
     const passView = renderAction();
-    fireEvent.click(screen.getByRole("button", { name: "测试运行时" }));
-    expect((await screen.findByRole("status")).textContent).toBe(
-      "已通过。这仅证明此次调用在所选计算机环境中使用当时的已保存配置成功。它不是持久的认证或就绪声明。",
-    );
+    fireEvent.click(screen.getByRole("button", { name: "运行测试" }));
+    expect((await screen.findByRole("status")).textContent).toBe("连接成功。已保存的模型设置在此次请求中正常工作。");
     passView.unmount();
 
     for (const code of RUNTIME_TEST_FAILURE_CODES) {

@@ -33,7 +33,7 @@ const LATE = new Date("2026-08-20T00:00:00.000Z");
 const THROUGH_0028_IDX = 28;
 const THROUGH_0028_COUNT = 29;
 const THROUGH_0030_COUNT = 31;
-const CURRENT_MIGRATION_COUNT = 32;
+const CURRENT_MIGRATION_COUNT = 35;
 
 type Journal = {
   version: string;
@@ -67,6 +67,8 @@ beforeEach(async () => {
 async function readJournal(): Promise<Journal> {
   return JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as Journal;
 }
+
+/** The current head, read from the ledger, so a later migration does not restate this suite's subject. */
 
 async function truncatedMigrations(lastIndex: number): Promise<string> {
   const journal = await readJournal();

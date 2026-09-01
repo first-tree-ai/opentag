@@ -40,3 +40,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Agent orchestration scratch state - never commit
+.dispatch/

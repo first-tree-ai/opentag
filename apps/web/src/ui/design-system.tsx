@@ -42,19 +42,24 @@ import {
 import {
   ArrowLeft,
   ArrowRight,
+  CaretDown,
   CaretRight,
+  CaretUp,
+  ChartLine,
   ChatCircle,
   Check,
   Copy,
   Cpu,
   DotsThreeVertical,
   Gear,
+  House,
   type IconWeight,
   Info,
   Laptop,
   List,
   MagnifyingGlass,
   type Icon as PhosphorIcon,
+  PlugsConnected,
   Plus,
   Shield,
   User,
@@ -80,6 +85,7 @@ import {
   useId,
   useRef,
 } from "react";
+import * as m from "../paraglide/messages.js";
 
 export {
   Banner,
@@ -122,7 +128,14 @@ function classes(...values: Array<string | false | null | undefined>): string {
   return cn(values.filter(Boolean).join(" "));
 }
 
-export type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger" | "inline";
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "secondary-destructive"
+  | "outline"
+  | "ghost"
+  | "danger"
+  | "inline";
 
 type KumoButtonAdapterProps = KumoButtonProps extends infer Props
   ? Props extends unknown
@@ -135,7 +148,9 @@ export type ButtonProps = KumoButtonAdapterProps & {
   variant?: ButtonVariant;
 };
 
-function kumoButtonVariant(variant: ButtonVariant): "primary" | "secondary" | "outline" | "ghost" | "destructive" {
+function kumoButtonVariant(
+  variant: ButtonVariant,
+): "primary" | "secondary" | "secondary-destructive" | "outline" | "ghost" | "destructive" {
   if (variant === "danger") return "destructive";
   if (variant === "inline") return "ghost";
   return variant;
@@ -218,7 +233,10 @@ export function Tabs({
 export function SettingsList({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div
-      className={classes("grid overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line", className)}
+      className={classes(
+        "grid divide-y divide-kumo-line overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line",
+        className,
+      )}
       data-ui="settings-list"
     >
       {children}
@@ -230,10 +248,12 @@ export function SettingsRow({
   children,
   description,
   label,
+  supportingContent,
 }: {
   children: ReactNode;
   description?: ReactNode;
   label: ReactNode;
+  supportingContent?: ReactNode;
 }) {
   return (
     <div
@@ -243,6 +263,7 @@ export function SettingsRow({
       <div className="grid gap-1">
         <strong className="text-sm font-medium text-kumo-strong">{label}</strong>
         {description ? <p className="text-sm text-kumo-subtle">{description}</p> : null}
+        {supportingContent}
       </div>
       <div className="min-w-0">{children}</div>
     </div>
@@ -331,10 +352,14 @@ export type IconName =
   | "arrow-left"
   | "arrow-right"
   | "check"
+  | "chevron-down"
   | "chevron-right"
+  | "chevron-up"
   | "close"
   | "copy"
   | "instructions"
+  | "home"
+  | "integrations"
   | "laptop"
   | "message"
   | "model"
@@ -342,16 +367,22 @@ export type IconName =
   | "plus"
   | "settings"
   | "shield"
-  | "user";
+  | "sign-out"
+  | "user"
+  | "usage";
 
 const icons: Record<IconName, PhosphorIcon> = {
   "arrow-left": ArrowLeft,
   "arrow-right": ArrowRight,
   check: Check,
+  "chevron-down": CaretDown,
   "chevron-right": CaretRight,
+  "chevron-up": CaretUp,
   close: X,
   copy: Copy,
   instructions: List,
+  home: House,
+  integrations: PlugsConnected,
   laptop: Laptop,
   message: ChatCircle,
   model: Cpu,
@@ -359,7 +390,9 @@ const icons: Record<IconName, PhosphorIcon> = {
   plus: Plus,
   settings: Gear,
   shield: Shield,
+  "sign-out": ArrowRight,
   user: User,
+  usage: ChartLine,
 };
 
 export function Icon({
@@ -514,7 +547,9 @@ export function Dialog({
             </KumoDialog.Title>
           </div>
           <Button
-            aria-label={closeLabel ?? `Close ${typeof title === "string" ? title : "dialog"}`}
+            aria-label={
+              closeLabel ?? (typeof title === "string" ? m.common_close_title({ title }) : m.common_close_dialog())
+            }
             className="shrink-0"
             disabled={busy}
             ref={closeRef}

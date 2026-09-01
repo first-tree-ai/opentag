@@ -8,6 +8,10 @@ import {
   assertCoverageArtifacts,
   COVERAGE_REPORTER_FLAGS,
   concatenateCoverageMaps,
+  evaluateCoverageFloors,
+  ratchetCoverageFloors,
+  summarizeTestResults,
+  validateCoverageManifest,
   writeAggregateReports,
 } from "../unit-coverage.mjs";
 
@@ -107,5 +111,81 @@ test("writeAggregateReports emits the concatenated detailed map the patch-covera
     assert.equal(written[serverFile].statementMap["0"].start.line, 4);
     assert.equal(written[webFile].s["0"], 0);
     assert.equal(writtenSummary.total.lines.pct, 50);
+  });
+});
+
+function summary(lines, statements = lines, functions = lines, branches = lines) {
+  return {
+    total: {
+      lines: { pct: lines },
+      statements: { pct: statements },
+      functions: { pct: functions },
+      branches: { pct: branches },
+    },
+  };
+}
+
+test("coverage floor breaches name the package and the signed delta", () => {
+  const breaches = evaluateCoverageFloors(
+    { server: summary(94, 94, 94, 94) },
+    { server: { lines: 95, statements: 95, functions: 95, branches: 95 } },
+  );
+  assert.equal(breaches.length, 4);
+  assert.match(breaches[0].message, /package "server"/);
+  assert.equal(breaches[0].delta, -1);
+  assert.match(breaches[0].message, /delta -1(?:\.00)?/);
+});
+
+test("coverage floors tolerate variance within the configured band and breach beyond it", () => {
+  const floors = {
+    tolerance: 0.75,
+    projects: { server: { lines: 97, statements: 97, functions: 97, branches: 97 } },
+  };
+  assert.deepEqual(evaluateCoverageFloors({ server: summary(96.3) }, floors), []);
+  const breaches = evaluateCoverageFloors({ server: summary(96.2) }, floors);
+  assert.equal(breaches.length, 4);
+  assert.match(breaches[0].message, /below floor 97\.00% \(tolerance 0\.75pp\)/);
+});
+
+test("coverage manifest validation reports source files without an intentional owner", () => {
+  const result = validateCoverageManifest({
+    sourceFiles: ["packages/client/src/runtime/owned.ts", "packages/client/src/runtime/missing.ts"],
+    includePatterns: ["packages/client/src/runtime/owned.ts"],
+  });
+  assert.deepEqual(result.missing, ["packages/client/src/runtime/missing.ts"]);
+  assert.deepEqual(result.unmatchedPatterns, []);
+});
+
+test("coverage floor ratchets reject decreases and permit them only with an explicit override", () => {
+  const existing = { client: { lines: 96, statements: 96, functions: 96, branches: 96 } };
+  const current = { client: summary(95, 95, 95, 95) };
+  assert.throws(() => ratchetCoverageFloors({ existing, summaries: current }), /ratchet.*decrease.*client.*lines/i);
+  const lowered = ratchetCoverageFloors({ existing, summaries: current, allowDecrease: true });
+  assert.equal(lowered.client.lines, 95);
+});
+
+test("test-result summaries report duration and retried-then-passed tests as flaky", () => {
+  const result = summarizeTestResults({
+    numTotalTests: 2,
+    numTotalTestSuites: 1,
+    testResults: [
+      {
+        assertionResults: [
+          { status: "passed", retryCount: 2, flaky: true },
+          { status: "failed", retryCount: 1 },
+        ],
+        endTime: 1_250,
+        name: "suite.test.ts",
+        startTime: 1_000,
+      },
+    ],
+  });
+  assert.deepEqual(result, {
+    durationMs: 250,
+    failedAfterRetryCount: 1,
+    flakyCount: 1,
+    retryCount: 3,
+    testCount: 2,
+    testFileCount: 1,
   });
 });

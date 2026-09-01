@@ -7,8 +7,9 @@ import type {
 import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
-import { ComputerSetup } from "../features/agents/computer-setup.js";
-import { compareText } from "../i18n/format.js";
+import { ComputerConnect } from "../features/computer-connect/computer-connect.js";
+import { compareText, formatNumber } from "../i18n/format.js";
+import * as m from "../paraglide/messages.js";
 import {
   Banner,
   Button,
@@ -250,7 +251,7 @@ export function AgentCreationFlow({
             await clearCreationIntent(accountId, record.creationIntentId);
           }
         }
-        setError(cause instanceof Error ? cause.message : "Agent creation failed");
+        setError(cause instanceof Error ? cause.message : m.agent_create_failed());
       } finally {
         inFlightRef.current = false;
         setSubmitting(false);
@@ -288,7 +289,7 @@ export function AgentCreationFlow({
     const parsedName = AgentNameSchema.safeParse(name);
     if (!parsedName.success) {
       setEditingName(true);
-      setNameError(parsedName.error.issues[0]?.message ?? "Agent name is invalid");
+      setNameError(parsedName.error.issues[0]?.message ?? m.agent_create_name_invalid());
       return;
     }
     void create({
@@ -302,12 +303,12 @@ export function AgentCreationFlow({
   return (
     <form className="grid gap-4" onSubmit={submit}>
       <div className="grid gap-4">
-        <Field htmlFor="new-agent-display-name" label="Display name">
+        <Field htmlFor="new-agent-display-name" label={m.agent_create_display_name_label()}>
           <KumoInputControl
             id="new-agent-display-name"
             ref={firstFieldRef}
             name="displayName"
-            placeholder="Research Assistant"
+            placeholder={m.agent_create_display_name_placeholder()}
             disabled={submitting}
             required
             value={displayName}
@@ -324,12 +325,10 @@ export function AgentCreationFlow({
         {!editingName && agentNameVisible ? (
           <div className="grid gap-1">
             {nameUnderivable ? (
-              <p className="text-sm text-kumo-danger">
-                This display name cannot produce an @ name. Set one to continue.
-              </p>
+              <p className="text-sm text-kumo-danger">{m.agent_create_name_required_message()}</p>
             ) : null}
             <Button
-              aria-label="Edit Agent name"
+              aria-label={m.agent_create_edit_name_label()}
               aria-controls="agent-name-editor"
               aria-expanded="false"
               className="w-fit"
@@ -337,7 +336,7 @@ export function AgentCreationFlow({
               variant="inline"
               onClick={() => setEditingName(true)}
             >
-              {name ? `@${name}` : "Set Agent name"}
+              {name ? m.agent_create_at_name({ name }) : m.agent_create_set_name_action()}
             </Button>
           </div>
         ) : null}
@@ -346,10 +345,10 @@ export function AgentCreationFlow({
             <Field
               error={nameError}
               errorId="agent-name-error"
-              hint="Used for mentions. Lowercase letters, numbers, and hyphens only."
+              hint={m.agent_create_name_hint()}
               hintId="new-agent-name-hint"
               htmlFor="new-agent-name"
-              label="Agent name"
+              label={m.agent_create_agent_name_label()}
             >
               <span className="grid grid-cols-[auto_1fr] items-center gap-2">
                 <span aria-hidden="true">@</span>
@@ -359,7 +358,7 @@ export function AgentCreationFlow({
                   aria-labelledby="new-agent-name-label"
                   id="new-agent-name"
                   ref={nameFieldRef}
-                  placeholder="research-assistant"
+                  placeholder={m.agent_create_name_placeholder()}
                   disabled={submitting}
                   aria-required="true"
                   value={name}
@@ -438,19 +437,19 @@ export function AgentCreationFlow({
       <div className="flex flex-wrap justify-end gap-3">
         {onCancel ? (
           <Button disabled={submitting} variant="secondary" onClick={onCancel}>
-            Cancel
+            {m.agent_create_cancel_action()}
           </Button>
         ) : null}
         <Button disabled={submitting || refreshing || !selectedRoute} type="submit">
           {submitting ? (
             <span className="flex items-center gap-1.5">
               <span aria-hidden="true">
-                <Loader aria-label="Creating Agent" size="sm" />
+                <Loader aria-label={m.agent_create_creating_agent_label()} size="sm" />
               </span>
-              Creating…
+              {m.agent_create_creating_action()}
             </span>
           ) : (
-            "Create Agent"
+            m.agent_create_create_agent_action()
           )}
         </Button>
       </div>
@@ -517,72 +516,88 @@ function RuntimeRouteSection({
       <header className="flex items-start justify-between gap-3">
         <div>
           <Text as="h3" id="agent-runtime-heading" variant="heading">
-            Where it runs
+            {m.agent_create_where_it_runs_title()}
           </Text>
         </div>
       </header>
 
       {facts.computers.length === 0 ? (
         <div className="grid gap-4">
-          <ComputerSetup
-            preview={preview}
-            onConnected={(computer) =>
-              onConnected({
-                id: computer.computerId,
-                displayName: computer.displayName,
-                connectionStatus: computer.connectionStatus,
-              })
-            }
-          />
+          <div className="grid gap-1">
+            <Text as="h4" variant="heading">
+              {m.computer_connect_agent_title()}
+            </Text>
+            <Text as="p" variant="secondary">
+              {m.computer_connect_agent_description()}
+            </Text>
+          </div>
+          {preview ? null : (
+            <ComputerConnect
+              intent={{ mode: "create" }}
+              onConnected={(computer) =>
+                onConnected({
+                  id: computer.computerId,
+                  displayName: computer.displayName,
+                  connectionStatus: computer.connectionStatus,
+                })
+              }
+            />
+          )}
         </div>
       ) : displayedComputer ? (
         <>
           <div className="grid divide-y divide-kumo-line rounded-md bg-kumo-base ring ring-kumo-line">
             <div className="flex flex-wrap items-center justify-between gap-3 p-3">
               <div className="grid gap-1">
-                <span className="text-xs text-kumo-subtle">Computer</span>
+                <span className="text-xs text-kumo-subtle">{m.agent_create_computer_label()}</span>
                 <strong>{displayedComputer.displayName}</strong>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <RouteState
-                  label={displayedComputer.connectionStatus === "online" ? "Online" : "Offline"}
+                  label={
+                    displayedComputer.connectionStatus === "online"
+                      ? m.agent_create_online_status()
+                      : m.agent_create_offline_status()
+                  }
                   tone={displayedComputer.connectionStatus === "online" ? "success" : "warning"}
                 />
                 <Button
                   aria-controls="new-agent-computer-picker"
                   aria-expanded={changingComputer}
-                  aria-label="Change Computer"
+                  aria-label={m.agent_create_change_computer_label()}
                   disabled={submitting || refreshing}
                   ref={computerChangeButtonRef}
                   size="compact"
                   variant="inline"
                   onClick={onToggleComputer}
                 >
-                  Change
+                  {m.agent_create_change_action()}
                 </Button>
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-between gap-3 p-3">
               <div className="grid gap-1">
-                <span className="text-xs text-kumo-subtle">Runtime</span>
-                <strong>{displayedProvider ? providerLabel(displayedProvider.provider) : "No Runtime detected"}</strong>
+                <span className="text-xs text-kumo-subtle">{m.agent_create_runtime_label()}</span>
+                <strong>
+                  {displayedProvider ? providerLabel(displayedProvider.provider) : m.agent_create_no_runtime_detected()}
+                </strong>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <RouteState
-                  label={selectedRoute ? "Ready" : providerStatusLabel(displayedProvider)}
+                  label={selectedRoute ? m.agent_create_ready_status() : providerStatusLabel(displayedProvider)}
                   tone={selectedRoute ? "success" : providerStatusTone(displayedProvider)}
                 />
                 {providerOptions.length > 0 ? (
                   <Button
                     aria-controls="new-agent-runtime-picker"
                     aria-expanded={changingRuntime}
-                    aria-label="Change Runtime"
+                    aria-label={m.agent_create_change_runtime_label()}
                     disabled={submitting || refreshing}
                     size="compact"
                     variant="inline"
                     onClick={onToggleRuntime}
                   >
-                    Change
+                    {m.agent_create_change_action()}
                   </Button>
                 ) : null}
               </div>
@@ -591,7 +606,7 @@ function RuntimeRouteSection({
 
           {changingComputer ? (
             <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-computer-picker">
-              <strong className="text-sm font-medium text-kumo-strong">Choose Computer</strong>
+              <strong className="text-sm font-medium text-kumo-strong">{m.agent_create_choose_computer_title()}</strong>
               <div className="grid gap-2">
                 {computerOptions.map((computer) => {
                   const routes = readyRoutes.filter((route) => route.computer.id === computer.id);
@@ -609,7 +624,11 @@ function RuntimeRouteSection({
                         <strong>{computer.displayName}</strong>
                         <small>{computerRouteSummary(computer, routes.length)}</small>
                       </span>
-                      <span>{computer.connectionStatus === "online" ? "Online" : "Offline"}</span>
+                      <span>
+                        {computer.connectionStatus === "online"
+                          ? m.agent_create_online_status()
+                          : m.agent_create_offline_status()}
+                      </span>
                     </Button>
                   );
                 })}
@@ -623,21 +642,33 @@ function RuntimeRouteSection({
                   variant="inline"
                   onClick={onToggleComputerSetup}
                 >
-                  {connectingComputer ? "Cancel Computer connection" : "Connect another Computer"}
+                  {connectingComputer
+                    ? m.agent_create_cancel_computer_connection()
+                    : m.agent_create_connect_another_computer()}
                 </Button>
               </div>
               {connectingComputer ? (
                 <div className="grid gap-4" id="new-agent-computer-setup">
-                  <ComputerSetup
-                    preview={preview}
-                    onConnected={(computer) =>
-                      onConnected({
-                        id: computer.computerId,
-                        displayName: computer.displayName,
-                        connectionStatus: computer.connectionStatus,
-                      })
-                    }
-                  />
+                  <div className="grid gap-1">
+                    <Text as="h4" variant="heading">
+                      {m.computer_connect_another_title()}
+                    </Text>
+                    <Text as="p" variant="secondary">
+                      {m.computer_connect_another_description()}
+                    </Text>
+                  </div>
+                  {preview ? null : (
+                    <ComputerConnect
+                      intent={{ mode: "create" }}
+                      onConnected={(computer) =>
+                        onConnected({
+                          id: computer.computerId,
+                          displayName: computer.displayName,
+                          connectionStatus: computer.connectionStatus,
+                        })
+                      }
+                    />
+                  )}
                 </div>
               ) : null}
             </div>
@@ -645,7 +676,7 @@ function RuntimeRouteSection({
 
           {changingRuntime ? (
             <div className="grid gap-3 rounded-md bg-kumo-base p-3 ring ring-kumo-line" id="new-agent-runtime-picker">
-              <strong className="text-sm font-medium text-kumo-strong">Choose Runtime</strong>
+              <strong className="text-sm font-medium text-kumo-strong">{m.agent_create_choose_runtime_title()}</strong>
               <div className="grid gap-2">
                 {providerOptions.map((provider) => {
                   const route = readyRoutes.find(
@@ -673,16 +704,16 @@ function RuntimeRouteSection({
 
           {selectedRoute ? (
             <div aria-live="polite" className="rounded-md bg-kumo-base p-3" role="status">
-              <StatusIndicator label="Ready to run" tone="success" />
+              <StatusIndicator label={m.agent_create_ready_to_run_status()} tone="success" />
             </div>
           ) : displayedComputer.connectionStatus === "offline" ? (
             <RuntimeAttention
               detail={
                 onlineComputers.length === 0
-                  ? "Reconnect one of your Computers to continue."
-                  : `Reconnect ${displayedComputer.displayName} or choose another Computer to continue.`
+                  ? m.agent_create_reconnect_computer_to_continue()
+                  : m.agent_create_reconnect_named_computer_to_continue({ displayName: displayedComputer.displayName })
               }
-              label="Computer offline"
+              label={m.agent_create_computer_offline_status()}
               refreshing={refreshing}
               tone="warning"
               onRefresh={onRefresh}
@@ -707,18 +738,20 @@ function RouteState({ label, tone }: { label: string; tone: "success" | "warning
 }
 
 function computerRouteSummary(computer: AgentCreationComputer, readyRuntimeCount: number): string {
-  if (computer.connectionStatus === "offline") return "Computer offline";
-  if (readyRuntimeCount === 0) return "No Runtime ready";
-  return `${readyRuntimeCount} ${readyRuntimeCount === 1 ? "Runtime" : "Runtimes"} ready`;
+  if (computer.connectionStatus === "offline") return m.agent_create_computer_offline_status();
+  if (readyRuntimeCount === 0) return m.agent_create_no_runtime_ready();
+  return readyRuntimeCount === 1
+    ? m.agent_create_runtime_ready({ count: formatNumber(readyRuntimeCount) })
+    : m.agent_create_runtimes_ready({ count: formatNumber(readyRuntimeCount) });
 }
 
 function providerStatusLabel(provider: AgentCreationProvider | undefined): string {
-  if (provider?.runtimeReady || provider?.status === "ready") return "Ready";
-  if (provider?.status === "checking") return "Checking";
-  if (provider?.status === "install") return "Not installed";
-  if (provider?.status === "sign-in") return "Sign-in required";
-  if (provider?.status === "unavailable") return "Unavailable";
-  return "Unconfirmed";
+  if (provider?.runtimeReady || provider?.status === "ready") return m.agent_create_ready_status();
+  if (provider?.status === "checking") return m.agent_create_checking_status();
+  if (provider?.status === "install") return m.agent_create_not_installed_status();
+  if (provider?.status === "sign-in") return m.agent_create_sign_in_required_status();
+  if (provider?.status === "unavailable") return m.agent_create_unavailable_status();
+  return m.agent_create_unconfirmed_status();
 }
 
 function providerStatusTone(provider: AgentCreationProvider | undefined): "success" | "warning" | "neutral" {
@@ -746,12 +779,12 @@ function RuntimeAttention({
         {refreshing ? (
           <span className="flex items-center gap-1.5">
             <span aria-hidden="true">
-              <Loader aria-label="Checking Server facts" size="sm" />
+              <Loader aria-label={m.agent_create_checking_server_facts_label()} size="sm" />
             </span>
-            Checking…
+            {m.agent_create_checking_action()}
           </span>
         ) : (
-          "Check again"
+          m.agent_create_check_again_action()
         )}
       </Button>
     </div>
@@ -765,8 +798,8 @@ function providerAttention(
 ): { detail: string; label: string; tone: StatusTone } {
   if (!facts.runtimeEvidenceAvailable) {
     return {
-      label: "Readiness unconfirmed",
-      detail: "OpenTag cannot confirm a ready Provider on this Computer yet.",
+      label: m.agent_create_readiness_unconfirmed_label(),
+      detail: m.agent_create_readiness_unconfirmed_detail(),
       tone: "neutral",
     };
   }
@@ -774,24 +807,35 @@ function providerAttention(
   const providerName = providerLabel(provider?.provider ?? "codex");
   if (provider?.status === "install") {
     return {
-      label: `Install ${providerName}`,
-      detail: `Install ${providerName} on ${computer?.displayName}.`,
+      label: m.agent_create_install_provider({ provider: providerName }),
+      detail: m.agent_create_install_provider_on_computer({
+        provider: providerName,
+        computer: computer?.displayName ?? m.agent_create_this_computer(),
+      }),
       tone: "warning",
     };
   }
   if (provider?.status === "sign-in") {
     return {
-      label: `Sign in to ${providerName}`,
-      detail: `Finish sign-in on ${computer?.displayName}.`,
+      label: m.agent_create_sign_in_provider({ provider: providerName }),
+      detail: m.agent_create_finish_sign_in_on_computer({
+        computer: computer?.displayName ?? m.agent_create_this_computer(),
+      }),
       tone: "warning",
     };
   }
   if (provider?.status === "checking") {
-    return { label: "Checking setup", detail: `${providerName} readiness is still being checked.`, tone: "neutral" };
+    return {
+      label: m.agent_create_checking_setup_label(),
+      detail: m.agent_create_provider_readiness_checking({ provider: providerName }),
+      tone: "neutral",
+    };
   }
   return {
-    label: "Provider unavailable",
-    detail: `Prepare Codex or Claude Code on ${computer?.displayName ?? "this Computer"}.`,
+    label: m.agent_create_provider_unavailable_label(),
+    detail: m.agent_create_prepare_provider_on_computer({
+      computer: computer?.displayName ?? m.agent_create_this_computer(),
+    }),
     tone: "warning",
   };
 }
@@ -817,7 +861,7 @@ function providerRank(provider: AgentRuntimeProvider): number {
 }
 
 function providerLabel(provider: AgentRuntimeProvider): string {
-  return provider === "claude-code" ? "Claude Code" : "Codex";
+  return provider === "claude-code" ? m.agent_create_claude_code() : m.agent_create_codex();
 }
 
 function createAgentOnce(record: CreationIntentRecord): Promise<AgentAdminConfig> {

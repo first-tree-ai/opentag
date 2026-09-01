@@ -20,6 +20,8 @@ export interface UpgradeOptions {
   check?: boolean;
   /** Release channel override (tests); defaults to this build's channel. */
   channel?: ChannelName;
+  /** Running CLI version override for deterministic exact-target tests. */
+  currentVersion?: string;
   home?: string;
   environment?: NodeJS.ProcessEnv;
   installMode?: InstallMode;
@@ -30,6 +32,8 @@ export interface UpgradeOptions {
   installPortable?: (target: string) => Promise<void>;
   /** Injectable service reconciliation (tests). */
   reconcileService?: () => Promise<DaemonServiceReconcileResult>;
+  /** Injectable durable-state writer (tests). */
+  writeState?: typeof writeUpdaterState;
   now?: () => number;
 }
 
@@ -132,7 +136,7 @@ function createUpgradeContext(options: UpgradeOptions): UpgradeContext {
   const channel = options.channel ?? CHANNEL;
   const environment = options.environment ?? process.env;
   return {
-    currentVersion: CLI_VERSION,
+    currentVersion: options.currentVersion ?? CLI_VERSION,
     channel,
     channelConfig: getChannelConfig(channel),
     environment,
@@ -165,7 +169,8 @@ async function noInstallResult(
   comparison: -1 | 0 | 1,
   check: boolean,
 ): Promise<UpgradeResult | undefined> {
-  if (comparison === 0 && (check || !(await currentTargetNeedsRepair(context.home, target.version)))) {
+  const exactCurrent = target.version === context.currentVersion;
+  if (exactCurrent && (check || !(await currentTargetNeedsRepair(context.home, target.version)))) {
     return finishUpgrade(context, {
       exitCode: 0,
       status: "up-to-date",
@@ -181,7 +186,7 @@ async function noInstallResult(
       message: `OpenTag ${context.currentVersion} is ahead of the ${context.channel} channel target ${target.version}; nothing to do`,
     });
   }
-  if (comparison > 0 && check) {
+  if (comparison >= 0 && check) {
     return finishUpgrade(context, {
       exitCode: 0,
       status: "available",
@@ -192,15 +197,10 @@ async function noInstallResult(
   return undefined;
 }
 
-async function installResolvedTarget(
-  context: UpgradeContext,
-  target: string,
-  comparison: -1 | 0 | 1,
-  options: UpgradeOptions,
-): Promise<void> {
+async function installResolvedTarget(context: UpgradeContext, target: string, options: UpgradeOptions): Promise<void> {
   // The exact target is already running. Manual upgrade repairs durable state and the supervisor
   // definition without reinstalling identical bytes.
-  if (comparison === 0) return;
+  if (target === context.currentVersion) return;
   if (context.installMode.mode === "npm-global") {
     await (options.runNpm ?? defaultRunNpm)(["install", "-g", `${context.channelConfig.packageName}@${target}`]);
     return;
@@ -222,7 +222,12 @@ async function installResolvedTarget(
   });
 }
 
-async function recordInstalledUpgrade(home: string, target: string, now: number): Promise<UpdaterStateSnapshot> {
+async function recordInstalledUpgrade(
+  home: string,
+  target: string,
+  now: number,
+  writeState: typeof writeUpdaterState,
+): Promise<UpdaterStateSnapshot> {
   const loaded = await readUpdaterState(home);
   const state: UpdaterStateSnapshot =
     loaded.status === "ok" ? loaded.state : { schemaVersion: 1, currentVersion: target, state: "idle", attempts: {} };
@@ -237,7 +242,7 @@ async function recordInstalledUpgrade(home: string, target: string, now: number)
   state.target = target;
   state.attempts[target] = attempt;
   state.lastAttempt = attempt;
-  await writeUpdaterState(home, state);
+  await writeState(home, state);
   return state;
 }
 
@@ -246,6 +251,7 @@ async function refreshDaemonService(
   target: string,
   state: UpdaterStateSnapshot,
   reconcile: () => Promise<DaemonServiceReconcileResult>,
+  writeState: typeof writeUpdaterState,
 ): Promise<ServiceRefreshResult> {
   try {
     const reconciled = await reconcile();
@@ -264,8 +270,15 @@ async function refreshDaemonService(
       attempt.failureReason = failureReason;
       state.lastAttempt = attempt;
     }
-    await writeUpdaterState(home, state).catch(() => undefined);
-    return { serviceRefresh: "failed", serviceMessage: `; the daemon service refresh failed: ${failureReason}` };
+    try {
+      await writeState(home, state);
+      return { serviceRefresh: "failed", serviceMessage: `; the daemon service refresh failed: ${failureReason}` };
+    } catch (stateError) {
+      return {
+        serviceRefresh: "failed",
+        serviceMessage: `; the daemon service refresh failed: ${failureReason}; recording the blocked updater state also failed: ${errorMessage(stateError)}`,
+      };
+    }
   }
 }
 
@@ -303,7 +316,7 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
   if (noInstall) return noInstall;
 
   try {
-    await installResolvedTarget(context, target.version, comparison, options);
+    await installResolvedTarget(context, target.version, options);
   } catch (error) {
     return finishUpgrade(context, {
       exitCode: 1,
@@ -315,7 +328,12 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
 
   let state: UpdaterStateSnapshot;
   try {
-    state = await recordInstalledUpgrade(context.home, target.version, (options.now ?? Date.now)());
+    state = await recordInstalledUpgrade(
+      context.home,
+      target.version,
+      (options.now ?? Date.now)(),
+      options.writeState ?? writeUpdaterState,
+    );
   } catch (error) {
     return finishUpgrade(context, {
       exitCode: 1,
@@ -330,6 +348,7 @@ export async function runUpgrade(options: UpgradeOptions = {}): Promise<UpgradeR
     target.version,
     state,
     options.reconcileService ?? reconcileDaemonService,
+    options.writeState ?? writeUpdaterState,
   );
 
   return finishUpgrade(context, {

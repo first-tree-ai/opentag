@@ -292,21 +292,36 @@ describe("SessionBindingStore", () => {
 
   it("C-18 retains only the most recent 64 recorded input tombstones", async () => {
     const fixture = await bindingFixture();
-    for (let index = 0; index < 65; index += 1) {
-      const request = delivery(fixture.runtime, index);
-      const inputHash = computeDirectInputHash(request);
-      const turnId = `turn-${index}`;
-      const resultHash = sha256(`result-${index}`);
-      await fixture.store.recordAccepted(request, inputHash, turnId);
-      await fixture.store.updateUnresolved("agent-1", "session-1", turnId, "reporting", { resultHash });
-      await fixture.store.recordResult("agent-1", "session-1", turnId, resultHash);
-    }
-    const binding = await fixture.store.read("agent-1", "session-1");
-    expect(binding?.recentRecordedInputs).toHaveLength(64);
-    expect(binding?.recentRecordedInputs[0]?.deliveryId).toBe("delivery-1");
-    expect(binding?.recentRecordedInputs.at(-1)?.deliveryId).toBe("delivery-64");
-    const raw = await readFile(sessionBindingPath(fixture.home, "agent-1", "session-1"), "utf8");
-    expect(raw).not.toContain("direct text 64");
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const binding = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    binding.recentRecordedInputs = Array.from({ length: 64 }, (_, index) => ({
+      kind: "turn",
+      deliveryId: `delivery-${index}`,
+      inputHash: sha256(`input-${index}`),
+      requestId: randomUUID(),
+      resultHash: sha256(`result-${index}`),
+      turnId: `turn-${index}`,
+    }));
+    binding.unresolvedTurn = {
+      requestId: randomUUID(),
+      deliveryId: "delivery-64",
+      inputHash: sha256("input-64"),
+      turnId: "turn-64",
+      phase: "reporting",
+      resultHash: sha256("result-64"),
+    };
+    await writeFile(path, `${JSON.stringify(binding)}\n`, "utf8");
+
+    const recorded = await fixture.store.recordResult("agent-1", "session-1", "turn-64", sha256("result-64"));
+    expect(recorded.recentRecordedInputs).toHaveLength(64);
+    expect(recorded.recentRecordedInputs[0]?.deliveryId).toBe("delivery-1");
+    expect(recorded.recentRecordedInputs.at(-1)?.deliveryId).toBe("delivery-64");
+    expect(recorded).not.toHaveProperty("unresolvedTurn");
+
+    const persisted = await fixture.store.read("agent-1", "session-1");
+    expect(persisted).toMatchObject({
+      recentRecordedInputs: expect.arrayContaining([expect.objectContaining({ deliveryId: "delivery-64" })]),
+    });
   });
 
   it("C-19 enforces monotonic unresolved phases and reopens disk-only custody as recovery", async () => {

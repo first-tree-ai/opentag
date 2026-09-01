@@ -9,10 +9,12 @@
  * modes exist for judging the flow at its real pace.
  */
 
+import type { ComputerConnectCodeStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ComputerConnectAdapter, ComputerConnectIntent } from "../features/computer-connect/computer-connect.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
-import type { AgentDraft, ConnectState, CreationState, MessagingState, ReadinessFacts } from "./flow.js";
+import type { AgentDraft, CreationState, MessagingState, ReadinessFacts } from "./flow.js";
 
 export interface MockScenario {
   readonly id: string;
@@ -41,13 +43,13 @@ function inventoryOf(inventory: MockInventory): readonly KnownComputer[] {
     case "none":
       return [];
     case "one-online":
-      return [{ id: "mac", displayName: COMPUTER_NAME, online: true }];
+      return [{ id: "mac", displayName: COMPUTER_NAME, availability: "online" }];
     case "one-offline":
-      return [{ id: "mac", displayName: COMPUTER_NAME, online: false, lastSeen: "3 days ago" }];
+      return [{ id: "mac", displayName: COMPUTER_NAME, availability: "offline", lastSeen: "3 days ago" }];
     case "several":
       return [
-        { id: "mac", displayName: COMPUTER_NAME, online: true },
-        { id: "imac", displayName: "Work iMac", online: false, lastSeen: "3 days ago" },
+        { id: "mac", displayName: COMPUTER_NAME, availability: "online" },
+        { id: "imac", displayName: "Work iMac", availability: "offline", lastSeen: "3 days ago" },
       ];
   }
 }
@@ -59,7 +61,7 @@ function inventoryOf(inventory: MockInventory): readonly KnownComputer[] {
  * or being offered another, is how an Account ends up with a duplicate it then has to repair.
  */
 function preselected(computers: readonly KnownComputer[]): string | undefined {
-  return (computers.find((computer) => computer.online) ?? computers[0])?.id;
+  return (computers.find((computer) => computer.availability === "online") ?? computers[0])?.id;
 }
 
 /**
@@ -115,22 +117,20 @@ interface Timings {
   /** `null` means the event waits to be advanced by hand rather than on a clock. */
   readonly connectMs: number | null;
   readonly probeMs: number | null;
-  readonly repairMs: number | null;
   readonly scanMs: number | null;
 }
 
 const TIMINGS: Record<MockSpeed, Timings> = {
-  manual: { issueMs: 300, codeTtlMs: 15 * 60 * 1_000, connectMs: null, probeMs: null, repairMs: null, scanMs: null },
+  manual: { issueMs: 300, codeTtlMs: 15 * 60 * 1_000, connectMs: null, probeMs: null, scanMs: null },
   // The production connect code is valid for 15 minutes.
   realistic: {
     issueMs: 500,
     codeTtlMs: 15 * 60 * 1_000,
     connectMs: 8_000,
     probeMs: 2_500,
-    repairMs: 4_000,
     scanMs: 6_000,
   },
-  fast: { issueMs: 150, codeTtlMs: 25_000, connectMs: 2_000, probeMs: 800, repairMs: 1_200, scanMs: 1_500 },
+  fast: { issueMs: 150, codeTtlMs: 25_000, connectMs: 2_000, probeMs: 800, scanMs: 1_500 },
 };
 
 const COMPUTER_NAME = "MacBook Pro";
@@ -181,6 +181,21 @@ function randomId(): string {
   return randomCode().slice(0, 16);
 }
 
+function mockComputerSummary(computer: KnownComputer): WorkspaceComputerSummary {
+  const now = new Date().toISOString();
+  return {
+    computerId: computer.id,
+    displayName: computer.displayName,
+    platform: "darwin",
+    connectionStatus: computer.availability === "online" ? "online" : "offline",
+    connectedAt: computer.availability === "online" ? now : null,
+    lastSeenAt: computer.lastSeen ? new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000).toISOString() : null,
+    observedAt: now,
+    enrolledAt: now,
+    agentIds: [],
+  };
+}
+
 /** The one thing the outside world could do next, for the control that stands in for it. */
 export interface PendingEvent {
   readonly label: string;
@@ -206,7 +221,6 @@ export function useMockBackend(
   inventory: MockInventory = "none",
 ): MockBackend {
   const timings = TIMINGS[speed];
-  const [connect, setConnect] = useState<ConnectState>({ kind: "idle" });
   const [readiness, setReadiness] = useState<ReadinessFacts | undefined>(undefined);
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   /** The result a running check will settle on, held so it can be applied on a clock or by hand. */
@@ -223,17 +237,36 @@ export function useMockBackend(
   const [selectedComputerId, setSelectedComputerId] = useState<string | undefined>(() =>
     preselected(inventoryOf(inventory)),
   );
-  // Switching inventory in the lab is a different Account, not a change of mind, so the rows, the
-  // selection and the verdict are all taken again rather than carried across. Without the last one,
-  // an answer about one Account's machine could stay on screen beside another Account's.
-  useEffect(() => {
-    const rows = inventoryOf(inventory);
-    setKnownComputers(rows);
-    setSelectedComputerId(preselected(rows));
-    setReadiness(undefined);
-    setCheckResult(undefined);
-  }, [inventory]);
+  const knownComputersRef = useRef(knownComputers);
+  knownComputersRef.current = knownComputers;
+  const timingsRef = useRef(timings);
+  timingsRef.current = timings;
 
+  interface ConnectFixture {
+    readonly intent: ComputerConnectIntent;
+    readonly status: ComputerConnectCodeStatus;
+    readonly computer?: WorkspaceComputerSummary;
+  }
+  const connectFixture = useRef<ConnectFixture | undefined>(undefined);
+  const statusWaiters = useRef<
+    Array<{ readonly connectCodeId: string; readonly resolve: (status: ComputerConnectCodeStatus) => void }>
+  >([]);
+  const [visibleConnectFixture, setVisibleConnectFixture] = useState<ConnectFixture | undefined>(undefined);
+  /** What the current readiness answer belongs to; inventory changes retire it with the Account. */
+  const [answering, setAnswering] = useState<string>();
+  const updateConnectFixture = useCallback((next: ConnectFixture | undefined) => {
+    connectFixture.current = next;
+    setVisibleConnectFixture(next);
+    const waiters = statusWaiters.current;
+    statusWaiters.current = [];
+    for (const waiter of waiters) {
+      waiter.resolve(
+        next?.status.connectCodeId === waiter.connectCodeId
+          ? next.status
+          : { connectCodeId: waiter.connectCodeId, state: "revoked", computerId: null, redeemedAt: null },
+      );
+    }
+  }, []);
   const timers = useRef<number[]>([]);
   const clearTimers = useCallback(() => {
     for (const id of timers.current) window.clearTimeout(id);
@@ -243,53 +276,102 @@ export function useMockBackend(
     if (delayMs === null) return;
     timers.current.push(window.setTimeout(run, delayMs));
   }, []);
+  // Switching inventory in the lab is a different Account, not a change of mind, so the rows, the
+  // selection and the verdict are all taken again rather than carried across. Without the last one,
+  // an answer about one Account's machine could stay on screen beside another Account's. Timers
+  // belong to that Account too: an issuance scheduled before the switch must never arrive in the
+  // replacement scenario.
+  useEffect(() => {
+    clearTimers();
+    const rows = inventoryOf(inventory);
+    setKnownComputers(rows);
+    setSelectedComputerId(preselected(rows));
+    updateConnectFixture(undefined);
+    setReadiness(undefined);
+    setCheckResult(undefined);
+    setAnswering(undefined);
+    setPlanSignIn("idle");
+    setCreation("idle");
+    setAgent(undefined);
+    setMessaging({ kind: "idle" });
+  }, [clearTimers, inventory, updateConnectFixture]);
 
   useEffect(() => clearTimers, [clearTimers]);
 
-  // Only a live code can produce a Computer. The arrival outlives an expiry, so without this guard
-  // an expired code would still "connect" and the expiry scenario would report an impossible
-  // success. A reissue clears pending timers, so the guard is all an expiry needs.
-  const arrive = useCallback(() => {
-    setConnect((current) =>
-      current.kind === "issued"
-        ? { kind: "connected", command: current.command, computerName: COMPUTER_NAME }
-        : current,
-    );
-  }, []);
+  const redeemConnectFixture = useCallback(
+    (expectedConnectCodeId?: string) => {
+      const current = connectFixture.current;
+      if (current?.status.state !== "pending") return;
+      if (expectedConnectCodeId && current.status.connectCodeId !== expectedConnectCodeId) return;
+      const now = new Date().toISOString();
+      const computerId = current.intent.mode === "repair" ? current.intent.target.computerId : NEW_ARRIVAL;
+      const displayName = current.intent.mode === "repair" ? current.intent.target.displayName : COMPUTER_NAME;
+      const computer: WorkspaceComputerSummary = {
+        computerId,
+        displayName,
+        platform: "darwin",
+        connectionStatus: "online",
+        connectedAt: now,
+        lastSeenAt: now,
+        observedAt: now,
+        enrolledAt: now,
+        agentIds: [],
+      };
+      updateConnectFixture({
+        ...current,
+        computer,
+        status: {
+          connectCodeId: current.status.connectCodeId,
+          state: "redeemed",
+          computerId,
+          redeemedAt: now,
+        },
+      });
+    },
+    [updateConnectFixture],
+  );
 
-  const issue = useCallback(() => {
-    clearTimers();
-    setConnect({ kind: "issuing" });
-    later(() => {
-      setConnect({ kind: "issued", command: connectCommand(randomCode()), expiresAt: Date.now() + timings.codeTtlMs });
-      later(arrive, timings.connectMs);
-    }, timings.issueMs);
-  }, [arrive, clearTimers, later, timings.codeTtlMs, timings.connectMs, timings.issueMs]);
-
-  const issueConnectCode = useCallback(() => {
-    setConnect((current) => {
-      if (current.kind !== "idle") return current;
-      queueMicrotask(issue);
-      return { kind: "issuing" };
-    });
-  }, [issue]);
-
-  // Expiry is observed rather than scheduled, so a backgrounded tab that misses its timer still
-  // resolves to the correct state the moment it is looked at again.
-  useEffect(() => {
-    if (connect.kind !== "issued") return;
-    const remaining = connect.expiresAt - Date.now();
-    if (remaining <= 0) {
-      setConnect({ kind: "expired", command: connect.command });
-      return;
-    }
-    const id = window.setTimeout(
-      () =>
-        setConnect((current) => (current.kind === "issued" ? { kind: "expired", command: current.command } : current)),
-      remaining,
-    );
-    return () => window.clearTimeout(id);
-  }, [connect]);
+  const computerConnectAdapter = useMemo<ComputerConnectAdapter>(
+    () => ({
+      issue: (intent) =>
+        new Promise((resolve) => {
+          const issueNow = () => {
+            const connectCodeId = randomId();
+            updateConnectFixture({
+              intent,
+              status: { connectCodeId, state: "pending", computerId: null, redeemedAt: null },
+            });
+            const issuedAt = new Date().toISOString();
+            resolve({
+              bootstrapCommand: connectCommand(randomCode()),
+              connectCodeId,
+              expiresIn: timingsRef.current.codeTtlMs / 1_000,
+              issuedAt,
+            });
+            later(() => redeemConnectFixture(connectCodeId), timingsRef.current.connectMs);
+          };
+          later(issueNow, timingsRef.current.issueMs);
+        }),
+      status: (connectCodeId) => {
+        const fixture = connectFixture.current;
+        if (!fixture || fixture.status.connectCodeId !== connectCodeId) {
+          return Promise.resolve({ connectCodeId, state: "revoked", computerId: null, redeemedAt: null });
+        }
+        if (fixture.status.state !== "pending") return Promise.resolve(fixture.status);
+        return new Promise((resolve) => {
+          statusWaiters.current.push({ connectCodeId, resolve });
+        });
+      },
+      computers: async () => {
+        const fixtureComputer = connectFixture.current?.computer;
+        const computers = knownComputersRef.current
+          .filter((computer) => computer.id !== fixtureComputer?.computerId)
+          .map(mockComputerSummary);
+        return { computers: fixtureComputer ? [...computers, fixtureComputer] : computers };
+      },
+    }),
+    [later, redeemConnectFixture, updateConnectFixture],
+  );
 
   /**
    * The Computer this run is preparing: the Account's own once it is reachable, or the one that just
@@ -299,13 +381,10 @@ export function useMockBackend(
   const preparedComputerId = useMemo(() => {
     if (selectedComputerId !== undefined) {
       const owned = knownComputers.find((computer) => computer.id === selectedComputerId);
-      return owned?.online ? owned.id : undefined;
+      return owned?.availability === "online" ? owned.id : undefined;
     }
-    return connect.kind === "connected" ? NEW_ARRIVAL : undefined;
-  }, [connect.kind, knownComputers, selectedComputerId]);
-
-  /** What the answer on screen answers: which machine, under which outcome the lab is asking about. */
-  const [answering, setAnswering] = useState<string>();
+    return undefined;
+  }, [knownComputers, selectedComputerId]);
 
   /*
    * The check runs against whichever Computer is being prepared, exactly like the daemon's eager
@@ -337,9 +416,19 @@ export function useMockBackend(
   const bringOnline = useCallback((computerId: string) => {
     setKnownComputers((current) =>
       current.map((computer) =>
-        computer.id === computerId ? { id: computer.id, displayName: computer.displayName, online: true } : computer,
+        computer.id === computerId
+          ? { id: computer.id, displayName: computer.displayName, availability: "online" }
+          : computer,
       ),
     );
+  }, []);
+
+  const computerConnected = useCallback((computer: WorkspaceComputerSummary) => {
+    setKnownComputers((current) => [
+      ...current.filter((candidate) => candidate.id !== computer.computerId),
+      { id: computer.computerId, displayName: computer.displayName, availability: "online" },
+    ]);
+    setSelectedComputerId(computer.computerId);
   }, []);
 
   const settleCheck = useCallback(() => {
@@ -414,10 +503,10 @@ export function useMockBackend(
 
   const reset = useCallback(() => {
     clearTimers();
+    updateConnectFixture(undefined);
     setPlanSignIn("idle");
     setCreation("idle");
     setAgent(undefined);
-    setConnect({ kind: "idle" });
     setReadiness(undefined);
     setCheckResult(undefined);
     setMessaging({ kind: "idle" });
@@ -425,14 +514,35 @@ export function useMockBackend(
     const rows = inventoryOf(inventory);
     setKnownComputers(rows);
     setSelectedComputerId(preselected(rows));
-  }, [clearTimers, inventory]);
+  }, [clearTimers, inventory, updateConnectFixture]);
+
+  const expireNow = useCallback(() => {
+    const current = connectFixture.current;
+    if (current?.status.state !== "pending") return;
+    updateConnectFixture({
+      ...current,
+      status: {
+        connectCodeId: current.status.connectCodeId,
+        state: "expired",
+        computerId: null,
+        redeemedAt: null,
+      },
+    });
+  }, [updateConnectFixture]);
 
   const pending = useMemo<PendingEvent | undefined>(() => {
-    // Reconnecting the Account's machine comes first: while it is asleep, nothing else on this step is
-    // waiting on the outside world, and enrolling a second Computer is not the move being offered.
-    const asleep = knownComputers.find((computer) => computer.id === selectedComputerId && !computer.online);
+    const fixture = visibleConnectFixture;
+    if (fixture?.status.state === "pending") {
+      return {
+        label: fixture.intent.mode === "repair" ? `Repair ${fixture.intent.target.displayName}` : "Connect computer",
+        run: () => redeemConnectFixture(),
+      };
+    }
+    // With no explicit repair attempt, the default event is the same Computer naturally returning.
+    const asleep = knownComputers.find(
+      (computer) => computer.id === selectedComputerId && computer.availability !== "online",
+    );
     if (asleep) return { label: `Reconnect ${asleep.displayName}`, run: () => bringOnline(asleep.id) };
-    if (connect.kind === "issued") return { label: "Connect computer", run: arrive };
     if (checkResult) return { label: "Return check result", run: settleCheck };
     if (planSignIn === "pending") return { label: "Approve sign-in", run: () => setPlanSignIn("signed-in") };
     if (messaging.kind === "waiting")
@@ -443,28 +553,31 @@ export function useMockBackend(
       return { label: "Confirm reachable", run: () => setMessaging({ kind: "connected" }) };
     return undefined;
   }, [
-    arrive,
     bringOnline,
     checkResult,
-    connect.kind,
     knownComputers,
     messaging.kind,
     planSignIn,
     selectedComputerId,
+    redeemConnectFixture,
     settleCheck,
+    visibleConnectFixture,
   ]);
 
-  return useMemo(
-    () => ({
+  return useMemo(() => {
+    const selected = knownComputers.find((computer) => computer.id === selectedComputerId);
+    return {
       agent,
-      // The mock's Computer does not leave once it has arrived.
-      computerOnline: connect.kind === "connected" ? true : undefined,
-      connect,
+      computerConnectAdapter,
+      computerConnected,
+      computerOnline:
+        selected?.availability === "online" ? true : selected?.availability === "offline" ? false : undefined,
       createAgent,
       creation,
       error: undefined,
       readiness,
       knownComputers,
+      markPastComputerStep: () => undefined,
       messaging,
       messagingProvider: undefined,
       planSignIn,
@@ -472,37 +585,33 @@ export function useMockBackend(
       // The mock has nothing to read back; it is the flow as it runs the first time.
       resuming: false,
       resumeError: undefined,
+      resumeBlocked: undefined,
       retryResume: () => undefined,
-      markPastConnectStep: () => undefined,
       startPlanSignIn,
-      issueConnectCode,
-      refreshConnectCode: issue,
       startMessaging,
       startSlackInstall,
       pending,
-      expireNow: () =>
-        setConnect((current) => (current.kind === "issued" ? { kind: "expired", command: current.command } : current)),
+      expireNow,
       repairNow,
       reset,
-    }),
-    [
-      agent,
-      connect,
-      createAgent,
-      creation,
-      issue,
-      issueConnectCode,
-      knownComputers,
-      messaging,
-      pending,
-      planSignIn,
-      readiness,
-      repairNow,
-      reset,
-      selectedComputerId,
-      startMessaging,
-      startPlanSignIn,
-      startSlackInstall,
-    ],
-  );
+    };
+  }, [
+    agent,
+    computerConnectAdapter,
+    computerConnected,
+    createAgent,
+    creation,
+    expireNow,
+    knownComputers,
+    messaging,
+    pending,
+    planSignIn,
+    readiness,
+    repairNow,
+    reset,
+    selectedComputerId,
+    startMessaging,
+    startPlanSignIn,
+    startSlackInstall,
+  ]);
 }

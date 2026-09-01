@@ -469,11 +469,7 @@ export class RuntimeSession {
         return;
       }
       if (this.#isClosing()) return;
-      const channelTarget =
-        this.#protocolVersion === RUNTIME_PROTOCOL_V2 &&
-        this.#negotiatedCapabilities[RUNTIME_CAPABILITY.channelTarget] !== undefined
-          ? this.#options.channelTarget?.()
-          : undefined;
+      const channelTarget = this.#channelTarget();
       this.#send(
         this.#protocolVersion === RUNTIME_PROTOCOL_V2
           ? {
@@ -490,6 +486,16 @@ export class RuntimeSession {
     } catch (error) {
       this.#handleRequestError(error, requestId);
     }
+  }
+
+  #channelTarget(): RuntimeChannelTarget | undefined {
+    if (
+      this.#protocolVersion !== RUNTIME_PROTOCOL_V2 ||
+      this.#negotiatedCapabilities[RUNTIME_CAPABILITY.channelTarget] === undefined
+    ) {
+      return undefined;
+    }
+    return this.#options.channelTarget?.();
   }
 
   #acceptsProviderReadiness(providerReadiness: RuntimeProviderReadinessCollection | undefined): boolean {

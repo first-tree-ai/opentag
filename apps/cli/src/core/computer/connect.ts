@@ -3,12 +3,13 @@ import {
   allocateComputerIdentity,
   machineCredentialsPath,
   normalizeServerUrl,
-  OpenTagApi,
+  type OpenTagApi,
   resolveOpenTagHome,
   storeBoundAccountComputer,
   writeComputerIdentityAtomically,
 } from "@opentag/client";
 import { CLI_VERSION } from "../../build-info.js";
+import { resolveCommandContext } from "../command/context.js";
 import {
   createDaemonServiceManager,
   type DaemonServiceInfo,
@@ -52,7 +53,8 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   await manager?.preflight();
   const serviceBefore = await manager?.status();
   const identity = await allocateComputerIdentity(home, serverUrl);
-  const api = options.api ?? new OpenTagApi(serverUrl);
+  const api = options.api ?? (await resolveCommandContext({ home, serverUrl })).api;
+  if (!api) throw new Error("Command context did not resolve an API");
   const enrollment = await api.exchangeComputerConnectCode({
     code: options.code,
     computerId: identity.computerId,

@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { registerAgentBindCommand } from "./bind.js";
 import { registerAgentCreateCommand } from "./create.js";
 import { registerAgentDeleteCommand } from "./delete.js";
 import { registerAgentImBindingCommands } from "./im.js";
@@ -13,6 +14,7 @@ export function registerAgentCommand(program: Command): void {
   registerAgentListCommand(agent);
   registerAgentShowCommand(agent);
   registerAgentUpdateCommand(agent);
+  registerAgentBindCommand(agent);
   registerAgentLifecycleCommands(agent);
   registerAgentDeleteCommand(agent);
   registerAgentImBindingCommands(agent);

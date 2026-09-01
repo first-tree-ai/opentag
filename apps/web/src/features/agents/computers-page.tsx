@@ -1,9 +1,11 @@
 import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
-import { StatusIndicator, Text } from "../../ui/design-system.js";
+import { useState } from "react";
+import * as m from "../../paraglide/messages.js";
+import { Button, StatusIndicator, Text } from "../../ui/design-system.js";
+import { ComputerConnect } from "../computer-connect/computer-connect.js";
 import { Page } from "../layout/page.js";
 import { AsyncState, toResourceState } from "../resource/resource-state.js";
 import { useComputersQuery } from "./agent-queries.js";
-import { ComputerSetup } from "./computer-setup.js";
 
 /**
  * Lists the Account's enrolled Computers and keeps the connection flow available as its own
@@ -13,15 +15,41 @@ import { ComputerSetup } from "./computer-setup.js";
 export function ComputersPage() {
   // The one Computers entry every surface reads, watched because this page is where an operator
   // waits for a Computer to come back.
-  const state = toResourceState(useComputersQuery(true));
+  const query = useComputersQuery(true);
+  const state = toResourceState(query);
+  const [connecting, setConnecting] = useState(false);
 
   return (
-    <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">
+    <Page title={m.agents_computers_title()} description={m.agents_computers_description()}>
       <AsyncState state={state}>
         {(value) => (
           <div className="grid gap-6">
             <ComputerList computers={value.computers} />
-            <ComputerSetup />
+            <section
+              aria-labelledby="connect-computer-heading"
+              className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+            >
+              <div className="grid gap-1">
+                <Text as="h2" id="connect-computer-heading" variant="heading">
+                  {m.computer_connect_entry_title()}
+                </Text>
+                <Text as="p" variant="secondary">
+                  {m.computer_connect_entry_description()}
+                </Text>
+              </div>
+              {connecting ? (
+                <>
+                  <ComputerConnect intent={{ mode: "create" }} onConnected={() => void query.refetch()} />
+                  <Button className="w-fit" size="compact" variant="secondary" onClick={() => setConnecting(false)}>
+                    {m.computer_connect_entry_close()}
+                  </Button>
+                </>
+              ) : (
+                <Button className="w-fit" onClick={() => setConnecting(true)}>
+                  {m.computer_connect_entry_action()}
+                </Button>
+              )}
+            </section>
           </div>
         )}
       </AsyncState>
@@ -36,11 +64,11 @@ export function ComputerList({ computers }: { computers: readonly WorkspaceCompu
       className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
     >
       <Text as="h2" id="enrolled-computers-heading" variant="heading">
-        Enrolled Computers
+        {m.agents_enrolled_computers()}
       </Text>
       {computers.length === 0 ? (
         <Text as="p" variant="secondary">
-          No Computers are enrolled yet.
+          {m.agents_no_computers_enrolled()}
         </Text>
       ) : (
         <ul className="grid divide-y divide-kumo-line">
@@ -62,10 +90,16 @@ function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) 
       <div className="grid min-w-0 gap-1">
         <strong className="truncate text-sm font-medium text-kumo-strong">{computer.displayName}</strong>
         <span className="text-sm text-kumo-subtle">
-          {platform} · {agentCount} {agentCount === 1 ? "Agent" : "Agents"}
+          {platform} ·{" "}
+          {agentCount === 1
+            ? m.agents_computer_agent_count_single({ count: agentCount })
+            : m.agents_computer_agent_count_plural({ count: agentCount })}
         </span>
       </div>
-      <StatusIndicator label={online ? "Online" : "Offline"} tone={online ? "success" : "warning"} />
+      <StatusIndicator
+        label={online ? m.agents_computer_online() : m.agents_computer_offline()}
+        tone={online ? "success" : "warning"}
+      />
     </li>
   );
 }

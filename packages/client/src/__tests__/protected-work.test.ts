@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { ComposedClientRuntime } from "../runtime/client-runtime-composition.js";
+import { RuntimeDurabilityMetrics } from "../runtime/runtime-durability.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 
 function composedRuntime(components: {
@@ -16,6 +17,7 @@ function composedRuntime(components: {
     bindingStore: {} as never,
     custody: { liveTurnCount: components.custodyTurns } as never,
     credentialEnvironment: {} as never,
+    durabilityMetrics: new RuntimeDurabilityMetrics(),
     reconciler: components.reconciler,
     sessionMessageInbox: { queuedCount: components.queuedSessionMessages } as never,
     reportOwner: { pendingCount: components.pendingReports } as never,
@@ -91,6 +93,7 @@ describe("protected work snapshot", () => {
       bindingStore: {} as never,
       custody: { liveTurnCount: 0 } as never,
       credentialEnvironment: {} as never,
+      durabilityMetrics: new RuntimeDurabilityMetrics(),
       reconciler: new SessionReconciler({ computerId: crypto.randomUUID() }),
       sessionMessageInbox: { queuedCount: 0 } as never,
       reportOwner: { pendingCount: 0 } as never,

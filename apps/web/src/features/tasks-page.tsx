@@ -5,6 +5,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { compareText, foldCase, formatDateTime, formatRelativeTime, initials } from "../i18n/format.js";
+import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import {
   Button,
@@ -19,32 +20,33 @@ import {
   Text,
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
+import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
 import { TaskMessageBody } from "./task-message-body.js";
 
 type TaskFilter = "all" | TaskStatus;
 
-const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
-  queued: { label: "Queued", tone: "info" },
-  running: { label: "Running", tone: "info" },
-  completed: { label: "Completed", tone: "success" },
-  failed: { label: "Failed", tone: "danger" },
-  expired: { label: "Expired", tone: "warning" },
-  ended: { label: "Ended", tone: "neutral" },
-  idle: { label: "Idle", tone: "neutral" },
+const statusPresentation: Record<TaskStatus, { readonly tone: StatusTone }> = {
+  queued: { tone: "info" },
+  running: { tone: "info" },
+  completed: { tone: "success" },
+  failed: { tone: "danger" },
+  expired: { tone: "warning" },
+  ended: { tone: "neutral" },
+  idle: { tone: "neutral" },
 };
 
-export function TasksPage() {
+export function TasksPage({ agentId }: { agentId?: string } = {}) {
   const [query, setQuery] = useState("");
-  const [agentId, setAgentId] = useState("all");
+  const [selectedAgentId, setSelectedAgentId] = useState("all");
   const [status, setStatus] = useState<TaskFilter>("all");
   /*
    * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
    * stays retryable — the behavior the hand-rolled append kept its own error state for.
    */
   const tasksQuery = useInfiniteQuery({
-    queryKey: queryKeys.tasks.list(),
-    queryFn: ({ pageParam }) => browserApi.tasks({ cursor: pageParam }),
+    queryKey: agentId ? queryKeys.tasks.byAgent(agentId) : queryKeys.tasks.list(),
+    queryFn: ({ pageParam }) => browserApi.tasks({ agentId, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     // The API reports the end of the list as null; the cache reads undefined as "no page after this".
     getNextPageParam: (page) => page.nextCursor ?? undefined,
@@ -85,14 +87,16 @@ export function TasksPage() {
           .join(" ")
           .includes(normalizedQuery);
       return (
-        matchesQuery && (agentId === "all" || task.agent.id === agentId) && (status === "all" || task.status === status)
+        matchesQuery &&
+        (agentId ? task.agent.id === agentId : selectedAgentId === "all" || task.agent.id === selectedAgentId) &&
+        (status === "all" || task.status === status)
       );
     });
-  }, [agentId, loaded, query, status]);
+  }, [agentId, loaded, query, selectedAgentId, status]);
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
-      <PageHeader description="Review Agent work, progress, and results." title="Tasks" titleId="tasks-page-title" />
+      <PageHeader description={m.tasks_page_description()} title={m.tasks_title()} titleId="tasks-page-title" />
 
       {/*
        * The toolbar is built out of the rows themselves — the Agent options are the Agents named by
@@ -103,37 +107,43 @@ export function TasksPage() {
       {terminalTasksError ? null : (
         <form
           className="flex flex-wrap items-end gap-3"
-          aria-label="Filter Tasks"
+          aria-label={m.tasks_filter_tasks()}
           data-ui="task-toolbar"
           onSubmit={(event) => event.preventDefault()}
         >
           <div className="min-w-56 flex-1">
-            <span className="sr-only">Search Tasks</span>
+            <span className="sr-only">{m.tasks_search_tasks()}</span>
             <KumoInputControl
-              aria-label="Search Tasks"
+              aria-label={m.tasks_search_tasks()}
               value={query}
               type="search"
-              placeholder="Search Tasks"
+              placeholder={m.tasks_search_tasks()}
               onChange={(event) => setQuery(event.target.value)}
             />
           </div>
-          <TaskSelect label="Filter by Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-            <option value="all">All Agents</option>
-            {agents.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.displayName}
-              </option>
-            ))}
-          </TaskSelect>
+          {!agentId ? (
+            <TaskSelect
+              label={m.tasks_filter_by_agent()}
+              value={selectedAgentId}
+              onChange={(event) => setSelectedAgentId(event.target.value)}
+            >
+              <option value="all">{m.tasks_all_agents()}</option>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.displayName}
+                </option>
+              ))}
+            </TaskSelect>
+          ) : null}
           <TaskSelect
-            label="Filter by status"
+            label={m.tasks_filter_by_status()}
             value={status}
             onChange={(event) => setStatus(event.target.value as TaskFilter)}
           >
-            <option value="all">All statuses</option>
-            {Object.entries(statusPresentation).map(([value, presentation]) => (
+            <option value="all">{m.tasks_all_statuses()}</option>
+            {Object.keys(statusPresentation).map((value) => (
               <option key={value} value={value}>
-                {presentation.label}
+                {taskStatusLabel(value as TaskStatus)}
               </option>
             ))}
           </TaskSelect>
@@ -141,16 +151,16 @@ export function TasksPage() {
       )}
 
       {!terminalTasksError && tasksQuery.isPending ? (
-        <TaskNotice heading="Loading Tasks" detail="Reading stored Sessions and Turns." />
+        <TaskNotice loading heading={m.tasks_loading_tasks()} detail={m.tasks_loading_tasks_detail()} />
       ) : null}
       {terminalTasksError ? (
         <TaskNotice
           action={
             <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
-              Try again
+              {m.tasks_try_again()}
             </Button>
           }
-          heading="Tasks unavailable"
+          heading={m.tasks_tasks_unavailable()}
           detail={terminalTasksError.message}
         />
       ) : null}
@@ -158,26 +168,26 @@ export function TasksPage() {
         <TaskNotice
           action={
             <Button type="button" variant="secondary" onClick={() => void tasksQuery.refetch()}>
-              Try again
+              {m.tasks_try_again()}
             </Button>
           }
-          heading="Tasks unavailable"
+          heading={m.tasks_tasks_unavailable()}
           detail={asError(tasksQuery.error).message}
         />
       ) : null}
       {!terminalTasksError && tasksQuery.data && tasks.length > 0 ? (
         <>
           <section
-            aria-label="Tasks table"
+            aria-label={m.tasks_table_region()}
             className="min-w-0 overflow-x-auto rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand focus-visible:ring-inset"
             // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to focus the horizontal scroll region.
             tabIndex={0}
           >
-            <Table className="min-w-[36rem]" aria-label="Tasks" data-ui="task-table">
+            <Table className="min-w-[36rem]" aria-label={m.tasks_title()} data-ui="task-table">
               <thead>
                 <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-                  <th scope="col">Task</th>
-                  <th scope="col">Status</th>
+                  <th scope="col">{m.tasks_task_label()}</th>
+                  <th scope="col">{m.tasks_status_label()}</th>
                 </tr>
               </thead>
               <tbody>
@@ -196,7 +206,11 @@ export function TasksPage() {
                 variant="secondary"
                 onClick={() => void tasksQuery.fetchNextPage()}
               >
-                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+                {tasksQuery.isFetchingNextPage
+                  ? m.tasks_loading_more()
+                  : loadMoreError
+                    ? m.tasks_try_again()
+                    : m.tasks_load_more()}
               </Button>
               {loadMoreError ? (
                 <span className="text-sm text-kumo-danger" role="alert">
@@ -208,7 +222,7 @@ export function TasksPage() {
         </>
       ) : null}
       {!terminalTasksError && tasksQuery.data && tasks.length === 0 ? (
-        <TaskNotice heading="No Tasks found" detail="Try a different search or filter." />
+        <TaskNotice heading={m.tasks_no_tasks_found()} detail={m.tasks_no_tasks_found_detail()} />
       ) : null}
     </section>
   );
@@ -247,35 +261,35 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
     >
       <div className="flex flex-wrap items-center justify-between gap-4">
         <Text as="h2" id="agent-tasks-heading" variant="heading">
-          Tasks
+          {m.tasks_title()}
         </Text>
-        <Link className="text-sm text-kumo-link" to="/tasks">
+        <Link className="text-sm text-kumo-link" {...agentTasksLink(agentId)}>
           All Tasks
         </Link>
       </div>
       {!unavailable && tasksQuery.isPending ? (
         <p className="text-sm text-kumo-subtle" role="status">
-          Loading Tasks…
+          {m.tasks_loading_tasks_compact()}
         </p>
       ) : null}
       {unavailable ? (
         <p className="text-sm text-kumo-subtle" role="status">
-          Tasks are temporarily unavailable.
+          {m.tasks_temporarily_unavailable()}
         </p>
       ) : null}
       {!unavailable && tasksQuery.data && tasks.length === 0 ? (
         <p className="text-sm text-kumo-subtle" role="status">
-          No Tasks yet. Message this Agent in your chat app to put it to work.
+          {m.tasks_no_tasks_yet()}
         </p>
       ) : null}
       {!unavailable && tasks.length > 0 ? (
         <>
           <div className="overflow-x-auto">
-            <Table className="w-full" aria-label="Agent Tasks" data-ui="task-table">
+            <Table className="w-full" aria-label={m.tasks_agent_tasks()} data-ui="task-table">
               <thead>
                 <tr className="border-b border-kumo-line text-left text-sm text-kumo-subtle">
-                  <th scope="col">Task</th>
-                  <th scope="col">Status</th>
+                  <th scope="col">{m.tasks_task_label()}</th>
+                  <th scope="col">{m.tasks_status_label()}</th>
                 </tr>
               </thead>
               <tbody>
@@ -293,11 +307,15 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
                 variant="secondary"
                 onClick={() => void tasksQuery.fetchNextPage()}
               >
-                {tasksQuery.isFetchingNextPage ? "Loading more Tasks…" : loadMoreError ? "Try again" : "Load more"}
+                {tasksQuery.isFetchingNextPage
+                  ? m.tasks_loading_more()
+                  : loadMoreError
+                    ? m.tasks_try_again()
+                    : m.tasks_load_more()}
               </Button>
               {loadMoreError ? (
                 <span className="text-sm text-kumo-subtle" role="status">
-                  Could not load more Tasks.
+                  {m.tasks_could_not_load_more()}
                 </span>
               ) : null}
             </div>
@@ -308,7 +326,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
   );
 }
 
-export function TaskDetailPage({ taskId }: { taskId?: string }) {
+export function TaskDetailPage({ agentId, taskId }: { agentId?: string; taskId?: string }) {
   /*
    * The Task itself, its internal Sessions and its collaboration messages come from the first page
    * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
@@ -328,24 +346,24 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   const terminalTaskError = taskQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
   const loadMoreError = taskQuery.isFetchNextPageError && !terminalTaskError ? taskError : null;
 
-  if (terminalTaskError) return <TaskUnavailable error={terminalTaskError} />;
+  if (terminalTaskError) return <TaskUnavailable agentId={agentId} error={terminalTaskError} />;
   if (taskId !== undefined && taskQuery.isPending) {
-    return <TaskNotice heading="Loading Task" detail="Reading stored Turn details." />;
+    return <TaskNotice loading heading={m.tasks_loading_task()} detail={m.tasks_loading_task_detail()} />;
   }
   if (!first) {
     // No Task id at all is the same answer as one the Server does not have.
-    const error = taskId === undefined ? new ApiError(404, "Task not found") : asError(taskQuery.error);
-    return <TaskUnavailable error={error} />;
+    const error = taskId === undefined ? new ApiError(404, m.tasks_not_found()) : asError(taskQuery.error);
+    return <TaskUnavailable agentId={agentId} error={error} />;
   }
 
   const { task } = first;
   const status = statusPresentation[task.status];
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
-      <nav aria-label="Breadcrumb">
-        <Link className="inline-flex items-center gap-1" to="/tasks">
+      <nav className="flex items-center gap-3" aria-label={m.tasks_breadcrumb()}>
+        <Link {...agentTasksLink(agentId ?? task.agent.id)}>
           <Icon name="arrow-left" />
-          Tasks
+          {m.tasks_title()}
         </Link>
       </nav>
 
@@ -355,7 +373,7 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
             {task.title}
           </Text>
         </div>
-        <section className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" aria-label="Task details">
+        <section className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm" aria-label={m.tasks_details()}>
           <span className="inline-flex items-center gap-2">
             <span
               className="grid size-7 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
@@ -369,11 +387,14 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
             <ProviderIcon className="size-5" provider={task.source.provider} />
             {humanizeEnum(task.source.provider)}
           </span>
-          <span className="text-kumo-subtle">Started {formatDateTime(task.createdAt)}</span>
-          <span className="text-kumo-subtle">Updated {formatRelativeTime(task.lastActivityAt)}</span>
+          <span className="text-kumo-subtle">{m.tasks_started({ time: formatDateTime(task.createdAt) })}</span>
+          <span className="text-kumo-subtle">{m.tasks_updated({ time: formatRelativeTime(task.lastActivityAt) })}</span>
           <StatusIndicator
-            aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
-            label={status.label}
+            aria-label={m.tasks_status_updated({
+              status: taskStatusLabel(task.status),
+              time: formatRelativeTime(task.lastActivityAt),
+            })}
+            label={taskStatusLabel(task.status)}
             tone={status.tone}
           />
         </section>
@@ -381,12 +402,12 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
 
       <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
         <Text as="h2" id="task-activity-title" variant="heading">
-          Activity
+          {m.tasks_activity()}
         </Text>
         {turns.length > 0 ? (
           turns.map((turn) => <TaskTurnView key={turn.deliveryId} task={task} turn={turn} />)
         ) : (
-          <TaskNotice heading="No activity recorded" detail="Messages and Agent results will appear here." />
+          <TaskNotice heading={m.tasks_no_activity()} detail={m.tasks_no_activity_detail()} />
         )}
       </section>
       {taskQuery.hasNextPage ? (
@@ -397,7 +418,7 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
           disabled={taskQuery.isFetchingNextPage}
           onClick={() => void taskQuery.fetchNextPage()}
         >
-          Load earlier activity
+          {m.tasks_load_earlier_activity()}
         </Button>
       ) : null}
       {loadMoreError ? (
@@ -409,17 +430,21 @@ export function TaskDetailPage({ taskId }: { taskId?: string }) {
   );
 }
 
-function TaskUnavailable({ error }: { error: Error }) {
+function TaskUnavailable({ agentId, error }: { agentId?: string; error: Error }) {
   const notFound = error instanceof ApiError && error.status === 404;
   return (
     <section className="grid gap-3" data-ui="task-not-found">
       <Text as="h1" size="lg" variant="heading">
-        {notFound ? "Task not found" : "Task unavailable"}
+        {notFound ? m.tasks_not_found() : m.tasks_unavailable()}
       </Text>
       <Text as="p" variant="secondary">
-        {notFound ? "This Task does not exist or is outside your Account." : error.message}
+        {notFound ? m.tasks_not_found_detail() : error.message}
       </Text>
-      <Link to="/tasks">Back to Tasks</Link>
+      {agentId ? (
+        <Link {...agentTasksLink(agentId)}>{m.tasks_back_to_tasks()}</Link>
+      ) : (
+        <Link to="/agents">{m.tasks_back_to_agents()}</Link>
+      )}
     </section>
   );
 }
@@ -430,7 +455,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   return (
     <section
       className="grid gap-4"
-      aria-label={`Message sent at ${formatDateTime(turn.message.occurredAt)}`}
+      aria-label={m.tasks_message_sent_at({ time: formatDateTime(turn.message.occurredAt) })}
       data-ui="task-exchange"
     >
       <article className="grid grid-cols-[2rem_minmax(0,1fr)] gap-3" data-ui="task-message-request">
@@ -464,20 +489,23 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
             <strong>{task.agent.displayName}</strong>
             <small className="text-kumo-subtle">
               {absorbedBy
-                ? "Added to active work"
+                ? m.tasks_added_to_active_work()
                 : report
-                  ? `${humanizeEnum(report.outcome)} · ${formatDateTime(report.reportedAt)}`
+                  ? m.tasks_report_summary({
+                      outcome: humanizeEnum(report.outcome),
+                      time: formatDateTime(report.reportedAt),
+                    })
                   : deliveryStateLabel(turn.delivery.state)}
             </small>
           </header>
           <section
             className="max-w-[48rem] rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-            aria-label="Agent response"
+            aria-label={m.tasks_agent_response()}
             data-ui="task-agent-response"
           >
             {absorbedBy ? (
               <p className="text-sm text-kumo-subtle" data-ui="task-progress-summary">
-                This message was included in the Agent's active work.
+                {m.tasks_included_in_active_work()}
               </p>
             ) : report?.finalText ? (
               <TaskMessageBody format="markdown" text={report.finalText} />
@@ -489,8 +517,8 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
                 data-state={turn.delivery.state === "accepted" ? "progress" : "attention"}
               >
                 {turn.delivery.state === "accepted"
-                  ? "Work is in progress."
-                  : `Message ${deliveryStateLabel(turn.delivery.state).toLocaleLowerCase()}.`}
+                  ? m.tasks_work_in_progress()
+                  : m.tasks_message_state({ state: deliveryStateLabel(turn.delivery.state).toLocaleLowerCase() })}
               </p>
             )}
           </section>
@@ -525,8 +553,8 @@ function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSu
   const status = statusPresentation[task.status];
   return (
     <tr className="border-b border-kumo-line align-top" data-ui="task-table-row">
-      <td className="p-3" data-label="Task">
-        <Link params={{ taskId: task.id }} title={task.title} to="/tasks/$taskId">
+      <td className="p-3" data-label={m.tasks_task_label()}>
+        <Link {...agentTaskDetailLink(task.agent.id, task.id)} title={task.title}>
           {task.title}
         </Link>
         <span className="mt-1 block text-sm text-kumo-subtle" data-ui="task-list-metadata">
@@ -544,11 +572,14 @@ function TaskRow({ showAgent = true, task }: { showAgent?: boolean; task: TaskSu
           <span>{shortId(task.source.threadKey ?? task.source.channelId)}</span>
         </span>
       </td>
-      <td className="p-3" data-label="Status">
+      <td className="p-3" data-label={m.tasks_status_label()}>
         <StatusIndicator
-          aria-label={`${status.label}, updated ${formatRelativeTime(task.lastActivityAt)}`}
+          aria-label={m.tasks_status_updated({
+            status: taskStatusLabel(task.status),
+            time: formatRelativeTime(task.lastActivityAt),
+          })}
           detail={formatRelativeTime(task.lastActivityAt)}
-          label={status.label}
+          label={taskStatusLabel(task.status)}
           tone={status.tone}
         />
       </td>
@@ -568,7 +599,17 @@ function TaskProviderIcon({
   );
 }
 
-function TaskNotice({ action, heading, detail }: { action?: ReactNode; heading: string; detail: string }) {
+function TaskNotice({
+  action,
+  detail,
+  heading,
+  loading = false,
+}: {
+  action?: ReactNode;
+  detail: string;
+  heading: string;
+  loading?: boolean;
+}) {
   return (
     <section
       className="grid gap-2 rounded-lg bg-kumo-base p-8 text-center ring ring-kumo-line"
@@ -576,7 +617,7 @@ function TaskNotice({ action, heading, detail }: { action?: ReactNode; heading: 
       data-ui="task-empty-state"
     >
       <div className="flex items-center justify-center gap-2">
-        {heading.startsWith("Loading") ? <Loader aria-label={heading} size="sm" /> : null}
+        {loading ? <Loader aria-label={heading} size="sm" /> : null}
         <Text as="h2" variant="heading">
           {heading}
         </Text>
@@ -594,13 +635,23 @@ function shortId(value: string): string {
 }
 
 function attentionLabel(value: TaskTurn["attention"]): string {
-  if (value === "direct") return "Direct message";
-  if (value === "ambient") return "Ambient message";
+  if (value === "direct") return m.tasks_direct_message();
+  if (value === "ambient") return m.tasks_ambient_message();
   return humanizeEnum(value);
 }
 
 function deliveryStateLabel(value: TaskTurn["delivery"]["state"]): string {
-  return value === "accepted" ? "In progress" : humanizeEnum(value);
+  return value === "accepted" ? m.tasks_in_progress() : humanizeEnum(value);
+}
+
+function taskStatusLabel(value: TaskStatus): string {
+  if (value === "queued") return m.tasks_status_queued();
+  if (value === "running") return m.tasks_status_running();
+  if (value === "completed") return m.tasks_status_completed();
+  if (value === "failed") return m.tasks_status_failed();
+  if (value === "expired") return m.tasks_status_expired();
+  if (value === "ended") return m.tasks_status_ended();
+  return m.tasks_status_idle();
 }
 
 function humanizeEnum(value: string): string {
@@ -609,5 +660,5 @@ function humanizeEnum(value: string): string {
 }
 
 function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error("The request failed");
+  return value instanceof Error ? value : new Error(m.tasks_request_failed());
 }

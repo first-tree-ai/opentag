@@ -4,6 +4,7 @@ import { readMachineCredentials, resolveBoundAccountComputer, resolveOpenTagHome
 import { getChannelConfig } from "@opentag/shared";
 import { CHANNEL } from "../../../build-info.js";
 import { channelConfig } from "../../channel/config.js";
+import { resolveChannelEnvironment } from "../../channel/environment.js";
 import { inspectDaemonOwner } from "../ownership.js";
 import { createLaunchdBackend } from "./launchd.js";
 import {
@@ -52,7 +53,7 @@ type DaemonServiceMutation = "install" | "refresh" | "restart" | "start" | "stop
 export async function createDaemonServiceManager(
   options: CreateDaemonServiceManagerOptions = {},
 ): Promise<DaemonServiceManager> {
-  const environment = options.env ?? process.env;
+  const environment = resolveChannelEnvironment(options.env ?? process.env);
   const platform = options.platform ?? process.platform;
   const account = userInfo();
   const home = await canonicalizeServiceHome(resolve(options.home ?? resolveOpenTagHome(environment)));

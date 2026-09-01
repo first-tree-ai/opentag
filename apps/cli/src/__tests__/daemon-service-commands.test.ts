@@ -48,6 +48,8 @@ describe("daemon service commands", () => {
       ] as const) {
         await createProgram().parseAsync(["node", "opentag", "daemon", command]);
         expect(execute).toHaveBeenLastCalledWith(action);
+        await createProgram().parseAsync(["node", "opentag", "daemon", command, "--json"]);
+        expect(execute).toHaveBeenLastCalledWith(action, { json: true });
       }
       await createProgram().parseAsync(["node", "opentag", "daemon", "service-run"]);
       await createProgram().parseAsync(["node", "opentag", "daemon", "ensure-service"]);
@@ -76,6 +78,34 @@ describe("daemon service commands", () => {
     const manager = fakeManager("inactive");
     manager.stop = vi.fn(async () => ({ ...(await manager.status()), state: "unknown" as const }));
     await expect(executeDaemonServiceCommand("stop", { manager, writeOutput: () => undefined })).resolves.toBe(1);
+  });
+
+  it("presents daemon service results and failures as JSON", async () => {
+    const manager = fakeManager("active");
+    const output: string[] = [];
+    const errors: string[] = [];
+    await expect(
+      executeDaemonServiceCommand("status", { manager, json: true, writeOutput: (message) => output.push(message) }),
+    ).resolves.toBe(0);
+    const failing = fakeManager("active");
+    failing.status = vi.fn().mockRejectedValue(new Error("connection refused"));
+    await expect(
+      executeDaemonServiceCommand("status", {
+        manager: failing,
+        json: true,
+        writeError: (message) => errors.push(message),
+      }),
+    ).resolves.toBe(3);
+    expect(output.join("\n")).toContain('"ok":true');
+    expect(errors.join("\n")).toContain('"category":"unavailable"');
+  });
+
+  it("uses the documented lifecycle exit states", async () => {
+    const active = fakeManager("active");
+    expect(await executeDaemonServiceCommand("stop", { manager: active, writeOutput: () => undefined })).toBe(0);
+    expect(await executeDaemonServiceCommand("uninstall", { manager: active, writeOutput: () => undefined })).toBe(0);
+    const inactive = fakeManager("inactive");
+    expect(await executeDaemonServiceCommand("start", { manager: inactive, writeOutput: () => undefined })).toBe(0);
   });
 
   it("treats deterministic service configuration failures as clean service exits", async () => {

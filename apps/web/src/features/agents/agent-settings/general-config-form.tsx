@@ -1,6 +1,7 @@
 import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { browserApi } from "../../../api.js";
+import * as m from "../../../paraglide/messages.js";
 import { Button, Field, KumoInputControl, Text } from "../../../ui/design-system.js";
 
 export function GeneralConfigForm({
@@ -24,10 +25,10 @@ export function GeneralConfigForm({
       const updated = await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName });
       setConfig(updated);
       setDisplayName(updated.displayName);
-      setMessage("Name saved.");
+      setMessage(m.agent_settings_name_saved());
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save name");
+      setMessage(cause instanceof Error ? cause.message : m.agent_settings_save_name_failed());
     } finally {
       setSaving(false);
     }
@@ -36,10 +37,10 @@ export function GeneralConfigForm({
     <form className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line" onSubmit={submit}>
       <header className="grid gap-2">
         <Text as="h1" size="lg" variant="heading">
-          Name
+          {m.agent_settings_name_title()}
         </Text>
       </header>
-      <Field htmlFor="agent-display-name" label="Display name">
+      <Field htmlFor="agent-display-name" label={m.agent_settings_display_name_label()}>
         <KumoInputControl
           id="agent-display-name"
           name="displayName"
@@ -53,7 +54,7 @@ export function GeneralConfigForm({
       </Field>
       {dirty ? (
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-          <span className="text-sm text-kumo-subtle">Unsaved changes</span>
+          <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               disabled={saving}
@@ -63,10 +64,10 @@ export function GeneralConfigForm({
                 setMessage(undefined);
               }}
             >
-              Discard
+              {m.agent_settings_discard_action()}
             </Button>
             <Button disabled={saving} type="submit">
-              {saving ? "Saving…" : "Save changes"}
+              {saving ? m.agent_settings_saving_action() : m.agent_settings_save_changes_action()}
             </Button>
           </div>
         </div>

@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../../agent-creation/agent-creation-flow.js";
 import { FeishuSetup } from "../../im/feishu-setup.js";
+import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Button, Dialog, Text } from "../../ui/design-system.js";
 import { Page } from "../layout/page.js";
@@ -70,12 +71,8 @@ export function NewAgentPage() {
   const { state: computers, refresh: refreshComputers } = useOwnComputersResource();
   return (
     <Page
-      title={created ? "Agent created" : "Create Agent"}
-      description={
-        created
-          ? "Connect messaging now or continue from the Agent overview."
-          : "Name the Agent and prepare where it runs."
-      }
+      title={created ? m.agents_created_title() : m.agents_create_title()}
+      description={created ? m.agents_created_description() : m.agents_create_description()}
     >
       {created ? (
         <NewAgentMessagingStep agent={created} onFinish={() => void navigate(agentDetailLink(created.id))} />
@@ -117,10 +114,10 @@ export function NewAgentDialog({
     <Dialog
       busy={submitting}
       className="w-[min(42rem,calc(100vw-2rem))]"
-      closeLabel="Close new Agent dialog"
+      closeLabel={m.agents_close_new_agent_dialog()}
       returnFocusRef={returnFocusRef}
       open={open}
-      title="New Agent"
+      title={m.agents_new_agent()}
       onClose={close}
     >
       {created ? (
@@ -172,10 +169,10 @@ export function AgentCreationContent({
     >
       {computerRefreshFocusActive
         ? computers.kind === "loading"
-          ? "Refreshing Computers"
+          ? m.agents_refreshing_computers()
           : computers.kind === "error"
-            ? "Computer refresh failed"
-            : "Computer connection updated"
+            ? m.agents_computer_refresh_failed()
+            : m.agents_computer_connection_updated()
         : null}
     </span>
   ) : null;
@@ -223,18 +220,18 @@ export function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminCo
       {(setup) => (
         <section className="grid gap-4" aria-labelledby="agent-created-heading" data-ui="agent-create-complete">
           <div>
-            <span className="text-xs font-medium uppercase text-kumo-subtle">Agent created</span>
+            <span className="text-xs font-medium uppercase text-kumo-subtle">{m.agents_created_title()}</span>
             <Text as="h2" id="agent-created-heading" variant="heading">
-              Connect messaging
+              {m.agents_connect_messaging()}
             </Text>
             <Text as="p" variant="secondary">
-              Connect a Feishu Bot so teammates can mention {agent.displayName}.
+              {m.agents_connect_messaging_description({ name: agent.displayName })}
             </Text>
           </div>
           <div className="flex flex-wrap gap-3">
-            <Button onClick={() => void setup.start()}>Connect Feishu</Button>
+            <Button onClick={() => void setup.start()}>{m.agents_connect_feishu()}</Button>
             <Button variant="secondary" onClick={onFinish}>
-              Set up later
+              {m.agents_set_up_later()}
             </Button>
           </div>
           {setup.feedback}

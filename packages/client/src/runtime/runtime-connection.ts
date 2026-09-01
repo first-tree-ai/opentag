@@ -5,7 +5,6 @@ import {
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
-  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -30,11 +29,12 @@ import {
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
-import WebSocket, { type ClientOptions, type RawData } from "ws";
+import WebSocket, { type ClientOptions } from "ws";
 import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
+import { notifyTarget, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -116,11 +116,6 @@ export interface RuntimeConnectionOptions {
   logger?: ClientLogger;
   machineToken: string;
   now?: () => number;
-  /**
-   * Invoked with the Server-advertised exact channel latest target whenever a v2 heartbeat result
-   * carries one (the `runtime.channelTarget` capability must have been negotiated). Listener
-   * failures are logged and never affect the heartbeat.
-   */
   onChannelTarget?: (target: RuntimeChannelTarget) => void;
   parseBusinessFrame?: (value: unknown) => RuntimeBusinessFrame | undefined;
   platform: "darwin" | "linux" | "win32";
@@ -751,18 +746,13 @@ export class RuntimeConnection {
           }
           pendingHeartbeatRequestId = undefined;
           if (heartbeatResultTimer) this.#scheduler.clearTimeout(heartbeatResultTimer);
-          if (
-            protocolVersion === RUNTIME_PROTOCOL_V2 &&
-            this.#negotiatedCapabilities[RUNTIME_CAPABILITY.channelTarget] !== undefined &&
-            "channelTarget" in frame &&
-            frame.channelTarget
-          ) {
-            try {
-              this.#options.onChannelTarget?.(frame.channelTarget);
-            } catch {
-              this.#logger.warn({ category: "listener" }, "Runtime channel target listener failed");
-            }
-          }
+          notifyTarget(
+            protocolVersion,
+            this.#negotiatedCapabilities,
+            frame,
+            this.#options.onChannelTarget,
+            this.#logger,
+          );
           scheduleHeartbeat();
           return;
         }
@@ -1034,21 +1024,6 @@ function connectionErrorCategory(error: unknown): string {
   if (error instanceof RuntimeConnectionError) return error.fatal ? "protocol" : "transport";
   if (error instanceof RuntimeSendError) return error.code;
   return "unexpected";
-}
-
-function rawDataBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data);
-  return Buffer.from(data);
-}
-
-function safeJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
 }
 
 function withoutConnectionId(value: unknown): unknown {

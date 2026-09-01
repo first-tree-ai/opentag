@@ -41,6 +41,16 @@ export interface BrowserAuthRoutesOptions {
   secureCookies: boolean;
   /** Bounds the double-submit token, so it lasts exactly as long as the session it accompanies. */
   sessionTtlSeconds: number;
+  /**
+   * Shared attempt budget. Clustered deployments must provide a shared limiter implementation at the gateway. When
+   * `OPENTAG_ENV=prod`, the process-local fallback is rejected unless `OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true` is
+   * set as an explicit deployment assertion.
+   */
+  rateLimiter?: BrowserAuthRateLimiter;
+}
+
+export interface BrowserAuthRateLimiter {
+  check(key: string): void;
 }
 
 function isLoopbackAddress(value: string): boolean {
@@ -110,6 +120,17 @@ export class RouteRateLimiter {
       if (oldest.done) return;
       this.#entries.delete(oldest.value);
     }
+  }
+}
+
+const processRateLimiter = new RouteRateLimiter();
+
+function assertRateLimiterBoundary(options: BrowserAuthRoutesOptions): void {
+  if (options.rateLimiter) return;
+  if (process.env.OPENTAG_ENV === "prod" && process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS !== "true") {
+    throw new Error(
+      "Browser authentication requires a shared rate limiter in production; set OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true only for a single-process deployment",
+    );
   }
 }
 
@@ -196,7 +217,8 @@ async function signInFailure(response: Response): Promise<AuthServiceError> {
 }
 
 export function registerBrowserAuthRoutes(app: FastifyInstance, options: BrowserAuthRoutesOptions): void {
-  const limiter = new RouteRateLimiter();
+  assertRateLimiterBoundary(options);
+  const limiter = options.rateLimiter ?? processRateLimiter;
 
   /** Development sign-in is offered only to a loopback client reaching a loopback host, on a server configured for it. */
   const devSignInAvailable = (request: FastifyRequest): boolean =>
@@ -204,28 +226,31 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
 
   app.get(HTTP_PATHS.authProviders, async (request, reply) => {
     const devAvailable = devSignInAvailable(request);
-    return reply.code(200).send(
-      AuthProvidersResponseSchema.parse({
-        providers: [
-          {
-            id: "google",
-            enabled: Boolean(options.googleSignIn),
-            startUrl: options.googleSignIn ? HTTP_PATHS.authGoogleStart : null,
-          },
-          {
-            id: "dev",
-            enabled: devAvailable,
-            startUrl: devAvailable ? HTTP_PATHS.authDevCallback : null,
-          },
-          // A form rather than a link, so there is no URL to start it from; the caller posts to the two email routes.
-          {
-            id: "password",
-            enabled: Boolean(options.passwordSignIn),
-            startUrl: null,
-          },
-        ],
-      }),
-    );
+    return reply
+      .header("Cache-Control", "no-store")
+      .code(200)
+      .send(
+        AuthProvidersResponseSchema.parse({
+          providers: [
+            {
+              id: "google",
+              enabled: Boolean(options.googleSignIn),
+              startUrl: options.googleSignIn ? HTTP_PATHS.authGoogleStart : null,
+            },
+            {
+              id: "dev",
+              enabled: devAvailable,
+              startUrl: devAvailable ? HTTP_PATHS.authDevCallback : null,
+            },
+            // A form rather than a link, so there is no URL to start it from; the caller posts to the two email routes.
+            {
+              id: "password",
+              enabled: Boolean(options.passwordSignIn),
+              startUrl: null,
+            },
+          ],
+        }),
+      );
   });
 
   app.get(HTTP_PATHS.authDevCallback, async (request, reply) => {
@@ -266,7 +291,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       maxAgeSeconds: options.sessionTtlSeconds,
       secure: options.secureCookies,
     });
-    return reply.redirect(destination, 302);
+    return reply.header("Cache-Control", "no-store").redirect(destination, 302);
   });
 
   app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
@@ -292,7 +317,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
     }
     copyBetterAuthCookies(reply, response);
-    return reply.redirect(payload.url, 302);
+    return reply.header("Cache-Control", "no-store").redirect(payload.url, 302);
   });
 
   /**
@@ -336,7 +361,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       throw await signUpFailure(response);
     }
     establishBrowserSession(reply, response);
-    return reply.code(204).send();
+    return reply.header("Cache-Control", "no-store").code(204).send();
   });
 
   app.post(HTTP_PATHS.authEmailSignIn, async (request, reply) => {
@@ -359,7 +384,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       throw await signInFailure(response);
     }
     establishBrowserSession(reply, response);
-    return reply.code(204).send();
+    return reply.header("Cache-Control", "no-store").code(204).send();
   });
 
   app.post(HTTP_PATHS.authBrowserLogout, async (request, reply) => {
@@ -393,6 +418,6 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
     // Cleared unconditionally: a browser mid-rollout can hold either credential, and signing out must end both.
     // The double-submit token is OpenTag's, not Better Auth's, so signing out has to retire it here.
     clearBrowserCsrfCookie(reply, options.secureCookies);
-    return reply.code(204).send();
+    return reply.header("Cache-Control", "no-store").code(204).send();
   });
 }

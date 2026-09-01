@@ -11,6 +11,7 @@ import {
   type AgentUsageWindowDays,
   accountComputerConnectCodePath,
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
@@ -52,8 +53,13 @@ import {
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
+  type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  type RuntimeDurableWorkKind,
+  RuntimeDurableWorkListResponseSchema,
+  type RuntimeDurableWorkRecord,
+  runtimeDurableWorkPath,
   runtimeImResourcePath,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCommandResponse,
@@ -66,218 +72,460 @@ import {
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
+  type StructuredError,
+  StructuredErrorSchema,
   type UpdateAgentRequest,
   type ValidationIssue,
 } from "@opentag/shared";
+import {
+  awaitWithAbort,
+  defaultPhase,
+  defaultRetryability,
+  type ErrorPhase,
+  type ErrorRetryability,
+  OPEN_TAG_API_REQUEST_TIMEOUT_MS,
+  prepareRequest,
+  REQUEST_ID_HEADER,
+  type RequestCause,
+  type RequestOptions,
+  safeCause,
+  statusFallback,
+} from "./request-policy.js";
 
 interface RuntimeSchema<T> {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
 }
 
 export class OpenTagApiError extends Error {
+  readonly structuredError: StructuredError;
+
   constructor(
-    readonly code: ErrorCode,
+    readonly code: ErrorCode | string,
     readonly category: ErrorCategory,
     message: string,
     readonly status?: number,
     readonly issues?: readonly ValidationIssue[],
+    options: {
+      cause?: unknown;
+      retryability?: ErrorRetryability;
+      phase?: ErrorPhase;
+      requestId?: string;
+      safeCause?: RequestCause;
+    } = {},
   ) {
-    super(message);
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "OpenTagApiError";
+    this.retryability = options.retryability ?? defaultRetryability(category);
+    this.phase = options.phase ?? defaultPhase(category);
+    this.requestId = options.requestId;
+    this.safeCause = options.safeCause ?? safeCause(options.cause);
+    this.structuredError = StructuredErrorSchema.parse({
+      code: this.code,
+      category: structuredCategory(category, this.code, status),
+      retryability: this.retryability,
+      phase: this.phase,
+      ...(this.requestId ? { requestId: this.requestId.slice(0, 256) } : {}),
+      message: message.slice(0, 2_048),
+      ...(this.safeCause ? { cause: this.safeCause } : {}),
+    });
   }
+
+  readonly retryability: ErrorRetryability;
+  readonly phase: ErrorPhase;
+  readonly requestId?: string;
+  readonly safeCause?: RequestCause;
+
+  toStructuredError(): StructuredError {
+    return this.structuredError;
+  }
+}
+
+function structuredCategory(category: ErrorCategory, code: string, status?: number): StructuredError["category"] {
+  if (category === "credential") return "auth";
+  if (category === "validation") return "validation";
+  if (category === "rate_limit") return "rate_limit";
+  if (category === "transient") return "unavailable";
+  if (code === "REQUEST_CANCELLED") return "cancelled";
+  if (code === "RESOURCE_NOT_FOUND" || status === 404) return "not_found";
+  if (status === 409 || /(?:CONFLICT|_CONFLICT)$/u.test(code)) return "conflict";
+  return "internal";
+}
+
+export interface OpenTagApiConstructorOptions {
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }
 
 export class OpenTagApi {
   readonly #baseUrl: URL;
   readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
+  readonly #responseRequestIds = new WeakMap<Response, string>();
 
-  constructor(serverUrl: string, fetchImpl: typeof fetch = fetch) {
+  constructor(
+    serverUrl: string,
+    fetchOrOptions: typeof fetch | OpenTagApiConstructorOptions = fetch,
+    options: OpenTagApiConstructorOptions = {},
+  ) {
     this.#baseUrl = new URL(normalizeServerUrl(serverUrl));
-    this.#fetch = fetchImpl;
+    const constructorOptions = typeof fetchOrOptions === "function" ? options : fetchOrOptions;
+    this.#fetch = typeof fetchOrOptions === "function" ? fetchOrOptions : (constructorOptions.fetchImpl ?? fetch);
+    this.#timeoutMs = constructorOptions.timeoutMs ?? OPEN_TAG_API_REQUEST_TIMEOUT_MS;
   }
 
-  exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse> {
-    return this.#request(HTTP_PATHS.authConnectExchange, ConnectCodeExchangeResponseSchema, {
-      method: "POST",
-      body: JSON.stringify({ code, ...(expectedUserId ? { expectedUserId } : {}) }),
-      headers: { "content-type": "application/json" },
-    });
+  exchangeConnectCode(
+    code: string,
+    expectedUserId?: string,
+    options?: RequestOptions,
+  ): Promise<ConnectCodeExchangeResponse> {
+    return this.#request(
+      HTTP_PATHS.authConnectExchange,
+      ConnectCodeExchangeResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ code, ...(expectedUserId ? { expectedUserId } : {}) }),
+        headers: { "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  exchangeComputerConnectCode(input: ComputerConnectCodeExchangeRequest): Promise<ComputerConnectCodeExchangeResponse> {
-    return this.#request(HTTP_PATHS.computerConnectExchange, ComputerConnectCodeExchangeResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json" },
-    });
+  exchangeComputerConnectCode(
+    input: ComputerConnectCodeExchangeRequest,
+    options?: RequestOptions,
+  ): Promise<ComputerConnectCodeExchangeResponse> {
+    return this.#request(
+      HTTP_PATHS.computerConnectExchange,
+      ComputerConnectCodeExchangeResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  refresh(refreshToken: string): Promise<RefreshTokenResponse> {
-    return this.#request(HTTP_PATHS.authRefresh, RefreshTokenResponseSchema, {
-      method: "POST",
-      body: JSON.stringify({ refreshToken }),
-      headers: { "content-type": "application/json" },
-    });
+  refresh(refreshToken: string, options?: RequestOptions): Promise<RefreshTokenResponse> {
+    return this.#request(
+      HTTP_PATHS.authRefresh,
+      RefreshTokenResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ refreshToken }),
+        headers: { "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  me(accessToken: string): Promise<MeResponse> {
-    return this.#request(HTTP_PATHS.me, MeResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  me(accessToken: string, options?: RequestOptions): Promise<MeResponse> {
+    return this.#request(
+      HTTP_PATHS.me,
+      MeResponseSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  issueComputerConnectCode(accessToken: string): Promise<ComputerConnectCodeIssueResponse> {
-    return this.#request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
-      method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  issueComputerConnectCode(accessToken: string, options?: RequestOptions): Promise<ComputerConnectCodeIssueResponse> {
+    return this.#request(
+      HTTP_PATHS.accountComputerConnectCodes,
+      ComputerConnectCodeIssueResponseSchema,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  getComputerConnectCodeStatus(accessToken: string, connectCodeId: string): Promise<ComputerConnectCodeStatus> {
-    return this.#request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getComputerConnectCodeStatus(
+    accessToken: string,
+    connectCodeId: string,
+    options?: RequestOptions,
+  ): Promise<ComputerConnectCodeStatus> {
+    return this.#request(
+      accountComputerConnectCodePath(connectCodeId),
+      ComputerConnectCodeStatusSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  listAccountComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
-    return this.#request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
-    });
+  listAccountComputers(accessToken: string, options?: RequestOptions): Promise<ListWorkspaceComputersResponse> {
+    return this.#request(
+      HTTP_PATHS.accountComputers,
+      ListWorkspaceComputersResponseSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
+      },
+      options,
+    );
   }
 
-  createAgent(accessToken: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
-    return this.#request(HTTP_PATHS.accountAgents, AgentAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
+  createAgent(accessToken: string, input: CreateAgentRequest, options?: RequestOptions): Promise<AgentAdminConfig> {
+    return this.#request(
+      HTTP_PATHS.accountAgents,
+      AgentAdminConfigSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  listAgents(accessToken: string): Promise<ListAgentsResponse> {
-    return this.#request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  listAgents(accessToken: string, options?: RequestOptions): Promise<ListAgentsResponse> {
+    return this.#request(
+      HTTP_PATHS.accountAgents,
+      ListAgentsResponseSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  getAgent(accessToken: string, agentId: string): Promise<AgentDetail> {
-    return this.#request(agentByIdPath(agentId), AgentDetailSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentDetail> {
+    return this.#request(
+      agentByIdPath(agentId),
+      AgentDetailSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  getAgentUsage(accessToken: string, agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {
-    return this.#request(agentUsagePath(agentId, windowDays), AgentUsageDetailSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getAgentUsage(
+    accessToken: string,
+    agentId: string,
+    windowDays: AgentUsageWindowDays,
+    options?: RequestOptions,
+  ): Promise<AgentUsageDetail> {
+    return this.#request(
+      agentUsagePath(agentId, windowDays),
+      AgentUsageDetailSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  getAgentConfig(accessToken: string, agentId: string): Promise<AgentAdminConfig> {
-    return this.#request(agentConfigPath(agentId), AgentAdminConfigSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getAgentConfig(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentAdminConfig> {
+    return this.#request(
+      agentConfigPath(agentId),
+      AgentAdminConfigSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
   testAgentRuntime(
     accessToken: string,
     agentId: string,
     input: AgentRuntimeTestRequest,
+    options?: RequestOptions,
   ): Promise<AgentRuntimeTestResponse> {
-    return this.#request(agentRuntimeTestPath(agentId), AgentRuntimeTestResponseSchema, {
+    return this.#request(
+      agentRuntimeTestPath(agentId),
+      AgentRuntimeTestResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  rebindAgentComputer(accessToken: string, agentId: string, computerId: string): Promise<AgentAdminConfig> {
+    return this.#request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify({ computerId } satisfies RebindAgentComputerRequest),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }
 
-  updateAgent(accessToken: string, agentId: string, input: UpdateAgentRequest): Promise<AgentAdminConfig> {
-    return this.#request(agentByIdPath(agentId), AgentAdminConfigSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
+  updateAgent(
+    accessToken: string,
+    agentId: string,
+    input: UpdateAgentRequest,
+    options?: RequestOptions,
+  ): Promise<AgentAdminConfig> {
+    return this.#request(
+      agentByIdPath(agentId),
+      AgentAdminConfigSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  suspendAgent(accessToken: string, agentId: string): Promise<AgentAdminConfig> {
-    return this.#request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  suspendAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentAdminConfig> {
+    return this.#request(
+      agentSuspendPath(agentId),
+      AgentAdminConfigSchema,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  reactivateAgent(accessToken: string, agentId: string): Promise<AgentAdminConfig> {
-    return this.#request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  reactivateAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentAdminConfig> {
+    return this.#request(
+      agentReactivatePath(agentId),
+      AgentAdminConfigSchema,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  deleteAgent(accessToken: string, agentId: string): Promise<void> {
-    return this.#requestNoContent(agentByIdPath(agentId), {
-      method: "DELETE",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  deleteAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      agentByIdPath(agentId),
+      {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  getAgentImBinding(accessToken: string, agentId: string): Promise<ImBindingSummary | undefined> {
-    return this.#requestOptional(agentImBindingPath(agentId), ImBindingSummarySchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getAgentImBinding(
+    accessToken: string,
+    agentId: string,
+    options?: RequestOptions,
+  ): Promise<ImBindingSummary | undefined> {
+    return this.#requestOptional(
+      agentImBindingPath(agentId),
+      ImBindingSummarySchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  getAgentImBindingConfig(accessToken: string, agentId: string): Promise<ImBindingAdminDetail | undefined> {
-    return this.#requestOptional(agentImBindingConfigPath(agentId), ImBindingAdminDetailSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getAgentImBindingConfig(
+    accessToken: string,
+    agentId: string,
+    options?: RequestOptions,
+  ): Promise<ImBindingAdminDetail | undefined> {
+    return this.#requestOptional(
+      agentImBindingConfigPath(agentId),
+      ImBindingAdminDetailSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
   createFeishuSetupAttempt(
     accessToken: string,
     agentId: string,
     intent: "create" | "reauthorize" | "replace" = "create",
+    options?: RequestOptions,
   ): Promise<FeishuSetupAttempt> {
-    return this.#request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
-      method: "POST",
-      body: JSON.stringify({ intent }),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
+    return this.#request(
+      agentFeishuSetupAttemptsPath(agentId),
+      FeishuSetupAttemptSchema,
+      {
+        method: "POST",
+        body: JSON.stringify({ intent }),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  getFeishuSetupAttempt(accessToken: string, attemptId: string): Promise<FeishuSetupAttempt> {
-    return this.#request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getFeishuSetupAttempt(accessToken: string, attemptId: string, options?: RequestOptions): Promise<FeishuSetupAttempt> {
+    return this.#request(
+      feishuSetupAttemptPath(attemptId),
+      FeishuSetupAttemptSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  cancelFeishuSetupAttempt(accessToken: string, attemptId: string): Promise<FeishuSetupAttempt> {
-    return this.#request(`${feishuSetupAttemptPath(attemptId)}/cancel`, FeishuSetupAttemptSchema, {
-      method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  cancelFeishuSetupAttempt(
+    accessToken: string,
+    attemptId: string,
+    options?: RequestOptions,
+  ): Promise<FeishuSetupAttempt> {
+    return this.#request(
+      `${feishuSetupAttemptPath(attemptId)}/cancel`,
+      FeishuSetupAttemptSchema,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
   startSlackOAuth(
     accessToken: string,
     agentId: string,
     input: StartSlackOAuthRequest,
+    options?: RequestOptions,
   ): Promise<StartSlackOAuthResponse> {
-    return this.#request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
+    return this.#request(
+      agentSlackOAuthStartPath(agentId),
+      StartSlackOAuthResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  getImBindingDiagnostics(accessToken: string, imBindingId: string): Promise<ImBindingDiagnostics> {
-    return this.#request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  getImBindingDiagnostics(
+    accessToken: string,
+    imBindingId: string,
+    options?: RequestOptions,
+  ): Promise<ImBindingDiagnostics> {
+    return this.#request(
+      imBindingDiagnosticsPath(imBindingId),
+      ImBindingDiagnosticsSchema,
+      {
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
-  disableImBinding(accessToken: string, imBindingId: string): Promise<void> {
-    return this.#requestNoContent(imBindingDisablePath(imBindingId), {
-      method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
+  disableImBinding(accessToken: string, imBindingId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      imBindingDisablePath(imBindingId),
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${accessToken}` },
+      },
+      options,
+    );
   }
 
   async openImResource(
@@ -285,90 +533,230 @@ export class OpenTagApi {
     imMessageId: string,
     ordinal: number,
     scope: { sessionId: string; instanceId: string; placementGeneration: number },
+    options?: RequestOptions,
   ): Promise<Response> {
-    const response = await this.#fetchResponse(runtimeImResourcePath(imMessageId, ordinal, scope), {
-      headers: { authorization: `Bearer ${machineToken}` },
-    });
+    const response = await this.#fetchResponse(
+      runtimeImResourcePath(imMessageId, ordinal, scope),
+      {
+        headers: { authorization: `Bearer ${machineToken}` },
+      },
+      options,
+    );
     if (!response.ok) {
       const body = await response.json().catch(() => undefined);
-      this.#throwResponseError(response.status, body);
+      this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
     }
     return response;
   }
 
-  createInternalSession(proof: string, input: SessionCliCreateRequest): Promise<SessionCliCommandResponse> {
-    return this.#request(HTTP_PATHS.runtimeInternalSessions, SessionCliCommandResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
-    });
+  listRuntimeDurableWork(
+    machineToken: string,
+    kind: RuntimeDurableWorkKind,
+    options?: RequestOptions,
+  ): Promise<RuntimeDurableWorkRecord[]> {
+    const query = new URLSearchParams({ kind });
+    return this.#request(
+      `${HTTP_PATHS.runtimeDurableWork}?${query.toString()}`,
+      RuntimeDurableWorkListResponseSchema,
+      { headers: { authorization: `Bearer ${machineToken}` } },
+      options,
+    ).then((response) => response.items);
   }
 
-  sendSessionMessage(proof: string, input: SessionCliSendRequest): Promise<SessionCliCommandResponse> {
-    return this.#request(HTTP_PATHS.runtimeSessionMessages, SessionCliCommandResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
-    });
+  writeRuntimeDurableWork(
+    machineToken: string,
+    record: RuntimeDurableWorkRecord,
+    options?: RequestOptions,
+  ): Promise<void> {
+    return this.#requestNoContent(
+      runtimeDurableWorkPath(record.kind, record.key),
+      {
+        method: "PUT",
+        body: JSON.stringify(record),
+        headers: { authorization: `Bearer ${machineToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
   }
 
-  listInternalSessions(proof: string, input: SessionCliListQuery): Promise<SessionCliListResponse> {
+  createInternalSession(
+    proof: string,
+    input: SessionCliCreateRequest,
+    options?: RequestOptions,
+  ): Promise<SessionCliCommandResponse> {
+    return this.#request(
+      HTTP_PATHS.runtimeInternalSessions,
+      SessionCliCommandResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  sendSessionMessage(
+    proof: string,
+    input: SessionCliSendRequest,
+    options?: RequestOptions,
+  ): Promise<SessionCliCommandResponse> {
+    return this.#request(
+      HTTP_PATHS.runtimeSessionMessages,
+      SessionCliCommandResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  listInternalSessions(
+    proof: string,
+    input: SessionCliListQuery,
+    options?: RequestOptions,
+  ): Promise<SessionCliListResponse> {
     const query = new URLSearchParams({
       recursive: String(input.recursive),
       limit: String(input.limit),
       ...(input.cursor ? { cursor: input.cursor } : {}),
       ...(input.since ? { since: input.since } : {}),
     });
-    return this.#request(`${HTTP_PATHS.runtimeSessions}?${query.toString()}`, SessionCliListResponseSchema, {
-      headers: { [SESSION_CLI_PROOF_HEADER]: proof },
-    });
+    return this.#request(
+      `${HTTP_PATHS.runtimeSessions}?${query.toString()}`,
+      SessionCliListResponseSchema,
+      {
+        headers: { [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
   }
 
-  async #request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit): Promise<T> {
-    const response = await this.#fetchResponse(path, init);
+  async #request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit, options?: RequestOptions): Promise<T> {
+    const response = await this.#fetchResponse(path, init, options);
     const body = await response.json().catch(() => undefined);
     if (!response.ok) {
-      this.#throwResponseError(response.status, body);
+      this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
     }
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
-      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
+      throw new OpenTagApiError(
+        "SERVICE_UNAVAILABLE",
+        "transient",
+        "The OpenTag server returned an invalid response",
+        response.status,
+        undefined,
+        {
+          requestId: this.#requestIdFromResponse(response),
+          phase: "serialization",
+        },
+      );
     }
     return parsed.data;
   }
 
-  async #requestNoContent(path: string, init: RequestInit): Promise<void> {
-    const response = await this.#fetchResponse(path, init);
+  async #requestNoContent(path: string, init: RequestInit, options?: RequestOptions): Promise<void> {
+    const response = await this.#fetchResponse(path, init, options);
     if (!response.ok) {
       const body = await response.json().catch(() => undefined);
-      this.#throwResponseError(response.status, body);
+      this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
     }
     if (response.status !== 204) {
-      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
+      throw new OpenTagApiError(
+        "SERVICE_UNAVAILABLE",
+        "transient",
+        "The OpenTag server returned an invalid response",
+        response.status,
+        undefined,
+        {
+          requestId: this.#requestIdFromResponse(response),
+          phase: "serialization",
+        },
+      );
     }
   }
 
-  async #requestOptional<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit): Promise<T | undefined> {
-    const response = await this.#fetchResponse(path, init);
+  async #requestOptional<T>(
+    path: string,
+    schema: RuntimeSchema<T>,
+    init: RequestInit,
+    options?: RequestOptions,
+  ): Promise<T | undefined> {
+    const response = await this.#fetchResponse(path, init, options);
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
-    if (!response.ok) this.#throwResponseError(response.status, body);
+    if (!response.ok) this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
-      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
+      throw new OpenTagApiError(
+        "SERVICE_UNAVAILABLE",
+        "transient",
+        "The OpenTag server returned an invalid response",
+        response.status,
+        undefined,
+        {
+          requestId: this.#requestIdFromResponse(response),
+          phase: "serialization",
+        },
+      );
     }
     return parsed.data;
   }
 
-  async #fetchResponse(path: string, init: RequestInit): Promise<Response> {
+  async #fetchResponse(path: string, init: RequestInit, options: RequestOptions = {}): Promise<Response> {
+    const prepared = prepareRequest(init, options, this.#timeoutMs);
     try {
-      return await this.#fetch(new URL(path, this.#baseUrl), init);
-    } catch {
-      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server is unavailable");
+      const response = await awaitWithAbort(this.#fetch(new URL(path, this.#baseUrl), prepared.init), prepared.signal);
+      this.#responseRequestIds.set(response, prepared.requestId);
+      return response;
+    } catch (error) {
+      if (prepared.reason() === "caller") {
+        throw new OpenTagApiError(
+          "REQUEST_CANCELLED",
+          "deterministic",
+          "The request was cancelled by the caller",
+          undefined,
+          undefined,
+          { cause: options.signal?.reason ?? error, phase: "request", requestId: prepared.requestId },
+        );
+      }
+      if (prepared.reason() === "deadline") {
+        const cause = safeCause(error);
+        throw new OpenTagApiError(
+          "REQUEST_TIMEOUT",
+          "transient",
+          "The OpenTag server request timed out",
+          undefined,
+          undefined,
+          { cause, safeCause: cause, phase: "transport", requestId: prepared.requestId },
+        );
+      }
+      const cause = safeCause(error);
+      throw new OpenTagApiError(
+        "SERVICE_UNAVAILABLE",
+        "transient",
+        "The OpenTag server is unavailable",
+        undefined,
+        undefined,
+        { cause, safeCause: cause, phase: "transport", requestId: prepared.requestId },
+      );
+    } finally {
+      prepared.cleanup();
     }
   }
 
-  #throwResponseError(status: number, body: unknown): never {
+  #requestIdFromResponse(response: Response): string {
+    const requestId =
+      response.headers.get(REQUEST_ID_HEADER) ??
+      response.headers.get("x-request-id") ??
+      this.#responseRequestIds.get(response);
+    if (!requestId) throw new Error("OpenTag response is missing a request ID");
+    return requestId;
+  }
+
+  #throwResponseError(status: number, body: unknown, requestId = "unknown"): never {
     const parsed = ErrorEnvelopeSchema.safeParse(body);
     if (parsed.success) {
       throw new OpenTagApiError(
@@ -377,15 +765,11 @@ export class OpenTagApi {
         parsed.data.error.message,
         status,
         parsed.data.error.issues,
+        { requestId: parsed.data.error.requestId ?? requestId },
       );
     }
-    if (status === 429) {
-      throw new OpenTagApiError("RATE_LIMITED", "rate_limit", "The OpenTag server rate limit was reached", 429);
-    }
-    if (status >= 500) {
-      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server is unavailable", status);
-    }
-    throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "Authentication failed", status);
+    const fallback = statusFallback(status);
+    throw new OpenTagApiError(fallback.code, fallback.category, fallback.message, status, undefined, { requestId });
   }
 }
 

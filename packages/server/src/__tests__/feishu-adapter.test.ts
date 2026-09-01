@@ -194,6 +194,46 @@ describe("Feishu adapter", () => {
     expect(received[2]?.resources[0]).toMatchObject({ fileKey: "file_1" });
   });
 
+  it("deduplicates a repeated group/thread representation by provider event identity", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const groupThreadEvent = rawMessage("event-group-thread", "message-group-thread", "10");
+    groupThreadEvent.event.message.chat_id = "oc_example_group";
+    Object.assign(groupThreadEvent.event.message, { thread_id: "omt_example_thread" });
+    const threadRepresentation = structuredClone(groupThreadEvent);
+    threadRepresentation.header.event_id = "event-thread-representation";
+
+    await Promise.all([
+      dispatcher.invoke(groupThreadEvent, { needCheck: false }),
+      dispatcher.invoke(threadRepresentation, { needCheck: false }),
+    ]);
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      chatId: "oc_example_group",
+      threadId: "omt_example_thread",
+      raw: { event_id: "event-group-thread", tenant_key: "workspace_1" },
+    });
+  });
+
+  it("keeps distinct messages in the same group chat and thread", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const first = rawMessage("event-distinct-1", "message-distinct-1", "11");
+    const second = rawMessage("event-distinct-2", "message-distinct-2", "12");
+    for (const event of [first, second]) {
+      event.event.message.chat_id = "oc_example_group";
+      Object.assign(event.event.message, { thread_id: "omt_example_thread" });
+      await dispatcher.invoke(event, { needCheck: false });
+    }
+
+    expect(received.map((message) => message.messageId)).toEqual(["message-distinct-1", "message-distinct-2"]);
+  });
+
   it("falls back to user sender ids and maps raw mentions", async () => {
     let received: NormalizedMessage | undefined;
     const dispatcher = createReliableFeishuDispatcher((message) => {

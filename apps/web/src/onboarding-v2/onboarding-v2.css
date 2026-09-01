@@ -20,9 +20,30 @@
  * invalid, so the mark would fall back to solid black rather than to a sensible colour.
  */
 :root {
-  --otv2-mark-tint: var(--color-kumo-tint);
-  --otv2-mark-surface: var(--color-kumo-base);
-  --otv2-mark-ink: var(--text-color-kumo-strong);
+  --otv2-mark-tint: var(--brand);
+  --otv2-mark-surface: var(--card);
+  --otv2-mark-ink: var(--brand-ink);
+}
+
+/* Codex follows OpenTag's explicit theme, not the operating system's colour preference. */
+.otv2-codex-mark--light {
+  display: block;
+}
+
+.otv2-codex-mark--dark {
+  display: none;
+}
+
+:root[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--light,
+[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--light,
+[data-theme="opentag"] [data-mode="dark"] .otv2-codex-mark--light {
+  display: none;
+}
+
+:root[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--dark,
+[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--dark,
+[data-theme="opentag"] [data-mode="dark"] .otv2-codex-mark--dark {
+  display: block;
 }
 
 /* Choice cards ----------------------------------------------------------- */
@@ -42,6 +63,11 @@
 
 .otv2-choice:hover:not(:disabled) {
   background: var(--color-kumo-fill-hover);
+}
+
+.otv2-choice:disabled {
+  background: var(--color-kumo-recessed);
+  cursor: not-allowed;
 }
 
 .otv2-choice[aria-pressed="true"] {

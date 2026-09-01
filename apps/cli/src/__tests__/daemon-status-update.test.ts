@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CLI_VERSION } from "../build-info.js";
 import { executeDaemonServiceCommand, formatUpdateStatus } from "../commands/daemon/shared.js";
 import { writeUpdaterState } from "../core/update/updater-state.js";
 
@@ -84,16 +85,19 @@ describe("daemon status update visibility", () => {
     expect(text).toContain("Update target: 0.0.3");
   });
 
-  it("omits the update section when no updater state was recorded", async () => {
+  it("reports the running version, npm-global mode, and manual state without updater history", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-status-empty-"));
     directories.push(home);
     vi.stubEnv("OPENTAG_HOME", home);
+    vi.stubEnv("OPENTAG_INSTALL_MODE", "npm-global");
     const outputs: string[] = [];
     const exitCode = await executeDaemonServiceCommand("status", {
       manager: activeManager(),
       writeOutput: (message) => outputs.push(message),
     });
     expect(exitCode).toBe(0);
-    expect(outputs.join("\n")).not.toContain("Update");
+    expect(outputs.join("\n")).toContain(`Update current: ${CLI_VERSION}`);
+    expect(outputs.join("\n")).toContain("Update install mode: npm-global");
+    expect(outputs.join("\n")).toContain("Update state: manual");
   });
 });

@@ -96,6 +96,22 @@ describe("manual upgrade", () => {
     expect(state.state.attempts["0.0.3"]).toMatchObject({ result: "installed" });
   });
 
+  it("installs an exact npm target that differs only by SemVer build metadata", async () => {
+    const runNpm = vi.fn(async () => undefined);
+    const result = await runUpgrade({
+      channel: "staging",
+      currentVersion: "1.2.3+build.1",
+      home: await tempHome(),
+      environment: {},
+      fetchFn: (async () => jsonResponse(packument("1.2.3+build.2"))) as typeof fetch,
+      runNpm,
+      reconcileService: async () => readyReconcile,
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, status: "installed", targetVersion: "1.2.3+build.2" });
+    expect(runNpm).toHaveBeenCalledWith(["install", "-g", "open-tag-staging@1.2.3+build.2"]);
+  });
+
   it("never installs automatically and reports ahead/up-to-date without work", async () => {
     const runNpm = vi.fn();
     for (const [latest, status] of [
@@ -222,6 +238,30 @@ describe("manual upgrade", () => {
       result: "failed",
       failureReason: "systemd unavailable",
     });
+  });
+
+  it("reports both service-refresh and blocked-state persistence failures", async () => {
+    const home = await tempHome();
+    const writeState = vi
+      .fn<typeof writeUpdaterState>()
+      .mockImplementationOnce(writeUpdaterState)
+      .mockRejectedValueOnce(new Error("state disk unavailable"));
+    const result = await runUpgrade({
+      channel: "staging",
+      home,
+      environment: {},
+      fetchFn: (async () => jsonResponse(packument("0.0.3"))) as typeof fetch,
+      runNpm: async () => undefined,
+      reconcileService: async () => {
+        throw new Error("systemd unavailable");
+      },
+      writeState,
+    });
+
+    expect(result).toMatchObject({ exitCode: 1, status: "installed", serviceRefresh: "failed" });
+    expect(result.message).toContain("systemd unavailable");
+    expect(result.message).toContain("state disk unavailable");
+    expect(writeState).toHaveBeenCalledTimes(2);
   });
 
   it("repairs invalid updater state by recording the manual install", async () => {

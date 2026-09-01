@@ -1,6 +1,7 @@
 # Runtime 协议兼容
 
-[English](../runtime-protocol.md)
+> Canonical source: [../runtime-protocol.md](../runtime-protocol.md)
+> Last synced with: 2026-09-01
 
 ## 范围
 

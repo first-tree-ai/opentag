@@ -232,4 +232,47 @@ describe("runtime protocol", () => {
     expect(runtimeFrameByteLength("你")).toBe(3);
     expect(runtimeFrameByteLength("x".repeat(RUNTIME_MAX_FRAME_BYTES))).toBe(RUNTIME_MAX_FRAME_BYTES);
   });
+
+  it("advertises the channel target only on v2 heartbeat results with an exact SemVer", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.channelTarget]).toEqual({ min: 1, max: 1 });
+    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.channelTarget]).toEqual({ min: 1, max: 1 });
+    expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.channelTarget);
+    expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.channelTarget);
+
+    const heartbeatResult = {
+      type: "heartbeat:result",
+      requestId: crypto.randomUUID(),
+      ok: true,
+      serverTime: new Date().toISOString(),
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      connectionId: crypto.randomUUID(),
+    };
+    const parsed = ServerRuntimeFrameSchema.parse({
+      ...heartbeatResult,
+      channelTarget: { channel: "staging", version: "0.0.3-staging.1.1" },
+    });
+    expect(parsed).toMatchObject({ channelTarget: { channel: "staging", version: "0.0.3-staging.1.1" } });
+    expect(ServerRuntimeFrameSchema.parse(heartbeatResult)).toMatchObject({ ok: true });
+    expect(() =>
+      ServerRuntimeFrameSchema.parse({
+        ...heartbeatResult,
+        channelTarget: { channel: "staging", version: "latest" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ServerRuntimeFrameSchema.parse({
+        ...heartbeatResult,
+        channelTarget: { channel: "production", version: "0.0.3" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ServerRuntimeFrameSchema.parse({
+        type: "heartbeat:result",
+        requestId: crypto.randomUUID(),
+        ok: true,
+        serverTime: new Date().toISOString(),
+        channelTarget: { channel: "staging", version: "0.0.3-staging.1.1" },
+      }),
+    ).toThrow();
+  });
 });

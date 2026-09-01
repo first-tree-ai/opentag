@@ -437,6 +437,54 @@ describe("doctor Agent Runtime CLI observations", () => {
   });
 });
 
+describe("doctor IM Provider CLI observations", () => {
+  it("reports account-global selections without installing or making either provider globally required", async () => {
+    const home = await createHome();
+    const providerCliInspector = vi.fn().mockResolvedValue([
+      readyProviderCli("feishu", "/account/.opentag/provider-cli/bin/lark-cli", "1.0.92"),
+      {
+        ...readyProviderCli("slack", "/account/.opentag/provider-cli/bin/slack", "4.7.0"),
+        state: "absent",
+        readiness: "install",
+        selection: undefined,
+        fingerprint: undefined,
+        diagnostic: { code: "not_installed" },
+      },
+    ]);
+
+    const result = await runHealthyDoctor(home, { providerCliInspector });
+
+    expect(providerCliInspector).toHaveBeenCalledOnce();
+    expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
+      blocking: false,
+      path: "/account/.opentag/provider-cli/bin/lark-cli",
+      status: "pass",
+    });
+    expect(check(result.checks, "provider-cli.slack.installation")).toMatchObject({
+      blocking: false,
+      status: "info",
+    });
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("keeps unsafe or unreadable Provider CLI state visible without mutating it", async () => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home, {
+      providerCliInspector: vi.fn().mockRejectedValue(new Error("account-global inspection failed")),
+    });
+
+    expect(check(result.checks, "provider-cli.feishu.installation")).toMatchObject({
+      blocking: false,
+      status: "unknown",
+    });
+    expect(check(result.checks, "provider-cli.slack.installation")).toMatchObject({
+      blocking: false,
+      status: "unknown",
+    });
+    expect(result.exitCode).toBe(0);
+  });
+});
+
 describe("doctor report and exit contract", () => {
   it("renders fixed sections, sources, baseline wording, and the complete not-evaluated list", async () => {
     const home = await createHome();
@@ -448,6 +496,7 @@ describe("doctor report and exit contract", () => {
       "Daemon service",
       "Server",
       "Agent Runtime CLIs",
+      "IM Provider CLIs",
       "Summary",
       "Not evaluated",
     ];
@@ -464,7 +513,7 @@ describe("doctor report and exit contract", () => {
       "Agent Runtime version or protocol compatibility",
       "Agent Runtime visibility from the installed daemon environment",
       "machine-token authentication or WebSocket registration",
-      "Integration CLI availability or authentication",
+      "Integration CLI credential validity and active-binding readiness",
       "end-to-end Turn or handoff delivery",
     ]);
     expect(result.checks.map((item) => item.code)).toEqual([
@@ -477,6 +526,8 @@ describe("doctor report and exit contract", () => {
       "runtime.any-installed",
       "runtime.codex.installation",
       "runtime.claude-code.installation",
+      "provider-cli.feishu.installation",
+      "provider-cli.slack.installation",
     ]);
     for (const item of result.notEvaluated) expect(rendered).toContain(item);
     expect(result.exitCode).toBe(0);
@@ -515,6 +566,12 @@ async function runHealthyDoctor(home: string, overrides: Partial<DoctorOptions> 
     nodeVersion: "v24.0.0",
     platform: "darwin",
     runtimeDetector: vi.fn().mockResolvedValue(installedCodex()),
+    providerCliInspector: vi
+      .fn()
+      .mockResolvedValue([
+        readyProviderCli("feishu", "/account/.opentag/provider-cli/bin/lark-cli", "1.0.92"),
+        readyProviderCli("slack", "/account/.opentag/provider-cli/bin/slack", "4.7.0"),
+      ]),
     ...overrides,
   });
 }
@@ -545,6 +602,25 @@ function installedCodex() {
     },
     { displayName: "Claude Code CLI", provider: "claude-code" as const, status: "not-installed" as const },
   ];
+}
+
+function readyProviderCli(provider: "feishu" | "slack", path: string, version: string) {
+  return {
+    provider,
+    state: "ready" as const,
+    readiness: "ready" as const,
+    selection: {
+      kind: "managed" as const,
+      path,
+      version,
+      trust: "catalog-verified" as const,
+      generation: 1,
+    },
+    fingerprint: `v1:${"a".repeat(64)}`,
+    launcher: { path, status: "valid" as const },
+    globalCommand: { active: true, path, resolvedPath: path },
+    warnings: [],
+  };
 }
 
 interface EnrollmentOverrides {

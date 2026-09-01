@@ -509,10 +509,7 @@ function RuntimeRouteSection({
   // task. A sentence here would only say those labels again, which is one more line between the
   // Account and the single action this step asks for.
   return (
-    <section
-      aria-labelledby="agent-runtime-heading"
-      className="grid gap-4 rounded-lg bg-kumo-recessed p-4 ring ring-kumo-line"
-    >
+    <section aria-labelledby="agent-runtime-heading" className="grid gap-4 border-t border-kumo-line pt-5">
       <header className="flex items-start justify-between gap-3">
         <div>
           <Text as="h3" id="agent-runtime-heading" variant="heading">
@@ -613,11 +610,12 @@ function RuntimeRouteSection({
                   return (
                     <Button
                       aria-pressed={computer.id === displayedComputer.id}
-                      className="h-auto w-full justify-between text-left"
+                      className="h-auto w-full justify-between text-left data-[selected=true]:!bg-(--brand-soft) data-[selected=true]:ring-kumo-brand"
                       data-selected={computer.id === displayedComputer.id ? "true" : undefined}
                       disabled={submitting || refreshing}
                       key={computer.id}
                       type="button"
+                      variant="secondary"
                       onClick={() => onChangeComputer(computer)}
                     >
                       <span className="grid gap-1">
@@ -686,11 +684,12 @@ function RuntimeRouteSection({
                   return (
                     <Button
                       aria-pressed={provider.provider === displayedProvider?.provider}
-                      className="h-auto w-full justify-between text-left"
+                      className="h-auto w-full justify-between text-left data-[selected=true]:!bg-(--brand-soft) data-[selected=true]:ring-kumo-brand"
                       data-selected={provider.provider === displayedProvider?.provider ? "true" : undefined}
                       disabled={submitting || refreshing || route === undefined}
                       key={provider.provider}
                       type="button"
+                      variant="secondary"
                       onClick={() => onChangeRuntime(provider)}
                     >
                       <strong>{providerLabel(provider.provider)}</strong>
@@ -703,7 +702,7 @@ function RuntimeRouteSection({
           ) : null}
 
           {selectedRoute ? (
-            <div aria-live="polite" className="rounded-md bg-kumo-base p-3" role="status">
+            <div aria-live="polite" className="px-1" role="status">
               <StatusIndicator label={m.agent_create_ready_to_run_status()} tone="success" />
             </div>
           ) : displayedComputer.connectionStatus === "offline" ? (

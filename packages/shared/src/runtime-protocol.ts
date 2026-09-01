@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js";
+import { ChannelNameSchema } from "./channel-name.js";
 import {
   ComputerPlatformSchema,
   IM_CLI_PROVIDERS,
@@ -8,6 +9,7 @@ import {
   ProviderReadinessStatusSchema,
 } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
+import { SemVerStringSchema } from "./semver.js";
 
 export const RUNTIME_PROTOCOL_V1 = 1 as const;
 export const RUNTIME_PROTOCOL_V2 = 2 as const;
@@ -25,9 +27,11 @@ export const RUNTIME_V0_CAPABILITIES = {
 export const RUNTIME_CAPABILITY = {
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
+  channelTarget: "runtime.channelTarget",
   imDelivery: "runtime.imDelivery",
   imSteer: "runtime.imSteer",
   imCredentialGrant: "runtime.imCredentialGrant",
+  providerCliReconcile: "runtime.providerCliReconcile",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
@@ -36,9 +40,11 @@ export const RUNTIME_CAPABILITY = {
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 2 },
   [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 1 },
@@ -54,6 +60,13 @@ export const RUNTIME_HEARTBEAT_INTERVAL_MAX_MS = 5 * 60 * 1_000;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS = 100;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS = 15 * 60 * 1_000;
 export const RUNTIME_CLIENT_CAPABILITY_TTL_MS = 60_000;
+export const RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS = 300_000;
+export const RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS = 120_000;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS = 15_000;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_TIMEOUT_MS = 10_000;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES = 1024 * 1024;
+export const RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION = 1 as const;
+export const RUNTIME_PROVIDER_CLI_VALIDATION_MAX_RETRIES = 3;
 export const RUNTIME_AGENT_RUNTIME_TEST_TIMEOUT_MS = 180_000;
 export const RUNTIME_AGENT_RUNTIME_TEST_CLEANUP_MS = 5_000;
 export const RUNTIME_AGENT_RUNTIME_TEST_TTL_MS =
@@ -375,12 +388,26 @@ const heartbeatResultShape = {
   serverTime: z.string().datetime(),
   errorCode: ErrorCodeSchema.optional(),
 };
+
+/**
+ * The exact channel latest target the Server currently advertises. Sent only on v2 heartbeat results
+ * when the `runtime.channelTarget` capability was negotiated, so older Clients never see a field
+ * their strict schemas would reject.
+ */
+export const RuntimeChannelTargetSchema = z
+  .object({
+    channel: ChannelNameSchema,
+    version: SemVerStringSchema,
+  })
+  .strict();
+
 export const HeartbeatResultV1FrameSchema = z.object(heartbeatResultShape).strict().superRefine(validateFailedResult);
 export const HeartbeatResultV2FrameSchema = z
   .object({
     ...heartbeatResultShape,
     protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
     connectionId: RuntimeConnectionIdSchema,
+    channelTarget: RuntimeChannelTargetSchema.optional(),
   })
   .strict()
   .superRefine(validateFailedResult);
@@ -431,6 +458,7 @@ export type ComputerRegisterFrame = z.infer<typeof ComputerRegisterFrameSchema>;
 export type ComputerRegisterResultFrame = z.infer<typeof ComputerRegisterResultFrameSchema>;
 export type HeartbeatFrame = z.infer<typeof HeartbeatFrameSchema>;
 export type HeartbeatResultFrame = z.infer<typeof HeartbeatResultFrameSchema>;
+export type RuntimeChannelTarget = z.infer<typeof RuntimeChannelTargetSchema>;
 export type RuntimeErrorFrame = z.infer<typeof RuntimeErrorFrameSchema>;
 export type ClientRuntimeFrame = z.infer<typeof ClientRuntimeFrameSchema>;
 export type ServerRuntimeFrame = z.infer<typeof ServerRuntimeFrameSchema>;

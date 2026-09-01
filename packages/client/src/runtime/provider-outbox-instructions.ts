@@ -24,8 +24,19 @@ export function buildProviderOutboxInstructions(options: ProviderOutboxInstructi
   ];
 }
 
+/** Fixed Slack-only native CLI guidance. Kept under 4 KiB so the managed prompt stays bounded. */
+const SLACK_NATIVE_CLI_GUIDANCE = [
+  "Use the native CLI as `slack api chat.postMessage --json '<json>'`. Pass exactly one JSON object; never key=value pairs, which form-encode the token into the request body.",
+  "Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update, or other token, app, team, workspace, config, or update override flags. The launcher and environment already bind this Turn.",
+  "Set channel to the supplied channelId. Thread placement is a Session policy decision: when the current context includes threadTs, that value is this Session's Slack thread_ts; otherwise messageTs identifies the source message you may thread from.",
+  "Put the body in `text` (at most 4,000 characters) or `markdown_text` (at most 12,000 characters). Split longer content across multiple chat.postMessage calls rather than truncating silently.",
+  "Post at most 1 message per second per channel. Mention users as `<@U...>` with provider-native user IDs.",
+  "conversations.history and similar reads are rate-limited; query sparingly and do not poll in a tight loop.",
+  "Never print credentials, tokens, or the environment file. CLI argv and command output are visible on the OpenTag runtime console.",
+] as const;
+
 function providerBodyInstructions(provider: ProviderOutboxProvider): readonly string[] {
-  if (provider !== "feishu") return [];
+  if (provider === "slack") return SLACK_NATIVE_CLI_GUIDANCE;
   return [
     "For lark-cli text and Markdown bodies, intended line breaks must reach the CLI as real newline characters; never write literal `\\n` sequences for layout.",
     "Before sending, inspect the body: if it has no real newline and contains two or more literal `\\n` sequences, treat it as malformed and rebuild it instead of sending. Do not blindly replace `\\n`, because code or prose may intentionally discuss that token.",

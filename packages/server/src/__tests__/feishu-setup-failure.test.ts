@@ -58,7 +58,7 @@ async function setupFixture() {
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindings = new ImBindingService(setupDatabase.database, cipher, { now: () => setupNow });
-  return { bootstrap, agent, computerId: workspaceComputer.id, cipher, imBindings };
+  return { bootstrap, agent, computerId: computer.id, cipher, imBindings };
 }
 
 function registration(

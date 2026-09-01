@@ -69,12 +69,6 @@
       "complexity": 20
     },
     {
-      "id": "apps/cli/src/core/daemon/runtime.ts#runDaemonService",
-      "path": "apps/cli/src/core/daemon/runtime.ts",
-      "symbol": "runDaemonService",
-      "complexity": 16
-    },
-    {
       "id": "apps/cli/src/core/daemon/service/launchd.ts#callback",
       "path": "apps/cli/src/core/daemon/service/launchd.ts",
       "symbol": "callback",
@@ -126,7 +120,7 @@
       "id": "apps/web/src/features/agents/agent-model.ts#projectAgentAvailability",
       "path": "apps/web/src/features/agents/agent-model.ts",
       "symbol": "projectAgentAvailability",
-      "complexity": 48
+      "complexity": 47
     },
     {
       "id": "apps/web/src/features/agents/agent-presentation.ts#agentStatusPresentation",
@@ -264,7 +258,7 @@
       "id": "apps/web/src/onboarding-v2/steps.tsx#MessagingConnection",
       "path": "apps/web/src/onboarding-v2/steps.tsx",
       "symbol": "MessagingConnection",
-      "complexity": 43
+      "complexity": 34
     },
     {
       "id": "apps/web/src/onboarding-v2/steps.tsx#OnboardingConnectPresentation",
@@ -516,7 +510,7 @@
       "id": "packages/client/src/runtime/client-runtime.ts##handleBusinessFrame",
       "path": "packages/client/src/runtime/client-runtime.ts",
       "symbol": "#handleBusinessFrame",
-      "complexity": 25
+      "complexity": 23
     },
     {
       "id": "packages/client/src/runtime/install-locations.ts#versionManagerBinDirs",
@@ -813,12 +807,6 @@
       "complexity": 23
     },
     {
-      "id": "packages/server/src/runtime/runtime-domain-owner.ts#handle",
-      "path": "packages/server/src/runtime/runtime-domain-owner.ts",
-      "symbol": "handle",
-      "complexity": 19
-    },
-    {
       "id": "packages/server/src/runtime/runtime-domain-owner.ts#requestReconcile",
       "path": "packages/server/src/runtime/runtime-domain-owner.ts",
       "symbol": "requestReconcile",
@@ -846,13 +834,13 @@
       "id": "packages/server/src/services/agents/agent-service.ts#callback",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 16
+      "complexity": 21
     },
     {
       "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 21
+      "complexity": 16
     },
     {
       "id": "packages/server/src/services/agents/agent-service.ts#callback~3",
@@ -919,12 +907,6 @@
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
       "symbol": "diagnostics",
       "complexity": 21
-    },
-    {
-      "id": "packages/server/src/services/im-bindings/im-binding-service.ts#issueRuntimeCredentialGrant",
-      "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
-      "symbol": "issueRuntimeCredentialGrant",
-      "complexity": 27
     },
     {
       "id": "packages/server/src/services/im-bindings/slack/adapter.ts#normalizeSlackEnvelope",

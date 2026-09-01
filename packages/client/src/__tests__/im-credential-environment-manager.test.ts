@@ -32,11 +32,18 @@ describe("ImCredentialEnvironmentManager", () => {
       const manager = new ImCredentialEnvironmentManager({ connection, home, platform: "linux" });
       const request = delivery(attention);
 
-      const { path } = await manager.prepare(request);
+      const prepared = await manager.prepare(request);
+      const { path } = prepared;
+      const configDir = prepared.slackConfigDir;
+      if (!configDir) throw new Error("Slack prepare must return its private config leaf");
+      expect(prepared.slackConfigDir).toBe(configDir);
+      expect(manager.activeSlackConfigDirForSession(request.sessionId)).toBe(configDir);
       expect(await readFile(path, "utf8")).toBe(
-        `export SLACK_BOT_TOKEN='xoxb-${attention}'\nunset SLACK_USER_TOKEN\nunset SLACK_APP_TOKEN\n`,
+        `export SLACK_BOT_TOKEN='xoxb-${attention}'\nunset SLACK_USER_TOKEN\nunset SLACK_APP_TOKEN\nexport OPENTAG_SLACK_CONFIG_DIR='${configDir}'\nexport SLACK_CONFIG_DIR='${configDir}'\n`,
       );
       expect((await stat(path)).mode & 0o777).toBe(0o600);
+      expect((await stat(configDir)).mode & 0o777).toBe(0o700);
+      expect(await readFile(path, "utf8")).not.toMatch(/xoxp-|xapp-/);
       expect(connection.requests).toEqual([
         expect.objectContaining({
           sessionId: request.sessionId,
@@ -48,7 +55,9 @@ describe("ImCredentialEnvironmentManager", () => {
       expect(connection.requests[0]).not.toHaveProperty("provider");
 
       await manager.cleanup(request.sessionId);
+      expect(manager.activeSlackConfigDirForSession(request.sessionId)).toBeUndefined();
       await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(configDir)).rejects.toMatchObject({ code: "ENOENT" });
       await manager.close();
     },
   );
@@ -79,7 +88,10 @@ describe("ImCredentialEnvironmentManager", () => {
       platform: "linux",
     });
 
-    const { path } = await manager.prepare(delivery("ambient"));
+    const prepared = await manager.prepare(delivery("ambient"));
+    const { path } = prepared;
+    expect(prepared.slackConfigDir).toBeUndefined();
+    expect(manager.activeSlackConfigDirForSession("session-1")).toBeUndefined();
     expect(await readFile(path, "utf8")).toContain("export LARKSUITE_CLI_APP_SECRET='secret-1'");
     await manager.prepare(delivery("ambient"));
     const rotated = await readFile(path, "utf8");
@@ -220,12 +232,32 @@ describe("ImCredentialEnvironmentManager", () => {
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("refuses traversal identities before recursive credential cleanup", async () => {
+    const home = await temporaryHome();
+    const removed: string[] = [];
+    const manager = new ImCredentialEnvironmentManager({
+      connection: grantConnection(() => {
+        throw new Error("No grant expected");
+      }),
+      home,
+      platform: "linux",
+      removePath: async (path) => {
+        removed.push(path);
+      },
+    });
+
+    await expect(manager.cleanup("../../outside")).rejects.toThrow("escaped its root");
+    expect(removed).toEqual([]);
+    await manager.close();
+  });
+
   it("removes only strictly named stale credential artifacts before preparing a new Turn", async () => {
     const home = await temporaryHome();
     const root = join(home, "data", "runtime", "provider-credentials");
     const staleSession = "123e4567-e89b-42d3-a456-426614174000";
     const staleTemporary = ".123e4567-e89b-42d3-a456-426614174001.tmp";
     await mkdir(join(root, `${staleSession}-lark-config`), { recursive: true });
+    await mkdir(join(root, `${staleSession}-slack-config`), { recursive: true });
     await writeFile(join(root, `${staleSession}.sh`), "secret", "utf8");
     await writeFile(join(root, staleTemporary), "temporary secret", "utf8");
     await writeFile(join(root, "keep-me.txt"), "not managed", "utf8");
@@ -245,6 +277,7 @@ describe("ImCredentialEnvironmentManager", () => {
     await manager.prepare(delivery("direct"));
     await expect(stat(join(root, `${staleSession}.sh`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, `${staleSession}-lark-config`))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(root, `${staleSession}-slack-config`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, staleTemporary))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(root, "keep-me.txt"), "utf8")).resolves.toBe("not managed");
     await expect(readFile(join(root, "keep-me.tmp"), "utf8")).resolves.toBe("not managed");
@@ -299,7 +332,8 @@ describe("ImCredentialEnvironmentManager", () => {
       },
     });
 
-    const failure = await manager.prepare(delivery("direct")).catch((error: unknown) => error);
+    const request = delivery("direct");
+    const failure = await manager.prepare(request).catch((error: unknown) => error);
     expect(failure).toMatchObject({
       name: "ImCredentialEnvironmentError",
       code: "credential_materialization_failed",
@@ -309,6 +343,7 @@ describe("ImCredentialEnvironmentManager", () => {
       executionEffects: "not_started",
       errorReason: "credential_unavailable",
     });
+    expect(manager.activeSlackConfigDirForSession(request.sessionId)).toBeUndefined();
     await manager.close();
   });
 

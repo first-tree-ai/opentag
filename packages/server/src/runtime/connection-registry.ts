@@ -1,11 +1,16 @@
 import {
   type AgentRuntimeProvider,
   type ImCliProvider,
+  type ImCliReadinessStatus,
+  type IntegrationCredentialExecutionReason,
+  type IntegrationCredentialExecutionStatus,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
+  RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
+  RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS,
   type RuntimeClientCapabilities,
   type RuntimeImCliReadinessCollection,
   type RuntimeNegotiatedCapabilities,
@@ -25,6 +30,27 @@ export class RuntimeRegistrySendError extends Error {
   }
 }
 
+export interface ProviderCliArtifactObservation {
+  agentId: string;
+  integrationId: string;
+  observedAt: number;
+  provider: ImCliProvider;
+  credentialGeneration: number;
+  requestId: string;
+  status: Exclude<ImCliReadinessStatus, "install">;
+}
+
+export interface ProviderCliCredentialObservation {
+  agentId: string;
+  integrationId: string;
+  observedAt: number;
+  provider: ImCliProvider;
+  credentialGeneration: number;
+  reason?: IntegrationCredentialExecutionReason;
+  requestId: string;
+  status: IntegrationCredentialExecutionStatus;
+}
+
 export interface RuntimeConnectionEntry {
   active?: boolean;
   capabilities?: RuntimeClientCapabilities;
@@ -40,6 +66,8 @@ export interface RuntimeConnectionEntry {
   providerReadinessProviders?: readonly AgentRuntimeProvider[];
   imCliReadiness?: RuntimeImCliReadinessCollection;
   imCliReadinessObservedAt?: number;
+  providerCliArtifact?: ProviderCliArtifactObservation[];
+  providerCliCredential?: ProviderCliCredentialObservation[];
   negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
   socket: WebSocket;
 }
@@ -80,6 +108,11 @@ export class ConnectionRegistry {
   currentInstanceId(computerId: string): string | undefined {
     const current = this.#entries.get(computerId);
     return current?.active === false ? undefined : current?.instanceId;
+  }
+
+  installationId(computerId: string): string | undefined {
+    const current = this.#entries.get(computerId);
+    return current?.active === false ? undefined : current?.installationId;
   }
 
   supportsCapability(computerId: string, instanceId: string, capability: string): boolean {
@@ -173,6 +206,76 @@ export class ConnectionRegistry {
     return this.imCliReadiness(computerId, now).some(
       ({ observation }) => observation.provider === provider && observation.status === "ready",
     );
+  }
+
+  providerCliArtifactReadiness(
+    computerId: string,
+    now = Date.now(),
+  ): readonly { observation: ProviderCliArtifactObservation; observedAt: number }[] {
+    const current = this.#entries.get(computerId);
+    if (!current || current.active === false || !current.providerCliArtifact) return [];
+    return current.providerCliArtifact.flatMap((observation) =>
+      observation.status !== "unavailable" && now - observation.observedAt > RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS
+        ? []
+        : [{ observation: { ...observation }, observedAt: observation.observedAt }],
+    );
+  }
+
+  providerCliCredentialReadiness(
+    computerId: string,
+    now = Date.now(),
+  ): readonly { observation: ProviderCliCredentialObservation; observedAt: number }[] {
+    const current = this.#entries.get(computerId);
+    if (!current || current.active === false || !current.providerCliCredential) return [];
+    return current.providerCliCredential.flatMap((observation) => {
+      if (observation.status === "needs_attention") {
+        return [{ observation: { ...observation }, observedAt: observation.observedAt }];
+      }
+      if (now - observation.observedAt > RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS) {
+        return [];
+      }
+      return [{ observation: { ...observation }, observedAt: observation.observedAt }];
+    });
+  }
+
+  setProviderCliArtifactObservation(
+    computerId: string,
+    instanceId: string,
+    observation: Omit<ProviderCliArtifactObservation, "observedAt">,
+    now = Date.now(),
+  ): boolean {
+    const current = this.#currentWritable(computerId, instanceId);
+    if (!current) return false;
+    const next: ProviderCliArtifactObservation = { ...observation, observedAt: now };
+    current.providerCliArtifact = upsertProviderCliObservation(
+      current.providerCliArtifact,
+      next,
+      artifactObservationKey,
+    );
+    return true;
+  }
+
+  setProviderCliCredentialObservation(
+    computerId: string,
+    instanceId: string,
+    observation: Omit<ProviderCliCredentialObservation, "observedAt">,
+    now = Date.now(),
+  ): boolean {
+    const current = this.#currentWritable(computerId, instanceId);
+    if (!current) return false;
+    const next: ProviderCliCredentialObservation = { ...observation, observedAt: now };
+    current.providerCliCredential = upsertProviderCliObservation(
+      current.providerCliCredential,
+      next,
+      credentialObservationKey,
+    );
+    return true;
+  }
+
+  #currentWritable(computerId: string, instanceId: string): RuntimeConnectionEntry | undefined {
+    const current = this.#entries.get(computerId);
+    if (!current || current.instanceId !== instanceId || current.active === false) return undefined;
+    return current;
   }
 
   async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
@@ -294,6 +397,27 @@ export class ConnectionRegistry {
       entry.socket.close(1001, "Server shutting down");
     }
   }
+}
+
+function artifactObservationKey(observation: ProviderCliArtifactObservation): string {
+  return `${observation.agentId}:${observation.integrationId}:${observation.provider}`;
+}
+
+function credentialObservationKey(observation: ProviderCliCredentialObservation): string {
+  return `${observation.agentId}:${observation.integrationId}:${observation.provider}`;
+}
+
+function upsertProviderCliObservation<T extends { credentialGeneration: number }>(
+  existing: T[] | undefined,
+  next: T,
+  keyOf: (observation: T) => string,
+): T[] {
+  const key = keyOf(next);
+  const observations = [...(existing ?? [])].filter((observation) => keyOf(observation) !== key);
+  const previous = existing?.find((observation) => keyOf(observation) === key);
+  if (previous && previous.credentialGeneration > next.credentialGeneration) return existing ?? [];
+  observations.push(next);
+  return observations;
 }
 
 function withConnectionId(frame: unknown, connectionId?: string): unknown {

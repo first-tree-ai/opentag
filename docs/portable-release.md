@@ -68,6 +68,41 @@ bin/<binName>           Artifact-local shim, used before the payload is activate
 The bundled CLI has no `node_modules`: `apps/cli` declares no runtime dependencies, and the build fails closed if that
 ever changes rather than shipping an artifact that only breaks when a user runs it.
 
+## Automatic upgrades
+
+Portable is the only install mode with fully supported automatic upgrades; an npm-global install never upgrades
+itself and uses the manual `opentag upgrade` / `opentag upgrade --check` commands instead. One exact target per
+channel, no cohorts or canaries: the Server polls the channel's published `latest.json` and advertises that exact
+target to connected Clients on v2 heartbeat results (the `runtime.channelTarget` capability — see
+[runtime-protocol.md](./runtime-protocol.md)).
+
+The daemon's updater follows a strict contract:
+
+- **Exact target identity, monotonic precedence.** Only an exact version-string match is already current, so a target
+  that differs only by SemVer build metadata is still installed. SemVer precedence is used only to reject an older
+  target; the target must also belong to the Client's own channel, and an automatic downgrade never happens.
+- **Protected work comes first.** Before installing, the updater waits indefinitely until the Session module reports
+  no protected work — no accepted Turn under local custody, no pending Turn completion or report, and no accepted
+  IM delivery could be lost or duplicated by the handoff. The Session module bounds every one of those units (Turn
+  budgets, delivery deadlines, report retries with terminal outcomes), so the updater adds no force timeout of its
+  own. New-work admission is closed before the zero-work snapshot; deliveries accepted before that point continue
+  draining, while later deliveries receive a retryable busy result.
+- **One attempt per target.** The attempt is recorded durably before any install work starts. A failure — including
+  an interrupted attempt — becomes a blocked state that is never retried automatically: the updater waits for a
+  newer target or a manual `opentag upgrade`, which prevents retry and restart storms.
+- **The existing layout does the work.** The install downloads the immutable version manifest (never the channel
+  pointer), verifies the published SHA-256, extracts into a fresh immutable version directory, smoke-checks the new
+  runtime, rewrites the stable shim, and moves `current` in one atomic switch — the same mechanics as `install.sh`.
+- **Service refresh and handoff.** After the switch, the updater runs `daemon refresh-service` through the newly
+  installed binary so the supervisor definition is rewritten by the version that will run next, without restarting
+  anything itself. It then exits with the reserved supervisor-restart exit code `75`: systemd maps it to a clean
+  forced restart (`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`), and launchd restarts it through
+  `KeepAlive.SuccessfulExit=false`. The stable shim means the restarted service runs the new version with the
+  OpenTag home, Account credentials, Computer enrollment, Agents, and placement untouched.
+
+Current version, target, updater state, and the last attempt with its failure reason are visible in
+`opentag daemon status`.
+
 ## Published object layout
 
 ~~~text

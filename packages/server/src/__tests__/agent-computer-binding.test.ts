@@ -10,15 +10,15 @@
 import { FEISHU_REQUIRED_TENANT_SCOPES, SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import type { DatabaseClient } from "../db/client.js";
-import { accountComputers, agents, computers, users, workspaceComputers } from "../db/schema/index.js";
+import { agents, computers, users } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
 import { SlackConfigurationService } from "../services/im-bindings/slack/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 let unitDatabase: UnitDatabase;
 
@@ -34,8 +34,6 @@ async function account(email = "admin@example.com") {
   return bootstrapTestAccount(unitDatabase.database, {
     displayName: "Admin",
     email,
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
 }
 
@@ -46,21 +44,19 @@ const computerProfile = {
   clientVersion: "0.0.2",
 };
 
-async function enrollComputer(database: DatabaseClient, ownerAccountId: string, workspaceId: string) {
-  const [computer] = await database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [enrollment] = await database
-    .insert(workspaceComputers)
-    .values({ workspaceId, computerId: computer.id, ...computerProfile, enrolledByUserId: ownerAccountId })
+async function connectComputer(database: DatabaseClient, ownerAccountId: string) {
+  const installationId = crypto.randomUUID();
+  const [computer] = await database
+    .insert(computers)
+    .values({
+      id: crypto.randomUUID(),
+      ownerAccountId,
+      currentInstallationId: installationId,
+      ...computerProfile,
+    })
     .returning();
-  if (!enrollment) throw new Error("Computer enrollment fixture was not created");
-  await database.insert(accountComputers).values({
-    id: enrollment.id,
-    ownerAccountId,
-    currentInstallationId: computer.id,
-    ...computerProfile,
-  });
-  return { id: enrollment.id, installationId: computer.id };
+  if (!computer) throw new Error("Computer fixture was not created");
+  return { id: computer.id, installationId };
 }
 
 function unboundInput(name = "assistant") {
@@ -77,10 +73,8 @@ describe("An Agent created before its Computer", () => {
     const created = await service.createForAccount(bootstrap.userId, unboundInput());
     expect(created).toMatchObject({ computerId: null, revision: 1, status: "active" });
 
-    // Both Computer columns clear together; the pair check is what holds the row to that.
     const [stored] = await unitDatabase.database.select().from(agents).where(eq(agents.id, created.id));
     expect(stored?.computerId).toBeNull();
-    expect(stored?.workspaceComputerId).toBeNull();
 
     // `computer` is stated as null rather than dropped, so a reader can tell it from an unread one.
     const listed = await service.listForAccount(bootstrap.userId);
@@ -92,29 +86,28 @@ describe("An Agent created before its Computer", () => {
     await expect(service.getConfigById(bootstrap.userId, created.id)).resolves.toEqual(created);
   });
 
-  it("refuses a row that names an enrollment without recording the Computer", async () => {
+  it("refuses a row that names a Computer that does not exist", async () => {
     const bootstrap = await account();
-    const enrolled = await enrollComputer(unitDatabase.database, bootstrap.userId, bootstrap.workspaceId);
 
     await expect(
       unitDatabase.engine.query(
-        `insert into agents (workspace_id, created_by_user_id, workspace_computer_id, name, display_name, runtime_provider)
-         values ($1, $2, $3, 'half', 'Half', 'codex')`,
-        [bootstrap.workspaceId, bootstrap.userId, enrolled.id],
+        `insert into agents (created_by_user_id, computer_id, name, display_name, runtime_provider)
+         values ($1, $2, 'missing', 'Missing', 'codex')`,
+        [bootstrap.userId, crypto.randomUUID()],
       ),
-    ).rejects.toMatchObject({ code: "23514" });
+    ).rejects.toMatchObject({ code: "23503" });
   });
 
   it("takes a Computer afterwards through the operation that moves one", async () => {
     const bootstrap = await account();
     const service = new AgentService(unitDatabase.database);
     const created = await service.createForAccount(bootstrap.userId, unboundInput());
-    const enrolled = await enrollComputer(unitDatabase.database, bootstrap.userId, bootstrap.workspaceId);
+    const connected = await connectComputer(unitDatabase.database, bootstrap.userId);
 
-    const bound = await service.rebindById(bootstrap.userId, created.id, enrolled.id);
-    expect(bound).toMatchObject({ computerId: enrolled.id, revision: 2 });
+    const bound = await service.rebindById(bootstrap.userId, created.id, connected.id);
+    expect(bound).toMatchObject({ computerId: connected.id, revision: 2 });
     await expect(service.getById(bootstrap.userId, created.id)).resolves.toMatchObject({
-      computer: expect.objectContaining({ computerId: enrolled.id }),
+      computer: expect.objectContaining({ computerId: connected.id }),
     });
   });
 
@@ -127,7 +120,7 @@ describe("An Agent created before its Computer", () => {
       .values({ displayName: "Other", email: "other@example.com" })
       .returning();
     if (!other) throw new Error("Other Account fixture was not created");
-    const foreign = await enrollComputer(unitDatabase.database, other.id, bootstrap.workspaceId);
+    const foreign = await connectComputer(unitDatabase.database, other.id);
 
     await expect(service.rebindById(bootstrap.userId, created.id, foreign.id)).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
@@ -211,8 +204,8 @@ describe("Messaging for an Agent that has no Computer", () => {
     const imBindings = new ImBindingService(unitDatabase.database, cipher());
     const service = new AgentService(unitDatabase.database);
     const created = await service.createForAccount(bootstrap.userId, unboundInput());
-    const enrolled = await enrollComputer(unitDatabase.database, bootstrap.userId, bootstrap.workspaceId);
-    await service.rebindById(bootstrap.userId, created.id, enrolled.id);
+    const connected = await connectComputer(unitDatabase.database, bootstrap.userId);
+    await service.rebindById(bootstrap.userId, created.id, connected.id);
 
     const activated = await imBindings.activateSlack(
       {

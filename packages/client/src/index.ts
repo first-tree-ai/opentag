@@ -184,6 +184,7 @@ export {
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
   createClientRuntime,
+  type ProtectedWorkSnapshot,
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
   resolveCodexHome,
@@ -291,6 +292,10 @@ export {
   providerCliProbeEnvironment,
 } from "./runtime/provider-cli/probe.js";
 export {
+  ProviderCliReconciler,
+  type ProviderCliReconcilerOptions,
+} from "./runtime/provider-cli/reconciler.js";
+export {
   PROVIDER_CLI_SELECTION_SCHEMA_VERSION,
   type ProviderCliSelection,
   type ProviderCliSelectionRecord,
@@ -302,6 +307,37 @@ export {
   extractProviderCliExecutable,
   ProviderCliArchiveError,
 } from "./runtime/provider-cli/tar.js";
+export {
+  type ProviderCliTurnLauncherSpec,
+  renderProviderCliTurnLauncher,
+} from "./runtime/provider-cli/turn-launcher.js";
+export {
+  deriveProviderCliHomeNamespace,
+  deriveProviderCliSessionKey,
+  MAX_PROVIDER_CLI_TURN_IDENTITY_BYTES,
+  MAX_PROVIDER_CLI_TURN_PLAN_BYTES,
+  PROVIDER_CLI_TURN_PLAN_SCHEMA_VERSION,
+  type ProviderCliTurnPlan,
+  type ProviderCliTurnPlanCommand,
+  ProviderCliTurnPlanError,
+  type ProviderCliTurnPlanErrorCode,
+  parseProviderCliTurnPlan,
+  providerCliCommandForProvider,
+  readProviderCliTurnPlan,
+} from "./runtime/provider-cli/turn-plan.js";
+export {
+  type ProviderCliPreparedTurnPlan,
+  ProviderCliTurnPlanManager,
+  type ProviderCliTurnPlanManagerDeps,
+  type ProviderCliTurnPlanPrepareInput,
+} from "./runtime/provider-cli/turn-plan-manager.js";
+export {
+  type ExecuteProviderCliTurnPlanOptions,
+  executeProviderCliTurnPlan,
+  parseProviderCliTurnRunnerArgv,
+  resolveProviderCliTurnRunnerInvocation,
+  runProviderCliTurnRunner,
+} from "./runtime/provider-cli/turn-runner.js";
 export {
   mapProviderCliLocalStateToReadiness,
   type ProviderCliCandidateReport,
@@ -318,6 +354,20 @@ export {
   type ProviderCliWarning,
   type ProviderCliWarningCode,
 } from "./runtime/provider-cli/types.js";
+export {
+  classifyLarkAuthStatus,
+  classifySlackAuthTest,
+  classifySpawnFailure,
+  extractBoundedJson,
+} from "./runtime/provider-cli/validation-classify.js";
+export {
+  deriveProviderCliValidationRequestKey,
+  exchangeFeishuTenantToken,
+  FeishuTokenExchangeError,
+  type ProviderCliValidationRequest,
+  ProviderCliValidationRunner,
+  type ProviderCliValidationRunnerOptions,
+} from "./runtime/provider-cli/validation-runner.js";
 export {
   type RuntimeBusinessFrame,
   RuntimeConnection,
@@ -390,6 +440,7 @@ export {
   type RuntimePreparation,
   type SessionActivity,
   type SessionActivityPhase,
+  type SessionProtectedWorkSnapshot,
   SessionReconciler,
   type SessionReconcilerOptions,
   type SessionRuntimeState,
@@ -422,6 +473,14 @@ export {
   type TurnReportSubmitOptions,
   type TurnReportTerminalStatus,
 } from "./runtime/turn-report-owner.js";
+export {
+  type ProtectedWorkCount,
+  UpdateManager,
+  type UpdateManagerOptions,
+  type UpdaterAttempt,
+  type UpdaterStateName,
+  type UpdaterStateSnapshot,
+} from "./runtime/update-manager.js";
 export {
   assertRealDirectory,
   assertWithin,

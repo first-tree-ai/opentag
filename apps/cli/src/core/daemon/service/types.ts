@@ -45,6 +45,12 @@ export interface DaemonServiceBackend {
   readonly platform: DaemonServicePlatform;
   installAndStart(): Promise<DaemonServiceInfo>;
   preflight(): Promise<void>;
+  /**
+   * Rewrite the on-disk service definition from the current binary's templates without restarting
+   * the service. Used by the portable upgrade handoff so the definition the supervisor reloads
+   * comes from the newly installed version.
+   */
+  refreshDefinition(): Promise<DaemonServiceInfo>;
   restart(): Promise<DaemonServiceInfo>;
   start(): Promise<DaemonServiceInfo>;
   status(): Promise<DaemonServiceInfo>;

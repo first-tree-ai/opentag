@@ -7,6 +7,33 @@ export const ProviderReadinessStatusSchema = z.enum(["checking", "install", "sig
 export const ImCliReadinessStatusSchema = z.enum(["checking", "install", "ready", "unavailable"]);
 export const IM_CLI_PROVIDERS = ["feishu", "slack"] as const;
 export const ImCliProviderSchema = z.enum(IM_CLI_PROVIDERS);
+export const INTEGRATION_CREDENTIAL_EXECUTION_STATUSES = [
+  "unconfirmed",
+  "checking",
+  "retrying",
+  "ready",
+  "needs_attention",
+] as const;
+export const IntegrationCredentialExecutionStatusSchema = z.enum(INTEGRATION_CREDENTIAL_EXECUTION_STATUSES);
+export const INTEGRATION_CREDENTIAL_EXECUTION_REASONS = [
+  "provider_unreachable",
+  "rate_limited",
+  "credential_rejected",
+  "identity_mismatch",
+  "scope_missing",
+  "upgrade_required",
+] as const;
+export const IntegrationCredentialExecutionReasonSchema = z.enum(INTEGRATION_CREDENTIAL_EXECUTION_REASONS);
+export const PROVIDER_CLI_VALIDATION_RETRY_REASONS = [
+  "validation_busy",
+  "validation_expired",
+  "artifact_changed",
+] as const;
+export const ProviderCliValidationRetryReasonSchema = z.enum(PROVIDER_CLI_VALIDATION_RETRY_REASONS);
+export const ProviderCliValidationResultReasonSchema = z.enum([
+  ...INTEGRATION_CREDENTIAL_EXECUTION_REASONS,
+  ...PROVIDER_CLI_VALIDATION_RETRY_REASONS,
+]);
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
 
 export const ComputerConnectCodeModeSchema = z.enum(["create", "repair"]);
@@ -183,6 +210,10 @@ export type ComputerConnectionStatus = z.infer<typeof ComputerConnectionStatusSc
 export type ProviderReadinessStatus = z.infer<typeof ProviderReadinessStatusSchema>;
 export type ImCliReadinessStatus = z.infer<typeof ImCliReadinessStatusSchema>;
 export type ImCliProvider = z.infer<typeof ImCliProviderSchema>;
+export type IntegrationCredentialExecutionStatus = z.infer<typeof IntegrationCredentialExecutionStatusSchema>;
+export type IntegrationCredentialExecutionReason = z.infer<typeof IntegrationCredentialExecutionReasonSchema>;
+export type ProviderCliValidationRetryReason = z.infer<typeof ProviderCliValidationRetryReasonSchema>;
+export type ProviderCliValidationResultReason = z.infer<typeof ProviderCliValidationResultReasonSchema>;
 export type ComputerProviderReadiness = z.infer<typeof ComputerProviderReadinessSchema>;
 export type ComputerProviderReadinessCollection = z.infer<typeof ComputerProviderReadinessCollectionSchema>;
 export type ComputerImCliReadiness = z.infer<typeof ComputerImCliReadinessSchema>;

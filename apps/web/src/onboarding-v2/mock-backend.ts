@@ -9,7 +9,7 @@
  * modes exist for judging the flow at its real pace.
  */
 
-import type { ComputerConnectCodeStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ComputerConnectAdapter, ComputerConnectIntent } from "../features/computer-connect/computer-connect.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
@@ -173,7 +173,7 @@ function randomId(): string {
   return randomCode().slice(0, 16);
 }
 
-function mockComputerSummary(computer: KnownComputer): WorkspaceComputerSummary {
+function mockComputerSummary(computer: KnownComputer): AccountComputerSummary {
   const now = new Date().toISOString();
   return {
     computerId: computer.id,
@@ -237,7 +237,7 @@ export function useMockBackend(
   interface ConnectFixture {
     readonly intent: ComputerConnectIntent;
     readonly status: ComputerConnectCodeStatus;
-    readonly computer?: WorkspaceComputerSummary;
+    readonly computer?: AccountComputerSummary;
   }
   const connectFixture = useRef<ConnectFixture | undefined>(undefined);
   const statusWaiters = useRef<
@@ -298,7 +298,7 @@ export function useMockBackend(
       const now = new Date().toISOString();
       const computerId = current.intent.mode === "repair" ? current.intent.target.computerId : NEW_ARRIVAL;
       const displayName = current.intent.mode === "repair" ? current.intent.target.displayName : COMPUTER_NAME;
-      const computer: WorkspaceComputerSummary = {
+      const computer: AccountComputerSummary = {
         computerId,
         displayName,
         platform: "darwin",
@@ -415,7 +415,7 @@ export function useMockBackend(
     );
   }, []);
 
-  const computerConnected = useCallback((computer: WorkspaceComputerSummary) => {
+  const computerConnected = useCallback((computer: AccountComputerSummary) => {
     setKnownComputers((current) => [
       ...current.filter((candidate) => candidate.id !== computer.computerId),
       { id: computer.computerId, displayName: computer.displayName, availability: "online" },

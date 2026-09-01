@@ -130,6 +130,7 @@ export class SlackConfigurationService {
       return this.#imBindings.activateSlack(activation, installation.botId, transaction);
     });
     await this.#afterConfigurationTransaction?.();
+    await this.#imBindings.notifyProviderCliRequirementChanged(agentId).catch(() => undefined);
     return configured;
   }
 

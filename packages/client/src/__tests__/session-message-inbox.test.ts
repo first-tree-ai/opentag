@@ -11,8 +11,41 @@ import {
 } from "../runtime/runtime-durability.js";
 import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
+import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 
 describe("SessionMessageInbox", () => {
+  it("rejects new messages while quiesced but drains messages accepted before the pause", async () => {
+    const admission = new AdmissionController();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "accepted before pause" }))).status).toBe(
+      "accepted",
+    );
+
+    admission.pause();
+    await expect(inbox.accept(delivery({ text: "new during pause" }))).resolves.toMatchObject({
+      status: "rejected",
+      reason: "client_busy",
+    });
+    held.reservation.release();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    await inbox.settled();
+    inbox.stop();
+  });
+
   it("rejects accepted work when the durable admission write fails", async () => {
     const logger = { warn: vi.fn() };
     const persistence = {
@@ -40,6 +73,7 @@ describe("SessionMessageInbox", () => {
       expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId }),
       "Session message persistence failed",
     );
+    expect(inbox.pendingCount).toBe(0);
     inbox.stop();
   });
 
@@ -358,12 +392,37 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("retryable");
+    expect(inbox.queuedCount).toBe(0);
+    expect(inbox.pendingCount).toBe(1);
     expect(scheduled).toHaveLength(1);
+
+    let updaterState: UpdaterStateSnapshot | undefined;
+    const executeUpdate = vi.fn(async () => undefined);
+    const updater = new UpdateManager({
+      channel: "staging",
+      currentVersion: "0.0.2",
+      protectedWork: () => ({ total: inbox.pendingCount }),
+      quiesce: () => () => undefined,
+      executeUpdate,
+      onHandoff: () => undefined,
+      loadState: async () => updaterState,
+      saveState: async (state) => {
+        updaterState = structuredClone(state);
+      },
+      checkIntervalMs: 1,
+    });
+    updater.observe({ channel: "staging", version: "0.0.3" });
+    await vi.waitFor(() => expect(updaterState?.state).toBe("awaiting_protected_work"));
+    expect(executeUpdate).not.toHaveBeenCalled();
+
     scheduled.shift()?.();
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(inbox.pendingCount).toBe(0);
     expect(inbox.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 1 });
+    await vi.waitFor(() => expect(executeUpdate).toHaveBeenCalledWith("0.0.3"));
+    updater.stop();
     now += 1_000;
     inbox.stop();
   });
@@ -647,6 +706,43 @@ describe("SessionMessageInbox", () => {
     expect(input.items[1]?.text).toBe("Report the result");
   });
 
+  it("adds Slack native CLI guidance on the visible collaboration callback path", () => {
+    const slackInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
+      sessionKind: "visible",
+      outboxContext: {
+        provider: "slack",
+        sessionKind: "channel",
+        channelId: "C-visible",
+      },
+    });
+    const slackText = slackInput.items[0]?.text ?? "";
+    expect(slackText).toContain("OPENTAG_PROVIDER_ENV_FILE");
+    expect(slackText).toContain("slack api chat.postMessage --json");
+    expect(slackText).toContain("never key=value pairs");
+    expect(slackText).toContain("Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update");
+    expect(slackText).toContain("`text` (at most 4,000 characters)");
+    expect(slackText).toContain("`markdown_text` (at most 12,000 characters)");
+    expect(slackText).toContain("Thread placement is a Session policy decision");
+    expect(slackText).toContain("at most 1 message per second per channel");
+    expect(slackText).toContain("<@U...>");
+    expect(slackText).toContain("conversations.history and similar reads are rate-limited");
+    expect(slackText).toContain("Never print credentials, tokens, or the environment file");
+    expect(slackText).not.toContain("OPENTAG_LARK_BODY");
+    expect(slackText).not.toMatch(/xox[bpa]-/);
+    expect(Buffer.byteLength(slackText, "utf8")).toBeLessThan(16 * 1024);
+
+    const feishuInput = buildSessionMessageInput(delivery({ text: "Report the result" }), "opentag", {
+      sessionKind: "visible",
+      outboxContext: {
+        provider: "feishu",
+        sessionKind: "channel",
+        chatId: "oc_visible",
+      },
+    });
+    expect(feishuInput.items[0]?.text).toContain("OPENTAG_LARK_BODY");
+    expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
+  });
+
   it("prepares visible Session outbox resources before Provider start and cleans them after the Run", async () => {
     const order: string[] = [];
     const credentials = {
@@ -700,6 +796,81 @@ describe("SessionMessageInbox", () => {
       expect.any(AbortSignal),
     );
     inbox.stop();
+  });
+
+  it("prepares a visible collaboration Turn plan before Provider start and skips it for internal Sessions", async () => {
+    const order: string[] = [];
+    const turnPlan = {
+      prepare: vi.fn(async () => {
+        order.push("plan");
+        return { sessionDir: "/tmp/plans" };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("plan-cleanup");
+      }),
+    };
+    const credentials = {
+      prepare: vi.fn(async () => {
+        order.push("prepare");
+        return {
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: {
+            provider: "feishu" as const,
+            sessionKind: "channel" as const,
+            chatId: "oc-visible",
+          },
+        };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("cleanup");
+      }),
+    };
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async () => {
+        order.push("prompt");
+        return { runId: "run", status: "completed", output: [] };
+      }),
+    };
+    const visible = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => {
+          order.push("runtime");
+          return runtime as never;
+        }),
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      turnPlan,
+    });
+    expect((await visible.accept(delivery())).status).toBe("accepted");
+    await visible.settled();
+    expect(order).toEqual(["prepare", "plan", "runtime", "prompt", "plan-cleanup", "cleanup"]);
+    expect(turnPlan.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "feishu", runId: expect.stringMatching(/^session-message-/) }),
+    );
+    visible.stop();
+
+    const internalPlan = { prepare: vi.fn(), cleanup: vi.fn() };
+    const internal = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      turnPlan: internalPlan,
+    });
+    expect((await internal.accept(delivery({ text: "internal" }))).status).toBe("accepted");
+    await internal.settled();
+    expect(internalPlan.prepare).not.toHaveBeenCalled();
+    internal.stop();
   });
 
   it("rejects a visible callback before ACK under grant v1 and accepts the same message after v2 is restored", async () => {

@@ -5,6 +5,7 @@ import type {
   AgentSummary,
   ImBindingHandoffStatus,
   ImBindingSummary,
+  ProviderCliHandoffProgress,
   ProviderReadinessStatus,
 } from "@opentag/shared/browser";
 
@@ -34,6 +35,7 @@ export type AgentAvailability = {
     handoff: {
       state: "ready" | "action_required" | "setting_up" | "not_connected" | "unconfirmed";
       lastConfirmedAt: string | null;
+      providerCli?: ProviderCliHandoffProgress;
     };
     channel: {
       state: "connected" | "not_connected" | "unconfirmed";
@@ -54,6 +56,21 @@ export type AgentDetailView = AgentDetail & {
   availability: AgentAvailability;
   messaging: DetailEvidence<ImBindingSummary>;
 };
+
+function handoffDependency(
+  state: AgentAvailability["dependencies"]["handoff"]["state"],
+  binding: ImBindingSummary | undefined,
+  handoff: ImBindingHandoffStatus | undefined,
+): AgentAvailability["dependencies"]["handoff"] {
+  const dependency: AgentAvailability["dependencies"]["handoff"] = {
+    state,
+    lastConfirmedAt: binding?.lastRuntimeObservationAt ?? binding?.lastValidatedAt ?? null,
+  };
+  if (handoff?.bindingState === "active" && !handoff.handoffReady && handoff.providerCli) {
+    dependency.providerCli = handoff.providerCli;
+  }
+  return dependency;
+}
 
 export function projectAgentAvailability(
   agent: AgentSummary,
@@ -92,10 +109,7 @@ export function projectAgentAvailability(
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
     runtime: { provider: agent.runtimeProvider, status: providerReadiness?.status ?? null },
-    handoff: {
-      state: handoffState,
-      lastConfirmedAt: binding?.lastRuntimeObservationAt ?? binding?.lastValidatedAt ?? null,
-    },
+    handoff: handoffDependency(handoffState, binding, handoff),
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
       provider: binding?.provider ?? null,

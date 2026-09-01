@@ -1,4 +1,4 @@
-import type { AgentAdminConfig, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentAdminConfig } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
@@ -105,7 +105,7 @@ describe("AgentComputerSettings repair disclosure", () => {
 const UNBOUND_AGENT_ID = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
 const SECOND_AGENT_ID = "5c4b3a2d-1e0f-4998-8877-66554433221a";
 
-const accountComputer: WorkspaceComputerSummary = {
+const accountComputer: AccountComputerSummary = {
   computerId: COMPUTER_ID,
   displayName: "Ada's Mac",
   platform: "darwin",
@@ -114,7 +114,7 @@ const accountComputer: WorkspaceComputerSummary = {
   connectedAt: "2026-08-20T00:00:00.000Z",
   lastSeenAt: "2026-08-20T00:01:00.000Z",
   observedAt: "2026-08-20T00:01:00.000Z",
-  enrolledAt: "2026-08-19T00:00:00.000Z",
+  createdAt: "2026-08-19T00:00:00.000Z",
   agentIds: [],
 };
 
@@ -220,7 +220,8 @@ describe("An Agent with no Computer", () => {
 
     await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={onAgentChanged} />);
 
-    expect(await screen.findByText("Choose the Computer this Agent should run on")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Choose the Computer this Agent should run on" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect another Computer" })).toBeTruthy();
     // Nothing is decided for the reader while the question is open.
     expect(rebind).not.toHaveBeenCalled();
 
@@ -271,7 +272,7 @@ describe("An Agent with no Computer", () => {
      * with an Agent that never got one. Inside the setup gate that is terminal.
      */
     const redeemedAt = "2026-08-20T00:05:00.000Z";
-    const fresh: WorkspaceComputerSummary = {
+    const fresh: AccountComputerSummary = {
       ...accountComputer,
       connectionStatus: "online",
       connectedAt: "2026-08-20T00:05:01.000Z",

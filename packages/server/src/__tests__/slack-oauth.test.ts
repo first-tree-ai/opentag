@@ -65,7 +65,7 @@ async function oauthFixture() {
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingService = new ImBindingService(oauthDatabase.database, cipher, { now: () => now });
-  return { bootstrap, agent, computerId: workspaceComputer.id, cipher, imBindingService };
+  return { bootstrap, agent, computerId: computer.id, cipher, imBindingService };
 }
 
 function inspection(overrides: Partial<SlackInstallationInspection> = {}): SlackInstallationInspection {
@@ -171,6 +171,7 @@ describe("SlackConfigurationService persistence", () => {
     client.inspectInstallation.mockResolvedValue(inspection());
     const before = vi.fn().mockResolvedValue(undefined);
     const after = vi.fn().mockResolvedValue(undefined);
+    const notify = vi.spyOn(value.imBindingService, "notifyProviderCliRequirementChanged");
     const service = new SlackConfigurationService({
       api: client.api,
       database: oauthDatabase.database,
@@ -197,6 +198,7 @@ describe("SlackConfigurationService persistence", () => {
     });
     expect(before).toHaveBeenCalledTimes(1);
     expect(after).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(value.agent.id);
     expect(await service.currentBinding(value.bootstrap.userId, value.agent.id)).toEqual({
       id: result.imBindingId,
       credentialGeneration: 1,

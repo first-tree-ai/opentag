@@ -79,6 +79,7 @@ export class TurnReportOwner {
   readonly #persistence?: RuntimeDurabilityStore;
   readonly #retryPolicy: RuntimeRetryPolicy;
   readonly #scheduler: RuntimeRetryScheduler;
+  readonly #inFlight = new Set<Promise<unknown>>();
   readonly #pending = new Map<string, PendingReport>();
   readonly #records = new Map<string, DurableWorkRecord<TurnReportRequest>>();
   readonly #retryTimers = new Map<string, { cancel(): void }>();
@@ -209,11 +210,13 @@ export class TurnReportOwner {
       },
     };
     this.#pending.set(report.turnId, pending);
-    void this.#persist(pending.record)
-      .then(() => {
-        if (this.#connection.state === "registered") this.#send(pending);
-      })
-      .catch((error) => this.#handleFailure(pending, "persist", error));
+    void this.#track(
+      this.#persist(pending.record)
+        .then(() => {
+          if (this.#connection.state === "registered") this.#send(pending);
+        })
+        .catch((error) => this.#handleFailure(pending, "persist", error)),
+    );
     return promise;
   }
 
@@ -291,38 +294,49 @@ export class TurnReportOwner {
     this.#pending.clear();
   }
 
+  async settled(): Promise<void> {
+    await this.#readyPromise.catch(() => undefined);
+    while (this.#inFlight.size > 0) {
+      await Promise.allSettled([...this.#inFlight]);
+    }
+  }
+
   #onConnectionState(state: RuntimeConnectionState): void {
     if (state !== "registered" || this.#stopped) return;
-    void this.#readyPromise.then(() => {
-      for (const pending of this.#pending.values()) {
-        this.#clearRetry(pending);
-        if (pending.sending) pending.resendRequested = true;
-        else this.#send(pending);
-      }
-    });
+    void this.#track(
+      this.#readyPromise.then(() => {
+        for (const pending of this.#pending.values()) {
+          this.#clearRetry(pending);
+          if (pending.sending) pending.resendRequested = true;
+          else this.#send(pending);
+        }
+      }),
+    );
   }
 
   #send(pending: PendingReport): void {
     if (pending.sending || this.#stopped || pending.serverStatus) return;
     this.#clearRetry(pending);
     pending.sending = true;
-    void this.#transition(pending, "running")
-      .then(() => this.#connection.send(pending.report, { priority: "report" }))
-      .catch((error) => this.#handleFailure(pending, "transport", error))
-      .finally(() => {
-        pending.sending = false;
-        if (
-          pending.resendRequested &&
-          this.#pending.get(pending.report.turnId) === pending &&
-          this.#connection.state === "registered"
-        ) {
-          pending.resendRequested = false;
-          this.#send(pending);
-        } else if (this.#pending.get(pending.report.turnId) === pending && !pending.serverStatus) {
-          const record = this.#records.get(pending.report.turnId);
-          if (record) this.#scheduleRetry(pending, record);
-        }
-      });
+    void this.#track(
+      this.#transition(pending, "running")
+        .then(() => this.#connection.send(pending.report, { priority: "report" }))
+        .catch((error) => this.#handleFailure(pending, "transport", error))
+        .finally(() => {
+          pending.sending = false;
+          if (
+            pending.resendRequested &&
+            this.#pending.get(pending.report.turnId) === pending &&
+            this.#connection.state === "registered"
+          ) {
+            pending.resendRequested = false;
+            this.#send(pending);
+          } else if (this.#pending.get(pending.report.turnId) === pending && !pending.serverStatus) {
+            const record = this.#records.get(pending.report.turnId);
+            if (record) this.#scheduleRetry(pending, record);
+          }
+        }),
+    );
   }
 
   #scheduleRetry(pending: PendingReport, record: DurableWorkRecord<TurnReportRequest>): void {
@@ -334,11 +348,13 @@ export class TurnReportOwner {
       const current = this.#records.get(record.key);
       if (!current || current.status === "succeeded" || pending.serverStatus) return;
       if (current.status === "retryable") {
-        void this.#transition(pending, "accepted")
-          .then(() => this.#send(pending))
-          .catch(() => undefined);
+        void this.#track(
+          this.#transition(pending, "accepted")
+            .then(() => this.#send(pending))
+            .catch(() => undefined),
+        );
       } else {
-        void this.#handleFailure(pending, "transport", new Error("Turn Report acknowledgement timed out"));
+        void this.#track(this.#handleFailure(pending, "transport", new Error("Turn Report acknowledgement timed out")));
       }
     });
     this.#retryTimers.set(record.key, timer);
@@ -454,6 +470,15 @@ export class TurnReportOwner {
   async #persist(record: DurableWorkRecord<TurnReportRequest>): Promise<void> {
     this.#records.set(record.key, record);
     await this.#persistence?.write(record);
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#inFlight.add(operation);
+    void operation.then(
+      () => this.#inFlight.delete(operation),
+      () => this.#inFlight.delete(operation),
+    );
+    return operation;
   }
 
   #emitFailure(failure: DurableFailure): void {

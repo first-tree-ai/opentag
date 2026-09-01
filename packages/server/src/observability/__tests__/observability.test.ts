@@ -666,7 +666,7 @@ describe("background and WebSocket tracing", () => {
       database: database as never,
       inbox,
       instanceId: randomUUID(),
-      imBindings: {} as never,
+      imBindings: { notifyProviderCliRequirementChanged: vi.fn().mockResolvedValue(undefined) } as never,
       createAdapter: () =>
         ({
           channel: {

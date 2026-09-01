@@ -1012,9 +1012,7 @@ describe("Agent persistence and authorization", () => {
       });
       expect(created).toMatchObject({ computerId: null, revision: 1, status: "active" });
       const [stored] = await value.database.select().from(agents).where(eq(agents.id, created.id));
-      // Both Computer columns clear together, which is what the pair constraint holds the row to.
       expect(stored?.computerId).toBeNull();
-      expect(stored?.workspaceComputerId).toBeNull();
       // The Agent is listable and readable while unbound; only its Computer is absent.
       expect((await value.service.listForAccount(value.bootstrap.userId)).agents).toEqual([
         expect.objectContaining({ id: created.id, computer: null }),
@@ -1025,7 +1023,7 @@ describe("Agent persistence and authorization", () => {
       });
       await expect(value.service.getConfigById(value.bootstrap.userId, created.id)).resolves.toEqual(created);
 
-      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.workspaceId);
+      const computer = await createComputer(value.database, value.bootstrap.userId);
       const bound = await value.service.rebindById(value.bootstrap.userId, created.id, computer.id);
       expect(bound).toMatchObject({ computerId: computer.id, revision: 2 });
       await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
@@ -1044,8 +1042,8 @@ describe("Agent persistence and authorization", () => {
         name: "code-reviewer",
         runtimeProvider: "codex",
       });
-      const other = await createUser(value.database, value.bootstrap.workspaceId, "other@example.com");
-      const foreign = await createComputer(value.database, other.id, value.bootstrap.workspaceId);
+      const other = await createUser(value.database, "other@example.com");
+      const foreign = await createComputer(value.database, other.id);
       await expect(value.service.rebindById(value.bootstrap.userId, created.id, foreign.id)).rejects.toMatchObject({
         code: "COMPUTER_NOT_FOUND",
       });

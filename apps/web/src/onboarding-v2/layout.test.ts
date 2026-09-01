@@ -49,6 +49,12 @@ describe("onboarding flow layout", () => {
     });
   });
 
+  it("distinguishes selected choices from neutral hover and disabled states", () => {
+    expect(declarationValue('.otv2-choice[aria-pressed="true"]', "background")).toBe("var(--brand-soft)");
+    expect(declarationValue(".otv2-choice:hover:not(:disabled)", "background")).toBe("var(--color-kumo-fill-hover)");
+    expect(declarationValue(".otv2-choice:disabled", "background")).toBe("var(--color-kumo-recessed)");
+  });
+
   /*
    * The reserved heights are declarations again: this app compiles no utilities of its own, so a
    * bracketed class would be inert. They are still measurements the flow depends on — each is the

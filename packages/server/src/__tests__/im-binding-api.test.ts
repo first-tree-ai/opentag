@@ -120,7 +120,11 @@ async function persistedFixture() {
     computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
-  const service = new RealImBindingService(unitDatabase.database, cipher, { now: () => fixedNow });
+  const service = new RealImBindingService(unitDatabase.database, cipher, {
+    now: () => fixedNow,
+    imCliReadiness: () => "ready",
+    credentialExecutionReadiness: () => ({ status: "ready" }),
+  });
   return { bootstrap, agent, cipher, service, computer };
 }
 
@@ -188,6 +192,7 @@ function services() {
       ready: false,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "install",
+      credentialExecutionReadiness: "unconfirmed",
       credentialGeneration: 1,
       credentialStatus: "valid",
       requiredCapabilities: [],
@@ -668,6 +673,14 @@ describe("ImBindingService persistence", () => {
       status: "succeeded",
       outboxContext: { provider: "slack", sessionKind: "channel", channelId: "C-credential" },
     });
+    const providerCliUnready = new RealImBindingService(unitDatabase.database, value.cipher, {
+      now: () => fixedNow,
+      imCliReadiness: () => "checking",
+      credentialExecutionReadiness: () => ({ status: "ready" }),
+    });
+    await expect(
+      providerCliUnready.issueRuntimeCredentialGrant({ ...request, requestId: crypto.randomUUID() }, auth),
+    ).resolves.toMatchObject({ status: "rejected", code: "provider_cli_unready" });
     await expect(
       value.service.issueRuntimeCredentialGrant({ ...request, placementGeneration: 2 }, auth),
     ).resolves.toMatchObject({ status: "rejected", code: "placement_stale" });
@@ -938,5 +951,110 @@ describe("ImBindingService persistence", () => {
     const installations = await unitDatabase.database.select().from(slackInstallations);
     expect(installations[0]?.status).toBe("disabled");
     expect(installations[0]?.encryptedCredential).toBeNull();
+  });
+
+  it("notifies Provider CLI reconcile only after an owned transaction commits", async () => {
+    const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
+      displayName: "Admin",
+      email: `admin-${crypto.randomUUID()}@example.com`,
+    });
+    const [computer] = await unitDatabase.database
+      .insert(computers)
+      .values({
+        ownerAccountId: bootstrap.userId,
+        currentInstallationId: crypto.randomUUID(),
+        displayName: "workstation",
+        platform: "linux",
+        arch: "x64",
+        clientVersion: "0.0.1",
+      })
+      .returning();
+    if (!computer) throw new Error("Computer fixture was not created");
+    const agent = await new AgentService(unitDatabase.database).createForAccount(bootstrap.userId, {
+      name: "assistant",
+      displayName: "Assistant",
+      runtimeProvider: "codex",
+      computerId: computer.id,
+    });
+    const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
+    const changed = vi.fn();
+    const service = new RealImBindingService(unitDatabase.database, cipher, {
+      now: () => fixedNow,
+      onActiveBindingChanged: changed,
+    });
+    const bindingId = await unitDatabase.database.transaction(async (transaction) => {
+      const id = await service.activateFeishu(feishuInput(agent.id), transaction);
+      expect(changed).not.toHaveBeenCalled();
+      return id;
+    });
+    expect(changed).not.toHaveBeenCalled();
+    await service.notifyProviderCliRequirementChanged(agent.id);
+    expect(changed).toHaveBeenCalledWith({
+      agentId: agent.id,
+      computerId: computer.id,
+    });
+    changed.mockClear();
+    await service.disable(bootstrap.userId, bindingId);
+    expect(changed).toHaveBeenCalledWith({
+      agentId: agent.id,
+      computerId: computer.id,
+    });
+    const slack = await service.activateSlack(slackInput(agent.id), "B1");
+    changed.mockClear();
+    await expect(service.requireReauthorization(slack.imBindingId, 1, "SLACK_TOKEN_REVOKED")).resolves.toBe(true);
+    expect(changed).toHaveBeenCalledWith({
+      agentId: agent.id,
+      computerId: computer.id,
+    });
+  });
+
+  it("fails closed when Provider CLI observation callbacks are omitted", async () => {
+    const value = await persistedFixture();
+    const closed = new RealImBindingService(unitDatabase.database, value.cipher, { now: () => fixedNow });
+    const bindingId = await value.service.activateFeishu(feishuInput(value.agent.id));
+    await unitDatabase.database
+      .update(imBindings)
+      .set({
+        connectionOwnerInstanceId: crypto.randomUUID(),
+        observedAt: fixedNow,
+        observedConnectedAt: fixedNow,
+        connectionLeaseExpiresAt: new Date(fixedNow.getTime() + 60_000),
+      })
+      .where(eq(imBindings.id, bindingId));
+    await expect(closed.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+      bindingState: "active",
+      handoffReady: false,
+      providerCli: { phase: "preparing_cli" },
+    });
+    await expect(closed.diagnostics(value.bootstrap.userId, bindingId)).resolves.toMatchObject({
+      providerCliReadiness: "checking",
+      credentialExecutionReadiness: "unconfirmed",
+      ready: false,
+    });
+  });
+
+  it("refuses a validation grant when the Computer installation no longer matches", async () => {
+    const value = await persistedFixture();
+    const bindingId = await value.service.activateFeishu(feishuInput(value.agent.id));
+    await expect(
+      value.service.issueIntegrationCliValidationGrant({
+        agentId: value.agent.id,
+        computerId: value.computer.id,
+        installationId: crypto.randomUUID(),
+        credentialGeneration: 1,
+        integrationId: bindingId,
+        provider: "feishu",
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      value.service.issueIntegrationCliValidationGrant({
+        agentId: value.agent.id,
+        computerId: value.computer.id,
+        installationId: value.computer.currentInstallationId,
+        credentialGeneration: 1,
+        integrationId: bindingId,
+        provider: "feishu",
+      }),
+    ).resolves.toMatchObject({ grant: { provider: "feishu" } });
   });
 });

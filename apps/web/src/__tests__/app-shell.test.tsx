@@ -62,6 +62,9 @@ describe("OpenTag Web App Shell", () => {
     const accountAgentsNavigation = screen.getByRole("navigation", { name: "Account Agents" });
     const backToAgents = within(accountAgentsNavigation).getByRole("link", { name: "Agents" });
     expect(backToAgents.getAttribute("href")).toBe("/agents");
+    const mobileAgentHome = document.querySelector('[data-ui="agent-mobile-home"]');
+    expect(mobileAgentHome?.textContent).toContain("Reviewer");
+    expect(mobileAgentHome?.getAttribute("href")).toBe(`/agents/${agentId}`);
     const switcher = screen.getByRole("button", { name: "Switch Agent, current Agent Reviewer" });
     expect(switcher.closest('[data-sidebar="header"]')).toBeTruthy();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Agent" });

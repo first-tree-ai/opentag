@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { registerDaemonEnsureServiceCommand } from "./ensure-service.js";
 import { registerDaemonInstallCommand } from "./install.js";
+import { registerDaemonRefreshServiceCommand } from "./refresh-service.js";
 import { registerDaemonRestartCommand } from "./restart.js";
 import { registerDaemonServiceRunCommand } from "./service-run.js";
 import { registerDaemonStartCommand } from "./start.js";
@@ -12,6 +13,7 @@ export function registerDaemonCommand(program: Command): void {
   const daemon = program.command("daemon").description("Manage the OpenTag daemon service");
   registerDaemonEnsureServiceCommand(daemon);
   registerDaemonInstallCommand(daemon);
+  registerDaemonRefreshServiceCommand(daemon);
   registerDaemonStartCommand(daemon);
   registerDaemonStopCommand(daemon);
   registerDaemonRestartCommand(daemon);

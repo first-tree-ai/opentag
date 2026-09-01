@@ -1017,6 +1017,11 @@ describe("ImBindingService persistence", () => {
       arch: "x64",
       clientVersion: "0.0.1",
     });
+    await unitDatabase.database.insert(computerCredentials).values({
+      computerId: workspaceComputer.id,
+      secretHash: `im-binding-reconcile-${computer.id}`,
+      issuedByUserId: bootstrap.userId,
+    });
     const agent = await new AgentService(unitDatabase.database).createForAccount(bootstrap.userId, {
       name: "assistant",
       displayName: "Assistant",

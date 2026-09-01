@@ -1,22 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { messagingProviderLabel } from "./provider-label.js";
+import { overwriteGetLocale } from "../paraglide/runtime.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel } from "./provider-label.js";
+
+/** Mirrors the helper in i18n/format.test.ts: run one assertion under a locale, then restore. */
+function withLocale(locale: "en" | "zh", callback: () => void): void {
+  overwriteGetLocale(() => locale);
+  try {
+    callback();
+  } finally {
+    overwriteGetLocale(() => "en");
+  }
+}
 
 describe("messagingProviderLabel", () => {
   it("names the channels OpenTag supports today", () => {
-    expect(messagingProviderLabel("feishu")).toBe("Feishu");
+    expect(messagingProviderLabel("feishu")).toBe("Lark");
     expect(messagingProviderLabel("slack")).toBe("Slack");
   });
 
   /*
-   * The Feishu/Lark brand switch is not something a first connect can resolve, so a label that
-   * named both would promise a domain we cannot mint yet. This is the assertion that fails if an
-   * apposition ever creeps back into the helper.
+   * A single connect code serves both brands — the vendor detects the tenant during authorization —
+   * so the label names the brand this reader knows rather than hedging between them. The earlier
+   * version of this test asserted the opposite, that the label must never say Lark, on the premise
+   * that a Lark tenant could not authorize a Feishu-domain code. Testing against a real Lark tenant
+   * disproved that premise; this asserts what replaced it.
    */
-  it("never names a brand the connect flow cannot deliver", () => {
-    for (const provider of ["feishu", "slack"] as const) {
-      expect(messagingProviderLabel(provider)).not.toMatch(/also called|aka|\(/i);
+  it("names the brand the reader knows, in their locale", () => {
+    withLocale("en", () => {
+      expect(messagingProviderLabel("feishu")).toBe("Lark");
+      expect(messagingProviderAlternateBrand()).toBe("Feishu");
+    });
+    withLocale("zh", () => {
+      expect(messagingProviderLabel("feishu")).toBe("飞书");
+      expect(messagingProviderAlternateBrand()).toBe("Lark");
+    });
+  });
+
+  /** Slack has one name everywhere, so locale must not touch it. */
+  it("leaves a single-brand channel alone in every locale", () => {
+    for (const locale of ["en", "zh"] as const) {
+      withLocale(locale, () => expect(messagingProviderLabel("slack")).toBe("Slack"));
     }
-    expect(messagingProviderLabel("feishu")).not.toMatch(/Lark/i);
   });
 
   it("refuses to label a provider it has never heard of", () => {

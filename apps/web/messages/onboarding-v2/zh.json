@@ -94,6 +94,7 @@
   "onboarding_v2_messaging_confirming": "已连接。正在检查 Agent 是否可访问…",
   "onboarding_v2_messaging_description": "选择团队已经使用的应用。",
   "onboarding_v2_messaging_failed": "操作未成功。请重试以获取新二维码。",
+  "onboarding_v2_messaging_feishu_description": "同时支持 {provider}",
   "onboarding_v2_messaging_feishu_preparing": "OpenTag 正在准备安全的 {provider} 授权。",
   "onboarding_v2_messaging_generating": "正在生成二维码…",
   "onboarding_v2_messaging_lark_intro": "使用 {provider} 扫描此码。最后一步会在 {provider} 中完成。",

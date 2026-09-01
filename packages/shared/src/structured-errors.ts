@@ -374,8 +374,9 @@ function inlineCredentialValueEnd(
   enclosingQuote: CredentialQuote | undefined,
 ): { end: number; replacement: string } {
   const openingQuote = value[from];
-  if (openingQuote === "\\" && isCredentialQuote(value[from + 1])) {
-    return escapedQuotedCredentialValueEnd(value, from, value[from + 1]);
+  const escapedQuote = value[from + 1];
+  if (openingQuote === "\\" && isCredentialQuote(escapedQuote)) {
+    return escapedQuotedCredentialValueEnd(value, from, escapedQuote);
   }
   if (isCredentialQuote(openingQuote)) {
     const end = inlineQuotedCredentialValueEnd(value, from, openingQuote);

@@ -125,6 +125,10 @@ describe("Tasks view", () => {
     expect(screen.queryByText("Read-only debug view")).toBeNull();
     expect(screen.queryByText("Demo data")).toBeNull();
     expect(screen.queryByRole("button", { name: "Edit title" })).toBeNull();
+    const toolbar = screen.getByRole("form", { name: "Filter Tasks" });
+    expect(toolbar.outerHTML).toContain("@min-[48rem]/content:flex-row");
+    expect(toolbar.outerHTML).toContain("@min-[36rem]/content:w-44");
+    expect(toolbar.outerHTML).not.toContain("/workspace");
 
     fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
     const failedOption = await screen.findByRole("option", { name: "Failed" });

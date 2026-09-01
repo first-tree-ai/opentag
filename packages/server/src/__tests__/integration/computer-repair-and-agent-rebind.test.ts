@@ -226,6 +226,123 @@ async function pendingDelivery(
 }
 
 describe("Computer repair and Agent rebind boundaries", () => {
+  it("serializes Computer removal before a queued repair-code redemption", async () => {
+    const value = await fixture();
+    const blocker = createDatabaseClient(databaseUrl, { max: 1 });
+    const observer = createDatabaseClient(databaseUrl, { max: 1 });
+    const computerLocked = deferred<void>();
+    const releaseComputer = deferred<void>();
+    let computerBarrier: Promise<unknown> | undefined;
+    let removal: Promise<unknown> | undefined;
+    let repair: Promise<unknown> | undefined;
+    try {
+      const computer = await enroll(value);
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+        mode: "repair",
+        targetComputerId: computer.workspaceComputerId,
+      });
+      const repairedInstallationId = crypto.randomUUID();
+      const computerService = new ComputerService(value.database, {
+        getActiveUserById: async () => {
+          throw new Error("Computer removal does not resolve an active user");
+        },
+      });
+
+      computerBarrier = blocker.sql.begin(async (transaction) => {
+        await transaction`
+          select id
+          from account_computers
+          where id = ${computer.workspaceComputerId}
+          for update
+        `;
+        computerLocked.resolve();
+        await releaseComputer.promise;
+      });
+      await computerLocked.promise;
+
+      removal = computerService.removeFromAccount(value.bootstrap.userId, computer.workspaceComputerId);
+      await waitUntil(async () => {
+        const result = await observer.sql<{ waiting: boolean }[]>`
+          select exists (
+            select 1
+            from pg_stat_activity
+            where datname = current_database()
+              and wait_event_type = 'Lock'
+              and wait_event = 'transactionid'
+              and query like '%from "account_computers"%for update%'
+              and query not like '%"workspace_computers"%'
+          ) as waiting
+        `;
+        return result[0]?.waiting ?? false;
+      });
+
+      repair = value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, repairedInstallationId));
+      await waitUntil(async () => {
+        const result = await observer.sql<{ waiting: boolean }[]>`
+          select exists (
+            select 1
+            from pg_stat_activity
+            where datname = current_database()
+              and wait_event_type = 'Lock'
+              and query like '%from "account_computers"%inner join "workspace_computers"%for update%'
+          ) as waiting
+        `;
+        return result[0]?.waiting ?? false;
+      });
+
+      releaseComputer.resolve();
+      await computerBarrier;
+      const [removalResult, repairResult] = await Promise.allSettled([removal, repair]);
+      expect(removalResult.status).toBe("fulfilled");
+      expect(repairResult).toMatchObject({
+        status: "rejected",
+        reason: { code: "AUTH_INVALID_CODE", statusCode: 401 },
+      });
+      expect(
+        (
+          await value.database
+            .select()
+            .from(accountComputers)
+            .where(eq(accountComputers.id, computer.workspaceComputerId))
+        )[0],
+      ).toMatchObject({
+        currentInstallationId: computer.computerId,
+        currentInstanceId: null,
+        connectedAt: null,
+      });
+      expect(
+        (
+          await value.database
+            .select()
+            .from(computerConnectCodes)
+            .where(eq(computerConnectCodes.id, issued.connectCodeId))
+        )[0],
+      ).toMatchObject({ consumedAt: null });
+      expect(
+        (
+          await value.database
+            .select()
+            .from(computerConnectCodes)
+            .where(eq(computerConnectCodes.id, issued.connectCodeId))
+        )[0]?.revokedAt,
+      ).not.toBeNull();
+      expect(
+        await value.database
+          .select()
+          .from(computerCredentials)
+          .where(eq(computerCredentials.computerId, computer.workspaceComputerId)),
+      ).toSatisfy((credentials: (typeof computerCredentials.$inferSelect)[]) =>
+        credentials.every(({ revokedAt }) => revokedAt !== null),
+      );
+    } finally {
+      releaseComputer.resolve();
+      await Promise.allSettled(
+        [computerBarrier, removal, repair].filter((promise): promise is Promise<unknown> => promise !== undefined),
+      );
+      await Promise.all([value.sql.end(), blocker.sql.end(), observer.sql.end()]);
+    }
+  });
+
   it.each(["create", "rebind"] as const)(
     "rejects an Agent %s that was waiting while its target Computer was removed",
     async (operation) => {

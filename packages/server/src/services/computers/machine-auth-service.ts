@@ -81,6 +81,7 @@ export interface MachineAuthServiceOptions {
 }
 
 type ConnectCodeRow = typeof computerConnectCodes.$inferSelect;
+type LockedRepairTarget = NonNullable<Awaited<ReturnType<typeof lockSchemaWorkspaceComputer>>>;
 
 export class MachineAuthService implements ComputerAuthVerifier, MachineConnectCodeIssuer {
   readonly #database: DatabaseClient;
@@ -163,27 +164,42 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     const now = this.#now();
     const tokenHash = hashSecret(input.code);
     const result = await this.#database.transaction(async (transaction) => {
-      const [connectCode] = await transaction
+      const [stagedConnectCode] = await transaction
         .select()
         .from(computerConnectCodes)
         .where(eq(computerConnectCodes.tokenHash, tokenHash))
+        .limit(1);
+      const staged = requireRedeemableConnectCode(stagedConnectCode, now);
+      await lockActiveAccount(transaction, staged.issuedByAccountId);
+      // Removal owns the target Computer before it revokes repair codes. Acquire the same rows in
+      // that order, then re-read the code under lock so a queued redemption sees removal's commit
+      // instead of forming Computer -> code / code -> Computer deadlock edges.
+      const repairTarget = staged.mode === "repair" ? await this.#lockRepairTarget(transaction, staged) : undefined;
+      const [lockedConnectCode] = await transaction
+        .select()
+        .from(computerConnectCodes)
+        .where(and(eq(computerConnectCodes.id, staged.id), eq(computerConnectCodes.tokenHash, tokenHash)))
         .limit(1)
         .for("update");
-      if (!connectCode || connectCode.revokedAt) {
+      const connectCode = requireRedeemableConnectCode(lockedConnectCode, now);
+      if (
+        connectCode.issuedByAccountId !== staged.issuedByAccountId ||
+        connectCode.mode !== staged.mode ||
+        connectCode.targetComputerId !== staged.targetComputerId ||
+        connectCode.workspaceId !== staged.workspaceId
+      ) {
         throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
       }
-      if (connectCode.consumedAt) {
-        throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
-      }
-      if (connectCode.expiresAt <= now) {
-        throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
-      }
-      await lockActiveAccount(transaction, connectCode.issuedByAccountId);
 
-      const enrollment =
-        connectCode.mode === "repair"
-          ? await this.#repairComputer(transaction, connectCode, input, now)
-          : await this.#createComputer(transaction, connectCode, input, now);
+      let enrollment: { id: string };
+      if (connectCode.mode === "repair") {
+        if (!repairTarget || connectCode.targetComputerId !== repairTarget.id) {
+          throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+        }
+        enrollment = await this.#repairComputer(transaction, connectCode, repairTarget, input, now);
+      } else {
+        enrollment = await this.#createComputer(transaction, connectCode, input, now);
+      }
       const credential = await rotateComputerCredentials(
         transaction,
         enrollment.id,
@@ -337,20 +353,10 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   async #repairComputer(
     transaction: DatabaseTransaction,
     connectCode: ConnectCodeRow,
+    target: LockedRepairTarget,
     input: MachineEnrollmentInput,
     now: Date,
   ): Promise<{ id: string }> {
-    if (!connectCode.targetComputerId) {
-      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-    }
-    const target = await lockSchemaWorkspaceComputer(transaction, connectCode.targetComputerId);
-    if (
-      !target ||
-      target.ownerAccountId !== connectCode.issuedByAccountId ||
-      target.workspaceId !== connectCode.workspaceId
-    ) {
-      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-    }
     await transaction
       .insert(computers)
       .values({ id: input.computerId, createdAt: now })
@@ -377,6 +383,21 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       throw new Error("The account-owned Computer does not match the schema-required fill");
     }
     return { id: target.id };
+  }
+
+  async #lockRepairTarget(transaction: DatabaseTransaction, connectCode: ConnectCodeRow): Promise<LockedRepairTarget> {
+    if (!connectCode.targetComputerId) {
+      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    }
+    const target = await lockSchemaWorkspaceComputer(transaction, connectCode.targetComputerId);
+    if (
+      !target ||
+      target.ownerAccountId !== connectCode.issuedByAccountId ||
+      target.workspaceId !== connectCode.workspaceId
+    ) {
+      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    }
+    return target;
   }
 }
 
@@ -409,7 +430,9 @@ async function lockActiveAccount(transaction: DatabaseTransaction, accountId: st
     .from(users)
     .where(eq(users.id, accountId))
     .limit(1)
-    .for("update");
+    // Suspension only changes non-key columns, so NO KEY UPDATE still serializes that transition
+    // while remaining compatible with the KEY SHARE lock taken by revoked-by foreign keys.
+    .for("no key update");
   if (!user || user.suspendedAt) {
     throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
   }
@@ -432,6 +455,19 @@ function matchesSecretHash(expectedHash: string, secret: string): boolean {
   const expected = Buffer.from(expectedHash, "hex");
   const actual = Buffer.from(hashSecret(secret), "hex");
   return expected.byteLength === actual.byteLength && timingSafeEqual(expected, actual);
+}
+
+function requireRedeemableConnectCode(connectCode: ConnectCodeRow | undefined, now: Date): ConnectCodeRow {
+  if (!connectCode || connectCode.revokedAt) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  if (connectCode.consumedAt) {
+    throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
+  }
+  if (connectCode.expiresAt <= now) {
+    throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
+  }
+  return connectCode;
 }
 
 export function buildComputerConnectCommand(options: {

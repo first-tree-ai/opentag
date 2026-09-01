@@ -271,6 +271,13 @@ describe("structured error redaction", () => {
     expect(semicolonList).toBe("ctx: a=1; authorization=[REDACTED]; b=2");
     expect(semicolonList).not.toContain("tok_live_SECRET");
     expect(semicolonList).toContain("b=2");
+
+    const escaped = String.raw`{\"cookie\":\"session=first-secret; admin=second-secret\",\"other\":\"keep\"}`;
+    const escapedRedacted = redactForLog(escaped);
+    expect(escapedRedacted).toBe(String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`);
+    expect(escapedRedacted).not.toContain("first-secret");
+    expect(escapedRedacted).not.toContain("second-secret");
+    expect(escapedRedacted).toContain(String.raw`\"other\":\"keep\"`);
   });
 
   it("scrubs and caps a bare string, which is how log messages cross the boundary", () => {

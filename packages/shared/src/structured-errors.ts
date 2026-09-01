@@ -152,7 +152,7 @@ function isSensitiveKey(key: string): boolean {
 }
 
 const CREDENTIAL_HEADER_PATTERN =
-  /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*["']?[ \t]*[:=][ \t]*/giu;
+  /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*\\?["']?[ \t]*[:=][ \t]*/giu;
 
 function lineBreakStart(value: string, from: number): number {
   const carriageReturn = value.indexOf("\r", from);
@@ -259,6 +259,57 @@ function inlineQuotedCredentialValueEnd(value: string, from: number, quote: Cred
   return value.length;
 }
 
+function escapedCredentialClosingDelimiterEnd(
+  value: string,
+  position: number,
+  quote: CredentialQuote,
+): number | undefined {
+  if (value[position] !== "\\" || value[position + 1] !== quote) return undefined;
+  let boundary = position + 2;
+  while (value[boundary] === " " || value[boundary] === "\t") boundary += 1;
+  if (
+    boundary === value.length ||
+    ",}]".includes(value[boundary] ?? "") ||
+    value[boundary] === "\r" ||
+    value[boundary] === "\n"
+  ) {
+    return position + 2;
+  }
+  return undefined;
+}
+
+function escapedQuotedCredentialValueEnd(
+  value: string,
+  from: number,
+  quote: CredentialQuote,
+): { end: number; replacement: string } {
+  const openingDelimiter = `\\${quote}`;
+  for (let cursor = from + openingDelimiter.length; cursor < value.length; cursor += 1) {
+    const character = value[cursor];
+    if (character === "\\") {
+      if (escapedCredentialClosingDelimiterEnd(value, cursor, quote) !== undefined) {
+        return {
+          end: cursor + 2,
+          replacement: `${openingDelimiter}${REDACTED}${openingDelimiter}`,
+        };
+      }
+      cursor += 1;
+      continue;
+    }
+    if (character === quote) {
+      return {
+        end: cursor + 1,
+        replacement: `${openingDelimiter}${REDACTED}${openingDelimiter}`,
+      };
+    }
+    if (character === "\r" || character === "\n") break;
+  }
+  return {
+    end: value.length,
+    replacement: `${openingDelimiter}${REDACTED}${openingDelimiter}`,
+  };
+}
+
 function enclosingQuotedCredentialValueEnd(value: string, from: number, quote: CredentialQuote): number {
   for (let cursor = from; cursor < value.length; cursor += 1) {
     const character = value[cursor];
@@ -323,6 +374,9 @@ function inlineCredentialValueEnd(
   enclosingQuote: CredentialQuote | undefined,
 ): { end: number; replacement: string } {
   const openingQuote = value[from];
+  if (openingQuote === "\\" && isCredentialQuote(value[from + 1])) {
+    return escapedQuotedCredentialValueEnd(value, from, value[from + 1]);
+  }
   if (isCredentialQuote(openingQuote)) {
     const end = inlineQuotedCredentialValueEnd(value, from, openingQuote);
     return { end, replacement: `${openingQuote}${REDACTED}${openingQuote}` };

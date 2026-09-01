@@ -133,6 +133,21 @@ describe("Client logger", () => {
     expect(record.message).toContain("X-Safe: ok");
   });
 
+  it("scrubs literal-backslash escaped serialized credentials at the emitted NDJSON boundary", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+    const message = String.raw`{\"cookie\":\"session=first-secret; admin=second-secret\",\"other\":\"keep\"}`;
+    createLogger("boundary").error({}, message);
+
+    const raw = await readFile(join(directory, "client.log"), "utf8");
+    const record = JSON.parse(raw.trim()) as { message: string };
+    expect(record.message).toBe(String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`);
+    expect(raw).not.toContain("first-secret");
+    expect(raw).not.toContain("second-secret");
+    expect(record.message).toContain(String.raw`\"other\":\"keep\"`);
+  });
+
   it("treats repeated configuration as a no-op and rejects another directory", async () => {
     const first = await temporaryDirectory();
     const second = await temporaryDirectory();

@@ -9,6 +9,11 @@ authorized Turn receives OpenTag-projected credentials.
 
 OpenTag owns inbound IM routing, Integration credentials, temporary Client credential projection, and provider-native inbound references. It does not expose a message send, reply, Reaction, or upload API.
 
+An active Feishu/Lark or Slack binding is the requirement signal. The daemon may repair only the corresponding
+OpenTag-managed artifact and validates that exact CLI with the real bound credential before reporting it ready; it never
+replaces an external installation or foreign shim. `opentag doctor` and the portable installer only report static
+account-global installation state. They do not install, repair, validate credentials, or infer login/subscription state.
+
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent
 sources that file and calls the official `lark-cli` or `slack api` command directly. The file is removed when the Turn

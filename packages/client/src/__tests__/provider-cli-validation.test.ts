@@ -1,9 +1,8 @@
-import { chmod, mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  classifyLarkAuthStatus,
   classifySlackAuthTest,
   deriveProviderCliValidationRequestKey,
   exchangeFeishuTenantToken,
@@ -11,6 +10,8 @@ import {
   FeishuTokenExchangeError,
   ProviderCliValidationRunner,
 } from "../index.js";
+import { classifyLarkBotInfo, classifyLarkWhoami } from "../runtime/provider-cli/validation-classify.js";
+import { validateFeishuBotIdentity } from "../runtime/provider-cli/validation-runner.js";
 
 const slackIdentity = { provider: "slack" as const, teamId: "T1", botUserId: "U1", botId: "B1" };
 const feishuIdentity = {
@@ -25,6 +26,16 @@ const feishuGrant = {
   appSecret: "secret",
   teamBrand: "feishu" as const,
 };
+const feishuWhoami = {
+  profile: "external",
+  appId: "cli_app",
+  brand: "feishu",
+  defaultAs: "bot",
+  identity: "bot",
+  identitySource: "flag",
+  available: true,
+  tokenStatus: "ready",
+};
 
 const fence = {
   requestId: "11111111-1111-4111-8111-111111111111",
@@ -33,6 +44,19 @@ const fence = {
   integrationId: "33333333-3333-4333-8333-333333333333",
   credentialGeneration: 1,
 };
+const feishuFence = { ...fence, provider: "feishu" as const };
+
+function feishuValidationRequest() {
+  return {
+    expectedFingerprint: "v1:test",
+    expectedIdentity: feishuIdentity,
+    expiresAt: new Date(Date.now() + 15_000).toISOString(),
+    grant: feishuGrant,
+    requestId: fence.requestId,
+    targetPath: "/bin/true",
+    version: "1.0.92",
+  };
+}
 
 async function fakeCli(home: string, script: string): Promise<string> {
   const path = join(home, "cli");
@@ -59,34 +83,42 @@ describe("provider CLI validation classification", () => {
     expect(classifySlackAuthTest("not-json", slackIdentity)).toEqual({ status: "needs_attention" });
   });
 
-  it("requires an explicit Lark brand and fails closed on missing brand or unknown schema", () => {
-    expect(
-      classifyLarkAuthStatus(
-        {
-          identity: { app_id: "cli_app", brand: "feishu", bot_open_id: "ou_bot" },
-          identities: { bot: { available: true, verified: true, open_id: "ou_bot" } },
-          _notice: { update: true },
-        },
-        feishuIdentity,
-      ),
-    ).toEqual({ status: "ready" });
-    expect(
-      classifyLarkAuthStatus(
-        {
-          identity: { app_id: "cli_app", bot_open_id: "ou_bot" },
-          identities: { bot: { available: true, verified: true, open_id: "ou_bot" } },
-        },
-        feishuIdentity,
-      ),
-    ).toEqual({ status: "needs_attention" });
-    expect(classifyLarkAuthStatus("not-json", feishuIdentity)).toEqual({ status: "needs_attention" });
-    expect(classifyLarkAuthStatus({ error: "rate_limited" }, feishuIdentity)).toEqual({
+  it("requires whoami to report the expected bot app, brand, availability, and ready token", () => {
+    expect(classifyLarkWhoami(feishuWhoami, feishuIdentity)).toEqual({ status: "ready" });
+    expect(classifyLarkWhoami({ ...feishuWhoami, appId: "cli_other" }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+      reason: "identity_mismatch",
+    });
+    expect(classifyLarkWhoami({ ...feishuWhoami, brand: "lark" }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+      reason: "identity_mismatch",
+    });
+    expect(classifyLarkWhoami({ ...feishuWhoami, available: false, tokenStatus: "missing" }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+      reason: "credential_rejected",
+    });
+    expect(classifyLarkWhoami("not-json", feishuIdentity)).toEqual({ status: "needs_attention" });
+    expect(classifyLarkWhoami({ error: "rate_limited" }, feishuIdentity)).toEqual({
       status: "retrying",
       reason: "rate_limited",
     });
-    expect(classifyLarkAuthStatus({ error: "internal_error" }, feishuIdentity)).toEqual({
+    expect(classifyLarkWhoami({ error: "internal_error" }, feishuIdentity)).toEqual({
       status: "retrying",
       reason: "provider_unreachable",
+    });
+  });
+
+  it("matches the live Feishu bot open ID independently of whoami", () => {
+    expect(classifyLarkBotInfo({ code: 0, msg: "ok", bot: { open_id: "ou_bot" } }, feishuIdentity)).toEqual({
+      status: "ready",
+    });
+    expect(classifyLarkBotInfo({ code: 0, msg: "ok", bot: { open_id: "ou_other" } }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+      reason: "identity_mismatch",
+    });
+    expect(classifyLarkBotInfo({ code: 99991663, msg: "invalid token" }, feishuIdentity)).toEqual({
+      status: "needs_attention",
+      reason: "credential_rejected",
     });
   });
 
@@ -159,6 +191,123 @@ describe("Feishu tenant token exchange", () => {
 });
 
 describe("provider CLI validation runner", () => {
+  it("validates external Feishu credentials with whoami and a separate live bot identity request", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-feishu-"));
+    const execFile = vi.fn(async (_file, args, options) => {
+      expect(args).toEqual(["whoami", "--as", "bot", "--json"]);
+      expect(args[0]).not.toBe("auth");
+      expect(options.env.LARKSUITE_CLI_APP_ID).toBe("cli_app");
+      expect(options.env.LARKSUITE_CLI_APP_SECRET).toBe("secret");
+      expect(options.env.LARKSUITE_CLI_BRAND).toBe("feishu");
+      expect(options.env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("tenant-token");
+      expect(options.env.LARKSUITE_CLI_USER_ACCESS_TOKEN).toBeUndefined();
+      return { stdout: JSON.stringify(feishuWhoami), stderr: "" };
+    });
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/open-apis/auth/v3/tenant_access_token/internal")) {
+        expect(init?.method).toBe("POST");
+        return new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-token" }));
+      }
+      expect(url).toBe("https://open.feishu.cn/open-apis/bot/v3/info");
+      expect(init?.method).toBe("GET");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer tenant-token");
+      return new Response(JSON.stringify({ code: 0, msg: "ok", bot: { open_id: "ou_bot" } }));
+    }) as typeof fetch;
+    const runner = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      fetch: fetchImpl,
+      verifyTarget: async () => true,
+    });
+
+    await expect(runner.run(feishuValidationRequest(), feishuFence)).resolves.toEqual({
+      ...feishuFence,
+      status: "ready",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(await readdir(join(home, "data", "runtime", "provider-cli-validation"))).toEqual([]);
+  });
+
+  it.each([
+    ["app", { ...feishuWhoami, appId: "cli_other" }, "identity_mismatch"],
+    ["brand", { ...feishuWhoami, brand: "lark" }, "identity_mismatch"],
+    ["identity", { ...feishuWhoami, identity: "user" }, "identity_mismatch"],
+    ["availability", { ...feishuWhoami, available: false, tokenStatus: "missing" }, "credential_rejected"],
+    ["token status", { ...feishuWhoami, tokenStatus: "expired" }, "credential_rejected"],
+  ])("fails closed on the wrong Feishu whoami %s", async (_case, payload, reason) => {
+    const fetchImpl = vi.fn();
+    const runner = new ProviderCliValidationRunner({
+      home: await mkdtemp(join(tmpdir(), "opentag-validation-feishu-whoami-")),
+      exchangeFeishuToken: async () => "tenant-token",
+      execFile: vi.fn(async () => ({ stdout: JSON.stringify(payload), stderr: "" })),
+      fetch: fetchImpl,
+      verifyTarget: async () => true,
+    });
+    await expect(runner.run(feishuValidationRequest(), feishuFence)).resolves.toMatchObject({
+      status: "needs_attention",
+      reason,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "token",
+      new Response(JSON.stringify({ code: 99991663, msg: "invalid token" }), { status: 401 }),
+      "credential_rejected",
+    ],
+    ["bot", new Response(JSON.stringify({ code: 0, msg: "ok", bot: { open_id: "ou_other" } })), "identity_mismatch"],
+  ])("rejects a wrong Feishu %s after whoami succeeds", async (_case, response, reason) => {
+    const fetchImpl = vi.fn(async () => response) as typeof fetch;
+    const runner = new ProviderCliValidationRunner({
+      home: await mkdtemp(join(tmpdir(), "opentag-validation-feishu-live-")),
+      exchangeFeishuToken: async () => "tenant-token",
+      execFile: vi.fn(async () => ({ stdout: JSON.stringify(feishuWhoami), stderr: "" })),
+      fetch: fetchImpl,
+      verifyTarget: async () => true,
+    });
+    await expect(runner.run(feishuValidationRequest(), feishuFence)).resolves.toMatchObject({
+      status: "needs_attention",
+      reason,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds the live Feishu bot request with its own timeout", async () => {
+    const hangingFetch = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+            once: true,
+          });
+        }),
+    ) as typeof fetch;
+    await expect(
+      validateFeishuBotIdentity("tenant-token", feishuIdentity, undefined, hangingFetch, 5),
+    ).resolves.toEqual({
+      status: "retrying",
+      reason: "provider_unreachable",
+    });
+  });
+
+  it("cleans up the Feishu validation directory after a CLI timeout", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-feishu-timeout-"));
+    const runner = new ProviderCliValidationRunner({
+      home,
+      exchangeFeishuToken: async () => "tenant-token",
+      execFile: vi.fn(async () => {
+        throw Object.assign(new Error("timeout"), { killed: true, stdout: "", stderr: "" });
+      }),
+      verifyTarget: async () => true,
+    });
+    await expect(runner.run(feishuValidationRequest(), feishuFence)).resolves.toMatchObject({
+      status: "retrying",
+      reason: "provider_unreachable",
+    });
+    expect(await readdir(join(home, "data", "runtime", "provider-cli-validation"))).toEqual([]);
+  });
+
   it("runs the Slack auth.test argv in an isolated env and never persists the grant", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-validation-"));
     const targetPath = await fakeCli(

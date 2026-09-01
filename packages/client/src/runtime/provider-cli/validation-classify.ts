@@ -48,7 +48,7 @@ export function classifySlackAuthTest(
   return { status: "ready" };
 }
 
-export function classifyLarkAuthStatus(
+export function classifyLarkWhoami(
   payload: unknown,
   expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
 ): ProviderCliValidationClassification {
@@ -58,18 +58,44 @@ export function classifyLarkAuthStatus(
     payload.missing_scopes,
   );
   if (failure) return failure;
-  if (!isRecord(payload.identity) || !isRecord(payload.identities)) return { status: "needs_attention" };
-  if (!isRecord(payload.identities.bot)) return { status: "needs_attention" };
-  const bot = payload.identities.bot;
-  if (typeof bot.available !== "boolean" || typeof bot.verified !== "boolean") return { status: "needs_attention" };
-  if (!bot.available || !bot.verified) return { status: "needs_attention", reason: "credential_rejected" };
-  const identity = larkIdentity(payload.identity, bot);
-  if (!identity) return { status: "needs_attention" };
-  if (
-    identity.appId !== expected.appId ||
-    identity.botOpenId !== expected.botOpenId ||
-    identity.brand !== expected.teamBrand
-  ) {
+  const appId = stringField(payload, ["appId", "app_id"]);
+  const brand = stringField(payload, ["brand", "teamBrand", "team_brand"]);
+  if (!appId || (brand !== "lark" && brand !== "feishu")) return { status: "needs_attention" };
+  if (payload.identity !== "bot" || appId !== expected.appId || brand !== expected.teamBrand) {
+    return { status: "needs_attention", reason: "identity_mismatch" };
+  }
+  if (typeof payload.available !== "boolean" || typeof payload.tokenStatus !== "string") {
+    return { status: "needs_attention" };
+  }
+  if (!payload.available || payload.tokenStatus !== "ready") {
+    return { status: "needs_attention", reason: "credential_rejected" };
+  }
+  return { status: "ready" };
+}
+
+/** @deprecated Retained for compatibility; Feishu validation now classifies `whoami` output. */
+export function classifyLarkAuthStatus(
+  payload: unknown,
+  expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
+): ProviderCliValidationClassification {
+  return classifyLarkWhoami(payload, expected);
+}
+
+export function classifyLarkBotInfo(
+  payload: unknown,
+  expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
+): ProviderCliValidationClassification {
+  if (!isRecord(payload)) return { status: "needs_attention" };
+  const failure = classifyProviderFailure(
+    [stringifyUnknown(payload.error), stringifyUnknown(payload.code)],
+    payload.missing_scopes,
+  );
+  if (failure) return failure;
+  if (payload.code !== 0) return { status: "needs_attention", reason: "credential_rejected" };
+  if (!isRecord(payload.bot) || typeof payload.bot.open_id !== "string" || payload.bot.open_id.length === 0) {
+    return { status: "needs_attention" };
+  }
+  if (payload.bot.open_id !== expected.botOpenId) {
     return { status: "needs_attention", reason: "identity_mismatch" };
   }
   return { status: "ready" };
@@ -96,20 +122,6 @@ function slackIdentity(
   if (typeof payload.user_id !== "string") return undefined;
   if (typeof payload.bot_id !== "string") return undefined;
   return { botId: payload.bot_id, teamId: payload.team_id, userId: payload.user_id };
-}
-
-function larkIdentity(
-  identity: Record<string, unknown>,
-  bot: Record<string, unknown>,
-): { readonly appId: string; readonly botOpenId: string; readonly brand: "feishu" | "lark" } | undefined {
-  const appId = stringField(identity, ["app_id", "appId"]) ?? stringField(bot, ["app_id"]);
-  const brand = stringField(identity, ["brand", "team_brand", "teamBrand"]);
-  const botOpenId =
-    stringField(identity, ["bot_open_id", "botOpenId", "open_id", "openId"]) ??
-    stringField(bot, ["bot_open_id", "open_id", "openId"]);
-  if (!appId || !botOpenId) return undefined;
-  if (brand !== "lark" && brand !== "feishu") return undefined;
-  return { appId, botOpenId, brand };
 }
 
 export function classifySpawnFailure(error: unknown): ProviderCliValidationClassification {

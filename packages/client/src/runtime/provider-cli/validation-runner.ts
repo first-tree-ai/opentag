@@ -18,7 +18,8 @@ import { findProviderCliCatalogEntry } from "./catalog.js";
 import { computeFileIdentity, computeTargetFingerprint } from "./fingerprint.js";
 import { providerCliProbeEnvironment } from "./probe.js";
 import {
-  classifyLarkAuthStatus,
+  classifyLarkBotInfo,
+  classifyLarkWhoami,
   classifySlackAuthTest,
   classifySpawnFailure,
   extractBoundedJson,
@@ -81,6 +82,7 @@ export class FeishuTokenExchangeError extends Error {
 export class ProviderCliValidationRunner {
   readonly #exchangeFeishuToken: NonNullable<ProviderCliValidationRunnerOptions["exchangeFeishuToken"]>;
   readonly #execFile: ProviderCliValidationExecFile;
+  readonly #fetch: typeof fetch;
   readonly #home: string;
   readonly #now: () => number;
   readonly #root: string;
@@ -89,9 +91,9 @@ export class ProviderCliValidationRunner {
   readonly #startupCleanup: Promise<void>;
 
   constructor(options: ProviderCliValidationRunnerOptions) {
+    this.#fetch = options.fetch ?? fetch;
     this.#exchangeFeishuToken =
-      options.exchangeFeishuToken ??
-      ((grant, signal) => exchangeFeishuTenantToken(grant, signal, options.fetch ?? fetch));
+      options.exchangeFeishuToken ?? ((grant, signal) => exchangeFeishuTenantToken(grant, signal, this.#fetch));
     this.#execFile = options.execFile ?? defaultExecFile;
     this.#now = options.now ?? Date.now;
     this.#verifyTarget = options.verifyTarget ?? verifyTargetFingerprint;
@@ -188,18 +190,20 @@ export class ProviderCliValidationRunner {
     env.LARKSUITE_CLI_BRAND = request.grant.teamBrand;
     env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN = tenantAccessToken;
     delete env.LARKSUITE_CLI_USER_ACCESS_TOKEN;
-    return this.#runProcess(
+    const expected = request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>;
+    const whoami = await this.#runProcess(
       request.targetPath,
-      ["auth", "status", "--verify", "--json"],
+      ["whoami", "--as", "bot", "--json"],
       env,
       workDir,
-      (payload) =>
-        classifyLarkAuthStatus(
-          payload,
-          request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
-        ),
+      (payload) => classifyLarkWhoami(payload, expected),
       signal,
     );
+    if (whoami.status !== "ready") return whoami;
+    if (Date.parse(request.expiresAt) <= this.#now()) {
+      return { status: "retrying", reason: "validation_expired" };
+    }
+    return validateFeishuBotIdentity(tenantAccessToken, expected, signal, this.#fetch);
   }
 
   async cleanupAll(): Promise<void> {
@@ -416,7 +420,11 @@ export async function exchangeFeishuTenantToken(
   }
   if (response.status === 429) throw new FeishuTokenExchangeError("rate_limited");
   if (response.status >= 500) throw new FeishuTokenExchangeError("provider_unreachable");
-  const buffer = await readBoundedResponseBody(response, RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES);
+  const buffer = await readBoundedResponseBody(
+    response,
+    RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
+    () => new FeishuTokenExchangeError("invalid"),
+  );
   let body: unknown;
   try {
     body = JSON.parse(new TextDecoder().decode(buffer));
@@ -430,7 +438,58 @@ export async function exchangeFeishuTenantToken(
   return body.tenant_access_token;
 }
 
-async function readBoundedResponseBody(response: Response, maxBytes: number): Promise<Uint8Array> {
+export async function validateFeishuBotIdentity(
+  tenantAccessToken: string,
+  expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
+  signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = RUNTIME_PROVIDER_CLI_VALIDATION_TIMEOUT_MS,
+): Promise<ProviderCliValidationClassification> {
+  if (signal?.aborted) throw abortError();
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const origin = expected.teamBrand === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn";
+  let response: Response;
+  try {
+    response = await fetchImpl(`${origin}/open-apis/bot/v3/info`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${tenantAccessToken}` },
+      redirect: "error",
+      signal: combined,
+    });
+  } catch {
+    if (signal?.aborted) throw abortError();
+    return { status: "retrying", reason: "provider_unreachable" };
+  }
+  if (response.status === 429) return { status: "retrying", reason: "rate_limited" };
+  if (response.status >= 500) return { status: "retrying", reason: "provider_unreachable" };
+  if (!response.ok) return { status: "needs_attention", reason: "credential_rejected" };
+  let buffer: Uint8Array;
+  try {
+    buffer = await readBoundedResponseBody(
+      response,
+      RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
+      () => new Error("Feishu bot info response exceeded the output limit"),
+    );
+  } catch {
+    if (signal?.aborted) throw abortError();
+    if (combined.aborted) return { status: "retrying", reason: "provider_unreachable" };
+    return { status: "needs_attention" };
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(buffer));
+  } catch {
+    return { status: "needs_attention" };
+  }
+  return classifyLarkBotInfo(body, expected);
+}
+
+async function readBoundedResponseBody(
+  response: Response,
+  maxBytes: number,
+  outputTooLarge: () => Error,
+): Promise<Uint8Array> {
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -440,7 +499,7 @@ async function readBoundedResponseBody(response: Response, maxBytes: number): Pr
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maxBytes) throw new FeishuTokenExchangeError("invalid");
+      if (total > maxBytes) throw outputTooLarge();
       chunks.push(value);
     }
   } finally {

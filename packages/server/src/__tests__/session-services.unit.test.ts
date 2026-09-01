@@ -673,6 +673,30 @@ describe("ImMessageInbox with the unit database", () => {
     });
   });
 
+  it("requests a title once after the first persisted inbound Task message", async () => {
+    const onTaskCreated = vi.fn().mockResolvedValue(undefined);
+    const inbox = new ImMessageInbox(db.database, {
+      now: () => fixture.now,
+      onTaskCreated,
+    });
+    const event = inboundEvent({ providerEventId: "title-seam", externalMessageId: "title-message" });
+
+    await expect(inbox.ingest(fixture.bindingId, 1, event)).resolves.toMatchObject({ duplicate: false });
+    await vi.waitFor(() => expect(onTaskCreated).toHaveBeenCalledTimes(1));
+    expect(onTaskCreated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: expect.any(String),
+        sourceText: "hello",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    const request = onTaskCreated.mock.calls[0]?.[0];
+    expect(request?.signal?.aborted).toBe(false);
+
+    await expect(inbox.ingest(fixture.bindingId, 1, event)).resolves.toMatchObject({ duplicate: true });
+    expect(onTaskCreated).toHaveBeenCalledTimes(1);
+  });
+
   it("handles identity, self-message, inactive, and rebind outcomes", async () => {
     const inbox = new ImMessageInbox(db.database, { now: () => fixture.now });
     const event = inboundEvent({ conversationKind: "dm" });

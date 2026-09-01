@@ -246,6 +246,13 @@
       "when": 1788208560698,
       "tag": "0034_legal_kat_farrell",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788220885442,
+      "tag": "0035_first_the_stranger",
+      "breakpoints": true
     }
   ]
 }

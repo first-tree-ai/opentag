@@ -391,18 +391,6 @@ function decodeSerializationCharacter(value: string, position: number): { next: 
   return character === "\\" ? decodeSerializationEscape(value, position) : { next: position + 1, value: character };
 }
 
-function decodeOneSerializationLayer(value: string): string | undefined {
-  let output = "";
-  let cursor = 0;
-  while (cursor < value.length) {
-    const decodedCharacter = decodeSerializationCharacter(value, cursor);
-    if (decodedCharacter === undefined) return undefined;
-    output += decodedCharacter.value;
-    cursor = decodedCharacter.next;
-  }
-  return output;
-}
-
 function encodeSerializationCharacter(character: string): string {
   if (character === '"') return '\\"';
   if (character === "\\") return "\\\\";
@@ -454,9 +442,14 @@ function serializedStructuralValueEnd(value: string, from: number, opener: strin
 function serializedUnquotedValueEnd(value: string, from: number): number | undefined {
   let cursor = from;
   while (cursor < value.length) {
+    const character = value[cursor];
+    if (character !== "\\") {
+      if (",;}\"'\r\n".includes(character ?? "")) return cursor;
+      cursor += 1;
+      continue;
+    }
     const decodedCharacter = decodeSerializationCharacter(value, cursor);
     if (decodedCharacter === undefined) return undefined;
-    if (",;}\"'\r\n".includes(decodedCharacter.value)) return cursor;
     cursor = decodedCharacter.next;
   }
   return cursor;
@@ -516,7 +509,6 @@ function fallbackSerializedValueEnd(value: string, from: number): number {
 type SerializedCredentialValueSpan = {
   complete: boolean;
   end: number;
-  kind?: "quoted" | "structural" | "unquoted";
 };
 
 function serializedCredentialValueSpan(value: string, from: number): SerializedCredentialValueSpan {
@@ -524,22 +516,18 @@ function serializedCredentialValueSpan(value: string, from: number): SerializedC
   if (firstCharacter === undefined) return { complete: false, end: fallbackSerializedValueEnd(value, from) };
 
   let end: number | undefined;
-  let kind: SerializedCredentialValueSpan["kind"];
   if (isCredentialQuote(firstCharacter.value)) {
-    kind = "quoted";
     end = serializedQuotedValueEnd(value, firstCharacter.next, firstCharacter.value);
   } else if (firstCharacter.value === "[" || firstCharacter.value === "{") {
-    kind = "structural";
     const closer = firstCharacter.value === "[" ? "]" : "}";
     end = serializedStructuralValueEnd(value, from, firstCharacter.value, closer);
   } else if (firstCharacter.value !== "\\") {
-    kind = "unquoted";
     end = serializedUnquotedValueEnd(value, from);
   }
 
   return end === undefined
     ? { complete: false, end: fallbackSerializedValueEnd(value, from) }
-    : { complete: true, end, kind };
+    : { complete: true, end };
 }
 
 type CredentialHeaderScrub = {
@@ -573,25 +561,8 @@ function scrubDecodedCredentialHeaders(value: string): CredentialHeaderScrub {
 
 const SERIALIZED_REDACTED_VALUE = encodeOneSerializationLayer(`"${REDACTED}"`);
 
-function scrubSerializedCredentialField(
-  value: string,
-  fieldStart: number,
-  valueStart: number,
-  valueSpan: SerializedCredentialValueSpan,
-): string {
-  const failClosed = `${value.slice(fieldStart, valueStart)}${SERIALIZED_REDACTED_VALUE}`;
-  if (!valueSpan.complete) return failClosed;
-  if (valueSpan.kind === "quoted" || valueSpan.kind === "structural") return failClosed;
-
-  const field = value.slice(fieldStart, valueSpan.end);
-  const decoded = decodeOneSerializationLayer(field);
-  if (decoded === undefined || encodeOneSerializationLayer(decoded) !== field) return failClosed;
-
-  const scrubbed = scrubDecodedCredentialHeaders(decoded);
-  if (!scrubbed.matched) return failClosed;
-
-  const encoded = encodeOneSerializationLayer(scrubbed.value);
-  return decodeOneSerializationLayer(encoded) === scrubbed.value ? encoded : failClosed;
+function scrubSerializedCredentialField(value: string, fieldStart: number, valueStart: number): string {
+  return `${value.slice(fieldStart, valueStart)}${SERIALIZED_REDACTED_VALUE}`;
 }
 
 function scrubSerializedCredentialFields(value: string): string {
@@ -608,7 +579,7 @@ function scrubSerializedCredentialFields(value: string): string {
     const valueStart = fieldStart + match[0].length;
     const valueSpan = serializedCredentialValueSpan(value, valueStart);
     output += value.slice(cursor, fieldStart);
-    output += scrubSerializedCredentialField(value, fieldStart, valueStart, valueSpan);
+    output += scrubSerializedCredentialField(value, fieldStart, valueStart);
     cursor = valueSpan.end;
     SERIALIZED_CREDENTIAL_FIELD_PATTERN.lastIndex = cursor;
   }

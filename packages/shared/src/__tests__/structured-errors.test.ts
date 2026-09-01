@@ -336,6 +336,26 @@ describe("structured error redaction", () => {
 
   it.each([
     [
+      String.raw`{\"cookie\":session=a\nb=deep-secret,\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"cookie\":session=a\r\nb=deep-secret,\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"authorization\":Bearer\nx=deep-secret,\"other\":\"keep\"}`,
+      String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+  ])("redacts encoded line breaks in unquoted serialized credential values", (input, expected) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).not.toContain("deep-secret");
+    expect(redacted).toContain(String.raw`\"other\":\"keep\"`);
+  });
+
+  it.each([
+    [
       String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
       String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
       String.raw`C:\Users\me\bin`,

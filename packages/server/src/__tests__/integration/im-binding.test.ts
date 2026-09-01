@@ -27,6 +27,7 @@ import {
   agentRuntimeConfigs,
   agents,
   computers,
+  feishuInboundReceipts,
   imBindings,
   imMessageDeliveries,
   imMessages,
@@ -49,6 +50,7 @@ import { ImMessageInbox, ImResourceService } from "../../services/im/index.js";
 import {
   type FeishuAdapter,
   FeishuConnectionManager,
+  FeishuInboundReceiptStore,
   type FeishuRegistration,
   type FeishuRegistrationGateway,
   FeishuSetupService,
@@ -1474,6 +1476,37 @@ describe("IM binding persistence", () => {
           expect.objectContaining({ messageId: edit.messageId, state: "pending" }),
         ]),
       );
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("elects one durable Feishu receipt winner under concurrent delivery", async () => {
+    const value = await fixture();
+    try {
+      const store = new FeishuInboundReceiptStore(value.database);
+      const claims = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          store.claim({ bindingId: value.imBindingId, credentialGeneration: 1, eventId: "feishu-concurrent-event" }),
+        ),
+      );
+      expect(claims.filter((claim) => claim.accepted)).toHaveLength(1);
+      expect(claims.filter((claim) => claim.duplicate)).toHaveLength(7);
+      const receipts = await value.database
+        .select()
+        .from(feishuInboundReceipts)
+        .where(eq(feishuInboundReceipts.imBindingId, value.imBindingId));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({ eventId: "feishu-concurrent-event", status: "processing" });
+      await store.markProcessed(receipts[0]?.id as string);
+      expect(
+        (
+          await value.database
+            .select({ status: feishuInboundReceipts.status })
+            .from(feishuInboundReceipts)
+            .where(eq(feishuInboundReceipts.imBindingId, value.imBindingId))
+        )[0]?.status,
+      ).toBe("processed");
     } finally {
       await value.sql.end();
     }

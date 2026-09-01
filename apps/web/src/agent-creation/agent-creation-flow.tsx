@@ -1,12 +1,7 @@
-import type {
-  AgentAdminConfig,
-  AgentRuntimeProvider,
-  CreateAgentRequest,
-  ProviderReadinessStatus,
-} from "@opentag/shared/browser";
+import type { AgentAdminConfig, AgentRuntimeProvider, ProviderReadinessStatus } from "@opentag/shared/browser";
 import { AgentNameSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, browserApi } from "../api.js";
+import { ApiError } from "../api.js";
 import { ComputerConnect } from "../features/computer-connect/computer-connect.js";
 import { compareText, formatNumber } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
@@ -20,9 +15,16 @@ import {
   type StatusTone,
   Text,
 } from "../ui/design-system.js";
-
-const CREATE_INTENT_VERSION = 3;
-const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
+import {
+  type CreationIntentRecord,
+  type CreationIntentRequest,
+  clearCreationIntent,
+  createAgentOnce,
+  getOrCreateCreationIntent,
+  pruneSupersededCreationIntents,
+  readCreationIntent,
+} from "./creation-intent-store.js";
+import { CreationRecoverySection, useCreationRecovery } from "./creation-recovery.js";
 
 export interface AgentCreationComputer {
   readonly id: string;
@@ -61,7 +63,7 @@ export interface AgentCreationFlowProps {
   readonly onCreated: (agent: AgentAdminConfig) => void;
   readonly onRefresh: () => void;
   readonly onSubmittingChange?: (submitting: boolean) => void;
-  /** Renders the flow for review only: no creation intent is read or resumed and no Agent is created. */
+  /** Renders the flow for review only: no creation intent is read or recovered and no Agent is created. */
   readonly preview?: boolean;
   readonly refreshing?: boolean;
   readonly accountId: string;
@@ -71,24 +73,6 @@ interface ReadyRoute {
   readonly computer: AgentCreationComputer;
   readonly provider: AgentRuntimeProvider;
 }
-
-interface CreationIntentRecord {
-  readonly version: typeof CREATE_INTENT_VERSION;
-  readonly accountId: string;
-  readonly creationIntentId: string;
-  readonly request: Omit<CreateAgentRequest, "creationIntentId">;
-}
-
-interface CreationIntentStore {
-  readonly version: typeof CREATE_INTENT_VERSION;
-  readonly accountId: string;
-  readonly records: readonly CreationIntentRecord[];
-}
-
-const memoryIntentRecords = new Map<string, readonly CreationIntentRecord[]>();
-const memoryIntentFallbackAccounts = new Set<string>();
-const fallbackCreationLocks = new Map<string, Promise<void>>();
-const creationRequests = new Map<string, Promise<AgentAdminConfig>>();
 
 export function deriveAgentName(displayName: string): string {
   return displayName
@@ -128,6 +112,7 @@ export function AgentCreationFlow({
   const [nameError, setNameError] = useState<string>();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [dismissedIntentId, setDismissedIntentId] = useState<string>();
   const [changingComputer, setChangingComputer] = useState(false);
   const [changingRuntime, setChangingRuntime] = useState(false);
   const [connectingComputer, setConnectingComputer] = useState(false);
@@ -139,7 +124,6 @@ export function AgentCreationFlow({
   const nameFieldRef = useRef<HTMLInputElement>(null);
   const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
-  const resumeAttemptedRef = useRef(false);
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
   const restoreComputerSetupFocusRef = useRef(false);
   const computerRefreshStartedRef = useRef(false);
@@ -225,7 +209,7 @@ export function AgentCreationFlow({
   }, [refreshing]);
 
   const create = useCallback(
-    async (request: Omit<CreateAgentRequest, "creationIntentId">, intent?: CreationIntentRecord) => {
+    async (request: CreationIntentRequest, intent?: CreationIntentRecord) => {
       if (preview || inFlightRef.current) return;
       let record = intent;
       inFlightRef.current = true;
@@ -237,18 +221,23 @@ export function AgentCreationFlow({
         record ??= await getOrCreateCreationIntent(accountId, request);
         const created = await createAgentOnce(record);
         await clearCreationIntent(accountId, record.creationIntentId);
+        setDismissedIntentId(record.creationIntentId);
         onCreated(created);
       } catch (cause) {
         if (cause instanceof ApiError) {
           const issue = cause.issues?.find(({ path }) => path[0] === "name");
           if (issue || cause.code === "AGENT_NAME_CONFLICT") {
-            if (record) await clearCreationIntent(accountId, record.creationIntentId);
+            if (record) {
+              await clearCreationIntent(accountId, record.creationIntentId);
+              setDismissedIntentId(record.creationIntentId);
+            }
             setEditingName(true);
             setNameError(issue?.message ?? cause.message);
             return;
           }
           if (record && (cause.category === "validation" || cause.category === "deterministic")) {
             await clearCreationIntent(accountId, record.creationIntentId);
+            setDismissedIntentId(record.creationIntentId);
           }
         }
         setError(cause instanceof Error ? cause.message : m.agent_create_failed());
@@ -261,29 +250,22 @@ export function AgentCreationFlow({
     [onCreated, onSubmittingChange, preview, accountId],
   );
 
-  useEffect(() => {
-    if (!pendingIntent || resumeAttemptedRef.current) return;
-    /*
-     * A resume finishes what the reader started, so it may only send what the reader is looking at.
-     * "Is that route still ready" is a weaker question: the reader moves the selection by choosing
-     * another Computer, and a newly connected one is adopted the same way, while the stored intent
-     * still names the original. When that machine comes back the weaker question turns true again
-     * and the Agent is created somewhere nobody is looking. Requiring the stored route to be the
-     * selected route keeps the target visible; an intent naming another route is not resumed, and
-     * its fields stay on the form for the reader to submit against what they can see.
-     */
-    const resumesTheSelectedRoute =
-      selectedRoute !== undefined &&
-      selectedRoute.computer.id === pendingIntent.request.computerId &&
-      selectedRoute.provider === pendingIntent.request.runtimeProvider;
-    if (!resumesTheSelectedRoute) return;
-    resumeAttemptedRef.current = true;
-    void create(pendingIntent.request, pendingIntent);
-  }, [create, pendingIntent, selectedRoute]);
+  const recovery = useCreationRecovery({
+    accountId,
+    create,
+    createInFlightRef: inFlightRef,
+    dismissedIntentId,
+    onSubmittingChange,
+    pendingIntent,
+    preview,
+    selectedRoute,
+    setDismissedIntentId,
+    submitting,
+  });
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (inFlightRef.current || !selectedRoute) return;
+    if (inFlightRef.current || recovery.checkInFlightRef.current || !selectedRoute) return;
     setError(undefined);
     setNameError(undefined);
     const parsedName = AgentNameSchema.safeParse(name);
@@ -302,6 +284,7 @@ export function AgentCreationFlow({
 
   return (
     <form className="grid gap-4" onSubmit={submit}>
+      <CreationRecoverySection recovery={recovery} />
       <div className="grid gap-4">
         <Field htmlFor="new-agent-display-name" label={m.agent_create_display_name_label()}>
           <KumoInputControl
@@ -440,7 +423,7 @@ export function AgentCreationFlow({
             {m.agent_create_cancel_action()}
           </Button>
         ) : null}
-        <Button disabled={submitting || refreshing || !selectedRoute} type="submit">
+        <Button disabled={submitting || recovery.checking || refreshing || !selectedRoute} type="submit">
           {submitting ? (
             <span className="flex items-center gap-1.5">
               <span aria-hidden="true">
@@ -861,160 +844,4 @@ function providerRank(provider: AgentRuntimeProvider): number {
 
 function providerLabel(provider: AgentRuntimeProvider): string {
   return provider === "claude-code" ? m.agent_create_claude_code() : m.agent_create_codex();
-}
-
-function createAgentOnce(record: CreationIntentRecord): Promise<AgentAdminConfig> {
-  const existing = creationRequests.get(record.creationIntentId);
-  if (existing) return existing;
-  const request = browserApi.createAgent({
-    ...record.request,
-    creationIntentId: record.creationIntentId,
-  });
-  creationRequests.set(record.creationIntentId, request);
-  void request.catch(() => creationRequests.delete(record.creationIntentId));
-  return request;
-}
-
-async function withCreationLock<T>(accountId: string, task: () => Promise<T> | T): Promise<T> {
-  const lockName = `opentag:create-agent:${accountId}`;
-  if (navigator.locks) return navigator.locks.request(lockName, task);
-  const prior = fallbackCreationLocks.get(lockName) ?? Promise.resolve();
-  let release: () => void = () => undefined;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const queued = prior.then(() => current);
-  fallbackCreationLocks.set(lockName, queued);
-  await prior;
-  try {
-    return await task();
-  } finally {
-    release();
-    if (fallbackCreationLocks.get(lockName) === queued) fallbackCreationLocks.delete(lockName);
-  }
-}
-
-async function getOrCreateCreationIntent(
-  accountId: string,
-  request: Omit<CreateAgentRequest, "creationIntentId">,
-): Promise<CreationIntentRecord> {
-  return withCreationLock(accountId, () => {
-    const records = readCreationIntents(accountId);
-    const fingerprint = JSON.stringify(request);
-    const existing = records.find((record) => JSON.stringify(record.request) === fingerprint);
-    if (existing) return existing;
-    const next: CreationIntentRecord = {
-      version: CREATE_INTENT_VERSION,
-      accountId,
-      creationIntentId: crypto.randomUUID(),
-      request,
-    };
-    writeCreationIntents(accountId, [...records, next]);
-    return next;
-  });
-}
-
-function readCreationIntent(accountId: string): CreationIntentRecord | undefined {
-  return readCreationIntents(accountId).at(-1);
-}
-
-function readCreationIntents(accountId: string): readonly CreationIntentRecord[] {
-  try {
-    const raw = window.localStorage.getItem(creationIntentKey(accountId));
-    if (!raw) {
-      if (memoryIntentFallbackAccounts.has(accountId)) return memoryIntentRecords.get(accountId) ?? [];
-      memoryIntentRecords.delete(accountId);
-      return [];
-    }
-    const value = JSON.parse(raw) as Partial<CreationIntentStore>;
-    if (
-      value.version !== CREATE_INTENT_VERSION ||
-      value.accountId !== accountId ||
-      !Array.isArray(value.records) ||
-      !value.records.every((record) => validCreationIntentRecord(record, accountId))
-    ) {
-      return [];
-    }
-    const records = value.records as readonly CreationIntentRecord[];
-    memoryIntentRecords.set(accountId, records);
-    return records;
-  } catch {
-    return memoryIntentRecords.get(accountId) ?? [];
-  }
-}
-
-function writeCreationIntents(accountId: string, records: readonly CreationIntentRecord[]): void {
-  memoryIntentRecords.set(accountId, records);
-  try {
-    window.localStorage.setItem(
-      creationIntentKey(accountId),
-      JSON.stringify({ version: CREATE_INTENT_VERSION, accountId, records } satisfies CreationIntentStore),
-    );
-    memoryIntentFallbackAccounts.delete(accountId);
-  } catch {
-    memoryIntentFallbackAccounts.add(accountId);
-  }
-}
-
-async function clearCreationIntent(accountId: string, creationIntentId: string): Promise<void> {
-  await withCreationLock(accountId, () => {
-    const records = readCreationIntents(accountId).filter((record) => record.creationIntentId !== creationIntentId);
-    if (records.length > 0) {
-      writeCreationIntents(accountId, records);
-      return;
-    }
-    memoryIntentRecords.delete(accountId);
-    memoryIntentFallbackAccounts.delete(accountId);
-    try {
-      window.localStorage.removeItem(creationIntentKey(accountId));
-    } catch {
-      // No durable record is available to clear.
-    }
-  });
-}
-
-function validCreationIntentRecord(value: unknown, accountId: string): value is CreationIntentRecord {
-  if (!value || typeof value !== "object") return false;
-  const record = value as Partial<CreationIntentRecord>;
-  return (
-    record.version === CREATE_INTENT_VERSION &&
-    record.accountId === accountId &&
-    typeof record.creationIntentId === "string" &&
-    record.request !== undefined &&
-    typeof record.request.name === "string" &&
-    typeof record.request.displayName === "string" &&
-    typeof record.request.computerId === "string" &&
-    (record.request.runtimeProvider === "codex" || record.request.runtimeProvider === "claude-code")
-  );
-}
-
-function creationIntentKey(accountId: string): string {
-  return `${CREATION_INTENT_KEY_PREFIX}${accountId}`;
-}
-
-/**
- * Drops creation intents written in a superseded format. Their keys are never read by the current
- * Account-scoped format; removing them by stored version leaves other Accounts' current records on a
- * shared browser untouched.
- */
-function pruneSupersededCreationIntents(): void {
-  try {
-    const stale: string[] = [];
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
-      if (!key?.startsWith(CREATION_INTENT_KEY_PREFIX)) continue;
-      const raw = window.localStorage.getItem(key);
-      if (raw === null) continue;
-      let version: unknown;
-      try {
-        version = (JSON.parse(raw) as Partial<CreationIntentStore>).version;
-      } catch {
-        version = undefined;
-      }
-      if (version !== CREATE_INTENT_VERSION) stale.push(key);
-    }
-    for (const key of stale) window.localStorage.removeItem(key);
-  } catch {
-    // Storage is unavailable; the superseded records are unreadable either way.
-  }
 }

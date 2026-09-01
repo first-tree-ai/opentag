@@ -142,6 +142,7 @@ function services() {
     },
     taskService: {
       list: vi.fn().mockResolvedValue({ tasks: [taskSummary], nextCursor: null }),
+      updateTitle: vi.fn().mockResolvedValue(taskSummary),
       get: vi.fn().mockResolvedValue({
         task: taskSummary,
         turns: [],
@@ -342,6 +343,39 @@ describe("Account-native management collections", () => {
     expect(detail.statusCode).toBe(200);
     expect(detail.headers["cache-control"]).toBe("no-store");
     expect(service.taskService.get).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 50 });
+  });
+
+  it("updates and clears a Task title in the authenticated Account scope", async () => {
+    const { app, service } = appWith();
+
+    const update = await app.inject({
+      method: "PATCH",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}`,
+      headers: authorization,
+      payload: { title: "Renamed Task" },
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.headers["cache-control"]).toBe("no-store");
+    expect(update.json()).toEqual({ task: taskSummary });
+    expect(service.taskService.updateTitle).toHaveBeenCalledWith(userId, taskSummary.id, "Renamed Task");
+
+    const clear = await app.inject({
+      method: "PATCH",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}`,
+      headers: authorization,
+      payload: { title: null },
+    });
+    expect(clear.statusCode).toBe(200);
+    expect(service.taskService.updateTitle).toHaveBeenLastCalledWith(userId, taskSummary.id, null);
+
+    const invalid = await app.inject({
+      method: "PATCH",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}`,
+      headers: authorization,
+      payload: { title: "   " },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(service.taskService.updateTitle).toHaveBeenCalledTimes(2);
   });
 
   it("creates and lists Agents without a client-selected scope", async () => {

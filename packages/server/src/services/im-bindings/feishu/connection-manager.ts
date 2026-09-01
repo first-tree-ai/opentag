@@ -503,92 +503,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           setFailureCode("FEISHU_INBOUND_NORMALIZE_FAILED");
           const events = adapter.normalizeInbound({ appId: handoff.appId, teamId: null, message });
           for (const event of events) {
-            setActiveSpanAttributes(
-              imAttrs({
-                provider: "feishu",
-                bindingId: handoff.imBindingId,
-                providerEventId: event.providerEventId,
-                externalMessageId: event.message.externalId,
-              }),
-            );
-            const receiptEventId = feishuEnvelopeEventId(event);
-            let receiptId: string | undefined;
-            if (this.#receipts && receiptEventId) {
-              setFailureCode("FEISHU_INBOUND_DATABASE_FAILED");
-              const claim = await this.#receipts.claim({
-                bindingId: handoff.imBindingId,
-                credentialGeneration: handoff.generation,
-                eventId: receiptEventId,
-              });
-              if (!claim.accepted || !claim.receiptId) {
-                emitRootSpan("feishu.inbound.deduplicated", {
-                  ...imAttrs({
-                    provider: "feishu",
-                    bindingId: handoff.imBindingId,
-                    providerEventId: receiptEventId,
-                    externalMessageId: event.message.externalId,
-                    duplicate: true,
-                  }),
-                  ...outcomeAttrs("duplicate"),
-                });
-                setActiveSpanAttributes({
-                  ...imAttrs({
-                    providerEventId: receiptEventId,
-                    externalMessageId: event.message.externalId,
-                    duplicate: true,
-                  }),
-                  ...outcomeAttrs("duplicate"),
-                });
-                continue;
-              }
-              receiptId = claim.receiptId;
-            }
-
-            let result: Awaited<ReturnType<ImMessageInbox["ingest"]>>;
-            try {
-              setFailureCode("FEISHU_INBOUND_DATABASE_FAILED");
-              result = await this.#inbox.ingest(handoff.imBindingId, handoff.generation, event, {
-                provider: "feishu",
-                holderInstanceId: this.#instanceId,
-                fencingEpoch: handoff.epoch,
-              });
-            } catch (error) {
-              if (receiptId) {
-                await this.#receipts?.markFailed(receiptId, processingErrorCode(error)).catch(() => undefined);
-              }
-              const code = classifyImInboundPersistenceError(error);
-              setFailureCode(
-                code === "IM_INBOUND_FENCE_STALE" || code === "IM_INBOUND_BINDING_STALE"
-                  ? "FEISHU_INBOUND_FENCE_STALE"
-                  : code === "IM_INBOUND_IDENTITY_MISMATCH"
-                    ? "FEISHU_INBOUND_IDENTITY_MISMATCH"
-                    : "FEISHU_INBOUND_DATABASE_FAILED",
-              );
-              throw error;
-            }
-            if (receiptId) await this.#receipts?.markProcessed(receiptId);
-            if (result.duplicate) {
-              emitRootSpan("feishu.inbound.deduplicated", {
-                ...imAttrs({
-                  provider: "feishu",
-                  bindingId: handoff.imBindingId,
-                  providerEventId: receiptEventId ?? event.providerEventId,
-                  externalMessageId: event.message.externalId,
-                  duplicate: true,
-                }),
-                ...outcomeAttrs("duplicate"),
-              });
-            }
-            setActiveSpanAttributes({
-              ...imAttrs({
-                messageId: result.messageId,
-                deliveryCount: result.deliveryIds.length,
-                duplicate: result.duplicate,
-              }),
-              ...outcomeAttrs(
-                result.duplicate ? "duplicate" : result.deliveryIds.length > 0 ? "persisted" : "no_delivery",
-              ),
-            });
+            await this.#processInboundEvent(event, handoff, setFailureCode);
           }
         });
       },
@@ -643,6 +558,91 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         }
       },
     });
+  }
+
+  async #processInboundEvent(
+    event: Parameters<ImMessageInbox["ingest"]>[2],
+    handoff: { imBindingId: string; epoch: number; generation: number; appId: string },
+    setFailureCode: (
+      code: "FEISHU_INBOUND_DATABASE_FAILED" | "FEISHU_INBOUND_FENCE_STALE" | "FEISHU_INBOUND_IDENTITY_MISMATCH",
+    ) => void,
+  ): Promise<void> {
+    setActiveSpanAttributes(
+      imAttrs({
+        provider: "feishu",
+        bindingId: handoff.imBindingId,
+        providerEventId: event.providerEventId,
+        externalMessageId: event.message.externalId,
+      }),
+    );
+    const receiptEventId = feishuEnvelopeEventId(event);
+    const receiptId = await this.#claimInboundReceipt(event, handoff, receiptEventId, setFailureCode);
+    if (receiptId === null) return;
+    const result = await this.#persistInboundEvent(event, handoff, receiptId, setFailureCode);
+    if (receiptId) await this.#receipts?.markProcessed(receiptId);
+    if (result.duplicate)
+      emitInboundDuplicate(handoff.imBindingId, receiptEventId ?? event.providerEventId, event.message.externalId);
+    setActiveSpanAttributes({
+      ...imAttrs({
+        messageId: result.messageId,
+        deliveryCount: result.deliveryIds.length,
+        duplicate: result.duplicate,
+      }),
+      ...outcomeAttrs(result.duplicate ? "duplicate" : result.deliveryIds.length > 0 ? "persisted" : "no_delivery"),
+    });
+  }
+
+  async #persistInboundEvent(
+    event: Parameters<ImMessageInbox["ingest"]>[2],
+    handoff: { imBindingId: string; epoch: number; generation: number; appId: string },
+    receiptId: string | undefined,
+    setFailureCode: (
+      code: "FEISHU_INBOUND_DATABASE_FAILED" | "FEISHU_INBOUND_FENCE_STALE" | "FEISHU_INBOUND_IDENTITY_MISMATCH",
+    ) => void,
+  ): Promise<Awaited<ReturnType<ImMessageInbox["ingest"]>>> {
+    try {
+      setFailureCode("FEISHU_INBOUND_DATABASE_FAILED");
+      return await this.#inbox.ingest(handoff.imBindingId, handoff.generation, event, {
+        provider: "feishu",
+        holderInstanceId: this.#instanceId,
+        fencingEpoch: handoff.epoch,
+      });
+    } catch (error) {
+      if (receiptId) await this.#receipts?.markFailed(receiptId, processingErrorCode(error)).catch(() => undefined);
+      const code = classifyImInboundPersistenceError(error);
+      setFailureCode(
+        code === "IM_INBOUND_FENCE_STALE" || code === "IM_INBOUND_BINDING_STALE"
+          ? "FEISHU_INBOUND_FENCE_STALE"
+          : code === "IM_INBOUND_IDENTITY_MISMATCH"
+            ? "FEISHU_INBOUND_IDENTITY_MISMATCH"
+            : "FEISHU_INBOUND_DATABASE_FAILED",
+      );
+      throw error;
+    }
+  }
+
+  async #claimInboundReceipt(
+    event: Parameters<ImMessageInbox["ingest"]>[2],
+    handoff: { imBindingId: string; epoch: number; generation: number; appId: string },
+    receiptEventId: string | null,
+    setFailureCode: (
+      code: "FEISHU_INBOUND_DATABASE_FAILED" | "FEISHU_INBOUND_FENCE_STALE" | "FEISHU_INBOUND_IDENTITY_MISMATCH",
+    ) => void,
+  ): Promise<string | null | undefined> {
+    if (!this.#receipts || !receiptEventId) return undefined;
+    setFailureCode("FEISHU_INBOUND_DATABASE_FAILED");
+    const claim = await this.#receipts.claim({
+      bindingId: handoff.imBindingId,
+      credentialGeneration: handoff.generation,
+      eventId: receiptEventId,
+    });
+    if (claim.accepted && claim.receiptId) return claim.receiptId;
+    emitInboundDuplicate(handoff.imBindingId, receiptEventId, event.message.externalId);
+    setActiveSpanAttributes({
+      ...imAttrs({ providerEventId: receiptEventId, externalMessageId: event.message.externalId, duplicate: true }),
+      ...outcomeAttrs("duplicate"),
+    });
+    return null;
   }
 
   async #observeConnected(imBindingId: string, epoch: number): Promise<void> {
@@ -733,11 +733,19 @@ function processingErrorCode(error: unknown): string {
   return "FEISHU_EVENT_PROCESSING_FAILED";
 }
 
-/**
- * The Feishu adapter keeps a deterministic providerEventId when the envelope omits event_id so the
- * inbox semantic key remains stable. That synthetic value is deliberately not claimed as a receipt:
- * only a provider envelope event ID is a durable delivery receipt identity.
- */
+function emitInboundDuplicate(bindingId: string, providerEventId: string, externalMessageId: string): void {
+  emitRootSpan("feishu.inbound.deduplicated", {
+    ...imAttrs({
+      provider: "feishu",
+      bindingId,
+      providerEventId,
+      externalMessageId,
+      duplicate: true,
+    }),
+    ...outcomeAttrs("duplicate"),
+  });
+}
+
 function connectionOutcome(code: string): string {
   if (code.includes("STALE") || code.includes("FENCE") || code.includes("LEASE")) return "stale";
   if (code.includes("SCOPE") || code.includes("IDENTITY") || code.includes("CREDENTIAL")) {

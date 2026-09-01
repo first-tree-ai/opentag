@@ -240,7 +240,11 @@ describe("Computer repair and Agent rebind boundaries", () => {
           await releaseRebind.promise;
         },
       });
-      const computerService = new ComputerService(value.database, { getActiveUserById: async () => value.bootstrap });
+      const computerService = new ComputerService(value.database, {
+        getActiveUserById: async () => {
+          throw new Error("Computer removal does not resolve an active user");
+        },
+      });
 
       const rebind = rebindService.rebindById(value.bootstrap.userId, agent.id, computer.workspaceComputerId);
       await agentLocked.promise;

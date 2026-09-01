@@ -1,5 +1,6 @@
 export const API_V1_PREFIX = "/api/v1";
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
+export const AGENT_SETUP_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/setup`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
@@ -76,6 +77,10 @@ export function accountComputerConnectCodePath(connectCodeId: string): string {
 
 export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
+}
+
+export function agentSetupPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/setup`;
 }
 
 export function agentConfigPath(agentId: string): string {

@@ -64,6 +64,7 @@ export {
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
 } from "./agent.js";
+export * from "./agent-setup.js";
 export {
   type AuthIdentityProvider,
   AuthIdentityProviderSchema,
@@ -190,6 +191,7 @@ export {
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
+  AGENT_SETUP_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
@@ -205,6 +207,7 @@ export {
   agentImBindingPath,
   agentReactivatePath,
   agentRuntimeTestPath,
+  agentSetupPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,

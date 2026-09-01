@@ -186,7 +186,7 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       "OpenTag Home:",
       "(environment)",
       "Local configuration",
-      "not checked because there is no authoritative enrolled Server",
+      "not checked because there is no connected Server",
       "Not evaluated",
     ]) {
       if (!doctor.stdout.includes(expectedOutput)) {
@@ -194,7 +194,7 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       }
     }
     if (doctor.stdout.includes("127.0.0.1:1")) {
-      throw new Error("CLI doctor smoke used OPENTAG_SERVER_URL instead of the enrolled Server");
+      throw new Error("CLI doctor smoke used OPENTAG_SERVER_URL instead of the connected Server");
     }
     if (doctor.stderr !== "") {
       throw new Error(`CLI doctor diagnostics must be written to stdout, got stderr:\n${doctor.stderr}`);

@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({
   appOptions: undefined as unknown,
   onClose: undefined as (() => Promise<void>) | undefined,
   database: undefined as unknown,
-  selectedAgents: [] as Array<{ workspaceComputerId: string; runtimeProvider: "codex" | "claude-code" }>,
+  selectedAgents: [] as Array<{ computerId: string; runtimeProvider: "codex" | "claude-code" }>,
   sql: { end: vi.fn() },
   parseServerConfig: vi.fn(),
   migrateDatabase: vi.fn(),
@@ -18,6 +18,11 @@ const state = vi.hoisted(() => ({
   registrySupportsProvider: vi.fn(),
   registryProviderReadiness: vi.fn(),
   registryImCliReadiness: vi.fn(),
+  registryCloseComputer: vi.fn(),
+  machineAuthOptions: undefined as unknown,
+  agentOptions: undefined as unknown,
+  domainRequestReconcile: vi.fn(),
+  sessionCliPrepareReconcile: vi.fn(),
   imBindingOptions: undefined as unknown,
   imBindingGetAgentComputerId: vi.fn(),
   feishuConnectionOptions: undefined as unknown,
@@ -76,7 +81,9 @@ vi.mock("../runtime/connection-registry.js", () => ({
     providerCliCredentialReadiness() {
       return [];
     }
-    closeEnrollment() {}
+    closeComputer(computerId: string) {
+      return state.registryCloseComputer(computerId);
+    }
   },
   RuntimeRegistrySendError: class extends Error {},
 }));
@@ -107,18 +114,61 @@ vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
   },
 }));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
+vi.mock("../runtime/agent-session-stopper.js", () => ({
+  stopAgentSessions: vi.fn(
+    async (
+      _database: unknown,
+      targets: { agentId: string; computerId: string; placementGeneration: number; sessionId: string }[],
+      dependencies: {
+        currentInstanceId(computerId: string): string | undefined;
+        requestReconcile(
+          computerId: string,
+          instanceId: string | undefined,
+          request: unknown,
+          onDispatched?: () => void,
+        ): Promise<unknown>;
+      },
+    ) => {
+      for (const target of targets) {
+        const instanceId = dependencies.currentInstanceId(target.computerId);
+        await dependencies.requestReconcile(target.computerId, instanceId, {
+          type: "session:reconcile",
+          desired: "stopped",
+        });
+      }
+    },
+  ),
+}));
 vi.mock("../runtime/runtime-domain-owner.js", () => ({
   RuntimeDomainConflictError: class extends Error {},
   RuntimeDomainOwner: class {
     constructor(_registry: unknown, _store: unknown, options: unknown) {
       state.domainOptions = options;
     }
+    requestReconcile(computerId: string, instanceId: string | undefined, request: unknown, onDispatched?: () => void) {
+      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched);
+    }
   },
   RuntimeDomainRequestError: class extends Error {},
 }));
+vi.mock("../services/sessions/index.js", () => ({
+  SessionCliProofError: class extends Error {},
+  SessionCliProofService: class {
+    prepareReconcile(computerId: string, connectionInstanceId: string, request: unknown) {
+      return state.sessionCliPrepareReconcile(computerId, connectionInstanceId, request);
+    }
+  },
+  SessionCollaborationService: class {},
+  SessionService: class {},
+  SessionServiceError: class extends Error {},
+}));
 vi.mock("../services/agents/index.js", () => ({
   AgentRuntimeTestService: class {},
-  AgentService: class {},
+  AgentService: class {
+    constructor(_database: unknown, options: unknown) {
+      state.agentOptions = options;
+    }
+  },
   AgentServiceError: class extends Error {},
 }));
 vi.mock("../services/auth/index.js", () => ({
@@ -147,7 +197,11 @@ vi.mock("../services/channel-target/index.js", () => ({
 }));
 vi.mock("../services/computers/index.js", () => ({
   ComputerService: class {},
-  MachineAuthService: class {},
+  MachineAuthService: class {
+    constructor(_database: unknown, options: unknown) {
+      state.machineAuthOptions = options;
+    }
+  },
 }));
 vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
 vi.mock("../services/im/index.js", () => ({
@@ -189,7 +243,7 @@ vi.mock("../services/im-bindings/index.js", () => ({
     constructor(_database: unknown, _cipher: unknown, options: unknown) {
       state.imBindingOptions = options;
     }
-    getAgentWorkspaceComputerId(agentId: string) {
+    getAgentComputerId(agentId: string) {
       return state.imBindingGetAgentComputerId(agentId);
     }
     issueRuntimeCredentialGrant(request: unknown, computerId: string) {
@@ -209,9 +263,8 @@ vi.mock("../services/im-bindings/slack/index.js", () => ({
   },
 }));
 vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshotAssembler: class {} }));
-vi.mock("../services/workspaces/index.js", () => ({
-  WorkspaceAdminService: class {},
-  WorkspaceSetupService: class {},
+vi.mock("../services/setup/index.js", () => ({
+  AccountSetupService: class {},
 }));
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
@@ -270,7 +323,7 @@ beforeEach(() => {
   state.config = defaultConfig();
   state.appOptions = undefined;
   state.onClose = undefined;
-  state.selectedAgents = [{ workspaceComputerId: "workspace-computer-1", runtimeProvider: "codex" }];
+  state.selectedAgents = [{ computerId: "computer-1", runtimeProvider: "codex" }];
   state.imBindingOptions = undefined;
   state.feishuConnectionOptions = undefined;
   state.feishuSetupOptions = undefined;
@@ -440,9 +493,8 @@ describe("Server startup", () => {
           placementGeneration: 3,
         },
         {
-          computerId: "computer-1",
-          workspaceComputerId: "workspace-computer-1",
-          workspaceId: "workspace-1",
+          computerId: "workspace-computer-1",
+          installationId: "computer-1",
           instanceId: "instance-1",
         },
       ),
@@ -450,9 +502,8 @@ describe("Server startup", () => {
     expect(state.issueRuntimeCredentialGrant).toHaveBeenCalledWith(
       expect.objectContaining({ type: "im:credential", requestId: "request-1" }),
       expect.objectContaining({
-        computerId: "computer-1",
-        workspaceComputerId: "workspace-computer-1",
-        workspaceId: "workspace-1",
+        computerId: "workspace-computer-1",
+        installationId: "computer-1",
       }),
     );
 
@@ -472,6 +523,47 @@ describe("Server startup", () => {
       "feishu-connections:stop",
       "sql:end",
     ]);
+  });
+
+  it("wires credential rotation, reconcile preparation, and Agent session stop into the runtime", async () => {
+    await startServer();
+
+    const machineAuth = state.machineAuthOptions as {
+      onCredentialRotated(computerId: string): Promise<void>;
+    };
+    state.registryCloseComputer.mockResolvedValue(true);
+    await machineAuth.onCredentialRotated("computer-9");
+    expect(state.registryCloseComputer).toHaveBeenCalledWith("computer-9");
+
+    const prepareReconcile = (
+      state.domainOptions as {
+        prepareReconcile(computerId: string, connectionInstanceId: string, request: unknown): Promise<unknown>;
+      }
+    ).prepareReconcile;
+    state.sessionCliPrepareReconcile.mockResolvedValue({ type: "session:reconcile" });
+    const reconcile = { type: "session:reconcile", desired: "ready" };
+    await prepareReconcile("computer-2", "instance-2", reconcile);
+    expect(state.sessionCliPrepareReconcile).toHaveBeenCalledWith("computer-2", "instance-2", reconcile);
+
+    const stopSessions = (
+      state.agentOptions as {
+        stopSessions(
+          targets: { agentId: string; computerId: string; placementGeneration: number; sessionId: string }[],
+        ): Promise<void>;
+      }
+    ).stopSessions;
+    state.registryCurrentInstanceId.mockReturnValue("instance-3");
+    state.domainRequestReconcile.mockResolvedValue({ status: "stopped" });
+    await stopSessions([
+      { agentId: "agent-1", computerId: "computer-1", placementGeneration: 2, sessionId: "session-1" },
+    ]);
+    expect(state.registryCurrentInstanceId).toHaveBeenCalledWith("computer-1");
+    expect(state.domainRequestReconcile).toHaveBeenCalledWith(
+      "computer-1",
+      "instance-3",
+      expect.objectContaining({ desired: "stopped" }),
+      undefined,
+    );
   });
 
   it("verifies checked-in migrations before listening when auto-migrate is disabled", async () => {

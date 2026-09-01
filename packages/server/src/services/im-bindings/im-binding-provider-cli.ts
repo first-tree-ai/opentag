@@ -13,7 +13,7 @@ import type {
 import { hasRequiredFeishuTenantScopes, hasRequiredSlackBotScopes } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { accountComputers, agents, imBindings, slackInstallations } from "../../db/schema/index.js";
+import { agents, computers, imBindings, slackInstallations } from "../../db/schema/index.js";
 import type { ApplicationCipher } from "../crypto.js";
 import { decodeFeishuCredential, decodeSlackCredential } from "./credential-material.js";
 
@@ -51,10 +51,10 @@ export interface ProviderCliRequirement {
 export interface ProviderCliValidationGrantInput {
   agentId: string;
   computerId: string;
+  installationId: string;
   credentialGeneration: number;
   integrationId: string;
   provider: ImCliProvider;
-  workspaceComputerId: string;
 }
 
 type CredentialReadiness = {
@@ -235,15 +235,13 @@ export class ImBindingProviderCli {
     this.#credentialReadiness = options.credentialReadiness;
   }
 
-  async listActiveRequirements(workspaceComputerId: string): Promise<readonly ProviderCliRequirement[]> {
+  async listActiveRequirements(computerId: string): Promise<readonly ProviderCliRequirement[]> {
     const rows = await this.#database
       .select({ binding: imBindings, slackInstallation: slackInstallations })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-      .where(
-        and(eq(agents.computerId, workspaceComputerId), eq(agents.status, "active"), eq(imBindings.status, "active")),
-      );
+      .where(and(eq(agents.computerId, computerId), eq(agents.status, "active"), eq(imBindings.status, "active")));
     return rows.flatMap((row) => {
       const requirement = requirementFromRow(this.#cipher, row);
       return requirement ? [requirement] : [];
@@ -259,21 +257,21 @@ export class ImBindingProviderCli {
       .select({
         binding: imBindings,
         slackInstallation: slackInstallations,
-        workspaceComputerId: agents.computerId,
-        computerId: accountComputers.currentInstallationId,
+        computerId: agents.computerId,
+        installationId: computers.currentInstallationId,
         agentStatus: agents.status,
       })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(accountComputers, eq(accountComputers.id, agents.computerId))
+      .innerJoin(computers, eq(computers.id, agents.computerId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(and(eq(imBindings.id, input.integrationId), eq(imBindings.agentId, input.agentId)))
       .limit(1);
     if (
       !row ||
       row.agentStatus !== "active" ||
-      row.workspaceComputerId !== input.workspaceComputerId ||
       row.computerId !== input.computerId ||
+      row.installationId !== input.installationId ||
       row.binding.status !== "active" ||
       row.binding.provider !== input.provider
     ) {

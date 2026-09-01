@@ -1,9 +1,9 @@
 import { computeDirectInputHash, type DirectImMessageDeliveryRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import {
-  accountComputers,
   agents,
   computerConnectCodes,
   computerCredentials,
@@ -14,11 +14,9 @@ import {
   sessionPlacements,
   sessions,
   users,
-  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -37,8 +35,6 @@ async function fixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
   return {
     ...client,
@@ -48,10 +44,10 @@ async function fixture() {
   };
 }
 
-function exchangeInput(code: string, computerId = crypto.randomUUID()) {
+function exchangeInput(code: string, installationId = crypto.randomUUID()) {
   return {
     code,
-    computerId,
+    installationId,
     displayName: "workstation" as const,
     platform: "linux" as const,
     arch: "x64",
@@ -59,7 +55,7 @@ function exchangeInput(code: string, computerId = crypto.randomUUID()) {
   };
 }
 
-async function enroll(value: Awaited<ReturnType<typeof fixture>>) {
+async function connect(value: Awaited<ReturnType<typeof fixture>>) {
   const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
   return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code));
 }
@@ -132,7 +128,6 @@ async function bindSession(
   if (!session) throw new Error("Session fixture was not created");
   await database.insert(sessionPlacements).values({
     sessionId: session.id,
-    workspaceComputerId: input.computerId,
     computerId: input.computerId,
     generation: 1,
   });
@@ -236,10 +231,10 @@ describe("Computer repair and Agent rebind boundaries", () => {
     let removal: Promise<unknown> | undefined;
     let repair: Promise<unknown> | undefined;
     try {
-      const computer = await enroll(value);
+      const computer = await connect(value);
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
         mode: "repair",
-        targetComputerId: computer.workspaceComputerId,
+        targetComputerId: computer.computerId,
       });
       const repairedInstallationId = crypto.randomUUID();
       const computerService = new ComputerService(value.database, {
@@ -251,8 +246,8 @@ describe("Computer repair and Agent rebind boundaries", () => {
       computerBarrier = blocker.sql.begin(async (transaction) => {
         await transaction`
           select id
-          from account_computers
-          where id = ${computer.workspaceComputerId}
+          from computers
+          where id = ${computer.computerId}
           for update
         `;
         computerLocked.resolve();
@@ -260,7 +255,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
       });
       await computerLocked.promise;
 
-      removal = computerService.removeFromAccount(value.bootstrap.userId, computer.workspaceComputerId);
+      removal = computerService.removeFromAccount(value.bootstrap.userId, computer.computerId);
       await waitUntil(async () => {
         const result = await observer.sql<{ waiting: boolean }[]>`
           select exists (
@@ -269,8 +264,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
             where datname = current_database()
               and wait_event_type = 'Lock'
               and wait_event = 'transactionid'
-              and query like '%from "account_computers"%for update%'
-              and query not like '%"workspace_computers"%'
+              and query like '%from "computers"%for update%'
           ) as waiting
         `;
         return result[0]?.waiting ?? false;
@@ -278,16 +272,14 @@ describe("Computer repair and Agent rebind boundaries", () => {
 
       repair = value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, repairedInstallationId));
       await waitUntil(async () => {
-        const result = await observer.sql<{ waiting: boolean }[]>`
-          select exists (
-            select 1
-            from pg_stat_activity
-            where datname = current_database()
-              and wait_event_type = 'Lock'
-              and query like '%from "account_computers"%inner join "workspace_computers"%for update%'
-          ) as waiting
+        const result = await observer.sql<{ count: number }[]>`
+          select count(*)::integer as count
+          from pg_stat_activity
+          where datname = current_database()
+            and wait_event_type = 'Lock'
+            and query like '%from "computers"%for update%'
         `;
-        return result[0]?.waiting ?? false;
+        return (result[0]?.count ?? 0) >= 2;
       });
 
       releaseComputer.resolve();
@@ -299,38 +291,23 @@ describe("Computer repair and Agent rebind boundaries", () => {
         reason: { code: "AUTH_INVALID_CODE", statusCode: 401 },
       });
       expect(
-        (
-          await value.database
-            .select()
-            .from(accountComputers)
-            .where(eq(accountComputers.id, computer.workspaceComputerId))
-        )[0],
+        (await value.database.select().from(computers).where(eq(computers.id, computer.computerId)))[0],
       ).toMatchObject({
-        currentInstallationId: computer.computerId,
+        currentInstallationId: computer.installationId,
         currentInstanceId: null,
         connectedAt: null,
       });
-      expect(
-        (
-          await value.database
-            .select()
-            .from(computerConnectCodes)
-            .where(eq(computerConnectCodes.id, issued.connectCodeId))
-        )[0],
-      ).toMatchObject({ consumedAt: null });
-      expect(
-        (
-          await value.database
-            .select()
-            .from(computerConnectCodes)
-            .where(eq(computerConnectCodes.id, issued.connectCodeId))
-        )[0]?.revokedAt,
-      ).not.toBeNull();
+      const [connectCode] = await value.database
+        .select()
+        .from(computerConnectCodes)
+        .where(eq(computerConnectCodes.id, issued.connectCodeId));
+      expect(connectCode).toMatchObject({ consumedAt: null });
+      expect(connectCode?.revokedAt).not.toBeNull();
       expect(
         await value.database
           .select()
           .from(computerCredentials)
-          .where(eq(computerCredentials.computerId, computer.workspaceComputerId)),
+          .where(eq(computerCredentials.computerId, computer.computerId)),
       ).toSatisfy((credentials: (typeof computerCredentials.$inferSelect)[]) =>
         credentials.every(({ revokedAt }) => revokedAt !== null),
       );
@@ -343,180 +320,30 @@ describe("Computer repair and Agent rebind boundaries", () => {
     }
   });
 
-  it.each(["create", "rebind"] as const)(
-    "rejects an Agent %s that was waiting while its target Computer was removed",
-    async (operation) => {
-      const value = await fixture();
-      const blocker = createDatabaseClient(databaseUrl, { max: 1 });
-      const observer = createDatabaseClient(databaseUrl, { max: 1 });
-      const credentialLocked = deferred<void>();
-      const releaseCredential = deferred<void>();
-      let credentialBarrier: Promise<unknown> | undefined;
-      try {
-        const target = await enroll(value);
-        const source = operation === "rebind" ? await enroll(value) : undefined;
-        const agent = source ? await createAgent(value, source.workspaceComputerId, "reverse-rebind") : undefined;
-        const computerService = new ComputerService(value.database, {
-          getActiveUserById: async () => {
-            throw new Error("Computer removal does not resolve an active user");
-          },
-        });
-
-        credentialBarrier = blocker.sql.begin(async (transaction) => {
-          await transaction`
-            select id
-            from computer_credentials
-            where computer_id = ${target.workspaceComputerId} and revoked_at is null
-            for update
-          `;
-          credentialLocked.resolve();
-          await releaseCredential.promise;
-        });
-        await credentialLocked.promise;
-
-        const removal = computerService.removeFromAccount(value.bootstrap.userId, target.workspaceComputerId);
-        await waitUntil(async () => {
-          const result = await observer.sql<{ waiting: boolean }[]>`
-            select exists (
-              select 1
-              from pg_stat_activity
-              where datname = current_database()
-                and wait_event_type = 'Lock'
-                and wait_event = 'transactionid'
-                and query like 'update "computer_credentials"%'
-            ) as waiting
-          `;
-          return result[0]?.waiting ?? false;
-        });
-
-        const mutation = agent
-          ? value.agents.rebindById(value.bootstrap.userId, agent.id, target.workspaceComputerId)
-          : createAgent(value, target.workspaceComputerId, "reverse-create");
-        await waitUntil(async () => {
-          const result = await observer.sql<{ waiting: boolean }[]>`
-            select exists (
-              select 1
-              from pg_stat_activity
-              where datname = current_database()
-                and wait_event_type = 'Lock'
-                and wait_event = 'transactionid'
-                and query like '%from "account_computers"%for update%'
-            ) as waiting
-          `;
-          return result[0]?.waiting ?? false;
-        });
-
-        releaseCredential.resolve();
-        await credentialBarrier;
-        const [removalResult, mutationResult] = await Promise.allSettled([removal, mutation]);
-        expect(removalResult.status).toBe("fulfilled");
-        expect(mutationResult).toMatchObject({
-          status: "rejected",
-          reason: { code: "COMPUTER_NOT_FOUND", statusCode: 404 },
-        });
-        expect(
-          await value.database.select().from(agents).where(eq(agents.computerId, target.workspaceComputerId)),
-        ).toEqual([]);
-        if (agent && source) {
-          expect((await value.database.select().from(agents).where(eq(agents.id, agent.id)))[0]).toMatchObject({
-            computerId: source.workspaceComputerId,
-            workspaceComputerId: source.workspaceComputerId,
-          });
-        }
-      } finally {
-        releaseCredential.resolve();
-        if (credentialBarrier) await Promise.allSettled([credentialBarrier]);
-        await Promise.all([value.sql.end(), blocker.sql.end(), observer.sql.end()]);
-      }
-    },
-  );
-
-  it("serializes Computer removal with an exact-target Agent rebind without a lock-order deadlock", async () => {
-    const value = await fixture();
-    const observer = createDatabaseClient(databaseUrl, { max: 1 });
-    const agentLocked = deferred<void>();
-    const releaseRebind = deferred<void>();
-    try {
-      const computer = await enroll(value);
-      const agent = await createAgent(value, computer.workspaceComputerId, "concurrent-removal");
-      const rebindService = new AgentService(value.database, {
-        afterAgentLocked: async () => {
-          agentLocked.resolve();
-          await releaseRebind.promise;
-        },
-      });
-      const computerService = new ComputerService(value.database, {
-        getActiveUserById: async () => {
-          throw new Error("Computer removal does not resolve an active user");
-        },
-      });
-
-      const rebind = rebindService.rebindById(value.bootstrap.userId, agent.id, computer.workspaceComputerId);
-      await agentLocked.promise;
-      const removal = computerService.removeFromAccount(value.bootstrap.userId, computer.workspaceComputerId);
-      await waitUntil(async () => {
-        const result = await observer.sql<{ waiting: boolean }[]>`
-          select exists (
-            select 1
-            from pg_stat_activity
-            where datname = current_database()
-              and wait_event_type = 'Lock'
-              and wait_event = 'transactionid'
-              and query like '%"agents"%for update%'
-          ) as waiting
-        `;
-        return result[0]?.waiting ?? false;
-      });
-
-      releaseRebind.resolve();
-      const [rebindResult, removalResult] = await Promise.allSettled([rebind, removal]);
-      expect(rebindResult.status).toBe("fulfilled");
-      expect(removalResult.status).toBe("fulfilled");
-      expect(
-        (
-          await value.database
-            .select()
-            .from(computerCredentials)
-            .where(eq(computerCredentials.computerId, computer.workspaceComputerId))
-        )[0]?.revokedAt,
-      ).not.toBeNull();
-      expect((await value.database.select().from(agents).where(eq(agents.id, agent.id)))[0]).toMatchObject({
-        computerId: null,
-        workspaceComputerId: null,
-      });
-    } finally {
-      releaseRebind.resolve();
-      await Promise.all([value.sql.end(), observer.sql.end()]);
-    }
-  });
-
   it("repairs the named Computer without inferring identity or moving Session placement", async () => {
     const value = await fixture();
     try {
-      const first = await enroll(value);
-      const agent = await createAgent(value, first.workspaceComputerId);
+      const first = await connect(value);
+      const agent = await createAgent(value, first.computerId);
       const { session } = await bindSession(value.database, {
         agentId: agent.id,
-        computerId: first.workspaceComputerId,
+        computerId: first.computerId,
         channelId: "C-repair",
       });
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
         mode: "repair",
-        targetComputerId: first.workspaceComputerId,
+        targetComputerId: first.computerId,
       });
       expect(issued.mode).toBe("repair");
       expect(issued.expiresIn).toBe(15 * 60);
       const repairedInstallation = crypto.randomUUID();
       const repaired = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, repairedInstallation));
-      expect(repaired.workspaceComputerId).toBe(first.workspaceComputerId);
-      expect(repaired.computerId).toBe(repairedInstallation);
+      expect(repaired.computerId).toBe(first.computerId);
+      expect(repaired.installationId).toBe(repairedInstallation);
       await expect(value.machineAuth.verifyMachineToken(first.machineToken)).rejects.toMatchObject({
         code: "AUTH_INVALID_TOKEN",
       });
-      const [accountComputer] = await value.database
-        .select()
-        .from(accountComputers)
-        .where(eq(accountComputers.id, first.workspaceComputerId));
+      const [accountComputer] = await value.database.select().from(computers).where(eq(computers.id, first.computerId));
       expect(accountComputer).toMatchObject({
         currentInstallationId: repairedInstallation,
         ownerAccountId: value.bootstrap.userId,
@@ -526,7 +353,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, session.id));
       expect(placement).toMatchObject({
-        computerId: first.workspaceComputerId,
+        computerId: first.computerId,
         generation: 1,
       });
       await expect(value.machineAuth.exchangeConnectCode(exchangeInput(issued.code))).rejects.toMatchObject({
@@ -540,7 +367,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
   it("refuses repair of a Computer the Account does not own", async () => {
     const value = await fixture();
     try {
-      const first = await enroll(value);
+      const first = await connect(value);
       const [other] = await value.database
         .insert(users)
         .values({ displayName: "Other", email: "other-repair@example.com" })
@@ -549,7 +376,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
       await expect(
         value.machineAuth.issueForAccount(other.id, {
           mode: "repair",
-          targetComputerId: first.workspaceComputerId,
+          targetComputerId: first.computerId,
         }),
       ).rejects.toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
       expect(await value.database.select().from(computerConnectCodes)).toHaveLength(1);
@@ -561,45 +388,43 @@ describe("Computer repair and Agent rebind boundaries", () => {
   it("moves non-ended Sessions atomically and leaves ended Sessions in place", async () => {
     const value = await fixture();
     try {
-      const first = await enroll(value);
-      const second = await enroll(value);
-      const agent = await createAgent(value, first.workspaceComputerId);
+      const first = await connect(value);
+      const second = await connect(value);
+      const agent = await createAgent(value, first.computerId);
       const active = await bindSession(value.database, {
         agentId: agent.id,
-        computerId: first.workspaceComputerId,
+        computerId: first.computerId,
         channelId: "C-active",
       });
       const alreadyOnTarget = await bindSession(value.database, {
         agentId: agent.id,
         bindingId: active.bindingId,
-        computerId: second.workspaceComputerId,
+        computerId: second.computerId,
         channelId: "C-target",
       });
       const ended = await bindSession(value.database, {
         agentId: agent.id,
         bindingId: active.bindingId,
-        computerId: first.workspaceComputerId,
+        computerId: first.computerId,
         channelId: "C-ended",
         ended: true,
       });
 
-      const rebound = await value.agents.rebindById(value.bootstrap.userId, agent.id, second.workspaceComputerId);
+      const rebound = await value.agents.rebindById(value.bootstrap.userId, agent.id, second.computerId);
       expect(rebound).toMatchObject({
-        computerId: second.workspaceComputerId,
+        computerId: second.computerId,
         revision: 2,
       });
       const [agentRow] = await value.database.select().from(agents).where(eq(agents.id, agent.id));
       expect(agentRow).toMatchObject({
-        computerId: second.workspaceComputerId,
-        workspaceId: value.bootstrap.workspaceId,
-        workspaceComputerId: second.workspaceComputerId,
+        computerId: second.computerId,
       });
       const [moved] = await value.database
         .select()
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, active.session.id));
       expect(moved).toMatchObject({
-        computerId: second.workspaceComputerId,
+        computerId: second.computerId,
         generation: 2,
       });
       const [unchanged] = await value.database
@@ -607,7 +432,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, alreadyOnTarget.session.id));
       expect(unchanged).toMatchObject({
-        computerId: second.workspaceComputerId,
+        computerId: second.computerId,
         generation: 1,
       });
       const [historical] = await value.database
@@ -615,7 +440,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, ended.session.id));
       expect(historical).toMatchObject({
-        computerId: first.workspaceComputerId,
+        computerId: first.computerId,
         generation: 1,
       });
     } finally {
@@ -626,8 +451,8 @@ describe("Computer repair and Agent rebind boundaries", () => {
   it("blocks rebind without partial writes when custody is pending, unreported, uncertain, or stale", async () => {
     const value = await fixture();
     try {
-      const first = await enroll(value);
-      const second = await enroll(value);
+      const first = await connect(value);
+      const second = await connect(value);
       const cases = [
         { name: "pending", channelId: "C-pending", setup: pendingDelivery },
         {
@@ -662,10 +487,10 @@ describe("Computer repair and Agent rebind boundaries", () => {
       ] as const;
 
       for (const testCase of cases) {
-        const agent = await createAgent(value, first.workspaceComputerId, `agent-${testCase.name}`);
+        const agent = await createAgent(value, first.computerId, `agent-${testCase.name}`);
         const bound = await bindSession(value.database, {
           agentId: agent.id,
-          computerId: first.workspaceComputerId,
+          computerId: first.computerId,
           channelId: testCase.channelId,
         });
         await testCase.setup(value.database, {
@@ -680,7 +505,7 @@ describe("Computer repair and Agent rebind boundaries", () => {
           .from(sessionPlacements)
           .where(eq(sessionPlacements.sessionId, bound.session.id));
         await expect(
-          value.agents.rebindById(value.bootstrap.userId, agent.id, second.workspaceComputerId),
+          value.agents.rebindById(value.bootstrap.userId, agent.id, second.computerId),
         ).rejects.toMatchObject({ code: "AGENT_REBIND_BLOCKED", statusCode: 409 });
         expect(await value.database.select().from(agents).where(eq(agents.id, agent.id))).toEqual(beforeAgent);
         expect(
@@ -698,11 +523,11 @@ describe("Computer repair and Agent rebind boundaries", () => {
   it("keeps an exact-target retry idempotent even with pending custody", async () => {
     const value = await fixture();
     try {
-      const computer = await enroll(value);
-      const agent = await createAgent(value, computer.workspaceComputerId, "idempotent");
+      const computer = await connect(value);
+      const agent = await createAgent(value, computer.computerId, "idempotent");
       const bound = await bindSession(value.database, {
         agentId: agent.id,
-        computerId: computer.workspaceComputerId,
+        computerId: computer.computerId,
         channelId: "C-idempotent",
       });
       await pendingDelivery(value.database, {
@@ -713,11 +538,11 @@ describe("Computer repair and Agent rebind boundaries", () => {
       });
 
       await expect(
-        value.agents.rebindById(value.bootstrap.userId, agent.id, computer.workspaceComputerId),
-      ).resolves.toMatchObject({ computerId: computer.workspaceComputerId, revision: 1 });
+        value.agents.rebindById(value.bootstrap.userId, agent.id, computer.computerId),
+      ).resolves.toMatchObject({ computerId: computer.computerId, revision: 1 });
       await expect(
         value.database.select().from(sessionPlacements).where(eq(sessionPlacements.sessionId, bound.session.id)),
-      ).resolves.toEqual([expect.objectContaining({ computerId: computer.workspaceComputerId, generation: 1 })]);
+      ).resolves.toEqual([expect.objectContaining({ computerId: computer.computerId, generation: 1 })]);
     } finally {
       await value.sql.end();
     }
@@ -726,12 +551,12 @@ describe("Computer repair and Agent rebind boundaries", () => {
   it("moves a placement past terminal history from an older generation", async () => {
     const value = await fixture();
     try {
-      const first = await enroll(value);
-      const second = await enroll(value);
-      const agent = await createAgent(value, first.workspaceComputerId, "terminal-history");
+      const first = await connect(value);
+      const second = await connect(value);
+      const agent = await createAgent(value, first.computerId, "terminal-history");
       const bound = await bindSession(value.database, {
         agentId: agent.id,
-        computerId: second.workspaceComputerId,
+        computerId: second.computerId,
         channelId: "C-terminal-history",
       });
       const delivery = await pendingDelivery(value.database, {
@@ -749,12 +574,13 @@ describe("Computer repair and Agent rebind boundaries", () => {
         .set({ generation: 2 })
         .where(eq(sessionPlacements.sessionId, bound.session.id));
 
-      await expect(
-        value.agents.rebindById(value.bootstrap.userId, agent.id, first.workspaceComputerId),
-      ).resolves.toMatchObject({ computerId: first.workspaceComputerId, revision: 1 });
+      await expect(value.agents.rebindById(value.bootstrap.userId, agent.id, first.computerId)).resolves.toMatchObject({
+        computerId: first.computerId,
+        revision: 1,
+      });
       await expect(
         value.database.select().from(sessionPlacements).where(eq(sessionPlacements.sessionId, bound.session.id)),
-      ).resolves.toEqual([expect.objectContaining({ computerId: first.workspaceComputerId, generation: 3 })]);
+      ).resolves.toEqual([expect.objectContaining({ computerId: first.computerId, generation: 3 })]);
     } finally {
       await value.sql.end();
     }
@@ -763,45 +589,33 @@ describe("Computer repair and Agent rebind boundaries", () => {
   it("rejects a rebind target the Agent creator does not own and keeps a mismatched Agent visible", async () => {
     const value = await fixture();
     try {
-      const owned = await enroll(value);
-      const agent = await createAgent(value, owned.workspaceComputerId, "mismatch");
+      const owned = await connect(value);
+      const agent = await createAgent(value, owned.computerId, "mismatch");
       const [other] = await value.database
         .insert(users)
         .values({ displayName: "Other", email: "other-rebind@example.com" })
         .returning();
       if (!other) throw new Error("Other Account fixture was not created");
-      const [installation] = await value.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-      if (!installation) throw new Error("Installation fixture was not created");
-      const [foreignEnrollment] = await value.database
-        .insert(workspaceComputers)
+      const [foreignComputer] = await value.database
+        .insert(computers)
         .values({
-          workspaceId: value.bootstrap.workspaceId,
-          computerId: installation.id,
+          ownerAccountId: other.id,
+          currentInstallationId: crypto.randomUUID(),
           displayName: "foreign",
           platform: "linux",
           arch: "x64",
           clientVersion: "0.0.2",
-          enrolledByUserId: other.id,
         })
         .returning();
-      if (!foreignEnrollment) throw new Error("Foreign Computer fixture was not created");
-      await value.database.insert(accountComputers).values({
-        id: foreignEnrollment.id,
-        ownerAccountId: other.id,
-        currentInstallationId: installation.id,
-        displayName: "foreign",
-        platform: "linux",
-        arch: "x64",
-        clientVersion: "0.0.2",
-      });
-      await expect(
-        value.agents.rebindById(value.bootstrap.userId, agent.id, foreignEnrollment.id),
-      ).rejects.toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
+      if (!foreignComputer) throw new Error("Foreign Computer fixture was not created");
+      await expect(value.agents.rebindById(value.bootstrap.userId, agent.id, foreignComputer.id)).rejects.toMatchObject(
+        { code: "COMPUTER_NOT_FOUND", statusCode: 404 },
+      );
 
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ ownerAccountId: other.id })
-        .where(eq(accountComputers.id, owned.workspaceComputerId));
+        .where(eq(computers.id, owned.computerId));
       const listed = await value.agents.listForAccount(value.bootstrap.userId);
       expect(listed.agents).toEqual([expect.objectContaining({ id: agent.id, requiresComputerRebind: true })]);
     } finally {

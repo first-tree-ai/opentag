@@ -2,9 +2,9 @@ import { FEISHU_REQUIRED_TENANT_SCOPES, type TurnReportRequest } from "@opentag/
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
-import { bootstrapTestAccount } from "../../../__tests__/test-account.js";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
 import {
-  accountComputers,
+  agents,
   computerCredentials,
   computers,
   imBindings,
@@ -12,7 +12,6 @@ import {
   imMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../../../db/schema/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
 import { AgentService } from "../index.js";
@@ -34,48 +33,34 @@ beforeEach(async () => {
   await unitDatabase.reset();
 });
 
-async function createComputer(ownerUserId: string, workspaceId: string, label = "workstation") {
+async function createComputer(ownerUserId: string, label = "workstation") {
   const installationId = crypto.randomUUID();
-  const [computer] = await unitDatabase.database.insert(computers).values({ id: installationId }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [enrollment] = await unitDatabase.database
-    .insert(workspaceComputers)
+  const [computer] = await unitDatabase.database
+    .insert(computers)
     .values({
-      workspaceId,
-      computerId: installationId,
+      ownerAccountId: ownerUserId,
+      currentInstallationId: installationId,
       displayName: label,
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      enrolledByUserId: ownerUserId,
     })
     .returning();
-  if (!enrollment) throw new Error("Workspace Computer fixture was not created");
-  await unitDatabase.database.insert(accountComputers).values({
-    id: enrollment.id,
-    ownerAccountId: ownerUserId,
-    currentInstallationId: installationId,
-    displayName: label,
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.2",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   await unitDatabase.database.insert(computerCredentials).values({
-    computerId: enrollment.id,
+    computerId: computer.id,
     secretHash: `agent-service-${installationId}`,
     issuedByUserId: ownerUserId,
   });
-  return { id: enrollment.id, installationId };
+  return { id: computer.id, installationId };
 }
 
 async function fixture() {
   const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
-  const computer = await createComputer(bootstrap.userId, bootstrap.workspaceId);
+  const computer = await createComputer(bootstrap.userId);
   const service = new AgentService(unitDatabase.database, { now: () => NOW });
   return { bootstrap, computer, service };
 }
@@ -138,7 +123,6 @@ async function createSession(
   if (computerId) {
     await unitDatabase.database.insert(sessionPlacements).values({
       sessionId: session.id,
-      workspaceComputerId: computerId,
       computerId,
       generation: 1,
     });
@@ -237,6 +221,20 @@ async function createDelivery(
 }
 
 describe("AgentService", () => {
+  it("fails loudly when a stored Agent projection is internally inconsistent", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id);
+    /* The database cannot express the summary invariants the projection defends (display names are
+       plain NOT NULL text), so an inconsistent row must still fail closed instead of leaking a
+       malformed projection to the Account. */
+    await unitDatabase.database.update(computers).set({ displayName: "" }).where(eq(computers.id, computer.id));
+
+    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow("missing its bound Computer");
+
+    await unitDatabase.database.delete(agents).where(eq(agents.id, created.id));
+    await expect(service.listForAccount(bootstrap.userId)).resolves.toEqual({ agents: [] });
+  });
+
   it("creates, projects, updates, and authorizes an Agent", async () => {
     const { bootstrap, computer, service } = await fixture();
     await expect(service.listForAccount(bootstrap.userId)).resolves.toEqual({ agents: [] });
@@ -497,8 +495,8 @@ describe("AgentService", () => {
     expect(stopSessions).toHaveBeenCalledWith([
       {
         agentId: created.id,
-        computerId: expect.any(String),
-        workspaceComputerId: computer.id,
+        computerId: computer.id,
+        installationId: computer.installationId,
         placementGeneration: 1,
         sessionId: session.id,
       },
@@ -529,7 +527,7 @@ describe("AgentService", () => {
 
   it("rebinds active Sessions, rejects unsafe custody, and handles no-op and missing targets", async () => {
     const { bootstrap, computer, service } = await fixture();
-    const target = await createComputer(bootstrap.userId, bootstrap.workspaceId, "target");
+    const target = await createComputer(bootstrap.userId, "target");
     const created = await createAgent(service, bootstrap.userId, computer.id, "rebind-agent");
     const binding = await createBinding(created.id);
     const session = await createSession(binding.id, computer.id);
@@ -564,7 +562,7 @@ describe("AgentService", () => {
       .select()
       .from(sessionPlacements)
       .where(eq(sessionPlacements.sessionId, session.id));
-    expect(placement).toMatchObject({ computerId: target.id, workspaceComputerId: target.id, generation: 2 });
+    expect(placement).toMatchObject({ computerId: target.id, generation: 2 });
     await expect(service.rebindById(bootstrap.userId, created.id, crypto.randomUUID())).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
     });
@@ -572,7 +570,7 @@ describe("AgentService", () => {
 
   it("notifies provider CLI placement after committed lifecycle changes and reports callback failures", async () => {
     const { bootstrap, computer, service } = await fixture();
-    const target = await createComputer(bootstrap.userId, bootstrap.workspaceId, "target-cli");
+    const target = await createComputer(bootstrap.userId, "target-cli");
     const created = await createAgent(service, bootstrap.userId, computer.id, "placement-agent");
     const onProviderCliPlacementChanged = vi.fn(async () => undefined);
     const hooked = new AgentService(unitDatabase.database, {
@@ -582,13 +580,13 @@ describe("AgentService", () => {
     await hooked.suspendById(bootstrap.userId, created.id);
     expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
       agentId: created.id,
-      previousWorkspaceComputerId: computer.id,
+      previousComputerId: computer.id,
     });
     onProviderCliPlacementChanged.mockClear();
     await hooked.reactivateById(bootstrap.userId, created.id);
     expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
       agentId: created.id,
-      workspaceComputerId: computer.id,
+      computerId: computer.id,
     });
     onProviderCliPlacementChanged.mockClear();
     await hooked.rebindById(bootstrap.userId, created.id, computer.id);
@@ -596,8 +594,8 @@ describe("AgentService", () => {
     await hooked.rebindById(bootstrap.userId, created.id, target.id);
     expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
       agentId: created.id,
-      previousWorkspaceComputerId: computer.id,
-      workspaceComputerId: target.id,
+      previousComputerId: computer.id,
+      computerId: target.id,
     });
     const diagnostics: string[] = [];
     const failing = new AgentService(unitDatabase.database, {

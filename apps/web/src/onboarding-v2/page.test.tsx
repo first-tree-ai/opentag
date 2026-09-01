@@ -689,7 +689,7 @@ describe("OnboardingV2Page", () => {
       await reachCheckStep();
       await settleCheck();
 
-      // Back to the agent step and forward again: the enrollment is durable, so it is still here.
+      // Back to the agent step and forward again: the connection is durable, so it is still here.
       fireEvent.click(screen.getByRole("button", { name: "Go back" }));
       expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Continue" }));

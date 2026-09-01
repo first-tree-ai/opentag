@@ -9,13 +9,8 @@ import {
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  accountComputers,
-  computerCredentials,
-  computers,
-  imBindings,
-  workspaceComputers,
-} from "../db/schema/index.js";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
+import { computerCredentials, computers, imBindings } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import {
@@ -29,7 +24,6 @@ import { FeishuConnectionManager } from "../services/im-bindings/feishu/connecti
 import { FeishuOperationError } from "../services/im-bindings/feishu/errors.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 let connectionDatabase: UnitDatabase;
 const connectionNow = new Date("2026-08-19T00:00:00.000Z");
@@ -47,33 +41,18 @@ async function connectionFixture() {
   });
   const [computer] = await connectionDatabase.database
     .insert(computers)
-    .values({ id: crypto.randomUUID() })
-    .returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await connectionDatabase.database
-    .insert(workspaceComputers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "connection-computer",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.1",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await connectionDatabase.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "connection-computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.1",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   await connectionDatabase.database.insert(computerCredentials).values({
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
     secretHash: `feishu-adapter-${computer.id}`,
     issuedByUserId: bootstrap.userId,
   });
@@ -81,11 +60,11 @@ async function connectionFixture() {
     name: "connection-agent",
     displayName: "Connection Agent",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindings = new ImBindingService(connectionDatabase.database, cipher, { now: () => connectionNow });
-  return { bootstrap, agent, cipher, imBindings, computer, workspaceComputer };
+  return { bootstrap, agent, cipher, imBindings, computer };
 }
 
 describe("Feishu adapter", () => {

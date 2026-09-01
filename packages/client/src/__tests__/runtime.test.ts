@@ -42,7 +42,7 @@ describe("RuntimeConnection", () => {
     let currentTime = 10_000;
     const connection = new RuntimeConnection({ ...baseOptions, queueLimits: { trace: 1 }, now: () => currentTime });
     expect(connection.state).toBe("stopped");
-    expect(connection.computerId).toBe(baseOptions.computer.computerId);
+    expect(connection.installationId).toBe(baseOptions.computer.computerId);
     expect(connection.instanceId).toBe(baseOptions.instanceId);
     expect(connection.supportsCapability("runtime.imDelivery")).toBe(false);
     expect(connection.capabilityVersion("runtime.imDelivery")).toBeUndefined();
@@ -133,9 +133,8 @@ describe("RuntimeConnection", () => {
               type: "auth:result",
               requestId: randomUUID(),
               ok: true,
-              workspaceComputerId: randomUUID(),
-              workspaceId: randomUUID(),
               computerId: randomUUID(),
+              installationId: randomUUID(),
             }),
           ),
       },
@@ -404,9 +403,8 @@ describe("RuntimeConnection", () => {
       type: "auth:result",
       requestId: auth?.requestId,
       ok: true,
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     });
     orderedSocket.receive(welcome(1_000, 2_000));
     await vi.waitFor(() => expect(orderedSocket.frame("computer:register")).toBeDefined());
@@ -431,9 +429,8 @@ describe("RuntimeConnection", () => {
         type: "auth:result",
         requestId: auth?.requestId,
         ok: true,
-        workspaceComputerId: randomUUID(),
-        workspaceId: randomUUID(),
         computerId: randomUUID(),
+        installationId: randomUUID(),
       });
       const baseWelcome = welcome(10, 2_000);
       const { "runtime.channelTarget": _omitted, ...legacyServerCapabilities } = RUNTIME_SERVER_CAPABILITY_OFFERS;
@@ -511,9 +508,8 @@ describe("RuntimeConnection", () => {
         type: "auth:result",
         requestId: auth?.requestId,
         ok: true,
-        workspaceComputerId: randomUUID(),
-        workspaceId: randomUUID(),
         computerId: randomUUID(),
+        installationId: randomUUID(),
       });
       socket.receive(welcome(1_000, 2_000));
       await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());
@@ -552,9 +548,8 @@ describe("RuntimeConnection", () => {
       type: "auth:result",
       requestId: legacyAuth?.requestId,
       ok: true,
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     });
     secondSocket.receive(welcome(1_000, 2_000, RUNTIME_PROTOCOL_V1));
     await vi.waitFor(() => expect(secondSocket.frame("computer:register")).toBeDefined());
@@ -638,12 +633,11 @@ describe("RuntimeConnection", () => {
       supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
     });
     const register = frames[1];
-    expect(register).toMatchObject({ computerId, displayName: "workstation", platform: "linux" });
+    expect(register).toMatchObject({ installationId: computerId, displayName: "workstation", platform: "linux" });
     expect(register).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
     expect(register).not.toEqual(
       expect.objectContaining({ providerReadiness: expect.arrayContaining([{ provider: "claude-code" }]) }),
     );
-    expect(register).not.toHaveProperty("workspaceId");
     expect(register?.instanceId).toBe(instanceId);
     expect(frames[2]).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
   });
@@ -1064,9 +1058,8 @@ describe("RuntimeConnection", () => {
             type: "auth:result",
             requestId: frame.requestId,
             ok: true,
-            workspaceComputerId: randomUUID(),
-            workspaceId: randomUUID(),
             computerId: randomUUID(),
+            installationId: randomUUID(),
           }),
         );
         socket.send(JSON.stringify({ ...welcome(), protocolVersion: 3 }));
@@ -1362,9 +1355,8 @@ function completeAuth(
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     }),
   );
   socket.send(
@@ -1492,9 +1484,8 @@ async function registerControlled(
     type: "auth:result",
     requestId: auth?.requestId,
     ok: true,
-    workspaceComputerId: randomUUID(),
-    workspaceId: randomUUID(),
     computerId: randomUUID(),
+    installationId: randomUUID(),
   });
   socket.receive(serverWelcome);
   await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());

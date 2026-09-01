@@ -3,8 +3,8 @@ import { Readable } from "node:stream";
 import type { NormalizedInboundImEvent, SessionReconcileRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import {
-  accountComputers,
   agents,
   computerCredentials,
   computers,
@@ -15,7 +15,6 @@ import {
   sessionPlacements,
   sessions,
   users,
-  workspaceComputers,
 } from "../db/schema/index.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import { AgentService } from "../services/agents/index.js";
@@ -35,7 +34,6 @@ import {
   SessionServiceError,
 } from "../services/sessions/session-service.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 describe("SessionService with the unit database", () => {
   let db: UnitDatabase;
@@ -59,7 +57,7 @@ describe("SessionService with the unit database", () => {
         conversationKind: "channel",
         kind: "channel",
         threadKey: "bad",
-        workspaceComputerId: fixture.workspaceComputerId,
+        computerId: fixture.computerId,
         now: fixture.now,
       }),
     ).rejects.toMatchObject({ code: "SESSION_SCOPE_INVALID" });
@@ -69,7 +67,7 @@ describe("SessionService with the unit database", () => {
         channelId: "C1",
         conversationKind: "channel",
         kind: "thread",
-        workspaceComputerId: fixture.workspaceComputerId,
+        computerId: fixture.computerId,
         now: fixture.now,
       }),
     ).rejects.toMatchObject({ code: "SESSION_SCOPE_INVALID" });
@@ -117,9 +115,9 @@ describe("SessionService with the unit database", () => {
     const messageId = randomUUID();
     const input = {
       creatorSessionId: source.session.id,
-      creatorComputerId: fixture.computerId,
+      creatorInstallationId: fixture.installationId,
       creatorConnectionInstanceId: fixture.instanceId,
-      creatorWorkspaceComputerId: fixture.workspaceComputerId,
+      creatorComputerId: fixture.computerId,
       creatorPlacementGeneration: 1,
       messageId,
       initialMessage: `${"é".repeat(200)} task`,
@@ -153,34 +151,22 @@ describe("SessionService with the unit database", () => {
     );
     const target = await service.createInternalSessionWithMessage({
       creatorSessionId: source.session.id,
-      creatorComputerId: fixture.computerId,
+      creatorInstallationId: fixture.installationId,
       creatorConnectionInstanceId: fixture.instanceId,
-      creatorWorkspaceComputerId: fixture.workspaceComputerId,
+      creatorComputerId: fixture.computerId,
       creatorPlacementGeneration: 1,
       messageId: randomUUID(),
       initialMessage: "initial",
     });
     const otherUserId = randomUUID();
     const otherComputerId = randomUUID();
-    const otherWorkspaceComputerId = randomUUID();
     await db.database
       .insert(users)
       .values({ id: otherUserId, email: "target-owner@example.com", displayName: "Target Owner" });
-    await db.database.insert(computers).values({ id: otherComputerId });
-    await db.database.insert(workspaceComputers).values({
-      id: otherWorkspaceComputerId,
-      workspaceId: fixture.workspaceId,
-      computerId: otherComputerId,
-      displayName: "other",
-      platform: "linux",
-      arch: "x64",
-      clientVersion: "1",
-      enrolledByUserId: otherUserId,
-    });
-    await db.database.insert(accountComputers).values({
-      id: otherWorkspaceComputerId,
+    await db.database.insert(computers).values({
+      id: otherComputerId,
       ownerAccountId: otherUserId,
-      currentInstallationId: otherComputerId,
+      currentInstallationId: randomUUID(),
       displayName: "other",
       platform: "linux",
       arch: "x64",
@@ -188,15 +174,15 @@ describe("SessionService with the unit database", () => {
     });
     await db.database
       .update(sessionPlacements)
-      .set({ workspaceComputerId: otherWorkspaceComputerId, computerId: otherWorkspaceComputerId })
+      .set({ computerId: otherComputerId })
       .where(eq(sessionPlacements.sessionId, target.session.id));
     await expect(
       service.authorizeAndRecordMessage({
         messageId: randomUUID(),
         sourceSessionId: source.session.id,
-        sourceComputerId: fixture.computerId,
+        sourceInstallationId: fixture.installationId,
         sourceConnectionInstanceId: fixture.instanceId,
-        sourceWorkspaceComputerId: fixture.workspaceComputerId,
+        sourceComputerId: fixture.computerId,
         sourcePlacementGeneration: 1,
         targetSessionId: target.session.id,
         content: "owner mismatch",
@@ -204,34 +190,34 @@ describe("SessionService with the unit database", () => {
     ).rejects.toMatchObject({ code: "SESSION_TARGET_UNAVAILABLE" });
     await db.database
       .update(sessionPlacements)
-      .set({ workspaceComputerId: fixture.workspaceComputerId, computerId: fixture.workspaceComputerId })
+      .set({ computerId: fixture.computerId })
       .where(eq(sessionPlacements.sessionId, target.session.id));
     await db.database
-      .update(accountComputers)
+      .update(computers)
       .set({ ownerAccountId: otherUserId })
-      .where(eq(accountComputers.id, fixture.workspaceComputerId));
+      .where(eq(computers.id, fixture.computerId));
     await expect(
       service.authorizeAndRecordMessage({
         messageId: randomUUID(),
         sourceSessionId: source.session.id,
-        sourceComputerId: fixture.computerId,
+        sourceInstallationId: fixture.installationId,
         sourceConnectionInstanceId: fixture.instanceId,
-        sourceWorkspaceComputerId: fixture.workspaceComputerId,
+        sourceComputerId: fixture.computerId,
         sourcePlacementGeneration: 1,
         targetSessionId: target.session.id,
         content: "source owner mismatch",
       }),
     ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
     await db.database
-      .update(accountComputers)
+      .update(computers)
       .set({ ownerAccountId: fixture.userId })
-      .where(eq(accountComputers.id, fixture.workspaceComputerId));
+      .where(eq(computers.id, fixture.computerId));
     const args = {
       messageId: randomUUID(),
       sourceSessionId: source.session.id,
-      sourceComputerId: fixture.computerId,
+      sourceInstallationId: fixture.installationId,
       sourceConnectionInstanceId: fixture.instanceId,
-      sourceWorkspaceComputerId: fixture.workspaceComputerId,
+      sourceComputerId: fixture.computerId,
       sourcePlacementGeneration: 1,
       targetSessionId: target.session.id,
       content: "hello",
@@ -274,9 +260,9 @@ describe("SessionService with the unit database", () => {
     );
     const target = await service.createInternalSessionWithMessage({
       creatorSessionId: source.session.id,
-      creatorComputerId: fixture.computerId,
+      creatorInstallationId: fixture.installationId,
       creatorConnectionInstanceId: fixture.instanceId,
-      creatorWorkspaceComputerId: fixture.workspaceComputerId,
+      creatorComputerId: fixture.computerId,
       creatorPlacementGeneration: 1,
       messageId: randomUUID(),
       initialMessage: "initial",
@@ -287,10 +273,10 @@ describe("SessionService with the unit database", () => {
       sourceSessionId: source.session.id,
       sourceConnectionInstanceId: fixture.instanceId,
       sourcePlacementGeneration: 1,
-      sourceWorkspaceComputerId: fixture.workspaceComputerId,
+      sourceComputerId: fixture.computerId,
       targetSessionId: target.session.id,
+      targetInstallationId: fixture.installationId,
       targetComputerId: fixture.computerId,
-      targetWorkspaceComputerId: fixture.workspaceComputerId,
       targetPlacementGeneration: 1,
       targetSessionKind: "internal" as const,
       targetCreatorSessionId: source.session.id,
@@ -311,14 +297,14 @@ describe("SessionService with the unit database", () => {
       .insert(users)
       .values({ id: otherUserId, email: "admission-owner@example.com", displayName: "Admission Owner" });
     await db.database
-      .update(accountComputers)
+      .update(computers)
       .set({ ownerAccountId: otherUserId })
-      .where(eq(accountComputers.id, fixture.workspaceComputerId));
+      .where(eq(computers.id, fixture.computerId));
     await expect(service.withCollaborationDispatchAdmission(route, operation)).resolves.toEqual({ admitted: false });
     await db.database
-      .update(accountComputers)
+      .update(computers)
       .set({ ownerAccountId: fixture.userId })
-      .where(eq(accountComputers.id, fixture.workspaceComputerId));
+      .where(eq(computers.id, fixture.computerId));
     await expect(
       service.withCollaborationDispatchAdmission(route, () => {
         throw new Error("dispatch failed");
@@ -355,32 +341,17 @@ describe("SessionService with the unit database", () => {
       "channel",
     );
     const otherComputer = randomUUID();
-    await db.database.insert(computers).values({ id: otherComputer });
-    await db.database.insert(workspaceComputers).values({
-      id: randomUUID(),
-      workspaceId: fixture.workspaceId,
-      computerId: otherComputer,
-      displayName: "other",
-      platform: "linux",
-      arch: "x64",
-      clientVersion: "1",
-      enrolledByUserId: fixture.userId,
-    });
-    const targetWorkspace = (
-      await db.database.select().from(workspaceComputers).where(eq(workspaceComputers.computerId, otherComputer))
-    )[0];
-    if (!targetWorkspace) throw new Error("missing target computer");
-    await db.database.insert(accountComputers).values({
-      id: targetWorkspace.id,
+    await db.database.insert(computers).values({
+      id: otherComputer,
       ownerAccountId: fixture.userId,
-      currentInstallationId: otherComputer,
+      currentInstallationId: randomUUID(),
       displayName: "other",
       platform: "linux",
       arch: "x64",
       clientVersion: "1",
     });
-    await expect(service.assertPlacement(session.session.id, fixture.workspaceComputerId, 1)).resolves.toBeUndefined();
-    await expect(service.assertPlacement(session.session.id, fixture.workspaceComputerId, 2)).rejects.toMatchObject({
+    await expect(service.assertPlacement(session.session.id, fixture.computerId, 1)).resolves.toBeUndefined();
+    await expect(service.assertPlacement(session.session.id, fixture.computerId, 2)).rejects.toMatchObject({
       code: "SESSION_PLACEMENT_STALE",
     });
     const inbox = new ImMessageInbox(db.database, { now: () => fixture.now });
@@ -400,7 +371,7 @@ describe("SessionService with the unit database", () => {
       .update(imMessageDeliveries)
       .set({ dispatchRequestId: randomUUID(), dispatchInputHash: "hash", dispatchPayload: {} as never })
       .where(eq(imMessageDeliveries.id, delivery.id));
-    await expect(service.movePlacement(delivery.sessionId, targetWorkspace.id)).rejects.toMatchObject({
+    await expect(service.movePlacement(delivery.sessionId, otherComputer)).rejects.toMatchObject({
       code: "SESSION_PLACEMENT_CUSTODY_UNCERTAIN",
     });
     await db.database
@@ -413,7 +384,7 @@ describe("SessionService with the unit database", () => {
         acceptedAt: fixture.now,
       })
       .where(eq(imMessageDeliveries.id, delivery.id));
-    await expect(service.movePlacement(delivery.sessionId, targetWorkspace.id)).rejects.toMatchObject({
+    await expect(service.movePlacement(delivery.sessionId, otherComputer)).rejects.toMatchObject({
       code: "SESSION_PLACEMENT_CUSTODY_PENDING",
     });
     await db.database
@@ -422,12 +393,12 @@ describe("SessionService with the unit database", () => {
       .where(eq(imMessageDeliveries.id, delivery.id));
     const afterLock = vi.fn();
     const moving = new SessionService(db.database, { now: () => fixture.now, afterPlacementLock: afterLock });
-    await expect(moving.movePlacement(delivery.sessionId, targetWorkspace.id)).resolves.toMatchObject({
+    await expect(moving.movePlacement(delivery.sessionId, otherComputer)).resolves.toMatchObject({
       generation: 2,
-      workspaceComputerId: targetWorkspace.id,
+      computerId: otherComputer,
     });
     expect(afterLock).toHaveBeenCalled();
-    await expect(service.movePlacement(randomUUID(), targetWorkspace.id)).rejects.toMatchObject({
+    await expect(service.movePlacement(randomUUID(), otherComputer)).rejects.toMatchObject({
       code: "SESSION_NOT_FOUND",
     });
   });
@@ -440,27 +411,27 @@ describe("SessionService with the unit database", () => {
     );
     const child = await service.createInternalSessionWithMessage({
       creatorSessionId: root.session.id,
-      creatorComputerId: fixture.computerId,
+      creatorInstallationId: fixture.installationId,
       creatorConnectionInstanceId: fixture.instanceId,
-      creatorWorkspaceComputerId: fixture.workspaceComputerId,
+      creatorComputerId: fixture.computerId,
       creatorPlacementGeneration: 1,
       messageId: randomUUID(),
       initialMessage: "one",
     });
     await service.createInternalSessionWithMessage({
       creatorSessionId: root.session.id,
-      creatorComputerId: fixture.computerId,
+      creatorInstallationId: fixture.installationId,
       creatorConnectionInstanceId: fixture.instanceId,
-      creatorWorkspaceComputerId: fixture.workspaceComputerId,
+      creatorComputerId: fixture.computerId,
       creatorPlacementGeneration: 1,
       messageId: randomUUID(),
       initialMessage: "two",
     });
     await service.createInternalSessionWithMessage({
       creatorSessionId: child.session.id,
-      creatorComputerId: fixture.computerId,
+      creatorInstallationId: fixture.installationId,
       creatorConnectionInstanceId: fixture.instanceId,
-      creatorWorkspaceComputerId: fixture.workspaceComputerId,
+      creatorComputerId: fixture.computerId,
       creatorPlacementGeneration: 1,
       messageId: randomUUID(),
       initialMessage: "nested",
@@ -524,7 +495,7 @@ describe("SessionCliProofService with the unit database", () => {
     );
     const input = {
       sessionId: session.session.id,
-      workspaceComputerId: fixture.workspaceComputerId,
+      computerId: fixture.computerId,
       placementGeneration: 1,
       connectionInstanceId: fixture.instanceId,
     };
@@ -543,7 +514,7 @@ describe("SessionCliProofService with the unit database", () => {
     const reconcile = {
       type: "session:reconcile",
       requestId: randomUUID(),
-      computerId: fixture.computerId,
+      installationId: fixture.installationId,
       sessionId: session.session.id,
       agentId: fixture.agentId,
       placementGeneration: 1,
@@ -551,18 +522,14 @@ describe("SessionCliProofService with the unit database", () => {
       runtime: {},
     } as SessionReconcileRequest;
     expect(
-      (await service.prepareReconcile(fixture.workspaceComputerId, fixture.instanceId, reconcile)).sessionCliProof,
+      (await service.prepareReconcile(fixture.computerId, fixture.instanceId, reconcile)).sessionCliProof,
     ).toBeDefined();
     const stopped = { ...reconcile, desired: "stopped" as const };
-    await expect(service.prepareReconcile(fixture.workspaceComputerId, fixture.instanceId, stopped)).resolves.toBe(
-      stopped,
-    );
+    await expect(service.prepareReconcile(fixture.computerId, fixture.instanceId, stopped)).resolves.toBe(stopped);
     await expect(service.revoke({ ...input, placementGeneration: 99 })).resolves.toBeUndefined();
     await expect(service.revoke({ ...input, connectionInstanceId: randomUUID() })).resolves.toBeUndefined();
     registry.supportsCapability.mockReturnValue(false);
-    await expect(service.prepareReconcile(fixture.workspaceComputerId, fixture.instanceId, reconcile)).resolves.toBe(
-      reconcile,
-    );
+    await expect(service.prepareReconcile(fixture.computerId, fixture.instanceId, reconcile)).resolves.toBe(reconcile);
     await expect(service.mint(input)).rejects.toMatchObject({ code: "runtime_unavailable" });
     registry.supportsCapability.mockReturnValue(true);
     await expect(service.revoke(input)).resolves.toBeUndefined();
@@ -580,7 +547,7 @@ describe("SessionCliProofService with the unit database", () => {
     );
     const input = {
       sessionId: session.session.id,
-      workspaceComputerId: fixture.workspaceComputerId,
+      computerId: fixture.computerId,
       placementGeneration: 1,
       connectionInstanceId: fixture.instanceId,
     };
@@ -725,9 +692,9 @@ describe("ImMessageInbox with the unit database", () => {
     const otherUserId = randomUUID();
     await db.database.insert(users).values({ id: otherUserId, email: "other@example.com", displayName: "Other" });
     await db.database
-      .update(accountComputers)
+      .update(computers)
       .set({ ownerAccountId: otherUserId })
-      .where(eq(accountComputers.id, fixture.workspaceComputerId));
+      .where(eq(computers.id, fixture.computerId));
     const rebind = await inbox.ingest(fixture.bindingId, 1, {
       ...event,
       providerEventId: "rebind",
@@ -976,9 +943,8 @@ describe("ImResourceService with the unit database", () => {
     const service = new ImResourceService(db.database, async () => adapter);
     const auth = {
       credentialId: randomUUID(),
-      workspaceComputerId: fixture.workspaceComputerId,
-      workspaceId: fixture.workspaceId,
       computerId: fixture.computerId,
+      installationId: fixture.installationId,
     };
     const opened = await service.open(
       auth,
@@ -1096,9 +1062,8 @@ describe("ImResourceService with the unit database", () => {
     if (!session) throw new Error("session missing");
     const auth = {
       credentialId: randomUUID(),
-      workspaceComputerId: fixture.workspaceComputerId,
-      workspaceId: fixture.workspaceId,
       computerId: fixture.computerId,
+      installationId: fixture.installationId,
     };
     const stale = new ImResourceService(db.database, async () => {
       throw new ProviderAdapterResolutionError("IM_BINDING_GENERATION_STALE");
@@ -1163,10 +1128,10 @@ describe("SessionCollaborationService response mapping", () => {
     agentId: "agent",
     computerId: "computer",
     connectionInstanceId: "instance",
+    installationId: "installation",
     placementGeneration: 1,
     sessionId: "source",
     sessionKind: "channel" as const,
-    workspaceComputerId: "workspace",
   };
   function fixture() {
     const attempt: SessionMessageAttempt = {
@@ -1176,10 +1141,10 @@ describe("SessionCollaborationService response mapping", () => {
         sourceSessionId: "source",
         sourceConnectionInstanceId: "instance",
         sourcePlacementGeneration: 1,
-        sourceWorkspaceComputerId: "workspace",
+        sourceComputerId: "computer",
         targetSessionId: "target",
+        targetInstallationId: "installation",
         targetComputerId: "computer",
-        targetWorkspaceComputerId: "workspace",
         targetPlacementGeneration: 1,
         targetSessionKind: "internal" as const,
         targetCreatorSessionId: "source",
@@ -1359,7 +1324,7 @@ describe("SessionCollaborationService response mapping", () => {
     );
     expect(result).toMatchObject({ status: "accepted", sessionId: "target" });
     expect(value.domain.requestReconcile).toHaveBeenCalledWith(
-      "workspace",
+      "computer",
       "instance",
       expect.objectContaining({ creatorSessionId: "source", sessionKind: "internal" }),
       undefined,
@@ -1416,43 +1381,27 @@ function inboundEvent(
 
 async function seedFixture(db: UnitDatabase) {
   const now = new Date("2026-01-01T00:00:00.000Z");
-  const bootstrap = await bootstrapTestAccount(
-    db.database,
-    { displayName: "Admin", email: "admin@example.com", workspaceDisplayName: "Example", workspaceName: "example" },
-    now,
-  );
-  const computerId = randomUUID();
+  const bootstrap = await bootstrapTestAccount(db.database, { displayName: "Admin", email: "admin@example.com" }, now);
+  const installationId = randomUUID();
   const instanceId = randomUUID();
-  await db.database.insert(computers).values({ id: computerId, createdAt: now });
-  const workspaceComputerId = randomUUID();
-  await db.database.insert(workspaceComputers).values({
-    id: workspaceComputerId,
-    workspaceId: bootstrap.workspaceId,
-    computerId,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "1",
-    enrolledByUserId: bootstrap.userId,
-    currentInstanceId: instanceId,
-    enrolledAt: now,
-    updatedAt: now,
-  });
-  await db.database.insert(accountComputers).values({
-    id: workspaceComputerId,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computerId,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "1",
-    currentInstanceId: instanceId,
-    createdAt: now,
-    updatedAt: now,
-  });
+  const [computer] = await db.database
+    .insert(computers)
+    .values({
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: installationId,
+      displayName: "workstation",
+      platform: "linux",
+      arch: "x64",
+      clientVersion: "1",
+      currentInstanceId: instanceId,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: computers.id });
+  if (!computer) throw new Error("Computer fixture missing");
   await db.database.insert(computerCredentials).values({
-    computerId: workspaceComputerId,
-    secretHash: `session-services-${computerId}`,
+    computerId: computer.id,
+    secretHash: `session-services-${computer.id}`,
     issuedByUserId: bootstrap.userId,
     issuedAt: now,
   });
@@ -1460,7 +1409,7 @@ async function seedFixture(db: UnitDatabase) {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
-    computerId: workspaceComputerId,
+    computerId: computer.id,
   });
   const [binding] = await db.database
     .insert(imBindings)
@@ -1482,11 +1431,10 @@ async function seedFixture(db: UnitDatabase) {
   return {
     agentId: agent.id,
     bindingId: binding.id,
-    computerId,
+    computerId: computer.id,
     instanceId,
+    installationId,
     now,
     userId: bootstrap.userId,
-    workspaceId: bootstrap.workspaceId,
-    workspaceComputerId,
   };
 }

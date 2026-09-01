@@ -16,7 +16,7 @@ type BindTarget = { computerId: string; displayName: string };
  * several, which one an Agent runs on is the reader's to say and nothing here decides it for them:
  * binding on list order would hand an Agent a durable home on the strength of an array index. With
  * exactly one there is nothing to disambiguate, so the read is the decision and no click is asked
- * for. With none, connecting is the answer, and the connect step names the machine it enrolled.
+ * for. With none, connecting is the answer, and the connect step names the machine it connected.
  *
  * It is shared because the two places an Agent can be found without a Computer -- its Settings, and
  * an onboarding run that resumed into it -- must resolve it the same way; the second copy is how the
@@ -38,7 +38,7 @@ export function AgentComputerChoice({
   const [error, setError] = useState<string>();
   /*
    * What this surface is binding to, held here rather than read back out of the Computers query.
-   * A Computer that just enrolled is known to the connect step and not to that query -- it reads
+   * A Computer that just connected is known to the connect step and not to that query -- it reads
    * through its own adapter and does not refill this cache -- so deriving the bind target from the
    * inventory would leave a failed bind for a brand new Computer invisible and unretryable.
    */
@@ -51,8 +51,8 @@ export function AgentComputerChoice({
   // Only a successful read speaks for the Account. Answering a failed one with "connect a Computer"
   // would send someone to enrol a machine they already own -- the same conflation the Agent's
   // availability refuses to make one layer up.
-  const enrolled = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
-  const sole = enrolled?.length === 1 ? enrolled[0] : undefined;
+  const connected = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
+  const sole = connected?.length === 1 ? connected[0] : undefined;
   const soleTarget = sole ? `${agentId}:${sole.computerId}` : undefined;
 
   const bind = useCallback(
@@ -106,7 +106,7 @@ export function AgentComputerChoice({
     void bind(sole);
   }, [sole, soleTarget, bind]);
 
-  if (enrolled === undefined) {
+  if (connected === undefined) {
     return (
       <div className="grid gap-2">
         {computersQuery.isError ? (
@@ -127,7 +127,7 @@ export function AgentComputerChoice({
 
   // Keyed on what was actually being bound, not on the inventory, so a Computer the connect step
   // just produced can still report its failure and be retried -- without issuing a second code.
-  if (error && pending && !sole && enrolled.length <= 1) {
+  if (error && pending && !sole && connected.length <= 1) {
     return (
       <div className="grid gap-4">
         <Banner variant="error" role="alert" description={error} />
@@ -158,20 +158,20 @@ export function AgentComputerChoice({
 
   // `pending` covers the moment after a Computer enrols: it is on the Account, but this query has
   // not been told about it, and offering to connect another one there would be wrong.
-  if (enrolled.length === 0 && pending) {
+  if (connected.length === 0 && pending) {
     return <p>{m.agents_computer_choice_binding({ name: pending.displayName })}</p>;
   }
 
   return (
     <div className="grid gap-4">
       {error ? <Banner variant="error" role="alert" description={error} /> : null}
-      {enrolled.length > 0 ? (
+      {connected.length > 0 ? (
         <div className="grid gap-2">
           <Text as="h3" variant="heading">
             {m.agents_computer_choice_existing_heading()}
           </Text>
           <ul className="grid gap-2">
-            {enrolled.map((computer) => (
+            {connected.map((computer) => (
               <li className="flex flex-wrap items-center justify-between gap-3" key={computer.computerId}>
                 <span>
                   {computer.displayName} · {platformLabel(computer.platform)} ·{" "}
@@ -194,10 +194,10 @@ export function AgentComputerChoice({
       ) : null}
       <div className="grid gap-2">
         <Text as="h3" variant="heading">
-          {enrolled.length > 0 ? m.agents_computer_choice_connect_new() : m.agents_computer_choice_connect_first()}
+          {connected.length > 0 ? m.agents_computer_choice_connect_new() : m.agents_computer_choice_connect_first()}
         </Text>
         {/*
-         * The connect step reports the machine it enrolled, so what gets bound is the Computer that
+         * The connect step reports the machine it connected, so what gets bound is the Computer that
          * answered this command rather than whatever a re-read of the inventory happens to find.
          */}
         <ComputerConnect

@@ -2,15 +2,15 @@ import { randomUUID } from "node:crypto";
 import { RUNTIME_CAPABILITY } from "@opentag/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { accountComputers, computerCredentials, computers, workspaceComputers } from "../../db/schema/index.js";
+import { computerCredentials, computers } from "../../db/schema/index.js";
 import { AgentRuntimeTestOwner } from "../../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import { AgentRuntimeTestService, AgentService } from "../../services/agents/index.js";
 import type { UserAuthService } from "../../services/auth/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 /**
@@ -59,10 +59,8 @@ describe("Agent Runtime test Postgres no-write", () => {
       const bootstrap = await bootstrapInitialAdmin(client.database, {
         displayName: "Admin",
         email: "admin@example.com",
-        workspaceDisplayName: "Example",
-        workspaceName: "example",
       });
-      const computer = await createComputer(client.database, bootstrap.userId, bootstrap.workspaceId);
+      const computer = await createComputer(client.database, bootstrap.userId);
       const agents = new AgentService(client.database);
       const created = await agents.createForAccount(bootstrap.userId, {
         computerId: computer.id,
@@ -79,9 +77,8 @@ describe("Agent Runtime test Postgres no-write", () => {
       const frames: unknown[] = [];
       await registry.register(
         {
-          computerId: computer.installationId,
-          workspaceComputerId: computer.id,
-          workspaceId: bootstrap.workspaceId,
+          computerId: computer.id,
+          installationId: computer.installationId,
           instanceId,
           lastHeartbeatAt: Date.now(),
           negotiatedCapabilities: { [RUNTIME_CAPABILITY.agentRuntimeTest]: 1 },
@@ -124,9 +121,8 @@ describe("Agent Runtime test Postgres no-write", () => {
       expect(frames[0]).not.toHaveProperty("prompt");
       const requestId = (frames[0] as { requestId: string }).requestId;
       const context: RuntimeBusinessContext = {
-        computerId: computer.installationId,
-        workspaceComputerId: computer.id,
-        workspaceId: bootstrap.workspaceId,
+        computerId: computer.id,
+        installationId: computer.installationId,
         instanceId,
         signal: new AbortController().signal,
       };
@@ -148,43 +144,30 @@ describe("Agent Runtime test Postgres no-write", () => {
   });
 });
 
-async function createComputer(
-  database: ReturnType<typeof createDatabaseClient>["database"],
-  ownerUserId: string,
-  workspaceId: string,
-) {
+async function createComputer(database: ReturnType<typeof createDatabaseClient>["database"], ownerUserId: string) {
   const profile = {
     displayName: "workstation",
     platform: "linux" as const,
     arch: "x64",
     clientVersion: "0.0.2",
   };
-  const [computer] = await database.insert(computers).values({ id: randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await database
-    .insert(workspaceComputers)
+  const [computer] = await database
+    .insert(computers)
     .values({
-      workspaceId,
-      computerId: computer.id,
+      ownerAccountId: ownerUserId,
+      currentInstallationId: randomUUID(),
       ...profile,
-      enrolledByUserId: ownerUserId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: ownerUserId,
-    currentInstallationId: computer.id,
-    ...profile,
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   await database.insert(computerCredentials).values({
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
     secretHash: `integration-runtime-test-${computer.id}`,
     issuedByUserId: ownerUserId,
   });
   return {
-    id: workspaceComputer.id,
-    installationId: computer.id,
+    id: computer.id,
+    installationId: computer.currentInstallationId,
   };
 }
 

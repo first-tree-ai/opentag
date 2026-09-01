@@ -27,7 +27,7 @@ README 只保留产品概览和 Docker Compose 依赖示例；仓库相关的开
 
 1. 启动本地 PostgreSQL 服务，并运行 Server 健康检查链路。
 2. Bootstrap Account，安装开发 CLI，并兑换 Account 登录 code。
-3. Enrollment Computer，启动 daemon，并创建 Agent 配置。
+3. 连接 Computer，启动 daemon，并创建 Agent 配置。
 4. 需要使用 Web App 时，配置 Google 登录或 loopback development bypass。
 
 下面各章节包含每一步所需的命令和环境变量详情。
@@ -155,14 +155,11 @@ docker compose down
 实例；上面的 Compose 服务仅用于本地开发。
 
 初始化空安装时，设置必需的 bootstrap 字段并运行一次性 bootstrap 命令。该命令会先迁移空数据库，再创建首个
-Account 与 Account 登录 code。当前命令名和 `OPENTAG_BOOTSTRAP_WORKSPACE_*` 输入还会创建内部默认 Workspace 与
-grant，作为 Phase 2 前的兼容 seam；它们不会创建产品层 Workspace 或 Admin 成员关系。
+Account 与 Account 登录 code。
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
-export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
@@ -179,7 +176,7 @@ production build 分别使用 `opentag-staging` / `~/.opentag-staging` 和 `open
 `OPENTAG_HOME` 会覆盖 channel 默认值。
 
 Account 登录只保存管理凭据。先从 Web 的 Agents 区域生成 Computer 连接命令，再在执行主机运行；
-`computer connect` 会保存 enrollment 范围的 machine credential，并在 Linux/macOS 上安装或重启用户服务。
+`computer connect` 会保存 Computer 范围的 machine credential，并在 Linux/macOS 上安装或重启用户服务。
 可在另一个终端检查服务：
 
 ```bash
@@ -189,8 +186,8 @@ opentag-dev computer list
 ```
 
 daemon 会复用 `${OPENTAG_HOME}/config/computer.json` 中的稳定 physical Computer ID，从
-`${OPENTAG_HOME}/config/computer-credentials.json` 加载各自独立的 enrollment credential，每次服务启动
-创建新的进程 instance，并为每个 enrollment 建立一条 Runtime 连接。OpenTag Home 按生命周期组织：
+`${OPENTAG_HOME}/config/computer-credentials.json` 加载唯一的 Computer credential，每次服务启动
+创建新的进程 instance，并为该 Computer 建立一条 Runtime 连接。OpenTag Home 按生命周期组织：
 
 ```text
 ${OPENTAG_HOME}/
@@ -234,7 +231,7 @@ layout。这里的 `workspace-states` 与 `workspaces` 是持久化本地 runtim
 
 ### 本地数据丢失与恢复
 
-再次运行 `computer connect` 会轮换所选 enrollment credential 并恢复连接，但不能恢复原有的本地执行连续性。
+再次运行 `computer connect` 会轮换 Computer credential 并恢复连接，但不能恢复原有的本地执行连续性。
 Server 可以重新签发 credentials 并重建 effective
 snapshot；Provider Runtime 启动或恢复时会重新注入托管 instructions。重新签发的 credentials 不是原值。如果
 `config/computer.json` 丢失，当前 Client 会创建新的 Computer identity。Server 虽保留旧 Computer 与 placement
@@ -272,10 +269,8 @@ Service mutation 使用两个独立 lease。`${OPENTAG_HOME}/state/service/opera
 
 ## 管理 Agent 配置
 
-已确认的产品方向与产品呈现是 **Account → Computer enrollment → Agent → IM binding**。在 Phase 1 schema 中，
-Agent 通过 active internal scope 对当前 Account 可用且可管理，并在创建时不可变地绑定到该 scope 的一个 active
-Computer enrollment。所选 internal scope 只有一台可选 Computer 时会自动选择。legacy active grant 可能让多个
-Account 看到并管理同一批 Agent 与 enrollment，直到一次性数据拆分和 Phase 2 建立严格 per-Account ownership：
+产品模型是 **Account → Computer → Agent → IM binding**。Agent 对创建它的 Account 可见，并在创建时绑定到该
+Account 拥有的一台 Computer；Account 只有一台可选 Computer 时会自动选择：
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -295,13 +290,13 @@ pnpm --filter open-tag start agent delete <agent-id>
 ```
 
 更新使用 revision compare-and-swap，不会自动覆盖并发变更；Computer rebind 不是 update 操作。删除是 Server 端
-软删除，对通过所选 internal scope 获得授权的 Account 幂等。`claude-code` 是允许的配置值，但其 runtime adapter
+软删除，对创建该 Agent 的 Account 幂等。`claude-code` 是允许的配置值，但其 runtime adapter
 以及所有 Session/Turn
 delivery 仍属于后续工作。
 
-这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
+这两个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
 bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 code 流程先解析稳定的 user ID，再进入与 provider
-无关的 token 颁发边界。内部 grant 仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
+无关的 token 颁发边界。
 
 该边界现在签发的是 Better Auth session，而不是签名的 access/refresh 对：CLI 凭据成为服务端可以撤销的一行记录，
 而不再是只能等它过期的一段签名。兑换响应仍是原来的四个字段，`accessToken` 与 `refreshToken` 携带同一个 session
@@ -397,14 +392,12 @@ Server 会在 `staging` 和 `prod` 环境拒绝这组配置。
 解析后的环境、public URL、package 和 binary，且绝不从 hostname 推断环境。
 
 打开 `/` 可使用管理 shell。顶层导航固定为 **Agents / Tasks / Skills / Integrations**，没有 Settings tab。
-Computer enrollment 与恢复位于 Agents 区域。**Generate connection command** 会签发一个 15 分钟、仅可使用
-一次的 code，并复制由 Server 生成的 `computer connect` 命令；页面会轮询 Account 的 Computer enrollment，直到新的
-daemon 握手到达。account menu 只包含 Account 操作。OpenTag 不提供 Workspace、Admin 或 invitation 管理面。普通注册
-和 bootstrap 仍会配置内部默认 Workspace 与 grant，但只作为 Phase 2 前的兼容 seam。若内部记录需要例外检查或修正，
-运维人员必须按照常规数据库变更流程，通过受控 PostgreSQL 运维执行。
+Computer 连接与恢复位于 Agents 区域。**Generate connection command** 会签发一个 15 分钟、仅可使用
+一次的 code，并复制由 Server 生成的 `computer connect` 命令；页面会轮询 Account 的 Computers，直到新的
+daemon 握手到达。account menu 只包含 Account 操作。
 
 Session collaboration 仍属于 Agent Runtime，不会引入产品 Workspace、Project 或共享管理容器。Context Tree 可以独立
-保存长期上下文；它不会建立 per-Account ownership，也不改变 Computer enrollment、Agent placement 或 IM binding。
+保存长期上下文；它不会建立 per-Account ownership，也不改变 Computer 连接、Agent placement 或 IM binding。
 `OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
 `openssl rand -base64 32` 生成。
 

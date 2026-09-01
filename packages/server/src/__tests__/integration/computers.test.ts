@@ -1,31 +1,22 @@
 import {
+  AccountComputerSummarySchema,
   accountComputerConnectCodePath,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   RUNTIME_PROTOCOL_V2,
-  WorkspaceComputerSummarySchema,
-  workspaceComputerConnectCodesPath,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
-import {
-  accountComputers,
-  computerConnectCodes,
-  computerCredentials,
-  computers,
-  users,
-  workspaceComputerCredentials,
-  workspaceComputers,
-} from "../../db/schema/index.js";
+import { computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
-import { AuthService, ConnectCodeService } from "../../services/auth/index.js";
+import { AuthService, ConnectCodeService, hashSecret } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const betterAuthSecret = "computer-test-secret-at-least-32-characters";
@@ -45,8 +36,6 @@ async function fixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    workspaceDisplayName: "Example",
-    workspaceName: "example",
   });
   const auth = new AuthService(
     client.database,
@@ -63,19 +52,19 @@ async function fixture() {
   );
   const registry = new ConnectionRegistry();
   const machineAuth = new MachineAuthService(client.database, {
-    onCredentialRotated: async (workspaceComputerId) => {
-      await registry.closeEnrollment(workspaceComputerId);
+    onCredentialRotated: async (computerId) => {
+      await registry.closeComputer(computerId);
     },
   });
   const service = new ComputerService(client.database, auth);
   return { ...client, auth, bootstrap, machineAuth, registry, service };
 }
 
-function registerFrame(computerId: string, instanceId: string) {
+function registerFrame(installationId: string, instanceId: string) {
   return {
     type: "computer:register" as const,
     requestId: crypto.randomUUID(),
-    computerId,
+    installationId,
     instanceId,
     displayName: "workstation",
     platform: "linux" as const,
@@ -88,10 +77,10 @@ function registerFrame(computerId: string, instanceId: string) {
   };
 }
 
-function exchangeInput(code: string, computerId: string) {
+function exchangeInput(code: string, installationId: string) {
   return {
     code,
-    computerId,
+    installationId,
     displayName: "workstation" as const,
     platform: "linux" as const,
     arch: "x64",
@@ -99,26 +88,26 @@ function exchangeInput(code: string, computerId: string) {
   };
 }
 
-async function enroll(
+async function connect(
   value: Awaited<ReturnType<typeof fixture>>,
   accountId = value.bootstrap.userId,
-  computerId: string = crypto.randomUUID(),
+  installationId: string = crypto.randomUUID(),
 ) {
   const issued = await value.machineAuth.issueForAccount(accountId, {});
-  return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
+  return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, installationId));
 }
 
 async function repair(
   value: Awaited<ReturnType<typeof fixture>>,
   targetComputerId: string,
   accountId = value.bootstrap.userId,
-  computerId = crypto.randomUUID(),
+  installationId = crypto.randomUUID(),
 ) {
   const issued = await value.machineAuth.issueForAccount(accountId, { mode: "repair", targetComputerId });
-  return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
+  return value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, installationId));
 }
 
-describe("Computer enrollment persistence", () => {
+describe("Computer connection persistence", () => {
   it("enforces the 0.0.2 Client floor and strict SemVer before any side effects", async () => {
     const value = await fixture();
     try {
@@ -141,109 +130,58 @@ describe("Computer enrollment persistence", () => {
         .from(computerConnectCodes);
       expect(unspent?.consumedAt).toBeNull();
 
-      const enrollment = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
-      const [before] = await value.database
-        .select()
-        .from(accountComputers)
-        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
+      const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, computerId));
+      const [before] = await value.database.select().from(computers).where(eq(computers.id, exchange.computerId));
       await expect(
-        value.service.register(enrollment, {
-          ...registerFrame(enrollment.computerId, crypto.randomUUID()),
+        value.service.register(exchange, {
+          ...registerFrame(exchange.installationId, crypto.randomUUID()),
           clientVersion: "1.0.0+build..7",
         }),
       ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
       await expect(
-        value.service.register(enrollment, {
-          ...registerFrame(enrollment.computerId, crypto.randomUUID()),
+        value.service.register(exchange, {
+          ...registerFrame(exchange.installationId, crypto.randomUUID()),
           clientVersion: "0.0.1",
         }),
       ).rejects.toMatchObject({ code: "CLIENT_VERSION_UNSUPPORTED", statusCode: 400 });
-      const [after] = await value.database
-        .select()
-        .from(accountComputers)
-        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
+      const [after] = await value.database.select().from(computers).where(eq(computers.id, exchange.computerId));
       expect(after).toEqual(before);
     } finally {
       await value.sql.end();
     }
   });
 
-  it("registers one enrollment and fences an older instance", async () => {
+  it("registers one Computer and fences an older instance", async () => {
     const value = await fixture();
     try {
-      const enrollment = await enroll(value);
+      const exchange = await connect(value);
       const first = crypto.randomUUID();
       const second = crypto.randomUUID();
-      await value.service.register(enrollment, registerFrame(enrollment.computerId, first));
-      await value.service.register(enrollment, registerFrame(enrollment.computerId, second));
-      expect(await value.service.heartbeat(enrollment, first)).toBe(false);
-      expect(await value.service.disconnect(enrollment.workspaceComputerId, first)).toBe(false);
-      expect(await value.service.heartbeat(enrollment, second)).toBe(true);
+      await value.service.register(exchange, registerFrame(exchange.installationId, first));
+      await value.service.register(exchange, registerFrame(exchange.installationId, second));
+      expect(await value.service.heartbeat(exchange, first)).toBe(false);
+      expect(await value.service.disconnect(exchange.computerId, first)).toBe(false);
+      expect(await value.service.heartbeat(exchange, second)).toBe(true);
       expect(await value.database.select().from(computers)).toHaveLength(1);
-      expect(await value.database.select().from(workspaceComputers)).toHaveLength(1);
-      const [legacy] = await value.database.select().from(workspaceComputers);
-      const [projected] = await value.database.select().from(accountComputers);
-      expect(projected).toMatchObject({
-        id: enrollment.workspaceComputerId,
+      const [computer] = await value.database.select().from(computers);
+      expect(computer).toMatchObject({
+        id: exchange.computerId,
         ownerAccountId: value.bootstrap.userId,
-        currentInstallationId: enrollment.computerId,
+        currentInstallationId: exchange.installationId,
         currentInstanceId: second,
-        displayName: legacy?.displayName,
-        platform: legacy?.platform,
+        displayName: "workstation",
+        platform: "linux",
       });
-      const [legacyCredential] = await value.database
-        .select()
-        .from(workspaceComputerCredentials)
-        .where(eq(workspaceComputerCredentials.id, enrollment.credentialId));
-      const [targetCredential] = await value.database
+      const [credential] = await value.database
         .select()
         .from(computerCredentials)
-        .where(eq(computerCredentials.id, enrollment.credentialId));
-      expect(targetCredential).toMatchObject({
-        id: enrollment.credentialId,
-        computerId: enrollment.workspaceComputerId,
+        .where(eq(computerCredentials.id, exchange.credentialId));
+      expect(credential).toMatchObject({
+        id: exchange.credentialId,
+        computerId: exchange.computerId,
         issuedByUserId: value.bootstrap.userId,
         revokedAt: null,
       });
-      expect(legacyCredential).toBeUndefined();
-      expect(legacy).toMatchObject({ currentInstanceId: null, connectedAt: null, lastSeenAt: null });
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("ignores and does not mirror a divergent legacy observation", async () => {
-    const value = await fixture();
-    try {
-      const enrollment = await enroll(value);
-      const instanceId = crypto.randomUUID();
-      await value.service.register(enrollment, registerFrame(enrollment.computerId, instanceId));
-      await value.database
-        .update(workspaceComputers)
-        .set({ currentInstanceId: crypto.randomUUID() })
-        .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
-      const [legacyBefore] = await value.database
-        .select()
-        .from(workspaceComputers)
-        .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
-      const before = await value.database
-        .select()
-        .from(accountComputers)
-        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
-
-      await expect(value.service.heartbeat(enrollment, instanceId)).resolves.toBe(true);
-      await expect(value.service.disconnect(enrollment.workspaceComputerId, instanceId)).resolves.toBe(true);
-      const [legacyAfter] = await value.database
-        .select()
-        .from(workspaceComputers)
-        .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
-      expect(legacyAfter).toEqual(legacyBefore);
-      expect(before[0]?.currentInstanceId).toBe(instanceId);
-      const [canonicalAfter] = await value.database
-        .select()
-        .from(accountComputers)
-        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
-      expect(canonicalAfter?.currentInstanceId).toBeNull();
     } finally {
       await value.sql.end();
     }
@@ -252,12 +190,12 @@ describe("Computer enrollment persistence", () => {
   it("creates a new Computer for every create code and never reuses an installation", async () => {
     const value = await fixture();
     try {
-      const first = await enroll(value);
-      const second = await enroll(value);
-      expect(second.workspaceComputerId).not.toBe(first.workspaceComputerId);
+      const first = await connect(value);
+      const second = await connect(value);
       expect(second.computerId).not.toBe(first.computerId);
-      expect(await value.database.select().from(accountComputers)).toHaveLength(2);
-      await expect(enroll(value, value.bootstrap.userId, first.computerId)).rejects.toMatchObject({
+      expect(second.installationId).not.toBe(first.installationId);
+      expect(await value.database.select().from(computers)).toHaveLength(2);
+      await expect(connect(value, value.bootstrap.userId, first.installationId)).rejects.toMatchObject({
         code: "COMPUTER_IDENTITY_CONFLICT",
         statusCode: 409,
       });
@@ -266,15 +204,14 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
-  it("rotates the enrollment credential and rejects Account tokens as machine authority", async () => {
+  it("rotates the machine credential and rejects Account tokens as machine authority", async () => {
     const value = await fixture();
     try {
       const computerId = crypto.randomUUID();
-      const first = await enroll(value, value.bootstrap.userId, computerId);
+      const first = await connect(value, value.bootstrap.userId, computerId);
       await expect(value.machineAuth.verifyMachineToken(first.machineToken)).resolves.toMatchObject({
-        workspaceComputerId: first.workspaceComputerId,
-        workspaceId: value.bootstrap.workspaceId,
-        computerId,
+        computerId: first.computerId,
+        installationId: computerId,
       });
 
       const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
@@ -290,19 +227,20 @@ describe("Computer enrollment persistence", () => {
       });
 
       const rotatedInstallationId = crypto.randomUUID();
-      const rotated = await repair(value, first.workspaceComputerId, value.bootstrap.userId, rotatedInstallationId);
-      expect(rotated.workspaceComputerId).toBe(first.workspaceComputerId);
-      expect(rotated.computerId).toBe(rotatedInstallationId);
+      const rotated = await repair(value, first.computerId, value.bootstrap.userId, rotatedInstallationId);
+      expect(rotated.computerId).toBe(first.computerId);
+      expect(rotated.installationId).toBe(rotatedInstallationId);
       await expect(value.machineAuth.verifyMachineToken(first.machineToken)).rejects.toMatchObject({
         code: "AUTH_INVALID_TOKEN",
       });
       await expect(value.machineAuth.verifyMachineToken(rotated.machineToken)).resolves.toMatchObject({
-        workspaceComputerId: first.workspaceComputerId,
+        computerId: first.computerId,
+        installationId: rotatedInstallationId,
       });
       const credentials = await value.database
         .select()
         .from(computerCredentials)
-        .where(eq(computerCredentials.computerId, first.workspaceComputerId));
+        .where(eq(computerCredentials.computerId, first.computerId));
       expect(credentials).toHaveLength(2);
       expect(credentials.find((row) => row.id === first.credentialId)).toMatchObject({
         revokedAt: expect.any(Date),
@@ -311,18 +249,9 @@ describe("Computer enrollment persistence", () => {
       expect(credentials.find((row) => row.id === rotated.credentialId)).toMatchObject({
         revokedAt: null,
       });
-      expect(
-        await value.database
-          .select()
-          .from(workspaceComputerCredentials)
-          .where(eq(workspaceComputerCredentials.id, rotated.credentialId)),
-      ).toEqual([]);
-      const [accountComputer] = await value.database
-        .select()
-        .from(accountComputers)
-        .where(eq(accountComputers.id, first.workspaceComputerId));
+      const [accountComputer] = await value.database.select().from(computers).where(eq(computers.id, first.computerId));
       expect(accountComputer).toMatchObject({
-        id: first.workspaceComputerId,
+        id: first.computerId,
         ownerAccountId: value.bootstrap.userId,
         currentInstallationId: rotatedInstallationId,
       });
@@ -335,10 +264,10 @@ describe("Computer enrollment persistence", () => {
     const value = await fixture();
     try {
       const computerId = crypto.randomUUID();
-      const first = await enroll(value, value.bootstrap.userId, computerId);
+      const first = await connect(value, value.bootstrap.userId, computerId);
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
         mode: "repair",
-        targetComputerId: first.workspaceComputerId,
+        targetComputerId: first.computerId,
       });
       const [otherUser] = await value.database
         .insert(users)
@@ -346,14 +275,12 @@ describe("Computer enrollment persistence", () => {
         .returning();
       if (!otherUser) throw new Error("Other Account fixture was not created");
       await value.database
-        .update(accountComputers)
+        .update(computers)
         .set({ ownerAccountId: otherUser.id })
-        .where(eq(accountComputers.id, first.workspaceComputerId));
+        .where(eq(computers.id, first.computerId));
 
       const before = {
-        enrollments: await value.database.select().from(workspaceComputers),
-        accountComputers: await value.database.select().from(accountComputers),
-        legacyCredentials: await value.database.select().from(workspaceComputerCredentials),
+        computers: await value.database.select().from(computers),
         targetCredentials: await value.database.select().from(computerCredentials),
         codes: await value.database.select().from(computerConnectCodes),
       };
@@ -361,7 +288,7 @@ describe("Computer enrollment persistence", () => {
       await expect(
         value.machineAuth.exchangeConnectCode({
           code: issued.code,
-          computerId: crypto.randomUUID(),
+          installationId: crypto.randomUUID(),
           displayName: "mutated",
           platform: "darwin",
           arch: "arm64",
@@ -369,13 +296,11 @@ describe("Computer enrollment persistence", () => {
         }),
       ).rejects.toMatchObject({ code: "AUTH_INVALID_CODE", statusCode: 401 });
 
-      expect(await value.database.select().from(workspaceComputers)).toEqual(before.enrollments);
-      expect(await value.database.select().from(accountComputers)).toEqual(before.accountComputers);
-      expect(await value.database.select().from(workspaceComputerCredentials)).toEqual(before.legacyCredentials);
+      expect(await value.database.select().from(computers)).toEqual(before.computers);
       expect(await value.database.select().from(computerCredentials)).toEqual(before.targetCredentials);
       expect(await value.database.select().from(computerConnectCodes)).toEqual(before.codes);
       expect(before.codes.filter((row) => row.consumedAt === null)).toHaveLength(1);
-      expect(before.accountComputers[0]).toMatchObject({
+      expect(before.computers[0]).toMatchObject({
         ownerAccountId: otherUser.id,
         currentInstallationId: computerId,
       });
@@ -384,10 +309,49 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
+  it("rejects a repair that reuses an installation already bound to another Computer", async () => {
+    const value = await fixture();
+    try {
+      const first = await connect(value, value.bootstrap.userId, crypto.randomUUID());
+      const second = await connect(value, value.bootstrap.userId, crypto.randomUUID());
+      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+        mode: "repair",
+        targetComputerId: second.computerId,
+      });
+      const before = {
+        computers: await value.database.select().from(computers),
+        targetCredentials: await value.database.select().from(computerCredentials),
+        codes: await value.database.select().from(computerConnectCodes),
+      };
+
+      await expect(
+        value.machineAuth.exchangeConnectCode({
+          code: issued.code,
+          installationId: first.installationId,
+          displayName: "mutated",
+          platform: "darwin",
+          arch: "arm64",
+          clientVersion: "9.9.9",
+        }),
+      ).rejects.toMatchObject({ code: "COMPUTER_IDENTITY_CONFLICT", statusCode: 409 });
+
+      expect(await value.database.select().from(computers)).toEqual(before.computers);
+      expect(await value.database.select().from(computerCredentials)).toEqual(before.targetCredentials);
+      expect(before.codes.filter((row) => row.consumedAt === null)).toHaveLength(1);
+      const [code] = await value.database
+        .select()
+        .from(computerConnectCodes)
+        .where(eq(computerConnectCodes.tokenHash, hashSecret(issued.code)));
+      expect(code).toMatchObject({ consumedAt: null });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("rejects an old WebSocket credential rotated after authentication but before registration", async () => {
     const value = await fixture();
     const computerId = crypto.randomUUID();
-    const first = await enroll(value, value.bootstrap.userId, computerId);
+    const first = await connect(value, value.bootstrap.userId, computerId);
     const app = createApp({
       authService: value.auth,
       computerService: value.service,
@@ -411,16 +375,16 @@ describe("Computer enrollment persistence", () => {
       expect(await oldFrames.next()).toMatchObject({ type: "server:welcome" });
 
       const rotatedInstallationId = crypto.randomUUID();
-      const rotated = await repair(value, first.workspaceComputerId, value.bootstrap.userId, rotatedInstallationId);
+      const rotated = await repair(value, first.computerId, value.bootstrap.userId, rotatedInstallationId);
       const oldClose = closeCode(oldSocket);
       oldSocket.send(JSON.stringify(webSocketRegisterFrame(computerId, crypto.randomUUID())));
       expect(await oldFrames.next()).toMatchObject({ type: "error", code: "COMPUTER_NOT_REGISTERED" });
       await expect(oldClose).resolves.toBe(4409);
-      expect(value.registry.currentInstanceId(first.workspaceComputerId)).toBeUndefined();
+      expect(value.registry.currentInstanceId(first.computerId)).toBeUndefined();
       const [afterOldRegistration] = await value.database
-        .select({ currentInstanceId: workspaceComputers.currentInstanceId })
-        .from(workspaceComputers)
-        .where(eq(workspaceComputers.id, first.workspaceComputerId));
+        .select({ currentInstanceId: computers.currentInstanceId })
+        .from(computers)
+        .where(eq(computers.id, first.computerId));
       expect(afterOldRegistration?.currentInstanceId).toBeNull();
 
       const newSocket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
@@ -439,7 +403,7 @@ describe("Computer enrollment persistence", () => {
       const newInstanceId = crypto.randomUUID();
       newSocket.send(JSON.stringify(webSocketRegisterFrame(rotatedInstallationId, newInstanceId)));
       expect(await newFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
-      expect(value.registry.currentInstanceId(first.workspaceComputerId)).toBe(newInstanceId);
+      expect(value.registry.currentInstanceId(first.computerId)).toBe(newInstanceId);
       newSocket.close();
     } finally {
       await app.close();
@@ -453,7 +417,7 @@ describe("Computer enrollment persistence", () => {
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
       const input = {
         code: issued.code,
-        computerId: crypto.randomUUID(),
+        installationId: crypto.randomUUID(),
         displayName: "workstation",
         platform: "linux" as const,
         arch: "x64",
@@ -476,7 +440,7 @@ describe("Computer enrollment persistence", () => {
     const value = await fixture();
     try {
       const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
-      const computerId = crypto.randomUUID();
+      const installationId = crypto.randomUUID();
       const app = createApp({
         authService: value.auth,
         computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
@@ -489,7 +453,7 @@ describe("Computer enrollment persistence", () => {
           url: HTTP_PATHS.computerConnectExchange,
           payload: {
             code: issued.code,
-            computerId,
+            installationId,
             displayName: "workstation",
             platform: "linux",
             arch: "x64",
@@ -498,10 +462,10 @@ describe("Computer enrollment persistence", () => {
         });
         expect(response.statusCode).toBe(200);
         expect(response.json()).toMatchObject({
-          computerId,
+          computerId: expect.any(String),
+          installationId,
           machineToken: expect.stringMatching(/^otmc_/),
         });
-        expect(response.json()).not.toHaveProperty("workspaceId");
       } finally {
         await app.close();
       }
@@ -510,7 +474,7 @@ describe("Computer enrollment persistence", () => {
     }
   });
 
-  it("issues connect codes only through the Account-native route", async () => {
+  it("issues connect codes through the Account-native route", async () => {
     const value = await fixture();
     try {
       const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
@@ -521,12 +485,6 @@ describe("Computer enrollment persistence", () => {
         machineAuthService: value.machineAuth,
       });
       try {
-        const retired = await app.inject({
-          method: "POST",
-          url: workspaceComputerConnectCodesPath(value.bootstrap.workspaceId),
-          headers: { authorization: `Bearer ${account.accessToken}` },
-        });
-        expect(retired.statusCode).toBe(404);
         const issued = await app.inject({
           method: "POST",
           url: HTTP_PATHS.accountComputerConnectCodes,
@@ -546,7 +504,7 @@ describe("Computer enrollment persistence", () => {
           url: HTTP_PATHS.computerConnectExchange,
           payload: {
             code,
-            computerId: crypto.randomUUID(),
+            installationId: crypto.randomUUID(),
             displayName: "workstation",
             platform: "linux",
             arch: "x64",
@@ -566,8 +524,8 @@ describe("Computer enrollment persistence", () => {
   it("rejects machine credentials on Account management routes and lists Computers for Account auth", async () => {
     const value = await fixture();
     try {
-      const enrollment = await enroll(value);
-      await value.service.register(enrollment, registerFrame(enrollment.computerId, crypto.randomUUID()));
+      const exchange = await connect(value);
+      await value.service.register(exchange, registerFrame(exchange.installationId, crypto.randomUUID()));
       const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
       const app = createApp({
         authService: value.auth,
@@ -579,14 +537,14 @@ describe("Computer enrollment persistence", () => {
         const denied = await app.inject({
           method: "GET",
           url: HTTP_PATHS.accountComputers,
-          headers: { authorization: `Bearer ${enrollment.machineToken}` },
+          headers: { authorization: `Bearer ${exchange.machineToken}` },
         });
         expect(denied.statusCode).toBe(401);
 
         const codeDenied = await app.inject({
           method: "POST",
           url: HTTP_PATHS.accountComputerConnectCodes,
-          headers: { authorization: `Bearer ${enrollment.machineToken}` },
+          headers: { authorization: `Bearer ${exchange.machineToken}` },
         });
         expect(codeDenied.statusCode).toBe(401);
 
@@ -599,12 +557,12 @@ describe("Computer enrollment persistence", () => {
         expect(response.json()).toMatchObject({
           computers: [
             {
-              computerId: enrollment.workspaceComputerId,
+              computerId: exchange.computerId,
               connectionStatus: "online",
             },
           ],
         });
-        expect(WorkspaceComputerSummarySchema.parse(response.json().computers[0])).not.toHaveProperty(
+        expect(AccountComputerSummarySchema.parse(response.json().computers[0])).not.toHaveProperty(
           "providerReadiness",
         );
 
@@ -647,20 +605,20 @@ describe("Connect code redemption status", () => {
         redeemedAt: null,
       });
 
-      const enrollment = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, crypto.randomUUID()));
+      const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, crypto.randomUUID()));
       const redeemed = await value.machineAuth.getConnectCodeStatusForAccount(
         value.bootstrap.userId,
         issued.connectCodeId,
       );
       expect(redeemed.state).toBe("redeemed");
-      expect(redeemed.computerId).toBe(enrollment.workspaceComputerId);
+      expect(redeemed.computerId).toBe(exchange.computerId);
       expect(redeemed.redeemedAt).not.toBeNull();
 
       // Durable evidence, not a reachability report: the machine that redeemed the code has not
       // connected yet, and the verdict still names it.
       const { computers: listed } = await value.service.listAccountComputers(value.bootstrap.userId);
-      const enrolled = listed.find((one) => one.computerId === enrollment.workspaceComputerId);
-      expect(enrolled?.connectionStatus).toBe("offline");
+      const machine = listed.find((one) => one.computerId === exchange.computerId);
+      expect(machine?.connectionStatus).toBe("offline");
     } finally {
       await value.sql.end();
     }
@@ -687,8 +645,8 @@ describe("Connect code redemption status", () => {
         value.bootstrap.userId,
         second.connectCodeId,
       );
-      expect(firstStatus).toMatchObject({ state: "redeemed", computerId: firstEnrollment.workspaceComputerId });
-      expect(secondStatus).toMatchObject({ state: "redeemed", computerId: secondEnrollment.workspaceComputerId });
+      expect(firstStatus).toMatchObject({ state: "redeemed", computerId: firstEnrollment.computerId });
+      expect(secondStatus).toMatchObject({ state: "redeemed", computerId: secondEnrollment.computerId });
       expect(firstStatus.computerId).not.toBe(secondStatus.computerId);
     } finally {
       await value.sql.end();
@@ -761,11 +719,11 @@ describe("Connect code redemption status", () => {
       const before = await Promise.all([read(), read(), read()]);
       for (const verdict of before) expect(verdict).toEqual(before[0]);
 
-      const enrollment = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, crypto.randomUUID()));
+      const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(issued.code, crypto.randomUUID()));
       const after = await Promise.all([read(), read(), read()]);
       for (const verdict of after) {
         expect(verdict).toEqual(after[0]);
-        expect(verdict).toMatchObject({ state: "redeemed", computerId: enrollment.workspaceComputerId });
+        expect(verdict).toMatchObject({ state: "redeemed", computerId: exchange.computerId });
       }
     } finally {
       await value.sql.end();
@@ -813,7 +771,7 @@ describe("Connect code redemption status", () => {
         const command = issued.json().bootstrapCommand as string;
         const code = command.split(" -- ").at(-1);
         if (!code) throw new Error("Computer connect command did not contain a code");
-        const enrollment = await value.machineAuth.exchangeConnectCode(exchangeInput(code, crypto.randomUUID()));
+        const exchange = await value.machineAuth.exchangeConnectCode(exchangeInput(code, crypto.randomUUID()));
         const redeemed = await app.inject({
           method: "GET",
           url: accountComputerConnectCodePath(connectCodeId),
@@ -823,11 +781,11 @@ describe("Connect code redemption status", () => {
         expect(redeemed.json()).toEqual({
           connectCodeId,
           state: "redeemed",
-          computerId: enrollment.workspaceComputerId,
+          computerId: exchange.computerId,
           redeemedAt: expect.any(String),
         });
         expect(redeemed.body).not.toContain(code);
-        expect(redeemed.body).not.toContain(enrollment.machineToken);
+        expect(redeemed.body).not.toContain(exchange.machineToken);
 
         // Another Account's token and the machine's own credential both fail closed.
         const foreign = await app.inject({
@@ -839,7 +797,7 @@ describe("Connect code redemption status", () => {
         const machine = await app.inject({
           method: "GET",
           url: accountComputerConnectCodePath(connectCodeId),
-          headers: { authorization: `Bearer ${enrollment.machineToken}` },
+          headers: { authorization: `Bearer ${exchange.machineToken}` },
         });
         expect(machine.statusCode).toBe(401);
         const anonymous = await app.inject({ method: "GET", url: accountComputerConnectCodePath(connectCodeId) });

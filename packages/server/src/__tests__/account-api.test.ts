@@ -3,7 +3,6 @@ import {
   accountComputerConnectCodePath,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
-  workspaceComputersPath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
@@ -12,11 +11,10 @@ import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
 import { OnboardingResetError } from "../services/onboarding-reset/index.js";
+import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
-import type { WorkspaceSetupService } from "../services/workspaces/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const authorization = { authorization: "Bearer access" };
@@ -63,7 +61,7 @@ const computerSummary = {
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:00.000Z",
   observedAt: "2026-08-19T00:00:00.000Z",
-  enrolledAt: "2026-08-18T00:00:00.000Z",
+  createdAt: "2026-08-18T00:00:00.000Z",
   agentIds: [agentId],
 };
 const createAgentPayload = {
@@ -130,9 +128,8 @@ function services() {
       exchangeConnectCode: vi.fn().mockResolvedValue({
         computerId,
         credentialId: "credential-id",
+        installationId: "5e4c5b1b-1c3d-4a2b-8c9d-9f3b7a1c2d4e",
         machineToken: "machine-token",
-        workspaceComputerId: computerId,
-        workspaceId,
       }),
       getConnectCodeStatusForAccount: vi.fn().mockResolvedValue({
         connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
@@ -156,7 +153,7 @@ function services() {
       listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
       removeFromAccount: vi.fn().mockResolvedValue(undefined),
     },
-    workspaceSetupService: {
+    accountSetupService: {
       complete: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
       completeForAccount: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
     },
@@ -175,7 +172,7 @@ function appWith(
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
     taskService: service.taskService as unknown as TaskService,
     computerService: service.computerService as unknown as ComputerService,
-    workspaceSetupService: service.workspaceSetupService as unknown as WorkspaceSetupService,
+    accountSetupService: service.accountSetupService as unknown as AccountSetupService,
     computerConnectCode: { environment: "dev", publicUrl: "https://opentag.example" },
   });
   apps.push(app);
@@ -399,8 +396,9 @@ describe("Account-native management collections", () => {
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
   });
 
-  it("exchanges a Computer connect code and strips legacy authority fields", async () => {
+  it("exchanges a Computer connect code and withholds the credential id", async () => {
     const { app, service } = appWith();
+    const installationId = "5e4c5b1b-1c3d-4a2b-8c9d-9f3b7a1c2d4e";
     const response = await app.inject({
       method: "POST",
       url: HTTP_PATHS.computerConnectExchange,
@@ -408,32 +406,22 @@ describe("Account-native management collections", () => {
         arch: "arm64",
         clientVersion: "1.0.0",
         code: "sixteen-character-code",
-        computerId,
+        installationId,
         displayName: "Laptop",
         platform: "darwin",
       },
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["cache-control"]).toBe("no-store");
-    expect(response.json()).toEqual({ computerId, machineToken: "machine-token", workspaceComputerId: computerId });
+    expect(response.json()).toEqual({ computerId, installationId, machineToken: "machine-token" });
     expect(service.machineAuthService.exchangeConnectCode).toHaveBeenCalledWith({
       arch: "arm64",
       clientVersion: "1.0.0",
       code: "sixteen-character-code",
-      computerId,
+      installationId,
       displayName: "Laptop",
       platform: "darwin",
     });
-  });
-
-  it("does not register management Workspace routes", async () => {
-    const { app } = appWith();
-    const response = await app.inject({
-      method: "GET",
-      url: workspaceComputersPath(workspaceId),
-      headers: authorization,
-    });
-    expect(response.statusCode).toBe(404);
   });
 
   it("forwards the provider readiness opt-in header", async () => {
@@ -470,7 +458,7 @@ describe("Account-native management collections", () => {
       { url: HTTP_PATHS.accountSetupComplete, base: { agentId } },
     ];
     for (const route of routes) {
-      for (const selector of [{ workspaceId }, { accountId: userId }]) {
+      for (const selector of [{ accountId: userId }]) {
         const response = await app.inject({
           method: "POST",
           url: route.url,
@@ -488,7 +476,7 @@ describe("Account-native management collections", () => {
 
     expect(service.agentService.createForAccount).not.toHaveBeenCalled();
     expect(service.machineAuthService.issueForAccount).not.toHaveBeenCalled();
-    expect(service.workspaceSetupService.completeForAccount).not.toHaveBeenCalled();
+    expect(service.accountSetupService.completeForAccount).not.toHaveBeenCalled();
   });
 
   it("still issues a connect code for an empty or absent body", async () => {
@@ -506,7 +494,7 @@ describe("Account-native management collections", () => {
     expect(service.machineAuthService.issueForAccount).toHaveBeenCalledTimes(2);
   });
 
-  it("lists Account-owned collections without a compatibility Workspace", async () => {
+  it("lists Account-owned collections from authenticated Account authority", async () => {
     const { app, service } = appWith();
 
     for (const url of [HTTP_PATHS.accountAgents, HTTP_PATHS.accountComputers, HTTP_PATHS.accountTasks]) {
@@ -523,7 +511,7 @@ describe("Account-native management collections", () => {
     expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
     expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, false);
     expect(service.taskService.list).toHaveBeenCalledWith(userId, { limit: 50 });
-    expect(service.workspaceSetupService.completeForAccount).toHaveBeenCalledWith(userId, agentId);
+    expect(service.accountSetupService.completeForAccount).toHaveBeenCalledWith(userId, agentId);
   });
 
   it("requires an authenticated Account on every collection", async () => {

@@ -1,4 +1,4 @@
-import type { AgentAdminConfig, AgentListItem, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentAdminConfig, AgentListItem } from "@opentag/shared/browser";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -19,7 +19,7 @@ const draft: AgentDraft = {
   tokenSource: undefined,
 };
 
-function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
+function computer(overrides: Partial<AccountComputerSummary> = {}): AccountComputerSummary {
   return {
     computerId: COMPUTER_ID,
     displayName: "Ada's Mac",
@@ -28,7 +28,7 @@ function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceC
     connectedAt: NOW,
     lastSeenAt: NOW,
     observedAt: NOW,
-    enrolledAt: NOW,
+    createdAt: NOW,
     agentIds: [AGENT_ID],
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }],
     ...overrides,

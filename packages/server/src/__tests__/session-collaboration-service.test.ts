@@ -131,8 +131,8 @@ function serviceFixture(
   const messageId = randomUUID();
   const agentId = randomUUID();
   const imBindingId = randomUUID();
-  const targetWorkspaceComputerId = randomUUID();
   const targetComputerId = randomUUID();
+  const targetInstallationId = randomUUID();
   const instanceId = randomUUID();
   const source: SessionCliSourceContext = {
     agentId,
@@ -141,7 +141,7 @@ function serviceFixture(
     placementGeneration: 1,
     sessionId: sourceSessionId,
     sessionKind: "channel",
-    workspaceComputerId: randomUUID(),
+    installationId: randomUUID(),
   };
   const attempt = {
     route: {
@@ -150,7 +150,7 @@ function serviceFixture(
       sourceSessionId,
       targetSessionId,
       targetComputerId,
-      targetWorkspaceComputerId,
+      targetInstallationId,
       targetPlacementGeneration: 1,
       targetSessionKind: options.targetSessionKind ?? ("internal" as const),
       targetCreatorSessionId: sourceSessionId,

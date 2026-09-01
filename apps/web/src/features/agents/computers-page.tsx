@@ -1,4 +1,4 @@
-import type { ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, ListAccountComputersResponse } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
@@ -12,13 +12,11 @@ import { AsyncState, toResourceState } from "../resource/resource-state.js";
 import { useComputersQuery } from "./agent-queries.js";
 
 /**
- * Lists the Account's enrolled Computers and keeps the connection flow available as its own
- * management surface. A Computer can be enrolled before an Agent exists, so this page cannot be
- * folded into the Agent list without making that first-run path unnecessarily indirect.
+ * Lists the Account's Computers and keeps the connection flow available as its own management
+ * surface. A Computer can be connected before an Agent exists, so this page cannot be folded into
+ * the Agent list without making that first-run path unnecessarily indirect.
  */
 export function ComputersPage() {
-  // The one Computers entry every surface reads, watched because this page is where an operator
-  // waits for a Computer to come back.
   const query = useComputersQuery(true);
   const state = toResourceState(query);
   const [connecting, setConnecting] = useState(false);
@@ -61,18 +59,18 @@ export function ComputersPage() {
   );
 }
 
-export function ComputerList({ computers }: { computers: readonly WorkspaceComputerSummary[] }) {
+export function ComputerList({ computers }: { computers: readonly AccountComputerSummary[] }) {
   return (
     <section
-      aria-labelledby="enrolled-computers-heading"
+      aria-labelledby="account-computers-heading"
       className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
     >
-      <Text as="h2" id="enrolled-computers-heading" variant="heading">
-        {m.agents_enrolled_computers()}
+      <Text as="h2" id="account-computers-heading" variant="heading">
+        {m.agents_connected_computers()}
       </Text>
       {computers.length === 0 ? (
         <Text as="p" variant="secondary">
-          {m.agents_no_computers_enrolled()}
+          {m.agents_no_computers_connected()}
         </Text>
       ) : (
         <ul className="grid divide-y divide-kumo-line">
@@ -85,7 +83,7 @@ export function ComputerList({ computers }: { computers: readonly WorkspaceCompu
   );
 }
 
-function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) {
+function ComputerListItem({ computer }: { computer: AccountComputerSummary }) {
   const queryClient = useQueryClient();
   const removeButtonRef = useRef<HTMLButtonElement>(null);
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
@@ -100,10 +98,8 @@ function ComputerListItem({ computer }: { computer: WorkspaceComputerSummary }) 
       setRemoving(true);
       setRemoveError(undefined);
       await browserApi.removeComputer(computer.computerId);
-      // A confirmed removal is stronger than a Computers read that may have started before it.
-      // Cancel that read and evict the row locally; later watched reads confirm the new Server state.
       await queryClient.cancelQueries({ queryKey: queryKeys.computers() });
-      queryClient.setQueryData<ListWorkspaceComputersResponse>(queryKeys.computers(), (current) =>
+      queryClient.setQueryData<ListAccountComputersResponse>(queryKeys.computers(), (current) =>
         current
           ? { ...current, computers: current.computers.filter((item) => item.computerId !== computer.computerId) }
           : current,
@@ -189,7 +185,7 @@ function removeComputerDescription(agentCount: number): string {
   return m.agents_remove_computer_confirm_description_plural({ count: agentCount });
 }
 
-function computerStatus(computer: WorkspaceComputerSummary) {
+function computerStatus(computer: AccountComputerSummary) {
   if (computer.connectionStatus === "online") {
     return { detail: undefined, label: m.agents_computer_online(), title: undefined, tone: "success" as const };
   }

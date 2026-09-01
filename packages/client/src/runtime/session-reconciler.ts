@@ -45,7 +45,7 @@ export interface RuntimeLocalPolicy {
 }
 
 export interface SessionReconcilerOptions {
-  computerId: string;
+  installationId: string;
   localPolicy?: RuntimeLocalPolicy;
   maxRememberedRequests?: number;
   preparation?: RuntimePreparation;
@@ -83,7 +83,7 @@ const noopPreparation: RuntimePreparation = {
 };
 
 export class SessionReconciler {
-  readonly #computerId: string;
+  readonly #installationId: string;
   readonly #preparation: RuntimePreparation;
   readonly #localPolicy?: RuntimeLocalPolicy;
   readonly #maxRememberedRequests: number;
@@ -95,7 +95,7 @@ export class SessionReconciler {
   readonly #agentTails = new Map<string, Promise<void>>();
 
   constructor(options: SessionReconcilerOptions) {
-    this.#computerId = options.computerId;
+    this.#installationId = options.installationId;
     this.#preparation = options.preparation ?? noopPreparation;
     this.#localPolicy = options.localPolicy;
     this.#maxRememberedRequests = options.maxRememberedRequests ?? 256;
@@ -247,7 +247,7 @@ export class SessionReconciler {
   }
 
   async #reconcileLocked(request: SessionReconcileRequest): Promise<SessionReconcileResult> {
-    if (request.computerId !== this.#computerId) return this.#result(request, "rejected", "target_mismatch");
+    if (request.installationId !== this.#installationId) return this.#result(request, "rejected", "target_mismatch");
 
     const existingSession = this.#sessions.get(request.sessionId);
     if (existingSession && request.placementGeneration < existingSession.placementGeneration) {

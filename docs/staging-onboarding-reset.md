@@ -7,7 +7,7 @@ staging onboarding reset gives that Account a repeatable way back, in two sizes:
 and keeps everything, while `mode: "all"` returns **the authenticated Account** to a genuine first-run state.
 
 Which one you want follows from what you are testing. Only `mode: "all"` can produce a first run, because clearing the
-setup-completion timestamp alone is not enough for that: existing Computer enrollments, Agents, runtime readiness and
+setup-completion timestamp alone is not enough for that: existing Computer connections, Agents, runtime readiness and
 IM bindings immediately advance the fact-derived onboarding flow. `mode: "reboard"` clears exactly that timestamp and
 nothing else, so the surviving facts carry the Account into the resume path instead — which is the point of it.
 
@@ -33,7 +33,7 @@ Sign in to staging with your own identity. A new Account starts in a first-run s
 nothing else; the reset is what lets you do it a second time.
 
 There is no shared test Account to take turns on, and nothing to configure. Two people can run onboarding at the same
-time: each resets only their own Account, each enrols their own Computer, and each Feishu authorization creates its own
+time: each resets only their own Account, each connects their own Computer, and each Feishu authorization creates its own
 application in the test tenant, so their bindings do not contend.
 
 One shared cost remains. Reset disables OpenTag's binding but cannot delete the application it created in the Feishu
@@ -49,8 +49,8 @@ Rules the Server enforces:
 - any deployment outside staging answers like a path that does not exist, and the environment is re-confirmed on each
   request rather than trusted from route registration;
 - reset always targets the authenticated Account and accepts no client-selected Account;
-- reset refuses unless that Account owns exactly one active resource scope, exclusively, so it can only ever act on
-  resources that belong to the caller;
+- reset selects Agents created by that Account and Computers owned by that Account, then verifies that no active fact
+  remains before clearing setup completion;
 - reset requires the normal browser CSRF protection.
 
 `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` used to name the one Account allowed to reset. It is retired: a deployment that
@@ -89,7 +89,7 @@ A `204` means setup completion is cleared; reload and `/onboarding` opens on its
 
 Clears the setup marker and nothing else. The Agents, Computers and messaging connections the Account already has are
 exactly what it keeps, which makes the next run a resume rather than a first run. Use it to look at onboarding again
-without rebuilding an Agent and re-enrolling a machine first — not to test first-run behaviour, because the facts that
+without rebuilding an Agent and reconnecting a machine first — not to test first-run behaviour, because the facts that
 survive advance the flow past the steps that create them.
 
 ### `mode: "all"`
@@ -99,14 +99,14 @@ Returns the Account to a genuine first run. The reset is staged and idempotent:
 1. every non-deleted Agent is suspended and deleted through the existing Agent lifecycle, which disables IM bindings,
    clears encrypted IM and setup credentials, ends active Sessions and removes runtime configuration;
 2. outstanding unconsumed Computer connect codes are revoked;
-3. active enrollment credentials and Computer enrollments are revoked;
+3. active Computer credentials are revoked and current connection observations are cleared;
 4. affected live Computer connections are closed;
 5. authoritative facts are re-read and verified;
 6. only then is the setup-completion timestamp cleared.
 
 Because the timestamp is the final commit marker, a reset that fails before verification leaves the Account inside the
-application and can simply be run again. Two testers resetting at the same time take different Accounts and different
-scope locks, so neither delays the other.
+application and can simply be run again. Two testers resetting at the same time lock different Account rows, so neither
+delays the other.
 
 Historical and identity data is kept: the Account and its Google identity, deleted Agent rows, disabled IM bindings,
 ended Sessions and messages, the stable Computer identity, and the external Feishu Bot. None of it satisfies
@@ -116,13 +116,13 @@ onboarding's active facts afterwards.
 
 Repeated testing does not require deleting or rebuilding `OPENTAG_HOME`. After a `mode: "all"` reset:
 
-1. the previous enrollment and machine token are invalid;
+1. the previous connection and machine token are invalid;
 2. the Web produces a new Computer connect command;
 3. the CLI reuses the stable physical Computer identity;
-4. the new enrollment credential replaces the invalid one for the same Account and scope;
+4. the new Computer credential replaces the invalid one for the same Account and stable Computer identity;
 5. the existing daemon service restarts and reconnects.
 
-This exercises the Computer step, connect command, enrollment, readiness and Agent creation. It intentionally does not
+This exercises the Computer step, connect command, connection, readiness and Agent creation. It intentionally does not
 retest first-time package installation, first-time daemon-service installation, or creating a brand-new local Computer
 identity; use a clean VM or CI host when you need those.
 

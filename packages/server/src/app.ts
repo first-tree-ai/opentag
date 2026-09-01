@@ -31,8 +31,8 @@ import { type ImBindingService, ImBindingServiceError } from "./services/im-bind
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
+import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
-import { type WorkspaceSetupService, WorkspaceSetupServiceError } from "./services/workspaces/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
@@ -70,14 +70,11 @@ export interface CreateAppOptions {
    */
   setupResetService?: OnboardingResetService;
   taskService?: TaskService;
-  workspaceSetupService?: WorkspaceSetupService;
+  accountSetupService?: AccountSetupService;
 }
 
 export function sanitizeRequestUrl(url: string): string {
-  const path = url.split("?", 1)[0] ?? "/";
-  return path
-    .replace(/^(\/invites\/)[^/]+/, "$1[REDACTED]")
-    .replace(/^(\/api\/v1\/admin-invitations\/)[^/]+/, "$1[REDACTED]");
+  return url.split("?", 1)[0] ?? "/";
 }
 
 export function formatHttpSpanName(request: { method?: string; routeOptions?: { url?: string } }): string {
@@ -232,8 +229,8 @@ export function createApp(options: CreateAppOptions = {}) {
       options.agentService ||
       options.taskService ||
       options.computerService ||
-      options.workspaceSetupService ||
       options.setupResetService ||
+      options.accountSetupService ||
       (options.machineAuthService && options.computerConnectCode)
     ) {
       registerAccountRoutes(app, authService, {
@@ -241,7 +238,7 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
         ...(options.computerService ? { computerService: options.computerService } : {}),
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
-        ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
+        ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
         ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
         authOptions,
@@ -300,7 +297,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof OnboardingResetError ||
       error instanceof TaskQueryError ||
       error instanceof SlackConfigurationServiceError ||
-      error instanceof WorkspaceSetupServiceError
+      error instanceof AccountSetupServiceError
     ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {

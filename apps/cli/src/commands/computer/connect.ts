@@ -11,7 +11,7 @@ type ComputerConnectCommandOptions = { home?: string; server?: string; start?: b
 export function registerComputerConnectCommand(computer: Command): void {
   computer
     .command("connect")
-    .description("Enroll this Computer with a one-time code")
+    .description("Connect this Computer with a one-time code")
     .argument("<code>", "one-time Computer connect code")
     .option("--server <url>", "OpenTag server URL")
     .option("--home <path>", "OpenTag home directory")

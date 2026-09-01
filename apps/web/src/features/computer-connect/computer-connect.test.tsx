@@ -1,4 +1,4 @@
-import type { WorkspaceComputerSummary as Computer, ComputerConnectCodeStatus } from "@opentag/shared/browser";
+import type { AccountComputerSummary as Computer, ComputerConnectCodeStatus } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +22,7 @@ const computer: Computer = {
   connectedAt: "2026-08-20T00:00:02.000Z",
   lastSeenAt: "2026-08-20T00:00:02.000Z",
   observedAt: "2026-08-20T00:00:02.000Z",
-  enrolledAt: NOW,
+  createdAt: NOW,
   agentIds: [],
 };
 

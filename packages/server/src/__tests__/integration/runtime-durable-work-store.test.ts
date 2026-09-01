@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { RuntimeDurableWorkRecord, SessionMessageDeliveryRequest } from "@opentag/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { accountComputers, computers, users, workspaces } from "../../db/schema/index.js";
+import { computers, users } from "../../db/schema/index.js";
 import { PostgresRuntimeDurableWorkStore } from "../../runtime/runtime-durable-work-store.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 describe("Runtime durable work persistence on PostgreSQL", () => {
   let testDatabase: MigratedTestDatabase;
   let database: ReturnType<typeof createDatabaseClient>;
-  let workspaceComputerId: string;
+  let computerId: string;
 
   beforeAll(async () => {
     testDatabase = await startMigratedTestDatabase();
@@ -24,19 +24,14 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
   beforeEach(async () => {
     await testDatabase.reset();
     const accountId = randomUUID();
-    const workspaceId = randomUUID();
-    workspaceComputerId = randomUUID();
+    computerId = randomUUID();
     await database.database
       .insert(users)
       .values({ id: accountId, email: `${accountId}@example.com`, displayName: "Test" });
-    await database.database
-      .insert(workspaces)
-      .values({ id: workspaceId, name: `test-${accountId}`, displayName: "Test" });
-    await database.database.insert(computers).values({ id: workspaceComputerId });
-    await database.database.insert(accountComputers).values({
-      id: workspaceComputerId,
+    await database.database.insert(computers).values({
+      id: computerId,
       ownerAccountId: accountId,
-      currentInstallationId: workspaceComputerId,
+      currentInstallationId: randomUUID(),
       displayName: "Test Computer",
       platform: "linux",
       arch: "x86_64",
@@ -47,14 +42,14 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
   it("survives a second database client and returns one idempotent receipt", async () => {
     const record = sessionRecord();
     const first = new PostgresRuntimeDurableWorkStore(database.database, { now: () => 1 });
-    await first.write(workspaceComputerId, record);
+    await first.write(computerId, record);
 
     const secondClient = createDatabaseClient(testDatabase.databaseUrl);
     try {
       const second = new PostgresRuntimeDurableWorkStore(secondClient.database, { now: () => 1 });
-      await expect(second.list(workspaceComputerId, "session-message")).resolves.toEqual([record]);
-      await second.write(workspaceComputerId, record);
-      await expect(second.list(workspaceComputerId, "session-message")).resolves.toHaveLength(1);
+      await expect(second.list(computerId, "session-message")).resolves.toEqual([record]);
+      await second.write(computerId, record);
+      await expect(second.list(computerId, "session-message")).resolves.toHaveLength(1);
     } finally {
       await secondClient.sql.end();
     }

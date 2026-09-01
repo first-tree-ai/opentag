@@ -2,7 +2,7 @@ export const OPENTAG_ATTR = {
   AGENT_ID: "opentag.agent.id",
   ATTEMPT: "opentag.attempt",
   COMPUTER_ID: "opentag.computer.id",
-  WORKSPACE_COMPUTER_ID: "opentag.workspace_computer.id",
+  INSTALLATION_ID: "opentag.installation.id",
   RUNTIME_CONNECTION_ID: "opentag.runtime.connection.id",
   ERROR_CODE: "opentag.error.code",
   IM_BINDING_ID: "opentag.im.binding.id",
@@ -54,7 +54,7 @@ export function runtimeAttrs(input: {
   sessionId?: string;
   agentId?: string;
   computerId?: string;
-  workspaceComputerId?: string;
+  installationId?: string;
   connectionId?: string;
   instanceId?: string;
   protocolVersion?: number;
@@ -69,7 +69,7 @@ export function runtimeAttrs(input: {
     [OPENTAG_ATTR.SESSION_ID]: input.sessionId,
     [OPENTAG_ATTR.AGENT_ID]: input.agentId,
     [OPENTAG_ATTR.COMPUTER_ID]: input.computerId,
-    [OPENTAG_ATTR.WORKSPACE_COMPUTER_ID]: input.workspaceComputerId,
+    [OPENTAG_ATTR.INSTALLATION_ID]: input.installationId,
     [OPENTAG_ATTR.RUNTIME_CONNECTION_ID]: input.connectionId,
     [OPENTAG_ATTR.RUNTIME_INSTANCE_ID]: input.instanceId,
     [OPENTAG_ATTR.RUNTIME_PROTOCOL_VERSION]: input.protocolVersion,

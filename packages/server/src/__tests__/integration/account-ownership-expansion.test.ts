@@ -7,22 +7,20 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "../../db/migrate.js";
 import {
-  accountComputers,
   agents,
   computerConnectCodes,
   computerCredentials,
+  computers,
   sessionCliProofs,
   sessionPlacements,
-  workspaceComputerCredentials,
-  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { SessionCliProofService, SessionService } from "../../services/sessions/index.js";
-import { bootstrapTestAccount as bootstrapInitialAdmin } from "../test-account.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -106,7 +104,6 @@ const LEGACY_HAZARD_INDEXES = [
   "slack_installations_workspace_current_unique",
   "session_placements_workspace_computer_id_idx",
 ] as const;
-const CURRENT_HAZARD_INDEXES = ["session_placements_workspace_computer_id_idx"] as const;
 
 async function expansionSchema(sql: postgres.Sql) {
   const [row] = await sql<
@@ -353,25 +350,64 @@ describe("account-owned computer expansion migrations", () => {
 
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {
-      const schema = await expansionSchema(sql);
-      expect(schema).toMatchObject({
+      const [schema] = await sql<
+        {
+          migrations: number;
+          computers: string | null;
+          account_computers: string | null;
+          computer_credentials: string | null;
+          legacy_tables: number;
+          legacy_columns: number;
+          slack_agent_id: boolean;
+          connect_mode: boolean;
+        }[]
+      >`
+        select
+          (select count(*)::int from drizzle.__drizzle_migrations) as migrations,
+          to_regclass('public.computers')::text as computers,
+          to_regclass('public.account_computers')::text as account_computers,
+          to_regclass('public.computer_credentials')::text as computer_credentials,
+          (
+            select count(*)::int from information_schema.tables
+            where table_schema = 'public'
+              and table_name in (
+                'workspaces',
+                'workspace_admin_grants',
+                'admin_invitations',
+                'workspace_computers',
+                'workspace_computer_credentials'
+              )
+          ) as legacy_tables,
+          (
+            select count(*)::int from information_schema.columns
+            where table_schema = 'public'
+              and column_name in ('workspace_id', 'workspace_computer_id', 'consumed_workspace_computer_id')
+          ) as legacy_columns,
+          exists(
+            select 1 from information_schema.columns
+            where table_schema = 'public' and table_name = 'slack_installations' and column_name = 'agent_id'
+          ) as slack_agent_id,
+          exists(
+            select 1 from information_schema.columns
+            where table_schema = 'public' and table_name = 'computer_connect_codes' and column_name = 'mode'
+          ) as connect_mode
+      `;
+      expect(schema).toEqual({
         migrations: journal.entries.length,
-        account_computers: "account_computers",
+        computers: "computers",
+        account_computers: null,
         computer_credentials: "computer_credentials",
-        agents_computer_id: true,
-        placements_computer_id: true,
-        proofs_computer_id: true,
+        legacy_tables: 0,
+        legacy_columns: 0,
         slack_agent_id: true,
         connect_mode: true,
-        hazards: [...HAZARD_CONSTRAINTS].sort(),
-        hazard_indexes: [...CURRENT_HAZARD_INDEXES].sort(),
       });
-      const [counts] = await sql<{ account_computers: number; computer_credentials: number }[]>`
+      const [counts] = await sql<{ computers: number; computer_credentials: number }[]>`
         select
-          (select count(*)::int from account_computers) as account_computers,
+          (select count(*)::int from computers) as computers,
           (select count(*)::int from computer_credentials) as computer_credentials
       `;
-      expect(counts).toEqual({ account_computers: 0, computer_credentials: 0 });
+      expect(counts).toEqual({ computers: 0, computer_credentials: 0 });
     } finally {
       await sql.end();
     }
@@ -597,8 +633,8 @@ describe("account-owned computer expansion migrations", () => {
   });
 
   it("rolls back a failed 0026 transaction and retries the checked-in migration", async () => {
-    const journal = await readJournal();
     const through0025 = await truncatedMigrations(25);
+    const through0026 = await truncatedMigrations(26);
     try {
       await migrateDatabase(databaseUrl, through0025);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
@@ -645,8 +681,8 @@ describe("account-owned computer expansion migrations", () => {
         });
 
         await sql.unsafe("drop table computer_credentials");
-        await migrateDatabase(databaseUrl, migrationsFolder);
-        await expect(verifyDatabaseMigrations(databaseUrl, migrationsFolder)).resolves.toBeUndefined();
+        await migrateDatabase(databaseUrl, through0026);
+        await expect(verifyDatabaseMigrations(databaseUrl, through0026)).resolves.toBeUndefined();
         const [retried] = await sql<
           {
             migrations: number;
@@ -671,7 +707,7 @@ describe("account-owned computer expansion migrations", () => {
             (select count(*)::int from computer_credentials) as credential_rows
         `;
         expect(retried).toEqual({
-          migrations: journal.entries.length,
+          migrations: 27,
           account_computers: "account_computers",
           mode_enum: true,
           credential_id_type: "uuid",
@@ -684,209 +720,89 @@ describe("account-owned computer expansion migrations", () => {
       }
     } finally {
       await rm(through0025, { force: true, recursive: true });
+      await rm(through0026, { force: true, recursive: true });
     }
   });
 
-  it("preserves enrollment hazards and fail-closes current projection constraints", async () => {
+  it("fail-closes the current Computer, credential, and Slack installation constraints", async () => {
     await migrateDatabase(databaseUrl, migrationsFolder);
     const client = createDatabaseClient(databaseUrl);
     try {
-      const bootstrap = await bootstrapInitialAdmin(client.database, {
-        displayName: "Admin",
-        email: "admin@example.com",
-        workspaceDisplayName: "Example",
-        workspaceName: "example",
-      });
-      const sql = client.sql;
-      const [hazards] = await sql<{ constraints: string[]; indexes: string[] }[]>`
-        select
-          array(
-            select conname::text from pg_constraint
-            where conname in ('computer_connect_codes_workspace_enrollment_fk', 'agents_workspace_enrollment_fk')
-            order by conname
-          ) as constraints,
-          array(
-            select indexname::text from pg_indexes
-            where indexname in (
-              'slack_installations_workspace_current_unique',
-              'session_placements_workspace_computer_id_idx'
-            )
-            order by indexname
-          ) as indexes
-      `;
-      expect(hazards).toEqual({
-        constraints: [...HAZARD_CONSTRAINTS].sort(),
-        indexes: [...CURRENT_HAZARD_INDEXES].sort(),
-      });
-
-      const computerId = crypto.randomUUID();
-      await sql`insert into computers (id) values (${computerId})`;
-      const [enrollment] = await sql<{ id: string }[]>`
-        insert into workspace_computers (
-          workspace_id, computer_id, display_name, platform, arch, client_version, enrolled_by_user_id
-        )
-        values (${bootstrap.workspaceId}, ${computerId}, 'box', 'linux', 'x64', '0.0.1', ${bootstrap.userId})
+      await client.sql`insert into users (id, email, display_name) values (${OWNER_ID}, 'owner@example.com', 'Owner')`;
+      const [computer] = await client.sql<{ id: string }[]>`
+        insert into computers (owner_account_id, current_installation_id, display_name, platform, arch, client_version)
+        values (${OWNER_ID}, ${INSTALLATION_ID}, 'box', 'linux', 'x64', '0.0.1')
         returning id::text
       `;
-      if (!enrollment) throw new Error("Enrollment fixture was not created");
-      await sql`
-        insert into account_computers (
-          id, owner_account_id, current_installation_id, display_name, platform, arch, client_version
-        )
-        values (${enrollment.id}, ${bootstrap.userId}, ${computerId}, 'box', 'linux', 'x64', '0.0.1')
-      `;
+      if (!computer) throw new Error("Computer fixture was not created");
 
-      const orphan = await sql`
-        insert into agents (workspace_id, created_by_user_id, workspace_computer_id, computer_id, name, display_name, runtime_provider)
-        values (
-          ${bootstrap.workspaceId}, ${bootstrap.userId}, ${enrollment.id}, ${crypto.randomUUID()},
-          'orphan', 'Orphan', 'codex'
-        )
+      const duplicateInstallation = await client.sql`
+        insert into computers (owner_account_id, current_installation_id, display_name, platform, arch, client_version)
+        values (${OWNER_ID}, ${INSTALLATION_ID}, 'box-2', 'linux', 'x64', '0.0.1')
       `.catch((error: unknown) => error);
-      expect(postgresError(orphan)).toMatchObject({
-        code: "23514",
-        constraint_name: "agents_computer_matches_enrollment",
+      expect(postgresError(duplicateInstallation)).toMatchObject({
+        code: "23505",
+        constraint_name: "computers_current_installation_id_unique",
       });
 
-      await sql`
+      const orphanAgent = await client.sql`
+        insert into agents (created_by_user_id, computer_id, name, display_name, runtime_provider)
+        values (${OWNER_ID}, ${crypto.randomUUID()}, 'orphan', 'Orphan', 'codex')
+      `.catch((error: unknown) => error);
+      expect(postgresError(orphanAgent)).toMatchObject({
+        code: "23503",
+        constraint_name: "agents_computer_id_computers_id_fk",
+      });
+
+      await client.sql`
         insert into computer_credentials (computer_id, secret_hash, issued_by_user_id)
-        values (${enrollment.id}, ${"f".repeat(64)}, ${bootstrap.userId})
+        values (${computer.id}, ${"f".repeat(64)}, ${OWNER_ID})
       `;
-      const duplicateActive = await sql`
+      const duplicateActive = await client.sql`
         insert into computer_credentials (computer_id, secret_hash, issued_by_user_id)
-        values (${enrollment.id}, ${"0".repeat(64)}, ${bootstrap.userId})
+        values (${computer.id}, ${"0".repeat(64)}, ${OWNER_ID})
       `.catch((error: unknown) => error);
       expect(postgresError(duplicateActive)).toMatchObject({
         code: "23505",
         constraint_name: "computer_credentials_active_computer_unique",
       });
 
-      const revocationPair = await sql`
+      const revocationPair = await client.sql`
         insert into computer_credentials (computer_id, secret_hash, issued_by_user_id, revoked_at)
-        values (${enrollment.id}, ${"1".repeat(64)}, ${bootstrap.userId}, now())
+        values (${computer.id}, ${"1".repeat(64)}, ${OWNER_ID}, now())
       `.catch((error: unknown) => error);
       expect(postgresError(revocationPair)).toMatchObject({
         code: "23514",
         constraint_name: "computer_credentials_revocation_pair",
       });
 
-      const otherWorkspace = crypto.randomUUID();
-      await sql`insert into workspaces (id, name, display_name) values (${otherWorkspace}, 'other', 'Other')`;
-      const crossCode = await sql`
-        insert into computer_connect_codes (
-          workspace_id, token_hash, issued_by_user_id, issued_by_account_id, mode, expires_at,
-          consumed_workspace_computer_id, consumed_computer_id, consumed_at
-        )
-        values (
-          ${otherWorkspace}, ${"2".repeat(64)}, ${bootstrap.userId}, ${bootstrap.userId}, 'create',
-          now() + interval '15 minutes', ${enrollment.id}, ${enrollment.id}, now()
-        )
-      `.catch((error: unknown) => error);
-      expect(postgresError(crossCode)).toMatchObject({
-        code: "23503",
-        constraint_name: "computer_connect_codes_workspace_enrollment_fk",
-      });
-
-      const slackAgents = await sql<{ id: string }[]>`
-        insert into agents (
-          workspace_id, created_by_user_id, workspace_computer_id, computer_id,
-          name, display_name, runtime_provider
-        )
+      const slackAgents = await client.sql<{ id: string }[]>`
+        insert into agents (created_by_user_id, computer_id, name, display_name, runtime_provider)
         values
-          (
-            ${bootstrap.workspaceId}, ${bootstrap.userId}, ${enrollment.id}, ${enrollment.id},
-            'slack-one', 'Slack One', 'codex'
-          ),
-          (
-            ${bootstrap.workspaceId}, ${bootstrap.userId}, ${enrollment.id}, ${enrollment.id},
-            'slack-two', 'Slack Two', 'codex'
-          )
+          (${OWNER_ID}, ${computer.id}, 'slack-one', 'Slack One', 'codex'),
+          (${OWNER_ID}, ${computer.id}, 'slack-two', 'Slack Two', 'codex')
         returning id::text
       `;
       const [firstSlackAgent, secondSlackAgent] = slackAgents;
       if (!firstSlackAgent || !secondSlackAgent) throw new Error("Slack Agent fixtures were not created");
 
-      await sql`
+      await client.sql`
         insert into slack_installations (
-          workspace_id, agent_id, status, external_app_id, external_team_id, external_bot_id,
+          agent_id, status, external_app_id, external_team_id, external_bot_id,
           credential_schema_version, credential_generation, encrypted_credential, activated_at
         )
-        values (
-          ${bootstrap.workspaceId}, ${firstSlackAgent.id}, 'active', 'A1', 'T1', 'U1',
-          1, 1, 'secret', now()
-        )
+        values (${firstSlackAgent.id}, 'active', 'A1', 'T1', 'U1', 1, 1, 'secret', now())
       `;
-      await sql`
+      const duplicateSlack = await client.sql`
         insert into slack_installations (
-          workspace_id, agent_id, status, external_app_id, external_team_id, external_bot_id,
+          agent_id, status, external_app_id, external_team_id, external_bot_id,
           credential_schema_version, credential_generation, encrypted_credential, activated_at
         )
-        values (
-          ${bootstrap.workspaceId}, ${secondSlackAgent.id}, 'active', 'A2', 'T2', 'U2',
-          1, 1, 'secret-2', now()
-        )
-      `;
-      const [currentSlack] = await sql<{ count: number }[]>`
-        select count(*)::int as count
-        from slack_installations
-        where workspace_id = ${bootstrap.workspaceId}
-          and status in ('active', 'reauthorization_required')
-      `;
-      expect(currentSlack?.count).toBe(2);
-
-      const duplicateSlack = await sql`
-        insert into slack_installations (
-          workspace_id, agent_id, status, external_app_id, external_team_id, external_bot_id,
-          credential_schema_version, credential_generation, encrypted_credential, activated_at
-        )
-        values (
-          ${bootstrap.workspaceId}, ${secondSlackAgent.id}, 'active', 'A1', 'T1', 'U3',
-          1, 1, 'secret-3', now()
-        )
+        values (${secondSlackAgent.id}, 'active', 'A1', 'T1', 'U3', 1, 1, 'secret-3', now())
       `.catch((error: unknown) => error);
       expect(postgresError(duplicateSlack)).toMatchObject({
         code: "23505",
         constraint_name: "slack_installations_app_team_current_unique",
-      });
-
-      const [otherComputer] = await sql<{ id: string }[]>`
-        insert into computers (id) values (${crypto.randomUUID()})
-        returning id::text
-      `;
-      if (!otherComputer) throw new Error("Cross-workspace Computer fixture was not created");
-      const [crossWorkspaceEnrollment] = await sql<{ id: string }[]>`
-        insert into workspace_computers (
-          workspace_id, computer_id, display_name, platform, arch, client_version, enrolled_by_user_id
-        )
-        values (
-          ${otherWorkspace}, ${otherComputer.id}, 'other-box', 'linux', 'x64', '0.0.1', ${bootstrap.userId}
-        )
-        returning id::text
-      `;
-      if (!crossWorkspaceEnrollment) throw new Error("Cross-workspace enrollment fixture was not created");
-      await sql`
-        insert into account_computers (
-          id, owner_account_id, current_installation_id, display_name, platform, arch, client_version
-        )
-        values (
-          ${crossWorkspaceEnrollment.id}, ${bootstrap.userId}, ${otherComputer.id},
-          'other-box', 'linux', 'x64', '0.0.1'
-        )
-      `;
-      const crossAgent = await sql`
-        insert into agents (
-          workspace_id, created_by_user_id, workspace_computer_id, computer_id,
-          name, display_name, runtime_provider
-        )
-        values (
-          ${bootstrap.workspaceId}, ${bootstrap.userId},
-          ${crossWorkspaceEnrollment.id}, ${crossWorkspaceEnrollment.id},
-          'cross', 'Cross', 'codex'
-        )
-      `.catch((error: unknown) => error);
-      expect(postgresError(crossAgent)).toMatchObject({
-        code: "23503",
-        constraint_name: "agents_workspace_enrollment_fk",
       });
     } finally {
       await client.sql.end();
@@ -901,29 +817,27 @@ describe("account-owned computer expansion migrations", () => {
       const bootstrap = await bootstrapInitialAdmin(client.database, {
         displayName: "Admin",
         email: "admin@example.com",
-        workspaceDisplayName: "Example",
-        workspaceName: "example",
       });
       const machineAuth = new MachineAuthService(client.database);
-      const computers = new ComputerService(client.database, {
+      const computerService = new ComputerService(client.database, {
         getActiveUserById: async () => {
           throw new Error("unused");
         },
       });
       const issued = await machineAuth.issueForAccount(bootstrap.userId, {});
-      const enrollment = await machineAuth.exchangeConnectCode({
+      const exchange = await machineAuth.exchangeConnectCode({
         code: issued.code,
-        computerId: crypto.randomUUID(),
+        installationId: crypto.randomUUID(),
         displayName: "workstation",
         platform: "linux",
         arch: "x64",
         clientVersion: "0.0.2",
       });
       const instanceId = crypto.randomUUID();
-      await computers.register(enrollment, {
+      await computerService.register(exchange, {
         type: "computer:register",
         requestId: crypto.randomUUID(),
-        computerId: enrollment.computerId,
+        installationId: exchange.installationId,
         instanceId,
         displayName: "workstation",
         platform: "linux",
@@ -935,57 +849,43 @@ describe("account-owned computer expansion migrations", () => {
         requiredServerCapabilities: [],
       });
 
-      const [legacy] = await client.database
-        .select()
-        .from(workspaceComputers)
-        .where(eq(workspaceComputers.id, enrollment.workspaceComputerId));
-      const [target] = await client.database
-        .select()
-        .from(accountComputers)
-        .where(eq(accountComputers.id, enrollment.workspaceComputerId));
-      expect(target).toMatchObject({
-        id: enrollment.workspaceComputerId,
+      const [computer] = await client.database.select().from(computers).where(eq(computers.id, exchange.computerId));
+      expect(computer).toMatchObject({
+        id: exchange.computerId,
         ownerAccountId: bootstrap.userId,
-        currentInstallationId: enrollment.computerId,
+        currentInstallationId: exchange.installationId,
         currentInstanceId: instanceId,
-        displayName: legacy?.displayName,
+        displayName: "workstation",
       });
-      const legacyCredentials = await client.database
-        .select()
-        .from(workspaceComputerCredentials)
-        .where(eq(workspaceComputerCredentials.id, enrollment.credentialId));
-      const [targetCredential] = await client.database
+      const [credential] = await client.database
         .select()
         .from(computerCredentials)
-        .where(eq(computerCredentials.id, enrollment.credentialId));
-      expect(targetCredential).toMatchObject({
-        id: enrollment.credentialId,
-        computerId: enrollment.workspaceComputerId,
+        .where(eq(computerCredentials.id, exchange.credentialId));
+      expect(credential).toMatchObject({
+        id: exchange.credentialId,
+        computerId: exchange.computerId,
         secretHash: expect.any(String),
         issuedByUserId: bootstrap.userId,
         revokedAt: null,
       });
-      expect(legacyCredentials).toHaveLength(0);
       const codes = await client.database.select().from(computerConnectCodes);
       expect(codes).toHaveLength(1);
       expect(codes[0]).toMatchObject({
         issuedByAccountId: bootstrap.userId,
         mode: "create",
-        consumedComputerId: enrollment.workspaceComputerId,
-        consumedWorkspaceComputerId: enrollment.workspaceComputerId,
+        consumedComputerId: exchange.computerId,
       });
 
       const agent = await new AgentService(client.database).createForAccount(bootstrap.userId, {
         name: "assistant",
         displayName: "Assistant",
         runtimeProvider: "codex",
-        computerId: enrollment.workspaceComputerId,
+        computerId: exchange.computerId,
       });
       const [agentRow] = await client.database.select().from(agents).where(eq(agents.id, agent.id));
       expect(agentRow).toMatchObject({
         createdByUserId: bootstrap.userId,
-        workspaceComputerId: enrollment.workspaceComputerId,
-        computerId: enrollment.workspaceComputerId,
+        computerId: exchange.computerId,
       });
 
       const [binding] = await client.sql<{ id: string }[]>`
@@ -1004,30 +904,28 @@ describe("account-owned computer expansion migrations", () => {
         { imBindingId: binding.id, channelId: "C-boot", conversationKind: "channel" },
         "channel",
       );
-      expect(chat.placement.workspaceComputerId).toBe(enrollment.workspaceComputerId);
+      expect(chat.placement.computerId).toBe(exchange.computerId);
       const [placement] = await client.database
         .select()
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, chat.session.id));
       expect(placement).toMatchObject({
-        workspaceComputerId: enrollment.workspaceComputerId,
-        computerId: enrollment.workspaceComputerId,
+        computerId: exchange.computerId,
         generation: 1,
       });
 
       const proofs = new SessionCliProofService(
         client.database,
         {
-          currentInstanceId: (workspaceComputerId: string) =>
-            workspaceComputerId === enrollment.workspaceComputerId ? instanceId : undefined,
-          supportsCapability: (workspaceComputerId: string, connectionInstanceId: string) =>
-            workspaceComputerId === enrollment.workspaceComputerId && connectionInstanceId === instanceId,
+          currentInstanceId: (computerId: string) => (computerId === exchange.computerId ? instanceId : undefined),
+          supportsCapability: (computerId: string, connectionInstanceId: string) =>
+            computerId === exchange.computerId && connectionInstanceId === instanceId,
         },
         new Uint8Array(32).fill(3),
       );
       const minted = await proofs.mint({
         sessionId: chat.session.id,
-        workspaceComputerId: enrollment.workspaceComputerId,
+        computerId: exchange.computerId,
         placementGeneration: 1,
         connectionInstanceId: instanceId,
       });
@@ -1037,20 +935,19 @@ describe("account-owned computer expansion migrations", () => {
         .where(eq(sessionCliProofs.sessionId, chat.session.id));
       expect(proof).toMatchObject({
         proofId: minted.proofId,
-        workspaceComputerId: enrollment.workspaceComputerId,
-        computerId: enrollment.workspaceComputerId,
+        computerId: exchange.computerId,
       });
 
-      const moved = await sessions.movePlacement(chat.session.id, enrollment.workspaceComputerId);
+      const moved = await sessions.movePlacement(chat.session.id, exchange.computerId);
       expect(moved).toMatchObject({
-        workspaceComputerId: enrollment.workspaceComputerId,
+        computerId: exchange.computerId,
         generation: 2,
       });
       const [movedRow] = await client.database
         .select()
         .from(sessionPlacements)
         .where(eq(sessionPlacements.sessionId, chat.session.id));
-      expect(movedRow?.computerId).toBe(enrollment.workspaceComputerId);
+      expect(movedRow?.computerId).toBe(exchange.computerId);
 
       const [message] = await client.sql<{ id: string }[]>`
         insert into im_messages (
@@ -1077,7 +974,7 @@ describe("account-owned computer expansion migrations", () => {
           now(), now() + interval '1 day', now(), 'turn-boot', ${"b".repeat(64)}, ${instanceId}
         )
       `;
-      await expect(sessions.movePlacement(chat.session.id, enrollment.workspaceComputerId)).rejects.toMatchObject({
+      await expect(sessions.movePlacement(chat.session.id, exchange.computerId)).rejects.toMatchObject({
         code: "SESSION_PLACEMENT_CUSTODY_PENDING",
       });
       const [blocked] = await client.database
@@ -1086,8 +983,7 @@ describe("account-owned computer expansion migrations", () => {
         .where(eq(sessionPlacements.sessionId, chat.session.id));
       expect(blocked).toMatchObject({
         generation: 2,
-        computerId: enrollment.workspaceComputerId,
-        workspaceComputerId: enrollment.workspaceComputerId,
+        computerId: exchange.computerId,
       });
     } finally {
       await client.sql.end();

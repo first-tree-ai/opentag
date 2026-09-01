@@ -103,11 +103,10 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path) === "/api/v1/agents")).toBe(true),
     );
-    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).includes("/api/v1/workspaces/"))).toBe(false);
     getItem.mockRestore();
   });
 
-  it("keeps Workspace management and switching out of the account menu", async () => {
+  it("keeps organization switching out of the account menu", async () => {
     installApi({ multipleMemberships: true });
     render(<App />);
     const { menu } = await openAccountMenu();

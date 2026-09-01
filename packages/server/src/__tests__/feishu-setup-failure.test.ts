@@ -1,13 +1,8 @@
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  accountComputers,
-  computerCredentials,
-  computers,
-  imBindings,
-  workspaceComputers,
-} from "../db/schema/index.js";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
+import { computerCredentials, computers, imBindings } from "../db/schema/index.js";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -23,7 +18,6 @@ import type { FeishuRegistration, FeishuRegistrationGateway } from "../services/
 import { type FeishuBindingActivation, FeishuSetupService } from "../services/im-bindings/feishu/setup-service.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 function fetchFailed(cause: unknown): Error {
   const error = new TypeError("fetch failed");
@@ -44,32 +38,20 @@ async function setupFixture() {
     displayName: "Admin",
     email: `setup-${crypto.randomUUID()}@example.com`,
   });
-  const [computer] = await setupDatabase.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await setupDatabase.database
-    .insert(workspaceComputers)
+  const [computer] = await setupDatabase.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "setup-computer",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.1",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await setupDatabase.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "setup-computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.1",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   await setupDatabase.database.insert(computerCredentials).values({
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
     secretHash: `feishu-setup-${computer.id}`,
     issuedByUserId: bootstrap.userId,
   });
@@ -77,11 +59,11 @@ async function setupFixture() {
     name: "setup-agent",
     displayName: "Setup Agent",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindings = new ImBindingService(setupDatabase.database, cipher, { now: () => setupNow });
-  return { bootstrap, agent, computerId: workspaceComputer.id, cipher, imBindings };
+  return { bootstrap, agent, computerId: computer.id, cipher, imBindings };
 }
 
 function registration(

@@ -2,8 +2,8 @@ import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEv
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
-  accountComputers,
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
@@ -41,7 +41,7 @@ interface EnsureChatSessionInput {
   conversationKind: "channel" | "dm" | "group_dm";
   kind: "channel" | "thread";
   threadKey?: string;
-  workspaceComputerId: string;
+  computerId: string;
   now: Date;
 }
 
@@ -166,9 +166,9 @@ export class ImMessageInbox {
             const agentComputerId = agent.computerId;
             const [computer] = agentComputerId
               ? await transaction
-                  .select({ ownerAccountId: accountComputers.ownerAccountId })
-                  .from(accountComputers)
-                  .where(eq(accountComputers.id, agentComputerId))
+                  .select({ ownerAccountId: computers.ownerAccountId })
+                  .from(computers)
+                  .where(eq(computers.id, agentComputerId))
                   .limit(1)
                   .for("update")
               : [];
@@ -451,7 +451,7 @@ export class ImMessageInbox {
                     conversationKind,
                     kind: "thread",
                     threadKey,
-                    workspaceComputerId: agentComputerId,
+                    computerId: agentComputerId,
                     now,
                   });
                   recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);
@@ -467,7 +467,7 @@ export class ImMessageInbox {
                     channelId: event.conversation.externalId,
                     conversationKind,
                     kind: "channel",
-                    workspaceComputerId: agentComputerId,
+                    computerId: agentComputerId,
                     now,
                   });
                   recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
@@ -479,7 +479,7 @@ export class ImMessageInbox {
                   channelId: event.conversation.externalId,
                   conversationKind,
                   kind: "channel",
-                  workspaceComputerId: agentComputerId,
+                  computerId: agentComputerId,
                   now,
                 });
                 recordCreatedTask(createdTasks, channel, event.message.content.fallbackText);
@@ -561,7 +561,7 @@ export class ImMessageInbox {
                   conversationKind,
                   kind: "thread",
                   threadKey: pending.threadKey,
-                  workspaceComputerId: agentComputerId,
+                  computerId: agentComputerId,
                   now,
                 });
                 recordCreatedTask(createdTasks, thread, event.message.content.fallbackText);

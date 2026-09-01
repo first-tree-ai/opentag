@@ -142,20 +142,25 @@ test("Computer management removes an offline Computer and keeps it gone after re
   await expect(page.getByText("Disposable E2E Mac", { exact: true })).toHaveCount(0);
 });
 
-test("shell navigation reaches every primary destination", async ({ page }) => {
+test("Agent navigation reaches every Agent-owned destination", async ({ page }) => {
+  expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   const destinations = [
-    { name: "Agents", heading: "Agents", path: "/agents" },
-    { name: "Tasks", heading: "Tasks", path: "/tasks" },
-    { name: "Skills", heading: "Skills", path: "/skills" },
-    { name: "Integrations", heading: "Integrations", path: "/integrations" },
+    { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
+    { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
+    { name: "Skills", heading: "Skills", path: `/agents/${agentId}/skills` },
+    { name: "Integrations", heading: "Integrations", path: `/agents/${agentId}/integrations` },
+    { name: "Usage", heading: "Usage", path: `/agents/${agentId}/usage` },
   ];
   for (const destination of destinations) {
-    await page.goto("/agents", { waitUntil: "networkidle" });
-    await page.getByRole("navigation", { name: "Product" }).getByRole("link", { name: destination.name }).click();
+    await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
+    await page
+      .getByRole("navigation", { name: "Agent", exact: true })
+      .getByRole("button", { name: destination.name })
+      .click();
     await expect(page).toHaveURL(new RegExp(`${destination.path.replace("/", "\\/")}\\/?$`));
     await expect(page.getByRole("heading", { name: destination.heading, exact: true })).toBeVisible();
   }
-  await page.goto("/agents", { waitUntil: "networkidle" });
+  await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Account menu" }).click();
   await page.getByRole("menuitem", { name: "Account" }).click();
   await expect(page).toHaveURL(/\/account\/?$/);
@@ -197,12 +202,15 @@ test("the screenshot pass captures every addressable page and writes a contact s
     { file: "agents-agentId-usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
     { file: "agents-agentId-settings", route: `/agents/${agentId}/settings`, heading: "Agent settings" },
     { file: "agents-agentId-settings-section", route: `/agents/${agentId}/settings/identity`, heading: "Name" },
-    { file: "tasks", route: "/tasks", heading: "Tasks" },
-    { file: "tasks-taskId", route: `/tasks/${taskId}`, heading: "Review the seeded E2E task" },
-    { file: "usage", route: "/usage", heading: "Agents" },
-    { file: "skills", route: "/skills", heading: "Skills" },
-    { file: "resources", route: "/resources", heading: "Skills" },
-    { file: "integrations", route: "/integrations", heading: "Integrations" },
+    { file: "tasks", route: `/agents/${agentId}/tasks`, heading: "Tasks" },
+    {
+      file: "tasks-taskId",
+      route: `/agents/${agentId}/tasks/${taskId}`,
+      heading: "Review the seeded E2E task",
+    },
+    { file: "usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
+    { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
+    { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Integrations" },
     { file: "account", route: "/account", heading: "Account" },
     { file: "internal-onboarding-v2", route: "/internal/onboarding-v2", heading: ONBOARDING_HEADING },
   ];
@@ -252,5 +260,5 @@ test("the screenshot pass captures every addressable page and writes a contact s
 <body><h1>OpenTag E2E page screenshots</h1><main>${entries.map((entry) => `<figure><img src="${htmlEscape(`${entry.file}.png`)}" alt="${htmlEscape(entry.route)}"><figcaption>${htmlEscape(entry.route)}</figcaption></figure>`).join("")}</main></body></html>
 `;
   await writeFile(join(screenshots, "index.html"), html);
-  expect(entries).toHaveLength(18);
+  expect(entries).toHaveLength(17);
 });

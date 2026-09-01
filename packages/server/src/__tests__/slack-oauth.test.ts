@@ -6,14 +6,9 @@ import {
 } from "@opentag/shared";
 import { decodeJwt } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { createApp } from "../app.js";
-import {
-  accountComputers,
-  computerCredentials,
-  computers,
-  slackOAuthNonces,
-  workspaceComputers,
-} from "../db/schema/index.js";
+import { computerCredentials, computers, slackOAuthNonces } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { AuthServiceError } from "../services/auth/errors.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -30,7 +25,6 @@ import {
 import { SlackOAuthStateService } from "../services/im-bindings/slack/oauth-state.js";
 import { signedInBrowser } from "./signed-in-browser.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
-import { bootstrapTestAccount } from "./test-account.js";
 
 const secret = "slack-oauth-state-secret-that-is-at-least-32-characters";
 const now = new Date("2026-08-19T00:00:00.000Z");
@@ -51,32 +45,20 @@ async function oauthFixture() {
     displayName: "OAuth Admin",
     email: `oauth-${crypto.randomUUID()}@example.com`,
   });
-  const [computer] = await oauthDatabase.database.insert(computers).values({ id: crypto.randomUUID() }).returning();
-  if (!computer) throw new Error("Computer fixture was not created");
-  const [workspaceComputer] = await oauthDatabase.database
-    .insert(workspaceComputers)
+  const [computer] = await oauthDatabase.database
+    .insert(computers)
     .values({
-      workspaceId: bootstrap.workspaceId,
-      computerId: computer.id,
+      ownerAccountId: bootstrap.userId,
+      currentInstallationId: crypto.randomUUID(),
       displayName: "oauth-computer",
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.1",
-      enrolledByUserId: bootstrap.userId,
     })
     .returning();
-  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  await oauthDatabase.database.insert(accountComputers).values({
-    id: workspaceComputer.id,
-    ownerAccountId: bootstrap.userId,
-    currentInstallationId: computer.id,
-    displayName: "oauth-computer",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.1",
-  });
+  if (!computer) throw new Error("Computer fixture was not created");
   await oauthDatabase.database.insert(computerCredentials).values({
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
     secretHash: `slack-oauth-${computer.id}`,
     issuedByUserId: bootstrap.userId,
   });
@@ -84,11 +66,11 @@ async function oauthFixture() {
     name: "oauth-agent",
     displayName: "OAuth Agent",
     runtimeProvider: "codex",
-    computerId: workspaceComputer.id,
+    computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingService = new ImBindingService(oauthDatabase.database, cipher, { now: () => now });
-  return { bootstrap, agent, computerId: workspaceComputer.id, cipher, imBindingService };
+  return { bootstrap, agent, computerId: computer.id, cipher, imBindingService };
 }
 
 function inspection(overrides: Partial<SlackInstallationInspection> = {}): SlackInstallationInspection {

@@ -150,9 +150,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
 
-    const trigger = await screen.findByRole("button", { name: "Remove Ada's Mac" });
-    fireEvent.click(trigger);
-
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Ada's Mac" }));
     const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
     expect(within(dialog).getByText(/disconnects 1 Agent/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));

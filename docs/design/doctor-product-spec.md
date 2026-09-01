@@ -180,7 +180,7 @@ opentag doctor
 ```
 
 P0 不接受 doctor 专属的目标参数。它没有 `--server-url` 或 `--server`，并忽略
-`OPENTAG_SERVER_URL`。Server 是 enrollment 的属性，不是诊断命令的调用方输入。
+`OPENTAG_SERVER_URL`。Server 是 Computer credential 的属性，不是诊断命令的调用方输入。
 
 `OPENTAG_HOME` 仍然有效，因为它是选择一套完整本地 OpenTag 安装的既有全局入口。
 没有设置时，使用当前 channel 的默认 Home。报告始终打印解析后的绝对 Home 路径及其来源。
@@ -189,7 +189,7 @@ P0 不接受 doctor 专属的目标参数。它没有 `--server-url` 或 `--serv
 
 P0 只回答以下问题：
 
-1. 当前 OpenTag Home 的本地 Computer identity 与 enrollment 是否结构有效、内部一致？
+1. 当前 OpenTag Home 的本地 Computer identity 与 Computer credential 是否结构有效、内部一致？
 2. 同一 Home 的 Daemon service 是否 active，并且在既有 service-status 边界内保持一致？
 3. 该 Home 记录的唯一 Server 是否通过公开 health endpoint 正常响应？
 4. 当前 CLI 诊断上下文能否找到至少一个受支持的本地 Agent Runtime CLI artifact，
@@ -205,7 +205,7 @@ P0 决策如下：
 | 决策 | P0 契约 | 理由 |
 | --- | --- | --- |
 | 诊断目标 | 当前 OpenTag Home | Home 是 OpenTag 完整本地安装的边界。 |
-| Server 来源 | 仅使用 Home 内经过验证的 enrollment | 调用方指定 URL 会诊断一个 Computer 可能永远不会使用的 Server。 |
+| Server 来源 | 仅使用 Home 内经过验证的 Computer credential | 调用方指定 URL 会诊断一个 Computer 可能永远不会使用的 Server。 |
 | Daemon service | 检查状态及 Home 一致性 | 停止或绑定错误的服务属于基础本地故障，即使 P0 不承诺端到端就绪。 |
 | Runtime 安装 | Codex 与 Claude Code，只做 install-only 检查 | Artifact 缺失可以在不调用 Provider、不读取凭据的前提下安全诊断。 |
 | Runtime 充分条件 | 至少安装一个受支持 Runtime | P0 没有权威的 Agent-to-Provider 分配视图；缺少其他 Provider 仍需展示，但不 blocking。 |
@@ -235,17 +235,13 @@ identity 状态的 helper。
 
 - Home/config 路径符合现有 private-storage 安全读取规则；
 - `computer.json` 存在且有效；
-- `computer-credentials.json` 存在，使用受支持的 envelope version，并至少包含一个
-  可用 enrollment；
-- Doctor 结果中不存在被静默丢弃的格式错误 enrollment；
-- enrollment identifier 符合 credential format 的唯一性规则；
-- 每个 enrollment 的 `computerId` 都与 `computer.json` 相同；
-- 每个 enrollment 都包含完全相同的规范 Server origin；
-- identity 的 `serverUrl` 与该规范 Server origin 完全一致；
-- 允许多个 Workspace Computer enrollment 指向同一个 Server。
-
-一个 Home 中出现多个不同 Server origin 属于 blocking 配置错误。Doctor 不得联系其中
-任何一个，因为 Daemon 会拒绝该 Home，而 Doctor 选择其中之一等同于捏造权威。
+- `computer-credentials.json` 存在，使用受支持的 envelope version，并包含唯一一个
+  可用 Computer credential；
+- Doctor 结果中不存在被静默丢弃的格式错误 Computer credential；
+- Computer credential identifier 符合 credential format 的唯一性规则；
+- 该 Computer credential 的 `computerId` 与 `computer.json` 相同；
+- 该 Computer credential 包含规范的唯一 Server origin；
+- identity 的 `serverUrl` 与该规范 Server origin 完全一致。
 
 Doctor 绝不能打印 `machineToken`、credential 文件内容，或可能包含文件数据的未脱敏
 解析错误。
@@ -286,7 +282,7 @@ service manager 被配置为只从其他位置加载 unit，安装/状态后置�
 
 #### D. 已登记 Server 的健康状态
 
-Server URL 只能来自经过验证的本地 enrollment。Server health 检查必须：
+Server URL 只能来自经过验证的本地 Computer credential。Server health 检查必须：
 
 - 对该 origin 执行 `GET /healthz`；
 - 设置五秒 deadline；
@@ -297,7 +293,7 @@ Server URL 只能来自经过验证的本地 enrollment。Server health 检查�
 该检查只证明公开 health endpoint 可达并返回预期 schema。它不证明 machine token
 有效、不证明 WebSocket registration 可用，也不证明 Server 可以交付 Turn。
 
-如果本地配置无效，Server 检查应为 `skipped`，原因为“没有权威的 enrolled Server”；
+如果本地配置无效，Server 检查应为 `skipped`，原因为“没有权威的绑定 Server”；
 Daemon service 与 Runtime artifact 等独立检查仍需继续运行。
 
 #### E. Agent Runtime CLI artifact
@@ -373,7 +369,7 @@ Target
   - CLI: 0.x.y, stable, darwin arm64, Node.js v24.x
 
 Checks
-  ✓ Local Computer configuration: 2 enrollments, one Computer, one Server
+  ✓ Local Computer configuration: 1 credential, one Computer, one Server
   ✓ Daemon service: active for this OpenTag Home
   ✓ Server health endpoint: reachable at https://example.opentag.dev
   ✓ Agent Runtime CLI: at least one supported Runtime is installed
@@ -444,9 +440,8 @@ Doctor 可以并发协调检查，但依赖关系必须显式：
 
 1. **Doctor 不得复用 `resolveComputerIdentity`。** 它可能创建或重写 identity 状态；
    Doctor 需要严格只读的 inspector。
-2. **不得把宽容的 credential projection 当作完整 doctor 结论。** Runtime reader 可以
-   有意丢弃不可用 enrollment，但 doctor 必须报告这种损坏，不能只把剩余 projection
-   报告为健康。
+2. **不得把 credential projection 当作完整 doctor 结论。** Runtime reader 只需要投影当前绑定，
+   但 doctor 必须报告 envelope 或 Computer credential 的任何损坏，不能把无效配置报告为健康。
 3. **不得在 CLI 中重复实现 Runtime resolution。** 应提取或扩展生产 resolver，随后由
    Runtime composition 与 doctor 共用。
 4. **不得把 `/healthz` 转换成 readiness 结论。** Result code 和 label 必须只描述公开
@@ -462,10 +457,10 @@ P0 check code 属于内部契约，也是未来 JSON 接口的基础：
 | --- | --- | --- |
 | `target.home` | 否 | 选中的规范 OpenTag Home 及来源 |
 | `local.identity` | 是 | `computer.json` 存在、安全且有效 |
-| `local.enrollments` | 是 | credential envelope 及每个存储的 enrollment 均有效 |
-| `local.binding` | 是 | Computer identity、enrollment 和唯一 Server origin 一致 |
+| `local.credentials` | 是 | credential envelope 及唯一的 Computer credential 均有效 |
+| `local.binding` | 是 | Computer identity、Computer credential 和唯一 Server origin 一致 |
 | `daemon.service` | 是 | 已安装 service active、配置未漂移并属于当前 Home |
-| `server.health` | 是 | enrolled Server 的公开 `/healthz` 在 deadline 内通过 |
+| `server.health` | 是 | bound Server 的公开 `/healthz` 在 deadline 内通过 |
 | `runtime.any-installed` | 是 | 至少找到一个受支持 Runtime artifact |
 | `runtime.codex.installation` | 否 | Codex artifact 观察结果 |
 | `runtime.claude-code.installation` | 否 | Claude Code artifact 观察结果 |
@@ -492,11 +487,11 @@ P0 至少需要使用确定性测试覆盖以下场景：
 | 调用时提供 `--server-url` | CLI usage error；doctor 不接受该参数 |
 | 环境中设置 `OPENTAG_SERVER_URL` | Doctor 的目标解析忽略该变量 |
 | 环境中设置 `OPENTAG_HOME` | 打印规范 Home 以及 environment 来源 |
-| 缺少 identity 或 enrollment | 本地配置失败；Server skipped；独立检查继续运行 |
+| 缺少 identity 或 Computer credential | 本地配置失败；Server skipped；独立检查继续运行 |
 | 本地文件 malformed 或 unsafe | 本地配置失败，且不暴露文件内容 |
-| 多个 enrollment 使用相同 Computer 和 Server | 本地 binding 通过 |
-| Enrollment 包含不同 Server | 本地 binding 失败；不联系任何 Server |
-| Enrollment Computer ID 与 identity 不同 | 本地 binding 失败 |
+| credential envelope version 不受支持 | 本地 binding 失败；不联系 Server |
+| Computer credential 的 Server URL 无效 | 本地 binding 失败；不联系 Server |
+| Computer credential Computer ID 与 identity 不同 | 本地 binding 失败 |
 | Service 对当前 Home 为 active | Daemon service 通过 |
 | Service inactive、drifted、unknown 或属于其他 Home | Daemon service fail closed |
 | 调用方 `PATH` shadow `launchctl`、`systemctl` 或 `loginctl` | 不执行 shadow；只有受支持的绝对 manager 才能提供状态 |
@@ -533,18 +528,18 @@ P0 至少需要使用确定性测试覆盖以下场景：
 
 这些未检查项不等于通过，并且必须持续显示在每次 P0 报告中。
 
-## 8. 对当前工作的影响
+## 8. 当前实现边界
 
 OpenTag `main` 已实现本文 P0 基线。后续 Provider CLI 产品集成又增加了本规格 F 节定义的
 non-blocking、只读 account-global installation 观察；它不改变 baseline 退出码，也不把
 credential 或 active-binding readiness 纳入 Doctor。
 
 PR [#246](https://github.com/first-tree-ai/opentag/pull/246) 在
-`1f241dc42097471e2e194a4efbf8fba8098ba00e` 上已将 Server 选择改为本地 enrollment，
+`1f241dc42097471e2e194a4efbf8fba8098ba00e` 上已将 Server 选择改为本地 Computer credential，
 并增加 install-only Runtime 观察，但不能按现状直接合并，原因包括：
 
-- 将多个不同 enrolled Server 视为有效，但 Daemon 会拒绝这种配置；
-- 未验证本地 Computer identity 与 enrollment binding；
+- 将多个不同的已连接 Server 视为有效，但 Daemon 会拒绝这种配置；
+- 未验证本地 Computer identity 与 Account Computer binding；
 - 缺少 Daemon service 基线检查；
 - Server 请求没有 deadline；
 - 可能把具有执行位的目录当成 Runtime artifact；

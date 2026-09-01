@@ -90,7 +90,7 @@ daemon 的 updater 遵循严格的契约：
   即将运行的版本重写，且自身不触发任何重启。随后以便留的 supervisor 重启退出码 `75` 退出：systemd 将其映射为
   干净的强制重启（`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`），launchd 通过
   `KeepAlive.SuccessfulExit=false` 重启。由于稳定 shim 的存在，重启后的服务运行新版本，而 OpenTag home、Account
-  凭据、Computer enrollment、Agent 与 placement 全部保持不变。
+  凭据、Computer connection、Agent 与 placement 全部保持不变。
 
 当前版本、目标、updater 状态以及最近一次尝试及其失败原因都可以在 `opentag daemon status` 中查看。
 

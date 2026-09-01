@@ -174,6 +174,7 @@ export class SessionMessageInbox {
   }
 
   #acceptanceReason(request: SessionMessageDeliveryRequest): InputRejectReason | undefined {
+    if (this.#admission.paused) return "client_busy";
     const authorityReason = this.#reconciler.checkSessionMessageDelivery(request);
     if (authorityReason) return authorityReason;
     if (
@@ -210,6 +211,7 @@ export class SessionMessageInbox {
     } catch {
       queue.pop();
       this.#queuedTotal -= 1;
+      this.#records.delete(key);
       this.#remember(key, { hash, status: "rejected", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
@@ -229,6 +231,23 @@ export class SessionMessageInbox {
     this.#retryTimers.clear();
     this.#queues.clear();
     this.#queuedTotal = 0;
+  }
+
+  /** Accepted Session messages still waiting in an in-memory delivery queue. */
+  get queuedCount(): number {
+    return this.#queuedTotal;
+  }
+
+  /**
+   * Every accepted Session message that has not reached a terminal durable state. Unlike
+   * `queuedCount`, this includes a message that is running or waiting behind retry backoff.
+   */
+  get pendingCount(): number {
+    let count = 0;
+    for (const record of this.#records.values()) {
+      if (record.status === "accepted" || record.status === "running" || record.status === "retryable") count += 1;
+    }
+    return count;
   }
 
   async settled(): Promise<void> {
@@ -253,10 +272,10 @@ export class SessionMessageInbox {
         this.#queues.delete(sessionId);
         return;
       }
-      let reservation = this.#admission.reserve(sessionId, next.request.agentId);
+      let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       while (!reservation.accepted) {
         await this.#admission.waitForRelease(this.#abort.signal);
-        reservation = this.#admission.reserve(sessionId, next.request.agentId);
+        reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       }
       queue?.shift();
       this.#queuedTotal -= 1;

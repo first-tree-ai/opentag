@@ -13,6 +13,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
   type RuntimeImCliReadinessCollection,
@@ -28,11 +29,12 @@ import {
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
-import WebSocket, { type ClientOptions, type RawData } from "ws";
+import WebSocket, { type ClientOptions } from "ws";
 import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
+import { notifyTarget, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -114,6 +116,7 @@ export interface RuntimeConnectionOptions {
   logger?: ClientLogger;
   machineToken: string;
   now?: () => number;
+  onChannelTarget?: (target: RuntimeChannelTarget) => void;
   parseBusinessFrame?: (value: unknown) => RuntimeBusinessFrame | undefined;
   platform: "darwin" | "linux" | "win32";
   queueLimits?: Partial<RuntimeQueueLimits>;
@@ -743,6 +746,13 @@ export class RuntimeConnection {
           }
           pendingHeartbeatRequestId = undefined;
           if (heartbeatResultTimer) this.#scheduler.clearTimeout(heartbeatResultTimer);
+          notifyTarget(
+            protocolVersion,
+            this.#negotiatedCapabilities,
+            frame,
+            this.#options.onChannelTarget,
+            this.#logger,
+          );
           scheduleHeartbeat();
           return;
         }
@@ -1014,21 +1024,6 @@ function connectionErrorCategory(error: unknown): string {
   if (error instanceof RuntimeConnectionError) return error.fatal ? "protocol" : "transport";
   if (error instanceof RuntimeSendError) return error.code;
   return "unexpected";
-}
-
-function rawDataBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data);
-  return Buffer.from(data);
-}
-
-function safeJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
 }
 
 function withoutConnectionId(value: unknown): unknown {

@@ -137,6 +137,14 @@ vi.mock("../services/auth/index.js", () => ({
   },
   PostAuthenticationService: class {},
 }));
+vi.mock("../services/channel-target/index.js", () => ({
+  createChannelTargetPoller: () => ({
+    get: () => undefined,
+    start: () => undefined,
+    stop: () => undefined,
+    refresh: async () => undefined,
+  }),
+}));
 vi.mock("../services/computers/index.js", () => ({
   ComputerService: class {},
   MachineAuthService: class {},
@@ -222,6 +230,10 @@ const originalExitCode = process.exitCode;
 function defaultConfig() {
   return {
     autoMigrate: true,
+    channelTarget: {
+      downloadBaseUrl: "https://download.test/releases",
+      pollIntervalMs: 300_000,
+    },
     databaseUrl: "postgres://db-user:db-password@localhost/opentag",
     encryptionKey: new Uint8Array(32),
     channel: {

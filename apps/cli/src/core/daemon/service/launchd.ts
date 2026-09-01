@@ -286,6 +286,25 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       await waitForEviction();
       return status();
     },
+    async refreshDefinition() {
+      await preflight();
+      const plist = await readRegularFile(plistPath);
+      if (plist === undefined) {
+        throw new DaemonServiceError("NOT_INSTALLED", "The daemon service is not installed; run daemon install");
+      }
+      const wrapper = await readRegularFile(wrapperPath);
+      // Rewrite the definition files only: never bootout the label here, because the caller is the
+      // running daemon handing off to the supervisor, and bootout would kill it before the handoff.
+      // launchd re-reads the wrapper path on every restart, so the refreshed wrapper and plist take
+      // effect the next time the supervisor starts the service.
+      if (wrapper !== expectedWrapper) {
+        await writeFileAtomically(wrapperPath, expectedWrapper, 0o700, 0o700, paths.home);
+      }
+      if (plist !== expectedPlist) {
+        await writeFileAtomically(plistPath, expectedPlist, 0o644, 0o700);
+      }
+      return status();
+    },
     async restart() {
       await preflight();
       if ((await readRegularFile(plistPath)) === undefined) {

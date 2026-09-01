@@ -1,7 +1,7 @@
 # OpenTag Portable 发布指南
 
 > Canonical source: [../portable-release.md](../portable-release.md)
-> Last synced with: 2026-08-25
+> Last synced with: 2026-09-01
 
 Portable release 是一份自包含的 OpenTag 安装包：每个平台一个 tarball，同时携带 bundle 后的 CLI **和它自己的
 Node.js runtime**，因此没有 Node.js、没有 npm、没有任何 package manager 的机器也能安装并运行 OpenTag。它发布到
@@ -65,6 +65,34 @@ bin/<binName>           artifact 本地 shim，在 payload 激活之前使用
 
 bundle 后的 CLI 没有 `node_modules`：`apps/cli` 不声明任何 runtime dependency，一旦这一点发生变化，构建会 fail
 closed，而不是产出一个只在用户运行时才崩溃的 artifact。
+
+## 自动升级
+
+portable 是唯一拥有完整支持的自动升级的安装模式；npm-global 安装永远不会自我升级，只能使用手动的
+`opentag upgrade` / `opentag upgrade --check` 命令。每个 channel 只有一个精确目标，没有灰度队列或 canary：Server
+轮询该 channel 已发布的 `latest.json`，并通过 v2 heartbeat result（`runtime.channelTarget` capability——见
+[runtime-protocol.md](./runtime-protocol.md)）把这个精确目标广播给已连接的 Client。
+
+daemon 的 updater 遵循严格的契约：
+
+- **精确目标身份，单调 precedence。** 只有 version 字符串完全一致才算已是当前目标，因此仅 SemVer build metadata
+  不同的目标仍会安装。SemVer precedence 只用于拒绝更旧的目标；目标还必须属于 Client 自身 channel，且绝不会自动降级。
+- **受保护工作优先。** 安装之前，updater 会无限期等待，直到 Session 模块报告没有受保护的工作——交接不会丢失或
+  重复任何已接受的 Turn、待完成的 Turn 完成/报告托管，或已接受的 IM 投递。Session 模块为每一类工作项都设定了
+  上限（Turn 预算、投递截止时间、带终态结果的报告重试），因此 updater 自己不再添加强制超时。读取零工作快照前会
+  先关闭新工作准入；此前已经接受的投递继续排空，之后到达的投递则收到可重试的 busy 结果。
+- **每个目标只尝试一次。** 任何安装工作开始之前，尝试就会被持久化记录。失败——包括被中断的尝试——会进入
+  blocked 状态且绝不自动重试：updater 等待更新的目标或手动 `opentag upgrade`，从而避免重试与重启风暴。
+- **复用现有布局。** 安装下载不可变的版本 manifest（绝不读取 channel 指针），校验已发布的 SHA-256，解压到全新的
+  不可变版本目录，对新 runtime 做冒烟检查，重写稳定 shim，并通过一次原子切换移动 `current`——与 `install.sh`
+  完全相同的机制。
+- **服务刷新与交接。** 切换之后，updater 通过新安装的二进制运行 `daemon refresh-service`，让 supervisor 定义由
+  即将运行的版本重写，且自身不触发任何重启。随后以便留的 supervisor 重启退出码 `75` 退出：systemd 将其映射为
+  干净的强制重启（`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`），launchd 通过
+  `KeepAlive.SuccessfulExit=false` 重启。由于稳定 shim 的存在，重启后的服务运行新版本，而 OpenTag home、Account
+  凭据、Computer enrollment、Agent 与 placement 全部保持不变。
+
+当前版本、目标、updater 状态以及最近一次尝试及其失败原因都可以在 `opentag daemon status` 中查看。
 
 ## 已发布对象结构
 

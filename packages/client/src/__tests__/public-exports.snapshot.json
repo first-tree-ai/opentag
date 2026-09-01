@@ -99,6 +99,7 @@
   "TurnReportOwner",
   "TurnReportOwnerStoppedError",
   "TurnTraceBuffer",
+  "UpdateManager",
   "agentRuntimePaths",
   "allocateComputerIdentity",
   "assertRealDirectory",

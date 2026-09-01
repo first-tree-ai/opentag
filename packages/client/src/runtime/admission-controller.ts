@@ -64,6 +64,7 @@ export class AdmissionController {
   readonly #sessions = new Map<string, AdmissionReservation>();
   readonly #agents = new Map<string, number>();
   readonly #releaseWaiters = new Set<() => void>();
+  #paused = false;
 
   constructor(limits: Partial<AdmissionLimits> = {}) {
     this.#limits = { ...DEFAULT_LIMITS, ...limits };
@@ -73,7 +74,8 @@ export class AdmissionController {
     if (this.#limits.session !== 1) throw new Error("The V0 Session admission limit must be exactly one");
   }
 
-  reserve(sessionId: string, agentId: string): AdmissionDecision {
+  reserve(sessionId: string, agentId: string, options: { acceptedWork?: boolean } = {}): AdmissionDecision {
+    if (this.#paused && !options.acceptedWork) return { accepted: false, reason: "client_busy" };
     if (this.#sessions.has(sessionId)) {
       return { accepted: false, reason: "session_busy" };
     }
@@ -83,6 +85,20 @@ export class AdmissionController {
     this.#sessions.set(sessionId, reservation);
     this.#agents.set(agentId, (this.#agents.get(agentId) ?? 0) + 1);
     return { accepted: true, reservation };
+  }
+
+  /** Stop taking new work while already accepted work continues to drain. */
+  pause(): void {
+    this.#paused = true;
+  }
+
+  /** Resume ordinary admission after an update attempt fails or is superseded. */
+  resume(): void {
+    this.#paused = false;
+  }
+
+  get paused(): boolean {
+    return this.#paused;
   }
 
   get(sessionId: string): AdmissionReservation | undefined {

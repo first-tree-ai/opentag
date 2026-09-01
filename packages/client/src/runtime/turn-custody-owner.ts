@@ -216,6 +216,11 @@ export class TurnCustodyOwner {
     return this.#turns.get(turnId);
   }
 
+  /** Accepted Turns still under local custody (accepted, not yet recorded as reported). */
+  get liveTurnCount(): number {
+    return this.#turns.size;
+  }
+
   async #prepare(owner: OwnedDelivery): Promise<DeliveryDecision> {
     try {
       const deliveryReason = this.#reconciler.checkDelivery(owner.request);

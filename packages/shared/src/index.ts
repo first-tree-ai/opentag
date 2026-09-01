@@ -406,6 +406,8 @@ export {
   RuntimeCapabilityOffersSchema,
   type RuntimeCapabilityRange,
   RuntimeCapabilityRangeSchema,
+  type RuntimeChannelTarget,
+  RuntimeChannelTargetSchema,
   type RuntimeClientCapabilities,
   RuntimeClientCapabilitiesSchema,
   RuntimeConnectionIdSchema,
@@ -442,6 +444,14 @@ export {
   type ServerWelcomeV2Frame,
   ServerWelcomeV2FrameSchema,
 } from "./runtime-protocol.js";
+export {
+  compareSemVer,
+  isSemVer,
+  parseSemVer,
+  SEMVER_PATTERN,
+  type SemVerParts,
+  SemVerStringSchema,
+} from "./semver.js";
 export * from "./session.js";
 export * from "./session-cli.js";
 export * from "./sign-in-destination.js";

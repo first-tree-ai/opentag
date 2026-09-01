@@ -72,6 +72,32 @@ describe("parseServerConfig", () => {
     expect(parseServerConfig(required).devAuth).toBeUndefined();
   });
 
+  it("defaults the channel target coordinates to the public release endpoint", () => {
+    expect(parseServerConfig(required).channelTarget).toEqual({
+      downloadBaseUrl: "https://download.opentag.build/releases",
+      pollIntervalMs: 300_000,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: "https://mirror.example.com/releases/",
+        OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: "60000",
+      }).channelTarget,
+    ).toEqual({ downloadBaseUrl: "https://mirror.example.com/releases", pollIntervalMs: 60_000 });
+  });
+
+  it("rejects channel target coordinates that are not plain HTTP(S) URLs", () => {
+    for (const downloadBaseUrl of [
+      "ftp://download.example.com/releases",
+      ["https://user", ":secret@download.example.com/releases"].join(""),
+      "https://download.example.com/releases?x=1",
+      "not-a-url",
+    ]) {
+      expect(() => parseServerConfig({ ...required, OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: downloadBaseUrl })).toThrow();
+    }
+    expect(() => parseServerConfig({ ...required, OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: "10" })).toThrow();
+  });
+
   it("enables development sign-in only with an explicit existing-user email and loopback server", () => {
     expect(
       parseServerConfig({

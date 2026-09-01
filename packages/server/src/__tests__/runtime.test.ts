@@ -336,6 +336,115 @@ describe("Computer runtime WebSocket", () => {
     await expect(closeCode(socket)).resolves.toBe(4409);
   });
 
+  it("advertises the exact channel target on v2 heartbeat results only when negotiated", async () => {
+    const target = { channel: "staging", version: "0.0.3-staging.1.1" } as const;
+    const app = createRuntimeApp({
+      authService: authService(),
+      computerService: computerService() as unknown as ComputerService,
+      runtime: {
+        authTimeoutMs: 1_000,
+        registerTimeoutMs: 1_000,
+        channelTarget: () => target,
+      },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+
+    const registerAndHeartbeat = async (
+      supportedCapabilities: Record<string, { min: number; max: number }>,
+    ): Promise<Record<string, unknown>> => {
+      const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+      const frames = frameQueue(socket);
+      await opened(socket);
+      await authenticateV2(socket, frames);
+      const register = {
+        type: "computer:register",
+        requestId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        computerId: machineContext.computerId,
+        instanceId: randomUUID(),
+        displayName: "workstation",
+        platform: "linux",
+        arch: "x64",
+        clientVersion: "0.0.2",
+        capabilities: { imCredentialGrant: 0 },
+        supportedCapabilities,
+        requiredServerCapabilities: [],
+      } as const;
+      socket.send(JSON.stringify(register));
+      const registered = (await frames.next()) as unknown as Record<string, unknown>;
+      const heartbeatRequestId = randomUUID();
+      socket.send(
+        JSON.stringify({
+          type: "heartbeat",
+          requestId: heartbeatRequestId,
+          protocolVersion: RUNTIME_PROTOCOL_V2,
+          connectionId: registered.connectionId,
+          computerId: register.computerId,
+          instanceId: register.instanceId,
+          capabilities: { imCredentialGrant: 0 },
+        }),
+      );
+      const result = await frames.next();
+      socket.close();
+      return result;
+    };
+
+    // A Client that offers the capability receives the exact advertised target.
+    const withCapability = await registerAndHeartbeat(RUNTIME_CLIENT_CAPABILITY_OFFERS);
+    expect(withCapability).toMatchObject({ type: "heartbeat:result", ok: true, channelTarget: target });
+
+    // A Client that never offered the capability must not see the field its strict schema would reject.
+    const { "runtime.channelTarget": _omitted, ...legacyCapabilities } = RUNTIME_CLIENT_CAPABILITY_OFFERS;
+    const withoutCapability = await registerAndHeartbeat(legacyCapabilities);
+    expect(withoutCapability).toMatchObject({ type: "heartbeat:result", ok: true });
+    expect(withoutCapability).not.toHaveProperty("channelTarget");
+  });
+
+  it("keeps the channel target off v1 heartbeat results", async () => {
+    const app = createRuntimeApp({
+      authService: authService(),
+      computerService: computerService() as unknown as ComputerService,
+      runtime: {
+        authTimeoutMs: 1_000,
+        registerTimeoutMs: 1_000,
+        channelTarget: () => ({ channel: "prod", version: "0.0.3" }),
+      },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const frames = frameQueue(socket);
+    await opened(socket);
+    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, machineToken: "machine" }));
+    expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
+    expect(await frames.next()).toMatchObject({ type: "server:welcome", protocolVersion: 1 });
+    const register = {
+      type: "computer:register",
+      requestId: randomUUID(),
+      computerId: machineContext.computerId,
+      instanceId: randomUUID(),
+      displayName: "workstation",
+      platform: "linux",
+      arch: "x64",
+      clientVersion: "0.0.2",
+    };
+    socket.send(JSON.stringify(register));
+    expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+    socket.send(
+      JSON.stringify({
+        type: "heartbeat",
+        requestId: randomUUID(),
+        computerId: register.computerId,
+        instanceId: register.instanceId,
+      }),
+    );
+    const result = await frames.next();
+    expect(result).toMatchObject({ type: "heartbeat:result", ok: true });
+    expect(result).not.toHaveProperty("channelTarget");
+    socket.close();
+  });
+
   it("rejects missing required v2 capabilities before registration side effects", async () => {
     const computers = computerService();
     const app = createRuntimeApp({

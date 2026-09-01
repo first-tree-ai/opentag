@@ -79,6 +79,7 @@ export function registerRuntimeRoutes(
         agentRuntimeTestOwner?.businessOptions(),
         domainOwner?.businessOptions(),
       ),
+    channelTarget: options.channelTarget,
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
     now: options.now,

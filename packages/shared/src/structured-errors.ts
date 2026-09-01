@@ -152,7 +152,9 @@ function isSensitiveKey(key: string): boolean {
 }
 
 const CREDENTIAL_HEADER_PATTERN =
-  /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*\\?["']?[ \t]*[:=][ \t]*/giu;
+  /\b(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*["']?[ \t]*[:=][ \t]*/giu;
+const SERIALIZED_CREDENTIAL_FIELD_PATTERN =
+  /\\+(?:["'])(?:authorization|proxy-authorization|cookie|set-cookie)\\+(?:["'])[ \t]*[:=]/iu;
 
 function lineBreakStart(value: string, from: number): number {
   const carriageReturn = value.indexOf("\r", from);
@@ -186,12 +188,36 @@ function lineIndentation(value: string, from: number): number {
   return cursor - from;
 }
 
+function listPrefixedHeaderOffset(value: string, from: number): number | undefined {
+  let cursor = from;
+  if (value[cursor] === "-" || value[cursor] === "*" || value[cursor] === "+") {
+    cursor += 1;
+  } else {
+    const numberStart = cursor;
+    while (/\d/u.test(value[cursor] ?? "")) cursor += 1;
+    if (cursor === numberStart || (value[cursor] !== "." && value[cursor] !== ")")) return undefined;
+    cursor += 1;
+  }
+  if (value[cursor] !== " " && value[cursor] !== "\t") return undefined;
+  while (value[cursor] === " " || value[cursor] === "\t") cursor += 1;
+  return cursor;
+}
+
+function isInlineCredentialPrefix(value: string, lineStartOffset: number, offset: number): boolean {
+  if (enclosingQuoteAt(value, offset) !== undefined) return true;
+  let cursor = offset - 1;
+  while (cursor >= lineStartOffset && (value[cursor] === " " || value[cursor] === "\t")) cursor -= 1;
+  return "{[(,;=".includes(value[cursor] ?? "");
+}
+
 function isLineAnchoredCredentialHeader(value: string, offset: number): boolean {
   const start = lineStart(value, offset);
   if (offset === start) return true;
   let cursor = start;
   while (value[cursor] === " " || value[cursor] === "\t") cursor += 1;
-  return cursor === offset && headerNameColonAt(value, offset);
+  if (cursor === offset) return headerNameColonAt(value, offset);
+  if (listPrefixedHeaderOffset(value, cursor) === offset) return headerNameColonAt(value, offset);
+  return headerNameColonAt(value, offset) && !isInlineCredentialPrefix(value, start, offset);
 }
 
 function credentialHeaderValueEnd(value: string, from: number, headerIndentation: number): number {
@@ -259,57 +285,6 @@ function inlineQuotedCredentialValueEnd(value: string, from: number, quote: Cred
   return value.length;
 }
 
-function escapedCredentialClosingDelimiterEnd(
-  value: string,
-  position: number,
-  quote: CredentialQuote,
-): number | undefined {
-  if (value[position] !== "\\" || value[position + 1] !== quote) return undefined;
-  let boundary = position + 2;
-  while (value[boundary] === " " || value[boundary] === "\t") boundary += 1;
-  if (
-    boundary === value.length ||
-    ",}]".includes(value[boundary] ?? "") ||
-    value[boundary] === "\r" ||
-    value[boundary] === "\n"
-  ) {
-    return position + 2;
-  }
-  return undefined;
-}
-
-function escapedQuotedCredentialValueEnd(
-  value: string,
-  from: number,
-  quote: CredentialQuote,
-): { end: number; replacement: string } {
-  const openingDelimiter = `\\${quote}`;
-  for (let cursor = from + openingDelimiter.length; cursor < value.length; cursor += 1) {
-    const character = value[cursor];
-    if (character === "\\") {
-      if (escapedCredentialClosingDelimiterEnd(value, cursor, quote) !== undefined) {
-        return {
-          end: cursor + 2,
-          replacement: `${openingDelimiter}${REDACTED}${openingDelimiter}`,
-        };
-      }
-      cursor += 1;
-      continue;
-    }
-    if (character === quote) {
-      return {
-        end: cursor + 1,
-        replacement: `${openingDelimiter}${REDACTED}${openingDelimiter}`,
-      };
-    }
-    if (character === "\r" || character === "\n") break;
-  }
-  return {
-    end: value.length,
-    replacement: `${openingDelimiter}${REDACTED}${openingDelimiter}`,
-  };
-}
-
 function enclosingQuotedCredentialValueEnd(value: string, from: number, quote: CredentialQuote): number {
   for (let cursor = from; cursor < value.length; cursor += 1) {
     const character = value[cursor];
@@ -374,10 +349,6 @@ function inlineCredentialValueEnd(
   enclosingQuote: CredentialQuote | undefined,
 ): { end: number; replacement: string } {
   const openingQuote = value[from];
-  const escapedQuote = value[from + 1];
-  if (openingQuote === "\\" && isCredentialQuote(escapedQuote)) {
-    return escapedQuotedCredentialValueEnd(value, from, escapedQuote);
-  }
   if (isCredentialQuote(openingQuote)) {
     const end = inlineQuotedCredentialValueEnd(value, from, openingQuote);
     return { end, replacement: `${openingQuote}${REDACTED}${openingQuote}` };
@@ -392,16 +363,75 @@ function inlineCredentialValueEnd(
   return { end: inlineUnquotedCredentialValueEnd(value, from), replacement: REDACTED };
 }
 
-/*
- * Consume a credential header through the end of its line and any RFC 7230 obs-fold continuation.
- * A non-folded line break is left intact so the next genuine header remains visible. Inline matches
- * stop at the delimiter for their surrounding JSON-ish or list value so sibling fields remain intact.
- */
-function scrubCredentialHeaders(value: string): string {
+function decodeSerializationEscape(value: string, position: number): { next: number; value: string } | undefined {
+  const escapeCode = value[position + 1];
+  if (escapeCode === undefined) return undefined;
+  if (escapeCode === '"' || escapeCode === "\\" || escapeCode === "/") {
+    return { next: position + 2, value: escapeCode };
+  }
+  const shortEscapes: Record<string, string> = {
+    b: "\b",
+    f: "\f",
+    n: "\n",
+    r: "\r",
+    t: "\t",
+  };
+  const shortValue = shortEscapes[escapeCode];
+  if (shortValue !== undefined) return { next: position + 2, value: shortValue };
+  if (escapeCode !== "u") return undefined;
+  const hexadecimal = value.slice(position + 2, position + 6);
+  if (!/^[0-9A-Fa-f]{4}$/u.test(hexadecimal)) return undefined;
+  return { next: position + 6, value: String.fromCharCode(Number.parseInt(hexadecimal, 16)) };
+}
+
+function decodeOneSerializationLayer(value: string): string | undefined {
+  let output = "";
+  let cursor = 0;
+  while (cursor < value.length) {
+    const character = value[cursor] ?? "";
+    if (character !== "\\") {
+      output += character;
+      cursor += 1;
+      continue;
+    }
+    const decodedEscape = decodeSerializationEscape(value, cursor);
+    if (decodedEscape === undefined) return undefined;
+    output += decodedEscape.value;
+    cursor = decodedEscape.next;
+  }
+  return output;
+}
+
+function encodeSerializationCharacter(character: string): string {
+  if (character === '"') return '\\"';
+  if (character === "\\") return "\\\\";
+  if (character === "\b") return "\\b";
+  if (character === "\f") return "\\f";
+  if (character === "\n") return "\\n";
+  if (character === "\r") return "\\r";
+  if (character === "\t") return "\\t";
+  if (character.charCodeAt(0) <= 0x1f) return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
+  return character;
+}
+
+function encodeOneSerializationLayer(value: string): string {
+  let output = "";
+  for (const character of value) output += encodeSerializationCharacter(character);
+  return output;
+}
+
+type CredentialHeaderScrub = {
+  matched: boolean;
+  value: string;
+};
+
+function scrubDecodedCredentialHeaders(value: string): CredentialHeaderScrub {
+  let matched = false;
   let output = "";
   let cursor = 0;
   CREDENTIAL_HEADER_PATTERN.lastIndex = 0;
   for (let match = CREDENTIAL_HEADER_PATTERN.exec(value); match; match = CREDENTIAL_HEADER_PATTERN.exec(value)) {
+    matched = true;
     const offset = match.index;
     const lineAnchored = isLineAnchoredCredentialHeader(value, offset);
     const valueStart = offset + match[0].length;
@@ -416,21 +446,40 @@ function scrubCredentialHeaders(value: string): string {
     cursor = valueEnd.end;
     CREDENTIAL_HEADER_PATTERN.lastIndex = cursor;
   }
-  return output + value.slice(cursor);
+  return { matched, value: output + value.slice(cursor) };
+}
+
+function scrubSerializedCredentialLayer(value: string): string {
+  const decoded = decodeOneSerializationLayer(value);
+  if (decoded === undefined || encodeOneSerializationLayer(decoded) !== value) return REDACTED;
+
+  const scrubbed = scrubDecodedCredentialHeaders(decoded);
+  if (!scrubbed.matched) return REDACTED;
+
+  const encoded = encodeOneSerializationLayer(scrubbed.value);
+  return decodeOneSerializationLayer(encoded) === scrubbed.value ? encoded : REDACTED;
+}
+
+/*
+ * Consume a credential header through the end of its line and any RFC 7230 obs-fold continuation.
+ * A non-folded line break is left intact so the next genuine header remains visible. Inline matches
+ * stop at the delimiter for their surrounding JSON-ish or list value so sibling fields remain intact.
+ */
+function scrubCredentialHeaders(value: string): string {
+  if (SERIALIZED_CREDENTIAL_FIELD_PATTERN.test(value)) return scrubSerializedCredentialLayer(value);
+  return scrubDecodedCredentialHeaders(value).value;
 }
 
 function scrubString(value: string): string {
-  return scrubCredentialHeaders(
-    value
-      .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
-      .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")
-      .replace(
-        /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
-        "$1[REDACTED]",
-      )
-      .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
-      .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@"),
-  );
+  return scrubCredentialHeaders(value)
+    .replace(/\bBearer\s+[^\s,;}\]]+/giu, "Bearer [REDACTED]")
+    .replace(/\b(Basic|Digest|Negotiate)\s+[^\s,;}\]]+/giu, "$1 [REDACTED]")
+    .replace(
+      /([?&](?:access_token|refresh_token|client_secret|token|secret|password|api[_-]?key)=)[^&#\s]+/giu,
+      "$1[REDACTED]",
+    )
+    .replace(/(\b(?:token|secret|password|credential|api[_-]?key)\s*[:=]\s*)[^\s,;}\]]+/giu, "$1[REDACTED]")
+    .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/giu, "$1[REDACTED]@");
 }
 
 function redactErrorValue(value: Error, seen: WeakSet<object>, depth: number): Record<string, unknown> {

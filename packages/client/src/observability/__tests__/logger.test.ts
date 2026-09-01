@@ -148,6 +148,43 @@ describe("Client logger", () => {
     expect(record.message).toContain(String.raw`\"other\":\"keep\"`);
   });
 
+  it("scrubs review-round five shapes without losing serialized siblings", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+    const cases = [
+      [
+        String.raw`{\"authorization\":\"Digest username=\\\"u\\\", realm=\\\"tenant\\\", nonce=\\\"deep-secret\\\"\",\"other\":\"keep\"}`,
+        String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      ],
+      [
+        "headers:\n  - Cookie: session=first-secret; admin=second-secret\n  - X-Safe: ok",
+        "headers:\n  - Cookie: [REDACTED]\n  - X-Safe: ok",
+      ],
+      [
+        "headers:\n  1. Cookie: session=first-secret; admin=second-secret\n  2. X-Safe: ok",
+        "headers:\n  1. Cookie: [REDACTED]\n  2. X-Safe: ok",
+      ],
+      [
+        String.raw`{\"set-cookie\":[\"session=first-secret\",\"admin=second-secret\"],\"other\":\"keep\"}`,
+        String.raw`{\"set-cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      ],
+    ] as const;
+
+    const logger = createLogger("review-round-five");
+    for (const [message] of cases) logger.error({}, message);
+
+    const lines = (await readFile(join(directory, "client.log"), "utf8")).trim().split("\n");
+    expect(lines).toHaveLength(cases.length);
+    const records = lines.map((line) => JSON.parse(line) as { message: string });
+    expect(records.map((record) => record.message)).toEqual(cases.map(([, expected]) => expected));
+    const emitted = records.map((record) => record.message).join("\n");
+    for (const secret of ["deep-secret", "first-secret", "admin=second-secret"]) expect(emitted).not.toContain(secret);
+    expect(emitted).toContain(String.raw`\"other\":\"keep\"`);
+    expect(emitted).toContain("- X-Safe: ok");
+    expect(emitted).toContain("2. X-Safe: ok");
+  });
+
   it("treats repeated configuration as a no-op and rejects another directory", async () => {
     const first = await temporaryDirectory();
     const second = await temporaryDirectory();

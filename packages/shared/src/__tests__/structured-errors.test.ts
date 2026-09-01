@@ -280,6 +280,63 @@ describe("structured error redaction", () => {
     expect(escapedRedacted).toContain(String.raw`\"other\":\"keep\"`);
   });
 
+  it("decodes exactly one serialized layer before redacting credential structures", () => {
+    const digest = String.raw`{\"authorization\":\"Digest username=\\\"u\\\", realm=\\\"tenant\\\", nonce=\\\"deep-secret\\\"\",\"other\":\"keep\"}`;
+    const digestRedacted = redactForLog(digest);
+    expect(digestRedacted).toBe(String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`);
+    expect(digestRedacted).not.toContain("deep-secret");
+    expect(digestRedacted).toContain(String.raw`\"other\":\"keep\"`);
+
+    const array = String.raw`{\"set-cookie\":[\"session=first-secret\",\"admin=second-secret\"],\"other\":\"keep\"}`;
+    const arrayRedacted = redactForLog(array);
+    expect(arrayRedacted).toBe(String.raw`{\"set-cookie\":\"[REDACTED]\",\"other\":\"keep\"}`);
+    expect(arrayRedacted).not.toContain("first-secret");
+    expect(arrayRedacted).not.toContain("second-secret");
+    expect(arrayRedacted).toContain(String.raw`\"other\":\"keep\"`);
+
+    const doubleSerialized = String.raw`\\\"cookie\\\":\\\"nested-secret\\\"`;
+    expect(redactForLog(doubleSerialized)).toBe("[REDACTED]");
+  });
+
+  it("redacts list-prefixed headers as complete physical fields", () => {
+    for (const prefix of ["- Cookie", "* Cookie", "+ Cookie", "1. Cookie", "2) Cookie"]) {
+      const input = `headers:\n  ${prefix}: session=first-secret; admin=second-secret\n  X-Safe: ok`;
+      expect(redactForLog(input)).toBe(`headers:\n  ${prefix}: [REDACTED]\n  X-Safe: ok`);
+    }
+
+    const unclear = redactForLog("headers:\n  -- Cookie: session=first-secret; admin=second-secret\n  X-Safe: ok");
+    expect(unclear).toBe("headers:\n  -- Cookie: [REDACTED]\n  X-Safe: ok");
+  });
+
+  it.each([
+    ["Cookie: a=first-secret\r\n  b: second-secret\r\nX-Safe: ok", "Cookie: [REDACTED]\r\nX-Safe: ok"],
+    [
+      String.raw`{\"cookie\":\"session=first-secret; admin=second-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      "headers:\n  Cookie: x-one-secret\n  Set-Cookie: y-two-secret",
+      "headers:\n  Cookie: [REDACTED]\n  Set-Cookie: [REDACTED]",
+    ],
+    [
+      "headers:\n  Cookie: session=first-secret; admin=second-secret\nX-Safe: ok",
+      "headers:\n  Cookie: [REDACTED]\nX-Safe: ok",
+    ],
+    ['{"set-cookie":["session=first-secret","admin=second-secret"]}', '{"set-cookie":"[REDACTED]"}'],
+    ['{"headers":"Cookie: session=first-secret; admin=second-secret"}', '{"headers":"Cookie: [REDACTED]"}'],
+    [
+      'req:\n\tAuthorization: Digest u="x", nonce="deadbeef"\nX-Safe: ok',
+      "req:\n\tAuthorization: [REDACTED]\nX-Safe: ok",
+    ],
+    ["{cookie: session=abc123secret, other: keepme}", "{cookie: [REDACTED], other: keepme}"],
+    ['{"cookie":"session=abc123secret","other":"keepme"}', '{"cookie":"[REDACTED]","other":"keepme"}'],
+    ["ctx: a=1; authorization=tok_live_SECRET; b=2", "ctx: a=1; authorization=[REDACTED]; b=2"],
+    ["Cookie: session=first-secret; admin=second-secret", "Cookie: [REDACTED]"],
+    ["Authorization: Bearer a\r\n\tfolded\r\nX-Safe: ok", "Authorization: [REDACTED]\r\nX-Safe: ok"],
+  ])("keeps the twelve established redaction outputs stable", (input, expected) => {
+    expect(redactForLog(input)).toBe(expected);
+  });
+
   it("scrubs and caps a bare string, which is how log messages cross the boundary", () => {
     expect(redactForLog("Authorization: Bearer message-secret")).not.toContain("message-secret");
     expect(new TextEncoder().encode(redactForLog("x".repeat(20_000))).byteLength).toBeLessThanOrEqual(

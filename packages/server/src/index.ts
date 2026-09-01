@@ -31,6 +31,7 @@ import {
   formatStartupError,
   PostAuthenticationService,
 } from "./services/auth/index.js";
+import { createChannelTargetPoller } from "./services/channel-target/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
@@ -163,6 +164,15 @@ export async function startServer(): Promise<void> {
     const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database));
     const connectCodeService = new ConnectCodeService(database);
     const registry = new ConnectionRegistry();
+    const channelTargetPoller = createChannelTargetPoller({
+      channel: config.environment,
+      downloadBaseUrl: config.channelTarget.downloadBaseUrl,
+      intervalMs: config.channelTarget.pollIntervalMs,
+      logger: {
+        info: (bindings: Record<string, unknown>, message: string) => app?.log.info(bindings, message),
+        warn: (bindings: Record<string, unknown>, message: string) => app?.log.warn(bindings, message),
+      },
+    });
     const machineAuthService = new MachineAuthService(database, {
       onCredentialRotated: async (workspaceComputerId) => {
         await registry.closeEnrollment(workspaceComputerId);
@@ -328,7 +338,12 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
-      runtime: { registry, domainOwner, agentRuntimeTestOwner },
+      runtime: {
+        registry,
+        domainOwner,
+        agentRuntimeTestOwner,
+        channelTarget: () => channelTargetPoller.get(),
+      },
       runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
@@ -356,6 +371,7 @@ export async function startServer(): Promise<void> {
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    channelTargetPoller.start();
     const closeForSignal = () => {
       void app?.close();
     };
@@ -364,6 +380,7 @@ export async function startServer(): Promise<void> {
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
+      channelTargetPoller.stop();
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();

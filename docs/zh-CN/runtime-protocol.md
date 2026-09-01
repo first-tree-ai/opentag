@@ -1,6 +1,7 @@
 # Runtime 协议兼容
 
-[English](../runtime-protocol.md)
+> Canonical source: [../runtime-protocol.md](../runtime-protocol.md)
+> Last synced with: 2026-09-01
 
 ## 范围
 
@@ -52,6 +53,10 @@ disconnected -> connecting -> authenticating -> welcoming -> registering -> regi
 - 每个 v2 心跳帧和业务帧都携带 Server 签发的 `connectionId`。双方在领域解析或副作用前拒绝缺失或过期的值。bootstrap/error 帧保持无版本，以便不兼容 peer 能安全拒绝连接；它们仍绑定精确 socket。Transport 在业务帧进入领域 schema 前移除 fence，因此它不会改变领域幂等哈希。
 - `instanceId` fence daemon 进程生命周期；`connectionId` fence 单条已注册 socket；placement generation 继续 fence Session placement。Server registry 在发送前后仍校验精确的当前 socket。
 - Transport queue 不跨 socket 重放。领域重试按照现有策略复用稳定 `requestId` 和语义 payload hash。
+
+## Channel target 广播
+
+可选的 `runtime.channelTarget` capability（版本 1）让已连接的 Client 获知用于自动升级的 channel 精确最新目标。当该 capability 协商成功后，每个 v2 `heartbeat:result` 都可以携带可选的 `channelTarget` 字段：Server 自身的 release channel，以及它当前广播的精确 SemVer（从该 channel 已发布的 release 指针读取）。该字段是可选扩展且经过协商，因此使用严格 heartbeat schema 的旧 Client 永远不会收到它；连接旧 Server 的 Client 则只是看不到目标。Client 只有在 version 字符串完全一致时才视为已经是当前目标；SemVer precedence 只用于拒绝更旧的目标，而 precedence 相同但 build metadata 不同的目标仍会安装。属于其他 channel 的目标在任何升级决策之前就会被拒绝。
 
 ## 对抗性检查
 

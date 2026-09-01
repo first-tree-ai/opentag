@@ -184,6 +184,7 @@ export {
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
   createClientRuntime,
+  type ProtectedWorkSnapshot,
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
   resolveCodexHome,
@@ -390,6 +391,7 @@ export {
   type RuntimePreparation,
   type SessionActivity,
   type SessionActivityPhase,
+  type SessionProtectedWorkSnapshot,
   SessionReconciler,
   type SessionReconcilerOptions,
   type SessionRuntimeState,
@@ -422,6 +424,14 @@ export {
   type TurnReportSubmitOptions,
   type TurnReportTerminalStatus,
 } from "./runtime/turn-report-owner.js";
+export {
+  type ProtectedWorkCount,
+  UpdateManager,
+  type UpdateManagerOptions,
+  type UpdaterAttempt,
+  type UpdaterStateName,
+  type UpdaterStateSnapshot,
+} from "./runtime/update-manager.js";
 export {
   assertRealDirectory,
   assertWithin,

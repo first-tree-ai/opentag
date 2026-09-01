@@ -136,6 +136,17 @@ test("coverage floor breaches name the package and the signed delta", () => {
   assert.match(breaches[0].message, /delta -1(?:\.00)?/);
 });
 
+test("coverage floors tolerate variance within the configured band and breach beyond it", () => {
+  const floors = {
+    tolerance: 0.75,
+    projects: { server: { lines: 97, statements: 97, functions: 97, branches: 97 } },
+  };
+  assert.deepEqual(evaluateCoverageFloors({ server: summary(96.3) }, floors), []);
+  const breaches = evaluateCoverageFloors({ server: summary(96.2) }, floors);
+  assert.equal(breaches.length, 4);
+  assert.match(breaches[0].message, /below floor 97\.00% \(tolerance 0\.75pp\)/);
+});
+
 test("coverage manifest validation reports source files without an intentional owner", () => {
   const result = validateCoverageManifest({
     sourceFiles: ["packages/client/src/runtime/owned.ts", "packages/client/src/runtime/missing.ts"],

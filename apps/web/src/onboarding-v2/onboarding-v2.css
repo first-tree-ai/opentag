@@ -20,9 +20,9 @@
  * invalid, so the mark would fall back to solid black rather than to a sensible colour.
  */
 :root {
-  --otv2-mark-tint: var(--color-kumo-tint);
-  --otv2-mark-surface: var(--color-kumo-base);
-  --otv2-mark-ink: var(--text-color-kumo-strong);
+  --otv2-mark-tint: var(--brand);
+  --otv2-mark-surface: var(--card);
+  --otv2-mark-ink: var(--brand-ink);
 }
 
 /* Codex follows OpenTag's explicit theme, not the operating system's colour preference. */

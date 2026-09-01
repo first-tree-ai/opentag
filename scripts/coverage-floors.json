@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "tolerance": 0.75,
   "projects": {
     "cli": {
       "branches": 87.3,

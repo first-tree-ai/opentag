@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
+import * as m from "../../paraglide/messages.js";
 import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
@@ -25,12 +26,12 @@ export function AgentsPage() {
         action={
           <div data-ui="agents-page-action">
             <Button ref={createTriggerRef} variant="secondary" onClick={() => setCreateOpen(true)}>
-              <Icon name="plus" weight="bold" /> New Agent
+              <Icon name="plus" weight="bold" /> {m.agents_new_agent()}
             </Button>
           </div>
         }
-        description="Choose an Agent to continue, or create a new one."
-        title="Agents"
+        description={m.agents_page_description()}
+        title={m.agents_title()}
       >
         <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
       </Page>
@@ -41,7 +42,7 @@ export function AgentsPage() {
 
 export function AgentsContent({ agents }: { agents: AgentListItem[] }) {
   if (agents.length > 0) return <AgentList agents={agents} />;
-  return <EmptyState title="No Agents yet">Create your first shared AI teammate with New Agent.</EmptyState>;
+  return <EmptyState title={m.agents_empty_title()}>{m.agents_empty_description()}</EmptyState>;
 }
 
 export function AgentList({ agents }: { agents: AgentListItem[] }) {
@@ -62,9 +63,11 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
   shownOrder.current = order;
   const workingCount = agents.filter((agent) => agent.activity.state === "working").length;
   return (
-    <section className="grid gap-4" aria-label="Agents" data-ui="agent-list">
+    <section className="grid gap-4" aria-label={m.agents_title()} data-ui="agent-list">
       <p className="text-sm text-kumo-subtle">
-        {agents.length} {agents.length === 1 ? "Agent" : "Agents"} · {workingCount} currently working
+        {agents.length === 1
+          ? m.agents_list_summary_single({ count: agents.length, workingCount })
+          : m.agents_list_summary_plural({ count: agents.length, workingCount })}
       </p>
       <div className="grid gap-3" data-ui="agent-roster">
         {order.map((id) => {
@@ -79,10 +82,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
 export function AgentRow({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
   const channel = agent.availability.dependencies.channel.provider;
-  const statusDetail =
-    agent.activity.state === "working" && status.label === "Working"
-      ? `Working now · started ${formatElapsedCompact(agent.activity.startedAt)} ago`
-      : (status.detail ?? (status.label === "Ready" ? "Ready for new work" : "Open to view status details"));
+  const statusDetail = agentStatusDetail(agent);
   return (
     <article
       className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[48rem]/workspace:grid-cols-[minmax(0,1.25fr)_minmax(12rem,1fr)_5rem_7rem_1rem] @min-[48rem]/workspace:items-center"
@@ -101,7 +101,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           <strong className="truncate text-base">{agent.displayName}</strong>
           <span className="flex items-center gap-1.5 text-sm text-kumo-subtle">
             {channel ? <ProviderIcon className="size-4" provider={channel} /> : null}
-            {channel ? messagingProviderLabel(channel) : "Messaging not connected"}
+            {channel ? messagingProviderLabel(channel) : m.agents_messaging_not_connected()}
           </span>
         </div>
       </div>
@@ -112,15 +112,21 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
         </p>
       </div>
       <dl className="grid grid-cols-2 gap-4 @min-[48rem]/workspace:contents" data-ui="agent-row-facts">
-        <AgentFact label={`Tasks (${agent.usage.windowDays}d)`} value={formatCompactNumber(agent.usage.tasks)} />
-        <AgentFact label={`Tokens (${agent.usage.windowDays}d)`} value={formatCompactNumber(agent.usage.tokens)} />
+        <AgentFact
+          label={m.agents_fact_tasks_window({ days: agent.usage.windowDays })}
+          value={formatCompactNumber(agent.usage.tasks)}
+        />
+        <AgentFact
+          label={m.agents_fact_tokens_window({ days: agent.usage.windowDays })}
+          value={formatCompactNumber(agent.usage.tokens)}
+        />
       </dl>
       <Icon
         className="absolute right-5 top-5 text-kumo-subtle @min-[48rem]/workspace:static @min-[48rem]/workspace:justify-self-end"
         name="chevron-right"
       />
       <Link
-        aria-label={`Open ${agent.displayName}`}
+        aria-label={m.agents_open_agent({ name: agent.displayName })}
         className="absolute inset-0 rounded-lg focus:outline-none"
         data-ui="agent-row-open"
         {...agentDetailLink(agent.id)}
@@ -136,4 +142,18 @@ function AgentFact({ label, value }: { label: string; value: string }) {
       <dd className="truncate text-sm font-medium text-kumo-strong">{value}</dd>
     </div>
   );
+}
+
+function agentStatusDetail(agent: AgentListItem): string {
+  if (!agent.evidenceConfirmed) return m.agents_status_detail_unable_to_refresh();
+  if (agent.availability.state === "unconfirmed") return m.agents_status_detail_unable_to_confirm_readiness();
+  if (agent.availability.state === "action_required" || agent.availability.state === "not_connected") {
+    return m.agents_status_detail_cannot_receive_work();
+  }
+  if (agent.availability.state === "setting_up") return m.agents_status_detail_messaging_setup();
+  if (agent.activity.state === "working" && agent.availability.state === "ready") {
+    return m.agents_status_detail_working({ elapsed: formatElapsedCompact(agent.activity.startedAt) });
+  }
+  if (agent.availability.state === "ready") return m.agents_status_detail_ready();
+  return m.agents_status_detail_open_status();
 }

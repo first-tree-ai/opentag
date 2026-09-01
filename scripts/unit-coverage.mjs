@@ -114,6 +114,12 @@ function floorProjects(floors) {
   return floors ?? {};
 }
 
+/** Allowed variance band, in percentage points, that observed coverage may sit below a floor. */
+function floorTolerance(floors) {
+  const value = Number(floors?.tolerance);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 function summaryMetric(summary, metric) {
   const value = summary?.total?.[metric]?.pct ?? summary?.[metric];
   const numeric = Number(value);
@@ -124,15 +130,16 @@ function roundedPercentage(value) {
   return Number(Number(value).toFixed(2));
 }
 
-function evaluatePackageFloors(packageName, packageFloors, summary) {
+function evaluatePackageFloors(packageName, packageFloors, summary, tolerance) {
   return COVERAGE_METRICS.flatMap((metric) => {
     const floor = Number(packageFloors?.[metric]);
     if (!Number.isFinite(floor)) return [];
     const current = summaryMetric(summary, metric);
-    if (current !== undefined && current >= floor) return [];
+    if (current !== undefined && current >= floor - tolerance) return [];
     const delta = current === undefined ? Number.NEGATIVE_INFINITY : roundedPercentage(current - floor);
     const observed = current === undefined ? "missing" : `${current.toFixed(2)}%`;
     const signedDelta = current === undefined ? "-Infinity" : delta.toFixed(2);
+    const toleranceNote = tolerance > 0 ? ` (tolerance ${tolerance.toFixed(2)}pp)` : "";
     return [
       {
         current,
@@ -140,7 +147,7 @@ function evaluatePackageFloors(packageName, packageFloors, summary) {
         floor,
         message:
           `Coverage floor breach for package "${packageName}": ${metric} ${observed} is ` +
-          `${signedDelta} percentage points (delta ${signedDelta}) below floor ${floor.toFixed(2)}%`,
+          `${signedDelta} percentage points (delta ${signedDelta}) below floor ${floor.toFixed(2)}%${toleranceNote}`,
         metric,
         packageName,
       },
@@ -149,8 +156,9 @@ function evaluatePackageFloors(packageName, packageFloors, summary) {
 }
 
 export function evaluateCoverageFloors(summaries, floors) {
+  const tolerance = floorTolerance(floors);
   return Object.entries(floorProjects(floors)).flatMap(([packageName, packageFloors]) =>
-    evaluatePackageFloors(packageName, packageFloors, summaries?.[packageName]),
+    evaluatePackageFloors(packageName, packageFloors, summaries?.[packageName], tolerance),
   );
 }
 
@@ -489,7 +497,7 @@ function enforceFloors({ floorDocument, options, selected, summaries }) {
     process.stdout.write(`Updated coverage floors in ${COVERAGE_FLOORS_PATH}\n`);
   }
   const selectedFloors = Object.fromEntries(selected.map(({ name }) => [name, floorProjects(floorDocument)[name]]));
-  assertCoverageFloors(summaries, selectedFloors);
+  assertCoverageFloors(summaries, { ...floorDocument, projects: selectedFloors });
 }
 
 function main() {

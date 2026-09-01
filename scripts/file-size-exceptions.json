@@ -3,12 +3,6 @@
   "maxLines": 500,
   "exceptions": [
     {
-      "path": "apps/web/src/__tests__/app.test.tsx",
-      "lines": 3599,
-      "owner": "@bestony",
-      "expires": "2026-10-31"
-    },
-    {
       "path": "apps/web/src/agent-creation/agent-creation-flow.tsx",
       "lines": 1021,
       "owner": "@bestony",

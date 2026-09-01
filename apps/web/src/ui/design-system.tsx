@@ -475,6 +475,7 @@ type SelectControlChangeProps = {
 
 export type KumoSelectControlProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, "onChange" | "size" | "value"> &
   SelectControlChangeProps & {
+    container?: KumoSelectProps["container"];
     size?: KumoSelectProps["size"];
     value?: string;
     onValueChange?: (value: string) => void;

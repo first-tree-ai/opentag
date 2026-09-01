@@ -93,8 +93,8 @@
       "complexity": 32
     },
     {
-      "id": "apps/web/src/__tests__/app.test.tsx#callback",
-      "path": "apps/web/src/__tests__/app.test.tsx",
+      "id": "apps/web/src/__tests__/support/app-fixtures.tsx#callback",
+      "path": "apps/web/src/__tests__/support/app-fixtures.tsx",
       "symbol": "callback",
       "complexity": 194
     },

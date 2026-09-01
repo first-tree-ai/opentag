@@ -26,6 +26,7 @@ const COMP_A1 = "00000000-0000-4000-8000-0000000000c1";
 const COMP_A2 = "00000000-0000-4000-8000-0000000000c2";
 const CRED_ACTIVE = "00000000-0000-4000-8000-0000000000e1";
 const CRED_REVOKED = "00000000-0000-4000-8000-0000000000e2";
+const CRED_CANONICAL_ONLY = "00000000-0000-4000-8000-0000000000e3";
 const CODE_CREATE = "00000000-0000-4000-8000-0000000000f1";
 const CODE_REPAIR = "00000000-0000-4000-8000-0000000000f2";
 const CODE_OPEN = "00000000-0000-4000-8000-0000000000f3";
@@ -579,16 +580,38 @@ const FAIL_CASES: Array<{
   },
   {
     name: "a legacy credential without a canonical mirror",
-    error: /without an identical canonical credential/,
+    error: /without a safe canonical successor/,
     inject: async (sql) => {
       await sql`delete from computer_credentials where id = ${CRED_REVOKED}`;
     },
   },
   {
     name: "a credential hash mismatch",
-    error: /without an identical canonical credential/,
+    error: /without a safe canonical successor/,
     inject: async (sql) => {
       await sql`update computer_credentials set secret_hash = ${"0".repeat(64)} where id = ${CRED_ACTIVE}`;
+    },
+  },
+  {
+    name: "a legacy-only credential revocation",
+    error: /without a safe canonical successor/,
+    inject: async (sql) => {
+      await sql`
+        update workspace_computer_credentials
+        set revoked_by_user_id = ${ACCOUNT_A}, revoked_at = ${LATE}
+        where id = ${CRED_ACTIVE}
+      `;
+    },
+  },
+  {
+    name: "conflicting canonical and legacy credential revocations",
+    error: /without a safe canonical successor/,
+    inject: async (sql) => {
+      await sql`
+        update computer_credentials
+        set revoked_by_user_id = ${ACCOUNT_B}
+        where id = ${CRED_REVOKED}
+      `;
     },
   },
   {
@@ -673,6 +696,65 @@ describe("workspace ownership contract migration", () => {
         await expect(verifyDatabaseMigrations(databaseUrl, migrationsFolder)).resolves.toBeUndefined();
         await expectFinalSchema(sql, journal.entries.length);
         await expectCanonicalDataPreserved(sql);
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(through0036, { force: true, recursive: true });
+    }
+  });
+
+  it("preserves canonical-only credentials and canonical revocations newer than frozen legacy shadows", async () => {
+    const journal = await readJournal();
+    const through0036 = await truncatedMigrations(36);
+    try {
+      await migrateDatabase(databaseUrl, through0036);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        await populateActive0036(sql);
+        await sql`
+          update workspace_computer_credentials
+          set revoked_by_user_id = ${ACCOUNT_A}, revoked_at = ${LATE}
+          where id = ${CRED_ACTIVE}
+        `;
+        await sql`
+          update computer_credentials
+          set revoked_by_user_id = ${ACCOUNT_A}, revoked_at = ${LATE}
+          where id = ${CRED_ACTIVE}
+        `;
+        await sql`
+          update workspace_computer_credentials
+          set revoked_by_user_id = null, revoked_at = null
+          where id = ${CRED_REVOKED}
+        `;
+        await sql`
+          insert into computer_credentials (id, computer_id, secret_hash, issued_by_user_id, issued_at)
+          values (${CRED_CANONICAL_ONLY}, ${COMP_A1}, ${"c".repeat(64)}, ${ACCOUNT_A}, ${LATE})
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+        await expect(verifyDatabaseMigrations(databaseUrl, migrationsFolder)).resolves.toBeUndefined();
+        const shape = await finalShape(sql);
+        expect(shape).toMatchObject({
+          migrations: journal.entries.length,
+          legacy_tables: 0,
+          legacy_columns: 0,
+          computers: 2,
+          credentials: 3,
+        });
+        const credentials = await sql<{ id: string; revokedBy: string | null; revokedAt: Date | null }[]>`
+          select
+            id::text as id,
+            revoked_by_user_id::text as "revokedBy",
+            revoked_at as "revokedAt"
+          from computer_credentials
+          where id in (${CRED_REVOKED}, ${CRED_CANONICAL_ONLY})
+          order by id
+        `;
+        expect(credentials).toEqual([
+          { id: CRED_REVOKED, revokedBy: ACCOUNT_A, revokedAt: LATE },
+          { id: CRED_CANONICAL_ONLY, revokedBy: null, revokedAt: null },
+        ]);
       } finally {
         await sql.end();
       }
@@ -769,7 +851,7 @@ describe("workspace ownership contract migration", () => {
         await populateActive0036(sql);
         await sql`delete from computer_credentials where id = ${CRED_REVOKED}`;
         await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(
-          /without an identical canonical credential/,
+          /without a safe canonical successor/,
         );
         const [rolledBack] = await sql<{ migrations: number; computers: string | null }[]>`
           select

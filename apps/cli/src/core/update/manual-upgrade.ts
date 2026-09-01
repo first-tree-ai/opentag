@@ -29,7 +29,7 @@ export interface UpgradeOptions {
   /** Injectable npm runner (tests); defaults to executing `npm` on PATH. */
   runNpm?: (args: readonly string[]) => Promise<void>;
   /** Injectable portable install step (tests). */
-  installPortable?: (target: string) => Promise<undefined | { cleanupFailure?: string }>;
+  installPortable?: (target: string) => Promise<void> | Promise<{ cleanupFailure?: string }>;
   /** Injectable service reconciliation (tests). */
   reconcileService?: () => Promise<DaemonServiceReconcileResult>;
   /** Injectable durable-state writer (tests). */
@@ -210,7 +210,7 @@ async function installResolvedTarget(
   }
   if (options.installPortable) {
     const result = await options.installPortable(target);
-    return result?.cleanupFailure;
+    return result && typeof result === "object" ? result.cleanupFailure : undefined;
   }
   const result = await installPortableTarget({
     channel: context.channel,

@@ -19,19 +19,26 @@ test("runtime test pass is user-visible through the saved Claude Code path", asy
   await mkdir(screenshots, { recursive: true });
   agentId = await createClaudeAgent(page, e2eRuntime.accountComputerId);
   await page.goto(`/agents/${agentId}/settings/execution`, { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Model & reasoning", exact: true })).toBeVisible();
-  await expect(page.getByText(/real Provider request/)).toBeVisible();
-  await page.getByRole("button", { name: "Test runtime" }).click();
-  await expect(page.getByRole("status")).toContainText("Passed.", { timeout: 60_000 });
-  await expect(page.getByRole("status")).toContainText("exact invocation");
+  await expect(page.getByRole("heading", { name: "Model", exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Send a short request using the saved model settings. This may use provider quota."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Run test" }).click();
+  await expect(page.getByRole("status")).toHaveText(
+    "Connection succeeded. The saved model settings worked for this request.",
+    { timeout: 60_000 },
+  );
   await page.screenshot({ path: join(screenshots, "runtime-test-pass.png"), fullPage: true });
 });
 
 test("runtime test failure shows a sanitized Provider failure", async ({ page, e2eRuntime }) => {
   await e2eRuntime.setClaudeStubMode("fail");
   await page.goto(`/agents/${agentId}/settings/execution`, { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Test runtime" }).click();
-  await expect(page.getByRole("alert")).toHaveText("The Provider request failed.", { timeout: 60_000 });
+  await page.getByRole("button", { name: "Run test" }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "The model request failed. Check provider access and quota, then try again.",
+    { timeout: 60_000 },
+  );
   await expect(page.getByRole("alert")).not.toContainText(/sentinel|token|usage|trace/i);
   await page.screenshot({ path: join(screenshots, "runtime-test-failure.png"), fullPage: true });
 });
@@ -39,13 +46,13 @@ test("runtime test failure shows a sanitized Provider failure", async ({ page, e
 test("runtime test pending disables the action", async ({ page, e2eRuntime }) => {
   await e2eRuntime.setClaudeStubMode("hold");
   await page.goto(`/agents/${agentId}/settings/execution`, { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Test runtime" }).click();
+  await page.getByRole("button", { name: "Run test" }).click();
   const pending = page.getByRole("button", { name: "Testing…" });
   await expect(pending).toBeVisible();
   await expect(pending).toBeDisabled();
   await page.screenshot({ path: join(screenshots, "runtime-test-pending.png"), fullPage: true });
   await e2eRuntime.setClaudeStubMode("pass");
-  await expect(page.getByRole("status")).toContainText("Passed.", { timeout: 60_000 });
+  await expect(page.getByRole("status")).toContainText("Connection succeeded.", { timeout: 60_000 });
 });
 
 test("runtime test reports stale configuration without a daemon retry", async ({ page }) => {
@@ -58,9 +65,9 @@ test("runtime test reports stale configuration without a daemon retry", async ({
     headers: await csrfHeaders(page),
   });
   expect(update.ok()).toBeTruthy();
-  await page.getByRole("button", { name: "Test runtime" }).click();
+  await page.getByRole("button", { name: "Run test" }).click();
   await expect(page.getByRole("alert")).toHaveText(
-    "The saved Agent Runtime configuration changed. Test again to use the current configuration.",
+    "The saved model settings changed. Run the test again to use the current settings.",
   );
   await page.screenshot({ path: join(screenshots, "runtime-test-stale-config.png"), fullPage: true });
 });
@@ -70,7 +77,7 @@ test("leaving the page cancels an in-flight runtime test", async ({ page, e2eRun
   const startsBefore = await e2eRuntime.claudeStubStartCount();
   await e2eRuntime.setClaudeStubMode("hold");
   await page.goto(`/agents/${agentId}/settings/execution`, { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Test runtime" }).click();
+  await page.getByRole("button", { name: "Run test" }).click();
   await expect(page.getByRole("button", { name: "Testing…" })).toBeVisible();
   await expect.poll(() => e2eRuntime.claudeStubStartCount()).toBe(startsBefore + 1);
   await page.goto(`/agents/${agentId}/settings`, { waitUntil: "networkidle" });
@@ -78,8 +85,8 @@ test("leaving the page cancels an in-flight runtime test", async ({ page, e2eRun
   await expect.poll(() => e2eRuntime.claudeStubCancellationCount()).toBe(1);
   await page.screenshot({ path: join(screenshots, "runtime-test-disconnect.png"), fullPage: true });
   await page.goto(`/agents/${agentId}/settings/execution`, { waitUntil: "networkidle" });
-  await expect(page.getByRole("button", { name: "Test runtime" })).toBeEnabled();
-  await expect(page.getByText(/^Passed\./)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run test" })).toBeEnabled();
+  await expect(page.getByText(/^Connection succeeded\./)).toHaveCount(0);
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 

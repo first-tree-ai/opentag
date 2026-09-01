@@ -1,4 +1,4 @@
-import { type ImBindingSummary, ImProviderSchema } from "@opentag/shared/browser";
+import type { ImBindingSummary } from "@opentag/shared/browser";
 
 type MessagingProvider = ImBindingSummary["provider"];
 
@@ -37,21 +37,4 @@ export function messagingProviderLabel(provider: MessagingProvider): string {
 
 function assertNeverProvider(provider: never): never {
   throw new Error(`Unlabelled messaging provider: ${String(provider)}`);
-}
-
-/**
- * Every channel OpenTag can connect, named and joined into prose: "Feishu or Slack".
- *
- * Sentences that offer the reader a choice used to write the set out by hand. Each name was correct,
- * so the exhaustive switch above looked like it covered them -- but that switch only guarantees every
- * provider *has* a name, not that every sentence listing them knows a new one exists. A third channel
- * would compile clean while these sentences kept telling readers there were two.
- *
- * Driving it from `ImProviderSchema.options` moves the set to the same source as the names: adding a
- * provider to the schema changes what these sentences say, without anyone remembering to come here.
- */
-export function messagingProviderChoices(): string {
-  const labels = ImProviderSchema.options.map(messagingProviderLabel);
-  const last = labels.at(-1) ?? "";
-  return labels.length > 1 ? `${labels.slice(0, -1).join(", ")} or ${last}` : last;
 }

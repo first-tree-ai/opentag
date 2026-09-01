@@ -7,7 +7,6 @@
  * Agent's settings. Copy that only one of those surfaces says stays with that surface.
  */
 
-import { messagingProviderLabel } from "../im/provider-label.js";
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
@@ -94,15 +93,8 @@ export const SETUP_COPY = {
      * The titles come from `messagingProviderLabel` rather than being spelled again here, so this
      * picker cannot drift from what the same provider is called everywhere else in the product.
      */
-    feishu: {
-      title: messagingProviderLabel("feishu"),
-      description: `Your ${messagingProviderLabel("feishu")} workspace`,
-    },
-    slack: { title: messagingProviderLabel("slack"), description: `Your ${messagingProviderLabel("slack")} workspace` },
     generating: "Generating QR code…",
     waiting: "Waiting for you to scan…",
-    cliMissing: (provider: string) =>
-      `${provider} messages are sent through its official CLI. After this app is connected, the OpenTag daemon prepares it automatically. opentag doctor only checks; it does not install.`,
     preparingCli: "Preparing CLI",
     checkingCredentials: "Checking credentials",
     cliUnavailable: "OpenTag could not prepare or validate the messaging CLI on this computer.",

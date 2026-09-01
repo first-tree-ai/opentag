@@ -1,6 +1,5 @@
-import { ImProviderSchema } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
-import { messagingProviderChoices, messagingProviderLabel } from "./provider-label.js";
+import { messagingProviderLabel } from "./provider-label.js";
 
 describe("messagingProviderLabel", () => {
   it("names the channels OpenTag supports today", () => {
@@ -18,20 +17,6 @@ describe("messagingProviderLabel", () => {
       expect(messagingProviderLabel(provider)).not.toMatch(/also called|aka|\(/i);
     }
     expect(messagingProviderLabel("feishu")).not.toMatch(/Lark/i);
-  });
-
-  /*
-   * Pinned to the schema rather than to the sentence, because the point of the helper is that the
-   * set follows `ImProviderSchema`. Asserting the literal "Feishu or Slack" would pass for a
-   * hand-written string too, which is the mistake the helper exists to prevent.
-   */
-  it("names every channel the schema declares, joined into prose", () => {
-    const expected = ImProviderSchema.options.map(messagingProviderLabel);
-    const rendered = messagingProviderChoices();
-    for (const label of expected) expect(rendered).toContain(label);
-    expect(rendered).toBe(
-      expected.length > 1 ? `${expected.slice(0, -1).join(", ")} or ${expected.at(-1)}` : (expected.at(-1) ?? ""),
-    );
   });
 
   it("refuses to label a provider it has never heard of", () => {

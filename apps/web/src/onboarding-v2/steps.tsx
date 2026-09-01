@@ -19,7 +19,7 @@ import {
   QrCode,
   WAITING_LINE,
 } from "../setup/index.js";
-import { Banner, Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
+import { Banner, Button, buttonClassName, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
 import type { KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { ADD_TO_SLACK_URL, BrandMark } from "./brand-mark.js";
 import {
@@ -409,6 +409,28 @@ function MessagingConnection({
             provider: messagingProviderLabel(provider),
           })
         : undefined;
+  /*
+   * Lark is led by the link, Feishu by the code, because that is what works in each. Scanning a
+   * Lark-minted code with the Lark client fails: its landing page reports the code expired for any
+   * valid `user_code`, while the same URL in a browser authorizes. Narrowed against a real tenant
+   * with age, symbol density and our own query parameters each controlled in turn — the page opens
+   * in that client until a code is attached. The QR stays for a reader who wants it; it is simply
+   * not what a Lark reader is pointed at.
+   */
+  const code = messaging.kind === "waiting" ? messaging : undefined;
+  const leadWithLink = code?.brand === "lark";
+  const feishuIntro = code
+    ? (leadWithLink ? m.onboarding_v2_messaging_open_first_intro : m.onboarding_v2_messaging_lark_intro)({
+        provider: messagingProviderLabel("feishu", brand),
+      })
+    : m.onboarding_v2_messaging_feishu_preparing({ provider: messagingProviderLabel("feishu", brand) });
+  const openLink = (className: string) =>
+    code ? (
+      <a className={className} href={code.qrValue} rel="noreferrer" target="_blank">
+        {m.onboarding_v2_messaging_open_link({ provider: messagingProviderLabel("feishu", code.brand) })}
+      </a>
+    ) : null;
+
   return (
     <div className="flex flex-col items-center gap-3">
       {/*
@@ -427,26 +449,20 @@ function MessagingConnection({
       ) : null}
       {provider === "feishu" ? (
         <div className={PANEL}>
-          <p className="text-kumo-subtle m-0">
-            {messaging.kind === "waiting"
-              ? m.onboarding_v2_messaging_lark_intro({ provider: messagingProviderLabel("feishu", brand) })
-              : m.onboarding_v2_messaging_feishu_preparing({ provider: messagingProviderLabel("feishu", brand) })}
-          </p>
+          {/*
+            Lark is led by the link, Feishu by the code, because that is what works in each.
+            Scanning a Lark-minted code with the Lark client fails: its landing page reports the
+            code expired for any valid `user_code`, while the same URL in a browser authorizes.
+            Narrowed against a real tenant with age, symbol density and our own query parameters
+            each controlled in turn — the page opens in that client until a code is attached. So
+            the QR stays for a reader who wants it, but it is not what a Lark reader is sent to.
+          */}
+          <p className="text-kumo-subtle m-0">{feishuIntro}</p>
+          {leadWithLink ? openLink(buttonClassName()) : null}
           <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode brand={messaging.brand} value={messaging.qrValue} /> : null}
           </div>
-          {/*
-            The same code, openable rather than only scannable. A QR alone is not a way through for
-            every reader: opening the code as a link has been seen to work where scanning it did
-            not, against a real tenant, and why that happens is not established. A second route to
-            the same code is cheap either way, and this step was the only connect surface offering
-            none; the settings one already links.
-          */}
-          {messaging.kind === "waiting" ? (
-            <a className="text-sm text-kumo-brand" href={messaging.qrValue} rel="noreferrer" target="_blank">
-              {m.onboarding_v2_messaging_open_link({ provider: messagingProviderLabel("feishu", messaging.brand) })}
-            </a>
-          ) : null}
+          {code && !leadWithLink ? openLink("text-sm text-kumo-brand") : null}
           {/*
             A refused code is not retried on sight, so this is the only way back to one. Saying
             "Waiting for you to scan…" over an empty box would be untrue: nothing is waiting.

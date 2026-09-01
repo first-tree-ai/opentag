@@ -262,6 +262,52 @@ describe("the onboarding flow against the Server", () => {
   });
 
   /*
+   * Which route a reader is led to depends on which one works for them. A Lark-minted code cannot
+   * be completed by scanning it with the Lark client, so that reader is pointed at the link and the
+   * code kept beneath it; a Feishu reader, whose scan does work, is led by the code. The assertion
+   * is on the order the two appear in, because that is the whole substance of the change.
+   */
+  it("leads a Lark code with the link and a Feishu code with the QR", async () => {
+    computersReturning([], [computer()]);
+    redeemedVerdict();
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    const create = vi
+      .spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockImplementation(async (_agentId, _intent, brand) =>
+        attempt({ brand: brand ?? "feishu", qrUrl: "https://accounts.example/launcher?user_code=ABCD-EFGH" }),
+      );
+    vi.spyOn(browserApi, "cancelFeishuSetupAttempt").mockImplementation(async (id) =>
+      attempt({ id, state: "canceled", qrUrl: null }),
+    );
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockImplementation(async (id) => attempt({ id }));
+
+    render(<OnboardingV2Page />);
+    await settle();
+    await reachComputerStep();
+    await settle();
+    await tick(POLL_MS);
+    press("Continue");
+    await settle();
+    press(/Feishu/);
+    await settle();
+
+    const orderFor = () => {
+      const link = screen.getByRole("link", { name: /Open the (Feishu|Lark) authorization page/ });
+      const qr = screen.getByRole("img", { name: /Scan this QR code in (Feishu|Lark)/ });
+      // `DOCUMENT_POSITION_FOLLOWING` means the QR comes after the link in the rendered order.
+      return (link.compareDocumentPosition(qr) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 ? "link-first" : "qr-first";
+    };
+
+    const minted = create.mock.calls[0]?.[2];
+    expect(orderFor()).toBe(minted === "lark" ? "link-first" : "qr-first");
+
+    const other = minted === "feishu" ? "lark" : "feishu";
+    press(`Use ${other === "lark" ? "Lark" : "Feishu"} instead`);
+    await settle();
+    expect(orderFor()).toBe(other === "lark" ? "link-first" : "qr-first");
+  });
+
+  /*
    * Scanning is not a way through for every reader: against a real tenant, opening this code as a
    * link completed an authorization that scanning it did not, and why is not established. So the
    * code has to be openable here and not only scannable — this step was the only connect surface

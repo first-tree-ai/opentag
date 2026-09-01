@@ -276,7 +276,7 @@
       "id": "apps/web/src/onboarding-v2/steps.tsx#MessagingConnection",
       "path": "apps/web/src/onboarding-v2/steps.tsx",
       "symbol": "MessagingConnection",
-      "complexity": 43
+      "complexity": 48
     },
     {
       "id": "apps/web/src/onboarding-v2/steps.tsx#OnboardingConnectPresentation",

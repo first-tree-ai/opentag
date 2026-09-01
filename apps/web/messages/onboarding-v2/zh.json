@@ -89,6 +89,7 @@
   "onboarding_v2_messaging_generating": "正在生成二维码…",
   "onboarding_v2_messaging_lark_description": "也称为飞书",
   "onboarding_v2_messaging_lark_intro": "用{provider}扫描，或在浏览器中打开。",
+  "onboarding_v2_messaging_open_first_intro": "在浏览器中打开以完成授权。在{provider}里扫这个码到不了那一步。",
   "onboarding_v2_messaging_open_link": "打开 {provider} 授权页面",
   "onboarding_v2_messaging_retry": "重试",
   "onboarding_v2_messaging_slack_action": "添加到 Slack",

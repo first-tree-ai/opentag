@@ -28,8 +28,8 @@
   "skills_page_description": "可复用的工作手册，为 Agent 提供完成专业工作所需的上下文和方法。",
   "skills_page_title": "Skill",
   "skills_preview": "预览",
+  "skills_shared": "共享",
   "skills_upload": "上传 Skill",
-  "skills_upload_file": "Skill 文件",
-  "skills_upload_status": "{fileName} 已选择 · 仅为演示，未上传",
+  "skills_upload_unavailable": "当前页面使用演示数据，暂不支持上传。",
   "skills_used_by": "使用者"
 }

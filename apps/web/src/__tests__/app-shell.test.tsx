@@ -31,6 +31,8 @@ describe("OpenTag Web App Shell", () => {
     expect(createAgent.closest('[data-ui="agents-page-action"]')).toBeTruthy();
     const agentRow = agentLink.closest('[data-ui="agent-row"]');
     expect(agentRow).toBeTruthy();
+    expect(agentRow?.parentElement?.classList.contains("@container/agent-roster")).toBe(true);
+    expect(agentRow?.className).toContain("/agent-roster:grid-cols-");
     expect(screen.queryByText(/Monitor availability/)).toBeNull();
     expect(screen.getByText("1 Agent · 0 currently working")).toBeTruthy();
     expect(within(agentRow as HTMLElement).queryByText("@reviewer")).toBeNull();

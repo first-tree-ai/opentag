@@ -230,7 +230,6 @@ function AgentSwitcher({
             aria-label={
               agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
             }
-            className="h-12 py-1"
             icon={
               <span
                 className="grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold group-data-[state=collapsed]/sidebar:size-4 group-data-[state=collapsed]/sidebar:text-xs"
@@ -241,9 +240,8 @@ function AgentSwitcher({
             }
             tooltip={agent?.displayName ?? m.shell_agent()}
           >
-            <span className="grid min-w-0 flex-1 gap-0.5 text-left">
-              <strong className="truncate">{agent?.displayName ?? m.shell_agent()}</strong>
-              <span className="truncate text-xs font-normal text-kumo-subtle">{sidebarAgentStatus(agent)}</span>
+            <span className="min-w-0 flex-1 text-left">
+              <strong className="block truncate">{agent?.displayName ?? m.shell_agent()}</strong>
             </span>
             <Icon name="chevron-down" />
           </Sidebar.MenuButton>
@@ -282,17 +280,6 @@ function AgentSwitcher({
       </DropdownMenu.Content>
     </DropdownMenu>
   );
-}
-
-function sidebarAgentStatus(agent?: AgentListItem): string {
-  if (!agent) return m.shell_loading_compact();
-  if (agent.status === "suspended") return m.shell_paused();
-  if (agent.activity.state === "working") return m.shell_working();
-  if (agent.availability.state === "ready") return m.shell_ready();
-  if (agent.availability.state === "setting_up") return m.shell_setting_up();
-  if (agent.availability.state === "not_connected") return m.shell_setup_required();
-  if (agent.availability.state === "action_required") return m.shell_action_needed();
-  return m.shell_status_unknown();
 }
 
 function AgentNavItem({

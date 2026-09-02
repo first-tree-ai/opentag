@@ -1,7 +1,9 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const CODEX_APP_SERVER_MAX_LINE_BYTES = 1024 * 1024;
+export const CODEX_APP_SERVER_MAX_STDERR_BYTES = 64 * 1024;
 export const CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
 
 export class CodexAppServerError extends Error {
@@ -46,7 +48,9 @@ export interface CodexSpawnOptions {
   env: NodeJS.ProcessEnv;
   expectedCodexHome?: string;
   maxLineBytes?: number;
+  maxStderrBytes?: number;
   requestTimeoutMs?: number;
+  logger?: ClientLogger;
   spawnProcess?: (
     command: string,
     args: readonly string[],
@@ -104,7 +108,9 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #expectedCodexHome?: string;
   readonly #maxLineBytes: number;
+  readonly #maxStderrBytes: number;
   readonly #requestTimeoutMs: number;
+  readonly #logger: ClientLogger;
   readonly #pending = new Map<number, PendingRequest>();
   readonly #listeners = new Set<(message: CodexAppServerMessage) => void>();
   readonly #serverRequestListeners = new Set<(request: CodexAppServerRequest) => void>();
@@ -115,6 +121,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #exit: Promise<void>;
   #resolveExit: (() => void) | undefined;
   #buffer = Buffer.alloc(0);
+  #stderr = Buffer.alloc(0);
   #nextId = 1;
   #closed = false;
   #closing = false;
@@ -124,13 +131,10 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   constructor(options: CodexSpawnOptions) {
     this.#expectedCodexHome = options.expectedCodexHome;
     this.#maxLineBytes = options.maxLineBytes ?? CODEX_APP_SERVER_MAX_LINE_BYTES;
+    this.#maxStderrBytes = options.maxStderrBytes ?? CODEX_APP_SERVER_MAX_STDERR_BYTES;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? CODEX_APP_SERVER_REQUEST_TIMEOUT_MS;
-    if (!Number.isSafeInteger(this.#maxLineBytes) || this.#maxLineBytes < 1024) {
-      throw new Error("maxLineBytes must be a safe integer of at least 1024");
-    }
-    if (!Number.isSafeInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs < 1) {
-      throw new Error("requestTimeoutMs must be a positive safe integer");
-    }
+    validateOptions(this.#maxLineBytes, this.#maxStderrBytes, this.#requestTimeoutMs);
+    this.#logger = options.logger ?? createLogger("provider-codex");
     this.#exit = new Promise<void>((resolve) => {
       this.#resolveExit = resolve;
     });
@@ -148,8 +152,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       );
     }
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
-    /* v8 ignore next -- stderr is drained and discarded; the wire only speaks stdout. */
-    this.#child.stderr.on("data", () => undefined);
+    this.#child.stderr.on("data", (chunk: Buffer) => this.#onStderr(chunk));
     this.#child.on("error", (error) =>
       this.#fail(new CodexAppServerError("spawn", error.message, spawnEvidence(error))),
     );
@@ -160,8 +163,8 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       if (!this.#failure && !this.#closing) {
         const error =
           this.#buffer.byteLength > 0
-            ? new CodexAppServerError("protocol", "Codex exited with a truncated JSONL line")
-            : new CodexAppServerError("exited", "Codex App Server exited", { exitCode, signal });
+            ? new CodexAppServerError("protocol", this.#exitMessage("Codex exited with a truncated JSONL line"))
+            : new CodexAppServerError("exited", this.#exitMessage(), { exitCode, signal });
         this.#fail(error);
       }
     });
@@ -332,6 +335,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       try {
         message = JSON.parse(line.toString("utf8"));
       } catch {
+        this.#logger.debug({ code: "stdout_malformed_json" }, "Codex protocol output was rejected");
         this.#fail(new CodexAppServerError("protocol", "Codex emitted malformed JSONL"));
         return;
       }
@@ -345,6 +349,17 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     if (this.#buffer.byteLength > this.#maxLineBytes) {
       this.#fail(new CodexAppServerError("protocol", "Codex emitted an oversized JSONL line"));
     }
+  }
+
+  #onStderr(chunk: Buffer): void {
+    if (this.#stderr.byteLength >= this.#maxStderrBytes) return;
+    const remaining = this.#maxStderrBytes - this.#stderr.byteLength;
+    this.#stderr = Buffer.concat([this.#stderr, chunk.subarray(0, remaining)]);
+  }
+
+  #exitMessage(prefix = "Codex App Server exited"): string {
+    const stderr = this.#stderr.toString("utf8").trim();
+    return stderr ? `${prefix}: ${stderr}` : prefix;
   }
 
   #onMessage(message: Record<string, unknown>): void {
@@ -525,6 +540,18 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
 function spawnEvidence(error: unknown): { readonly errno?: string } {
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return typeof code === "string" ? { errno: code } : {};
+}
+
+function validateOptions(maxLineBytes: number, maxStderrBytes: number, requestTimeoutMs: number): void {
+  if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 1024) {
+    throw new Error("maxLineBytes must be a safe integer of at least 1024");
+  }
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+    throw new Error("requestTimeoutMs must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(maxStderrBytes) || maxStderrBytes < 0) {
+    throw new Error("maxStderrBytes must be a non-negative safe integer");
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

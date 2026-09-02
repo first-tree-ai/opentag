@@ -11,6 +11,7 @@ import {
   FeishuTokenExchangeError,
   ProviderCliValidationRunner,
 } from "../index.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const slackIdentity = { provider: "slack" as const, teamId: "T1", botUserId: "U1", botId: "B1" };
 const feishuIdentity = {
@@ -143,6 +144,46 @@ describe("provider CLI validation classification", () => {
     expect(extractBoundedJson('noise {"ok":true} trailing')).toEqual({ ok: true });
     expect(extractBoundedJson("not json")).toBeUndefined();
     expect(extractBoundedJson(`{"ok":true}`, 4)).toBeUndefined();
+  });
+
+  it("records distinct diagnostics for structural validation rejections", () => {
+    const entries: RecordedLog[] = [];
+    const logger = recordingLogger(entries);
+    classifySlackAuthTest("not-an-object", slackIdentity, logger);
+    classifySlackAuthTest({}, slackIdentity, logger);
+    classifySlackAuthTest({ ok: false }, slackIdentity, logger);
+    classifySlackAuthTest({ ok: true }, slackIdentity, logger);
+    classifyLarkAuthStatus("not-an-object", feishuIdentity, logger);
+    classifyLarkAuthStatus({ code: 1 }, feishuIdentity, logger);
+    classifyLarkAuthStatus({ ok: true, identity: 1 }, feishuIdentity, logger);
+    classifyLarkAuthStatus({ code: 0 }, feishuIdentity, logger);
+
+    expect(entries.map((entry) => entry.fields.code)).toEqual([
+      "slack_payload_not_record",
+      "slack_ok_field_missing",
+      "slack_ok_not_true",
+      "slack_identity_unparseable",
+      "lark_payload_not_record",
+      "lark_success_field_invalid",
+      "lark_identity_field_invalid",
+      "lark_bot_identity_unparseable",
+    ]);
+  });
+
+  it("records distinct diagnostics for each bounded JSON rejection", () => {
+    const entries: RecordedLog[] = [];
+    const logger = recordingLogger(entries);
+    extractBoundedJson("", 100, logger);
+    extractBoundedJson("no object", 100, logger);
+    extractBoundedJson("{malformed}", 100, logger);
+    extractBoundedJson("x".repeat(101), 100, logger);
+
+    expect(entries.map((entry) => entry.fields.code)).toEqual([
+      "json_output_empty",
+      "json_object_bounds_missing",
+      "json_output_malformed",
+      "json_output_oversize",
+    ]);
   });
 });
 

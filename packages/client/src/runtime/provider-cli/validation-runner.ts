@@ -12,6 +12,7 @@ import {
   RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
   RUNTIME_PROVIDER_CLI_VALIDATION_TIMEOUT_MS,
 } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory } from "../../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../../storage/home-layout.js";
 import { findProviderCliCatalogEntry } from "./catalog.js";
@@ -53,6 +54,7 @@ export interface ProviderCliValidationRunnerOptions {
   readonly execFile?: ProviderCliValidationExecFile;
   readonly fetch?: typeof fetch;
   readonly home: string;
+  readonly logger?: ClientLogger;
   readonly now?: () => number;
   readonly verifyTarget?: (request: ProviderCliValidationRequest) => Promise<boolean>;
 }
@@ -82,6 +84,7 @@ export class ProviderCliValidationRunner {
   readonly #exchangeFeishuToken: NonNullable<ProviderCliValidationRunnerOptions["exchangeFeishuToken"]>;
   readonly #execFile: ProviderCliValidationExecFile;
   readonly #home: string;
+  readonly #logger: ClientLogger;
   readonly #now: () => number;
   readonly #root: string;
   readonly #verifyTarget: (request: ProviderCliValidationRequest) => Promise<boolean>;
@@ -97,6 +100,7 @@ export class ProviderCliValidationRunner {
     this.#verifyTarget = options.verifyTarget ?? verifyTargetFingerprint;
     const layout = resolveOpenTagHomeLayout(options.home);
     this.#home = layout.home;
+    this.#logger = options.logger ?? createLogger("provider-cli-validation");
     this.#root = join(layout.runtime, "provider-cli-validation");
     this.#startupCleanup = this.cleanupAll();
   }
@@ -164,6 +168,7 @@ export class ProviderCliValidationRunner {
           classifySlackAuthTest(
             payload,
             request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
+            this.#logger,
           ),
         signal,
       );
@@ -200,7 +205,7 @@ export class ProviderCliValidationRunner {
       ["api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "ndjson"],
       env,
       workDir,
-      (payload) => classifyLarkAuthStatus(payload, expectedIdentity),
+      (payload) => classifyLarkAuthStatus(payload, expectedIdentity, this.#logger),
       signal,
     );
   }
@@ -240,9 +245,9 @@ export class ProviderCliValidationRunner {
         windowsHide: true,
         ...(signal ? { signal } : {}),
       });
-      return classifyProcessOutput(result, classify);
+      return classifyProcessOutput(result, classify, this.#logger);
     } catch (error) {
-      return classifyProcessFailure(error, signal, classify);
+      return classifyProcessFailure(error, signal, classify, this.#logger);
     }
   }
 }
@@ -280,11 +285,14 @@ function validationFailureResult(
 function classifyProcessOutput(
   output: { readonly stderr: string; readonly stdout: string },
   classify: (payload: unknown) => ProviderCliValidationClassification,
+  logger: ClientLogger,
 ): ProviderCliValidationClassification {
   if (combinedBytes(output.stdout, output.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
     return { status: "needs_attention" };
   }
-  const payload = extractBoundedJson(output.stdout) ?? extractBoundedJson(output.stderr);
+  const payload =
+    extractBoundedJson(output.stdout, RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger) ??
+    extractBoundedJson(output.stderr, RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger);
   return payload === undefined ? { status: "needs_attention" } : classify(payload);
 }
 
@@ -292,13 +300,16 @@ function classifyProcessFailure(
   error: unknown,
   signal: AbortSignal | undefined,
   classify: (payload: unknown) => ProviderCliValidationClassification,
+  logger: ClientLogger,
 ): ProviderCliValidationClassification {
   if (isAbortError(error) || signal?.aborted) throw abortError();
   const output = processOutput(error);
   if (output && combinedBytes(output.stdout, output.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
     return { status: "needs_attention" };
   }
-  const payload = extractBoundedJson(output?.stdout ?? "") ?? extractBoundedJson(output?.stderr ?? "");
+  const payload =
+    extractBoundedJson(output?.stdout ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger) ??
+    extractBoundedJson(output?.stderr ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger);
   if (payload !== undefined) return classify(payload);
   if (isTimeout(error)) return { status: "retrying", reason: "provider_unreachable" };
   throw error;

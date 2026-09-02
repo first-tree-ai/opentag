@@ -118,6 +118,7 @@ export {
 } from "./providers/codex/agent-runtime.js";
 export {
   CODEX_APP_SERVER_MAX_LINE_BYTES,
+  CODEX_APP_SERVER_MAX_STDERR_BYTES,
   CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
   type CodexAppServerClient,
   CodexAppServerError,

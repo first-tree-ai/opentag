@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   CODEX_APP_SERVER_MAX_LINE_BYTES,
+  CODEX_APP_SERVER_MAX_STDERR_BYTES,
   CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
   CodexAppServerError,
   CodexAppServerProcess,
@@ -21,6 +22,10 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
         "requestTimeoutMs must be a positive safe integer",
       );
     }
+    expect(CODEX_APP_SERVER_MAX_STDERR_BYTES).toBe(64 * 1024);
+    expect(() => processWith(new FakeChild(), { maxStderrBytes: -1 })).toThrowError(
+      "maxStderrBytes must be a non-negative safe integer",
+    );
     expect(
       () =>
         new CodexAppServerProcess({
@@ -51,6 +56,22 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
           },
         }),
     ).toThrowError(expect.objectContaining({ code: "spawn", errno: "EAGAIN" }));
+  });
+
+  it("retains a bounded stderr tail on abnormal exit without parsing stderr as protocol", async () => {
+    const child = new FakeChild({ exitOnEnd: false });
+    const process = processWith(child, { maxStderrBytes: 8 });
+    const failure = processFailure(process);
+    child.stderr.write('{"id":999,"result":"not stdout"}');
+    child.stderr.write("-extra-diagnostics");
+    child.exit(23, null);
+
+    await expect(failure).resolves.toMatchObject({
+      code: "exited",
+      exitCode: 23,
+      message: 'Codex App Server exited: {"id":99',
+    });
+    await process.close();
   });
 
   it("uses default process options, exposes pid, initializes, notifies, interrupts, and rejects request errors", async () => {

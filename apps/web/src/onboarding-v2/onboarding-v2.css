@@ -163,12 +163,6 @@
   .otv2-field-error {
     min-height: 34px;
   }
-
-  .otv2-command-lead {
-    flex-direction: column;
-    align-items: flex-start;
-    min-height: 68px;
-  }
 }
 
 /* And below this one the repair summary takes a second pair of lines. */

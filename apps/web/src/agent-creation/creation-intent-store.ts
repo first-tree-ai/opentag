@@ -1,7 +1,8 @@
 import type { AgentAdminConfig, CreateAgentRequest } from "@opentag/shared/browser";
 import { browserApi } from "../api.js";
 
-const CREATE_INTENT_VERSION = 3;
+// v4 invalidates v3 records whose required Computer id cannot match the new Computer-less creation request.
+const CREATE_INTENT_VERSION = 4;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
 
 export type CreationIntentRequest = Omit<CreateAgentRequest, "creationIntentId">;
@@ -162,7 +163,7 @@ function validCreationIntentRecord(value: unknown, accountId: string): value is 
     record.request !== undefined &&
     typeof record.request.name === "string" &&
     typeof record.request.displayName === "string" &&
-    typeof record.request.computerId === "string" &&
+    (record.request.computerId === undefined || typeof record.request.computerId === "string") &&
     (record.request.runtimeProvider === "codex" || record.request.runtimeProvider === "claude-code")
   );
 }

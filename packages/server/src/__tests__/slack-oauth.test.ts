@@ -776,7 +776,7 @@ describe("Slack OAuth HTTP routes", () => {
     });
     expect(success.statusCode).toBe(302);
     expect(success.headers.location).toBe(
-      `https://opentag.example.com/onboarding?agentId=${agentId}&slack_oauth=success`,
+      `https://opentag.example.com/agents/setup?agentId=${agentId}&slack_oauth=success`,
     );
     expect(JSON.stringify(success.headers)).not.toContain("evil.example.com");
 
@@ -787,7 +787,7 @@ describe("Slack OAuth HTTP routes", () => {
     });
     expect(failure.statusCode).toBe(302);
     expect(failure.headers.location).toBe(
-      `https://opentag.example.com/onboarding?agentId=${agentId}&slack_oauth_error=SLACK_CONFIGURATION_CONFLICT`,
+      `https://opentag.example.com/agents/setup?agentId=${agentId}&slack_oauth_error=SLACK_CONFIGURATION_CONFLICT`,
     );
   });
 

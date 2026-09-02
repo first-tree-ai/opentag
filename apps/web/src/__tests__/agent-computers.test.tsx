@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { agentId, computerId, installApi, resetWebAppState } from "./support/app-fixtures.js";
+import { agentId, computerId, installApi, resetWebAppState, twoReadyComputers } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
@@ -19,6 +19,148 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Execution" })).toBeNull();
     expect(screen.queryByText(/Turn timeout/i)).toBeNull();
     expect(screen.queryByText(/Last seen/i)).toBeNull();
+  });
+
+  it("lists every Computer the Account has and still offers another", async () => {
+    installApi({
+      computers: [
+        ...twoReadyComputers,
+        {
+          id: "a5fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          displayName: "Ada's Retired Mac",
+          platform: "darwin",
+          connectionStatus: "offline",
+          connectedAt: "2026-08-20T00:00:00.000Z",
+          lastSeenAt: "2026-08-20T00:00:00.000Z",
+        },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    const listed = await screen.findByRole("region", { name: "Your computers" });
+    expect(within(listed).getAllByRole("listitem")).toHaveLength(3);
+    for (const name of ["Ada's Mac", "Zulu Tower", "Ada's Retired Mac"]) {
+      expect(within(listed).getByText(name)).toBeTruthy();
+    }
+    expect(screen.getByRole("heading", { name: "Connect a Computer" })).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST"),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Connect a Computer" }));
+    expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
+  });
+
+  it("removes a Computer after explaining the Agent impact", async () => {
+    installApi();
+    const fixtureFetch = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === `/api/v1/computers/${computerId}` && init?.method === "DELETE"
+        ? Promise.resolve(new Response(null, { status: 204 }))
+        : (fixtureFetch?.(input, init) ?? Promise.reject(new Error("The fixture fetch implementation is missing"))),
+    );
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Ada's Mac" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
+    expect(within(dialog).getByText(/disconnects 1 Agent/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+
+    await waitFor(() => expect(screen.queryByText("Ada's Mac")).toBeNull());
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([path, init]) => path === `/api/v1/computers/${computerId}` && init?.method === "DELETE"),
+    ).toBe(true);
+  });
+
+  it("shows the Computer empty state without hiding the connection action", async () => {
+    installApi({ computers: [] });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Your computers" })).toBeTruthy();
+    expect(screen.getByText("No computers yet.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Connect a Computer" })).toBeTruthy();
+  });
+
+  it("locks Computer removal while pending and allows retry after a transient failure", async () => {
+    installApi();
+    const fixtureFetch = vi.mocked(fetch).getMockImplementation();
+    let finishFirstAttempt: (() => void) | undefined;
+    let attempts = 0;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      if (String(input) !== `/api/v1/computers/${computerId}` || init?.method !== "DELETE") {
+        return fixtureFetch?.(input, init) ?? Promise.reject(new Error("The fixture fetch implementation is missing"));
+      }
+      attempts += 1;
+      if (attempts > 1) return Promise.resolve(new Response(null, { status: 204 }));
+      return new Promise((resolve) => {
+        finishFirstAttempt = () =>
+          resolve(
+            new Response(
+              JSON.stringify({
+                error: { code: "INTERNAL_ERROR", category: "transient", message: "Temporary failure" },
+              }),
+              { status: 500 },
+            ),
+          );
+      });
+    });
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Ada's Mac" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Removing…" })).toBeTruthy());
+    expect(within(dialog).getByRole("button", { name: "Removing…" }).hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Close Remove Ada's Mac?" }).hasAttribute("disabled")).toBe(true);
+
+    await act(async () => finishFirstAttempt?.());
+    expect(await within(dialog).findByText("Couldn’t remove this Computer. Try again.")).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+    await waitFor(() => expect(screen.queryByText("Ada's Mac")).toBeNull());
+    expect(attempts).toBe(2);
+  });
+
+  it("keeps the Computer visible when unresolved Agent work blocks removal", async () => {
+    installApi();
+    const fixtureFetch = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation((input, init) =>
+      String(input) === `/api/v1/computers/${computerId}` && init?.method === "DELETE"
+        ? Promise.resolve(
+            new Response(
+              JSON.stringify({
+                error: {
+                  code: "COMPUTER_REMOVAL_BLOCKED",
+                  category: "deterministic",
+                  message: "Computer removal is blocked",
+                },
+              }),
+              { status: 409 },
+            ),
+          )
+        : (fixtureFetch?.(input, init) ?? Promise.reject(new Error("The fixture fetch implementation is missing"))),
+    );
+    window.history.replaceState({}, "", "/agents/computers");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Ada's Mac" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Remove Ada's Mac?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove Computer" }));
+
+    expect(
+      await within(dialog).findByText("This Computer is still finishing Agent work. Try again after it completes."),
+    ).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
   });
 
   it("names the machine-level recovery for an offline Computer instead of offering a dead retry", async () => {
@@ -200,7 +342,9 @@ describe("OpenTag Web App Shell", () => {
       .getByRole("region", { name: "Agent status" })
       .querySelector('[data-ui="agent-status-message-channel"]') as HTMLElement;
     expect(within(messagingRow).queryByText("Messages cannot be delivered to this Agent right now.")).toBeNull();
-    expect(within(messagingRow).getByRole("link", { name: "Fix messaging" })).toBeTruthy();
+    expect(within(messagingRow).getByRole("link", { name: "Continue setup" }).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}`,
+    );
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();
@@ -296,41 +440,48 @@ describe("OpenTag Web App Shell", () => {
          * falls through to the Provider sentence and reports a Computer that does not exist.
          * Its exit differs too -- there is nothing here to view.
          */
-        exit: "Connect a Computer",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "No Computer",
         options: { agentUnbound: true },
       },
       {
         exit: "View computer",
+        href: `/agents/${agentId}/settings/computer`,
         label: "Status unavailable",
         options: { computerEvidenceFails: true },
       },
       {
         exit: "Open computer setup",
+        href: `/agents/${agentId}/settings/computer`,
         label: "Offline",
         options: { computerStatus: () => "offline" as const },
       },
       {
-        exit: undefined,
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Checking Codex",
         options: { computerProviderReadiness: readiness("checking") },
       },
       {
-        exit: "Set up Codex",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Codex not installed",
         options: { computerProviderReadiness: readiness("install") },
       },
       {
-        exit: "Sign in to Codex",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Codex sign-in required",
         options: { computerProviderReadiness: readiness("sign-in") },
       },
       {
-        exit: "Troubleshoot Codex",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Codex unavailable",
         options: { computerProviderReadiness: readiness("unavailable") },
       },
-      { exit: undefined, label: "Online", options: { computerProviderReadiness: readiness("ready") } },
+      { exit: undefined, href: undefined, label: "Online", options: { computerProviderReadiness: readiness("ready") } },
     ];
     for (const state of states) {
       installApi({ bound: true, ...state.options });
@@ -348,9 +499,7 @@ describe("OpenTag Web App Shell", () => {
         expect(within(row).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
       }
       if (state.exit) {
-        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(
-          `/agents/${agentId}/settings/computer`,
-        );
+        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(state.href);
       } else {
         expect(within(row).queryByRole("link")).toBeNull();
       }

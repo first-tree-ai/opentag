@@ -21,7 +21,7 @@ const areas = [
   "usage",
   "skills",
   "integrations",
-  "onboarding",
+  "agent-setup",
   "onboarding-v2",
   "im",
 ] as const;

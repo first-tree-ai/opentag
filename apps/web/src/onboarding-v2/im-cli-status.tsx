@@ -1,9 +1,9 @@
+import type { ImProvider } from "@opentag/shared/browser";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import type { MessagingCliStatus } from "../setup/index.js";
-import type { MessagingProvider, ReadinessFacts } from "./flow.js";
 
-export type ImCliStatuses = ReadinessFacts["messagingCli"];
+export type ImCliStatuses = Partial<Record<ImProvider, MessagingCliStatus>>;
 
 export function imCliStatusCopy(status: MessagingCliStatus | undefined): string {
   if (status === "ready") return m.onboarding_v2_im_cli_status_ready();
@@ -12,18 +12,11 @@ export function imCliStatusCopy(status: MessagingCliStatus | undefined): string 
   return m.onboarding_v2_im_cli_status_checking();
 }
 
-export function providerCliCommandComment(): string {
-  return m.onboarding_v2_connect_command_comment({
-    feishuProvider: messagingProviderLabel("feishu"),
-    slackProvider: messagingProviderLabel("slack"),
-  });
-}
-
 export function ImCliStatusText({
   provider,
   status,
 }: {
-  provider: MessagingProvider;
+  provider: ImProvider;
   status: MessagingCliStatus | undefined;
 }) {
   return (

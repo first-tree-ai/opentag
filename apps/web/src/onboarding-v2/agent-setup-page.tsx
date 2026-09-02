@@ -34,11 +34,12 @@ import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import { COPY, RUNTIME_COPY } from "./copy.js";
+import type { FlowState } from "./flow.js";
 import { ImCliReadinessList, type ImCliStatuses } from "./im-cli-status.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
-import { CardCopy, DoneStep } from "./steps.js";
+import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
 /** The snapshot doubles as the observation channel while the outside world is expected to move it. */
 const SETUP_POLL_MS = 2_000;
@@ -52,13 +53,14 @@ const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
   "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
 const IDENTITY_ROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3";
-const PANEL = "rounded-lg bg-kumo-base p-4 ring ring-kumo-line";
 
 export interface AgentSetupPageProps {
   /** The exact Agent this surface sets up. Never an index, a name, or a guess. */
   readonly agentId: string;
   /** Defaults to the HTTP adapter over the browser API; tests and the lab pass the in-memory one. */
   readonly adapter?: AgentSetupAdapter;
+  /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
+  readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
   readonly onReady?: (agentId: string) => Promise<void> | void;
   /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
@@ -421,6 +423,7 @@ function useReadyReport(
 export function AgentSetupPage({
   agentId,
   adapter,
+  onOpenAgent,
   onReady,
   reviewMode = false,
   slackOAuthError,
@@ -433,6 +436,7 @@ export function AgentSetupPage({
       adapter={resolvedAdapter}
       agentId={agentId}
       key={agentId}
+      onOpenAgent={onOpenAgent}
       onReady={onReady}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
@@ -443,6 +447,7 @@ export function AgentSetupPage({
 function AgentSetupPageContent({
   agentId,
   adapter,
+  onOpenAgent,
   onReady,
   reviewMode = false,
   slackOAuthError,
@@ -451,15 +456,21 @@ function AgentSetupPageContent({
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
+  const ready = snapshot?.stage === "ready";
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
       <header className="flex items-center justify-between p-6">
         <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
+        {onOpenAgent && !ready ? (
+          <Button onClick={onOpenAgent} variant="ghost">
+            {m.onboarding_v2_back_to_agent()}
+          </Button>
+        ) : null}
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
         {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
-        <SetupPhaseView agentId={agentId} controller={controller} report={report} />
+        <SetupPhaseView agentId={agentId} controller={controller} onOpenAgent={onOpenAgent} report={report} />
       </main>
     </div>
   );
@@ -468,10 +479,12 @@ function AgentSetupPageContent({
 function SetupPhaseView({
   agentId,
   controller,
+  onOpenAgent,
   report,
 }: {
   readonly agentId: string;
   readonly controller: AgentSetupController;
+  readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
 }) {
   const { phase } = controller;
@@ -507,17 +520,37 @@ function SetupPhaseView({
       </div>
     );
   }
-  return <AgentSetupSnapshotView agentId={agentId} controller={controller} report={report} snapshot={phase.snapshot} />;
+  return (
+    <AgentSetupSnapshotView
+      agentId={agentId}
+      controller={controller}
+      onOpenAgent={onOpenAgent}
+      report={report}
+      snapshot={phase.snapshot}
+    />
+  );
+}
+
+function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
+  const computerComplete = stage === "needs-messaging" || stage === "ready";
+  const messagingComplete = stage === "ready";
+  return [
+    { id: "agent", status: "complete" },
+    { id: "computer", status: computerComplete ? "complete" : "current" },
+    { id: "messaging", status: messagingComplete ? "complete" : computerComplete ? "current" : "upcoming" },
+  ];
 }
 
 function AgentSetupSnapshotView({
   agentId,
   controller,
+  onOpenAgent,
   report,
   snapshot,
 }: {
   readonly agentId: string;
   readonly controller: AgentSetupController;
+  readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -526,6 +559,7 @@ function AgentSetupSnapshotView({
   const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
   return (
     <>
+      <StepRail steps={setupSteps(stage)} />
       <header className={SECTION_HEADER}>
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
@@ -543,6 +577,7 @@ function AgentSetupSnapshotView({
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
           <DoneStep
+            action={onOpenAgent ? { label: m.onboarding_v2_open_agent(), onClick: onOpenAgent } : undefined}
             completion={report}
             name={snapshot.agent.name}
             provider={snapshot.messaging.kind === "ready" ? snapshot.messaging.provider : undefined}
@@ -614,9 +649,7 @@ function ComputerSetupSection({
           })}
         </p>
         {canBind ? (
-          <div className={PANEL}>
-            <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} />
-          </div>
+          <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} />
         ) : null}
       </section>
     );
@@ -679,35 +712,8 @@ function NotBoundComputerSection({
        * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
        * does it — including the choice when the Account genuinely has one to make.
        */}
-      {canBind ? (
-        <div className={PANEL}>
-          <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} />
-        </div>
-      ) : null}
+      {canBind ? <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} /> : null}
     </section>
-  );
-}
-
-/** Reconnecting the exact Computer the snapshot names, so it keeps its identity. */
-function RepairComputerConnect({
-  adapter,
-  computerId,
-  displayName,
-  onChanged,
-}: {
-  readonly adapter: ComputerConnectAdapter;
-  readonly computerId: string;
-  readonly displayName: string;
-  readonly onChanged: () => void;
-}) {
-  return (
-    <div className={PANEL}>
-      <ComputerConnect
-        adapter={adapter}
-        intent={{ mode: "repair", target: { computerId, displayName } }}
-        onConnected={onChanged}
-      />
-    </div>
   );
 }
 
@@ -773,11 +779,13 @@ function BoundComputerSection({
           </Button>
           {repairing ? (
             <div id="agent-setup-repair-command">
-              <RepairComputerConnect
+              <ComputerConnect
                 adapter={computerConnectAdapter}
-                computerId={repair.computerId}
-                displayName={computer.displayName}
-                onChanged={onChanged}
+                intent={{
+                  mode: "repair",
+                  target: { computerId: repair.computerId, displayName: computer.displayName },
+                }}
+                onConnected={onChanged}
               />
             </div>
           ) : null}

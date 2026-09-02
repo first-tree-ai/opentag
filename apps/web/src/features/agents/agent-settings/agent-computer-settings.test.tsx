@@ -207,7 +207,8 @@ describe("An Agent with no Computer", () => {
 
     await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={() => undefined} />);
 
-    expect(await screen.findByText("Connect a Computer")).toBeTruthy();
+    await waitFor(() => expect(document.querySelector('[data-ui="computer-connect"]')).toBeTruthy());
+    expect(screen.queryByText("Connect a Computer")).toBeNull();
     expect(rebind).not.toHaveBeenCalled();
     // Nothing to choose between, so no list is offered either.
     expect(screen.queryByRole("button", { name: /Use / })).toBeNull();
@@ -225,7 +226,8 @@ describe("An Agent with no Computer", () => {
     await renderInRouter(<AgentComputerSettings agent={unbound()} onAgentChanged={onAgentChanged} />);
 
     expect(await screen.findByRole("heading", { name: "Choose the Computer this Agent should run on" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Connect another Computer" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect another Computer" })).toBeNull();
+    expect(document.querySelector('[data-ui="computer-connect"]')).toBeTruthy();
     // Nothing is decided for the reader while the question is open.
     expect(rebind).not.toHaveBeenCalled();
 

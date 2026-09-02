@@ -3,18 +3,6 @@
   "maxLines": 500,
   "exceptions": [
     {
-      "path": "apps/web/src/agent-creation/agent-creation-flow.tsx",
-      "lines": 853,
-      "owner": "@bestony",
-      "expires": "2026-10-31"
-    },
-    {
-      "path": "apps/web/src/onboarding-v2/steps.tsx",
-      "lines": 1149,
-      "owner": "@bestony",
-      "expires": "2026-10-31"
-    },
-    {
       "path": "packages/client/src/runtime/runtime-connection.ts",
       "lines": 1073,
       "owner": "@bestony",

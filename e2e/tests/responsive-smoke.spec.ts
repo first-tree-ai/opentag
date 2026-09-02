@@ -25,21 +25,20 @@ test.describe("320px minimum supported width", () => {
 test.describe("390px primary mobile width", () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
 
-  test("keeps the primary action and touch dialog inside the viewport", async ({ page }) => {
+  test("keeps the primary action and touch creation route inside the viewport", async ({ page }) => {
     await page.goto("/agents", { waitUntil: "networkidle" });
     await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
-    const trigger = page.getByRole("button", { name: "New Agent", exact: true });
+    const trigger = page.getByRole("link", { name: "New Agent", exact: true });
     await expectWithinViewport(trigger);
     await expectNoPageOverflow(page);
 
     await trigger.tap();
-    const dialog = page.getByRole("dialog", { name: "New Agent" });
-    await expectWithinViewport(dialog);
+    await expect(page).toHaveURL(/\/agents\/setup\?action=create$/);
+    const createSurface = page.locator('[data-ui="agent-create"]');
+    await expect(page.getByRole("heading", { name: "Where should your agent run?", exact: true })).toBeVisible();
+    await expectWithinViewport(createSurface);
     await expectNoPageOverflow(page);
     await expectAccessible(page);
-
-    await dialog.getByRole("button", { name: "Close new Agent dialog", exact: true }).tap();
-    await expect(dialog).toHaveCount(0);
   });
 });
 
@@ -73,7 +72,7 @@ test.describe("1440px desktop width", () => {
   test("centers the bounded content frame and preserves the page hierarchy", async ({ page }) => {
     await page.goto("/agents", { waitUntil: "networkidle" });
     const heading = page.getByRole("heading", { name: "Agents", exact: true });
-    const action = page.getByRole("button", { name: "New Agent", exact: true });
+    const action = page.getByRole("link", { name: "New Agent", exact: true });
     await expect(heading).toBeVisible();
     await expect(action).toBeVisible();
     await expectNoPageOverflow(page);
@@ -89,6 +88,11 @@ test.describe("1440px desktop width", () => {
     if (!headingBox || !actionBox) throw new Error("Expected the page header to have layout dimensions");
     const alignmentOffset = Math.abs(actionBox.y + actionBox.height / 2 - (headingBox.y + headingBox.height / 2));
     expect(alignmentOffset, "desktop page action alignment").toBeLessThanOrEqual(8);
+
+    await action.click();
+    await expect(page).toHaveURL(/\/agents\/setup\?action=create$/);
+    await expect(page.getByRole("heading", { name: "Where should your agent run?", exact: true })).toBeVisible();
+    await expectNoPageOverflow(page);
     await expectAccessible(page);
   });
 });

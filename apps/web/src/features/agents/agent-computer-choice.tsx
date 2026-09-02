@@ -9,31 +9,6 @@ import { useComputersQuery } from "./agent-queries.js";
 /** What a bind is aimed at, named so a failure can be reported and retried against it. */
 type BindTarget = { computerId: string; displayName: string };
 
-function ConnectAnotherComputer({
-  adapter,
-  hasExisting,
-  onConnected,
-}: {
-  adapter?: ComputerConnectAdapter;
-  hasExisting: boolean;
-  onConnected: (computer: BindTarget) => void;
-}) {
-  return (
-    <div className="grid gap-2">
-      <Text as="h3" variant="heading">
-        {hasExisting ? m.agents_computer_choice_connect_new() : m.agents_computer_choice_connect_first()}
-      </Text>
-      <ComputerConnect
-        adapter={adapter}
-        intent={{ mode: "create" }}
-        onConnected={(connected) =>
-          onConnected({ computerId: connected.computerId, displayName: connected.displayName })
-        }
-      />
-    </div>
-  );
-}
-
 /**
  * The Account's Computers, from a read this mount made and no other.
  *
@@ -69,7 +44,7 @@ export function AgentComputerChoice({
   agentId,
   onBound,
 }: {
-  /** Lets onboarding issue a command targeted at the Agent being recovered. */
+  /** Lets Agent setup issue a command targeted at the Agent being recovered. */
   adapter?: ComputerConnectAdapter;
   agentId: string;
   /**
@@ -234,8 +209,19 @@ export function AgentComputerChoice({
           </ul>
         </div>
       ) : null}
-      {/* The exact machine reported by the connect lifecycle is the one that gets bound. */}
-      <ConnectAnotherComputer adapter={adapter} hasExisting={connected.length > 0} onConnected={bind} />
+      <div className="grid gap-2">
+        {/*
+         * The connect step reports the machine it connected, so what gets bound is the Computer that
+         * answered this command rather than whatever a re-read of the inventory happens to find.
+         */}
+        <ComputerConnect
+          adapter={adapter}
+          intent={{ mode: "create" }}
+          onConnected={(connected) =>
+            void bind({ computerId: connected.computerId, displayName: connected.displayName })
+          }
+        />
+      </div>
     </div>
   );
 }

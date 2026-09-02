@@ -20,7 +20,7 @@ import {
   SETUP_OTHER_AGENT_ID,
   setupAgent,
 } from "./agent-setup-test-fixtures.js";
-import { OnboardingV2Page } from "./page.js";
+import { AgentSetupSurface } from "./page.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
 
@@ -58,6 +58,7 @@ function renderSetup(
   adapter: AgentSetupAdapter,
   props: {
     agentId?: string;
+    onOpenAgent?: () => void;
     onReady?: (agentId: string) => Promise<void> | void;
     reviewMode?: boolean;
     slackOAuthError?: string;
@@ -69,6 +70,7 @@ function renderSetup(
       <AgentSetupPage
         adapter={adapter}
         agentId={props.agentId ?? SETUP_AGENT_ID}
+        onOpenAgent={props.onOpenAgent}
         onReady={props.onReady}
         reviewMode={props.reviewMode}
         slackOAuthError={props.slackOAuthError}
@@ -132,7 +134,6 @@ describe("AgentSetupPage stages", () => {
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
-    const issue = mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
     renderSetup(memory.adapter);
@@ -146,19 +147,42 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(reads).toHaveBeenCalledTimes(1);
 
+    // An offline Computer is expected to come back without the page being touched, so it is polled.
+    const readsBeforePoll = reads.mock.calls.length;
+    await advance(POLL_MS + 10);
+    expect(reads.mock.calls.length).toBeGreaterThan(readsBeforePoll);
+  });
+
+  it("expands the shared command surface directly when an offline Computer needs reinstalling", async () => {
+    const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- repair-code",
+      connectCodeId: "repair-code",
+      expiresIn: 900,
+      issuedAt: new Date().toISOString(),
+    });
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+      computerId: null,
+      connectCodeId: "repair-code",
+      redeemedAt: null,
+      state: "pending",
+    });
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
+    renderSetup(memory.adapter);
+    await settle();
+
     fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
     await settle();
-    await advance(1);
+
+    const repairSurface = document.querySelector('[data-ui="computer-connect"]');
+    expect(repairSurface?.parentElement?.id).toBe("agent-setup-repair-command");
+    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(screen.getByText("Expires in 15:00")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("Waiting for Review Mac to reconnect");
     expect(issue).toHaveBeenCalledWith({
       mode: "repair",
       targetAgentId: SETUP_AGENT_ID,
       targetComputerId: SETUP_COMPUTER_ID,
     });
-
-    // An offline Computer is expected to come back without the page being touched, so it is polled.
-    const readsBeforePoll = reads.mock.calls.length;
-    await advance(POLL_MS + 10);
-    expect(reads.mock.calls.length).toBeGreaterThan(readsBeforePoll);
   });
 
   it("points a missing runtime at the repair command on the exact Computer", async () => {
@@ -168,7 +192,10 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "Prepare Codex" })).toBeTruthy();
     expect(screen.getByText("Codex isn't installed on Review Mac yet.")).toBeTruthy();
-    expect(screen.getByText('"$HOME/.local/bin/opentag" doctor --json')).toBeTruthy();
+    const doctorCommand = screen.getByText("opentag doctor");
+    expect(doctorCommand.parentElement?.textContent).toBe(
+      "Continue in your terminal or agent for instructions, or run opentag doctor on that Computer to see what is missing.",
+    );
   });
 
   it("waits visibly while the runtime check is still resolving", async () => {
@@ -204,7 +231,9 @@ describe("AgentSetupPage stages", () => {
     await settle(10);
 
     expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
-    expect(screen.getByAltText("Scan this QR code in Lark")).toBeTruthy();
+    const qr = screen.getByAltText("Scan this QR code in Lark");
+    expect(qr.parentElement?.getAttribute("data-ui")).toBe("setup-qr");
+    expect(qr.classList.contains("ots-qr__image")).toBe(true);
     expect(screen.getByText(/QR code expires/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
@@ -436,7 +465,8 @@ describe("AgentSetupPage transitions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
     const dialog = screen.getByRole("alertdialog");
-    expect(dialog.textContent).toContain("Teammates will no longer be able to send messages");
+    expect(dialog.textContent).toContain("stops new messages from reaching this Agent");
+    expect(dialog.textContent).toContain("Message history is preserved");
 
     const confirm = within(dialog).getAllByRole("button", { name: "Disconnect Slack" });
     fireEvent.click(confirm[confirm.length - 1] as HTMLElement);
@@ -675,6 +705,20 @@ describe("AgentSetupPage request fencing", () => {
 });
 
 describe("AgentSetupPage closed failures and review", () => {
+  it("replaces the return action with Open agent when setup becomes ready", async () => {
+    const onOpenAgent = vi.fn();
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack", reachable: true },
+    });
+    renderSetup(memory.adapter, { onOpenAgent });
+    await settle();
+
+    expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
+    expect(onOpenAgent).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed on a terminal answer instead of offering any creation path", async () => {
     const adapter = scriptedAdapter(async () => {
       throw new ApiError(404, "refused: RESOURCE_NOT_FOUND", "RESOURCE_NOT_FOUND", "deterministic");
@@ -743,13 +787,13 @@ describe("AgentSetupPage closed failures and review", () => {
   });
 });
 
-describe("OnboardingV2Page integration seam", () => {
+describe("AgentSetupSurface integration seam", () => {
   it("renders the canonical setup surface when the route names an exact Agent", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={queryClient}>
-        <OnboardingV2Page agentId={SETUP_AGENT_ID} setupAdapter={memory.adapter} />
+        <AgentSetupSurface agentId={SETUP_AGENT_ID} setupAdapter={memory.adapter} />
       </QueryClientProvider>,
     );
     await settle();

@@ -533,6 +533,10 @@ describe("BrowserApi", () => {
         platform: "darwin",
         connectionStatus: "online",
         lastSeenAt: null,
+        imCliReadiness: [
+          { provider: "feishu", status: "ready", observedAt },
+          { provider: "slack", status: "checking", observedAt: null },
+        ],
         observedAt,
       },
       runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },

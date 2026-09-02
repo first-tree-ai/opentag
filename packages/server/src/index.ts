@@ -271,13 +271,14 @@ export async function startServer(): Promise<void> {
           : { status: "unconfirmed" };
       },
       onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
+      logger: serviceLogger("im-binding"),
     });
     const accountSetupService = new AccountSetupService(database);
     const imMessageInbox = new ImMessageInbox(database);
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
     });
-    const sessionService = new SessionService(database);
+    const sessionService = new SessionService(database, { logger: serviceLogger("session") });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
@@ -288,7 +289,11 @@ export async function startServer(): Promise<void> {
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
-    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, imBindingService);
+    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
+      issueIntegrationCliValidationGrant: (input) => imBindingService.issueIntegrationCliValidationGrant(input),
+      shouldPrewarmOfficialProviderClis: (computerId) => computerService.accountInFirstSetup(computerId),
+    });
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -296,6 +301,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       registry,
       sessions: sessionService,
+      logger: serviceLogger("session-collaboration"),
     });
     const agentService = new AgentService(database, {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
@@ -395,6 +401,7 @@ export async function startServer(): Promise<void> {
         publicUrl: config.publicUrl,
       },
       computerConnectCode: {
+        downloadBaseUrl: config.channelTarget.downloadBaseUrl,
         environment: config.environment,
         publicUrl: config.publicUrl,
       },

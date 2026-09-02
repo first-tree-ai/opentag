@@ -410,7 +410,7 @@ async function main() {
       await page.getByRole("heading", { name: "Connect your computer" }).waitFor({ timeout: 15_000 });
       const command = await waitFor("the bootstrap command", async () => {
         const text = await page.locator("body").innerText();
-        const match = /computer connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(text);
+        const match = /(?:computer )?connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_.-]+)'?/.exec(text);
         return match?.[1] === BASE_URL ? { serverUrl: match[1], code: match[2] } : undefined;
       });
       await shot("02-connect-computer");

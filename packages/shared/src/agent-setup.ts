@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { AgentSummarySchema } from "./agent.js";
-import { ComputerConnectionStatusSchema, ComputerPlatformSchema, ProviderReadinessStatusSchema } from "./computer.js";
+import {
+  ComputerConnectionStatusSchema,
+  ComputerImCliReadinessCollectionSchema,
+  ComputerPlatformSchema,
+  ProviderReadinessStatusSchema,
+} from "./computer.js";
 import { ImProviderSchema, ProviderCliHandoffProgressSchema, SlackConfigurationIntentSchema } from "./im-binding.js";
 
 export const AGENT_SETUP_STAGES = ["needs-computer", "needs-runtime", "needs-messaging", "ready"] as const;
@@ -31,6 +36,7 @@ export const AgentSetupComputerStateSchema = z.discriminatedUnion("kind", [
       kind: z.literal("bound"),
       ...AgentSetupComputerIdentityShape,
       connectionStatus: ComputerConnectionStatusSchema,
+      imCliReadiness: ComputerImCliReadinessCollectionSchema,
       lastSeenAt: z.string().datetime().nullable(),
       observedAt: z.string().datetime(),
     })

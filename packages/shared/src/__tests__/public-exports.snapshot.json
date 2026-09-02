@@ -181,6 +181,7 @@
   "ProviderCliExpectedIdentitySchema",
   "ProviderCliHandoffPhaseSchema",
   "ProviderCliHandoffProgressSchema",
+  "ProviderCliPrewarmFrameSchema",
   "ProviderCliRequirementFrameSchema",
   "ProviderCliValidationGrantFrameSchema",
   "ProviderCliValidationResultFrameSchema",

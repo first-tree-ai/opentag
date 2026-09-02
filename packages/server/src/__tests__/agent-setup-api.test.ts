@@ -37,6 +37,10 @@ const snapshot = {
     platform: "linux",
     connectionStatus: "online",
     lastSeenAt: observedAt,
+    imCliReadiness: [
+      { provider: "feishu", status: "ready", observedAt },
+      { provider: "slack", status: "checking", observedAt: null },
+    ],
     observedAt,
   },
   runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },

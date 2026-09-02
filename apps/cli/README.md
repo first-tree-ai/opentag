@@ -16,7 +16,8 @@ Every user-facing command uses the same result policy. Human-readable success ou
 written to stderr and never include access tokens, refresh tokens, cookies, authorization headers, passwords, or request
 bodies. Commands that support `--json` emit one JSON document. A successful document has the shape
 `{"ok":true,"result":...}`. A failure document has the shape
-`{"ok":false,"error":{"code","category","retryability","phase","requestId?","message"}}`.
+`{"ok":false,"error":{"code","category","retryability","phase","requestId?","message"}}`. A command that
+completed a safe partial operation may also include `result` in that failure document, with bounded state and next actions.
 
 The process exit code is stable across commands:
 

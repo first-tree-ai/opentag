@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ClientRuntimeBusinessFrameSchema,
+  IM_CLI_PROVIDERS,
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   ProviderCliArtifactStatusFrameSchema,
   ProviderCliCancelFrameSchema,
+  ProviderCliPrewarmFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
   ProviderCliValidationResultFrameSchema,
@@ -56,6 +58,54 @@ describe("provider CLI reconcile protocol", () => {
         ),
       ),
     ).toEqual([RUNTIME_CAPABILITY.providerCliReconcile]);
+  });
+
+  it("negotiates the setup prewarm capability independently of active-Integration reconcile", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.providerCliPrewarm]).toEqual({
+      min: 1,
+      max: 1,
+    });
+    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.providerCliPrewarm]).toEqual({
+      min: 1,
+      max: 1,
+    });
+    expect(
+      negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, RUNTIME_SERVER_CAPABILITY_OFFERS)[
+        RUNTIME_CAPABILITY.providerCliPrewarm
+      ],
+    ).toBe(1);
+    expect(
+      missingRuntimeCapabilities(
+        [RUNTIME_CAPABILITY.providerCliPrewarm],
+        negotiateRuntimeCapabilities(
+          { [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 1 } },
+          RUNTIME_SERVER_CAPABILITY_OFFERS,
+        ),
+      ),
+    ).toEqual([RUNTIME_CAPABILITY.providerCliPrewarm]);
+  });
+
+  it("accepts a secret-free prewarm of both official CLIs in canonical order", () => {
+    const prewarm = {
+      type: "provider-cli:prewarm" as const,
+      requestId,
+      providers: [...IM_CLI_PROVIDERS],
+    };
+    expect(prewarm.providers).toEqual(["feishu", "slack"]);
+    expect(ServerRuntimeBusinessFrameSchema.parse(prewarm)).toEqual(prewarm);
+    expect(ProviderCliPrewarmFrameSchema.parse(prewarm)).toEqual(prewarm);
+    expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, providers: ["slack", "feishu"] })).toThrow();
+    expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, providers: ["feishu", "feishu"] })).toThrow();
+    for (const extra of [
+      { agentId },
+      { integrationId },
+      { expectedIdentity: slackIdentity },
+      { grant: { provider: "slack", botAccessToken: "xoxb-secret" } },
+      { botAccessToken: "xoxb-secret" },
+      { path: "/usr/local/bin/lark-cli" },
+    ]) {
+      expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, ...extra })).toThrow();
+    }
   });
 
   it("accepts a secret-free requirement and rejects path, version, url, argv, and env", () => {

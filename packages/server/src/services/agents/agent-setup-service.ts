@@ -13,7 +13,11 @@ import type {
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { computers } from "../../db/schema/index.js";
-import { type ProviderReadinessSource, projectComputerProviderReadiness } from "../computers/index.js";
+import {
+  type ProviderReadinessSource,
+  projectComputerImCliReadiness,
+  projectComputerProviderReadiness,
+} from "../computers/index.js";
 import type { AgentSetupBindingState } from "../im-bindings/index.js";
 import type { AgentService } from "./agent-service.js";
 import { AgentServiceError } from "./errors.js";
@@ -182,6 +186,12 @@ export class AgentSetupService {
       kind: "bound",
       ...identity,
       connectionStatus,
+      imCliReadiness: projectComputerImCliReadiness(
+        identity.computerId,
+        connectionStatus,
+        observedAt,
+        this.#providerReadiness,
+      ),
       lastSeenAt: computer.lastSeenAt?.toISOString() ?? null,
       observedAt: observedAt.toISOString(),
     };

@@ -68,10 +68,14 @@ Markdown outside `apps/web` is `territory` with a wider owner pool of yuezengwu,
 except for the root policy and agent-instruction files: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, and
 the Chinese mirrors of the last two. Those are pulled back into the gate, because agent-instruction files change what
 agents in this repository do and are behavior rather than documentation, and `CONTRIBUTING.md` is where this policy
-itself is written down. Four routine chore paths are `territory`: `pnpm-lock.yaml`, `.editorconfig`, `.gitignore`, and
-`LICENSE`. `packages/server/drizzle/` carries a defensive `gate` pin so irreversible migrations stay mutually reviewed.
-Everything else is gated: the packages, `apps/cli`, `.github`, `scripts`, `e2e`, root build and quality-gate
-configuration, and any directory added in the future.
+itself is written down. Three routine chore paths are `territory`: `.editorconfig`, `.gitignore`, and `LICENSE`. The
+dependency manifests are `exempt`: `package.json` at any depth and `pnpm-lock.yaml` name no owners, so a dependabot bump
+no longer auto-requests a reviewer. The auto-request is GitHub's and reads only `.github/CODEOWNERS`, which cannot tell
+one author from another, so the same exemption lets a human-authored manifest change merge without approval; that is the
+price of the behaviour and the reason the exemption stops at the manifests. `packages/server/drizzle/` carries a
+defensive `gate` pin so irreversible migrations stay mutually reviewed. Everything else is gated: the packages,
+`apps/cli`, `.github`, `scripts`, `e2e`, the rest of the root build and quality-gate configuration, and any directory
+added in the future.
 
 Two rules apply on top of the per-file result. When the pull request author has no write access to the repository, as
 an outside contributor, from a fork, or as a bot including dependabot, the pull request additionally needs an approval

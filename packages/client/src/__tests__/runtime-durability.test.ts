@@ -100,6 +100,10 @@ describe("runtime durability primitives", () => {
       );
       await expect(store.list("turn-report")).resolves.toMatchObject([{ key: "turn-1", status: "accepted" }]);
       await writeFile(path, JSON.stringify({ invalid: true }));
+      await expect(store.list("turn-report")).rejects.toThrow(
+        "Runtime storage contains data that does not match its schema",
+      );
+      await writeFile(path, "{ invalid");
       await expect(store.list("turn-report")).rejects.toThrow("Runtime storage contains invalid JSON");
     } finally {
       await rm(home, { recursive: true, force: true });

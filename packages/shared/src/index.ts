@@ -282,6 +282,8 @@ export {
   ProviderCliCancelFrameSchema,
   type ProviderCliExpectedIdentity,
   ProviderCliExpectedIdentitySchema,
+  type ProviderCliPrewarmFrame,
+  ProviderCliPrewarmFrameSchema,
   type ProviderCliRequirementFrame,
   ProviderCliRequirementFrameSchema,
   type ProviderCliValidationGrantFrame,

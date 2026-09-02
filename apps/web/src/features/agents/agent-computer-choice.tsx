@@ -2,12 +2,29 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Text } from "../../ui/design-system.js";
-import { ComputerConnect } from "../computer-connect/computer-connect.js";
+import { ComputerConnect, type ComputerConnectAdapter } from "../computer-connect/computer-connect.js";
 import { platformLabel } from "./agent-presentation.js";
 import { useComputersQuery } from "./agent-queries.js";
 
 /** What a bind is aimed at, named so a failure can be reported and retried against it. */
 type BindTarget = { computerId: string; displayName: string };
+
+/**
+ * The Account's Computers, from a read this mount made and no other.
+ *
+ * Only a successful read speaks for the Account: answering a failed one with "connect a Computer"
+ * would send someone to enrol a machine they already own -- the same conflation the Agent's
+ * availability refuses to make one layer up.
+ *
+ * And only a read made after this mount. The cache is served on mount while the re-read runs, and
+ * it is filled by whichever page the reader came from: a bind decided from it can pick the one
+ * Computer the Account had before a second was connected elsewhere, or one it no longer has -- a
+ * durable placement the reader never chose. The re-read is what the automatic bind waits for, so
+ * until it lands there is nothing to bind from.
+ */
+function computersReadAfterMount(query: ReturnType<typeof useComputersQuery>) {
+  return query.isSuccess && query.isFetchedAfterMount ? query.data.computers : undefined;
+}
 
 /**
  * Giving an Agent a Computer to run on.
@@ -23,9 +40,12 @@ type BindTarget = { computerId: string; displayName: string };
  * onboarding recovery once ended up pointing at a route the setup gate refuses.
  */
 export function AgentComputerChoice({
+  adapter,
   agentId,
   onBound,
 }: {
+  /** Lets Agent setup issue a command targeted at the Agent being recovered. */
+  adapter?: ComputerConnectAdapter;
   agentId: string;
   /**
    * Called when the Agent's Computer may have changed -- after a bind here, or after the reader
@@ -48,10 +68,7 @@ export function AgentComputerChoice({
   // A bind is attempted once per Agent-and-Computer pair, so a failure is not restarted by every
   // render it causes. The Agent belongs in the key because this surface outlives any one of them.
   const attempted = useRef<string | undefined>(undefined);
-  // Only a successful read speaks for the Account. Answering a failed one with "connect a Computer"
-  // would send someone to enrol a machine they already own -- the same conflation the Agent's
-  // availability refuses to make one layer up.
-  const connected = computersQuery.isSuccess ? computersQuery.data.computers : undefined;
+  const connected = computersReadAfterMount(computersQuery);
   const sole = connected?.length === 1 ? connected[0] : undefined;
   const soleTarget = sole ? `${agentId}:${sole.computerId}` : undefined;
 
@@ -198,6 +215,7 @@ export function AgentComputerChoice({
          * answered this command rather than whatever a re-read of the inventory happens to find.
          */}
         <ComputerConnect
+          adapter={adapter}
           intent={{ mode: "create" }}
           onConnected={(connected) =>
             void bind({ computerId: connected.computerId, displayName: connected.displayName })

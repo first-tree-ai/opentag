@@ -242,8 +242,9 @@ the public verification gate fails and the channel pointers are deliberately lef
 
 - The installer needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`. Linux and macOS on x64 and arm64 are
   supported; Windows is not.
-- After activation the installer runs `daemon ensure-service`. Exit code 3 means the CLI deferred service setup until
-  `login` creates credentials, which is the normal first-install path and not a failure.
+- The installer only installs or upgrades OpenTag. The onboarding command runs `opentag connect`, which exchanges the
+  one-time Computer code, binds its explicit Agent/Computer target, and then installs or restarts the daemon service.
+  Provider CLI detection and installation belongs to that active daemon, never to `install.sh`.
 - Any released version can be installed directly with `sh install.sh --version <version>`, which reads that version's
   immutable manifest and never consults the channel pointer. This is how a rollback is performed, and how the release
   gate installs a release before it is advertised.

@@ -322,6 +322,20 @@ describe("Agent Setup route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(0);
   });
 
+  it.each(["agentId=123", `agentId=${agentId}&agentId=${secondAgentId}`])(
+    "fails closed when an explicitly present exact id is parsed as a non-string: %s",
+    async (search) => {
+      installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+      window.history.replaceState({}, "", `/agents/setup?${search}`);
+      render(<App />);
+
+      expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
+      expect(agentListReads()).toHaveLength(0);
+      expect(screen.queryByRole("heading", { name: "Where should your agent run?" })).toBeNull();
+      expect(agentCreationPosts()).toHaveLength(0);
+    },
+  );
+
   it("fails closed on a missing exact id and never falls back to the list", async () => {
     installAgentSetupApi({ setupCompletedAt: null });
     window.history.replaceState({}, "", `/agents/setup?agentId=${missingAgentId}`);

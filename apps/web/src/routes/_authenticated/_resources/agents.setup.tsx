@@ -21,8 +21,12 @@ export const Route = createFileRoute("/_authenticated/_resources/agents/setup")(
   } => {
     const action = search.action === "create" ? "create" : undefined;
     const agentId = typeof search.agentId === "string" ? search.agentId : undefined;
+    // TanStack can revalidate this normalized output; retain the marker after a non-string id is removed.
     const invalid =
-      (search.action !== undefined && action === undefined) || (action !== undefined && agentId !== undefined)
+      search.invalid === true ||
+      (search.action !== undefined && action === undefined) ||
+      (search.agentId !== undefined && agentId === undefined) ||
+      (action !== undefined && agentId !== undefined)
         ? true
         : undefined;
     return {

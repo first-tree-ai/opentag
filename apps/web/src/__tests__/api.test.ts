@@ -1,6 +1,7 @@
 import type { TaskSummary } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, BrowserApi } from "../api.js";
+import { DiagnosticReporter } from "../observability/diagnostics.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const taskSummary = {
@@ -176,7 +177,7 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("preserves structured server error codes for recovery actions", async () => {
+  it("preserves structured server diagnostics for recovery actions", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
         new Response(
@@ -185,6 +186,8 @@ describe("BrowserApi", () => {
               code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
               category: "deterministic",
               message: "Additional scopes are required",
+              requestId: "request-123",
+              retryAfterSeconds: 30,
             },
           }),
           { status: 409, headers: { "content-type": "application/json" } },
@@ -198,6 +201,8 @@ describe("BrowserApi", () => {
       status: 409,
       code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
       category: "deterministic",
+      requestId: "request-123",
+      retryAfterSeconds: 30,
     });
   });
 
@@ -449,7 +454,11 @@ describe("BrowserApi", () => {
         expectedRevision: 1,
         expectedRuntimeConfigRevision: 1,
       }),
-    ).rejects.toMatchObject({ status: 503, message: "The server returned an invalid response" });
+    ).rejects.toMatchObject({
+      name: "ResponseSchemaError",
+      code: "invalid_response_schema",
+      message: "The server returned an invalid response",
+    });
     expect(extraFieldFetch).toHaveBeenCalledOnce();
 
     const abortFetch = vi.fn<typeof fetch>(async (_input, init) => {
@@ -466,6 +475,77 @@ describe("BrowserApi", () => {
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(abortFetch).toHaveBeenCalledOnce();
+  });
+
+  it("records schema issue paths and codes without response detail", async () => {
+    setDocumentCookie("opentag_csrf=schema-csrf; Path=/");
+    const warn = vi.fn();
+    const reporter = new DiagnosticReporter({ warn });
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ status: "passed", output: "secret-model-text" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+    await expect(
+      new BrowserApi(fetchImpl, reporter).testAgentRuntime("1a63a21e-f6c7-4474-91ea-4dabf0566a24", {
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 1,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_response_schema" });
+
+    expect(warn).toHaveBeenCalledOnce();
+    const diagnostic = warn.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(diagnostic).toMatchObject({
+      code: "invalid_response_schema",
+      routeTemplate: "/api/v1/agents/:id/runtime-test",
+      issues: [{ path: [], code: "unrecognized_keys" }],
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("secret-model-text");
+    expect(JSON.stringify(diagnostic)).not.toContain("message");
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
+  it("records a CSRF-less write at the request seam", async () => {
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+    const warn = vi.fn();
+    const reporter = new DiagnosticReporter({ warn });
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+
+    await expect(
+      new BrowserApi(fetchImpl, reporter).deleteAgent("1a63a21e-f6c7-4474-91ea-4dabf0566a24"),
+    ).resolves.toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(
+      "[OpenTag] Diagnostic",
+      expect.objectContaining({
+        code: "csrf_token_missing",
+        routeTemplate: "/api/v1/agents/:id",
+        method: "DELETE",
+      }),
+    );
+  });
+
+  it("maps an aborted request to cancelled without warning", async () => {
+    const warn = vi.fn();
+    const reporter = new DiagnosticReporter({ warn });
+    const controller = new AbortController();
+    controller.abort();
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(init?.signal?.aborted).toBe(true);
+      throw abortError();
+    });
+
+    await expect(
+      new BrowserApi(fetchImpl, reporter).testAgentRuntime(
+        "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+        { expectedRevision: 1, expectedRuntimeConfigRevision: 1 },
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError", code: "cancelled" });
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

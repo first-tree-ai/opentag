@@ -153,6 +153,7 @@ describe("ImDeliveryWorker database workflow", () => {
         .set({ nextAttemptAt: new Date(now.getTime() - 1_000) })
         .where(eq(imMessageDeliveries.id, fixture.deliveryId));
       const metrics: Array<{ name: string; value: number; agentId?: string }> = [];
+      const logger = { info: vi.fn() };
       const worker = new ImDeliveryWorker({
         database: unit.database,
         domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
@@ -160,7 +161,10 @@ describe("ImDeliveryWorker database workflow", () => {
         registry: fixture.registry,
         now: () => now,
         maxQueueAgeMs: 100,
-        onMetric: (metric) => metrics.push(metric),
+        onMetric: (metric) => {
+          metrics.push(metric);
+          logger.info({ metric }, "IM delivery worker metric");
+        },
       });
 
       await worker.runOnce();
@@ -170,6 +174,12 @@ describe("ImDeliveryWorker database workflow", () => {
         { name: "saturation", value: 1, agentId: fixture.agentId },
         { name: "retry", value: 1 },
       ]);
+      expect(logger.info).toHaveBeenCalledTimes(metrics.length);
+      expect(logger.info).toHaveBeenNthCalledWith(
+        1,
+        { metric: { name: "queue_age_ms", value: 1_000, agentId: fixture.agentId } },
+        "IM delivery worker metric",
+      );
       const [row] = await unit.database
         .select({ code: imMessageDeliveries.lastErrorCode })
         .from(imMessageDeliveries)

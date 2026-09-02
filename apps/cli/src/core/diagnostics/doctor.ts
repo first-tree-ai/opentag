@@ -2,12 +2,11 @@ import { resolve } from "node:path";
 import {
   type AgentRuntimeCliInstallation,
   checkServerHealth,
+  type IntegrationCliInstallation,
   inspectLocalComputerConfiguration,
   type LocalComputerConfigurationInspection,
-  type ProviderCliInspection,
-  ProviderCliManager,
   probeAgentRuntimeCliInstallations,
-  resolveAccountHome,
+  probeIntegrationCliInstallations,
   ServerHealthConfigurationError,
   ServerHealthHttpError,
   ServerHealthNetworkError,
@@ -71,11 +70,10 @@ export type RuntimeDetector = (options: {
   environment: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
 }) => Promise<AgentRuntimeCliInstallation[]>;
-export type ProviderCliInspector = (options: {
+export type IntegrationCliDetector = (options: {
   environment: NodeJS.ProcessEnv;
   platform: NodeJS.Platform;
-  arch: string;
-}) => Promise<ProviderCliInspection[]>;
+}) => Promise<IntegrationCliInstallation[]>;
 
 export interface DoctorOptions {
   env?: NodeJS.ProcessEnv;
@@ -87,8 +85,8 @@ export interface DoctorOptions {
   healthChecker?: HealthChecker;
   inspectLocalConfiguration?: LocalConfigurationInspector;
   inspectDaemonService?: DaemonServiceInspector;
-  providerCliInspector?: ProviderCliInspector;
   runtimeDetector?: RuntimeDetector;
+  integrationCliDetector?: IntegrationCliDetector;
 }
 
 export const DOCTOR_NOT_EVALUATED = [
@@ -96,7 +94,8 @@ export const DOCTOR_NOT_EVALUATED = [
   "Agent Runtime version or protocol compatibility",
   "Agent Runtime visibility from the installed daemon environment",
   "machine-token authentication or WebSocket registration",
-  "Integration CLI credential validity and active-binding readiness",
+  "Integration CLI version compatibility, authentication, credentials, installation configuration, or network availability",
+  "Integration CLI visibility from the installed daemon environment",
   "end-to-end Turn or handoff delivery",
 ] as const;
 
@@ -127,25 +126,19 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
         environment: request.environment,
         platform: request.platform,
       }));
-  const providerCliInspector =
-    options.providerCliInspector ??
-    (async (request) => {
-      const manager = new ProviderCliManager({
-        accountHome: resolveAccountHome(),
-        env: request.environment,
+  const integrationCliDetector =
+    options.integrationCliDetector ??
+    ((request) =>
+      probeIntegrationCliInstallations({
+        environment: request.environment,
         platform: request.platform,
-        arch: request.arch,
-      });
-      return Promise.all([manager.inspect("feishu"), manager.inspect("slack")]);
-    });
+      }));
   const healthChecker = options.healthChecker ?? checkServerHealth;
 
   const localPromise = settle(localInspector(target.home));
   const daemonPromise = settle(daemonInspector(target.home));
   const runtimePromise = settle(runtimeDetector({ environment, platform }));
-  const providerCliPromise = settle(
-    providerCliInspector({ environment, platform, arch: options.arch ?? process.arch }),
-  );
+  const providerCliPromise = settle(integrationCliDetector({ environment, platform }));
   const healthPromise = localPromise.then(async (localResult) => {
     if (localResult.status === "rejected") return { status: "skipped" as const };
     const serverUrl = localResult.value.binding.serverUrl;
@@ -418,108 +411,105 @@ function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[
       observedFrom: "current CLI process environment",
       ...(installed.length > 0 ? {} : { remediation: "Install Codex CLI or Claude Code CLI" }),
     },
-    runtimeProviderCheck(codex),
-    runtimeProviderCheck(claude),
+    cliInstallationCheck(`runtime.${codex.provider}.installation`, "agent-runtime", codex),
+    cliInstallationCheck(`runtime.${claude.provider}.installation`, "agent-runtime", claude),
   ];
 }
 
-function providerCliChecks(result: PromiseSettledResult<ProviderCliInspection[]>): DoctorCheck[] {
+function providerCliChecks(result: PromiseSettledResult<IntegrationCliInstallation[]>): DoctorCheck[] {
   if (result.status === "rejected") {
-    const detail = safeErrorDetail(result.reason, "Provider CLI state could not be inspected");
-    return [providerCliUnknown("feishu", "Lark CLI", detail), providerCliUnknown("slack", "Slack CLI", detail)];
+    const detail = safeErrorDetail(result.reason, "Integration CLI installation could not be determined");
+    return [
+      cliInstallationCheck("provider-cli.feishu.installation", "provider-cli", {
+        detail,
+        displayName: "Lark CLI",
+        status: "unknown",
+      }),
+      cliInstallationCheck("provider-cli.slack.installation", "provider-cli", {
+        detail,
+        displayName: "Slack CLI",
+        status: "unknown",
+      }),
+    ];
   }
-  const byProvider = new Map(result.value.map((inspection) => [inspection.provider, inspection]));
+  const byCli = new Map(result.value.map((entry) => [entry.cli, entry]));
   return [
-    providerCliCheck(byProvider.get("feishu"), "feishu", "Lark CLI"),
-    providerCliCheck(byProvider.get("slack"), "slack", "Slack CLI"),
+    cliInstallationCheck(
+      "provider-cli.feishu.installation",
+      "provider-cli",
+      byCli.get("feishu") ?? {
+        displayName: "Lark CLI",
+        status: "unknown",
+        detail: "Detector did not return a result",
+      },
+    ),
+    cliInstallationCheck(
+      "provider-cli.slack.installation",
+      "provider-cli",
+      byCli.get("slack") ?? {
+        displayName: "Slack CLI",
+        status: "unknown",
+        detail: "Detector did not return a result",
+      },
+    ),
   ];
 }
 
-function providerCliCheck(
-  inspection: ProviderCliInspection | undefined,
-  provider: "feishu" | "slack",
-  label: string,
+function cliInstallationCheck(
+  code: string,
+  scope: Extract<DoctorCheckScope, "agent-runtime" | "provider-cli">,
+  entry: {
+    displayName: string;
+    status: "installed" | "not-installed" | "unknown";
+    path?: string;
+    source?: string;
+    detail?: string;
+  },
 ): DoctorCheck {
-  if (!inspection) return providerCliUnknown(provider, label, "Inspector did not return a result");
-  const common = {
-    code: `provider-cli.${provider}.installation`,
-    scope: "provider-cli" as const,
-    blocking: false,
-    label,
-    observedFrom: "operating-system account Provider CLI state",
-  };
-  if (inspection.readiness === "ready" && inspection.selection) {
-    return {
-      ...common,
-      status: "pass",
-      detail: `${inspection.selection.kind} ${inspection.selection.version} selected at ${inspection.selection.path}`,
-      path: inspection.selection.path,
-    };
-  }
-  if (inspection.readiness === "install") {
-    return {
-      ...common,
-      status: "info",
-      detail: "not prepared for this operating-system account",
-      remediation:
-        "No action is required until this provider is bound; the daemon prepares required CLIs automatically",
-    };
-  }
-  return {
-    ...common,
-    status: "fail",
-    detail: inspection.diagnostic?.code ?? "local Provider CLI selection is unavailable",
-    ...(inspection.diagnostic?.remediation ? { remediation: inspection.diagnostic.remediation } : {}),
-  };
-}
-
-function providerCliUnknown(provider: "feishu" | "slack", label: string, detail: string): DoctorCheck {
-  return {
-    code: `provider-cli.${provider}.installation`,
-    scope: "provider-cli",
-    status: "unknown",
-    blocking: false,
-    label,
-    detail: truncate(detail),
-    observedFrom: "operating-system account Provider CLI state",
-  };
-}
-
-function runtimeProviderCheck(entry: AgentRuntimeCliInstallation): DoctorCheck {
+  const observedFrom =
+    scope === "provider-cli"
+      ? "current CLI process environment and operating-system account locations"
+      : "current CLI process environment";
   if (entry.status === "installed") {
     return {
-      code: `runtime.${entry.provider}.installation`,
-      scope: "agent-runtime",
+      code,
+      scope,
       status: "pass",
       blocking: false,
       label: entry.displayName,
       detail: `installed at ${entry.path} (${entry.source})`,
       path: entry.path,
-      observedFrom: "current CLI process environment",
+      observedFrom,
     };
   }
-  if (entry.status === "unknown") return runtimeProviderUnknown(entry.provider, entry.displayName, entry.detail);
+  if (entry.status === "unknown") {
+    return {
+      code,
+      scope,
+      status: "unknown",
+      blocking: false,
+      label: entry.displayName,
+      detail: truncate(entry.detail ?? "installation could not be determined"),
+      observedFrom,
+    };
+  }
   return {
-    code: `runtime.${entry.provider}.installation`,
-    scope: "agent-runtime",
+    code,
+    scope,
     status: "info",
     blocking: false,
     label: entry.displayName,
     detail: "not installed",
-    observedFrom: "current CLI process environment",
+    observedFrom,
   };
 }
 
 function runtimeProviderUnknown(provider: "codex" | "claude-code", label: string, detail?: string): DoctorCheck {
-  return {
-    code: `runtime.${provider}.installation`,
-    scope: "agent-runtime",
+  return cliInstallationCheck(`runtime.${provider}.installation`, "agent-runtime", {
+    detail,
+    displayName: label,
     status: "unknown",
-    blocking: false,
-    label,
-    detail: truncate(detail ?? "installation could not be determined"),
-    observedFrom: "current CLI process environment",
-  };
+  });
 }
 
 function unknownRuntime(provider: "codex" | "claude-code", displayName: string): AgentRuntimeCliInstallation {

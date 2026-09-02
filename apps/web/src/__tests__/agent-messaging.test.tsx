@@ -203,11 +203,11 @@ describe("OpenTag Web App Shell", () => {
     installApi({ agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
-    expect(await screen.findByText("Ready")).toBeTruthy();
+    expect(await screen.findByText("Ready for new work")).toBeTruthy();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Unconfirmed")).toBeTruthy();
+    expect(await screen.findByText("Status unavailable")).toBeTruthy();
     expect(screen.getByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });

@@ -36,5 +36,6 @@ them for debugging.
 
 This suite proves the Linux behavior inside Docker Desktop's Linux VM. It does
 not replace release QA on a separately installed physical or virtual Linux
-host, and it does not cover deferred Runtime authentication, Integration CLI,
-machine-token/WebSocket registration, or end-to-end Turn delivery.
+host, and it does not cover deferred Runtime authentication, Integration CLI
+version/authentication/credential/configuration/network probes, machine-token/WebSocket
+registration, or end-to-end Turn delivery.

@@ -32,7 +32,7 @@ export interface ImCredentialEnvironmentManagerOptions {
   ) => Promise<string>;
   readonly home: string;
   readonly listArtifacts?: (root: string) => Promise<readonly string[]>;
-  readonly logger?: Pick<ClientLogger, "warn">;
+  readonly logger?: Pick<ClientLogger, "debug" | "warn">;
   readonly platform?: NodeJS.Platform;
   readonly removePath?: (path: string, options: { force: true; recursive?: true }) => Promise<void>;
   readonly writeEnvironmentFile?: (path: string, content: string, mode: number) => Promise<void>;
@@ -58,7 +58,7 @@ export class ImCredentialEnvironmentManager {
   readonly #platform: NodeJS.Platform;
   readonly #home: string;
   readonly #listArtifacts: NonNullable<ImCredentialEnvironmentManagerOptions["listArtifacts"]>;
-  readonly #logger: Pick<ClientLogger, "warn">;
+  readonly #logger: Pick<ClientLogger, "debug" | "warn">;
   readonly #removePath: NonNullable<ImCredentialEnvironmentManagerOptions["removePath"]>;
   readonly #root: string;
   readonly #startupCleanup: Promise<ImCredentialEnvironmentError | undefined>;
@@ -124,7 +124,19 @@ export class ImCredentialEnvironmentManager {
         ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
       };
     } catch (error) {
-      await this.cleanup(request.sessionId).catch(() => undefined);
+      this.#logger.debug(
+        { code: "credential_materialization_failed", error: String(error) },
+        "Provider credential environment materialization failed",
+      );
+      await this.cleanup(request.sessionId).catch((cleanupError: unknown) => {
+        this.#logger.debug(
+          {
+            code: "credential_cleanup_after_failure_failed",
+            error: String(cleanupError),
+          },
+          "Provider credential cleanup after materialization failure failed",
+        );
+      });
       throw credentialEnvironmentError(error, signal, "credential_materialization_failed");
     }
   }
@@ -282,6 +294,10 @@ export class ImCredentialEnvironmentManager {
           { priority: "result", signal },
         )
         .catch((error: unknown) => {
+          this.#logger.debug(
+            { code: "credential_result_send_failed", error: String(error) },
+            "Provider credential result send failed",
+          );
           cleanup();
           reject(error instanceof Error ? error : new ImCredentialEnvironmentError("send_failed"));
         });

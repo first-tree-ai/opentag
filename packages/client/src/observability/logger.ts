@@ -67,10 +67,10 @@ export function configureClientLoggerContext(bindings: ClientLogBindings): void 
 }
 
 export function createLogger(module: string, options: CreateLoggerOptions = {}): ClientLogger {
-  if (options.destination === "stderr") return adapt(buildRoot(stderrDestination(), false), { module });
-  if (options.destination === "file") return adapt(buildRoot(fileDestination(), true), { module });
-  if (options.destination === "dual") return adapt(buildRoot(dualDestination(), true), { module });
-  return adapt(root(), { module });
+  if (options.destination === "stderr") return adapt(fixed(buildRoot(stderrDestination(), false)), { module });
+  if (options.destination === "file") return adapt(fixed(buildRoot(fileDestination(), true)), { module });
+  if (options.destination === "dual") return adapt(fixed(buildRoot(dualDestination(), true)), { module });
+  return adapt(root, { module });
 }
 
 export function resetClientLoggerForTests(): void {
@@ -154,16 +154,21 @@ function getServiceStream(): RotatingFileStream {
   return serviceStream;
 }
 
-function adapt(logger: PinoLogger, bindings: ClientLogBindings): ClientLogger {
+function fixed(logger: PinoLogger): () => PinoLogger {
+  return () => logger;
+}
+
+function adapt(resolveLogger: () => PinoLogger, bindings: ClientLogBindings): ClientLogger {
   const write = (method: "debug" | "error" | "info" | "warn", fields: ClientLogBindings, message: string) =>
     safeWrite(() => {
+      const logger = resolveLogger();
       // Redaction walks and rewrites every string, so it must not run for a line the level discards.
       // Pino would drop the record anyway, but the arguments are evaluated before that call.
       if (!logger.isLevelEnabled(method)) return;
       logger[method](redactForLog({ ...bindings, ...fields }) as ClientLogBindings, redactForLog(message));
     });
   return {
-    child: (childBindings) => adapt(logger, { ...bindings, ...childBindings }),
+    child: (childBindings) => adapt(resolveLogger, { ...bindings, ...childBindings }),
     debug: (fields, message) => write("debug", fields, message),
     error: (fields, message) => write("error", fields, message),
     info: (fields, message) => write("info", fields, message),

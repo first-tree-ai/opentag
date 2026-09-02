@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import semver from "semver";
+import { createLogger } from "../../observability/logger.js";
 import type { ProviderCliCatalogEntry } from "./catalog.js";
 
 /** Injectable bounded child-process runner; the default never uses a shell. */
@@ -14,6 +15,7 @@ export type ProviderCliExecFile = (
 ) => Promise<{ stdout: string; stderr: string }>;
 
 const execFileAsync = promisify(execFile);
+const logger = createLogger("runtime-provider-cli-probe");
 
 export const defaultProviderCliExecFile: ProviderCliExecFile = async (file, args, options) => {
   const result = await execFileAsync(file, [...args], {
@@ -95,7 +97,8 @@ export async function probeProviderCliExecutable(
     let versionOutput: string;
     try {
       versionOutput = (await run(target, [...prefix, ...entry.probes.versionArgs], execution)).stdout;
-    } catch {
+    } catch (error) {
+      logger.debug({ code: "version_probe_failed", error: String(error) }, "Provider CLI version probe failed");
       return { status: "failed", code: "probe_failed" };
     }
     const match = new RegExp(entry.probes.versionPattern).exec(versionOutput);
@@ -108,13 +111,18 @@ export async function probeProviderCliExecutable(
     }
     try {
       await run(target, [...prefix, ...entry.probes.surfaceArgs], execution);
-    } catch {
+    } catch (error) {
+      logger.debug({ code: "surface_probe_failed", error: String(error) }, "Provider CLI surface probe failed");
       return { status: "failed", code: "probe_failed" };
     }
     return { status: "ok", version };
-  } catch {
+  } catch (error) {
+    logger.debug({ code: "probe_setup_failed", error: String(error) }, "Provider CLI probe setup failed");
     return { status: "failed", code: "probe_failed" };
   } finally {
-    if (probeHome) await rm(probeHome, { force: true, recursive: true }).catch(() => undefined);
+    if (probeHome)
+      await rm(probeHome, { force: true, recursive: true }).catch((error: unknown) => {
+        logger.debug({ code: "probe_cleanup_failed", error: String(error) }, "Provider CLI probe cleanup failed");
+      });
   }
 }

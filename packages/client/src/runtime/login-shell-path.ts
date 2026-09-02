@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { sep } from "node:path";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { ActiveVersionManager } from "./install-locations.js";
 import { protectedRoots, type ReadLink, resolveOutsideProtectedRoots } from "./protected-paths.js";
 
@@ -46,6 +47,7 @@ export type LoginShellPathDeps = {
   home?: string;
   environment?: NodeJS.ProcessEnv;
   spawn?: LoginShellSpawn;
+  logger?: ClientLogger;
 };
 
 export type LoginShellPathProbe = {
@@ -87,19 +89,21 @@ export function resetLoginShellPathDirsCache(): void {
 }
 
 async function runProbe(deps: LoginShellPathDeps): Promise<LoginShellPathProbe> {
+  const logger = deps.logger ?? createLogger("runtime-login-shell-path");
   const platform = deps.platform ?? process.platform;
   if (platform === "win32") {
     memo = { ok: false, dirs: [], env: {} };
     return memo;
   }
   const runShell = deps.runShell ?? (() => defaultRunShell(deps));
-  const probed = await readProbe(runShell);
+  const probed = await readProbe(runShell, logger);
   if (probed) {
     const result = interpretProbe(probed, deps);
     memo = result;
     return result;
   }
   failedAttempts += 1;
+  logger.debug({ attempt: failedAttempts, code: "probe_failed" }, "Login shell PATH probe failed");
   if (failedAttempts >= LOGIN_SHELL_PROBE_MAX_ATTEMPTS) {
     memo = { ok: false, dirs: [], env: {} };
     return memo;
@@ -107,16 +111,26 @@ async function runProbe(deps: LoginShellPathDeps): Promise<LoginShellPathProbe> 
   return { ok: false, dirs: [], env: {} };
 }
 
-async function readProbe(runShell: RunShell): Promise<{ dirs: string[]; env: ProbedShellEnv } | null> {
+async function readProbe(
+  runShell: RunShell,
+  logger: Pick<ClientLogger, "debug">,
+): Promise<{ dirs: string[]; env: ProbedShellEnv } | null> {
   let output: string | null;
   try {
     output = await runShell();
-  } catch {
+  } catch (error) {
+    logger.debug({ code: "shell_execution_failed", error: String(error) }, "Login shell execution failed");
     return null;
   }
-  if (!output) return null;
+  if (!output) {
+    logger.debug({ code: "shell_output_empty" }, "Login shell returned no probe output");
+    return null;
+  }
   const dirs = parsePathFromShellOutput(output);
-  if (dirs === null) return null;
+  if (dirs === null) {
+    logger.debug({ code: "shell_path_markers_missing" }, "Login shell probe markers were missing");
+    return null;
+  }
   return { dirs, env: parseShellEnv(output) };
 }
 
@@ -172,6 +186,7 @@ export function buildProbeScript(platform: NodeJS.Platform = process.platform): 
 }
 
 export function defaultRunShell(deps: LoginShellPathDeps = {}): Promise<string | null> {
+  const logger = deps.logger ?? createLogger("runtime-login-shell-path");
   const platform = deps.platform ?? process.platform;
   const environment = deps.environment ?? process.env;
   const spawnFn = deps.spawn ?? spawn;
@@ -192,14 +207,16 @@ export function defaultRunShell(deps: LoginShellPathDeps = {}): Promise<string |
         windowsHide: true,
         env: environment,
       });
-    } catch {
+    } catch (error) {
+      logger.debug({ code: "shell_spawn_failed", error: String(error) }, "Login shell could not be spawned");
       finish(null);
       return;
     }
     const killAndSettle = () => {
       try {
         child.kill(LOGIN_SHELL_PROBE_KILL_SIGNAL);
-      } catch {
+      } catch (error) {
+        logger.debug({ code: "shell_probe_kill_failed", error: String(error) }, "Login shell probe kill failed");
         // The child may already be gone.
       }
       child.stdout?.destroy();
@@ -216,7 +233,10 @@ export function defaultRunShell(deps: LoginShellPathDeps = {}): Promise<string |
         killAndSettle();
       }
     });
-    child.on("error", () => finish(null));
+    child.on("error", (error) => {
+      logger.debug({ code: "shell_process_error", error: String(error) }, "Login shell process failed");
+      finish(null);
+    });
     child.on("close", (status, signal) => {
       if (signal || status !== 0) finish(null);
       else finish(stdout);

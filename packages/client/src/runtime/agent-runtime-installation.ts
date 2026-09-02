@@ -3,6 +3,7 @@ import { access, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { AgentRuntimeProvider } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { type ActiveVersionManager, versionManagerBinDirs } from "./install-locations.js";
 import { type LoginShellPathDeps, probeLoginShellPath } from "./login-shell-path.js";
 import { automaticCandidateAllowed } from "./protected-paths.js";
@@ -67,6 +68,7 @@ export interface ResolveAgentRuntimeExecutableOptions {
   runShell?: LoginShellPathDeps["runShell"];
   loginShellSpawn?: LoginShellPathDeps["spawn"];
   versionManagerDirs?: (home: string, active: ActiveVersionManager) => readonly string[];
+  logger?: ClientLogger;
 }
 
 export interface ProbeAgentRuntimeCliInstallationsOptions extends ResolveAgentRuntimeExecutableOptions {
@@ -78,6 +80,7 @@ const PROVIDERS = [
   { provider: "codex", displayName: "Codex CLI", command: "codex" },
   { provider: "claude-code", displayName: "Claude Code CLI", command: "claude" },
 ] as const;
+const defaultInstallationLogger = createLogger("runtime-agent-installation");
 
 export class AgentRuntimeExecutableNotFoundError extends Error {
   override readonly name = "AgentRuntimeExecutableNotFoundError";
@@ -176,11 +179,13 @@ export async function probeInstalledCliCommand(
   environment: NodeJS.ProcessEnv,
   options: ResolveAgentRuntimeExecutableOptions = {},
 ): Promise<InstalledCliProbeResult> {
+  const logger = installationLogger(options);
   try {
     const resolved = await resolveInstalledCliExecutable(command, environment, options);
     return { status: "installed", path: resolved.path, source: resolved.source };
   } catch (error) {
     if (error instanceof AgentRuntimeExecutableNotFoundError) return { status: "not-installed" };
+    logger.debug({ code: "cli_probe_failed", error: String(error) }, "Agent Runtime CLI probe failed");
     return {
       status: "unknown",
       detail: safeErrorDetail(error, "CLI installation could not be determined"),
@@ -200,13 +205,14 @@ export async function* iterateAgentRuntimeExecutables(
   environment: NodeJS.ProcessEnv,
   options: ResolveAgentRuntimeExecutableOptions = {},
 ): AsyncGenerator<ResolvedAgentRuntimeExecutable> {
+  const logger = installationLogger(options);
   const dependencies = {
     access: options.access ?? access,
     realpath: options.realpath ?? realpath,
     stat: options.stat ?? stat,
   };
   if (isAbsolute(command)) {
-    const outcome = await inspectExecutableCandidate(command, dependencies);
+    const outcome = await inspectExecutableCandidate(command, dependencies, logger);
     if (outcome.status !== "installed") {
       if (outcome.status === "unknown") throw new AgentRuntimeExecutableDiscoveryError(outcome.detail);
       throw new AgentRuntimeExecutableNotFoundError(`The ${provider} Agent Runtime CLI is not installed`);
@@ -236,11 +242,15 @@ export async function* iterateAgentRuntimeExecutables(
       seenSearchPaths.add(candidate.path);
       try {
         if (!candidateAllowed(candidate.path, { platform, home })) continue;
-      } catch {
+      } catch (error) {
+        logger.debug(
+          { code: "candidate_safety_check_failed", error: String(error) },
+          "Automatic Runtime candidate safety check failed",
+        );
         firstUnknown ??= "An automatic Runtime candidate could not be inspected safely";
         continue;
       }
-      const outcome = await inspectExecutableCandidate(candidate.path, dependencies);
+      const outcome = await inspectExecutableCandidate(candidate.path, dependencies, logger);
       if (outcome.status === "installed") {
         if (seenResolvedPaths.has(outcome.path)) continue;
         seenResolvedPaths.add(outcome.path);
@@ -274,6 +284,7 @@ export async function probeAgentRuntimeCliInstallations(
   options: ProbeAgentRuntimeCliInstallationsOptions = {},
 ): Promise<AgentRuntimeCliInstallation[]> {
   const environment = options.environment ?? process.env;
+  const logger = installationLogger(options);
   return Promise.all(
     PROVIDERS.map(async ({ provider, displayName, command }): Promise<AgentRuntimeCliInstallation> => {
       try {
@@ -288,6 +299,10 @@ export async function probeAgentRuntimeCliInstallations(
         if (error instanceof AgentRuntimeExecutableNotFoundError) {
           return { provider, displayName, status: "not-installed" };
         }
+        logger.debug(
+          { code: "installation_probe_failed", provider, error: String(error) },
+          "Agent Runtime installation probe failed",
+        );
         return {
           provider,
           displayName,
@@ -297,6 +312,10 @@ export async function probeAgentRuntimeCliInstallations(
       }
     }),
   );
+}
+
+function installationLogger(options: ResolveAgentRuntimeExecutableOptions): ClientLogger {
+  return options.logger ?? defaultInstallationLogger;
 }
 
 async function resolveLoginShellLayer(
@@ -317,6 +336,7 @@ async function resolveLoginShellLayer(
   const probed = await probeLoginShellPath({
     environment,
     home,
+    logger: options.logger,
     platform,
     runShell: options.runShell,
     spawn: options.loginShellSpawn,
@@ -331,11 +351,13 @@ async function resolveLoginShellLayer(
 async function inspectExecutableCandidate(
   candidate: string,
   dependencies: Pick<Required<ResolveAgentRuntimeExecutableOptions>, "access" | "realpath" | "stat">,
+  logger: Pick<ClientLogger, "debug">,
 ): Promise<{ status: "installed"; path: string } | { status: "absent" } | { status: "unknown"; detail: string }> {
   try {
     const status = await dependencies.stat(candidate);
     if (!status.isFile()) return { status: "absent" };
   } catch (error) {
+    logger.debug({ code: "candidate_stat_failed", error: String(error) }, "Runtime candidate stat failed");
     return missingOrUnknown(error);
   }
   try {
@@ -344,11 +366,19 @@ async function inspectExecutableCandidate(
     if (isMissing(error) || (error as NodeJS.ErrnoException | undefined)?.code === "EACCES") {
       return { status: "absent" };
     }
+    logger.debug(
+      { code: "candidate_access_failed", error: String(error) },
+      "Runtime candidate executable permission check failed",
+    );
     return { status: "unknown", detail: "A Runtime candidate's executable permission could not be inspected" };
   }
   try {
     return { status: "installed", path: await dependencies.realpath(candidate) };
   } catch (error) {
+    logger.debug(
+      { code: "candidate_realpath_failed", error: String(error) },
+      "Runtime candidate canonicalization failed",
+    );
     return missingOrUnknown(error);
   }
 }

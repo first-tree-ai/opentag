@@ -1,5 +1,6 @@
 import { readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { createLogger } from "../observability/logger.js";
 import { protectedRoots, type ReadLink, resolveOutsideProtectedRoots } from "./protected-paths.js";
 
 /** Injectable directory listing so tests need no real version-manager install. */
@@ -23,6 +24,7 @@ export type VersionManagerDirDeps = {
 };
 
 type RootScan = { kind: "skip" } | { kind: "ambiguous" } | { kind: "one"; dir: string };
+const logger = createLogger("runtime-install-locations");
 
 /**
  * The `bin` dir to fall back to when a version manager's per-session `$PATH`
@@ -76,7 +78,11 @@ export function versionManagerBinDirs(home: string, deps: VersionManagerDirDeps 
     let entries: string[];
     try {
       entries = readDir(vetted);
-    } catch {
+    } catch (error) {
+      logger.debug(
+        { code: "version_manager_scan_failed", error: String(error) },
+        "Version manager directory scan failed",
+      );
       return { kind: "skip" };
     }
     if (entries.length === 0) return { kind: "skip" };

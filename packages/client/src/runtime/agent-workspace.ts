@@ -9,6 +9,7 @@ import {
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
+import { createLogger } from "../observability/logger.js";
 import {
   assertRealDirectory,
   assertWithin,
@@ -23,6 +24,8 @@ import {
 import { agentRuntimePaths } from "./runtime-paths.js";
 import type { SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
 import type { RuntimePreparation } from "./session-reconciler.js";
+
+const logger = createLogger("runtime-agent-workspace");
 
 interface AgentWorkspaceIdentity {
   agentId: string;
@@ -212,7 +215,11 @@ async function removeProvenManagedFile(
   try {
     stranded = await readSecureFile(quarantine);
     if (stranded !== undefined) strandedIsReadOnly = isReadOnlyRegularFile(await lstat(quarantine));
-  } catch {
+  } catch (error) {
+    logger.debug(
+      { code: "quarantine_inspection_failed", error: String(error) },
+      "Agent workspace quarantine inspection failed",
+    );
     await restoreQuarantinedEntry(quarantine, path);
     throw new RuntimeStorageError("conflict", "A non-file Workspace entry was isolated during cleanup");
   }
@@ -239,6 +246,7 @@ async function removeProvenManagedFile(
     await rename(path, quarantine);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    logger.debug({ code: "workspace_quarantine_failed", error: String(error) }, "Agent workspace quarantine failed");
     throw error;
   }
   await syncDurableDirectory(dirname(path));
@@ -259,6 +267,10 @@ async function removeProvenManagedFile(
     isolated = await readSecureFile(quarantine);
   } catch (error) {
     if (error instanceof RuntimeStorageError && error.code === "conflict") throw error;
+    logger.debug(
+      { code: "quarantine_verification_failed", error: String(error) },
+      "Agent workspace quarantine verification failed",
+    );
     await restoreQuarantinedEntry(quarantine, path);
     throw new RuntimeStorageError("conflict", "A Workspace entry changed while cleanup verified it");
   }
@@ -280,6 +292,10 @@ async function restoreQuarantinedEntry(quarantine: string, path: string): Promis
     status = await lstat(quarantine);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    logger.debug(
+      { code: "quarantine_restore_stat_failed", error: String(error) },
+      "Agent workspace quarantine restore inspection failed",
+    );
     throw error;
   }
   try {
@@ -298,6 +314,10 @@ async function restoreQuarantinedEntry(quarantine: string, path: string): Promis
     } else await link(quarantine, path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    logger.debug(
+      { code: "quarantine_restore_failed", error: String(error) },
+      "Agent workspace quarantine restore failed",
+    );
     throw error;
   }
   await syncDurableDirectory(dirname(path));
@@ -459,6 +479,10 @@ async function realDirectoryExists(path: string): Promise<boolean> {
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    logger.debug(
+      { code: "workspace_directory_check_failed", error: String(error) },
+      "Agent workspace directory check failed",
+    );
     throw error;
   }
 }

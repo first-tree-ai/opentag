@@ -6,6 +6,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { DirectImMessageDeliveryRequest, RuntimeImSteerRequest } from "@opentag/shared";
 import type { OpenTagApi } from "../api.js";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
 
@@ -13,15 +14,18 @@ export class ImResourceFetcher {
   readonly #api?: Pick<OpenTagApi, "openImResource">;
   readonly #instanceId: string;
   readonly #machineToken?: string;
+  readonly #logger: ClientLogger;
 
   constructor(input: {
     instanceId: string;
     api?: Pick<OpenTagApi, "openImResource">;
     machineToken?: string;
+    logger?: ClientLogger;
   }) {
     this.#api = input.api;
     this.#instanceId = input.instanceId;
     this.#machineToken = input.machineToken;
+    this.#logger = input.logger ?? createLogger("runtime-im-resource-fetcher");
   }
 
   async fetchForTurn(
@@ -51,7 +55,11 @@ export class ImResourceFetcher {
           await access(target);
           lines.push(`- ${resourceLabel}: ${target}`);
           continue;
-        } catch {
+        } catch (error) {
+          this.#logger.debug(
+            { code: "resource_target_missing", error: String(error) },
+            "IM resource target is not published",
+          );
           // A complete target is published only after a private temporary download succeeds.
         }
         const response = await this.#api.openImResource(this.#machineToken, resource.imMessageId, resource.ordinal, {
@@ -74,8 +82,17 @@ export class ImResourceFetcher {
         );
         await rename(temporary, target);
         lines.push(`- ${resourceLabel}: ${target}`);
-      } catch {
-        await rm(temporary, { force: true }).catch(() => undefined);
+      } catch (error) {
+        this.#logger.debug({ code: "resource_download_failed", error: String(error) }, "IM resource download failed");
+        await rm(temporary, { force: true }).catch((cleanupError: unknown) => {
+          this.#logger.debug(
+            {
+              code: "resource_temp_cleanup_failed",
+              error: String(cleanupError),
+            },
+            "IM resource temporary file cleanup failed",
+          );
+        });
         lines.push(`- ${resourceLabel}: unavailable (download failed)`);
       }
     }

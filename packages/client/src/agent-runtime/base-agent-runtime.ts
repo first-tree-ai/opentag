@@ -1,3 +1,4 @@
+import { createLogger } from "../observability/logger.js";
 import { AgentProviderError, AgentRuntimeError } from "./errors.js";
 import { AgentRunEventValidator } from "./event-validator.js";
 import type {
@@ -69,6 +70,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
   #sinkFailure?: Error;
   #closePromise?: Promise<void>;
   #providerFailureClosing = false;
+  static readonly #logger = createLogger("agent-runtime");
 
   protected constructor(options: BaseAgentRuntimeOptions) {
     this.manifest = Object.freeze({ ...options.manifest });
@@ -277,7 +279,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     if (!this.#sinkFailure) {
       try {
         await this.#dispatch(this.#terminalEvent(result));
-      } catch {
+      } catch (error) {
+        BaseAgentRuntime.#logger.debug(
+          { code: "terminal_event_delivery_failed", error: String(error) },
+          "Agent Runtime terminal event delivery failed",
+        );
         result = this.#eventDeliveryFailure(record.request.runId, result);
       }
     } else {
@@ -450,7 +456,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       try {
         await record.admissionEvent;
         await this.#dispatch(this.#terminalEvent(result));
-      } catch {
+      } catch (error) {
+        BaseAgentRuntime.#logger.debug(
+          { code: "cancelled_event_delivery_failed", error: String(error) },
+          "Agent Runtime cancelled event delivery failed",
+        );
         result = {
           ...result,
           error: { code: "event_delivery_failed", message: "the ordered event sink rejected an event" },
@@ -506,6 +516,10 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       await this.#eventSink(snapshot);
     });
     this.#dispatchTail = delivery.catch((error: unknown) => {
+      BaseAgentRuntime.#logger.debug(
+        { code: "event_sink_failed", error: String(error) },
+        "Agent Runtime event sink failed",
+      );
       this.#breakEventSink(error instanceof Error ? error : new Error("event sink rejected an event"));
     });
     return delivery;
@@ -529,7 +543,12 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       });
     }
     /* v8 ignore next -- closing after a sink failure must not raise a second fault. */
-    void this.close().catch(() => undefined);
+    void this.close().catch((error: unknown) => {
+      BaseAgentRuntime.#logger.debug(
+        { code: "close_after_sink_failure_failed", error: String(error) },
+        "Agent Runtime close after sink failure failed",
+      );
+    });
   }
 
   async #closeInternal(): Promise<void> {
@@ -542,7 +561,12 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     }
     const aborting =
       active && !this.#providerFailureClosing
-        ? this.#requestAbort(active, "runtime closing").catch(() => undefined)
+        ? this.#requestAbort(active, "runtime closing").catch((error: unknown) => {
+            BaseAgentRuntime.#logger.debug(
+              { code: "abort_during_close_failed", error: String(error) },
+              "Agent Runtime abort during close failed",
+            );
+          })
         : Promise.resolve();
     let closeError: unknown;
     const providerClosing = this.closeProvider().catch((error: unknown) => {
@@ -564,7 +588,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         try {
           await record.admissionEvent;
           await this.#dispatch(this.#terminalEvent(result));
-        } catch {
+        } catch (error) {
+          BaseAgentRuntime.#logger.debug(
+            { code: "queued_event_delivery_failed", error: String(error) },
+            "Agent Runtime queued event delivery failed",
+          );
           queueSinkHealthy = false;
           result = {
             ...result,
@@ -580,7 +608,12 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     await active?.promise;
     await this.#dispatchTail;
     if (!this.#sinkFailure) {
-      await this.#dispatch({ type: "runtime_closed" }).catch(() => undefined);
+      await this.#dispatch({ type: "runtime_closed" }).catch((error: unknown) => {
+        BaseAgentRuntime.#logger.debug(
+          { code: "runtime_closed_event_delivery_failed", error: String(error) },
+          "Agent Runtime closed event delivery failed",
+        );
+      });
     }
     this.#phase = "closed";
     this.#active = undefined;

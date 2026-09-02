@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access, chmod, lstat, mkdir, realpath } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
+import { createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory, readSecureFile, writeDurableFile } from "../../storage/durable-file.js";
 import { type ProviderCliAccountLayout, providerCliLauncherPath } from "./account-layout.js";
 import type { ProviderCliCatalogEntry } from "./catalog.js";
@@ -23,6 +24,7 @@ import type { ProviderCliProvider } from "./types.js";
 
 const LAUNCHER_MARKER = "# opentag-provider-cli-launcher: v1";
 const SHIM_MARKER = "# opentag-provider-cli-shim: v1";
+const logger = createLogger("runtime-provider-cli-launcher");
 
 export type ProviderCliLauncherStatus = "valid" | "missing" | "invalid" | "mismatch";
 
@@ -71,7 +73,10 @@ export async function reconcileProviderCliLauncher(
   const launcherPath = providerCliLauncherPath(layout, entry.command);
   await ensurePrivateDirectory(layout.root, layout.bin);
   const expected = renderProviderCliLauncher(entry, selection);
-  const current = await readSecureFile(launcherPath).catch(() => undefined);
+  const current = await readSecureFile(launcherPath).catch((error: unknown) => {
+    logger.debug({ code: "launcher_read_failed", error: String(error) }, "Provider CLI launcher read failed");
+    return undefined;
+  });
   if (current === expected) {
     await chmod(launcherPath, 0o755);
     return { path: launcherPath, changed: false };
@@ -87,7 +92,13 @@ export async function inspectProviderCliLauncher(
   selection: ProviderCliSelection | undefined,
 ): Promise<{ status: ProviderCliLauncherStatus; path: string }> {
   const launcherPath = providerCliLauncherPath(layout, entry.command);
-  const content = await readSecureFile(launcherPath).catch(() => undefined);
+  const content = await readSecureFile(launcherPath).catch((error: unknown) => {
+    logger.debug(
+      { code: "launcher_inspection_read_failed", error: String(error) },
+      "Provider CLI launcher inspection read failed",
+    );
+    return undefined;
+  });
   if (content === undefined) return { status: "missing", path: launcherPath };
   if (!isProviderCliLauncherContent(content, entry.provider)) return { status: "invalid", path: launcherPath };
   if (selection && content !== renderProviderCliLauncher(entry, selection)) {
@@ -111,7 +122,10 @@ export async function reconcileProviderCliShim(
   const shimPath = join(layout.publicBinDir, entry.command);
   const launcherPath = providerCliLauncherPath(layout, entry.command);
   const expected = renderProviderCliShim(entry.provider, launcherPath);
-  const current = await readSecureFile(shimPath).catch(() => undefined);
+  const current = await readSecureFile(shimPath).catch((error: unknown) => {
+    logger.debug({ code: "shim_read_failed", error: String(error) }, "Provider CLI shim read failed");
+    return undefined;
+  });
   if (current === expected) {
     await chmod(shimPath, 0o755);
     return { status: "unchanged", path: shimPath };
@@ -148,7 +162,10 @@ export async function inspectGlobalCommand(
   env: NodeJS.ProcessEnv,
 ): Promise<ProviderCliGlobalCommandStatus> {
   const shimPath = join(layout.publicBinDir, command);
-  const shimContent = await readSecureFile(shimPath).catch(() => undefined);
+  const shimContent = await readSecureFile(shimPath).catch((error: unknown) => {
+    logger.debug({ code: "global_shim_read_failed", error: String(error) }, "Provider CLI global shim read failed");
+    return undefined;
+  });
   const ours = shimContent?.startsWith(`#!/bin/sh\n${SHIM_MARKER} `) === true;
   const launcherPath = providerCliLauncherPath(layout, command);
 
@@ -162,11 +179,30 @@ export async function inspectGlobalCommand(
       if (!status.isFile() && !status.isSymbolicLink()) continue;
       resolvedPath = await realpath(candidate);
       break;
-    } catch {}
+    } catch (error) {
+      logger.debug(
+        { code: "global_command_resolution_failed", error: String(error) },
+        "Provider CLI global command resolution failed",
+      );
+    }
   }
 
-  const shimCanonical = ours ? await realpath(shimPath).catch(() => shimPath) : undefined;
-  const launcherCanonical = await realpath(launcherPath).catch(() => undefined);
+  const shimCanonical = ours
+    ? await realpath(shimPath).catch((error: unknown) => {
+        logger.debug(
+          { code: "shim_realpath_failed", error: String(error) },
+          "Provider CLI shim canonicalization failed",
+        );
+        return shimPath;
+      })
+    : undefined;
+  const launcherCanonical = await realpath(launcherPath).catch((error: unknown) => {
+    logger.debug(
+      { code: "launcher_realpath_failed", error: String(error) },
+      "Provider CLI launcher canonicalization failed",
+    );
+    return undefined;
+  });
   const active = resolvedPath !== undefined && (resolvedPath === shimCanonical || resolvedPath === launcherCanonical);
   const shadowed = resolvedPath !== undefined && !active;
   return {

@@ -46,6 +46,32 @@ describe("Client logger", () => {
     await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain("First diagnostic");
   });
 
+  it("re-resolves a module logger after service configuration", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "debug";
+    vi.resetModules();
+
+    const { AgentRunEventValidator } = await import("../../agent-runtime/event-validator.js");
+    const configuredLogger = await import("../logger.js");
+    configuredLogger.configureClientLoggerForService(directory);
+
+    const event = new Proxy(
+      { type: "message_started", messageId: "message" },
+      {
+        get() {
+          throw "invalid provider object";
+        },
+      },
+    );
+    expect(() => new AgentRunEventValidator().accept(event as never)).toThrow();
+
+    await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain(
+      "Provider event validation failed",
+    );
+    expect(stderrWrites.write).not.toHaveBeenCalled();
+    configuredLogger.resetClientLoggerForTests();
+  });
+
   it("writes a terminal daemon failure to stderr and the file sink", async () => {
     const directory = await temporaryDirectory();
     process.env.OPENTAG_LOG_LEVEL = "info";

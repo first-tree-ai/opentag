@@ -45,7 +45,7 @@
   "onboarding_v2_connect_hide_repair": "隐藏修复命令",
   "onboarding_v2_connect_lead": "你的 AI Worker 运行在自己的电脑上。将这台电脑连接到 OpenTag。",
   "onboarding_v2_connect_offline": "离线",
-  "onboarding_v2_connect_offline_for": "{computerName} 处于离线状态。请在那台电脑上启动 OpenTag；重新连接后此页面会继续。",
+  "onboarding_v2_connect_offline_for": "{computerName} 处于离线状态。请在那台电脑的终端运行 opentag daemon start；重新连接后此页面会继续。",
   "onboarding_v2_connect_offline_last_seen": "离线 · 上次在线 {when}",
   "onboarding_v2_connect_online": "在线",
   "onboarding_v2_connect_preparing": "正在准备连接命令…",

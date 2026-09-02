@@ -1,4 +1,5 @@
 export const OPENTAG_ATTR = {
+  ACCOUNT_ID: "opentag.account.id",
   AGENT_ID: "opentag.agent.id",
   ATTEMPT: "opentag.attempt",
   COMPUTER_ID: "opentag.computer.id",

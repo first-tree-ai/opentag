@@ -1,6 +1,11 @@
 import { resolve } from "node:path";
+import { redactForLog } from "@opentag/shared";
 import pino, { type DestinationStream, type Logger as PinoLogger } from "pino";
-import { RotatingFileStream, writeStringToFileDescriptor } from "./rotating-file-stream.js";
+import {
+  CLIENT_LOG_MIN_RETENTION_MS,
+  RotatingFileStream,
+  writeStringToFileDescriptor,
+} from "./rotating-file-stream.js";
 
 export type ClientLogBindings = Readonly<Record<string, unknown>>;
 
@@ -12,11 +17,11 @@ export interface ClientLogger {
   warn(fields: ClientLogBindings, message: string): void;
 }
 
-interface CreateLoggerOptions {
-  destination?: "configured" | "stderr";
+export interface CreateLoggerOptions {
+  destination?: "configured" | "stderr" | "file" | "dual";
 }
 
-const LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal"]);
+const LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal", "silent"]);
 const SENSITIVE_KEYS = [
   "password",
   "token",
@@ -41,6 +46,7 @@ const REDACT_PATHS = [
 let serviceDirectory: string | undefined;
 let serviceStream: RotatingFileStream | undefined;
 let rootLogger: PinoLogger | undefined;
+let clientLoggerContext: ClientLogBindings = {};
 
 export function configureClientLoggerForService(logDirectory: string): void {
   const canonicalDirectory = resolve(logDirectory);
@@ -49,12 +55,20 @@ export function configureClientLoggerForService(logDirectory: string): void {
   }
   if (serviceDirectory) return;
   serviceDirectory = canonicalDirectory;
-  serviceStream = new RotatingFileStream(canonicalDirectory);
+  serviceStream = new RotatingFileStream(canonicalDirectory, { minRetentionMs: CLIENT_LOG_MIN_RETENTION_MS });
+  rootLogger = undefined;
+}
+
+export function configureClientLoggerContext(bindings: ClientLogBindings): void {
+  clientLoggerContext = { ...clientLoggerContext, ...redactForLog(bindings) };
   rootLogger = undefined;
 }
 
 export function createLogger(module: string, options: CreateLoggerOptions = {}): ClientLogger {
-  return adapt(options.destination === "stderr" ? buildRoot(stderrDestination(), false) : root(), { module });
+  if (options.destination === "stderr") return adapt(buildRoot(stderrDestination(), false), { module });
+  if (options.destination === "file") return adapt(buildRoot(fileDestination(), true), { module });
+  if (options.destination === "dual") return adapt(buildRoot(dualDestination(), true), { module });
+  return adapt(root(), { module });
 }
 
 export function resetClientLoggerForTests(): void {
@@ -62,6 +76,7 @@ export function resetClientLoggerForTests(): void {
   serviceDirectory = undefined;
   serviceStream = undefined;
   rootLogger = undefined;
+  clientLoggerContext = {};
 }
 
 function root(): PinoLogger {
@@ -78,7 +93,7 @@ function buildRoot(destination: DestinationStream, serviceMode: boolean): PinoLo
     (configured ? "info" : process.env.NODE_ENV === "test" ? "silent" : serviceMode ? "info" : "warn");
   const logger = pino(
     {
-      base: null,
+      base: Object.keys(clientLoggerContext).length > 0 ? clientLoggerContext : null,
       level,
       messageKey: "message",
       redact: { paths: REDACT_PATHS, censor: "[REDACTED]" },
@@ -104,9 +119,33 @@ function stderrDestination(): DestinationStream {
   };
 }
 
+function fileDestination(): DestinationStream {
+  return serviceStream ?? stderrDestination();
+}
+
+function dualDestination(): DestinationStream {
+  const file = serviceStream;
+  if (!file) return stderrDestination();
+  return {
+    write(chunk: string) {
+      file.write(chunk);
+      try {
+        writeStringToFileDescriptor(2, chunk);
+      } catch {
+        // Logging failures never escape into runtime behavior.
+      }
+    },
+  };
+}
+
 function adapt(logger: PinoLogger, bindings: ClientLogBindings): ClientLogger {
   const write = (method: "debug" | "error" | "info" | "warn", fields: ClientLogBindings, message: string) =>
-    safeWrite(() => logger[method]({ ...bindings, ...fields }, message));
+    safeWrite(() => {
+      // Redaction walks and rewrites every string, so it must not run for a line the level discards.
+      // Pino would drop the record anyway, but the arguments are evaluated before that call.
+      if (!logger.isLevelEnabled(method)) return;
+      logger[method](redactForLog({ ...bindings, ...fields }) as ClientLogBindings, redactForLog(message));
+    });
   return {
     child: (childBindings) => adapt(logger, { ...bindings, ...childBindings }),
     debug: (fields, message) => write("debug", fields, message),

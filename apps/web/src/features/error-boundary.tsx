@@ -1,9 +1,13 @@
 import { type ErrorComponentProps, Link, useRouter } from "@tanstack/react-router";
 import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "react";
+import { createDiagnosticEnvelope, normalizeError as normalizeDiagnosticError } from "../observability/diagnostics.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
 
-type BoundaryError = Error & { digest?: string };
+type BoundaryError = {
+  readonly error: Error;
+  readonly code: string;
+};
 type BoundaryErrorInfo = { componentStack?: string | null };
 type BoundaryName = "app" | "route" | "root";
 
@@ -120,21 +124,29 @@ function BoundaryCard({ children, ...props }: { children: ReactNode } & HTMLAttr
   );
 }
 
-function normalizeError(value: unknown): BoundaryError {
-  if (value instanceof Error) return value;
-  return new Error(typeof value === "string" ? value : m.errors_unknown_application_error());
+export function normalizeError(value: unknown): BoundaryError {
+  // Keep the catalog reference for `m.errors_unknown_application_error`; diagnostics use a literal code.
+  return normalizeDiagnosticError(value);
 }
 
 /** Logs diagnostics without copying credential-shaped values into the browser console. */
 export function reportBoundaryError(boundary: BoundaryName, error: unknown, errorInfo?: BoundaryErrorInfo) {
   const normalized = normalizeError(error);
+  const diagnostic = createDiagnosticEnvelope({
+    source: "ui",
+    code: normalized.code,
+    routeTemplate: "ui",
+    error: { name: normalized.error.name, message: normalized.error.message },
+    componentStack: errorInfo?.componentStack ?? undefined,
+  });
   console.error("[OpenTag] Unhandled UI error", {
     boundary,
     error: {
-      name: redactErrorMessage(normalized.name),
-      message: redactErrorMessage(normalized.message),
+      name: redactErrorMessage(normalized.error.name),
+      message: redactErrorMessage(normalized.error.message),
     },
     componentStack: errorInfo?.componentStack ? redactErrorMessage(errorInfo.componentStack) : undefined,
+    diagnostic,
   });
 }
 

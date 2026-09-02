@@ -61,9 +61,9 @@ function resetOperations(): readonly ResetOperation[] {
 function toolPages() {
   return [
     {
-      description: m.common_onboarding_mock_description(),
-      title: m.common_onboarding_mock(),
-      to: "/internal/onboarding-v2",
+      description: m.common_agent_setup_lab_description(),
+      title: m.common_agent_setup_lab(),
+      to: "/internal/agent-setup",
     },
   ] as const;
 }

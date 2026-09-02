@@ -436,12 +436,12 @@ management container. Context Tree can preserve long-term context independently;
 ownership or change Computer connection, Agent placement, or IM binding.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
-## Onboarding end-to-end check
+## Agent Setup end-to-end check
 
-`scripts/e2e/onboarding-e2e.mjs` drives the whole `/onboarding` flow against a real Server, a real PostgreSQL database,
+`scripts/e2e/onboarding-e2e.mjs` drives the whole `/agents/setup` flow against a real Server, a real PostgreSQL database,
 the real Web build, and a real Computer daemon. It signs in through the browser, reads the connect command from the
 page, exchanges it with the CLI, runs `daemon service-run`, waits for the negotiated Provider readiness projection,
-creates the Agent from the form, and then checks the handoff, the authorized setup gate, persisted completion, and that a
+creates the Agent before Computer preparation, and then checks the handoff, Account admission, persisted readiness, and that a
 later runtime outage stays in the normal Agents product flow.
 
 ```bash

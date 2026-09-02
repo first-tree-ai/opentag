@@ -43,7 +43,7 @@ function setupSnapshot(targetAgentId: string) {
   };
 }
 
-function installOnboardingApi(options?: Parameters<typeof installApi>[0]) {
+function installAgentSetupApi(options?: Parameters<typeof installApi>[0]) {
   installApi(options);
   const fallback = vi.mocked(fetch).getMockImplementation();
   if (!fallback) throw new Error("installApi did not install fetch");
@@ -64,28 +64,88 @@ function agentListReads() {
   return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === undefined);
 }
 
-describe("Onboarding exact-target route boundary", () => {
+describe("Agent Setup route boundary", () => {
   beforeEach(resetWebAppState);
 
   it("renders the creation flow without creating anything when the Account has no Agent", async () => {
-    installOnboardingApi({ emptyAgents: true, setupCompletedAt: null });
-    window.history.replaceState({}, "", "/onboarding");
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).not.toContain("agentId=");
     // Zero targets means the reader creates deliberately — never an automatic POST from a visit.
     expect(agentCreationPosts()).toHaveLength(0);
   });
 
+  it("starts explicit creation without resolving existing Agents, then canonicalizes to the created Agent", async () => {
+    installAgentSetupApi();
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
+    expect(window.location.pathname).toBe("/agents/setup");
+    const posts = agentCreationPosts();
+    expect(posts).toHaveLength(1);
+    const body = JSON.parse(String(posts[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(body.runtimeProvider).toBe("codex");
+    expect(body.creationIntentId).toEqual(expect.any(String));
+    expect(body).not.toHaveProperty("computerId");
+  });
+
+  it("fails closed when action=create conflicts with an exact target", async () => {
+    installAgentSetupApi();
+    window.history.replaceState({}, "", `/agents/setup?action=create&agentId=${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
+    expect(agentListReads()).toHaveLength(0);
+    expect(agentCreationPosts()).toHaveLength(0);
+  });
+
+  it("keeps an uncertain creation explicit and retries only after the reader asks", async () => {
+    installAgentSetupApi();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let firstCreate = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST" && firstCreate) {
+        firstCreate = false;
+        throw new TypeError("Connection closed before the result arrived");
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    expect(await screen.findByRole("heading", { name: "Creation attempt interrupted" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check result" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Discard and start over" })).toBeTruthy();
+    expect(window.location.search).toBe("?action=create");
+    fireEvent.click(screen.getByRole("button", { name: "Retry creation" }));
+
+    await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
+    expect(agentCreationPosts()).toHaveLength(2);
+  });
+
   it("redirects an un-targeted visit to the canonical exact URL when the Account has one active Agent", async () => {
-    installOnboardingApi({ setupCompletedAt: null });
-    window.history.replaceState({}, "", "/onboarding");
+    installAgentSetupApi({ setupCompletedAt: null });
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
     await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     const completions = vi
@@ -96,8 +156,8 @@ describe("Onboarding exact-target route boundary", () => {
   });
 
   it("asks for an explicit choice when the Account has several active Agents", async () => {
-    installOnboardingApi({ agentList: [agentListItem, secondAgentListItem], setupCompletedAt: null });
-    window.history.replaceState({}, "", "/onboarding");
+    installAgentSetupApi({ agentList: [agentListItem, secondAgentListItem], setupCompletedAt: null });
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Choose an agent to set up" })).toBeTruthy();
@@ -109,13 +169,13 @@ describe("Onboarding exact-target route boundary", () => {
     fireEvent.click(screen.getByRole("link", { name: "Helper" }));
 
     await waitFor(() => expect(window.location.search).toContain(`agentId=${secondAgentId}`));
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(await screen.findByRole("heading", { name: "Set up Helper" })).toBeTruthy();
   });
 
   it("fails closed on a malformed exact id without reading or listing anything", async () => {
-    installOnboardingApi({ setupCompletedAt: null });
-    window.history.replaceState({}, "", "/onboarding?agentId=not-a-uuid");
+    installAgentSetupApi({ setupCompletedAt: null });
+    window.history.replaceState({}, "", "/agents/setup?agentId=not-a-uuid");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
@@ -128,8 +188,8 @@ describe("Onboarding exact-target route boundary", () => {
   });
 
   it("fails closed on a missing exact id and never falls back to the list", async () => {
-    installOnboardingApi({ setupCompletedAt: null });
-    window.history.replaceState({}, "", `/onboarding?agentId=${missingAgentId}`);
+    installAgentSetupApi({ setupCompletedAt: null });
+    window.history.replaceState({}, "", `/agents/setup?agentId=${missingAgentId}`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
@@ -140,8 +200,8 @@ describe("Onboarding exact-target route boundary", () => {
   });
 
   it("fails closed on an inactive exact id even when the Account owns it", async () => {
-    installOnboardingApi({ initialStatus: "suspended", setupCompletedAt: null });
-    window.history.replaceState({}, "", `/onboarding?agentId=${agentId}`);
+    installAgentSetupApi({ initialStatus: "suspended", setupCompletedAt: null });
+    window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
@@ -150,8 +210,8 @@ describe("Onboarding exact-target route boundary", () => {
   });
 
   it("treats an Account with no active Agent as having zero targets", async () => {
-    installOnboardingApi({ initialStatus: "suspended", setupCompletedAt: null });
-    window.history.replaceState({}, "", "/onboarding");
+    installAgentSetupApi({ initialStatus: "suspended", setupCompletedAt: null });
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
@@ -159,19 +219,19 @@ describe("Onboarding exact-target route boundary", () => {
   });
 
   it("fails closed on a foreign exact id for a completed Account instead of entering the app", async () => {
-    installOnboardingApi();
-    window.history.replaceState({}, "", `/onboarding?agentId=${missingAgentId}`);
+    installAgentSetupApi();
+    window.history.replaceState({}, "", `/agents/setup?agentId=${missingAgentId}`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
   });
 
   it("retries Account admission explicitly without starting Agent setup before access opens", async () => {
-    installOnboardingApi({ setupCompletedAt: null });
+    installAgentSetupApi({ setupCompletedAt: null });
     const fallback = vi.mocked(fetch).getMockImplementation();
-    if (!fallback) throw new Error("installOnboardingApi did not install fetch");
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
     let admissionUnavailable = true;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       if (String(input) === "/api/v1/me/setup/complete" && init?.method === "POST" && admissionUnavailable) {
@@ -182,7 +242,7 @@ describe("Onboarding exact-target route boundary", () => {
       }
       return fallback(input, init);
     });
-    window.history.replaceState({}, "", `/onboarding?agentId=${agentId}`);
+    window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Could not open app access" })).toBeTruthy();
@@ -201,14 +261,14 @@ describe("Onboarding exact-target route boundary", () => {
     ).toHaveLength(2);
   });
 
-  it("keeps exact onboarding accessible for a completed Account without adopting again", async () => {
-    installOnboardingApi();
-    window.history.replaceState({}, "", `/onboarding?agentId=${agentId}`);
+  it("keeps exact setup accessible for a completed Account without adopting again", async () => {
+    installAgentSetupApi();
+    window.history.replaceState({}, "", `/agents/setup?agentId=${agentId}`);
     render(<App />);
 
     // The flow renders in place — no bounce to /agents — and a mere visit reports no completion.
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toContain(`agentId=${agentId}`);
     expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
     expect(
@@ -218,19 +278,19 @@ describe("Onboarding exact-target route boundary", () => {
     ).toBe(false);
   });
 
-  it("sends a completed Account with no target and no Agents to the application", async () => {
-    installOnboardingApi({ emptyAgents: true });
-    window.history.replaceState({}, "", "/onboarding");
+  it("offers creation to a completed Account with no target and no active Agents", async () => {
+    installAgentSetupApi({ emptyAgents: true });
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents");
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents/setup");
   });
 
   it("fails closed when the Agent list cannot be read, and recovers only through an explicit retry", async () => {
     let listStatus: number | undefined = 503;
-    installOnboardingApi({ agentListStatus: () => listStatus, setupCompletedAt: null });
-    window.history.replaceState({}, "", "/onboarding");
+    installAgentSetupApi({ agentListStatus: () => listStatus, setupCompletedAt: null });
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Could not read your agents" })).toBeTruthy();

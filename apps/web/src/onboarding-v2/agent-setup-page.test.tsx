@@ -20,7 +20,7 @@ import {
   SETUP_OTHER_AGENT_ID,
   setupAgent,
 } from "./agent-setup-test-fixtures.js";
-import { OnboardingV2Page } from "./page.js";
+import { AgentSetupSurface } from "./page.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
 
@@ -56,17 +56,12 @@ function scriptedAdapter(
 
 function renderSetup(
   adapter: AgentSetupAdapter,
-  props: { agentId?: string; onReady?: (agentId: string) => Promise<void> | void; reviewMode?: boolean } = {},
+  props: { agentId?: string; onReady?: (agentId: string) => Promise<void> | void } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <AgentSetupPage
-        adapter={adapter}
-        agentId={props.agentId ?? SETUP_AGENT_ID}
-        onReady={props.onReady}
-        reviewMode={props.reviewMode}
-      />
+      <AgentSetupPage adapter={adapter} agentId={props.agentId ?? SETUP_AGENT_ID} onReady={props.onReady} />
     </QueryClientProvider>,
   );
 }
@@ -394,7 +389,8 @@ describe("AgentSetupPage transitions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Slack" }));
     await settle();
     const dialog = screen.getByRole("alertdialog");
-    expect(dialog.textContent).toContain("Teammates will no longer be able to send messages");
+    expect(dialog.textContent).toContain("stops new messages from reaching this Agent");
+    expect(dialog.textContent).toContain("Message history is preserved");
 
     const confirm = within(dialog).getAllByRole("button", { name: "Disconnect Slack" });
     fireEvent.click(confirm[confirm.length - 1] as HTMLElement);
@@ -580,22 +576,6 @@ describe("AgentSetupPage closed failures and review", () => {
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
   });
 
-  it("holds a re-board's readiness report until the tester finishes the review", async () => {
-    const onReady = vi.fn();
-    const memory = createMemorySetupAdapter({
-      agent: setupAgent(),
-      messaging: { kind: "bound", provider: "slack", reachable: true },
-    });
-    renderSetup(memory.adapter, { onReady, reviewMode: true });
-    await settle();
-
-    expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
-    expect(onReady).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Finish re-board" }));
-    await settle();
-    expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
-  });
-
   it("retries a refused readiness report a bounded number of times", async () => {
     const onReady = vi
       .fn<(agentId: string) => Promise<void>>()
@@ -619,13 +599,13 @@ describe("AgentSetupPage closed failures and review", () => {
   });
 });
 
-describe("OnboardingV2Page integration seam", () => {
+describe("AgentSetupSurface integration seam", () => {
   it("renders the canonical setup surface when the route names an exact Agent", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={queryClient}>
-        <OnboardingV2Page agentId={SETUP_AGENT_ID} setupAdapter={memory.adapter} />
+        <AgentSetupSurface agentId={SETUP_AGENT_ID} setupAdapter={memory.adapter} />
       </QueryClientProvider>,
     );
     await settle();

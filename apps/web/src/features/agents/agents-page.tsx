@@ -1,10 +1,10 @@
 import { Link } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
-import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
+import { buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
@@ -13,30 +13,24 @@ import type { AgentListItem } from "./agent-model.js";
 import { agentCardStatus } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
-import { NewAgentDialog } from "./new-agent-page.js";
 
 export function AgentsPage() {
   const { me } = useAccount();
-  const [createOpen, setCreateOpen] = useState(false);
-  const createTriggerRef = useRef<HTMLButtonElement>(null);
   const state = useAgentListView(me.user.id);
   return (
-    <>
-      <Page
-        action={
-          <div data-ui="agents-page-action">
-            <Button ref={createTriggerRef} variant="secondary" onClick={() => setCreateOpen(true)}>
-              <Icon name="plus" weight="bold" /> {m.agents_new_agent()}
-            </Button>
-          </div>
-        }
-        description={m.agents_page_description()}
-        title={m.agents_title()}
-      >
-        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
-      </Page>
-      <NewAgentDialog open={createOpen} returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} />
-    </>
+    <Page
+      action={
+        <div data-ui="agents-page-action">
+          <Link className={buttonClassName({ variant: "secondary" })} search={{ action: "create" }} to="/agents/setup">
+            <Icon name="plus" weight="bold" /> {m.agents_new_agent()}
+          </Link>
+        </div>
+      }
+      description={m.agents_page_description()}
+      title={m.agents_title()}
+    >
+      <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
+    </Page>
   );
 }
 

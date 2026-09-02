@@ -42,7 +42,7 @@ describe("a brand inside a finished Chinese sentence", () => {
         action: "断开飞书",
         title: "断开飞书？",
         failed: "无法断开飞书，请重试。",
-        description: "团队成员将无法再通过飞书向此 Agent 发送消息。",
+        description: "断开飞书后，新消息将不再送达此 Agent，进行中的对话会结束；消息历史会保留。",
       });
       expect(sharedConversationDestination("feishu")).toBe("飞书群聊");
       expect(sharedConversationDestination("feishu", true)).toBe("已连接的飞书群聊");
@@ -55,7 +55,7 @@ describe("a brand inside a finished Chinese sentence", () => {
         action: "断开 Slack",
         title: "断开 Slack？",
         failed: "无法断开 Slack，请重试。",
-        description: "团队成员将无法再通过 Slack 向此 Agent 发送消息。",
+        description: "断开 Slack 后，新消息将不再送达此 Agent，进行中的对话会结束；消息历史会保留。",
       });
       expect(sharedConversationDestination("slack")).toBe("Slack 频道");
       expect(messagingCliMissingCopy("slack").startsWith("Slack 消息")).toBe(true);

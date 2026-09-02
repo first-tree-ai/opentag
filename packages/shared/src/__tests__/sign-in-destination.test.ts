@@ -14,7 +14,7 @@ describe("sign-in destination", () => {
       "/agents?tab=all",
       "/settings",
       "/settings/profile",
-      "/onboarding",
+      "/agents/setup",
       "/login",
     ]) {
       expect(resolveSignInDestination(destination)).toBe(destination);

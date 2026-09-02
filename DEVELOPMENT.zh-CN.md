@@ -401,11 +401,11 @@ Session collaboration 仍属于 Agent Runtime，不会引入产品 Workspace、P
 `OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
 `openssl rand -base64 32` 生成。
 
-## Onboarding 端到端检查
+## Agent Setup 端到端检查
 
 `scripts/e2e/onboarding-e2e.mjs` 会在真实 Server、真实 PostgreSQL、真实 Web 构建产物和真实 Computer daemon 上
-跑完整个 `/onboarding` 流程：浏览器登录、从页面读取连接命令、用 CLI 兑换、运行 `daemon service-run`、等待协商出的
-Provider readiness 投影、在表单里创建 Agent，然后检查 handoff、授权 setup gate、持久化完成状态，以及后续
+跑完整个 `/agents/setup` 流程：浏览器登录、先在表单里创建 Agent、从页面读取连接命令、用 CLI 兑换、运行
+`daemon service-run`、等待协商出的 Provider readiness 投影，然后检查 handoff、Account admission、持久化 readiness，以及后续
 运行时中断仍停留在正常 Agents 产品流程中的行为。
 
 ```bash

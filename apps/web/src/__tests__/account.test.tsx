@@ -184,37 +184,37 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Ada")).toBeTruthy();
   });
 
-  it("routes an Account with incomplete setup into onboarding without a legacy management scope", async () => {
+  it("routes an Account with incomplete admission into Agent Setup", async () => {
     installApi({ workspaceless: true });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
   });
 
-  it("keeps standalone onboarding reachable for an Account without completed setup", async () => {
+  it("keeps standalone Agent Setup reachable for an Account without completed admission", async () => {
     installApi({ workspaceless: true });
-    window.history.replaceState({}, "", "/onboarding");
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
 
-  it("routes an Account with incomplete setup into onboarding", async () => {
+  it("routes an Account with incomplete admission into Agent Setup", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
 
-  it("lets an Account with no finished setup bind a Computer without leaving onboarding", async () => {
+  it("lets an Account with no finished admission bind a Computer without leaving Agent Setup", async () => {
     /*
      * The recovery for an Agent that has no Computer has to work from inside the setup gate. It
      * once linked to that Agent's Computer settings, which lives under the shell that redirects
-     * every Account with `setupCompletedAt === null` straight back to onboarding -- so the exit
+     * every Account with `setupCompletedAt === null` straight back to Agent Setup -- so the exit
      * returned the reader to the screen they were trying to leave. A hook test cannot see that:
      * only the real router mounts the route that redirects. So the recovery is rendered here, and
      * this test drives it to a working bind rather than asserting a link's href.
@@ -223,7 +223,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
     // Reachable and resolved right here, not merely advertised: the Account has one Computer, so
     // the Agent is put on it without the reader being asked which.
@@ -238,10 +238,10 @@ describe("OpenTag Web App Shell", () => {
     );
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
   });
 
-  it("lets an Account with several Computers choose one without leaving onboarding", async () => {
+  it("lets an Account with several Computers choose one without leaving Agent Setup", async () => {
     /*
      * Which machine an Agent runs on is the reader's question when the Account holds more than one,
      * and this screen sits inside the setup gate -- so the choice has to be answerable here. A
@@ -271,24 +271,24 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     expect(screen.getByText("Reviewer has no computer yet. Connect the machine it should run on.")).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
 
     // The second row, so this cannot pass by binding whichever Computer happens to be first.
     fireEvent.click(await screen.findByRole("button", { name: "Use Spare" }));
 
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.location.pathname).toBe("/agents/setup");
   });
 
-  it("renders onboarding without the application navigation", async () => {
+  it("renders Agent Setup without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
     await screen.findByRole("heading", { name: "Set up Reviewer" });
 
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell
-    // brand would stand beside the one onboarding renders itself.
+    // brand would stand beside the one Agent Setup renders itself.
     // The sidebar is an <aside>, so it is `complementary`; asking for `navigation` here matched
     // nothing whether or not the shell rendered.
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).toBeNull();
@@ -296,17 +296,18 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryAllByRole("link", { name: "OpenTag" })).toHaveLength(0);
   });
 
-  it("keeps completed Accounts out of onboarding even when it is requested directly", async () => {
+  it("resolves a completed Account's target when Agent Setup is requested directly", async () => {
     installApi();
-    window.history.replaceState({}, "", "/onboarding");
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents");
+    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents/setup");
+    expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
 
-  it("keeps a staging re-board inspectable across its route handoff until it is explicitly finished", async () => {
+  it("uses normal Agent Setup and Open agent for a staging re-board", async () => {
     installApi({ bound: true, handoffReady: true, internalToolsOffered: true, provider: "slack" });
-    const firstMount = render(<App />);
+    render(<App />);
 
     const { menu } = await openAccountMenu();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Internal tools" }));
@@ -317,30 +318,15 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Re-board" }));
 
     expect(await screen.findByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
-    // D1 admits the Account as soon as the exact active owned Agent is adopted. Re-board remains
-    // a separate Agent-setup review and therefore still waits for the reader's explicit finish.
+    expect(window.location.pathname).toBe("/agents/setup");
     expect(
       vi
         .mocked(fetch)
         .mock.calls.filter(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST"),
     ).toHaveLength(1);
 
-    // The review intent is tab-scoped as well as represented in search, so a browser/history
-    // implementation that drops the search string still cannot turn a reload into auto-complete.
-    firstMount.unmount();
-    window.history.replaceState({}, "", "/onboarding");
-    render(<App />);
-    expect(await screen.findByRole("button", { name: "Finish re-board" })).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST"),
-    ).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "Finish re-board" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents");
+    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
     expect(
       vi
         .mocked(fetch)

@@ -29,10 +29,11 @@ import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import { COPY, RUNTIME_COPY } from "./copy.js";
+import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
-import { CardCopy, DoneStep } from "./steps.js";
+import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
 /** The snapshot doubles as the observation channel while the outside world is expected to move it. */
 const SETUP_POLL_MS = 2_000;
@@ -53,10 +54,12 @@ export interface AgentSetupPageProps {
   readonly agentId: string;
   /** Defaults to the HTTP adapter over the browser API; tests and the lab pass the in-memory one. */
   readonly adapter?: AgentSetupAdapter;
+  /** Returns to the Account's Agent list after Account admission has opened normal surfaces. */
+  readonly onBackToAgents?: () => void;
+  /** Opens the normal Agent surface after canonical setup reaches ready. */
+  readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
   readonly onReady?: (agentId: string) => Promise<void> | void;
-  /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
-  readonly reviewMode?: boolean;
 }
 
 type SetupPhase =
@@ -318,7 +321,7 @@ function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupC
   return { ...reader, ...actions, reload };
 }
 
-type ReadyReport = { readonly onFinish: () => void; readonly state: "failed" | "pending" | "ready" } | undefined;
+type ReadyReport = { readonly onFinish: () => void } | undefined;
 
 /**
  * Reporting readiness once the stage is `ready`. Reported from the render that first sees it —
@@ -329,15 +332,13 @@ function useReadyReport(
   snapshot: AgentSetupSnapshot | undefined,
   agentId: string,
   onReady: AgentSetupPageProps["onReady"],
-  reviewMode: boolean,
 ): ReadyReport {
   const reported = useRef<string | undefined>(undefined);
   const [reportAttempt, setReportAttempt] = useState(0);
   const [reportFailed, setReportFailed] = useState(false);
-  const [reviewConfirmed, setReviewConfirmed] = useState(false);
   useEffect(() => {
     if (snapshot?.stage !== "ready" || !onReady) return;
-    if (reported.current === agentId || reportFailed || (reviewMode && !reviewConfirmed)) return;
+    if (reported.current === agentId || reportFailed) return;
     // Claimed before the call so a re-render cannot report twice, and released if it fails.
     reported.current = agentId;
     let live = true;
@@ -350,7 +351,7 @@ function useReadyReport(
     return () => {
       live = false;
     };
-  }, [snapshot?.stage, agentId, onReady, reportAttempt, reportFailed, reviewMode, reviewConfirmed]);
+  }, [snapshot?.stage, agentId, onReady, reportAttempt, reportFailed]);
 
   if (!onReady) return undefined;
   if (reportFailed) {
@@ -359,14 +360,12 @@ function useReadyReport(
         setReportAttempt(0);
         setReportFailed(false);
       },
-      state: "failed",
     };
   }
-  if (reviewMode) return { onFinish: () => setReviewConfirmed(true), state: reviewConfirmed ? "pending" : "ready" };
   return undefined;
 }
 
-export function AgentSetupPage({ agentId, adapter, onReady, reviewMode = false }: AgentSetupPageProps) {
+export function AgentSetupPage({ agentId, adapter, onBackToAgents, onOpenAgent, onReady }: AgentSetupPageProps) {
   const resolvedAdapter = useMemo(() => adapter ?? createHttpSetupAdapter(), [adapter]);
   // Keyed on the exact target: a different Agent's setup is a different task, and remounting is
   // what retires everything the previous one still had in flight.
@@ -375,8 +374,9 @@ export function AgentSetupPage({ agentId, adapter, onReady, reviewMode = false }
       adapter={resolvedAdapter}
       agentId={agentId}
       key={agentId}
+      onBackToAgents={onBackToAgents}
+      onOpenAgent={onOpenAgent}
       onReady={onReady}
-      reviewMode={reviewMode}
     />
   );
 }
@@ -384,20 +384,26 @@ export function AgentSetupPage({ agentId, adapter, onReady, reviewMode = false }
 function AgentSetupPageContent({
   agentId,
   adapter,
+  onBackToAgents,
+  onOpenAgent,
   onReady,
-  reviewMode = false,
 }: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
   const controller = useAgentSetup(agentId, adapter);
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
-  const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
+  const report = useReadyReport(snapshot, agentId, onReady);
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
       <header className="flex items-center justify-between p-6">
         <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
+        {onBackToAgents ? (
+          <Button onClick={onBackToAgents} variant="ghost">
+            {m.onboarding_v2_back_to_agents()}
+          </Button>
+        ) : null}
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
-        <SetupPhaseView agentId={agentId} controller={controller} report={report} />
+        <SetupPhaseView agentId={agentId} controller={controller} onOpenAgent={onOpenAgent} report={report} />
       </main>
     </div>
   );
@@ -406,10 +412,12 @@ function AgentSetupPageContent({
 function SetupPhaseView({
   agentId,
   controller,
+  onOpenAgent,
   report,
 }: {
   readonly agentId: string;
   readonly controller: AgentSetupController;
+  readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
 }) {
   const { phase } = controller;
@@ -445,17 +453,37 @@ function SetupPhaseView({
       </div>
     );
   }
-  return <AgentSetupSnapshotView agentId={agentId} controller={controller} report={report} snapshot={phase.snapshot} />;
+  return (
+    <AgentSetupSnapshotView
+      agentId={agentId}
+      controller={controller}
+      onOpenAgent={onOpenAgent}
+      report={report}
+      snapshot={phase.snapshot}
+    />
+  );
+}
+
+function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
+  const computerComplete = stage === "needs-messaging" || stage === "ready";
+  const messagingComplete = stage === "ready";
+  return [
+    { id: "agent", status: "complete" },
+    { id: "computer", status: computerComplete ? "complete" : "current" },
+    { id: "messaging", status: messagingComplete ? "complete" : computerComplete ? "current" : "upcoming" },
+  ];
 }
 
 function AgentSetupSnapshotView({
   agentId,
   controller,
+  onOpenAgent,
   report,
   snapshot,
 }: {
   readonly agentId: string;
   readonly controller: AgentSetupController;
+  readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -464,6 +492,7 @@ function AgentSetupSnapshotView({
   const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
   return (
     <>
+      <StepRail steps={setupSteps(stage)} />
       <header className={SECTION_HEADER}>
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
@@ -481,6 +510,7 @@ function AgentSetupSnapshotView({
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
           <DoneStep
+            action={onOpenAgent ? { label: m.onboarding_v2_open_agent(), onClick: onOpenAgent } : undefined}
             completion={report}
             name={snapshot.agent.name}
             provider={snapshot.messaging.kind === "ready" ? snapshot.messaging.provider : undefined}

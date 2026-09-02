@@ -3,7 +3,7 @@
  * End-to-end onboarding check.
  *
  * Runs the real Server against a real PostgreSQL database, serves the real Web
- * build, drives a real Chromium browser through `/onboarding`, and connects a
+ * build, drives a real Chromium browser through `/agents/setup`, and connects a
  * real Computer with the real CLI daemon over the runtime WebSocket protocol.
  * Nothing in the Server, Web, Client, or CLI code paths is stubbed. The only
  * substituted artifacts are the local Claude Code and lark-cli executables,
@@ -392,9 +392,9 @@ async function main() {
       await page.screenshot({ path: join(ARTIFACT_DIRECTORY, `${name}.png`), fullPage: true });
     };
 
-    await step("sign in through the browser and land on /onboarding", async () => {
-      await page.goto(`${BASE_URL}/api/v1/auth/dev/callback?next=/onboarding`, { waitUntil: "networkidle" });
-      if (new URL(page.url()).pathname !== "/onboarding") throw new Error(`Landed on ${page.url()}`);
+    await step("sign in through the browser and land on /agents/setup", async () => {
+      await page.goto(`${BASE_URL}/api/v1/auth/dev/callback?next=/agents/setup`, { waitUntil: "networkidle" });
+      if (new URL(page.url()).pathname !== "/agents/setup") throw new Error(`Landed on ${page.url()}`);
       await page.getByRole("heading", { name: "Where should your agent run?" }).waitFor({ timeout: 15_000 });
       await shot("01-signed-in");
       return page.url();
@@ -405,7 +405,7 @@ async function main() {
       await page.getByRole("button", { name: "Continue" }).click();
       await page.getByRole("heading", { name: "Create your agent" }).waitFor({ timeout: 15_000 });
       await page.getByRole("button", { name: /Claude Code/ }).click();
-      await page.getByRole("button", { name: "Continue" }).click();
+      await page.getByRole("button", { name: "Create Agent" }).click();
       await page.getByRole("heading", { name: "Connect your computer" }).waitFor({ timeout: 15_000 });
       const command = await waitFor("the bootstrap command", async () => {
         const text = await page.locator("body").innerText();
@@ -451,24 +451,11 @@ async function main() {
       return connected ? `${PROVIDER_STUB ? "stubbed" : "installed"} local CLIs, daemon log: ${daemonLogPath}` : "";
     });
 
-    await step("complete the Computer check and create the Agent", async () => {
-      await waitFor(
-        "the passing Computer check",
-        async () => {
-          const passed = await page
-            .getByText("Everything your agent needs is ready.")
-            .isVisible()
-            .catch(() => false);
-          const next = page.getByRole("button", { name: "Continue" });
-          return passed && (await next.isEnabled().catch(() => false));
-        },
-        { timeoutMs: 120_000, intervalMs: 1_500 },
-      );
-      await shot("03-create-agent");
-      await page.getByRole("button", { name: "Continue" }).click();
-      await page.getByRole("heading", { name: "Connect your messaging app" }).waitFor({ timeout: 60_000 });
+    await step("complete Computer and runtime readiness for the exact Agent", async () => {
+      await page.getByRole("heading", { name: "Connect your messaging app" }).waitFor({ timeout: 120_000 });
+      await shot("03-agent-ready-for-messaging");
       await shot("04-handoff");
-      return "passing Computer check created the Claude Code Agent";
+      return "the existing Claude Code Agent reached Messaging setup";
     });
 
     await step("verify the Server facts behind the new Agent", async () => {

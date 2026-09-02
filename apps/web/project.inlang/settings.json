@@ -20,7 +20,7 @@
       "./messages/usage/{locale}.json",
       "./messages/skills/{locale}.json",
       "./messages/integrations/{locale}.json",
-      "./messages/onboarding/{locale}.json",
+      "./messages/agent-setup/{locale}.json",
       "./messages/onboarding-v2/{locale}.json",
       "./messages/im/{locale}.json"
     ]

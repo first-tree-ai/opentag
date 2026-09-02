@@ -49,7 +49,7 @@ function authenticatedUserId(request: FastifyRequest): string {
 
 /**
  * The callback returns only to a fixed surface the signed state named: the Agent's messaging settings or
- * the canonical `/onboarding?agentId=<exact-agent>` setup page. There is no caller-controlled return URL.
+ * the canonical `/agents/setup?agentId=<exact-agent>` setup page. There is no caller-controlled return URL.
  */
 function resultRedirect(
   publicOrigin: string,
@@ -58,7 +58,7 @@ function resultRedirect(
 ): string {
   const url = new URL("/", publicOrigin);
   if (target.agentId && target.returnSurface === "agent-setup") {
-    url.pathname = "/onboarding";
+    url.pathname = "/agents/setup";
     url.searchParams.set("agentId", target.agentId);
   } else if (target.agentId) {
     url.pathname = `/agents/${encodeURIComponent(target.agentId)}/settings/messaging`;

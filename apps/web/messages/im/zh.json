@@ -10,7 +10,7 @@
   "im_connection_error": "连接错误",
   "im_disconnect": "断开{providerName}",
   "im_disconnect_cancel": "保持连接",
-  "im_disconnect_description": "团队成员将无法再通过{providerName}向此 Agent 发送消息。",
+  "im_disconnect_description": "断开{providerName}后，新消息将不再送达此 Agent，进行中的对话会结束；消息历史会保留。",
   "im_disconnect_failed": "无法断开{providerName}，请重试。",
   "im_disconnect_title": "断开{providerName}？",
   "im_disconnected": "已断开",

@@ -26,9 +26,10 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByText("Example")).toBeNull();
     const agentLink = await screen.findByRole("link", { name: "Open Reviewer" });
-    const createAgent = screen.getByRole("button", { name: "New Agent" });
+    const createAgent = screen.getByRole("link", { name: "New Agent" });
     expect(createAgent.closest('[data-ui="page-header"]')).toBeTruthy();
     expect(createAgent.closest('[data-ui="agents-page-action"]')).toBeTruthy();
+    expect(createAgent.getAttribute("href")).toBe("/agents/setup?action=create");
     const agentRow = agentLink.closest('[data-ui="agent-row"]');
     expect(agentRow).toBeTruthy();
     expect(agentRow?.parentElement?.classList.contains("@container/agent-roster")).toBe(true);

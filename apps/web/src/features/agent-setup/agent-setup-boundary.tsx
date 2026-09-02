@@ -2,9 +2,10 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { browserApi } from "../../api.js";
 import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-review.js";
-import { OnboardingV2Page } from "../../onboarding-v2/page.js";
+import { AgentSetupSurface } from "../../onboarding-v2/page.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Loader, Text } from "../../ui/design-system.js";
+import { agentDetailLink } from "../agents/agent-routes.js";
 import { Redirect } from "../navigation/redirect.js";
 import { useAccount } from "../session/session-context.js";
 
@@ -45,14 +46,23 @@ function resolveTargets(agentId: string | undefined, active: readonly ActiveAgen
 }
 
 /**
- * The exact-target route boundary for canonical setup (`/onboarding?agentId=<exact-agent>`).
+ * The route boundary for canonical setup (`/agents/setup?agentId=<exact-agent>`).
  *
  * Without an `agentId` the Account's own cardinality decides: zero Agents renders the creation
  * flow, exactly one redirects to its canonical URL, and more than one asks the reader to choose
- * explicitly. A completed Account that arrives without a target is sent to the application; one
- * that arrives with a valid exact target stays — exact onboarding remains accessible after setup.
+ * explicitly. `action=create` bypasses cardinality and always opens a fresh creation form.
  */
-export function OnboardingBoundary({ agentId, review }: { agentId?: string; review?: "reboard" }) {
+export function AgentSetupBoundary({
+  action,
+  agentId,
+  invalidSearch = false,
+  review,
+}: {
+  action?: "create";
+  agentId?: string;
+  invalidSearch?: boolean;
+  review?: "reboard";
+}) {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
   const reviewMode = review === "reboard" || isReboardReviewFor(me.user.id);
@@ -60,49 +70,63 @@ export function OnboardingBoundary({ agentId, review }: { agentId?: string; revi
     async (adoptedAgentId: string) => {
       await browserApi.completeSetup(adoptedAgentId);
       await refreshMe();
+      if (reviewMode) forgetReboardReview();
     },
-    [refreshMe],
+    [refreshMe, reviewMode],
   );
-  const finishReview = useCallback(async () => {
-    forgetReboardReview();
-    await navigate({ replace: true, to: "/agents" });
+  const openAgent = useCallback(
+    async (targetAgentId: string) => {
+      await navigate(agentDetailLink(targetAgentId));
+    },
+    [navigate],
+  );
+  const backToAgents = useCallback(async () => {
+    await navigate({ to: "/agents" });
   }, [navigate]);
   const openExactTarget = useCallback(
     async (createdAgentId: string) => {
-      await navigate({ replace: true, search: { agentId: createdAgentId, review }, to: "/onboarding" });
+      await navigate({ replace: true, search: { agentId: createdAgentId, review }, to: "/agents/setup" });
     },
     [navigate, review],
   );
-  if (me.setupCompletedAt && agentId === undefined && !reviewMode) return <Redirect replace to="/agents" />;
   return (
-    <TargetedOnboarding
+    <TargetedAgentSetup
+      accountId={me.user.id}
       accountCompleted={me.setupCompletedAt !== null}
+      action={action}
       agentId={agentId}
+      onBackToAgents={backToAgents}
+      invalidSearch={invalidSearch}
       onAdopt={adopt}
-      onReviewFinished={finishReview}
+      onOpenAgent={openAgent}
       onTarget={openExactTarget}
       review={review}
-      reviewMode={reviewMode}
     />
   );
 }
 
-function TargetedOnboarding({
+function TargetedAgentSetup({
+  accountId,
   accountCompleted,
+  action,
   agentId,
+  invalidSearch,
   onAdopt,
-  onReviewFinished,
+  onBackToAgents,
+  onOpenAgent,
   onTarget,
   review,
-  reviewMode,
 }: {
+  accountId: string;
   accountCompleted: boolean;
+  action?: "create";
   agentId?: string;
+  invalidSearch: boolean;
   onAdopt: (agentId: string) => Promise<void>;
-  onReviewFinished: (agentId: string) => Promise<void>;
+  onBackToAgents: () => Promise<void>;
+  onOpenAgent: (agentId: string) => Promise<void>;
   onTarget: (agentId: string) => Promise<void>;
   review?: "reboard";
-  reviewMode: boolean;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [resolution, setResolution] = useState<TargetResolution>({ kind: "loading" });
@@ -111,6 +135,18 @@ function TargetedOnboarding({
   useEffect(() => {
     let live = true;
     setResolution({ kind: "loading" });
+    if (invalidSearch) {
+      setResolution({ kind: "unavailable" });
+      return () => {
+        live = false;
+      };
+    }
+    if (action === "create") {
+      setResolution({ kind: "create" });
+      return () => {
+        live = false;
+      };
+    }
     // A malformed id can never become valid by asking the Server, so nothing is asked.
     if (agentId !== undefined && !AGENT_ID_PATTERN.test(agentId)) {
       setResolution({ kind: "unavailable" });
@@ -135,17 +171,17 @@ function TargetedOnboarding({
     return () => {
       live = false;
     };
-  }, [agentId, attempt]);
+  }, [action, agentId, attempt, invalidSearch]);
 
   if (resolution.kind === "loading") {
     return (
       <div
         className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
-        data-ui="onboarding-target-loading"
+        data-ui="agent-setup-target-loading"
       >
         <Loader />
         <p className="text-sm text-kumo-subtle m-0" role="status">
-          {m.onboarding_target_loading()}
+          {m.agent_setup_target_loading()}
         </p>
       </div>
     );
@@ -155,15 +191,15 @@ function TargetedOnboarding({
     return (
       <div
         className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
-        data-ui="onboarding-target-read-failed"
+        data-ui="agent-setup-target-read-failed"
       >
         <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_target_read_failed_title()}
+          {m.agent_setup_target_read_failed_title()}
         </Text>
         <p className="text-sm text-kumo-danger m-0 max-w-prose text-center" role="alert">
-          {m.onboarding_target_read_failed_detail()}
+          {m.agent_setup_target_read_failed_detail()}
         </p>
-        <Button onClick={() => setAttempt((current) => current + 1)}>{m.onboarding_target_retry()}</Button>
+        <Button onClick={() => setAttempt((current) => current + 1)}>{m.agent_setup_target_retry()}</Button>
       </div>
     );
   }
@@ -172,39 +208,39 @@ function TargetedOnboarding({
     return (
       <div
         className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
-        data-ui="onboarding-target-unavailable"
+        data-ui="agent-setup-target-unavailable"
       >
         <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_target_unavailable_title()}
+          {m.agent_setup_target_unavailable_title()}
         </Text>
         <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center" role="alert">
-          {m.onboarding_target_unavailable_detail()}
+          {m.agent_setup_target_unavailable_detail()}
         </p>
       </div>
     );
   }
 
   if (resolution.kind === "redirect") {
-    return <Redirect replace search={{ agentId: resolution.agentId, review }} to="/onboarding" />;
+    return <Redirect replace search={{ agentId: resolution.agentId, review }} to="/agents/setup" />;
   }
 
   if (resolution.kind === "choice") {
     return (
       <div
         className="flex min-h-screen flex-col items-center justify-center gap-4 bg-kumo-canvas p-6"
-        data-ui="onboarding-target-choice"
+        data-ui="agent-setup-target-choice"
       >
         <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_target_choice_title()}
+          {m.agent_setup_target_choice_title()}
         </Text>
-        <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">{m.onboarding_target_choice_detail()}</p>
+        <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">{m.agent_setup_target_choice_detail()}</p>
         <ul className="grid w-full max-w-md gap-2 m-0 list-none p-0">
           {resolution.agents.map((agent) => (
             <li key={agent.id}>
               <Link
                 className="block rounded-lg bg-kumo-base px-4 py-3 text-sm text-kumo-strong ring ring-kumo-line"
                 search={{ agentId: agent.id, review }}
-                to="/onboarding"
+                to="/agents/setup"
               >
                 {agent.displayName}
               </Link>
@@ -217,22 +253,22 @@ function TargetedOnboarding({
 
   if (resolution.kind === "exact") {
     return (
-      <ExactAgentOnboarding
+      <ExactAgentSetup
         accountCompleted={accountCompleted}
         agentId={resolution.agentId}
         key={resolution.agentId}
         onAdopt={onAdopt}
-        onReviewFinished={onReviewFinished}
-        reviewMode={reviewMode}
+        onBackToAgents={onBackToAgents}
+        onOpenAgent={onOpenAgent}
       />
     );
   }
 
   return (
-    <OnboardingV2Page
+    <AgentSetupSurface
+      accountId={accountId}
+      onBackToAgents={accountCompleted ? onBackToAgents : undefined}
       onAgentAvailable={onTarget}
-      onComplete={reviewMode ? onReviewFinished : undefined}
-      reviewMode={reviewMode}
     />
   );
 }
@@ -244,18 +280,18 @@ type AdmissionState = "failed" | "loading" | "ready";
  * the exact active owned Agent, this component adopts it immediately; Computer, runtime, and
  * Messaging setup continue on the same canonical URL without becoming Account access gates.
  */
-function ExactAgentOnboarding({
+function ExactAgentSetup({
   accountCompleted,
   agentId,
   onAdopt,
-  onReviewFinished,
-  reviewMode,
+  onBackToAgents,
+  onOpenAgent,
 }: {
   accountCompleted: boolean;
   agentId: string;
   onAdopt: (agentId: string) => Promise<void>;
-  onReviewFinished: (agentId: string) => Promise<void>;
-  reviewMode: boolean;
+  onBackToAgents: () => Promise<void>;
+  onOpenAgent: (agentId: string) => Promise<void>;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [admission, setAdmission] = useState<AdmissionState>(accountCompleted ? "ready" : "loading");
@@ -285,11 +321,11 @@ function ExactAgentOnboarding({
     return (
       <div
         className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
-        data-ui="onboarding-target-adopting"
+        data-ui="agent-setup-target-adopting"
       >
         <Loader />
         <p className="text-sm text-kumo-subtle m-0" role="status">
-          {m.onboarding_target_adopting()}
+          {m.agent_setup_target_adopting()}
         </p>
       </div>
     );
@@ -299,24 +335,20 @@ function ExactAgentOnboarding({
     return (
       <div
         className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
-        data-ui="onboarding-target-adoption-failed"
+        data-ui="agent-setup-target-adoption-failed"
       >
         <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_target_adoption_failed_title()}
+          {m.agent_setup_target_adoption_failed_title()}
         </Text>
         <p className="text-sm text-kumo-danger m-0 max-w-prose text-center" role="alert">
-          {m.onboarding_target_adoption_failed_detail()}
+          {m.agent_setup_target_adoption_failed_detail()}
         </p>
-        <Button onClick={() => setAttempt((current) => current + 1)}>{m.onboarding_target_retry()}</Button>
+        <Button onClick={() => setAttempt((current) => current + 1)}>{m.agent_setup_target_retry()}</Button>
       </div>
     );
   }
 
   return (
-    <OnboardingV2Page
-      agentId={agentId}
-      onComplete={reviewMode ? onReviewFinished : undefined}
-      reviewMode={reviewMode}
-    />
+    <AgentSetupSurface agentId={agentId} onBackToAgents={onBackToAgents} onOpenAgent={() => onOpenAgent(agentId)} />
   );
 }

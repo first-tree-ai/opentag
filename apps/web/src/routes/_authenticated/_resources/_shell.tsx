@@ -8,11 +8,10 @@ export const Route = createFileRoute("/_authenticated/_resources/_shell")({
 });
 
 /**
- * The application surface. An Account that has not finished setup is sent back to onboarding, which
- * is the direction the onboarding route mirrors.
+ * The application surface. An Account that has not finished admission is sent to Agent Setup.
  */
 function AccountShell() {
   const { me } = useAccount();
-  if (!me.setupCompletedAt) return <Redirect replace to="/onboarding" />;
+  if (!me.setupCompletedAt) return <Redirect replace to="/agents/setup" />;
   return <AppShell />;
 }

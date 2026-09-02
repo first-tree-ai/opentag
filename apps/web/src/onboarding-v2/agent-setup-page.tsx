@@ -48,7 +48,6 @@ const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
   "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
 const IDENTITY_ROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3";
-const PANEL = "rounded-lg bg-kumo-base p-4 ring ring-kumo-line";
 
 export interface AgentSetupPageProps {
   /** The exact Agent this surface sets up. Never an index, a name, or a guess. */
@@ -630,11 +629,7 @@ function ComputerSetupSection({
             name: snapshot.agent.displayName,
           })}
         </p>
-        {canBind ? (
-          <div className={PANEL}>
-            <AgentComputerChoice agentId={agentId} onBound={onChanged} />
-          </div>
-        ) : null}
+        {canBind ? <AgentComputerChoice agentId={agentId} onBound={onChanged} /> : null}
       </section>
     );
   }
@@ -687,11 +682,7 @@ function NotBoundComputerSection({
        * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
        * does it — including the choice when the Account genuinely has one to make.
        */}
-      {canBind ? (
-        <div className={PANEL}>
-          <AgentComputerChoice agentId={agentId} onBound={onChanged} />
-        </div>
-      ) : null}
+      {canBind ? <AgentComputerChoice agentId={agentId} onBound={onChanged} /> : null}
     </section>
   );
 }

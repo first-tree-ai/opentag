@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withLocale } from "../__tests__/support/with-locale.js";
 import { overwriteGetLocale } from "../paraglide/runtime.js";
 import {
   compareText,
@@ -12,15 +13,6 @@ import {
   formatRelativeTime,
   initials,
 } from "./format.js";
-
-function withLocale(locale: "en" | "zh", callback: () => void): void {
-  overwriteGetLocale(() => locale);
-  try {
-    callback();
-  } finally {
-    overwriteGetLocale(() => "en");
-  }
-}
 
 describe("locale-aware formatters", () => {
   const instant = new Date("2025-02-03T12:34:00.000Z");

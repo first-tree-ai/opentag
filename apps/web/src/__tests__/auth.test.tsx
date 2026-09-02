@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { PasswordSignInForm } from "../features/auth/password-sign-in-form.js";
+import { overwriteGetLocale } from "../paraglide/runtime.js";
 import { installApi, resetWebAppState } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
@@ -33,6 +34,41 @@ describe("OpenTag Web App Shell", () => {
     expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
     expect(screen.getByText("Sign in to manage your Agents and Computers.")).toBeTruthy();
+  });
+
+  /*
+   * The login surface itself, not a re-composition of it. A test that calls authProviderLabel and
+   * builds the sentence the way the component does would keep passing if the component went back to
+   * interpolating provider.id -- which is the regression this exists to catch. Only `dev` reaches
+   * this sentence in production: `google` renders as an image and `password` as a form.
+   */
+  it("names the sign-in method on the button rather than its identifier", async () => {
+    installApi({
+      authProviders: [{ id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" }],
+      unauthenticated: true,
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    const link = await screen.findByRole("link", { name: "Continue with Developer sign-in" });
+    expect(link.getAttribute("data-ui")).toBe("login-provider");
+    expect(screen.queryByRole("link", { name: /dev/ })).toBeNull();
+  });
+
+  it("reads the same button in Chinese", async () => {
+    overwriteGetLocale(() => "zh");
+    try {
+      installApi({
+        authProviders: [{ id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" }],
+        unauthenticated: true,
+      });
+      window.history.replaceState({}, "", "/agents");
+      render(<App />);
+
+      expect(await screen.findByRole("link", { name: "使用开发者登录继续" })).toBeTruthy();
+    } finally {
+      overwriteGetLocale(() => "en");
+    }
   });
 
   it("offers the password form only where the server enabled it", async () => {

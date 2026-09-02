@@ -1,0 +1,111 @@
+name: Ownership Gate
+
+# Evaluates every changed file against .github/CODEOWNERS and reports one commit
+# status, `ownership-gate`, on the pull request head commit. That status is the
+# signal the `protect main` ruleset requires; this workflow never approves on
+# anyone's behalf.
+#
+# Every trigger below loads this file from the DEFAULT BRANCH, which is the
+# property the whole design rests on:
+#
+#   pull_request_target  runs in the context of the default branch, unlike
+#                        `pull_request`, which runs the pull request's own copy.
+#   workflow_run         only fires at all if the file exists on the default
+#                        branch, and always runs that copy.
+#   push, schedule       run the default-branch copy by definition.
+#
+# `workflow_dispatch` is deliberately absent for the same reason: the caller
+# chooses the ref, and the chosen ref supplies the workflow body, so a branch
+# could dispatch its own version of this file. The reconciliation sweep below
+# replaces the manual re-run it would otherwise provide.
+#
+# `pull_request_review` is absent too, even though the gate must react to
+# approvals: that event loads the workflow from `refs/pull/N/merge`, so a pull
+# request could rewrite the gate that judges it, and on a fork it also receives a
+# read-only token that cannot post a status at all. The reaction is routed
+# through the powerless `Ownership Gate Relay` workflow and the `workflow_run`
+# trigger instead.
+#
+# The job is also NOT named `ownership-gate`: a required check name matches both
+# a commit status context and a check run name, and a job of that name would make
+# both required -- including a check run that reports success when the job is
+# skipped.
+on:
+  pull_request_target:
+    # `edited` fires when a pull request is retargeted at another base branch,
+    # which can change which policy applies.
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_run:
+    workflows: ["Ownership Gate Relay"]
+    types: [completed]
+  # Reconciliation. A published status is only as good as the policy it was
+  # computed under, and nothing else re-opens the question: an already-open pull
+  # request receives no event when the policy tightens on the default branch, and
+  # none when its relay run is missing because the pull request removed it. The
+  # sweep re-judges every open pull request from the trusted copy of the policy,
+  # immediately when the policy changes and periodically otherwise.
+  push:
+    branches: [main]
+    paths:
+      - .github/CODEOWNERS
+      - .github/ownership-modes.json
+      - .github/workflows/ownership-gate.yml
+      - .github/workflows/ownership-gate-relay.yml
+      - scripts/ownership-gate.mjs
+      - scripts/ownership-gate/**
+  schedule:
+    - cron: "17,47 * * * *"
+
+# Serialize per commit. Runs are never cancelled: each one posts its own verdict,
+# and cancelling one mid-flight would leave the required status on whatever the
+# previous run wrote. The sweep is serialized against itself rather than against
+# a pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || 'sweep' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: Evaluate ownership
+    # A skipped job reports success, but the required signal here is a posted
+    # commit status, not this job's check run. A skipped job posts nothing, the
+    # required context stays unreported, and an unreported required context
+    # blocks the merge -- so this guard fails closed.
+    if: github.repository == 'first-tree-ai/opentag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      # Pin the default branch explicitly rather than relying on the event's
+      # default checkout, so the policy that judges a pull request can never come
+      # from the pull request.
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # The gate imports only node: builtins, so nothing is installed and no
+      # lockfile or build script from the pull request is ever resolved.
+      - name: Evaluate the ownership gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Absent on `workflow_run`; the gate then resolves the pull requests
+          # from the head SHA, which GitHub sets and no pull request can
+          # influence. Both are absent on the sweep, which enumerates the open
+          # pull requests itself.
+          PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha }}
+          SWEEP: ${{ github.event_name == 'push' || github.event_name == 'schedule' }}
+          OWNERSHIP_GATE_LOG_LEVEL: ${{ runner.debug == '1' && 'debug' || 'info' }}
+        run: node scripts/ownership-gate.mjs

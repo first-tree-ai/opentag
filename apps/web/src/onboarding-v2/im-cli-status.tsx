@@ -1,3 +1,4 @@
+import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import type { MessagingCliStatus } from "../setup/index.js";
 import type { MessagingProvider, ReadinessFacts } from "./flow.js";
@@ -7,6 +8,13 @@ export function imCliStatusCopy(status: MessagingCliStatus | undefined): string 
   if (status === "unavailable") return m.onboarding_v2_im_cli_status_unavailable();
   if (status === "install") return m.onboarding_v2_im_cli_status_install();
   return m.onboarding_v2_im_cli_status_checking();
+}
+
+export function providerCliCommandComment(): string {
+  return m.onboarding_v2_connect_command_comment({
+    feishuProvider: messagingProviderLabel("feishu"),
+    slackProvider: messagingProviderLabel("slack"),
+  });
 }
 
 export function ImCliStatusText({
@@ -25,8 +33,8 @@ export function ImCliStatusText({
 
 export function ImCliReadinessList({ readiness }: { readiness: ReadinessFacts | undefined }) {
   const rows = [
-    ["feishu", m.onboarding_v2_im_cli_lark_label()],
-    ["slack", m.onboarding_v2_im_cli_slack_label()],
+    ["feishu", `${messagingProviderLabel("feishu")} CLI`],
+    ["slack", `${messagingProviderLabel("slack")} CLI`],
   ] as const;
   return (
     <ul

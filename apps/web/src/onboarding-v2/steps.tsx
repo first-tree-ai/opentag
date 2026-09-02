@@ -44,7 +44,7 @@ import {
   tokenChoiceApplies,
   validateAgentName,
 } from "./flow.js";
-import { ImCliReadinessList, ImCliStatusText } from "./im-cli-status.js";
+import { ImCliReadinessList, ImCliStatusText, providerCliCommandComment } from "./im-cli-status.js";
 import { messagingCliMissingCopy, messagingWaitingReason } from "./messaging-readiness-copy.js";
 
 /** One step's worth of vertical rhythm. Every gap on every step is one of 4, 12 or 24px. */
@@ -1012,7 +1012,7 @@ function ConnectCommand({ lifecycle, repairTarget }: { lifecycle: ComputerConnec
           comment={
             repairTarget
               ? m.onboarding_v2_connect_repair_command_comment({ computerName: repairTarget })
-              : m.onboarding_v2_connect_command_comment()
+              : providerCliCommandComment()
           }
           copiedLabel={m.onboarding_v2_connect_copied()}
           copyLabel={m.onboarding_v2_connect_copy()}
@@ -1028,7 +1028,7 @@ function ConnectCommand({ lifecycle, repairTarget }: { lifecycle: ComputerConnec
       comment={
         repairTarget
           ? m.onboarding_v2_connect_repair_command_comment({ computerName: repairTarget })
-          : m.onboarding_v2_connect_command_comment()
+          : providerCliCommandComment()
       }
       copiedLabel={m.onboarding_v2_connect_copied()}
       copyLabel={m.onboarding_v2_connect_copy()}

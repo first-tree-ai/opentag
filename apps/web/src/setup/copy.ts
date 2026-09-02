@@ -7,6 +7,7 @@
  * Agent's settings. Copy that only one of those surfaces says stays with that surface.
  */
 
+import { messagingProviderLabel } from "../im/provider-label.js";
 import type { CheckRow, CheckState } from "./checks.js";
 
 /**
@@ -46,8 +47,8 @@ export const SETUP_COPY = {
     privacy: "Your code and data never leave your machine.",
     /** How to run it, which belongs with the command itself. */
     commandIntro: "Run this in your terminal, or paste it to your agent.",
-    commandComment:
-      "# Agent: install OpenTag, connect this computer, and stay until the Lark and Slack CLI checks finish.",
+    commandComment: () =>
+      `# Agent: install OpenTag, connect this computer, and stay until the ${messagingProviderLabel("feishu")} and ${messagingProviderLabel("slack")} CLI checks finish.`,
     copy: "Copy",
     copied: "Copied",
     copyFallback: "Copying is unavailable here. The command is selected — press Ctrl or Cmd + C.",

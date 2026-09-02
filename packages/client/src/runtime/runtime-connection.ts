@@ -34,7 +34,7 @@ import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
-import { notifyTarget, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
+import { notifyTarget, protocolRejectionFields, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -368,7 +368,7 @@ export class RuntimeConnection {
           }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(
-              { attempt: attempt + 1, category: "protocol", state: this.#state },
+              protocolRejectionFields(attempt, this.#state, error.message),
               "Runtime connection was rejected",
             );
             throw error;

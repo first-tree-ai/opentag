@@ -405,8 +405,8 @@ Session collaboration 仍属于 Agent Runtime，不会引入产品 Workspace、P
 
 `scripts/e2e/onboarding-e2e.mjs` 会在真实 Server、真实 PostgreSQL、真实 Web 构建产物和真实 Computer daemon 上
 跑完整个 `/agents/setup` 流程：浏览器登录、先在表单里创建 Agent、从页面读取连接命令、用 CLI 兑换、运行
-`daemon service-run`、等待协商出的 Provider readiness 投影，然后检查 handoff、Account admission、持久化 readiness，以及后续
-运行时中断仍停留在正常 Agents 产品流程中的行为。
+`daemon service-run`、等待协商出的 Provider readiness 投影，然后检查 handoff、Account admission、等待中的 Provider 验证，
+以及后续运行时中断仍停留在正常 Agents 产品流程中的行为。
 
 ```bash
 pnpm build
@@ -433,8 +433,8 @@ Server。daemon 拿到的是显式构造的 Provider 环境，而不是调用者
 
 流程中有两部分无法离线执行。Agent Runtime 和 Feishu CLI readiness 使用 stub 可执行文件，它们满足与 Claude Code 和
 `lark-cli` 相同的 probe 契约，因为 CI 中没有已登录的本地 CLI。Feishu 授权需要访问 `open.feishu.cn`，因此该检查会真实发起一次
-setup attempt 并记录结果，然后把一条已授权的 binding 写入数据库，用于确认 Server 会投影 handoff readiness、页面会据此
-推导出 ready 状态。
+setup attempt 并记录结果，然后把一条已授权的 binding 写入数据库，用于确认 Server 与页面会投影等待中的 handoff；该检查
+不会伪造 canonical Snapshot 进入 `ready` 所需的最终 provider credential-execution observation。
 
 ## 环境变量
 

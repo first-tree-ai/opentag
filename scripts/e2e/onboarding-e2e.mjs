@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * End-to-end onboarding check.
+ * End-to-end Agent Setup check.
  *
  * Runs the real Server against a real PostgreSQL database, serves the real Web
  * build, drives a real Chromium browser through `/agents/setup`, and connects a
@@ -12,8 +12,9 @@
  *
  * The Feishu leg cannot be authorized offline, so the check does two things: it
  * starts a real setup attempt and records the outcome, then writes an authorized
- * binding directly into the database to confirm that the Server projects handoff
- * readiness and the page derives its ready state from those facts.
+ * binding directly into the database to confirm that the Server projects the
+ * pending handoff. Provider credential execution still requires a real provider,
+ * so this offline check does not manufacture a ready observation.
  *
  * Requirements:
  * - a reachable PostgreSQL superuser URL (OPENTAG_E2E_ADMIN_DATABASE_URL)
@@ -491,11 +492,9 @@ async function main() {
         "a Feishu setup response",
         async () => {
           const text = await page.locator("body").innerText();
-          const alert = await page
-            .locator("[role=alert], .notice.error")
-            .first()
-            .innerText()
-            .catch(() => "");
+          // `first().innerText()` waits for the default Playwright timeout when no alert exists,
+          // which can consume this step's entire polling budget before the waiting copy is read.
+          const [alert = ""] = await page.locator("[role=alert], .notice.error").allInnerTexts();
           if (alert) return `error: ${alert.replace(/\s+/g, " ").trim()}`;
           if (/scan|QR|Authorize|awaiting/i.test(text)) return "attempt awaiting user authorization";
           return undefined;
@@ -506,7 +505,7 @@ async function main() {
       return outcome;
     });
 
-    await step("reach the ready state with an authorized Feishu binding", async () => {
+    await step("project the pending handoff from an authorized Feishu binding", async () => {
       const { FEISHU_REQUIRED_TENANT_SCOPES } = await import(
         join(repositoryRoot, "packages", "shared", "dist", "index.mjs")
       );
@@ -537,11 +536,18 @@ async function main() {
          )`,
       );
       await page.reload({ waitUntil: "networkidle" });
-      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      await page
+        .locator('[data-ui="agent-setup-messaging"][data-state="waiting-handoff"]')
+        .waitFor({ timeout: 30_000 });
+      if (new URL(page.url()).pathname !== "/agents/setup") {
+        throw new Error(`Pending handoff left the canonical setup page: ${page.url()}`);
+      }
       const completedAt = await psql(DATABASE_URL, `select setup_completed_at from users where id = '${USER_ID}'`);
-      if (!completedAt) throw new Error("Account setup completion was not persisted");
+      if (!completedAt) throw new Error("Account admission was not persisted");
       await shot("06-completed");
-      return `handoff readiness projected and Account setup completed at ${completedAt}`;
+      await page.getByRole("button", { name: "Back to agents" }).click();
+      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      return `pending handoff projected while Account admission stayed at ${completedAt}`;
     });
 
     await step("survive a Computer outage without losing the Agent", async () => {
@@ -555,7 +561,6 @@ async function main() {
         { timeoutMs: 60_000 },
       );
       await page.reload({ waitUntil: "networkidle" });
-      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
       await page.getByRole("heading", { name: "Agents" }).waitFor({ timeout: 30_000 });
       await shot("07-runtime-outage");
       const agents = await psql(DATABASE_URL, `select count(*) from agents where created_by_user_id = '${USER_ID}'`);

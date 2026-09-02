@@ -753,6 +753,72 @@ describe("TaskService", () => {
     expect(nextDetail.internalSessions.map((session) => session.id)).toEqual([child.id]);
   });
 
+  it("lists the first page of a busy group in bounded time", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+    // 2,500 topics of a root plus one reply, every delivery accepted and reported in one Session:
+    // the shape that made the correlated running check quadratic.
+    const messageRows: (typeof imMessages.$inferInsert)[] = [];
+    for (let index = 0; index < 2_500; index += 1) {
+      const rootId = `om_scale_${index}`;
+      const at = new Date(BASE_TIME.getTime() + index * 60_000);
+      for (const [suffix, threadKey, offset] of [
+        ["root", null, 0],
+        ["reply", rootId, 30_000],
+      ] as const) {
+        messageRows.push({
+          id: crypto.randomUUID(),
+          imBindingId: binding.id,
+          providerEventId: `event-${rootId}-${suffix}`,
+          channelId: GROUP,
+          externalMessageId: suffix === "root" ? rootId : `${rootId}_reply`,
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          threadKey,
+          authorKind: "human",
+          authorExternalId: "ou_human",
+          authorDisplayName: "Mia",
+          content: { version: 1, fallbackText: `Request ${index} ${suffix}`, blocks: [], truncated: false },
+          providerContext: { provider: "feishu", chatType: "group" },
+          occurredAt: new Date(at.getTime() + offset),
+        });
+      }
+    }
+    for (let start = 0; start < messageRows.length; start += 500) {
+      await unitDatabase.database.insert(imMessages).values(messageRows.slice(start, start + 500));
+    }
+    const deliveryRows = messageRows.map((message, index) => ({
+      messageId: message.id as string,
+      sessionId: channel.id,
+      attention: "direct" as const,
+      state: "accepted" as const,
+      placementGeneration: 1,
+      inputHash: "c".repeat(64),
+      turnId: `turn-scale-${index}`,
+      reportOwnerInstanceId: crypto.randomUUID(),
+      acceptedAt: new Date((message.occurredAt as Date).getTime() + 1_000),
+      expiresAt: new Date(BASE_TIME.getTime() + 30 * 24 * 60 * 60_000),
+      reportedAt: new Date((message.occurredAt as Date).getTime() + 2_000),
+      turnReport: report(),
+      resultHash: "b".repeat(64),
+    }));
+    for (let start = 0; start < deliveryRows.length; start += 500) {
+      await unitDatabase.database.insert(imMessageDeliveries).values(deliveryRows.slice(start, start + 500));
+    }
+
+    const startedAt = Date.now();
+    const page = await service.list(bootstrap.userId, { limit: 50 });
+    const elapsedMs = Date.now() - startedAt;
+    expect(page.tasks).toHaveLength(50);
+    expect(page.tasks[0]?.title).toBe("Request 2499 root");
+    expect(page.nextCursor).toEqual(expect.any(String));
+    const second = await service.list(bootstrap.userId, { limit: 50, cursor: page.nextCursor ?? undefined });
+    expect(second.tasks[0]?.title).toBe("Request 2449 root");
+    // The seed itself takes well under a second; the projection must stay in the same order of magnitude.
+    expect(elapsedMs).toBeLessThan(5_000);
+  }, 60_000);
+
   it("paginates the list and the Turns, and rejects unknown ids or malformed cursors", async () => {
     const { binding, bootstrap, service } = await fixture();
     const channel = await createSession(binding.id, { channelId: GROUP });

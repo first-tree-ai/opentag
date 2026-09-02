@@ -338,7 +338,6 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         m.external_message_id,
         m.provider_revision_key,
         m.occurred_at,
-        m.content,
         case
           when ch.conversation_kind = 'dm' then null
           else coalesce(tr.root_external_id, m.thread_key, m.external_message_id)
@@ -404,6 +403,16 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
       inner join sessions s on s.id = d.session_id
       where s.kind = 'thread'
     ),
+    accepted_windows as (
+      select
+        d.id,
+        lead(d.accepted_at) over (partition by d.session_id order by d.accepted_at, d.id) as next_accepted_at
+      from im_message_deliveries d
+      inner join sessions ds on ds.id = d.session_id
+      inner join scoped_bindings sb on sb.binding_id = ds.im_binding_id
+      where d.state = 'accepted'
+        ${channelFilter("ds")}
+    ),
     executions as (
       select
         d.id,
@@ -411,21 +420,17 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         d.attention,
         d.state,
         d.accepted_at,
+        aw.next_accepted_at,
         tm.im_binding_id,
         tm.channel_id,
         tm.topic_key,
         case when d.state = 'steered' then root.reported_at else d.reported_at end as reported_at,
-        case when d.state = 'steered' then root.turn_report else d.turn_report end as turn_report,
         (
           d.state = 'accepted'
           and d.reported_at is null
           and d.expires_at > ${input.now.toISOString()}::timestamptz
           and ds.ended_at is null
-          and not exists (
-            select 1
-            from im_message_deliveries later
-            where later.session_id = d.session_id and later.accepted_at > d.accepted_at
-          )
+          and aw.next_accepted_at is null
         ) as is_running,
         greatest(
           tm.occurred_at,
@@ -438,6 +443,7 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
       inner join sessions ds on ds.id = d.session_id
       left join im_message_deliveries root on root.id = d.steer_target_delivery_id
       left join thread_owned tw on tw.message_id = d.message_id
+      left join accepted_windows aw on aw.id = d.id
       where not (d.state = 'expired' and d.reason = 'superseded_revision')
         and not (d.attention = 'ambient' and ds.kind = 'channel' and tw.message_id is not null)
     ),
@@ -448,43 +454,22 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         topic_key,
         bool_or(is_running) as has_running,
         bool_or(state = 'pending') as has_pending,
-        max(activity_at) as last_execution_at
+        max(activity_at) as last_execution_at,
+        (array_agg(id order by activity_at desc, id desc))[1] as latest_execution_id
       from executions
       group by im_binding_id, channel_id, topic_key
       having bool_or(attention = 'direct')
     ),
-    latest_execution as (
-      select distinct on (im_binding_id, channel_id, topic_key)
+    message_topics as (
+      select
         im_binding_id,
         channel_id,
         topic_key,
-        state as delivery_state,
-        is_running,
-        reported_at,
-        turn_report
-      from executions
-      order by im_binding_id, channel_id, topic_key, activity_at desc, id desc
-    ),
-    anchors as (
-      select distinct on (im_binding_id, channel_id, topic_key)
-        im_binding_id,
-        channel_id,
-        topic_key,
-        id as anchor_id,
-        external_message_id as anchor_external_id,
-        occurred_at as anchor_at
+        min(occurred_at) as anchor_at,
+        (array_agg(id order by occurred_at asc, provider_revision_key asc, id asc))[1] as anchor_id,
+        (array_agg(external_message_id order by occurred_at asc, provider_revision_key asc, id asc))[1] as anchor_external_id
       from topic_messages
-      order by im_binding_id, channel_id, topic_key, occurred_at asc, provider_revision_key asc, id asc
-    ),
-    title_sources as (
-      select distinct on (tm.im_binding_id, tm.channel_id, tm.topic_key)
-        tm.im_binding_id,
-        tm.channel_id,
-        tm.topic_key,
-        tm.content as title_content
-      from topic_messages tm
-      inner join anchors a on ${sameTopic("a", "tm")} and a.anchor_external_id = tm.external_message_id
-      order by tm.im_binding_id, tm.channel_id, tm.topic_key, tm.occurred_at desc, tm.provider_revision_key desc, tm.id desc
+      group by im_binding_id, channel_id, topic_key
     )
   `;
 }
@@ -765,13 +750,7 @@ export class TaskService {
           and e.accepted_at is not null
           and s.created_at >= e.accepted_at
           and (e.reported_at is null or s.created_at <= e.reported_at)
-          and not exists (
-            select 1
-            from im_message_deliveries later
-            where later.session_id = e.session_id
-              and later.accepted_at > e.accepted_at
-              and later.accepted_at <= s.created_at
-          )
+          and (e.next_accepted_at is null or s.created_at < e.next_accepted_at)
         union all
         select child.id
         from sessions child
@@ -802,50 +781,76 @@ export class TaskService {
     },
   ): Promise<TaskSummaryRow[]> {
     const rows = await this.database.execute<TaskSummaryRow>(sql`
-      with ${topicCtes({ accountId, agentId: options.agentId, scope: options.scope, now: this.#now() })}
+      with ${topicCtes({ accountId, agentId: options.agentId, scope: options.scope, now: this.#now() })},
+      page as (
+        select
+          t.im_binding_id,
+          t.channel_id,
+          t.topic_key,
+          t.has_running,
+          t.has_pending,
+          t.latest_execution_id,
+          mt.anchor_id,
+          mt.anchor_at,
+          mt.anchor_external_id,
+          greatest(mt.anchor_at, coalesce(t.last_execution_at, mt.anchor_at)) as last_activity_at
+        from topics t
+        inner join message_topics mt on ${sameTopic("mt", "t")}
+        where true
+          ${options.kind === "channel" ? sql`and t.topic_key is null` : sql``}
+          ${options.kind === "thread" ? sql`and t.topic_key is not null` : sql``}
+          ${
+            options.cursor
+              ? sql`and (greatest(mt.anchor_at, coalesce(t.last_execution_at, mt.anchor_at)), mt.anchor_id) < (${cursorTimestamp(options.cursor)}::timestamptz, ${options.cursor.id}::uuid)`
+              : sql``
+          }
+        order by last_activity_at desc, mt.anchor_id desc
+        limit ${options.limit}
+      )
       select
-        a.anchor_id as id,
+        p.anchor_id as id,
         sb.agent_id as "agentId",
         sb.agent_name as "agentName",
         sb.agent_display_name as "agentDisplayName",
         sb.runtime_provider as "runtimeProvider",
         sb.provider,
         coalesce(ch.conversation_kind, 'channel') as "conversationKind",
-        case when t.topic_key is null then 'channel' else 'thread' end as "sessionKind",
-        t.channel_id as "channelId",
-        t.topic_key as "threadKey",
-        a.anchor_at as "createdAt",
+        case when p.topic_key is null then 'channel' else 'thread' end as "sessionKind",
+        p.channel_id as "channelId",
+        p.topic_key as "threadKey",
+        p.anchor_at as "createdAt",
         case when ts.id is not null then ts.ended_at else cs.ended_at end as "endedAt",
         ts.manual_title as "manualTitle",
         ts.generated_title as "generatedTitle",
-        greatest(a.anchor_at, coalesce(t.last_execution_at, a.anchor_at)) as "lastActivityAt",
-        tsrc.title_content ->> 'fallbackText' as "fallbackText",
-        tsrc.title_content as "titleContent",
+        p.last_activity_at as "lastActivityAt",
+        title.content ->> 'fallbackText' as "fallbackText",
+        title.content as "titleContent",
         sb.external_bot_id as "addressedExternalId",
-        t.has_running as "hasRunning",
-        t.has_pending as "hasPending",
-        le.delivery_state as "deliveryState",
+        p.has_running as "hasRunning",
+        p.has_pending as "hasPending",
+        le.state as "deliveryState",
         le.is_running as "latestRunning",
         le.reported_at as "reportedAt",
-        le.turn_report as "turnReport"
-      from topics t
-      inner join anchors a on ${sameTopic("a", "t")}
-      inner join scoped_bindings sb on sb.binding_id = t.im_binding_id
-      left join channels ch on ch.im_binding_id = t.im_binding_id and ch.channel_id = t.channel_id
-      left join channel_sessions cs on cs.im_binding_id = t.im_binding_id and cs.channel_id = t.channel_id
-      left join topic_sessions ts on ${sameTopic("ts", "t")}
-      left join title_sources tsrc on ${sameTopic("tsrc", "t")}
-      left join latest_execution le on ${sameTopic("le", "t")}
-      where true
-        ${options.kind === "channel" ? sql`and t.topic_key is null` : sql``}
-        ${options.kind === "thread" ? sql`and t.topic_key is not null` : sql``}
-        ${
-          options.cursor
-            ? sql`and (greatest(a.anchor_at, coalesce(t.last_execution_at, a.anchor_at)), a.anchor_id) < (${cursorTimestamp(options.cursor)}::timestamptz, ${options.cursor.id}::uuid)`
-            : sql``
-        }
-      order by "lastActivityAt" desc, a.anchor_id desc
-      limit ${options.limit}
+        case when le.state = 'steered' then le_root.turn_report else le_delivery.turn_report end as "turnReport"
+      from page p
+      inner join scoped_bindings sb on sb.binding_id = p.im_binding_id
+      left join channels ch on ch.im_binding_id = p.im_binding_id and ch.channel_id = p.channel_id
+      left join channel_sessions cs on cs.im_binding_id = p.im_binding_id and cs.channel_id = p.channel_id
+      left join topic_sessions ts on ${sameTopic("ts", "p")}
+      left join executions le on le.id = p.latest_execution_id
+      left join im_message_deliveries le_delivery on le_delivery.id = p.latest_execution_id
+      left join im_message_deliveries le_root on le_root.id = le_delivery.steer_target_delivery_id
+      left join lateral (
+        select m.content
+        from im_messages m
+        where m.im_binding_id = p.im_binding_id
+          and m.channel_id = p.channel_id
+          and m.external_message_id = p.anchor_external_id
+          and m.direction = 'inbound'
+        order by m.occurred_at desc, m.provider_revision_key desc, m.id desc
+        limit 1
+      ) title on true
+      order by p.last_activity_at desc, p.anchor_id desc
     `);
     return [...rows];
   }

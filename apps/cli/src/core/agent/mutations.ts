@@ -81,7 +81,7 @@ export async function runAgentCreate(options: AgentCreateOptions): Promise<Agent
   if (!computer) {
     return {
       agent,
-      warning: "This Account has no Computer; connect one with `opentag computer connect` before the Agent can run",
+      warning: "This Account has no Computer; connect one with `opentag connect` before the Agent can run",
     };
   }
   return {

@@ -274,26 +274,140 @@ describe("Server-backed onboarding: the defects it had", () => {
     expect(calls).toBe(1);
   });
 
-  it("refuses to resume an Agent that has no Computer rather than reporting someone else's machine", async () => {
+  it("replaces every piece of a resumed bound Agent when a retry finds the Account empty", async () => {
     /*
-     * An unbound Agent is not resumed at all. Reporting a Computer for it would have to come from
-     * an arrival -- a machine on the Account that connected or reconnected -- which identifies a
-     * machine but not one this Agent was ever given, and the run would then advance into messaging,
-     * which refuses an Agent with nowhere to run. So the reader is handed the page where the Agent
-     * gets a Computer instead, and nothing durable is written on a guess.
+     * The bound Agent's handoff failed to complete, so the reader retries the Account read; the
+     * Account now reports nothing. A resume that merged would keep showing — and offering to
+     * delete — an Agent the Server no longer has.
+     */
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem()] });
+    computersReturning([computer()]);
+    vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: false });
+    const view = mount();
+    await settle();
+
+    expect(view.result.current.agent).toEqual({ id: AGENT_ID, name: "opentag", runtimeProvider: "codex" });
+    expect(view.result.current.creation).toBe("created");
+    expect(view.result.current.selectedComputerId).toBe(COMPUTER_ID);
+    expect(view.result.current.computerPreviouslyConfirmed).toBe(true);
+    expect(view.result.current.messaging).toEqual({ kind: "waiting-handoff" });
+
+    vi.mocked(browserApi.agents).mockResolvedValue({ agents: [] });
+    vi.mocked(browserApi.computers).mockResolvedValue({ computers: [] });
+    act(() => view.result.current.retryResume());
+    await settle();
+
+    expect(view.result.current.agent).toBeUndefined();
+    expect(view.result.current.agentRestored).toBe(false);
+    expect(view.result.current.creation).toBe("idle");
+    expect(view.result.current.selectedComputerId).toBeUndefined();
+    expect(view.result.current.computerPreviouslyConfirmed).toBe(false);
+    expect(view.result.current.resumeBlocked).toBeUndefined();
+    expect(view.result.current.messaging).toEqual({ kind: "idle" });
+    expect(view.result.current.computerConnectAdapter).toBeUndefined();
+  });
+
+  it("replaces a resumed bound Agent with a computer-only selection on retry", async () => {
+    /*
+     * The Account kept its Computer but no longer has the Agent. The Computer step must reflect
+     * exactly that: no retained Agent, no inherited creation or confirmation state.
+     */
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem()] });
+    computersReturning([computer()]);
+    const view = mount();
+    await settle();
+    expect(view.result.current.agent?.id).toBe(AGENT_ID);
+
+    vi.mocked(browserApi.agents).mockResolvedValue({ agents: [] });
+    vi.mocked(browserApi.computers).mockResolvedValue({ computers: [computer({ agentIds: [] })] });
+    act(() => view.result.current.retryResume());
+    await settle();
+
+    expect(view.result.current.agent).toBeUndefined();
+    expect(view.result.current.agentRestored).toBe(false);
+    expect(view.result.current.creation).toBe("idle");
+    expect(view.result.current.resumeBlocked).toBeUndefined();
+    expect(view.result.current.computerPreviouslyConfirmed).toBe(false);
+    expect(view.result.current.selectedComputerId).toBe(COMPUTER_ID);
+    expect(view.result.current.knownComputers).toEqual([
+      expect.objectContaining({ id: COMPUTER_ID, availability: "online" }),
+    ]);
+  });
+
+  it("deletes exactly the unbound Agent a retry surfaced, never the bound Agent it replaced", async () => {
+    /*
+     * The first read resumes bound Agent A; the retry finds only unbound Agent B, so the blocked
+     * screen names B. The destructive confirmation must target B's id — a retained A would be
+     * deleted by mistake.
+     */
+    const unboundAgentId = "2b73a21e-f6c7-4474-91ea-4dabf0566a24";
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem()] });
+    computersReturning([computer()]);
+    const view = mount();
+    await settle();
+    expect(view.result.current.agent?.id).toBe(AGENT_ID);
+
+    vi.mocked(browserApi.agents).mockResolvedValue({
+      agents: [
+        listItem({
+          id: unboundAgentId,
+          name: "second",
+          displayName: "Second agent",
+          computer: null,
+        }),
+      ],
+    });
+    vi.mocked(browserApi.computers).mockResolvedValue({ computers: [] });
+    act(() => view.result.current.retryResume());
+    await settle();
+
+    expect(view.result.current.agent).toBeUndefined();
+    expect(view.result.current.creation).toBe("idle");
+    expect(view.result.current.computerPreviouslyConfirmed).toBe(false);
+    expect(view.result.current.selectedComputerId).toBeUndefined();
+    expect(view.result.current.resumeBlocked).toEqual({ agentId: unboundAgentId, agentName: "Second agent" });
+
+    const suspend = vi.spyOn(browserApi, "suspendAgent").mockResolvedValue(undefined as never);
+    const remove = vi.spyOn(browserApi, "deleteAgent").mockResolvedValue(undefined);
+    vi.mocked(browserApi.agents).mockResolvedValue({ agents: [] });
+    let removed = false;
+    await act(async () => {
+      removed = await view.result.current.discardAgent();
+    });
+
+    expect(removed).toBe(true);
+    expect(suspend).toHaveBeenCalledWith(unboundAgentId);
+    expect(remove).toHaveBeenCalledWith(unboundAgentId);
+    expect(suspend).not.toHaveBeenCalledWith(AGENT_ID);
+    expect(remove).not.toHaveBeenCalledWith(AGENT_ID);
+    expect(view.result.current.resumeBlocked).toBeUndefined();
+  });
+
+  it("offers existing Computers for an unbound Agent and keeps new connect commands targeted", async () => {
+    /*
+     * The first durable setup write is now the Agent. A refresh between steps must resume that
+     * Agent and issue a code whose target is explicit; an unrelated Computer already on the
+     * Account is not evidence that it belongs to this Agent.
      */
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem({ computer: null })] });
     computersReturning([
       computer({ computerId: "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f", displayName: "Someone else's laptop" }),
     ]);
+    const issue = issuing();
     const rebind = vi.spyOn(browserApi, "rebindAgentComputer");
 
     const view = mount();
     await settle();
 
+    expect(view.result.current.agent).toBeUndefined();
+    expect(view.result.current.creation).toBe("idle");
     expect(view.result.current.resumeBlocked).toEqual({ agentId: AGENT_ID, agentName: "opentag" });
+    expect(view.result.current.selectedComputerId).toBeUndefined();
+    expect(view.result.current.computerPreviouslyConfirmed).toBe(false);
     expect(rebind).not.toHaveBeenCalled();
-    // Not silently created either, so nothing advances toward messaging.
-    expect(view.result.current.creation).not.toBe("created");
+    await act(async () => {
+      await view.result.current.computerConnectAdapter?.issue({ mode: "create" });
+    });
+    expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: AGENT_ID });
   });
 });

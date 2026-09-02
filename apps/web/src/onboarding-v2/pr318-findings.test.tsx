@@ -54,6 +54,9 @@ async function reachComputerStep() {
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  // Agent-first setup creates the durable Agent on step one. The Computer step is not rendered
+  // until that write completes, so the Review Lab's creation clock belongs here now.
+  await advance(CREATE_MS);
   // The step's own effects — issuing a code, or probing the machine it prepares — settle here
   // rather than inside the assertions that read what they produced.
   await act(async () => undefined);
@@ -74,7 +77,9 @@ function continueButton(): HTMLButtonElement {
 
 /** The connect command: the thing a reader should never be shown beside a machine they already own. */
 function connectCommandShown(): boolean {
-  return screen.queryByText(/opentag computer connect/) !== null;
+  return Array.from(document.querySelectorAll("code")).some((element) =>
+    element.textContent?.includes('"$HOME/.local/bin/opentag" connect'),
+  );
 }
 
 /** Anything that would ask the reader which Computer, or offer them another one. */
@@ -210,21 +215,12 @@ describe("the Computer the Account already has", () => {
     expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
   });
 
-  it("still checks the Account's Computer after Start over", async () => {
+  it("does not offer Start over after the Agent has been durably created", async () => {
     render(<OnboardingV2MockPage />);
     chooseInventory("One, online");
     await reachComputerStep();
     expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Start over" }));
-    await reachComputerStep();
-
-    // Start over takes the verdict away without changing which machine is prepared. If the check is
-    // only asked for when the machine changes, the step waits for an answer nobody will give:
-    // Continue disabled, and nothing left for the outside world to do.
-    expect(screen.getByRole("button", { name: "Return check result" })).toBeTruthy();
-    await advanceMock("Return check result");
-    expect(continueButton().disabled).toBe(false);
+    expect(screen.queryByRole("button", { name: "Start over" })).toBeNull();
   });
 });
 

@@ -30,6 +30,10 @@ function setupSnapshot(targetAgentId: string) {
       ...summary.computer,
       connectionStatus: "online",
       lastSeenAt: observedAt,
+      imCliReadiness: [
+        { provider: "feishu", status: "ready", observedAt },
+        { provider: "slack", status: "ready", observedAt },
+      ],
       observedAt,
     },
     runtime: { kind: "observed", provider: summary.runtimeProvider, status: "ready", observedAt },

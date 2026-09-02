@@ -58,7 +58,7 @@ const CreationIntentParamsSchema = z.object({ creationIntentId: AgentCreationInt
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
-  computerConnectCode?: { environment: ChannelName; publicUrl: string };
+  computerConnectCode?: { downloadBaseUrl?: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
@@ -169,7 +169,7 @@ export function registerAccountRoutes(
 
   if (options.machineAuthService && options.computerConnectCode) {
     const machineAuthService = options.machineAuthService;
-    const { environment, publicUrl } = options.computerConnectCode;
+    const { downloadBaseUrl, environment, publicUrl } = options.computerConnectCode;
 
     app.post(HTTP_PATHS.accountComputerConnectCodes, { preHandler }, async (request, reply) => {
       const input = parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
@@ -180,7 +180,12 @@ export function registerAccountRoutes(
         .send(
           ComputerConnectCodeIssueResponseSchema.parse({
             connectCodeId: issued.connectCodeId,
-            bootstrapCommand: buildComputerConnectCommand({ code: issued.code, environment, publicUrl }),
+            bootstrapCommand: buildComputerConnectCommand({
+              code: issued.code,
+              downloadBaseUrl,
+              environment,
+              publicUrl,
+            }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),
             mode: issued.mode,

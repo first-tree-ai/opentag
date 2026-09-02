@@ -56,6 +56,8 @@ export const ComputerConnectCodeExchangeRequestSchema = z
 
 export const ComputerConnectCodeExchangeResponseSchema = z
   .object({
+    /** Present when this setup code atomically bound an explicit Agent to the connected Computer. */
+    agentId: z.string().uuid().optional(),
     computerId: z.string().uuid(),
     installationId: z.string().uuid(),
     machineToken: z.string().min(1).max(4096),
@@ -66,6 +68,8 @@ export const ComputerConnectCodeExchangeResponseSchema = z
 export const AccountComputerConnectCodeCreateRequestSchema = z
   .object({
     mode: z.literal("create").optional(),
+    /** Optional setup target. The Server embeds it into the opaque code and binds it at redemption. */
+    targetAgentId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -74,6 +78,8 @@ export const AccountComputerConnectCodeRepairRequestSchema = z
   .object({
     mode: z.literal("repair"),
     targetComputerId: z.string().uuid(),
+    /** When supplied, the Agent must already be bound to the repaired Computer. */
+    targetAgentId: z.string().uuid().optional(),
   })
   .strict();
 

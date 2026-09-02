@@ -28,6 +28,7 @@ import {
   type AgentSummary,
   type FeishuSetupIntent,
   type ImBindingMessagingExpectation,
+  type ImCliReadinessStatus,
   type ImProvider,
   type ProviderReadinessStatus,
   type SlackConfigurationIntent,
@@ -65,6 +66,8 @@ export interface MemorySetupSeed {
   readonly computerOnline?: boolean;
   /** Defaults to ready, so a seed names only the legs it wants to exercise. */
   readonly runtimeStatus?: ProviderReadinessStatus;
+  /** Independent daemon observations for both messaging CLIs; absent Providers are still checking. */
+  readonly imCliReadiness?: Partial<Record<ImProvider, ImCliReadinessStatus>>;
   readonly messaging?: MemoryMessagingModel;
   /** Keeps one authoritative observation leg failed, for production-parity blocker scenarios. */
   readonly observationFailure?: "computer" | "runtime" | "messaging";
@@ -115,6 +118,7 @@ type MemoryBoundMessaging = MemoryBound | undefined;
 interface MemoryState {
   readonly agent: AgentSummary;
   computerOnline: boolean;
+  readonly imCliReadiness: Partial<Record<ImProvider, ImCliReadinessStatus>>;
   runtimeStatus: ProviderReadinessStatus;
   messaging: MemoryMessagingState;
   readonly observationFailure: MemorySetupSeed["observationFailure"];
@@ -292,6 +296,11 @@ function deriveComputerState(state: MemoryState): AgentSetupComputerState {
     kind: "bound",
     ...agent.computer,
     connectionStatus: computerOnline ? "online" : "offline",
+    imCliReadiness: (["feishu", "slack"] as const).map((provider) => ({
+      provider,
+      status: computerOnline ? (state.imCliReadiness[provider] ?? "checking") : "unavailable",
+      observedAt: computerOnline && state.imCliReadiness[provider] ? now() : null,
+    })),
     lastSeenAt: computerOnline ? null : now(),
     observedAt: now(),
   };
@@ -367,6 +376,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
   const state: MemoryState = {
     agent: seed.agent,
     computerOnline: seed.computerOnline ?? true,
+    imCliReadiness: seed.imCliReadiness ?? {},
     runtimeStatus: seed.runtimeStatus ?? "ready",
     messaging: bound
       ? {

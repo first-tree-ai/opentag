@@ -9,8 +9,12 @@ authorized Turn receives OpenTag-projected credentials.
 
 OpenTag owns inbound IM routing, Integration credentials, temporary Client credential projection, and provider-native inbound references. It does not expose a message send, reply, Reaction, or upload API.
 
-An active Feishu/Lark or Slack binding is the requirement signal. The daemon may repair only the corresponding
-OpenTag-managed artifact and validates that exact CLI with the real bound credential before reporting it ready; it never
+The targeted first-setup `opentag connect` command is the only installer for both official Provider CLIs during
+onboarding. It is non-interactive, returns bounded next actions, and can be run by a person or an Agent. The daemon
+independently inspects and reports both CLIs while setup is incomplete; it does not race the foreground installer.
+
+After a Feishu/Lark or Slack binding becomes active, the daemon may repair only that binding's corresponding
+OpenTag-managed artifact and validates the exact CLI with the real bound credential before reporting it ready; it never
 replaces an external installation or foreign shim. `opentag doctor` and the portable installer only report static
 account-global installation state. They do not install, repair, validate credentials, or infer login/subscription state.
 

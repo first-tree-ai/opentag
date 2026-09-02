@@ -6,7 +6,6 @@
  * setup copy, so the same work says the same thing on both surfaces.
  */
 
-import * as m from "../paraglide/messages.js";
 import { SETUP_COPY } from "../setup/copy.js";
 import type { CloudRuntime, Destination, Runtime, StepId, TokenSource } from "./flow.js";
 
@@ -47,20 +46,6 @@ export const TOKEN_COPY: Record<TokenSource, { readonly title: string; readonly 
 
 export const COPY = {
   loading: "Picking up where you left off…",
-  /**
-   * The Agent exists but has no computer, and this flow cannot give it one: the connect step proves
-   * that *a* machine arrived, not that it is the machine that ran this command. Choosing is the
-   * reader's, on the page built for it.
-   */
-  resumeBlocked: {
-    /*
-     * Both are functions, including the one that takes no argument. A message resolved here would
-     * run at import, before `configureLocaleRuntime()` replaces Paraglide's persisting resolver —
-     * which would write a locale preference the reader never chose.
-     */
-    title: (agentName: string) => m.onboarding_v2_resume_blocked_title({ agentName }),
-    detail: () => m.onboarding_v2_resume_blocked_detail(),
-  },
   brand: "OpenTag",
 
   nav: {
@@ -122,14 +107,10 @@ export const COPY = {
       count > 1
         ? `${count} things need fixing before your agent can run.`
         : "One thing needs fixing before your agent can run.",
-    /**
-     * By the time this page is read, `doctor --fix` is usually already running on the user's
-     * machine — signing in during the previous step starts it. So this is a pointer back to where
-     * the work is happening, not a command to go and run: one light line, no block, no copy button.
-     */
+    /** Doctor stays read-only; its JSON report gives an Agent exact commands for repairable checks. */
     repairHint: "Continue in your terminal or agent for instructions, or run",
-    repairCommand: "opentag doctor --fix",
-    repairHintSuffix: "to start the repair.",
+    repairCommand: '"$HOME/.local/bin/opentag" doctor --json',
+    repairHintSuffix: "to inspect the remaining issues.",
     creating: "Creating…",
   },
 
@@ -150,6 +131,7 @@ export const COPY = {
     connectCode: "We couldn't get a connection command. Check your network and try again.",
     computers: "We lost contact while waiting for your computer.",
     createAgent: "We couldn't create your agent.",
+    discardAgent: "We couldn't delete this agent. Try again before choosing a different runtime.",
     messaging: "We couldn't start connecting your messaging app.",
     resume: "We couldn't check what your account already has.",
     completeSetup: "Your agent is ready, but we couldn't finish setting up your account.",

@@ -42,6 +42,10 @@ function boundComputer(connectionStatus: "online" | "offline" = "online") {
     kind: "bound" as const,
     ...computerIdentity,
     connectionStatus,
+    imCliReadiness: [
+      { provider: "feishu" as const, status: "ready" as const, observedAt },
+      { provider: "slack" as const, status: "checking" as const, observedAt: null },
+    ],
     lastSeenAt: observedAt,
     observedAt,
   };

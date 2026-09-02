@@ -19,7 +19,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api.js";
 import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
-import { ComputerConnect } from "../features/computer-connect/computer-connect.js";
+import {
+  ComputerConnect,
+  type ComputerConnectAdapter,
+  createAgentTargetedComputerConnectAdapter,
+} from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
 import { formatDateTime, formatRelativeTime, spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
@@ -30,6 +34,7 @@ import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import { COPY, RUNTIME_COPY } from "./copy.js";
+import { ImCliReadinessList, type ImCliStatuses } from "./im-cli-status.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
@@ -570,10 +575,12 @@ function ComputerSetupSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { computer } = snapshot;
+  const computerConnectAdapter = useMemo(() => createAgentTargetedComputerConnectAdapter(agentId), [agentId]);
   if (computer.kind === "not-bound") {
     return (
       <NotBoundComputerSection
         agentId={agentId}
+        computerConnectAdapter={computerConnectAdapter}
         name={snapshot.agent.displayName}
         onChanged={onChanged}
         snapshot={snapshot}
@@ -608,7 +615,7 @@ function ComputerSetupSection({
         </p>
         {canBind ? (
           <div className={PANEL}>
-            <AgentComputerChoice agentId={agentId} onBound={onChanged} />
+            <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} />
           </div>
         ) : null}
       </section>
@@ -636,16 +643,25 @@ function ComputerSetupSection({
       </section>
     );
   }
-  return <BoundComputerSection computer={computer} onChanged={onChanged} snapshot={snapshot} />;
+  return (
+    <BoundComputerSection
+      computer={computer}
+      computerConnectAdapter={computerConnectAdapter}
+      onChanged={onChanged}
+      snapshot={snapshot}
+    />
+  );
 }
 
 function NotBoundComputerSection({
   agentId,
+  computerConnectAdapter,
   name,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
+  readonly computerConnectAdapter: ComputerConnectAdapter;
   readonly name: string;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
@@ -665,7 +681,7 @@ function NotBoundComputerSection({
        */}
       {canBind ? (
         <div className={PANEL}>
-          <AgentComputerChoice agentId={agentId} onBound={onChanged} />
+          <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} />
         </div>
       ) : null}
     </section>
@@ -674,27 +690,35 @@ function NotBoundComputerSection({
 
 /** Reconnecting the exact Computer the snapshot names, so it keeps its identity. */
 function RepairComputerConnect({
+  adapter,
   computerId,
   displayName,
   onChanged,
 }: {
+  readonly adapter: ComputerConnectAdapter;
   readonly computerId: string;
   readonly displayName: string;
   readonly onChanged: () => void;
 }) {
   return (
     <div className={PANEL}>
-      <ComputerConnect intent={{ mode: "repair", target: { computerId, displayName } }} onConnected={onChanged} />
+      <ComputerConnect
+        adapter={adapter}
+        intent={{ mode: "repair", target: { computerId, displayName } }}
+        onConnected={onChanged}
+      />
     </div>
   );
 }
 
 function BoundComputerSection({
   computer,
+  computerConnectAdapter,
   onChanged,
   snapshot,
 }: {
   readonly computer: Extract<AgentSetupSnapshot["computer"], { kind: "bound" }>;
+  readonly computerConnectAdapter: ComputerConnectAdapter;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -750,6 +774,7 @@ function BoundComputerSection({
           {repairing ? (
             <div id="agent-setup-repair-command">
               <RepairComputerConnect
+                adapter={computerConnectAdapter}
                 computerId={repair.computerId}
                 displayName={computer.displayName}
                 onChanged={onChanged}
@@ -808,6 +833,10 @@ function MessagingSetupSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { messaging } = snapshot;
+  const cliStatuses: ImCliStatuses | undefined =
+    snapshot.computer.kind === "bound"
+      ? Object.fromEntries(snapshot.computer.imCliReadiness.map((entry) => [entry.provider, entry.status]))
+      : undefined;
   return (
     <section className={SECTION} data-state={messaging.kind} data-ui="agent-setup-messaging">
       <header className={SECTION_HEADER}>
@@ -815,6 +844,7 @@ function MessagingSetupSection({
           {m.onboarding_v2_messaging_title()}
         </Text>
       </header>
+      <ImCliReadinessList statuses={cliStatuses} />
       {messaging.kind === "not-configured" ? (
         <MessagingStartChoice busyKey={controller.busyKey} onStart={controller.act} snapshot={snapshot} />
       ) : null}

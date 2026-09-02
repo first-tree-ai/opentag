@@ -63,6 +63,7 @@ function connection(): ProviderCliReconcilerOptions["connection"] & {
       };
     },
     capabilityVersion: () => 1,
+    setImCliReadiness: vi.fn(),
     emit(frame) {
       return Promise.all([...listeners].map((listener) => listener(frame)));
     },

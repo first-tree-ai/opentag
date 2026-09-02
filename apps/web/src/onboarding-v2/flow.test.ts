@@ -16,8 +16,8 @@ const draft: AgentDraft = {
   cloudRuntime: undefined,
   tokenSource: undefined,
 };
-/** The facts of a user who has confirmed both of the steps they drive themselves. */
-const confirmed = { draft, destinationConfirmed: true, draftConfirmed: true } as const;
+/** The facts after the Agent step's durable create has completed. */
+const confirmed = { draft, destinationConfirmed: true, draftConfirmed: true, creation: "created" } as const;
 const selectedComputerId = "computer-1";
 const ready: ReadinessFacts = { runtime: "ready", messagingCli: { feishu: "ready", slack: "ready" } };
 
@@ -63,6 +63,7 @@ describe("deriveFlowState", () => {
 
   it("stays on the agent page until the draft is explicitly confirmed", () => {
     expect(deriveFlowState(facts({ draft, destinationConfirmed: true })).page).toBe("agent");
+    expect(deriveFlowState(facts({ ...confirmed, creation: "creating" })).page).toBe("agent");
     expect(deriveFlowState(facts(confirmed)).page).toBe("computer");
   });
 
@@ -83,14 +84,14 @@ describe("deriveFlowState", () => {
     ]);
   });
 
-  it("holds the computer step until the Agent is actually created", () => {
+  it("holds the computer step until the reader explicitly continues", () => {
     const passing = facts({ ...confirmed, selectedComputerId, readiness: ready });
     expect(deriveFlowState(passing).page).toBe("computer");
-    expect(deriveFlowState({ ...passing, creation: "created" }).page).toBe("messaging");
+    expect(deriveFlowState({ ...passing, computerConfirmed: true }).page).toBe("messaging");
   });
 
   it("is complete only once messaging is connected", () => {
-    const base = facts({ ...confirmed, selectedComputerId, readiness: ready, creation: "created" });
+    const base = facts({ ...confirmed, selectedComputerId, readiness: ready, computerConfirmed: true });
     expect(deriveFlowState(base).complete).toBe(false);
     expect(deriveFlowState({ ...base, messaging: { kind: "connected" } }).complete).toBe(true);
   });
@@ -100,5 +101,8 @@ describe("readinessPassed", () => {
   it("does not wait on the messaging CLI: its provider is not chosen yet", () => {
     // A missing lark-cli used to block a user who was going to pick Slack.
     expect(readinessPassed({ runtime: "ready", messagingCli: { feishu: "install", slack: "install" } })).toBe(true);
+    expect(readinessPassed({ runtime: "ready", messagingCli: { feishu: "unavailable", slack: "checking" } })).toBe(
+      true,
+    );
   });
 });

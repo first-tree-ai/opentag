@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { type AgentRuntimeProvider, AgentRuntimeProviderSchema, AgentRuntimeTestFailureCodeSchema } from "./agent.js";
-import { ImCliProviderSchema, ProviderCliValidationResultReasonSchema } from "./computer.js";
+import { IM_CLI_PROVIDERS, ImCliProviderSchema, ProviderCliValidationResultReasonSchema } from "./computer.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -787,6 +787,38 @@ const providerCliFenceShape = {
   credentialGeneration: z.number().int().safe().positive(),
 };
 
+export const ProviderCliPrewarmFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:prewarm"),
+    requestId: RuntimeRequestIdSchema,
+    providers: z
+      .array(ImCliProviderSchema)
+      .min(1)
+      .max(IM_CLI_PROVIDERS.length)
+      .superRefine((providers, context) => {
+        const seen = new Set<string>();
+        for (const [index, provider] of providers.entries()) {
+          if (seen.has(provider)) {
+            context.addIssue({
+              code: "custom",
+              path: [index],
+              message: "IM CLI prewarm providers must be unique",
+            });
+          }
+          seen.add(provider);
+          const previous = providers[index - 1];
+          if (previous !== undefined && IM_CLI_PROVIDERS.indexOf(provider) < IM_CLI_PROVIDERS.indexOf(previous)) {
+            context.addIssue({
+              code: "custom",
+              path: [index],
+              message: "IM CLI prewarm providers must use canonical Provider order",
+            });
+          }
+        }
+      }),
+  })
+  .strict();
+
 export const ProviderCliRequirementFrameSchema = z
   .object({
     type: z.literal("provider-cli:requirement"),
@@ -930,6 +962,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   RuntimeImCredentialGrantResultSchema,
   AgentRuntimeTestRequestFrameSchema,
   AgentRuntimeTestCancelFrameSchema,
+  ProviderCliPrewarmFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
   ProviderCliCancelFrameSchema,
@@ -982,6 +1015,7 @@ export type AgentRuntimeTestRequestFrame = z.infer<typeof AgentRuntimeTestReques
 export type AgentRuntimeTestCancelFrame = z.infer<typeof AgentRuntimeTestCancelFrameSchema>;
 export type AgentRuntimeTestResultFrame = z.infer<typeof AgentRuntimeTestResultFrameSchema>;
 export type ProviderCliExpectedIdentity = z.infer<typeof ProviderCliExpectedIdentitySchema>;
+export type ProviderCliPrewarmFrame = z.infer<typeof ProviderCliPrewarmFrameSchema>;
 export type ProviderCliRequirementFrame = z.infer<typeof ProviderCliRequirementFrameSchema>;
 export type ProviderCliArtifactStatusFrame = z.infer<typeof ProviderCliArtifactStatusFrameSchema>;
 export type ProviderCliCancelFrame = z.infer<typeof ProviderCliCancelFrameSchema>;

@@ -283,7 +283,7 @@ describe("RuntimeConnection", () => {
         throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "access token was revoked");
       },
     });
-    await expect(apiConnection.run()).rejects.toThrow("access token was revoked; run computer connect again");
+    await expect(apiConnection.run()).rejects.toThrow("access token was revoked; run opentag connect again");
 
     const credentialConnection = new RuntimeConnection({
       ...controlledOptions(new ControlledWebSocket()),
@@ -292,7 +292,7 @@ describe("RuntimeConnection", () => {
       },
     });
     await expect(credentialConnection.run()).rejects.toThrow(
-      "The runtime CLI is not logged in; run computer connect first",
+      "The runtime CLI is not logged in; run opentag connect first",
     );
   });
 

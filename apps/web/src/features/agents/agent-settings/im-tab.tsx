@@ -102,6 +102,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
           {m.im_messaging_page_title()}
         </Text>
+        <p className="text-sm text-kumo-subtle">{m.im_messaging_page_description()}</p>
       </header>
       <FeishuSetup
         agentId={agent.id}
@@ -136,10 +137,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                 <AsyncState state={state}>
                   {(binding) => (
                     <div className="grid gap-6">
-                      <section
-                        className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-                        aria-labelledby="messaging-app-heading"
-                      >
+                      <section className="grid gap-4" aria-labelledby="messaging-app-heading">
                         <Text as="h2" id="messaging-app-heading" variant="heading">
                           {m.im_messaging_app()}
                         </Text>
@@ -241,10 +239,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                       </section>
 
                       {binding ? (
-                        <section
-                          className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-                          aria-labelledby="trigger-rules-heading"
-                        >
+                        <section className="grid gap-4" aria-labelledby="trigger-rules-heading">
                           <div className="grid gap-2">
                             <Text
                               as="h2"

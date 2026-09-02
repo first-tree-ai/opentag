@@ -12,6 +12,7 @@
   "agent_settings_channel_detail_with_name": "{provider} · @{name}",
   "agent_settings_claude_code": "Claude Code",
   "agent_settings_codex": "Codex",
+  "agent_settings_computer_description": "The Computer this Agent runs on. It can work only while that Computer is online.",
   "agent_settings_computer_none_heading": "No Computer connected",
   "agent_settings_computer_none_status": "Not connected",
   "agent_settings_computer_none_summary": "No Computer connected",

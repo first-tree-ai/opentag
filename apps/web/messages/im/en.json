@@ -58,6 +58,7 @@
   "im_mentions_only_description": "The Agent checks the conversation when someone @mentions it. Messages since its last reply are included for context.",
   "im_messaging_app": "Messaging app",
   "im_messaging_connect_description": "Connect {provider} or {alternateProvider} so teammates can send messages to this Agent.",
+  "im_messaging_page_description": "Where teammates reach this Agent, and which messages it answers.",
   "im_messaging_page_title": "Messaging",
   "im_no_messaging_app": "No messaging app connected",
   "im_permissions_required": "Permissions required",

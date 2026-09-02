@@ -17,18 +17,19 @@ import { AgentSettingsPageHeader } from "./settings-layout.js";
 function AgentComputerBinding({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   return (
     <div className="grid gap-6">
-      <AgentSettingsPageHeader id="computer-heading" title={m.agents_status_computer()} />
-      <section
-        aria-labelledby="computer-heading"
-        className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      >
+      <AgentSettingsPageHeader
+        description={m.agent_settings_computer_description()}
+        id="computer-heading"
+        title={m.agents_status_computer()}
+      />
+      <section aria-labelledby="computer-heading" className="grid gap-4">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <Text as="h2" variant="heading">
             {m.agent_settings_computer_none_heading()}
           </Text>
           <StatusIndicator label={m.agent_settings_computer_none_status()} tone="warning" />
         </header>
-        <div className="grid gap-4 rounded-md bg-kumo-recessed p-4">
+        <div className="grid gap-4">
           <p>{computerRecoveryMessage(agent)}</p>
           <AgentComputerChoice agentId={agent.id} onBound={onAgentChanged} />
         </div>
@@ -60,11 +61,12 @@ export function AgentComputerSettings({
   if (!agent.computer) return <AgentComputerBinding agent={agent} onAgentChanged={onAgentChanged} />;
   return (
     <div className="grid gap-6">
-      <AgentSettingsPageHeader id="computer-heading" title={m.agents_status_computer()} />
-      <section
-        aria-labelledby="computer-device-heading"
-        className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-      >
+      <AgentSettingsPageHeader
+        description={m.agent_settings_computer_description()}
+        id="computer-heading"
+        title={m.agents_status_computer()}
+      />
+      <section aria-labelledby="computer-device-heading" className="grid gap-4">
         <header className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3" data-ui="computer-identity">
           <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
             <Icon name="laptop" />
@@ -83,27 +85,25 @@ export function AgentComputerSettings({
           <StatusIndicator className="justify-self-end" label={computerStatus} tone={computerTone} />
         </header>
         {ready ? null : (
-          <div className="rounded-md bg-kumo-recessed p-4">
-            <div className="grid gap-3">
-              {computerState.lastConfirmedAt ? (
-                <p>
-                  {m.agent_settings_last_seen({
-                    relative: formatRelativeTime(computerState.lastConfirmedAt),
-                    date: formatDateTime(computerState.lastConfirmedAt),
-                  })}
-                </p>
-              ) : null}
-              <p>{computerRecoveryMessage(agent)}</p>
-              {/* Re-enrolment only answers an unreachable Computer; a missing Provider needs the
-                  Provider installed, so offering it there would send an operator down a dead path. */}
-              {computerState.state === "action_required" ? (
-                <AgentComputerRepair
-                  computer={agent.computer}
-                  key={agent.computer.computerId}
-                  onAgentChanged={onAgentChanged}
-                />
-              ) : null}
-            </div>
+          <div className="grid gap-3">
+            {computerState.lastConfirmedAt ? (
+              <p>
+                {m.agent_settings_last_seen({
+                  relative: formatRelativeTime(computerState.lastConfirmedAt),
+                  date: formatDateTime(computerState.lastConfirmedAt),
+                })}
+              </p>
+            ) : null}
+            <p>{computerRecoveryMessage(agent)}</p>
+            {/* Re-enrolment only answers an unreachable Computer; a missing Provider needs the
+                Provider installed, so offering it there would send an operator down a dead path. */}
+            {computerState.state === "action_required" ? (
+              <AgentComputerRepair
+                computer={agent.computer}
+                key={agent.computer.computerId}
+                onAgentChanged={onAgentChanged}
+              />
+            ) : null}
           </div>
         )}
       </section>
@@ -121,9 +121,12 @@ function AgentComputerRepair({
   const [reconnecting, setReconnecting] = useState(false);
   return (
     <>
+      {/* The negative inset cancels the control's own padding: a borderless button reads as part of
+          the prose above it only when its text starts on the same left edge. */}
       <Button
         aria-controls="agent-computer-reconnect"
         aria-expanded={reconnecting}
+        className="-mx-2 text-kumo-link"
         size="compact"
         variant="inline"
         onClick={() => setReconnecting((value) => !value)}
@@ -131,10 +134,17 @@ function AgentComputerRepair({
         {reconnecting ? m.agent_settings_computer_repair_hide() : m.agent_settings_computer_repair_show()}
       </Button>
       {reconnecting ? (
-        <div className="grid gap-3" id="agent-computer-reconnect">
-          <Text as="h2" variant="heading">
-            {m.computer_connect_repair_title({ computerName: computer.displayName })}
-          </Text>
+        /*
+         * Everything the disclosure adds -- the command, how long it lasts, what happens once it
+         * runs -- sits on one surface, so it reads as the single thing the button opened rather
+         * than as loose paragraphs after it. The name it used to repeat as a heading is the
+         * region's label instead: the command block below already names the machine.
+         */
+        <section
+          aria-label={m.computer_connect_repair_title({ computerName: computer.displayName })}
+          className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
+          id="agent-computer-reconnect"
+        >
           <ComputerConnect
             intent={{
               mode: "repair",
@@ -143,7 +153,7 @@ function AgentComputerRepair({
             onConnected={onAgentChanged}
           />
           <p className="text-sm text-kumo-subtle">{m.agent_settings_reconnecting_description()}</p>
-        </div>
+        </section>
       ) : null}
     </>
   );

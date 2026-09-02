@@ -3,5 +3,6 @@
   "agent_create_create_agent_action": "Create Agent",
   "agent_create_creating_action": "Creating…",
   "agent_create_failed": "Agent creation failed",
+  "agent_create_open_agents": "Go to your Agents",
   "agent_create_open_existing": "Open @{name}"
 }

@@ -3,5 +3,6 @@
   "agent_create_create_agent_action": "创建 Agent",
   "agent_create_creating_action": "正在创建…",
   "agent_create_failed": "Agent 创建失败",
+  "agent_create_open_agents": "去看你的 Agent",
   "agent_create_open_existing": "打开 @{name}"
 }

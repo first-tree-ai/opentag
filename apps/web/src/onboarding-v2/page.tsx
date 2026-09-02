@@ -84,8 +84,13 @@ function AgentCreatePage({
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
-  /** The Agent a refused name already belongs to, once it has been found. */
-  const [taken, setTaken] = useState<{ id: string; name: string }>();
+  /**
+   * What a refused name leaves behind: the Agent holding it when that Agent could be read, and
+   * otherwise the bare fact that one exists. Both are exits, which is the point — on this route the
+   * offer is the only way off the page, and it must not depend on a second request succeeding
+   * immediately after one has just failed.
+   */
+  const [taken, setTaken] = useState<{ id: string; name: string } | "unnamed">();
   /** One creation at a time. A second press before the first answers would ask for a second Agent. */
   const createInFlight = useRef(false);
 
@@ -107,6 +112,9 @@ function AgentCreatePage({
       createInFlight.current = true;
       setSubmitting(true);
       setError(undefined);
+      // Cleared with the error it belongs to: an offer left over from a previous refusal would sit
+      // under a failure it does not describe.
+      setTaken(undefined);
       try {
         const created = await browserApi.createAgent(request);
         await Promise.resolve(onAgentAvailable?.(created.id));
@@ -123,7 +131,7 @@ function AgentCreatePage({
          * never work again.
          */
         if (cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT") {
-          setTaken(await agentHoldingName(request.name));
+          setTaken((await agentHoldingName(request.name)) ?? "unnamed");
         }
       } finally {
         createInFlight.current = false;
@@ -158,9 +166,11 @@ function AgentCreatePage({
                 <Link
                   className="inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
                   data-ui="agent-create-open-taken-name"
-                  {...agentDetailLink(taken.id)}
+                  {...(taken === "unnamed" ? { to: "/agents" } : agentDetailLink(taken.id))}
                 >
-                  {m.agent_create_open_existing({ name: taken.name })}
+                  {taken === "unnamed"
+                    ? m.agent_create_open_agents()
+                    : m.agent_create_open_existing({ name: taken.name })}
                   <Icon className="size-3.5" name="chevron-right" />
                 </Link>
               ) : null}

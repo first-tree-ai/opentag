@@ -213,6 +213,95 @@ describe("Agent Setup route boundary", () => {
     expect(screen.queryByText("An active Agent with this name already exists for this Account")).toBeNull();
   });
 
+  it("retires a refusal's offer with the refusal itself", async () => {
+    /*
+     * The offer belongs to the failure that produced it. A later failure of a different kind, on the
+     * same name, is not answered by it — and an offer sitting under a banner that says the request
+     * never reached the Server is the second, disagreeing account of one fact this flow exists to
+     * be rid of.
+     */
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let refused = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        if (refused) throw new TypeError("Connection closed before the result arrived");
+        refused = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && refused) {
+        return json({ agents: [agentListItem] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(await screen.findByRole("link", { name: "Open @reviewer" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    expect(await screen.findByText("Connection closed before the result arrived")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open @reviewer" })).toBeNull();
+  });
+
+  it("still offers a way off the page when the refused name cannot be traced", async () => {
+    /*
+     * The offer is this route's only exit, and it asks for a second read straight after one request
+     * has just failed — which is when that read is least likely to succeed. So a refusal that cannot
+     * name the Agent still says where to look, rather than leaving a screen with no way out.
+     */
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let refused = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        refused = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && refused) {
+        throw new TypeError("Connection closed before the result arrived");
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    const exit = await screen.findByRole("link", { name: "Go to your Agents" });
+    expect(exit.getAttribute("href")).toBe("/agents");
+    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+  });
+
   it("offers the same Agent to an Account that asked for an extra one and reused a name", async () => {
     installAgentSetupApi();
     const fallback = vi.mocked(fetch).getMockImplementation();

@@ -8,8 +8,6 @@
  */
 
 /** Mirrors the Server's provider readiness vocabulary so a mock stays swappable for the real API. */
-export type RuntimeStatus = "checking" | "ready" | "install" | "sign-in" | "unavailable";
-/** The messaging CLI has no sign-in of its own: it is installed or it is not. */
 export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable";
 
 /**
@@ -23,56 +21,6 @@ export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable
  * chain: `messagingCliCheck` maps the reported status to the `CheckState` that decides whether
  * `messagingCliMissingCopy` is shown.
  */
-export type CheckState = "pending" | "passed" | "failed" | "blocked";
-
-export interface CheckRow {
-  readonly id: "runtime-cli" | "runtime-auth";
-  readonly state: CheckState;
-}
-
-/**
- * The runtime rows, from the one status they are both derived from. An absent status is a probe
- * that has not answered yet, which reads the same as `checking`.
- *
- * The messaging CLI is deliberately not here: which one is even needed depends on a provider that
- * is chosen separately, so a missing `lark-cli` used to block someone who was going to pick Slack.
- * That check is asked for on its own, where the requirement becomes real.
- */
-export function deriveChecks(runtime: RuntimeStatus | undefined): readonly CheckRow[] {
-  const status = runtime ?? "checking";
-  return [
-    { id: "runtime-cli", state: runtimeCliState(status) },
-    { id: "runtime-auth", state: runtimeAuthState(status) },
-  ];
-}
-
-/** The chosen provider's CLI, as the `CheckState` behind the missing-CLI sentence. */
-export function messagingCliCheck(status: MessagingCliStatus | undefined): CheckState {
-  return messagingCliState(status ?? "checking");
-}
-
-function runtimeCliState(status: RuntimeStatus): CheckState {
-  if (status === "checking") return "pending";
-  // A runtime that reports `sign-in` proved its CLI runs; only the credential is missing.
-  if (status === "ready" || status === "sign-in") return "passed";
-  return "failed";
-}
-
-function runtimeAuthState(status: RuntimeStatus): CheckState {
-  if (status === "checking") return "pending";
-  if (status === "ready") return "passed";
-  if (status === "sign-in") return "failed";
-  // Without a working CLI there is no credential answer to report.
-  return "blocked";
-}
-
-function messagingCliState(status: MessagingCliStatus): CheckState {
-  if (status === "checking" || status === "install") return "pending";
-  if (status === "ready") return "passed";
-  return "failed";
-}
-
-/** Formats a remaining duration as `m:ss`, never rounding a live second up. */
 export function formatRemaining(remainingMs: number): string {
   const seconds = Math.max(0, Math.ceil(remainingMs / 1_000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;

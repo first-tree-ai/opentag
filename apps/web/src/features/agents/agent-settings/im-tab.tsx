@@ -211,6 +211,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           <>
                             <p className="text-sm text-kumo-subtle">
                               {m.im_messaging_connect_description({
+                                alternateProvider: messagingProviderLabel("slack"),
                                 provider: messagingProviderLabel("feishu"),
                               })}
                             </p>
@@ -231,7 +232,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 variant="secondary"
                                 onClick={() => void connectSlack()}
                               >
-                                {m.im_connect_slack()}
+                                {m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
                               </Button>
                             </div>
                           </>

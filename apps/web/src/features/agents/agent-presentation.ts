@@ -1,4 +1,5 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import { ImProviderSchema } from "@opentag/shared/browser";
 import { messagingProviderLabel, spaceBrandInSentence } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { SETUP_COPY } from "../../setup/copy.js";
@@ -286,7 +287,17 @@ export function agentAvailabilityRecovery(
   return { label: "View Computer", link: agentSettingsSectionLink(agent.id, "computer") };
 }
 
+/*
+ * The channels a reader could connect, named by the helper and joined here. The sentence and its
+ * grammar belong to this module; each brand inside it does not, which is why the list is built from
+ * the provider schema rather than written out. Adding a provider changes these sentences with it.
+ */
+function connectableChannels(): string {
+  return ImProviderSchema.options.map(messagingProviderLabel).join(" or ");
+}
+
 export function agentRecoveryMessage(agent: AgentDetailView): string {
+  const channels = connectableChannels();
   const messages: Record<NonNullable<AgentAvailability["reason"]>, string> = {
     agent_suspended: "This Agent is paused. Resume it to start receiving messages again.",
     agent_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
@@ -296,11 +307,11 @@ export function agentRecoveryMessage(agent: AgentDetailView): string {
     computer_not_bound: m.agents_computer_not_bound_detail(),
     computer_offline: "This agent's computer is offline. Retrying automatically.",
     runtime_unavailable: runtimeRecoveryMessage(agent),
-    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
+    im_not_connected: `Connect ${channels} so teammates can send this Agent work.`,
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
-    im_error: "The messaging connection failed. Reconnect Feishu or Slack to receive messages.",
-    im_disabled: "Messaging is turned off for this Agent. Reconnect Feishu or Slack to receive messages.",
+    im_error: `The messaging connection failed. Reconnect ${channels} to receive messages.`,
+    im_disabled: `Messaging is turned off for this Agent. Reconnect ${channels} to receive messages.`,
     handoff_unavailable: providerCliRecoveryMessage(agent),
   };
   return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);

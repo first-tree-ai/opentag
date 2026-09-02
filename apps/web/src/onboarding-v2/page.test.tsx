@@ -231,12 +231,15 @@ describe("OnboardingV2Page", () => {
   it("installs through the portable installer, which needs nothing already on the machine", async () => {
     render(<OnboardingV2MockPage />);
     await reachConnectStep();
-    const command = screen.getByText(/opentag connect/).textContent ?? "";
+    const command = screen.getByText(/curl -fsSL/).closest("code")?.textContent ?? "";
     // No `npm`: that would require a working Node before OpenTag could be installed at all.
     expect(command).not.toContain("npm");
     expect(command).toContain("curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh");
     // The shim is not on this shell's PATH yet, so the connect call has to name its directory.
-    expect(command).toMatch(/PATH="\$HOME\/\.local\/bin\S* opentag connect --server \S+ -- [A-Za-z0-9_-]{32}$/);
+    expect(command).toContain(
+      `PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag" connect --server https://opentag.ai -- otcc_`,
+    );
+    expect(command).toMatch(/otcc_[A-Za-z0-9_-]{43}$/u);
   });
 
   it("copies the comment together with the command", async () => {

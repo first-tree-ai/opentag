@@ -306,7 +306,7 @@ describe("machine authentication and Computer services", () => {
     expect(await unit.database.select().from(computerCredentials)).toHaveLength(2);
   });
 
-  it("embeds an explicit Agent target in the opaque code and binds it atomically at redemption", async () => {
+  it("compactly embeds an explicit Agent target and binds it atomically at redemption", async () => {
     const bootstrap = await account();
     const [target] = await unit.database
       .insert(agents)
@@ -320,13 +320,46 @@ describe("machine authentication and Computer services", () => {
     if (!target) throw new Error("Agent insert did not return a row");
     const machine = new MachineAuthService(unit.database, { now: () => NOW });
     const issued = await machine.issueForAccount(bootstrap.userId, { targetAgentId: target.id });
-    expect(issued.code).toMatch(new RegExp(`\\.${target.id}$`, "u"));
+    expect(issued.code).toMatch(/^otcc_[A-Za-z0-9_-]{43}$/u);
+    expect(issued.code).toHaveLength(48);
+    expect(issued.code).not.toContain(target.id);
     expect((await unit.database.select().from(computerConnectCodes))[0]?.tokenHash).toBe(hashSecret(issued.code));
 
     const connected = await machine.exchangeConnectCode(exchangeInput(issued.code));
     expect(connected).toMatchObject({ agentId: target.id, computerId: expect.any(String) });
     const [bound] = await unit.database.select().from(agents).where(eq(agents.id, target.id));
     expect(bound).toMatchObject({ computerId: connected.computerId, revision: 2 });
+  });
+
+  it("redeems the previous textual targeted-code format during a rolling upgrade", async () => {
+    const bootstrap = await account();
+    const [target] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        displayName: "Legacy Setup Agent",
+        name: "legacy-setup-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!target) throw new Error("Agent insert did not return a row");
+    const legacyCode = `otcc_${"a".repeat(32)}.${target.id}`;
+    await unit.database.insert(computerConnectCodes).values({
+      tokenHash: hashSecret(legacyCode),
+      issuedByAccountId: bootstrap.userId,
+      mode: "create",
+      targetComputerId: null,
+      createdAt: NOW,
+      expiresAt: new Date(NOW.getTime() + 15 * 60 * 1000),
+    });
+
+    const connected = await new MachineAuthService(unit.database, { now: () => NOW }).exchangeConnectCode(
+      exchangeInput(legacyCode),
+    );
+
+    expect(connected.agentId).toBe(target.id);
+    const [bound] = await unit.database.select().from(agents).where(eq(agents.id, target.id));
+    expect(bound?.computerId).toBe(connected.computerId);
   });
 
   it("rejects a bound or foreign Agent before issuing a targeted create code", async () => {

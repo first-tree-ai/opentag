@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   type AccountComputerConnectCodeIssueRequest,
   type ChannelName,
@@ -15,9 +15,12 @@ import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
 
 export const COMPUTER_CONNECT_CODE_TTL_SECONDS = 15 * 60;
 const COMPUTER_CONNECT_CODE_PREFIX = "otcc_";
+const TARGETED_CONNECT_CODE_RANDOM_BYTES = 16;
+const TARGETED_CONNECT_CODE_PAYLOAD_BYTES = 16 + TARGETED_CONNECT_CODE_RANDOM_BYTES;
 const MACHINE_TOKEN_PREFIX = "otmc_";
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/;
-const TARGETED_CONNECT_CODE_PATTERN =
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const LEGACY_TARGETED_CONNECT_CODE_PATTERN =
   /^otcc_[A-Za-z0-9_-]+\.([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 const MACHINE_TOKEN_PATTERN =
   /^otmc_([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{32,})$/i;
@@ -257,7 +260,9 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         targetComputerId: input.targetComputerId,
       });
     }
-    const code = `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}${input.targetAgentId ? `.${input.targetAgentId}` : ""}`;
+    const code = input.targetAgentId
+      ? targetedComputerConnectCode(input.targetAgentId)
+      : `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}`;
     const expiresIn = COMPUTER_CONNECT_CODE_TTL_SECONDS;
     const expiresAt = new Date(input.now.getTime() + expiresIn * 1000);
     const [inserted] = await transaction
@@ -359,10 +364,42 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
 }
 
 function targetAgentIdFromConnectCode(code: string): string | undefined {
-  if (!code.includes(".")) return undefined;
-  const target = TARGETED_CONNECT_CODE_PATTERN.exec(code)?.[1];
-  if (!target) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  if (code.includes(".")) {
+    const legacyTarget = LEGACY_TARGETED_CONNECT_CODE_PATTERN.exec(code)?.[1];
+    if (!legacyTarget) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    return legacyTarget;
+  }
+  const encoded = code.startsWith(COMPUTER_CONNECT_CODE_PREFIX) ? code.slice(COMPUTER_CONNECT_CODE_PREFIX.length) : "";
+  // Untargeted codes remain the existing 24 random bytes / 32 Base64URL characters.
+  if (encoded.length !== 43) return undefined;
+  if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  const payload = Buffer.from(encoded, "base64url");
+  if (payload.byteLength !== TARGETED_CONNECT_CODE_PAYLOAD_BYTES || payload.toString("base64url") !== encoded) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  const target = uuidFromBytes(payload.subarray(0, 16));
+  if (!UUID_PATTERN.test(target)) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
   return target;
+}
+
+function targetedComputerConnectCode(agentId: string): string {
+  const agentBytes = uuidBytes(agentId);
+  const payload = Buffer.concat([agentBytes, randomBytes(TARGETED_CONNECT_CODE_RANDOM_BYTES)]);
+  return `${COMPUTER_CONNECT_CODE_PREFIX}${payload.toString("base64url")}`;
+}
+
+function uuidBytes(value: string): Buffer {
+  if (!UUID_PATTERN.test(value)) throw new TypeError("Invalid target Agent id");
+  return Buffer.from(value.replaceAll("-", ""), "hex");
+}
+
+function uuidFromBytes(value: Uint8Array): string {
+  const hex = Buffer.from(value).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 async function assertConnectTargetAgent(

@@ -134,6 +134,7 @@ const TIMINGS: Record<MockSpeed, Timings> = {
 };
 
 const COMPUTER_NAME = "MacBook Pro";
+const MOCK_AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const SERVER_URL = "https://opentag.ai";
 const INSTALLER_URL = "https://download.opentag.build/releases/prod/install.sh";
 
@@ -151,18 +152,24 @@ const INSTALLER_URL = "https://download.opentag.build/releases/prod/install.sh";
 function connectCommand(code: string): string {
   return [
     `curl -fsSL ${INSTALLER_URL} | sh`,
-    `PATH="$HOME/.local/bin\${PATH:+:$PATH}" opentag connect --server ${SERVER_URL} -- ${code}`,
+    `PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag" connect --server ${SERVER_URL} -- ${code}`,
   ].join(" && ");
 }
 
 /**
- * Matches the Server's connect code: `generateSecret(24)`, so 24 random bytes rendered base64url,
- * which is 32 characters. The exact shape matters here because it is what sets the length of the
- * command block the whole step is built around.
+ * Matches the Server's compact targeted connect code: the Agent UUID's 16 bytes followed by 16
+ * random bytes, rendered together as 43 Base64URL characters. The Agent id is recoverable without
+ * persistence, while the random half remains the 128-bit one-time bearer secret.
  */
-function randomCode(): string {
-  const bytes = new Uint8Array(24);
-  crypto.getRandomValues(bytes);
+function targetedCode(agentId: string): string {
+  const bytes = new Uint8Array(32);
+  const hex = agentId.replaceAll("-", "");
+  for (let index = 0; index < 16; index += 1) bytes[index] = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  crypto.getRandomValues(bytes.subarray(16));
+  return `otcc_${base64Url(bytes)}`;
+}
+
+function base64Url(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -170,7 +177,7 @@ function randomCode(): string {
 }
 
 function randomId(): string {
-  return randomCode().slice(0, 16);
+  return crypto.randomUUID();
 }
 
 function mockComputerSummary(computer: KnownComputer): AccountComputerSummary {
@@ -335,7 +342,7 @@ export function useMockBackend(
             });
             const issuedAt = new Date().toISOString();
             resolve({
-              bootstrapCommand: connectCommand(randomCode()),
+              bootstrapCommand: connectCommand(targetedCode(agent?.id ?? MOCK_AGENT_ID)),
               connectCodeId,
               expiresIn: timingsRef.current.codeTtlMs / 1_000,
               issuedAt,
@@ -362,7 +369,7 @@ export function useMockBackend(
         return { computers: fixtureComputer ? [...computers, fixtureComputer] : computers };
       },
     }),
-    [later, redeemConnectFixture, updateConnectFixture],
+    [agent?.id, later, redeemConnectFixture, updateConnectFixture],
   );
 
   /**
@@ -478,7 +485,7 @@ export function useMockBackend(
         if (current !== "idle") return current;
         later(() => {
           setCreation("created");
-          setAgent({ id: randomId(), name: draft.name, runtimeProvider: draft.runtime ?? "codex" });
+          setAgent({ id: crypto.randomUUID(), name: draft.name, runtimeProvider: draft.runtime ?? "codex" });
         }, CREATE_AGENT_MS);
         return "creating";
       });

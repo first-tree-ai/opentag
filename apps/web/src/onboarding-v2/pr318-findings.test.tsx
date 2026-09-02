@@ -77,7 +77,9 @@ function continueButton(): HTMLButtonElement {
 
 /** The connect command: the thing a reader should never be shown beside a machine they already own. */
 function connectCommandShown(): boolean {
-  return screen.queryByText(/opentag connect/) !== null;
+  return Array.from(document.querySelectorAll("code")).some((element) =>
+    element.textContent?.includes('"$HOME/.local/bin/opentag" connect'),
+  );
 }
 
 /** Anything that would ask the reader which Computer, or offer them another one. */

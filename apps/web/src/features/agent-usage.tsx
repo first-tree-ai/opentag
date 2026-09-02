@@ -48,6 +48,18 @@ export function usageWindowLabel(days: AgentUsageWindowDays): string {
   return days === 1 ? m.usage_window_24_hours() : m.usage_window_days({ days });
 }
 
+export function usageXAxisTickCount(days: AgentUsageWindowDays): number {
+  if (days === 1) return 4;
+  return 3;
+}
+
+export function usageXAxisTickLabel(value: number, endedAt: string, windowDays: AgentUsageWindowDays): string {
+  const timestamp = new Date(value).toISOString();
+  const distanceFromEnd = Date.parse(endedAt) - value;
+  const endLabelBuffer = windowDays === 1 ? 4 * 60 * 60 * 1_000 : 2 * 24 * 60 * 60 * 1_000;
+  return distanceFromEnd >= 0 && distanceFromEnd < endLabelBuffer ? "" : formatDay(timestamp);
+}
+
 export function AgentUsageOverview({ agentId }: { agentId: string }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
   const { retry, state } = useAgentUsage(agentId, windowDays);
@@ -236,6 +248,7 @@ function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
   const noCoverage = usage.measuredTasks === 0;
   return (
     <Banner
+      className="text-kumo-default"
       data-ui="usage-coverage"
       description={
         noCoverage
@@ -267,55 +280,71 @@ function Metric({ compact = false, label, value }: { compact?: boolean; label: s
 }
 
 function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
+  const hasTokenActivity = usage.tokens > 0 || usage.cachedInputTokens > 0;
   return (
     <>
       <LayerCard className="p-0" data-ui="usage-summary">
         <UsageMetrics usage={usage} />
       </LayerCard>
       <UsageCoverage usage={usage} />
-      <div
-        className="grid gap-4 @min-[42rem]/usage-tab:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]"
-        data-ui="usage-analysis"
-      >
-        <LayerCard
-          render={<section aria-labelledby="agent-usage-trend-heading" />}
-          className="grid min-w-0 content-start gap-4 p-4"
+      {hasTokenActivity ? (
+        <div
+          className="grid gap-4 @min-[42rem]/usage-tab:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]"
+          data-ui="usage-analysis"
         >
-          <header className="flex min-h-7 items-center">
-            <Text as="h3" id="agent-usage-trend-heading" variant="heading">
-              {m.usage_trend_title()}
-            </Text>
-          </header>
-          <TokenTrendChart usage={usage} />
-        </LayerCard>
+          <LayerCard
+            render={<section aria-labelledby="agent-usage-trend-heading" />}
+            className="grid min-w-0 content-start gap-4 p-4"
+          >
+            <header className="flex min-h-7 items-center">
+              <Text as="h2" id="agent-usage-trend-heading" variant="heading">
+                {m.usage_trend_title()}
+              </Text>
+            </header>
+            <TokenTrendChart usage={usage} />
+          </LayerCard>
+          <LayerCard
+            render={<section aria-labelledby="agent-usage-breakdown-heading" />}
+            className="grid min-w-0 content-start gap-4 p-4"
+          >
+            <header className="flex min-h-7 items-center">
+              <Text as="h2" id="agent-usage-breakdown-heading" variant="heading">
+                {m.usage_breakdown_title()}
+              </Text>
+            </header>
+            <TokenBreakdown usage={usage} />
+          </LayerCard>
+        </div>
+      ) : (
         <LayerCard
-          render={<section aria-labelledby="agent-usage-breakdown-heading" />}
-          className="grid min-w-0 content-start gap-4 p-4"
+          render={<section aria-label={m.usage_no_tokens_title()} />}
+          className="p-4"
+          data-ui="usage-empty-card"
         >
-          <header className="flex min-h-7 items-center">
-            <Text as="h3" id="agent-usage-breakdown-heading" variant="heading">
-              {m.usage_breakdown_title()}
-            </Text>
-          </header>
-          <TokenBreakdown usage={usage} />
+          <UsageEmpty />
         </LayerCard>
-      </div>
+      )}
     </>
+  );
+}
+
+function UsageEmpty() {
+  return (
+    <div data-ui="usage-empty">
+      <Empty
+        className="min-h-72 gap-2 rounded-none border-0 bg-transparent px-6 py-8 [&_h2]:text-base"
+        description={m.usage_no_tokens_description()}
+        size="sm"
+        title={m.usage_no_tokens_title()}
+      />
+    </div>
   );
 }
 
 function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   const nonEmpty = usage.daily.some((point) => point.tokens > 0);
   if (!nonEmpty) {
-    return (
-      <Empty
-        className="min-h-72"
-        data-ui="usage-empty"
-        description={m.usage_no_tokens_description()}
-        size="sm"
-        title={m.usage_no_tokens_title()}
-      />
-    );
+    return <UsageEmpty />;
   }
   const chart = (
     <LazyTimeseriesChart
@@ -332,7 +361,8 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
       ]}
       height={288}
       tooltipValueFormat={(value) => m.usage_chart_tooltip({ tokens: formatCompactNumber(value) })}
-      xAxisTickFormat={(value) => formatDay(new Date(value).toISOString())}
+      xAxisTickCount={usageXAxisTickCount(usage.windowDays)}
+      xAxisTickFormat={(value) => usageXAxisTickLabel(value, usage.endedAt, usage.windowDays)}
       yAxisTickFormat={(value) => formatCompactNumber(value)}
     />
   );
@@ -379,7 +409,7 @@ function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
   const total = Math.max(usage.tokens, 1);
   return (
     <div className="grid gap-3">
-      <div className="min-w-0 overflow-x-auto rounded-lg ring ring-kumo-line">
+      <div className="min-w-0 overflow-x-auto rounded-lg">
         <Table aria-label={m.usage_breakdown_title()} data-ui="usage-breakdown-table">
           <Table.Header variant="compact">
             <Table.Row>

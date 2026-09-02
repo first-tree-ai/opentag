@@ -5,7 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
-import { AgentUsageOverview, AgentUsageTab, usageWindowLabel } from "./agent-usage.js";
+import {
+  AgentUsageOverview,
+  AgentUsageTab,
+  usageWindowLabel,
+  usageXAxisTickCount,
+  usageXAxisTickLabel,
+} from "./agent-usage.js";
 
 const usage: AgentUsageDetail = {
   windowDays: 30,
@@ -55,8 +61,8 @@ describe("AgentUsageOverview", () => {
     await renderInRouter(<AgentUsageTab agentId="agent-1" />);
 
     expect(screen.getByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
-    expect(await screen.findByRole("heading", { name: "Token usage over time" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { level: 2, name: "Token usage over time" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Token breakdown" })).toBeTruthy();
     expect(screen.getByRole("combobox", { name: "Usage period" }).textContent).toBe("Last 30 days");
     expect(screen.getByLabelText(/Last 30 days/).classList.contains("grid-cols-2")).toBe(true);
     expect(document.querySelector('[data-ui="usage-tab"]')?.classList.contains("@container/usage-tab")).toBe(true);
@@ -65,6 +71,34 @@ describe("AgentUsageOverview", () => {
     expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Type", "Usage"]);
     expect(screen.queryByText("Total Tokens recorded each day.")).toBeNull();
     expect(screen.queryByText("Input and output within the selected period.")).toBeNull();
+  });
+
+  it("uses a single calm empty surface instead of empty analysis cards and an all-zero table", async () => {
+    vi.spyOn(browserApi, "agentUsage").mockResolvedValue({
+      ...usage,
+      tasks: 0,
+      measuredTasks: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      tokens: 0,
+      daily: [],
+    });
+
+    await renderInRouter(<AgentUsageTab agentId="agent-empty" />);
+
+    expect(await screen.findByRole("heading", { level: 2, name: "No token usage" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Token usage over time" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Token breakdown" })).toBeNull();
+    expect(screen.queryByRole("table", { name: "Token breakdown" })).toBeNull();
+    expect(document.querySelector('[data-ui="usage-analysis"]')).toBeNull();
+    expect(document.querySelector('[data-ui="usage-empty"] > div')?.className).toContain("border-0");
+  });
+
+  it("limits time-axis tick density for every supported usage window", () => {
+    expect(([1, 7, 30, 90] as const).map((days) => usageXAxisTickCount(days))).toEqual([4, 3, 3, 3]);
+    expect(usageXAxisTickLabel(Date.parse("2026-08-28T12:00:00.000Z"), "2026-09-01T23:59:59.999Z", 30)).toBe("Aug 28");
+    expect(usageXAxisTickLabel(Date.parse("2026-08-31T12:00:00.000Z"), "2026-09-01T23:59:59.999Z", 30)).toBe("");
   });
 
   it("reads one window once for the overview and the tab that show it together", async () => {

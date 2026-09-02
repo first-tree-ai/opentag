@@ -21,6 +21,7 @@ import {
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
+  redactForLog,
   runtimeFrameByteLength,
   type ServerRuntimeFrame,
   ServerWelcomeV1FrameSchema,
@@ -35,6 +36,7 @@ import {
   startRuntimeConnectionSpan,
   startRuntimeFrameSpan,
 } from "../observability/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerAuthContext, ComputerAuthVerifier, ComputerService } from "../services/computers/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
@@ -74,6 +76,7 @@ export interface RuntimeSessionOptions {
   channelTarget?: () => RuntimeChannelTarget | undefined;
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
+  logger?: ServiceLogger;
   now?: () => Date;
   onRegistered?: (input: { computerId: string; installationId: string; instanceId: string }) => Promise<void> | void;
   providerReadiness?: readonly AgentRuntimeProvider[];
@@ -85,6 +88,7 @@ export class RuntimeSession {
   readonly #computers: ComputerService;
   readonly #registry: ConnectionRegistry;
   readonly #socket: WebSocket;
+  readonly #logger?: ServiceLogger;
   readonly #options: Required<Omit<RuntimeSessionOptions, "business" | "channelTarget" | "now" | "onRegistered">> & {
     business?: RuntimeBusinessOptions;
     channelTarget?: () => RuntimeChannelTarget | undefined;
@@ -116,6 +120,7 @@ export class RuntimeSession {
     this.#auth = auth;
     this.#computers = computers;
     this.#registry = registry;
+    this.#logger = options.logger;
     const heartbeat = ServerWelcomeV1FrameSchema.parse({
       type: "server:welcome",
       protocolVersion: RUNTIME_PROTOCOL_V1,
@@ -672,6 +677,19 @@ export class RuntimeSession {
 
   #fail(code: RuntimeErrorFrame["code"], message: string, closeCode: number, requestId?: string): void {
     if (this.#isClosing()) return;
+    try {
+      this.#logger?.warn(
+        {
+          code,
+          closeCode,
+          reason: redactForLog(message),
+          ...(requestId ? { requestId } : {}),
+        },
+        "Runtime session terminated",
+      );
+    } catch {
+      // Logging must never prevent the runtime connection from closing.
+    }
     this.#state = "closing";
     this.#abort.abort();
     this.#businessScheduler?.close();

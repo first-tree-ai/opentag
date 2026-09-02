@@ -8,7 +8,7 @@ import {
 import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
-import type { ImBindingService } from "../im-binding-service.js";
+import { type ImBindingService, ImBindingUnbindRequiredError } from "../im-binding-service.js";
 import type { SlackApiClient, SlackInstallationInspection } from "./adapter.js";
 
 type QueryExecutor = DatabaseClient | DatabaseTransaction;
@@ -66,11 +66,11 @@ export class SlackConfigurationService {
     await this.#agent(agentId, this.#database);
     const current = await this.#current(agentId, this.#database, false);
     if (current && current.provider !== "slack") {
-      throw new SlackConfigurationServiceError(
-        "IM_BINDING_PROVIDER_IMMUTABLE",
-        409,
-        "Disable the current IM binding before configuring Slack",
-      );
+      throw new ImBindingUnbindRequiredError({
+        currentProvider: current.provider,
+        currentBindingId: current.id,
+        requestedProvider: "slack",
+      });
     }
     return this.#expectedBinding(current);
   }
@@ -92,11 +92,11 @@ export class SlackConfigurationService {
       await this.#agent(agentId, transaction);
       const current = await this.#current(agentId, transaction, true);
       if (current && current.provider !== "slack") {
-        throw new SlackConfigurationServiceError(
-          "IM_BINDING_PROVIDER_IMMUTABLE",
-          409,
-          "Disable the current IM binding before configuring Slack",
-        );
+        throw new ImBindingUnbindRequiredError({
+          currentProvider: current.provider,
+          currentBindingId: current.id,
+          requestedProvider: "slack",
+        });
       }
       const configuredCurrent = this.#configuredCurrent(current);
       const expected = input.expectedBinding;

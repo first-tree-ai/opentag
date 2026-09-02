@@ -129,7 +129,7 @@ function StepNav({
 }
 
 /** A card's copy: the title it is chosen by, and the line that explains it. */
-function CardCopy({
+export function CardCopy({
   badge,
   description,
   disabled = false,

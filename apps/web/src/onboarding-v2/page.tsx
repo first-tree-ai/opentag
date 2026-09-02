@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Loader } from "../ui/design-system.js";
+import { AgentSetupPage } from "./agent-setup-page.js";
 import type { OnboardingBackend } from "./backend.js";
 import {
   type AgentDraft,
@@ -16,6 +17,7 @@ import { LabControls } from "./lab-controls.js";
 import { type MockInventory, type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
 import { useServerBackend } from "./server-backend.js";
+import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
 /** How many times to ask before telling the reader the Server will not mark setup complete. */
@@ -31,19 +33,73 @@ function localDraft(): AgentDraft {
 /**
  * The redesigned onboarding flow, against the real Server.
  *
- * The draft is held here rather than inside the flow because the backend is built from it: a
- * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
- * given that after it runs.
+ * With an exact `agentId` the route is the Agent Setup surface, rendered from the canonical
+ * snapshot; without one it is the first-run creation flow. The two are separate components so
+ * switching between them remounts rather than reordering hooks.
  */
 export function OnboardingV2Page({
+  agentId,
+  emptyAgentSetResolved = false,
+  onAgentAvailable,
   onComplete,
   reviewMode = false,
+  setupAdapter,
+  slackOAuthError,
 }: {
+  /** The exact Agent being set up. Present, the page renders from its canonical setup snapshot. */
+  agentId?: string;
+  /** The route boundary already resolved this untargeted visit against exactly zero active Agents. */
+  emptyAgentSetResolved?: boolean;
+  /** Canonicalizes the creation flow as soon as the Server returns the exact Agent it created. */
+  onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onComplete?: (agentId: string) => Promise<void> | void;
   reviewMode?: boolean;
+  /** Review Lab and tests pass the in-memory adapter; production leaves the HTTP default. */
+  setupAdapter?: AgentSetupAdapter;
+  /** A callback failure returned by Slack for this exact setup surface. */
+  slackOAuthError?: string;
 } = {}) {
+  if (agentId) {
+    return (
+      <AgentSetupPage
+        adapter={setupAdapter}
+        agentId={agentId}
+        onReady={onComplete}
+        reviewMode={reviewMode}
+        slackOAuthError={slackOAuthError}
+      />
+    );
+  }
+  return (
+    <OnboardingV2CreatePage
+      emptyAgentSetResolved={emptyAgentSetResolved}
+      onAgentAvailable={onAgentAvailable}
+      onComplete={onComplete}
+      reviewMode={reviewMode}
+    />
+  );
+}
+
+/**
+ * The first-run creation flow. The draft is held here rather than inside the flow because the
+ * backend is built from it: a readiness read has to ask about the Provider the reader actually
+ * chose, and a hook cannot be given that after it runs.
+ */
+function OnboardingV2CreatePage(
+  {
+    emptyAgentSetResolved,
+    onAgentAvailable,
+    onComplete,
+    reviewMode = false,
+  }: {
+    emptyAgentSetResolved: boolean;
+    onAgentAvailable?: (agentId: string) => Promise<void> | void;
+    onComplete?: (agentId: string) => Promise<void> | void;
+    reviewMode?: boolean;
+  } = { emptyAgentSetResolved: false },
+) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
-  const backend = useServerBackend(draft);
+  const backend = useServerBackend(draft, { resumeExistingAgents: !emptyAgentSetResolved });
 
   /*
    * An Agent read back from the Server fills the draft it would have been created from, so the
@@ -51,6 +107,7 @@ export function OnboardingV2Page({
    * actually has, on the runtime it actually runs.
    */
   const resumed = backend.agent;
+  const announcedAgent = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!resumed) return;
     setDraft((current) =>
@@ -59,6 +116,14 @@ export function OnboardingV2Page({
         : { ...current, destination: "local", name: resumed.name, runtime: resumed.runtimeProvider },
     );
   }, [resumed]);
+
+  useEffect(() => {
+    if (!resumed || !onAgentAvailable || announcedAgent.current === resumed.id) return;
+    announcedAgent.current = resumed.id;
+    void Promise.resolve(onAgentAvailable(resumed.id)).catch(() => {
+      if (announcedAgent.current === resumed.id) announcedAgent.current = undefined;
+    });
+  }, [onAgentAvailable, resumed]);
 
   /*
    * The read has to show something. This is the only route the setup gate allows, so a read that is

@@ -1,4 +1,10 @@
-import type { ProviderCliEnsureResult, ProviderCliManager, ProviderCliPhaseEvent } from "@opentag/client";
+import {
+  PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS,
+  PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS,
+  type ProviderCliEnsureResult,
+  type ProviderCliManager,
+  type ProviderCliPhaseEvent,
+} from "@opentag/client";
 import { CommandError, type CommandExitCode, commandExitCode, presentCommand } from "../command/policy.js";
 import {
   createProviderCliManager,
@@ -104,22 +110,38 @@ function nextActionFor(result: ProviderCliEnsureResult): ProviderCliNextAction |
   };
 }
 
-function ensureOneProvider(
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function ensureOneProvider(
   manager: ProviderCliManager,
   provider: ProviderCliEnsureResult["provider"],
   options: ProviderCliEnsureCommandOptions,
 ): Promise<ProviderCliEnsureResult> {
-  return manager.ensure(provider, {
-    mode: options.managedOnly ? "managed-only" : "auto",
-    pathUpdate: options.pathUpdate ?? true,
-    dryRun: options.dryRun ?? false,
-    onPhase: options.json
-      ? undefined
-      : (event) => {
-          const line = renderPhaseLine(event);
-          if (line !== undefined) writeStdout(options, `${line}\n`);
-        },
-  });
+  const ensure = (emitPhases: boolean): Promise<ProviderCliEnsureResult> =>
+    manager.ensure(provider, {
+      mode: options.managedOnly ? "managed-only" : "auto",
+      pathUpdate: options.pathUpdate ?? true,
+      dryRun: options.dryRun ?? false,
+      onPhase:
+        options.json || !emitPhases
+          ? undefined
+          : (event) => {
+              const line = renderPhaseLine(event);
+              if (line !== undefined) writeStdout(options, `${line}\n`);
+            },
+    });
+
+  let result = await ensure(true);
+  const sleep = options.sleep ?? defaultSleep;
+  for (let attempt = 0; result.diagnostic?.code === "operation_in_progress"; attempt += 1) {
+    if (attempt >= PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS) break;
+    await sleep(PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS);
+    // A daemon that acquired the cross-process lock first may have completed the same install.
+    // Re-enter ensure so the foreground Agent observes that terminal fact instead of reporting
+    // the transient lock owner as a Provider failure.
+    result = await ensure(false);
+  }
+  return result;
 }
 
 export async function runProviderCliEnsure(

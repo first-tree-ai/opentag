@@ -74,8 +74,7 @@ async function connectOrPresentFailure(
 
 function presentConnectFailure(error: unknown, json: boolean): void {
   if (error instanceof ComputerConnectServiceInstallError) {
-    presentServiceFailure(error, json);
-    process.exitCode = 1;
+    process.exitCode = presentServiceFailure(error, json);
     return;
   }
   const commandError = commandPolicy.toCommandError(error, "request");
@@ -195,23 +194,27 @@ function presentConnectResult(
   if (result.service) process.stdout.write(`Daemon service ${result.service.serviceId} is ${result.service.state}\n`);
 }
 
-function presentServiceFailure(error: ComputerConnectServiceInstallError, json: boolean): void {
+function presentServiceFailure(
+  error: ComputerConnectServiceInstallError,
+  json: boolean,
+): commandPolicy.CommandExitCode {
   const command = `"$HOME/.local/bin/${channelConfig.binName}" daemon restart`;
+  const commandError = new commandPolicy.CommandError(
+    {
+      code: "DAEMON_SERVICE_FAILED",
+      category: "dependency",
+      retryability: "immediate",
+      phase: "startup",
+    },
+    "Daemon service reload failed; machine credentials were preserved.",
+  );
+  const exitCode = commandPolicy.commandExitCode(commandError);
   if (json) {
-    const commandError = new commandPolicy.CommandError(
-      {
-        code: "DAEMON_SERVICE_FAILED",
-        category: "dependency",
-        retryability: "immediate",
-        phase: "startup",
-      },
-      "Daemon service reload failed; machine credentials were preserved.",
-    );
     commandPolicy.presentCommand(
       {
         ok: false,
         error: commandError,
-        exitCode: 1,
+        exitCode,
         value: {
           connected: true,
           connection: error.connectResult,
@@ -225,12 +228,13 @@ function presentServiceFailure(error: ComputerConnectServiceInstallError, json: 
       },
       { json: true },
     );
-    return;
+    return exitCode;
   }
   process.stdout.write(`${commandPolicy.redactSecrets(error.connectResult.message)}\n`);
   process.stderr.write(
     `${commandPolicy.redactSecrets(`Daemon service reload failed; machine credentials were preserved. Run ${command} to retry.`)}\n`,
   );
+  return exitCode;
 }
 
 function providerCliRepairAllCommand(): string {

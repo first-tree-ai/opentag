@@ -1,6 +1,7 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import {
   PROVIDER_CLI_CATALOG,
+  PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS,
   type ProviderCliCatalogEntry,
   providerCliLockFilePath,
   resolveProviderCliAccountLayout,
@@ -297,6 +298,45 @@ describe("runProviderCliEnsure", () => {
         reason: "operation_in_progress",
       }),
     ]);
+  });
+
+  it("waits for a daemon-held lock and returns the completed Provider state", async () => {
+    const accountHome = await makeTempDir("opentag-cli-");
+    const bin = `${accountHome}/tools`;
+    const layout = resolveProviderCliAccountLayout(accountHome);
+    const lockPath = providerCliLockFilePath(layout, "slack");
+    await mkdir(layout.state, { recursive: true });
+    await writeFile(lockPath, JSON.stringify({ pid: process.pid, token: "daemon-install" }), { mode: 0o600 });
+    let terminalWaits = 0;
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    const result = await runProviderCliEnsure({
+      provider: "slack",
+      json: true,
+      accountHome,
+      env: { PATH: bin },
+      sleep: async (ms) => {
+        if (ms !== PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS || terminalWaits > 0) return;
+        terminalWaits += 1;
+        // Model the daemon completing the same install while the foreground command waits.
+        await writeFakeCli(bin, "slack", "4.7.0");
+        await rm(lockPath, { force: true });
+      },
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: (chunk) => stderr.push(chunk),
+    });
+
+    expect(terminalWaits).toBe(1);
+    expect(result.exitCode).toBe(0);
+    expect(result.results).toEqual([
+      expect.objectContaining({ provider: "slack", ok: true, readiness: "ready", action: "selected-existing" }),
+    ]);
+    expect(stderr).toEqual([]);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      ok: true,
+      result: { results: [{ provider: "slack", ok: true, readiness: "ready" }], nextActions: [] },
+    });
   });
 
   it("managed install via fixture catalog writes the launcher and shim", async () => {

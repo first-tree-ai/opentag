@@ -314,10 +314,21 @@ export class ProviderCliReconciler {
     const wait = this.#sleep(PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS);
     if (!signal) return wait;
     if (signal.aborted) return Promise.resolve();
-    return Promise.race([
-      wait,
-      new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true })),
-    ]);
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const onAbort = (): void => finish();
+      signal.addEventListener("abort", onAbort, { once: true });
+      // Close the check-to-listener race if shutdown happened between the guard above and add.
+      if (signal.aborted) onAbort();
+      void wait.then(() => finish(), finish);
+    });
   }
 
   async #publishCurrentProvider(

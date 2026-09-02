@@ -323,7 +323,60 @@ describe("computer connect", () => {
       await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home]);
       expect(stdout).toHaveBeenCalledWith("Connected this Computer\n");
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining("machine credentials were preserved"));
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(3);
+    } finally {
+      stdout.mockRestore();
+      stderr.mockRestore();
+      process.exitCode = previousExitCode;
+      runSpy.mockRestore();
+    }
+  });
+
+  it("presents daemon reload partial failure with the dependency exit policy", async () => {
+    const home = await temporaryHome();
+    const connectResult = {
+      computerId: "computer-1",
+      credentialsPath: `${home}/credentials.json`,
+      message: "Connected this Computer",
+    };
+    const runSpy = vi
+      .spyOn(computerCore, "runComputerConnect")
+      .mockRejectedValue(new computerCore.ComputerConnectServiceInstallError(connectResult));
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home, "--json"]);
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(stderr.mock.calls[0]?.[0]))).toEqual({
+        ok: false,
+        error: {
+          code: "DAEMON_SERVICE_FAILED",
+          category: "dependency",
+          retryability: "immediate",
+          phase: "startup",
+          message: "Daemon service reload failed; machine credentials were preserved.",
+        },
+        result: {
+          connected: true,
+          connection: { ...connectResult, credentialsPath: "[REDACTED]" },
+          providerClis: {
+            status: "skipped",
+            results: [],
+            nextActions: [
+              {
+                provider: "all",
+                command: '"$HOME/.local/bin/opentag-dev" daemon restart',
+                reason: "daemon_service_failed",
+              },
+            ],
+            reason: "daemon_service_failed",
+          },
+        },
+      });
+      expect(process.exitCode).toBe(3);
     } finally {
       stdout.mockRestore();
       stderr.mockRestore();

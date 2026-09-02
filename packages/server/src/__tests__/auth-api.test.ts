@@ -71,7 +71,7 @@ describe("auth HTTP API", () => {
     const response = await app.inject({
       method: "POST",
       url: HTTP_PATHS.authConnectExchange,
-      payload: { code: "1234567890abcdef", workspaceId: "caller-authority" },
+      payload: { code: "1234567890abcdef", accountId: "caller-authority" },
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR", category: "validation" } });
@@ -124,7 +124,7 @@ describe("auth HTTP API", () => {
     expect(authService.refresh).toHaveBeenCalledWith("refresh-token");
   });
 
-  it("authenticates /api/v1/me without a management Workspace projection", async () => {
+  it("authenticates /api/v1/me with the Account projection", async () => {
     const authService = createAuthService();
     const app = createApp({ authService });
     apps.push(app);
@@ -147,7 +147,6 @@ describe("auth HTTP API", () => {
       },
       setupCompletedAt: null,
     });
-    expect(response.json()).not.toHaveProperty("workspaces");
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
   });
 

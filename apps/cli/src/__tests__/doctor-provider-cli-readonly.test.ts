@@ -91,12 +91,12 @@ async function createHome(): Promise<string> {
     join(config, "computer-credentials.json"),
     `${JSON.stringify({
       computer: {
-        computerId,
+        computerId: "19eb4f37-2cc0-49d4-85e2-b9987f9c71a4",
+        installationId: computerId,
         machineToken: "otmc_NEVER_PRINT_THIS_SECRET",
         serverUrl,
-        workspaceComputerId: "19eb4f37-2cc0-49d4-85e2-b9987f9c71a4",
       },
-      version: 2,
+      version: 3,
     })}\n`,
     { mode: 0o600 },
   );

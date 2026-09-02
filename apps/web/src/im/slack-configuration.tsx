@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { Banner } from "../ui/design-system.js";
+import { messagingProviderLabel } from "./provider-label.js";
 
 type SlackOAuthIntent = "create" | "reauthorize";
 
@@ -62,7 +63,13 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     startOAuth,
     feedback: (
       <>
-        {saved ? <Banner variant="secondary" role="status" description={m.im_slack_connected()} /> : null}
+        {saved ? (
+          <Banner
+            variant="secondary"
+            role="status"
+            description={m.im_slack_connected({ provider: messagingProviderLabel("slack") })}
+          />
+        ) : null}
         {error ? <Banner variant="error" role="alert" description={error} /> : null}
       </>
     ),
@@ -71,17 +78,21 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
 
 function normalizeSlackConfigurationError(cause: unknown): string {
   const code = cause instanceof ApiError ? cause.code : undefined;
-  return code ? slackConfigurationMessage(code) : m.im_slack_authorization_failed();
+  return code
+    ? slackConfigurationMessage(code)
+    : m.im_slack_authorization_failed({ provider: messagingProviderLabel("slack") });
 }
 
 function slackConfigurationMessage(code: string): string {
   // An Agent with no Computer has nowhere to run, so nothing is installed for it and no route is
   // claimed. That is a different repair from a Slack permission problem, and saying so is the only
   // way the reader learns the fix is on the Agent rather than in Slack.
-  if (code === "AGENT_COMPUTER_NOT_BOUND") return m.im_slack_agent_computer_not_bound();
+  if (code === "AGENT_COMPUTER_NOT_BOUND")
+    return m.im_slack_agent_computer_not_bound({ provider: messagingProviderLabel("slack") });
   if (code === "SLACK_SCOPE_REAUTH_REQUIRED" || code === "SLACK_TOKEN_REVOKED") {
-    return m.im_slack_permissions_missing();
+    return m.im_slack_permissions_missing({ provider: messagingProviderLabel("slack") });
   }
-  if (code === "SLACK_UPSTREAM_UNAVAILABLE") return m.im_slack_unavailable();
-  return m.im_slack_authorization_failed();
+  if (code === "SLACK_UPSTREAM_UNAVAILABLE")
+    return m.im_slack_unavailable({ provider: messagingProviderLabel("slack") });
+  return m.im_slack_authorization_failed({ provider: messagingProviderLabel("slack") });
 }

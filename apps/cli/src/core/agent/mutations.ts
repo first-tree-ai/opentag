@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { AgentAdminConfig, ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared";
+import type { AccountComputerSummary, AgentAdminConfig, ListAccountComputersResponse } from "@opentag/shared";
 import {
   CreateAgentRequestSchema,
   CreateAgentRuntimeConfigSchema,
@@ -53,12 +53,12 @@ export interface AgentUpdateOptions extends AgentCommandDependencies {
  * guessing which machine the Account meant would silently place the Agent on the wrong one.
  */
 export function selectComputer(
-  response: ListWorkspaceComputersResponse,
+  response: ListAccountComputersResponse,
   requestedComputerId?: string,
-): WorkspaceComputerSummary | undefined {
+): AccountComputerSummary | undefined {
   if (requestedComputerId) {
     const selected = response.computers.find((computer) => computer.computerId === requestedComputerId);
-    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled by this Account`);
+    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not owned by this Account`);
     return selected;
   }
   if (response.computers.length > 1) throw new Error("Multiple Computers are available; use --computer <uuid>");
@@ -81,7 +81,7 @@ export async function runAgentCreate(options: AgentCreateOptions): Promise<Agent
   if (!computer) {
     return {
       agent,
-      warning: "No Computer is enrolled by this Account; bind one with `opentag agent bind` before the Agent can run",
+      warning: "This Account has no Computer; connect one with `opentag computer connect` before the Agent can run",
     };
   }
   return {

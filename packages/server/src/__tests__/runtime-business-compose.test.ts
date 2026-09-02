@@ -5,9 +5,8 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "../runtime/
 const context = {
   computerId: "computer",
   instanceId: "instance",
+  installationId: "installation",
   signal: new AbortController().signal,
-  workspaceComputerId: "computer",
-  workspaceId: "workspace",
 } satisfies RuntimeBusinessContext;
 
 function owner(label: string, parseValue: unknown = undefined): RuntimeBusinessOptions {

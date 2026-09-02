@@ -466,7 +466,7 @@ jobs:
             "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
             "$runtime_home/config/computer.json")
           computer_id=$(node -p \
-            "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computer.workspaceComputerId" \
+            "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computer.computerId" \
             "$runtime_home/config/computer-credentials.json")
           test "$installation_id" != "$computer_id"
           printf '%s\n' "$computer_list" | awk -F '\t' -v computer_id="$computer_id" \
@@ -489,7 +489,7 @@ jobs:
             echo "Agent creation accepted a local installation ID" >&2
             exit 1
           fi
-          grep -q "is not enrolled by this Account" "$runtime_home/installation-id-agent.err"
+          grep -q "is not owned by this Account" "$runtime_home/installation-id-agent.err"
           test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list)" = \
             "No Agents registered"
 

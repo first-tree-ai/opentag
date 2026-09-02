@@ -6,11 +6,11 @@
  */
 
 import type {
+  AccountComputerSummary,
   AgentAdminConfig,
   AgentListItem,
   FeishuSetupAttempt,
   ImBindingSummary,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,7 @@ const POLL_MS = 1_500;
 const FEISHU_POLL_MS = 2_000;
 const HANDOFF_POLL_MS = 2_000;
 
-function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
+function computer(overrides: Partial<AccountComputerSummary> = {}): AccountComputerSummary {
   return {
     computerId: COMPUTER_ID,
     displayName: "Ada's Mac",
@@ -40,7 +40,7 @@ function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceC
     connectedAt: "2026-08-29T00:00:10.000Z",
     lastSeenAt: "2026-08-29T00:00:10.000Z",
     observedAt: "2026-08-29T00:00:10.000Z",
-    enrolledAt: "2026-08-29T00:00:10.000Z",
+    createdAt: "2026-08-29T00:00:10.000Z",
     agentIds: [],
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }],
     ...overrides,
@@ -115,7 +115,7 @@ function attempt(overrides: Partial<FeishuSetupAttempt> = {}): FeishuSetupAttemp
   };
 }
 
-function computersReturning(...pages: readonly (readonly WorkspaceComputerSummary[])[]) {
+function computersReturning(...pages: readonly (readonly AccountComputerSummary[])[]) {
   let call = 0;
   return vi.spyOn(browserApi, "computers").mockImplementation(async () => {
     const page = pages[Math.min(call, pages.length - 1)] ?? [];
@@ -204,13 +204,13 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     expect(view.result.current.error).toBe("An active Agent with this name already exists");
   });
 
-  it("offers a way back after Lark refuses the attempt", async () => {
+  it("offers a way back after Feishu refuses the attempt", async () => {
     // `failed` no longer retries on sight, which is right — but nothing restarts it either, and
     // the messaging step has no footer, so the panel is inert.
     computersReturning([computer()]);
     issuing();
     vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
-    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue(new Error("Lark is unavailable"));
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue(new Error("Feishu is unavailable"));
 
     render(<OnboardingV2Page />);
 
@@ -219,7 +219,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
 
     expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
@@ -255,7 +255,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(8_000);
     await tick(8_000);
@@ -370,7 +370,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(FEISHU_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 2);
@@ -403,7 +403,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(FEISHU_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 4);
@@ -442,7 +442,7 @@ describe("onboarding-v2 as the real onboarding: findings at 9a64ce6", () => {
     await tick(POLL_MS);
     press("Continue");
     await settle();
-    press(/Lark/);
+    press(/Feishu/);
     await settle();
     await tick(FEISHU_POLL_MS * 2);
     await tick(HANDOFF_POLL_MS * 2);

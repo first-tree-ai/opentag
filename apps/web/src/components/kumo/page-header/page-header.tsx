@@ -1,4 +1,4 @@
-import { cn, Tabs, type TabsItem, Text } from "@cloudflare/kumo";
+import { cn, Tabs, Text } from "@cloudflare/kumo";
 import type { ReactNode } from "react";
 
 export const KUMO_PAGE_HEADER_VARIANTS = {
@@ -28,6 +28,11 @@ export interface KumoPageHeaderVariantsProps {
   spacing?: KumoPageHeaderSpacing;
 }
 
+export interface PageHeaderTab {
+  value: string;
+  label: ReactNode;
+}
+
 export function pageHeaderVariants({
   spacing = KUMO_PAGE_HEADER_DEFAULT_VARIANTS.spacing,
 }: KumoPageHeaderVariantsProps = {}) {
@@ -40,7 +45,7 @@ export interface PageHeaderProps extends KumoPageHeaderVariantsProps {
   title?: string;
   description?: string;
   titleId?: string;
-  tabs?: TabsItem[];
+  tabs?: PageHeaderTab[];
   defaultTab?: string;
   onValueChange?: (value: string) => void;
   className?: string;

@@ -1,9 +1,9 @@
 import type {
+  AccountComputerSummary,
   AgentAdminConfig,
   AgentSummary,
   ImBindingHandoffStatus,
   ImBindingSummary,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import { formatCompactNumber, formatElapsedCompact, formatRelativeTime, initials } from "../i18n/format.js";
@@ -77,7 +77,7 @@ describe("Agent availability model and presentation", () => {
     connectionStatus: "online",
     lastSeenAt: "2026-08-20T00:00:00.000Z",
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
-  } as unknown as WorkspaceComputerSummary;
+  } as unknown as AccountComputerSummary;
   const binding = (bindingState: string, provider = "feishu", displayName: string | null = "OpenTag") =>
     ({
       id: "33333333-3333-4333-8333-333333333333",
@@ -308,9 +308,20 @@ describe("Agent availability model and presentation", () => {
     expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");
-    expect(sharedConversationDestination("feishu")).toContain("Feishu");
-    expect(sharedConversationDestination("slack", true)).toContain("Slack");
-    expect(agentAvailabilitySummary(base)).toBe("Available in Feishu");
+    /*
+     * Exact, and both branches in both numbers, so the complete visible sentence is pinned: anything
+     * added, dropped or reworded around the brand fails here, which `toContain("Lark")` did not.
+     *
+     * What they deliberately do not prove is where the brand came from. Replacing the helper call
+     * with the same correctly-spelled literals leaves all four green, because the rendered text is
+     * identical either way -- no assertion about output can see sourcing. That guarantee needs a
+     * structural check (#335), not a stronger expectation here.
+     */
+    expect(sharedConversationDestination("feishu")).toBe("a Lark group chat");
+    expect(sharedConversationDestination("feishu", true)).toBe("connected Lark group chats");
+    expect(sharedConversationDestination("slack")).toBe("a Slack channel");
+    expect(sharedConversationDestination("slack", true)).toBe("connected Slack channels");
+    expect(agentAvailabilitySummary(base)).toBe("Available in Lark");
     expect(
       agentAvailabilitySummary({
         ...base,
@@ -335,7 +346,9 @@ describe("Agent availability model and presentation", () => {
     expect(
       agentRecoveryMessage({ ...base, availability: { ...base.availability, reason: null, state: "ready" } }),
     ).toContain("Available");
-    expect(agentUseInstruction(base, "feishu")).toContain("mention it in a Feishu group chat");
+    expect(agentUseInstruction(base, "feishu")).toBe(
+      "Send @reviewer a direct message, or mention it in a Lark group chat.",
+    );
     expect(agentUseInstruction({ ...base, receiveMode: "all_message" }, "slack")).toContain(
       "every message in connected Slack channels",
     );

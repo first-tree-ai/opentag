@@ -6,6 +6,42 @@ OpenTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The i
 
 Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only.
 
+## Logging contract
+
+Logs use a fixed vocabulary. Use one key for each concept so dashboards and later adoption lanes do not have to merge
+synonyms:
+
+| Concept | Pino field | Notes |
+| --- | --- | --- |
+| Module | `module` | Owning package or service boundary. |
+| Operation | `operation` | Stable operation name, not a free-form explanation. |
+| Request correlation | `requestId` | HTTP or client request identifier. |
+| Account boundary | `accountId` | Tenant boundary for an Agent and its resources. |
+| Agent, Computer, Session, Delivery | `agentId`, `computerId`, `sessionId`, `deliveryId` | Stable resource identifiers. |
+| Provider | `provider` | A provider name such as `feishu` or `slack`. |
+| Outcome | `outcome` | A stable state transition such as `accepted`, `failed`, or `rejected`. |
+| Error identity | `errorCode` | Use the structured error code. Do not invent `reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` for the same concept. |
+| Attempt | `attempt` | Numeric retry or execution attempt. |
+| Duration | `durationMs` | Elapsed time in milliseconds. |
+| Status | `status` | Protocol or provider status when it is not an outcome. |
+
+Level has an operational meaning: `error` is terminal or unrecoverable, `warn` is handled or degraded, `info` is a
+state transition, and `debug` is per-request detail. Keep messages short and put queryable values in the fields above.
+
+The client logger follows this `OPENTAG_LOG_LEVEL` matrix:
+
+| Environment | OPENTAG_LOG_LEVEL | Effective level |
+| --- | --- | --- |
+| Tests | unset | `silent` |
+| Service mode or explicit `file`/`dual` destination | unset | `info` |
+| One-shot client with no configured destination | unset | `warn` |
+| Any mode | valid `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` | The selected level |
+| Any mode | invalid value | `info`, plus one safe warning |
+
+`imAttrs()` and `runtimeAttrs()` are OpenTelemetry helpers. They emit dotted span keys such as
+`opentag.im.binding.id` and `opentag.runtime.connection.id`; do **not** pass their result as a Pino payload. Map values to
+the fixed camelCase Pino vocabulary instead.
+
 ## Configuration
 
 Tracing is disabled when `OPENTAG_OTEL_ENDPOINT` is empty. The exporter sends traces to the configured URL exactly as written and accepts any valid OTLP collector headers.
@@ -23,6 +59,7 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_HEADERS` | empty | Comma-separated `key=value` headers passed unchanged to the OTLP trace exporter |
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | `deployment.environment.name` resource label |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global head sample rate in the inclusive range `0` to `1` |
+| `OPENTAG_LOG_LEVEL` | `info` | Server Pino level: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` |
 
 The service resource is fixed to `service.name=opentag-server`. Every process also emits its random startup identity as `service.instance.id`, which distinguishes replicas and restarts.
 

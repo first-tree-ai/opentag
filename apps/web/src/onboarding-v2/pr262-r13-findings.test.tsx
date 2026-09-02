@@ -8,10 +8,10 @@
  */
 
 import type {
+  AccountComputerSummary,
   AgentAdminConfig,
   AgentListItem,
   FeishuSetupAttempt,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,7 +42,7 @@ function existingAgent(): AgentListItem {
   };
 }
 
-function machine(online: boolean): WorkspaceComputerSummary {
+function machine(online: boolean): AccountComputerSummary {
   return {
     computerId: COMPUTER_ID,
     displayName: "Ada's Mac",
@@ -51,7 +51,7 @@ function machine(online: boolean): WorkspaceComputerSummary {
     connectedAt: online ? "2026-08-29T00:00:20.000Z" : null,
     lastSeenAt: NOW,
     observedAt: NOW,
-    enrolledAt: NOW,
+    createdAt: NOW,
     agentIds: [],
     providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }],
     imCliReadiness: [{ provider: "feishu", status: "ready", observedAt: NOW }],
@@ -117,7 +117,7 @@ describe("the messaging wait at ab76497", () => {
     render(<OnboardingV2Page />);
     await settle();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await settle();
     await tick(POLL_MS * 6);
 
@@ -143,7 +143,7 @@ describe("the messaging wait at ab76497", () => {
 
     render(<OnboardingV2Page />);
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await settle();
     await tick(POLL_MS * 6);
 

@@ -12,6 +12,7 @@ const user: UserProfile = {
 };
 
 async function renderTools() {
+  vi.spyOn(browserApi, "internalNavigationVisibility").mockResolvedValue({ integrations: false, skills: false });
   const onResetSucceeded = vi.fn();
   await renderInRouter(<InternalToolsPage user={user} onResetSucceeded={onResetSucceeded} />, { path: "/internal" });
   return { onResetSucceeded };
@@ -34,6 +35,24 @@ describe("internal tools page", () => {
 
     expect(screen.getByRole("button", { name: "Re-board" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reset and start onboarding" })).toBeTruthy();
+  });
+
+  it("keeps Skills and Integrations out of navigation until each preview is enabled", async () => {
+    const update = vi
+      .spyOn(browserApi, "updateInternalNavigationVisibility")
+      .mockResolvedValue({ integrations: false, skills: true });
+    await renderTools();
+
+    const skills = await screen.findByRole("switch", { name: "Show Skills" });
+    const integrations = await screen.findByRole("switch", { name: "Show Integrations" });
+    expect(skills.getAttribute("aria-checked")).toBe("false");
+    expect(integrations.getAttribute("aria-checked")).toBe("false");
+
+    fireEvent.click(skills);
+
+    await waitFor(() => expect(skills.getAttribute("aria-checked")).toBe("true"));
+    expect(update).toHaveBeenCalledExactlyOnceWith({ integrations: false, skills: true });
+    expect(integrations.getAttribute("aria-checked")).toBe("false");
   });
 
   it("re-boards without asking the Server to destroy anything", async () => {

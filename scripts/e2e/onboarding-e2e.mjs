@@ -48,7 +48,6 @@ DATABASE_URL.pathname = `/${DATABASE_NAME}`;
 const CHROMIUM_PATH = process.env.OPENTAG_E2E_CHROMIUM ?? "/opt/pw-browsers/chromium";
 const DEV_EMAIL = "e2e@opentag.local";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
-const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
 const ENCRYPTION_KEY = Buffer.alloc(32, 7);
 const ARTIFACT_DIRECTORY = resolve(process.env.OPENTAG_E2E_ARTIFACTS ?? join(tmpdir(), "opentag-onboarding-e2e"));
 /* Set to "off" to probe the Claude Code CLI already installed on PATH instead. */
@@ -364,15 +363,12 @@ async function main() {
       return `${BASE_URL} (migrations applied, log: ${serverLogPath})`;
     });
 
-    await step("seed an authenticated user and Workspace", async () => {
+    await step("seed an authenticated Account", async () => {
       await psql(
         DATABASE_URL,
-        `insert into users (id, email, display_name) values ('${USER_ID}', '${DEV_EMAIL}', 'E2E User');
-         insert into workspaces (id, name, display_name) values ('${WORKSPACE_ID}', 'e2e-workspace', 'E2E Workspace');
-         insert into workspace_admin_grants (workspace_id, user_id, granted_by_user_id)
-           values ('${WORKSPACE_ID}', '${USER_ID}', '${USER_ID}');`,
+        `insert into users (id, email, display_name) values ('${USER_ID}', '${DEV_EMAIL}', 'E2E User');`,
       );
-      return `${DEV_EMAIL} as admin of e2e-workspace`;
+      return DEV_EMAIL;
     });
 
     const chromium = loadChromium();
@@ -399,21 +395,24 @@ async function main() {
     await step("sign in through the browser and land on /onboarding", async () => {
       await page.goto(`${BASE_URL}/api/v1/auth/dev/callback?next=/onboarding`, { waitUntil: "networkidle" });
       if (new URL(page.url()).pathname !== "/onboarding") throw new Error(`Landed on ${page.url()}`);
-      await page.getByRole("heading", { name: "Set up OpenTag" }).waitFor({ timeout: 15_000 });
+      await page.getByRole("heading", { name: "Where should your agent run?" }).waitFor({ timeout: 15_000 });
       await shot("01-signed-in");
       return page.url();
     });
 
-    const connect = await step("read the Computer connect command from the page", async () => {
-      await page.getByRole("heading", { name: "Connect a Local Computer" }).waitFor({ timeout: 15_000 });
-      await page.getByRole("button", { name: "Generate connection command" }).click();
+    const connect = await step("choose the local route and read its Computer connect command", async () => {
+      await page.getByRole("button", { name: /Local computer/ }).click();
+      await page.getByRole("button", { name: "Continue" }).click();
+      await page.getByRole("heading", { name: "Create your agent" }).waitFor({ timeout: 15_000 });
+      await page.getByRole("button", { name: /Claude Code/ }).click();
+      await page.getByRole("button", { name: "Continue" }).click();
+      await page.getByRole("heading", { name: "Connect your computer" }).waitFor({ timeout: 15_000 });
       const command = await waitFor("the bootstrap command", async () => {
         const text = await page.locator("body").innerText();
         const match = /computer connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(text);
-        return match ? { serverUrl: match[1], code: match[2] } : undefined;
+        return match?.[1] === BASE_URL ? { serverUrl: match[1], code: match[2] } : undefined;
       });
       await shot("02-connect-computer");
-      if (command.serverUrl !== BASE_URL) throw new Error(`Unexpected server URL ${command.serverUrl}`);
       return { code: command.code, detail: `one-time code issued for ${command.serverUrl}` };
     });
 
@@ -443,7 +442,7 @@ async function main() {
         async () => {
           const online = await psql(
             DATABASE_URL,
-            "select count(*) from workspace_computers where current_instance_id is not null",
+            "select count(*) from computers where current_instance_id is not null",
           );
           return Number(online) > 0;
         },
@@ -452,49 +451,37 @@ async function main() {
       return connected ? `${PROVIDER_STUB ? "stubbed" : "installed"} local CLIs, daemon log: ${daemonLogPath}` : "";
     });
 
-    await step("advance the page to the Agent creation step", async () => {
-      const createAgent = page.getByRole("button", { name: "Create Agent" });
-      const providerHeading = page.getByRole("heading", {
-        name: /Prepare Codex or Claude Code|Confirm the runtime route/,
-      });
+    await step("complete the Computer check and create the Agent", async () => {
       await waitFor(
-        "the Agent creation step",
+        "the passing Computer check",
         async () => {
-          if (await createAgent.isEnabled().catch(() => false)) return true;
-          const checkAgain = page.getByRole("button", { name: /Check again|Checking…/ });
-          if (await providerHeading.isVisible().catch(() => false)) {
-            if (await checkAgain.isEnabled().catch(() => false)) await checkAgain.click();
-          }
-          return false;
+          const passed = await page
+            .getByText("Everything your agent needs is ready.")
+            .isVisible()
+            .catch(() => false);
+          const next = page.getByRole("button", { name: "Continue" });
+          return passed && (await next.isEnabled().catch(() => false));
         },
         { timeoutMs: 120_000, intervalMs: 1_500 },
       );
-      const description = await page.getByRole("region", { name: "Where it runs" }).innerText();
       await shot("03-create-agent");
-      if (!description.includes("Claude Code")) throw new Error(`Unexpected runtime route: ${description}`);
-      return description;
-    });
-
-    await step("create the Agent from the onboarding form", async () => {
-      const input = page.getByLabel("Display name");
-      await input.fill("OpenTag E2E");
-      await page.getByRole("button", { name: "Create Agent" }).click();
-      await page.getByRole("heading", { name: "Connect OpenTag to Feishu" }).waitFor({ timeout: 60_000 });
+      await page.getByRole("button", { name: "Continue" }).click();
+      await page.getByRole("heading", { name: "Connect your messaging app" }).waitFor({ timeout: 60_000 });
       await shot("04-handoff");
-      return "handoff step reached";
+      return "passing Computer check created the Claude Code Agent";
     });
 
     await step("verify the Server facts behind the new Agent", async () => {
       const row = await psql(
         DATABASE_URL,
-        `select a.display_name || ' | ' || a.runtime_provider || ' | ' || a.status || ' | ' || wc.display_name
+        `select a.display_name || ' | ' || a.runtime_provider || ' | ' || a.status || ' | ' || c.display_name
            from agents a
-           join workspace_computers wc on wc.id = a.workspace_computer_id
-          where a.workspace_id = '${WORKSPACE_ID}'`,
+           join computers c on c.id = a.computer_id
+          where a.created_by_user_id = '${USER_ID}'`,
       );
       if (!row.includes("claude-code")) throw new Error(`Unexpected Agent row: ${row || "<none>"}`);
       const api = await page.evaluate(async () => {
-        const response = await fetch("/api/v1/workspaces/22222222-2222-4222-8222-222222222222/computers", {
+        const response = await fetch("/api/v1/computers", {
           headers: { "x-opentag-provider-readiness": "1" },
         });
         return response.json();
@@ -507,16 +494,16 @@ async function main() {
 
     await step("reload and stay on the same factual step", async () => {
       await page.reload({ waitUntil: "networkidle" });
-      await page.getByRole("heading", { name: "Connect OpenTag to Feishu" }).waitFor({ timeout: 30_000 });
+      await page.getByRole("heading", { name: "Connect your messaging app" }).waitFor({ timeout: 30_000 });
       return "no step cursor is persisted";
     });
 
     await step("start the Feishu handoff and report the outcome", async () => {
-      await page.getByRole("button", { name: /Connect existing or new Feishu Bot|Resume Feishu setup/ }).click();
+      await page.getByRole("button", { name: /Lark/ }).click();
       const outcome = await waitFor(
         "a Feishu setup response",
         async () => {
-          const text = await page.locator(".onboarding-action").innerText();
+          const text = await page.locator("body").innerText();
           const alert = await page
             .locator("[role=alert], .notice.error")
             .first()
@@ -532,31 +519,14 @@ async function main() {
       return outcome;
     });
 
-    await step("explain zero-Workspace access without creating a replacement Workspace", async () => {
-      await psql(
-        DATABASE_URL,
-        `update workspace_admin_grants
-            set revoked_by_user_id = '${USER_ID}', revoked_at = now()
-          where user_id = '${USER_ID}' and revoked_at is null`,
-      );
-      await page.reload({ waitUntil: "networkidle" });
-      await page.getByRole("heading", { name: "No Workspace administration access" }).waitFor({ timeout: 30_000 });
-      await page.getByText("A current Workspace Admin can restore access", { exact: false }).waitFor();
-      await shot("06-zero-workspace-access");
-      await psql(
-        DATABASE_URL,
-        `insert into workspace_admin_grants (workspace_id, user_id, granted_by_user_id)
-           values ('${WORKSPACE_ID}', '${USER_ID}', '${USER_ID}')`,
-      );
-      await page.goto(`${BASE_URL}/onboarding`, { waitUntil: "networkidle" });
-      return "zero-grant Account saw the restore-access explanation and no replacement Workspace";
-    });
-
     await step("reach the ready state with an authorized Feishu binding", async () => {
       const { FEISHU_REQUIRED_TENANT_SCOPES } = await import(
         join(repositoryRoot, "packages", "shared", "dist", "index.mjs")
       );
-      const agentId = await psql(DATABASE_URL, `select id from agents where workspace_id = '${WORKSPACE_ID}' limit 1`);
+      const agentId = await psql(
+        DATABASE_URL,
+        `select id from agents where created_by_user_id = '${USER_ID}' order by created_at, id limit 1`,
+      );
       const grantedScopes = [...FEISHU_REQUIRED_TENANT_SCOPES].sort();
       const scopes = grantedScopes.map((scope) => `'${scope}'`).join(", ");
       const encryptedCredential = encryptCredential({
@@ -581,13 +551,10 @@ async function main() {
       );
       await page.reload({ waitUntil: "networkidle" });
       await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
-      const completedAt = await psql(
-        DATABASE_URL,
-        `select setup_completed_at from workspaces where id = '${WORKSPACE_ID}'`,
-      );
-      if (!completedAt) throw new Error("Workspace setup completion was not persisted");
-      await shot("07-completed");
-      return `handoff readiness projected and Workspace setup completed at ${completedAt}`;
+      const completedAt = await psql(DATABASE_URL, `select setup_completed_at from users where id = '${USER_ID}'`);
+      if (!completedAt) throw new Error("Account setup completion was not persisted");
+      await shot("06-completed");
+      return `handoff readiness projected and Account setup completed at ${completedAt}`;
     });
 
     await step("survive a Computer outage without losing the Agent", async () => {
@@ -595,10 +562,7 @@ async function main() {
       await waitFor(
         "the Computer to go offline",
         async () => {
-          const offline = await psql(
-            DATABASE_URL,
-            "select count(*) from workspace_computers where current_instance_id is null",
-          );
+          const offline = await psql(DATABASE_URL, "select count(*) from computers where current_instance_id is null");
           return Number(offline) > 0;
         },
         { timeoutMs: 60_000 },
@@ -606,14 +570,11 @@ async function main() {
       await page.reload({ waitUntil: "networkidle" });
       await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
       await page.getByRole("heading", { name: "Agents" }).waitFor({ timeout: 30_000 });
-      await shot("08-runtime-outage");
-      const agents = await psql(DATABASE_URL, `select count(*) from agents where workspace_id = '${WORKSPACE_ID}'`);
+      await shot("07-runtime-outage");
+      const agents = await psql(DATABASE_URL, `select count(*) from agents where created_by_user_id = '${USER_ID}'`);
       if (Number(agents) !== 1) throw new Error(`Expected exactly one Agent, found ${agents}`);
-      const completedAt = await psql(
-        DATABASE_URL,
-        `select setup_completed_at from workspaces where id = '${WORKSPACE_ID}'`,
-      );
-      if (!completedAt) throw new Error("Computer outage reopened Workspace setup");
+      const completedAt = await psql(DATABASE_URL, `select setup_completed_at from users where id = '${USER_ID}'`);
+      if (!completedAt) throw new Error("Computer outage reopened Account setup");
       return `Agents remained the product destination; setup completion stayed at ${completedAt}`;
     });
 

@@ -5,10 +5,10 @@ import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
 
-const workspaceId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const workspaceComputerId = "59ea83c3-0452-4fdb-a81b-e8037e91cd1b";
+const accountId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+const computerId = "59ea83c3-0452-4fdb-a81b-e8037e91cd1b";
 const sessionId = "07a9192e-cb82-477a-a931-2c694e937012";
-const computerId = "e9f6f9f3-84e2-4448-bbe4-f933cbd5b68f";
+const installationId = "e9f6f9f3-84e2-4448-bbe4-f933cbd5b68f";
 const instanceId = "fef187cf-0e5b-4c12-826a-c012e3a2b4cd";
 const imMessageId = "f7ca351d-337f-4c64-8aca-1ad5ab6fa7f2";
 const authorization = { authorization: "Bearer access" };
@@ -25,7 +25,7 @@ function authService(): UserAuthService {
     getAuthenticatedUser: vi.fn().mockResolvedValue({
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
-        user: { id: workspaceId, email: "admin@example.com", displayName: "Admin" },
+        user: { id: accountId, email: "admin@example.com", displayName: "Admin" },
         setupCompletedAt: null,
       },
     }),
@@ -48,9 +48,8 @@ function createResourceApp(resource: Record<string, unknown>, verifyMachineToken
       verifyMachineToken ??
       vi.fn().mockResolvedValue({
         credentialId: "6a7f5ffb-65c2-40e2-8b20-89f430aa74e5",
-        workspaceComputerId,
-        workspaceId,
         computerId,
+        installationId,
       }),
   };
   const app = createApp({
@@ -99,7 +98,7 @@ describe("IM resource HTTP API", () => {
       "attachment; filename*=UTF-8''%E6%8A%A5%E5%91%8A%20%E5%9B%BE.png",
     );
     expect(resources.open).toHaveBeenCalledWith(
-      { credentialId: expect.any(String), workspaceComputerId, workspaceId, computerId },
+      { credentialId: expect.any(String), computerId, installationId },
       { sessionId, instanceId, placementGeneration: 7 },
       imMessageId,
       2,

@@ -304,7 +304,11 @@ async function runtimeFixture(
     providerEnvironmentPath: () => "/tmp/provider-env.sh",
     workspace,
   });
-  const reconciler = new SessionReconciler({ computerId, preparation: runtimeManager, localPolicy: runtimeManager });
+  const reconciler = new SessionReconciler({
+    installationId: computerId,
+    preparation: runtimeManager,
+    localPolicy: runtimeManager,
+  });
   let runner: AgentTurnRunner;
   const custody = new TurnCustodyOwner({
     bindingStore: store,
@@ -339,7 +343,7 @@ async function runtimeFixture(
   const reconcile: SessionReconcileRequest = {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

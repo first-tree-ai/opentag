@@ -86,6 +86,8 @@ export {
 export {
   type ClientLogBindings,
   type ClientLogger,
+  type CreateLoggerOptions,
+  configureClientLoggerContext,
   configureClientLoggerForService,
   createLogger,
 } from "./observability/logger.js";

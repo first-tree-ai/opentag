@@ -3,17 +3,17 @@
  *
  * Each of these was a real failure of the Server-backed flow, written first as an assertion of the
  * behaviour the flow is supposed to have. Two of them could create an Agent on a Computer this
- * reader never enrolled; one could answer for a messaging app nobody had probed. None describes a
+ * reader never connected; one could answer for a messaging app nobody had probed. None describes a
  * Server fault — they are all decisions this hook and its steps make locally, which is why they
  * are guarded here rather than left to a live run to catch.
  */
 
 import type {
+  AccountComputerSummary,
   AgentAdminConfig,
   AgentListItem,
   ComputerConnectCodeStatus,
   FeishuSetupAttempt,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,7 +33,7 @@ const REDEEMED_AT = "2026-08-29T00:00:05.000Z";
 const POLL_MS = 1_500;
 const FEISHU_POLL_MS = 2_000;
 
-function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceComputerSummary {
+function computer(overrides: Partial<AccountComputerSummary> = {}): AccountComputerSummary {
   return {
     computerId: COMPUTER_ID,
     displayName: "Ada's Mac",
@@ -42,7 +42,7 @@ function computer(overrides: Partial<WorkspaceComputerSummary> = {}): WorkspaceC
     connectedAt: "2026-08-29T00:00:10.000Z",
     lastSeenAt: "2026-08-29T00:00:10.000Z",
     observedAt: "2026-08-29T00:00:10.000Z",
-    enrolledAt: "2026-08-29T00:00:10.000Z",
+    createdAt: "2026-08-29T00:00:10.000Z",
     agentIds: [],
     ...overrides,
   };
@@ -102,7 +102,7 @@ function attempt(overrides: Partial<FeishuSetupAttempt> = {}): FeishuSetupAttemp
   };
 }
 
-function computersReturning(...pages: readonly (readonly WorkspaceComputerSummary[])[]) {
+function computersReturning(...pages: readonly (readonly AccountComputerSummary[])[]) {
   let call = 0;
   return vi.spyOn(browserApi, "computers").mockImplementation(async () => {
     const page = pages[Math.min(call, pages.length - 1)] ?? [];
@@ -198,8 +198,8 @@ describe("Server-backed onboarding: the defects it had", () => {
 
   it("does not report a messaging CLI verdict taken from a different provider", async () => {
     // `imCliReadiness[0]` is whichever CLI the Server happened to observe first, in its own
-    // canonical order. Here only Slack has been probed, so a reader who picks Lark is told
-    // Lark's CLI is present on the strength of Slack's result.
+    // canonical order. Here only Slack has been probed, so a reader who picks Feishu is told
+    // Feishu's CLI is present on the strength of Slack's result.
     const view = mount();
     act(() =>
       view.result.current.computerConnected(
@@ -210,13 +210,13 @@ describe("Server-backed onboarding: the defects it had", () => {
       ),
     );
 
-    // Slack's result answers for Slack and for nothing else; Lark has simply not been probed.
+    // Slack's result answers for Slack and for nothing else; Feishu has simply not been probed.
     expect(view.result.current.readiness?.messagingCli.slack).toBe("ready");
     expect(view.result.current.readiness?.messagingCli.feishu).toBeUndefined();
     expect(messagingCliCheck(view.result.current.readiness?.messagingCli.feishu)).toBe("pending");
   });
 
-  it("stops polling a Lark attempt that Start over abandoned", async () => {
+  it("stops polling a Feishu attempt that Start over abandoned", async () => {
     computersReturning([computer({ providerReadiness: [{ provider: "codex", status: "ready", observedAt: NOW }] })]);
     issuing();
     vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemedVerdict());
@@ -241,7 +241,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     expect(poll).not.toHaveBeenCalled();
     expect(view.result.current.messaging).toEqual({ kind: "idle" });
   });
-  it("asks for one Lark code per attempt rather than retrying a refused one on sight", async () => {
+  it("asks for one Feishu code per attempt rather than retrying a refused one on sight", async () => {
     // The messaging step starts an attempt whenever the state is idle, and a refused attempt is
     // returned to idle, so the effect starts another one immediately. Nothing paces the two, and
     // nothing bounds them: the mock below has to stop refusing in order for the test to end.
@@ -252,7 +252,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     let calls = 0;
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockImplementation(async () => {
       calls += 1;
-      if (calls < 8) throw new Error("Lark is unavailable");
+      if (calls < 8) throw new Error("Feishu is unavailable");
       return attempt();
     });
     vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt());
@@ -268,7 +268,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     await tick(POLL_MS);
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await settle();
 
     expect(calls).toBe(1);
@@ -277,7 +277,7 @@ describe("Server-backed onboarding: the defects it had", () => {
   it("refuses to resume an Agent that has no Computer rather than reporting someone else's machine", async () => {
     /*
      * An unbound Agent is not resumed at all. Reporting a Computer for it would have to come from
-     * an arrival -- a machine on the Account that enrolled or reconnected -- which identifies a
+     * an arrival -- a machine on the Account that connected or reconnected -- which identifies a
      * machine but not one this Agent was ever given, and the run would then advance into messaging,
      * which refuses an Agent with nowhere to run. So the reader is handed the page where the Agent
      * gets a Computer instead, and nothing durable is written on a guess.

@@ -12,8 +12,9 @@ const node = process.execPath;
 const root = suite === "minimal" ? "/tmp/doctor-e2e" : "/home/node/doctor-e2e";
 const runtimeBin = join(root, "runtime-bin");
 const defaultPath = `${runtimeBin}:/usr/local/bin:/usr/bin:/bin`;
-const computerId = "11111111-1111-4111-8111-111111111111";
-const otherComputerId = "22222222-2222-4222-8222-222222222222";
+const installationId = "11111111-1111-4111-8111-111111111111";
+const otherInstallationId = "22222222-2222-4222-8222-222222222222";
+const logicalComputerId = "33333333-3333-4333-8333-333333333333";
 const responseSecret = "doctor-e2e-response-secret";
 const credentialSecret = "otmc_doctor-e2e-machine-token-secret";
 const results = [];
@@ -92,25 +93,25 @@ async function writePrivateJson(path, value) {
   await chmod(path, 0o600);
 }
 
-function enrollment({
-  computer = computerId,
+function computerCredential({
+  installationId: credentialInstallationId = installationId,
+  computerId = logicalComputerId,
   serverUrl,
-  workspaceComputerId = "33333333-3333-4333-8333-333333333333",
 }) {
   return {
-    workspaceComputerId,
-    computerId: computer,
+    computerId,
+    installationId: credentialInstallationId,
     machineToken: credentialSecret,
     serverUrl,
   };
 }
 
-async function writeValidHome(name, serverUrl, computer = enrollment({ serverUrl })) {
+async function writeValidHome(name, serverUrl, credential = computerCredential({ serverUrl })) {
   const home = await createHome(name);
   const config = join(home, "config");
   await mkdir(config, { mode: 0o700 });
-  await writePrivateJson(join(config, "computer.json"), { version: 2, computerId, serverUrl });
-  await writePrivateJson(join(config, "computer-credentials.json"), { version: 2, computer });
+  await writePrivateJson(join(config, "computer.json"), { version: 2, computerId: installationId, serverUrl });
+  await writePrivateJson(join(config, "computer-credentials.json"), { version: 3, computer: credential });
   return home;
 }
 
@@ -195,12 +196,7 @@ async function runCoreSuite() {
     const result = runDoctor(home);
     expect(result.status === 1, "empty Home doctor must exit 1", result);
     expectIncludes(result.stdout, "Computer identity is not configured", "local result", result);
-    expectIncludes(
-      result.stdout,
-      "not checked because there is no authoritative enrolled Server",
-      "server result",
-      result,
-    );
+    expectIncludes(result.stdout, "not checked because there is no connected Server", "server result", result);
     expect((await snapshot(home)) === before, "doctor mutated the empty Home", result);
   });
 
@@ -210,63 +206,59 @@ async function runCoreSuite() {
     await mkdir(config, { mode: 0o700 });
     await writePrivateJson(join(config, "computer.json"), {
       version: 2,
-      computerId,
+      computerId: installationId,
       serverUrl: "http://127.0.0.1:18080",
       secret: responseSecret,
     });
     await writePrivateJson(join(config, "computer-credentials.json"), {
-      version: 2,
-      computer: enrollment({ serverUrl: "http://127.0.0.1:18080" }),
+      version: 3,
+      computer: computerCredential({ serverUrl: "http://127.0.0.1:18080" }),
     });
     const result = runDoctor(home);
     expectIncludes(result.stdout, "identity file is invalid", "identity result", result);
     expectExcludes(result.stdout, responseSecret, "identity result", result);
   });
 
-  await record("a malformed Computer credential invalidates the credential set", async () => {
+  await record("a malformed Computer credential invalidates the canonical binding", async () => {
     const serverUrl = "http://127.0.0.1:18080";
     const before = await requestCount(18080);
-    const home = await writeValidHome("malformed-enrollment", serverUrl, {
-      workspaceComputerId: "not-a-uuid",
+    const home = await writeValidHome("malformed-credential", serverUrl, {
+      ...computerCredential({ serverUrl }),
+      installationId: "not-a-uuid",
       machineToken: responseSecret,
-      computerId,
-      serverUrl,
     });
     const result = runDoctor(home);
-    expectIncludes(result.stdout, "unusable OpenTag Computer credential", "enrollment result", result);
-    expectExcludes(result.stdout, responseSecret, "enrollment result", result);
+    expectIncludes(result.stdout, "unusable OpenTag Computer credential", "credential result", result);
+    expectExcludes(result.stdout, responseSecret, "credential result", result);
     expect((await requestCount(18080)) === before, "doctor contacted Server for malformed credentials");
   });
 
-  await record("legacy multi-enrollment credentials receive zero Server requests", async () => {
+  await record("a retired multi-binding credential document receives zero requests", async () => {
     const first = "http://127.0.0.1:18081";
     const second = "http://127.0.0.1:18082";
     const beforeA = await requestCount(18081);
     const beforeB = await requestCount(18082);
-    const home = await writeValidHome("multiple-servers", first);
-    await writePrivateJson(join(home, "config", "computer-credentials.json"), {
-      version: 1,
-      enrollments: [
-        enrollment({ serverUrl: first }),
-        enrollment({
-          serverUrl: second,
-          workspaceComputerId: "44444444-4444-4444-8444-444444444444",
-        }),
-      ],
+    const home = await createHome("retired-multi-binding");
+    const config = join(home, "config");
+    await mkdir(config, { mode: 0o700 });
+    await writePrivateJson(join(config, "computer.json"), { version: 2, computerId: installationId, serverUrl: first });
+    await writePrivateJson(join(config, "computer-credentials.json"), {
+      version: 2,
+      computers: [computerCredential({ serverUrl: first }), computerCredential({ serverUrl: second })],
     });
     const result = runDoctor(home);
-    expectIncludes(result.stdout, "unsupported format", "binding result", result);
+    expectIncludes(result.stdout, "uses an unsupported format", "binding result", result);
     expect((await requestCount(18081)) === beforeA, "doctor contacted the first ambiguous Server");
     expect((await requestCount(18082)) === beforeB, "doctor contacted the second ambiguous Server");
   });
 
-  await record("Computer mismatch skips the enrolled Server", async () => {
+  await record("Computer mismatch skips the connected Server", async () => {
     const serverUrl = "http://127.0.0.1:18081";
     const before = await requestCount(18081);
     const home = await writeValidHome(
       "computer-mismatch",
       serverUrl,
-      enrollment({ computer: otherComputerId, serverUrl }),
+      computerCredential({ installationId: otherInstallationId, serverUrl }),
     );
     const result = runDoctor(home);
     expectIncludes(result.stdout, "do not belong to the local Computer identity", "binding result", result);
@@ -282,12 +274,7 @@ async function runCoreSuite() {
     const result = runDoctor(home);
     expect(result.status === 1, "unsafe symlink doctor must exit 1", result);
     expectExcludes(result.stdout, responseSecret, "symlink result", result);
-    expectIncludes(
-      result.stdout,
-      "not checked because there is no authoritative enrolled Server",
-      "server result",
-      result,
-    );
+    expectIncludes(result.stdout, "not checked because there is no connected Server", "server result", result);
   });
 
   await record("HTTP 503 is classified without response-body disclosure", async () => {

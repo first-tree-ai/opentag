@@ -21,10 +21,10 @@ describe("Agent detail capability previews", () => {
     expect(screen.getByText("Available")).toBeTruthy();
     expect(screen.getByText("Connection error")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
-    expect(screen.queryByText(/Feishu|Slack/)).toBeNull();
+    expect(screen.queryByText(/Feishu|Lark|Slack/)).toBeNull();
   });
 
-  it("shows Skill preview source and assignment state with a real Workspace-list link", async () => {
+  it("shows Skill preview source and assignment state with a real Skills-list link", async () => {
     await renderInRouter(<AgentSkillsPreview />);
 
     expect(screen.getByText("Release notes writer")).toBeTruthy();

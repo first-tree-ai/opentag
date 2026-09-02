@@ -1,9 +1,9 @@
 import type {
+  AccountComputerSummary,
   AgentAdminConfig,
   AgentDetail,
   AgentListItem as AgentListApiItem,
   ListAgentsResponse,
-  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -20,7 +20,7 @@ const accountId = "0b9c8d7e-6f50-4a1b-8c2d-3e4f50617283";
 const agentId = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
 const computerId = "8c2b1d4e-5a6f-4b7c-8d9e-0f1a2b3c4d5e";
 
-const computer: WorkspaceComputerSummary = {
+const computer: AccountComputerSummary = {
   computerId,
   displayName: "Ada's Mac",
   platform: "darwin",
@@ -29,7 +29,7 @@ const computer: WorkspaceComputerSummary = {
   connectedAt: "2026-08-20T00:00:00.000Z",
   lastSeenAt: "2026-08-20T00:01:00.000Z",
   observedAt: "2026-08-20T00:01:00.000Z",
-  enrolledAt: "2026-08-19T00:00:00.000Z",
+  createdAt: "2026-08-19T00:00:00.000Z",
   agentIds: [agentId],
 };
 

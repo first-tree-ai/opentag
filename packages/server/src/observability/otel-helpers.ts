@@ -1,3 +1,4 @@
+import { redactForLog } from "@opentag/shared";
 import {
   type Attributes,
   type Context,
@@ -36,6 +37,8 @@ const SENSITIVE_KEY_PARTS = [
   "author",
   "display_name",
 ];
+const SENSITIVE_ERROR_MESSAGE_PARTS =
+  /(?:authorization|cookie|token|secret|credential|password|api[_-]?key|private|body|payload|prompt|output|text|mention|resource|sender|author|message)/i;
 
 export function getServerTracer() {
   return trace.getTracer(TRACER_NAME, TRACER_VERSION);
@@ -56,6 +59,11 @@ function sanitizeString(value: string): string {
   return scrubbed.length <= MAX_ATTRIBUTE_LENGTH
     ? scrubbed
     : `${scrubbed.slice(0, MAX_ATTRIBUTE_LENGTH)}...[truncated]`;
+}
+
+function sanitizeErrorMessage(value: string): string {
+  if (SENSITIVE_ERROR_MESSAGE_PARTS.test(value)) return "[scrubbed]";
+  return sanitizeString(value);
 }
 
 function sanitizeJsonValue(value: unknown, seen: WeakSet<object>): unknown {
@@ -96,11 +104,22 @@ export function normalizeTelemetryAttrs(attrs?: Record<string, unknown>): Attrib
   return output;
 }
 
-function recordSpanError(span: Span): void {
+function recordSpanError(span: Span, error: unknown): void {
   try {
-    const code = "INTERNAL_ERROR";
-    span.recordException({ name: "OpenTagOperationError", message: code });
-    span.setStatus({ code: SpanStatusCode.ERROR, message: code });
+    const redacted = redactForLog(error);
+    const name = error instanceof Error ? error.name : typeof error;
+    const message =
+      error instanceof Error && typeof redacted === "object" && redacted !== null && "message" in redacted
+        ? String(redacted.message)
+        : typeof redacted === "string"
+          ? redacted
+          : (JSON.stringify(redacted) ?? String(redacted));
+    const details = {
+      name: sanitizeString(name),
+      message: sanitizeErrorMessage(message),
+    };
+    span.recordException(details);
+    span.setStatus({ code: SpanStatusCode.ERROR, message: "INTERNAL_ERROR" });
   } catch {
     // Telemetry must never replace the original business failure.
   }
@@ -120,7 +139,7 @@ function runWithSpan<T>(
       try {
         return await fn();
       } catch (error) {
-        recordSpanError(span);
+        recordSpanError(span, error);
         throw error;
       } finally {
         try {
@@ -162,7 +181,7 @@ export function tracePromise<T>(
       promise = create();
     } catch (error) {
       setSpanErrorAttributes(span, error, errorAttrs);
-      recordSpanError(span);
+      recordSpanError(span, error);
       span.end();
       throw error;
     }
@@ -178,7 +197,7 @@ export function tracePromise<T>(
       },
       (error: unknown) => {
         setSpanErrorAttributes(span, error, errorAttrs);
-        recordSpanError(span);
+        recordSpanError(span, error);
         span.end();
         throw error;
       },
@@ -202,7 +221,7 @@ function setSpanErrorAttributes(
 export function emitRootSpan(name: string, attrs?: Record<string, unknown>, error?: Error): void {
   try {
     const span = getServerTracer().startSpan(name, { attributes: normalizeTelemetryAttrs(attrs) }, ROOT_CONTEXT);
-    if (error) recordSpanError(span);
+    if (error) recordSpanError(span, error);
     span.end();
   } catch {
     // Diagnostics are best-effort and never affect the caller.
@@ -225,7 +244,7 @@ export function endSpan(span: Span | undefined, attrs?: Record<string, unknown>,
   if (!span) return;
   try {
     if (attrs) span.setAttributes(normalizeTelemetryAttrs(attrs));
-    if (error) recordSpanError(span);
+    if (error) recordSpanError(span, error);
     span.end();
   } catch {
     // Telemetry must not affect transport shutdown.

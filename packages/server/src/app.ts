@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
-import Fastify, { type FastifyLoggerOptions } from "fastify";
-import { registerAccountRoutes } from "./api/account.js";
+import Fastify, { type FastifyLoggerOptions, LogController } from "fastify";
+import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
@@ -31,8 +32,8 @@ import { type ImBindingService, ImBindingServiceError } from "./services/im-bind
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
+import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
-import { type WorkspaceSetupService, WorkspaceSetupServiceError } from "./services/workspaces/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
@@ -59,6 +60,7 @@ export interface CreateAppOptions {
   feishuSetupService?: FeishuSetupService;
   slackOAuth?: SlackOAuthRouteOptions;
   loggerStream?: FastifyLoggerOptions["stream"];
+  loggerLevel?: FastifyLoggerOptions["level"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
@@ -69,15 +71,13 @@ export interface CreateAppOptions {
    * deployment outside staging stays indistinguishable from one that never had the capability.
    */
   setupResetService?: OnboardingResetService;
+  internalNavigationService?: InternalNavigationVisibilityService;
   taskService?: TaskService;
-  workspaceSetupService?: WorkspaceSetupService;
+  accountSetupService?: AccountSetupService;
 }
 
 export function sanitizeRequestUrl(url: string): string {
-  const path = url.split("?", 1)[0] ?? "/";
-  return path
-    .replace(/^(\/invites\/)[^/]+/, "$1[REDACTED]")
-    .replace(/^(\/api\/v1\/admin-invitations\/)[^/]+/, "$1[REDACTED]");
+  return url.split("?", 1)[0] ?? "/";
 }
 
 export function formatHttpSpanName(request: { method?: string; routeOptions?: { url?: string } }): string {
@@ -97,6 +97,22 @@ export function ignoreHttpTraceRoute(path: string): boolean {
   );
 }
 
+function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOptions {
+  return {
+    level: options.loggerLevel ?? "info",
+    ...(options.loggerStream ? { stream: options.loggerStream } : {}),
+    serializers: {
+      req: (request) => ({
+        method: request.method,
+        url: sanitizeRequestUrl(request.url),
+        host: request.hostname,
+        remoteAddress: request.ip,
+        remotePort: request.socket.remotePort,
+      }),
+    },
+  };
+}
+
 function contentTypeParserErrorStatus(error: unknown): number | undefined {
   if (
     typeof error !== "object" ||
@@ -112,20 +128,31 @@ function contentTypeParserErrorStatus(error: unknown): number | undefined {
   return typeof statusCode === "number" && statusCode >= 400 && statusCode < 500 ? statusCode : undefined;
 }
 
+/** Bounded, log-safe shape for a caller-supplied correlation id: the shared request-id contract. */
+const SAFE_REQUEST_ID = /^[A-Za-z0-9._:-]{1,256}$/;
+
+/**
+ * Accept an inbound `x-request-id` only when it matches the bounded identifier contract shared with
+ * `StructuredError.requestId`. Anything longer, multi-valued, or carrying characters that would be
+ * awkward in a log or span attribute is rejected so the caller gets a minted UUID instead.
+ */
+export function safeInboundRequestId(header: string | string[] | undefined): string | undefined {
+  if (typeof header !== "string") return undefined;
+  const candidate = header.trim();
+  return SAFE_REQUEST_ID.test(candidate) ? candidate : undefined;
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
-    logger: {
-      ...(options.loggerStream ? { stream: options.loggerStream } : {}),
-      serializers: {
-        req: (request) => ({
-          method: request.method,
-          url: sanitizeRequestUrl(request.url),
-          host: request.hostname,
-          remoteAddress: request.ip,
-          remotePort: request.socket.remotePort,
-        }),
-      },
-    },
+    /*
+     * requestIdHeader is deliberately false. When it names a header, Fastify adopts that value
+     * verbatim and never calls genReqId, so an unbounded or colliding caller-chosen id would flow
+     * straight into Pino and OTel. Doing the read here keeps the header contract but validates it.
+     */
+    requestIdHeader: false,
+    logController: new LogController({ requestIdLogLabel: "requestId" }),
+    genReqId: (request) => safeInboundRequestId(request.headers["x-request-id"]) ?? randomUUID(),
+    logger: createFastifyLoggerOptions(options),
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
 
@@ -156,6 +183,7 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   app.addHook("onRequest", async (_request, reply) => {
+    reply.header("x-request-id", _request.id);
     const traceId = currentTraceId();
     if (traceId) reply.header("x-trace-id", traceId);
   });
@@ -232,8 +260,8 @@ export function createApp(options: CreateAppOptions = {}) {
       options.agentService ||
       options.taskService ||
       options.computerService ||
-      options.workspaceSetupService ||
       options.setupResetService ||
+      options.accountSetupService ||
       (options.machineAuthService && options.computerConnectCode)
     ) {
       registerAccountRoutes(app, authService, {
@@ -241,9 +269,10 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
         ...(options.computerService ? { computerService: options.computerService } : {}),
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
-        ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
+        ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
         ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
+        internalNavigationService: options.internalNavigationService,
         authOptions,
       });
     }
@@ -300,7 +329,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof OnboardingResetError ||
       error instanceof TaskQueryError ||
       error instanceof SlackConfigurationServiceError ||
-      error instanceof WorkspaceSetupServiceError
+      error instanceof AccountSetupServiceError
     ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {

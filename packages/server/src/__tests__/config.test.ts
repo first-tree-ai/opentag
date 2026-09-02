@@ -68,8 +68,14 @@ describe("parseServerConfig", () => {
         tracing: { endpoint: "", environment: "dev", headers: "", sampleRate: 1 },
       },
       sessionTtlSeconds: 2_592_000,
+      logLevel: "info",
     });
     expect(parseServerConfig(required).devAuth).toBeUndefined();
+  });
+
+  it("accepts the configured server log level and rejects unknown levels", () => {
+    expect(parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "debug" }).logLevel).toBe("debug");
+    expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
   });
 
   it("defaults the channel target coordinates to the public release endpoint", () => {

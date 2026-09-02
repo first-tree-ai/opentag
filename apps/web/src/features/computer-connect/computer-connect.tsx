@@ -1,4 +1,4 @@
-import type { ComputerConnectCodeStatus, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
@@ -21,7 +21,7 @@ export type ComputerConnectIntent =
 
 export interface ComputerConnectProps {
   readonly intent: ComputerConnectIntent;
-  readonly onConnected?: (computer: WorkspaceComputerSummary) => void;
+  readonly onConnected?: (computer: AccountComputerSummary) => void;
 }
 
 export interface ComputerConnectAdapter {
@@ -32,7 +32,7 @@ export interface ComputerConnectAdapter {
     readonly issuedAt: string;
   }>;
   readonly status: (connectCodeId: string) => Promise<ComputerConnectCodeStatus>;
-  readonly computers: () => Promise<{ readonly computers: readonly WorkspaceComputerSummary[] }>;
+  readonly computers: () => Promise<{ readonly computers: readonly AccountComputerSummary[] }>;
 }
 
 export interface IssuedComputerConnectCommand {
@@ -59,7 +59,7 @@ export type ComputerConnectState =
   | {
       readonly kind: "connected";
       readonly issued: IssuedComputerConnectCommand;
-      readonly computer: WorkspaceComputerSummary;
+      readonly computer: AccountComputerSummary;
     };
 
 export interface ComputerConnectLifecycle {
@@ -77,14 +77,14 @@ type PollResult =
   | { readonly kind: "wait" }
   | { readonly kind: "expire" }
   | { readonly kind: "redeemed"; readonly redeemed: RedeemedComputerConnectCommand }
-  | { readonly kind: "connected"; readonly computer: WorkspaceComputerSummary };
+  | { readonly kind: "connected"; readonly computer: AccountComputerSummary };
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback;
 }
 
 /** The redeemed Computer counts only once the connection bought by that redemption is online. */
-function isFreshlyConnected(computer: WorkspaceComputerSummary, redeemedAt: string): boolean {
+function isFreshlyConnected(computer: AccountComputerSummary, redeemedAt: string): boolean {
   return (
     computer.connectionStatus === "online" &&
     computer.connectedAt !== null &&
@@ -121,7 +121,7 @@ async function pollRedeemedComputer({
 }: {
   readonly adapter: ComputerConnectAdapter;
   readonly isCurrent: () => boolean;
-  readonly onConnected: (computer: WorkspaceComputerSummary) => void;
+  readonly onConnected: (computer: AccountComputerSummary) => void;
   readonly redeemed: RedeemedComputerConnectCommand;
   readonly setError: (message: string | undefined) => void;
 }): Promise<void> {
@@ -152,7 +152,7 @@ async function pollIssuedCommand({
   readonly expire: () => void;
   readonly issued: IssuedComputerConnectCommand;
   readonly isCurrent: () => boolean;
-  readonly onConnected: (computer: WorkspaceComputerSummary) => void;
+  readonly onConnected: (computer: AccountComputerSummary) => void;
   readonly onRedeemed: (redeemed: RedeemedComputerConnectCommand) => void;
   readonly setError: (message: string | undefined) => void;
   readonly targetComputerId?: string;
@@ -230,7 +230,7 @@ function ComputerConnectAttempt({
   readonly adapter: ComputerConnectAdapter;
   readonly children: ComputerConnectLifecycleProps["children"];
   readonly intent: ComputerConnectIntent;
-  readonly onConnected?: (computer: WorkspaceComputerSummary) => void;
+  readonly onConnected?: (computer: AccountComputerSummary) => void;
 }) {
   const targetComputerId = intent.mode === "repair" ? intent.target.computerId : undefined;
   const [state, setState] = useState<ComputerConnectState>({ kind: "issuing" });
@@ -296,7 +296,7 @@ function ComputerConnectAttempt({
       setError(undefined);
       setState({ kind: "expired", issued: state.issued });
     };
-    const complete = (computer: WorkspaceComputerSummary) => {
+    const complete = (computer: AccountComputerSummary) => {
       if (!current()) return;
       completed = true;
       setError(undefined);
@@ -331,7 +331,7 @@ function ComputerConnectAttempt({
     const pollTimer = window.setInterval(poll, COMPUTER_POLL_INTERVAL_MS);
     // At the local deadline, ask the Server once more instead of expiring blindly: redemption is
     // durable and can precede inventory propagation. Once latched, the exact Computer is polled
-    // without any code TTL because issuing another command would risk duplicate enrollment.
+    // without any code TTL because issuing another command would risk a duplicate connection.
     const expiryTimer = redeemed ? undefined : window.setTimeout(poll, Math.max(0, expiresAt - Date.now()));
     poll();
     return () => {

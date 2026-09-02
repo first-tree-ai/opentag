@@ -23,7 +23,7 @@
     "payload": {
       "type": "session:reconcile",
       "requestId": "11111111-1111-4111-8111-111111111111",
-      "computerId": "22222222-2222-4222-8222-222222222222",
+      "installationId": "22222222-2222-4222-8222-222222222222",
       "sessionId": "session-1",
       "agentId": "agent-1",
       "placementGeneration": 3,
@@ -157,7 +157,7 @@
     "payload": {
       "type": "computer:register",
       "requestId": "99999999-9999-4999-8999-999999999999",
-      "computerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "installationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       "instanceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       "displayName": "Build machine",
       "platform": "darwin",
@@ -172,7 +172,7 @@
     "payload": {
       "type": "heartbeat",
       "requestId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-      "computerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "installationId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       "instanceId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       "capabilities": { "imCredentialGrant": 1 }
     }

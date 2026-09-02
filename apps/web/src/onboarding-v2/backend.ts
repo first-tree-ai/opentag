@@ -9,7 +9,7 @@
  * rather than a fake of the API.
  */
 
-import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary } from "@opentag/shared/browser";
 import type { ComputerConnectAdapter } from "../features/computer-connect/computer-connect.js";
 import type { AgentDraft, CreationState, MessagingProvider, MessagingState, ReadinessFacts, Runtime } from "./flow.js";
 
@@ -57,7 +57,7 @@ export interface OnboardingBackend {
   /** The one this run is preparing, or `undefined` when there is none and one must be connected. */
   readonly selectedComputerId?: string | undefined;
   /** Adopts only the exact Computer the shared connection lifecycle has verified online. */
-  readonly computerConnected: (computer: WorkspaceComputerSummary) => void;
+  readonly computerConnected: (computer: AccountComputerSummary) => void;
   /**
    * Records that readiness has already carried this run beyond the Computer page. Availability
    * can change later without rewinding messaging setup.

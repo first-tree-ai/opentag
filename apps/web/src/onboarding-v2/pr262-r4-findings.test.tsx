@@ -6,7 +6,7 @@
  * where it started.
  */
 
-import type { AgentListItem, FeishuSetupAttempt, WorkspaceComputerSummary } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentListItem, FeishuSetupAttempt } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -38,7 +38,7 @@ function agentOn(computerId: string, displayName: string, extra: Partial<AgentLi
   };
 }
 
-function machine(id: string, name: string, online: boolean): WorkspaceComputerSummary {
+function machine(id: string, name: string, online: boolean): AccountComputerSummary {
   return {
     computerId: id,
     displayName: name,
@@ -47,7 +47,7 @@ function machine(id: string, name: string, online: boolean): WorkspaceComputerSu
     connectedAt: online ? "2026-08-29T00:00:20.000Z" : null,
     lastSeenAt: NOW,
     observedAt: NOW,
-    enrolledAt: NOW,
+    createdAt: NOW,
     agentIds: [],
     providerReadiness: online ? [{ provider: "codex", status: "ready", observedAt: NOW }] : undefined,
   };
@@ -108,7 +108,7 @@ describe("resume at a4e2662", () => {
 
   it("does not finish setup on a Computer the Agent is not bound to", async () => {
     // Resume correctly refuses to claim the offline Computer, so the step issues a repair code for
-    // it. A different machine enrolling during the wait is not the machine the code names, and the
+    // it. A different machine connecting during the wait is not the machine the code names, and the
     // Server's verdict is the only thing that can settle the wait — so the checks that would go
     // green on the wrong machine never run.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentOn(AGENT_COMPUTER, "Ada's old Mac")] });
@@ -128,9 +128,9 @@ describe("resume at a4e2662", () => {
     render(<OnboardingV2Page onComplete={onComplete} />);
     await settle();
     await tick(5_000);
-    const lark = screen.queryByRole("button", { name: /Lark/ });
-    if (lark) {
-      fireEvent.click(lark);
+    const feishuButton = screen.queryByRole("button", { name: /Feishu/ });
+    if (feishuButton) {
+      fireEvent.click(feishuButton);
       await settle();
       await tick(5_000);
     }

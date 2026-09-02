@@ -61,6 +61,28 @@ before the first deployment.
 - **Container HTTP port** `8000`, matching the port the image exposes.
 - **PostgreSQL**, either a CapRover one-click Postgres App or an external instance reachable from the host.
 - **Persistent storage** is not required by the server image itself, but the database App needs it.
+
+### Container log rotation
+
+The server image does not control Docker's logging driver. Configure the Docker daemon on every Swarm node that may run
+the server, or set the equivalent CapRover logging option, before the first deployment. The concrete Docker daemon gate is
+`/etc/docker/daemon.json`:
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+```
+
+Restart or reload the Docker daemon according to the host operating system after changing this file. The `max-size` and
+`max-file` values above are the intended server limits; Docker does not read them from image labels. The `logging:` block
+in this repository's `docker-compose.yml` applies to the local Postgres service only and does not configure the CapRover
+server container.
+
 - **Environment variables** on the App:
 
 | Variable | Staging value |

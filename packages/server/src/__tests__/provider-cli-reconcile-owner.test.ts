@@ -19,36 +19,34 @@ function socket(): WebSocket & { send: ReturnType<typeof vi.fn> } {
 }
 
 async function registered(registry: ConnectionRegistry, options: { capabilities?: boolean } = {}) {
-  const workspaceComputerId = randomUUID();
-  const instanceId = randomUUID();
   const computerId = randomUUID();
+  const instanceId = randomUUID();
+  const installationId = randomUUID();
   const runtimeSocket = socket();
   await registry.register(
     {
       active: true,
-      computerId,
+      installationId,
       instanceId,
-      workspaceComputerId,
-      workspaceId: randomUUID(),
+      computerId,
       lastHeartbeatAt: Date.now(),
       socket: runtimeSocket,
       negotiatedCapabilities: options.capabilities === false ? {} : { [RUNTIME_CAPABILITY.providerCliReconcile]: 1 },
     },
     async () => undefined,
   );
-  registry.activate(workspaceComputerId, instanceId, runtimeSocket);
-  return { computerId, instanceId, workspaceComputerId, socket: runtimeSocket };
+  registry.activate(computerId, instanceId, runtimeSocket);
+  return { installationId, instanceId, computerId, socket: runtimeSocket };
 }
 
 const identity = { provider: "slack" as const, teamId: "T1", botUserId: "U1", botId: "B1" };
 
 function contextOf(connection: Awaited<ReturnType<typeof registered>>, overrides: Record<string, string> = {}) {
   return {
-    computerId: connection.computerId,
+    installationId: connection.installationId,
     instanceId: connection.instanceId,
     signal: new AbortController().signal,
-    workspaceComputerId: connection.workspaceComputerId,
-    workspaceId: randomUUID(),
+    computerId: connection.computerId,
     ...overrides,
   };
 }
@@ -72,7 +70,7 @@ describe("ProviderCliReconcileOwner", () => {
     const connection = await registered(registry, { capabilities: false });
     await owner.onComputerRegistered(connection);
     expect(connection.socket.send).not.toHaveBeenCalled();
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation).toMatchObject({
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation).toMatchObject({
       status: "needs_attention",
       reason: "upgrade_required",
     });
@@ -118,8 +116,8 @@ describe("ProviderCliReconcileOwner", () => {
     expect(bindings.issueIntegrationCliValidationGrant).toHaveBeenCalledWith(
       expect.objectContaining({
         agentId,
+        installationId: connection.installationId,
         computerId: connection.computerId,
-        workspaceComputerId: connection.workspaceComputerId,
         credentialGeneration: 3,
       }),
     );
@@ -141,9 +139,7 @@ describe("ProviderCliReconcileOwner", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "ready",
-    );
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("ready");
     await owner.businessOptions().handle(
       {
         type: "provider-cli:artifact:status",
@@ -156,9 +152,7 @@ describe("ProviderCliReconcileOwner", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "unconfirmed",
-    );
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("unconfirmed");
     await owner.businessOptions().handle(
       {
         type: "provider-cli:validation:result",
@@ -171,7 +165,7 @@ describe("ProviderCliReconcileOwner", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)).toHaveLength(1);
+    expect(registry.providerCliCredentialReadiness(connection.computerId)).toHaveLength(1);
   });
 
   it("fails closed when fresh grant material does not match the requirement identity", async () => {
@@ -204,7 +198,7 @@ describe("ProviderCliReconcileOwner", () => {
       contextOf(connection),
     );
     expect(connection.socket.send).toHaveBeenCalledTimes(1);
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation).toMatchObject({
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation).toMatchObject({
       status: "needs_attention",
     });
   });
@@ -279,9 +273,7 @@ describe("ProviderCliReconcileOwner", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "checking",
-    );
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
     await owner.businessOptions().handle(
       {
         type: "provider-cli:validation:result",
@@ -292,11 +284,9 @@ describe("ProviderCliReconcileOwner", () => {
         credentialGeneration: 2,
         status: "ready",
       },
-      contextOf(connection, { computerId: randomUUID() }),
+      contextOf(connection, { installationId: randomUUID() }),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation.status).toBe(
-      "checking",
-    );
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
   });
 
   it("keeps rate_limited after bounded retries instead of rewriting it as provider_unreachable", async () => {
@@ -342,7 +332,7 @@ describe("ProviderCliReconcileOwner", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId)[0]?.observation).toMatchObject({
+    expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation).toMatchObject({
       status: "needs_attention",
       reason: "rate_limited",
     });
@@ -361,21 +351,15 @@ describe("ProviderCliReconcileOwner", () => {
     const owner = new ProviderCliReconcileOwner(registry, bindings);
     const connection = await registered(registry);
     await owner.onComputerRegistered(connection);
-    registry.touch(
-      connection.workspaceComputerId,
-      connection.instanceId,
-      connection.socket,
-      Date.now(),
-      undefined,
-      undefined,
-      [{ provider: "slack", status: "ready" }],
-    );
+    registry.touch(connection.computerId, connection.instanceId, connection.socket, Date.now(), undefined, undefined, [
+      { provider: "slack", status: "ready" },
+    ]);
     expect(
-      registry.imCliReadiness(connection.workspaceComputerId).some(({ observation }) => observation.status === "ready"),
+      registry.imCliReadiness(connection.computerId).some(({ observation }) => observation.status === "ready"),
     ).toBe(true);
     expect(
       registry
-        .providerCliArtifactReadiness(connection.workspaceComputerId)
+        .providerCliArtifactReadiness(connection.computerId)
         .some(({ observation }) => observation.status === "ready"),
     ).toBe(false);
     await owner.businessOptions().handle(
@@ -412,7 +396,7 @@ describe("ProviderCliReconcileOwner", () => {
     const requirement = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as {
       requestId: string;
     };
-    await owner.onActiveBindingChanged({ agentId, workspaceComputerId: connection.workspaceComputerId });
+    await owner.onActiveBindingChanged({ agentId, computerId: connection.computerId });
     const cancel = JSON.parse(connection.socket.send.mock.calls.at(-1)?.[0] as string) as Record<string, unknown>;
     expect(cancel).toMatchObject({
       type: "provider-cli:cancel",
@@ -447,11 +431,11 @@ describe("ProviderCliReconcileOwner", () => {
     const connection = await registered(registry);
     const first = owner.ensureActiveReadiness({
       agentId,
-      workspaceComputerId: connection.workspaceComputerId,
+      computerId: connection.computerId,
     });
     const second = owner.ensureActiveReadiness({
       agentId,
-      workspaceComputerId: connection.workspaceComputerId,
+      computerId: connection.computerId,
     });
     await vi.waitFor(() => expect(listCalls).toBe(1));
     release();
@@ -459,7 +443,7 @@ describe("ProviderCliReconcileOwner", () => {
     expect(listCalls).toBe(1);
     expect(connection.socket.send).toHaveBeenCalledTimes(1);
     connection.socket.send.mockClear();
-    await owner.ensureActiveReadiness({ agentId, workspaceComputerId: connection.workspaceComputerId });
+    await owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
     expect(connection.socket.send).not.toHaveBeenCalled();
   });
 
@@ -507,12 +491,12 @@ describe("ProviderCliReconcileOwner", () => {
       contextOf(connection),
     );
     connection.socket.send.mockClear();
-    await owner.ensureActiveReadiness({ agentId, workspaceComputerId: connection.workspaceComputerId });
+    await owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
     expect(connection.socket.send).not.toHaveBeenCalled();
     now += RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS + 1;
-    expect(registry.providerCliArtifactReadiness(connection.workspaceComputerId, now)).toEqual([]);
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId, now)).toEqual([]);
-    await owner.ensureActiveReadiness({ agentId, workspaceComputerId: connection.workspaceComputerId });
+    expect(registry.providerCliArtifactReadiness(connection.computerId, now)).toEqual([]);
+    expect(registry.providerCliCredentialReadiness(connection.computerId, now)).toEqual([]);
+    await owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
     expect(JSON.parse(connection.socket.send.mock.calls.at(-1)?.[0] as string)).toMatchObject({
       type: "provider-cli:requirement",
     });
@@ -553,16 +537,14 @@ describe("ProviderCliReconcileOwner", () => {
       contextOf(rejectedConnection),
     );
     now += RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS + 1;
-    expect(
-      rejected.providerCliCredentialReadiness(rejectedConnection.workspaceComputerId, now)[0]?.observation,
-    ).toMatchObject({
+    expect(rejected.providerCliCredentialReadiness(rejectedConnection.computerId, now)[0]?.observation).toMatchObject({
       status: "needs_attention",
       reason: "credential_rejected",
     });
     rejectedConnection.socket.send.mockClear();
     await rejectedOwner.ensureActiveReadiness({
       agentId,
-      workspaceComputerId: rejectedConnection.workspaceComputerId,
+      computerId: rejectedConnection.computerId,
     });
     expect(rejectedConnection.socket.send).not.toHaveBeenCalled();
   });
@@ -616,7 +598,7 @@ describe("ProviderCliReconcileOwner", () => {
       },
       contextOf(connection),
     );
-    expect(registry.providerCliCredentialReadiness(connection.workspaceComputerId, now)[0]?.observation.status).toBe(
+    expect(registry.providerCliCredentialReadiness(connection.computerId, now)[0]?.observation.status).toBe(
       "needs_attention",
     );
 
@@ -679,10 +661,10 @@ describe("ProviderCliReconcileOwner", () => {
     const integrationId = randomUUID();
     const first = await registered(registry);
     const second = await registered(registry);
-    let host = first.workspaceComputerId;
+    let host = first.computerId;
     const bindings = {
-      listActiveProviderCliRequirements: vi.fn(async (workspaceComputerId: string) =>
-        workspaceComputerId === host
+      listActiveProviderCliRequirements: vi.fn(async (computerId: string) =>
+        computerId === host
           ? [
               {
                 agentId,
@@ -716,11 +698,11 @@ describe("ProviderCliReconcileOwner", () => {
       contextOf(first),
     );
     const grant = JSON.parse(first.socket.send.mock.calls.at(-1)?.[0] as string) as { requestId: string };
-    host = second.workspaceComputerId;
+    host = second.computerId;
     await owner.onAgentPlacementChanged({
       agentId,
-      previousWorkspaceComputerId: first.workspaceComputerId,
-      workspaceComputerId: second.workspaceComputerId,
+      previousComputerId: first.computerId,
+      computerId: second.computerId,
     });
     const cancel = JSON.parse(first.socket.send.mock.calls.at(-1)?.[0] as string) as Record<string, unknown>;
     expect(cancel).toMatchObject({
@@ -746,7 +728,7 @@ describe("ProviderCliReconcileOwner", () => {
     );
     expect(
       registry
-        .providerCliCredentialReadiness(second.workspaceComputerId)
+        .providerCliCredentialReadiness(second.computerId)
         .some(({ observation }) => observation.status === "ready"),
     ).toBe(false);
   });

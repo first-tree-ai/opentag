@@ -6,6 +6,7 @@ import {
   type ComputerConnectLifecycle,
   ComputerConnectLifecycleRoot,
 } from "../features/computer-connect/computer-connect.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import {
   CheckLine,
@@ -351,25 +352,18 @@ function MessagingPicker({
             onClick={() => onChoose(candidate)}
             variant="ghost"
           >
-            <BrandMark
-              brand={candidate}
-              label={
-                candidate === "feishu"
-                  ? m.onboarding_v2_messaging_lark_title()
-                  : m.onboarding_v2_messaging_slack_title()
-              }
-            />
+            <BrandMark brand={candidate} label={messagingProviderLabel(candidate)} />
             <CardCopy
               description={
                 candidate === "feishu"
-                  ? m.onboarding_v2_messaging_lark_description()
-                  : m.onboarding_v2_messaging_slack_description()
+                  ? m.onboarding_v2_messaging_feishu_description({
+                      provider: messagingProviderAlternateBrand(),
+                    })
+                  : m.onboarding_v2_messaging_provider_description({
+                      provider: messagingProviderLabel(candidate),
+                    })
               }
-              title={
-                candidate === "feishu"
-                  ? m.onboarding_v2_messaging_lark_title()
-                  : m.onboarding_v2_messaging_slack_title()
-              }
+              title={messagingProviderLabel(candidate)}
             />
           </Button>
         </li>
@@ -396,9 +390,10 @@ function MessagingConnection({
   /*
    * The CLI that delivers messages is checked here, not on the computer step: which one is needed
    * depends on the provider, and until this point there was no provider. A missing one used to
-   * block creating the Agent at all, which stopped a Slack user over a Lark dependency.
+   * block creating the Agent at all, which stopped a Slack user over a Feishu dependency.
    */
   const cliState = provider ? messagingCliCheck(readiness?.messagingCli[provider]) : "pending";
+  const slackName = messagingProviderLabel("slack");
   /*
    * Reachability needs more than the binding, and the Server's handoff status carries no reason —
    * so a wait on one of its other conditions would otherwise be an unexplained spinner.
@@ -430,8 +425,8 @@ function MessagingConnection({
         <div className={PANEL}>
           <p className="text-kumo-subtle m-0">
             {messaging.kind === "waiting"
-              ? m.onboarding_v2_messaging_lark_intro()
-              : m.onboarding_v2_messaging_feishu_preparing()}
+              ? m.onboarding_v2_messaging_lark_intro({ provider: messagingProviderLabel("feishu") })
+              : m.onboarding_v2_messaging_feishu_preparing({ provider: messagingProviderLabel("feishu") })}
           </p>
           <div className="ots-qr flex items-center justify-center rounded-xl bg-kumo-base ring ring-kumo-line">
             {messaging.kind === "waiting" ? <QrCode value={messaging.qrValue} /> : null}
@@ -473,7 +468,7 @@ function MessagingConnection({
         </div>
       ) : provider === "slack" ? (
         <div className={PANEL}>
-          <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_slack_intro()}</p>
+          <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_slack_intro({ provider: slackName })}</p>
           {/*
             Installing is a link out: the user finishes in Slack and comes back. So the waiting
             state here is about a page they are not on, not something to watch on this one.
@@ -494,7 +489,7 @@ function MessagingConnection({
             ) : messaging.kind === "away" ? (
               <p className={WAITING_LINE} role="status">
                 <span aria-hidden="true" className="ots-pulse shrink-0" />
-                {m.onboarding_v2_messaging_slack_waiting()}
+                {m.onboarding_v2_messaging_slack_waiting({ provider: slackName })}
               </p>
             ) : (
               /*
@@ -507,7 +502,7 @@ function MessagingConnection({
                 onClick={onSlackInstall}
                 variant="ghost"
               >
-                <img alt={m.onboarding_v2_messaging_slack_action()} src={ADD_TO_SLACK_URL} />
+                <img alt={m.onboarding_v2_messaging_slack_action({ provider: slackName })} src={ADD_TO_SLACK_URL} />
               </Button>
             )}
           </div>
@@ -1073,7 +1068,7 @@ export function MessagingStep({
   provider: MessagingProvider | undefined;
   readiness: ReadinessFacts | undefined;
 }) {
-  // Lark's code is issued as soon as it is picked; Slack waits for its install to be started.
+  // Feishu's code is issued as soon as it is picked; Slack waits for its install to be started.
   useEffect(() => {
     if (provider && messaging.kind === "idle") onStart(provider);
   }, [messaging.kind, onStart, provider]);
@@ -1127,11 +1122,16 @@ export function DoneStep({
           {m.onboarding_v2_done_title({ name })}
         </Text>
         <p className="text-kumo-subtle m-0">
-          {m.onboarding_v2_done_description({
-            name,
-            provider:
-              provider === "slack" ? m.onboarding_v2_messaging_slack_title() : m.onboarding_v2_messaging_lark_title(),
-          })}
+          {/*
+            The channel has to be the one the reader actually connected. When it is somehow unknown
+            the sentence stays vague rather than guessing: a confidently wrong channel sent Slack
+            installers to an app their Agent is not in.
+          */}
+          {provider
+            ? spaceBrandInSentence(
+                m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) }),
+              )
+            : m.onboarding_v2_done_description_any_app({ name })}
         </p>
       </header>
       {completion ? (

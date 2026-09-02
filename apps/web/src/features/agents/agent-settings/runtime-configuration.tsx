@@ -8,7 +8,6 @@ import { type FormEvent, useState } from "react";
 import * as m from "../../../paraglide/messages.js";
 import {
   Banner,
-  Button,
   InputArea,
   KumoInputControl,
   Select,
@@ -17,6 +16,7 @@ import {
   Text,
 } from "../../../ui/design-system.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
+import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
 
 const CUSTOM_MODEL_OPTION = "__custom_model__";
 const PROVIDER_DEFAULT_OPTION = "__provider_default__";
@@ -68,8 +68,6 @@ function RuntimeConfigurationEditor({
   const [saving, setSaving] = useState<"runtime" | "instructions">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
   const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
-  const ExecutionHeading = section === "execution" ? "h1" : "h3";
-  const InstructionsHeading = section === "instructions" ? "h1" : "h3";
   const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
   const hasHistoricalReasoningDraft =
@@ -135,18 +133,25 @@ function RuntimeConfigurationEditor({
 
   return (
     <div className="grid gap-6" data-ui={section === "all" ? "runtime-settings" : "settings-section"}>
+      <UnsavedChangesGuard when={runtimeDirty || instructionsDirty} />
       {section !== "instructions" ? (
-        <section aria-labelledby="execution-heading" className="grid gap-4">
-          <ExecutionHeading id="execution-heading">{m.agent_settings_model()}</ExecutionHeading>
+        <section aria-labelledby="execution-heading" className={section === "execution" ? "grid gap-6" : "grid gap-4"}>
+          {section === "execution" ? (
+            <AgentSettingsPageHeader id="execution-heading" title={m.agent_settings_model()} />
+          ) : (
+            <Text as="h3" id="execution-heading" variant="heading">
+              {m.agent_settings_model()}
+            </Text>
+          )}
           <form className="grid gap-4" onSubmit={saveRuntime}>
             <SettingsList>
               <SettingsRow description={m.agent_settings_runtime_fixed()} label={m.agent_settings_runtime()}>
-                <div className="flex justify-start @min-[44rem]/workspace:justify-end">
+                <div className="flex justify-start @min-[44rem]/content:justify-end">
                   <span className="text-sm text-kumo-default">{providerName}</span>
                 </div>
               </SettingsRow>
               <SettingsRow label={m.agent_settings_model()}>
-                <div className="grid w-full gap-2 @min-[44rem]/workspace:ml-auto @min-[44rem]/workspace:max-w-80">
+                <div className="grid w-full gap-2 @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
                   <Select
                     aria-label={m.agent_settings_model()}
                     className="w-full"
@@ -191,7 +196,7 @@ function RuntimeConfigurationEditor({
                 description={m.agent_settings_reasoning_effort_description()}
                 label={m.agent_settings_reasoning_effort()}
               >
-                <div className="w-full @min-[44rem]/workspace:ml-auto @min-[44rem]/workspace:max-w-80">
+                <div className="w-full @min-[44rem]/content:ml-auto @min-[44rem]/content:max-w-80">
                   <Select
                     aria-label={m.agent_settings_reasoning_effort()}
                     className="w-full"
@@ -220,17 +225,11 @@ function RuntimeConfigurationEditor({
               </SettingsRow>
             </SettingsList>
             {runtimeDirty ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-                <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button disabled={Boolean(saving)} variant="ghost" onClick={discardRuntimeChanges}>
-                    {m.agent_settings_discard()}
-                  </Button>
-                  <Button disabled={Boolean(saving) || customModelInvalid} type="submit">
-                    {saving === "runtime" ? m.agent_settings_saving() : m.agent_settings_save_changes()}
-                  </Button>
-                </div>
-              </div>
+              <SettingsSaveActions
+                busy={Boolean(saving)}
+                saveDisabled={customModelInvalid}
+                onDiscard={discardRuntimeChanges}
+              />
             ) : null}
           </form>
           {message?.section === "runtime" ? <SaveMessage message={message} /> : null}
@@ -258,13 +257,24 @@ function RuntimeConfigurationEditor({
       ) : null}
 
       {section !== "execution" ? (
-        <section aria-labelledby="agent-instructions-heading" className="grid gap-4">
-          <header className="grid gap-2">
-            <InstructionsHeading id="agent-instructions-heading">
-              {m.agent_settings_instructions_title()}
-            </InstructionsHeading>
-            <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
-          </header>
+        <section
+          aria-labelledby="agent-instructions-heading"
+          className={section === "instructions" ? "grid gap-6" : "grid gap-4"}
+        >
+          {section === "instructions" ? (
+            <AgentSettingsPageHeader
+              description={m.agent_settings_instructions_description()}
+              id="agent-instructions-heading"
+              title={m.agent_settings_instructions_title()}
+            />
+          ) : (
+            <header className="grid gap-2">
+              <Text as="h3" id="agent-instructions-heading" variant="heading">
+                {m.agent_settings_instructions_title()}
+              </Text>
+              <p className="text-sm text-kumo-subtle">{m.agent_settings_instructions_description()}</p>
+            </header>
+          )}
           <form className="grid gap-4" onSubmit={saveInstructions}>
             <InputArea
               aria-label={m.agent_settings_instructions_title()}
@@ -281,24 +291,13 @@ function RuntimeConfigurationEditor({
               }}
             />
             {instructionsDirty ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-kumo-line pt-3">
-                <span className="text-sm text-kumo-subtle">{m.agent_settings_unsaved_changes()}</span>
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button
-                    disabled={Boolean(saving)}
-                    variant="ghost"
-                    onClick={() => {
-                      setInstructionsDraft(config.runtimeConfig.instructions);
-                      setMessage(undefined);
-                    }}
-                  >
-                    {m.agent_settings_discard()}
-                  </Button>
-                  <Button disabled={Boolean(saving)} type="submit">
-                    {saving === "instructions" ? m.agent_settings_saving() : m.agent_settings_save_changes()}
-                  </Button>
-                </div>
-              </div>
+              <SettingsSaveActions
+                busy={Boolean(saving)}
+                onDiscard={() => {
+                  setInstructionsDraft(config.runtimeConfig.instructions);
+                  setMessage(undefined);
+                }}
+              />
             ) : null}
           </form>
           {message?.section === "instructions" ? <SaveMessage message={message} /> : null}

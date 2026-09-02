@@ -1,4 +1,20 @@
 export {
+  type AccountComputerSummary,
+  AccountComputerSummarySchema,
+  type AccountSetupCompletion,
+  AccountSetupCompletionSchema,
+  type AccountSetupResetMode,
+  AccountSetupResetModeSchema,
+  type AccountSetupResetRequest,
+  AccountSetupResetRequestSchema,
+  type CompleteAccountSetupRequest,
+  CompleteAccountSetupRequestSchema,
+  type InternalNavigationVisibility,
+  InternalNavigationVisibilitySchema,
+  type ListAccountComputersResponse,
+  ListAccountComputersResponseSchema,
+} from "./account.js";
+export {
   AGENT_RUNTIME_PROVIDERS,
   AGENT_RUNTIME_TEST_FAILURE_CODES,
   AGENT_USAGE_WINDOW_DAYS,
@@ -70,8 +86,6 @@ export {
   EmailSignUpRequestSchema,
   type MeResponse,
   MeResponseSchema,
-  type MeWorkspace,
-  MeWorkspaceSchema,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
   PasswordSchema,
@@ -84,10 +98,6 @@ export {
   UserDisplayNameSchema,
   type UserProfile,
   UserProfileSchema,
-  WorkspaceDisplayNameSchema,
-  type WorkspaceName,
-  WorkspaceNameInputSchema,
-  WorkspaceNameSchema,
 } from "./auth.js";
 export {
   type ChannelConfig,
@@ -113,8 +123,6 @@ export {
   ComputerConnectCodeExchangeRequestSchema,
   type ComputerConnectCodeExchangeResponse,
   ComputerConnectCodeExchangeResponseSchema,
-  type ComputerConnectCodeIssueRequest,
-  ComputerConnectCodeIssueRequestSchema,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeMode,
@@ -220,14 +228,6 @@ export {
   SLACK_OAUTH_CALLBACK_PATH,
   TASK_BY_ID_TEMPLATE,
   taskByIdPath,
-  WORKSPACE_AGENTS_TEMPLATE,
-  WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE,
-  WORKSPACE_COMPUTERS_TEMPLATE,
-  WORKSPACE_SETUP_COMPLETE_TEMPLATE,
-  workspaceAgentsPath,
-  workspaceComputerConnectCodesPath,
-  workspaceComputersPath,
-  workspaceSetupCompletePath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./im-message.js";
@@ -465,7 +465,9 @@ export {
   ErrorRetryabilitySchema,
   RetryabilitySchema,
   redactDiagnostic,
+  redactForLog,
   redactSensitive,
+  STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
   STRUCTURED_ERROR_MAX_CAUSE_DEPTH,
   STRUCTURED_ERROR_MESSAGE_MAX_BYTES,
   STRUCTURED_ERROR_REQUEST_ID_MAX_BYTES,
@@ -485,17 +487,3 @@ export {
   serializeDiagnostic,
 } from "./structured-errors.js";
 export * from "./task.js";
-export {
-  type AccountSetupResetMode,
-  AccountSetupResetModeSchema,
-  type AccountSetupResetRequest,
-  AccountSetupResetRequestSchema,
-  type CompleteWorkspaceSetupRequest,
-  CompleteWorkspaceSetupRequestSchema,
-  type ListWorkspaceComputersResponse,
-  ListWorkspaceComputersResponseSchema,
-  type WorkspaceComputerSummary,
-  WorkspaceComputerSummarySchema,
-  type WorkspaceSetupCompletion,
-  WorkspaceSetupCompletionSchema,
-} from "./workspace.js";

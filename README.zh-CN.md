@@ -13,7 +13,7 @@ OpenTag 是一个全新的独立开源产品，用于连接即时通信与 AI �
 - 会校验 schema 的 Client 健康检查；
 - 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
 - 使用滑动续期无状态 refresh JWT 的一次性 Account 登录 code；
-- 独立认证的 Computer enrollment 与在线状态；
+- 独立认证的 Computer connection 与在线状态；
 - 带不可变 Computer/provider 绑定与 revision fencing 的 Agent Registry；
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
 - 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
@@ -58,7 +58,7 @@ docker compose up -d postgres
 ```
 
 Compose 服务只是本地开发依赖，不会启动 OpenTag Server 或 Agent Runtime。Node.js 配置、Server 启动、Account
-bootstrap、Computer enrollment、认证和 Agent 管理方式，请参阅[开发指南](./DEVELOPMENT.zh-CN.md)。
+bootstrap、Computer connection、认证和 Agent 管理方式，请参阅[开发指南](./DEVELOPMENT.zh-CN.md)。
 
 ## 项目状态
 

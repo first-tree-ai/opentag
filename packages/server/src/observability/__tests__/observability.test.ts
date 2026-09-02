@@ -745,9 +745,8 @@ describe("background and WebSocket tracing", () => {
     });
     const machine = {
       credentialId: randomUUID(),
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     };
     const registry = new ConnectionRegistry();
     const app = createApp({
@@ -789,7 +788,7 @@ describe("background and WebSocket tracing", () => {
     const registration = {
       type: "computer:register",
       requestId: randomUUID(),
-      computerId: machine.computerId,
+      installationId: machine.installationId,
       instanceId: randomUUID(),
       displayName: "test",
       platform: "linux",
@@ -821,14 +820,14 @@ describe("background and WebSocket tracing", () => {
     const overloadedRequestId = randomUUID();
     socket.send(JSON.stringify({ type: "test:work", requestId: overloadedRequestId, key: "slow" }));
     expect(await frames.next()).toMatchObject({ type: "test:result", requestId: overloadedRequestId, status: "busy" });
-    expect(registry.currentInstanceId(machine.workspaceComputerId)).toBe(registration.instanceId);
+    expect(registry.currentInstanceId(machine.computerId)).toBe(registration.instanceId);
     socket.close();
     // The client socket's own close event proves nothing about the server: the server observes the
     // close on a separate socket object, and only that handler aborts the session, closes the
     // scheduler, and drops the registry entry. Releasing the held work before then lets it complete
     // against a connection the server still considers live, which is traced as "handled". Wait for
     // the registry entry to disappear so the release always happens after the server-observed close.
-    await vi.waitFor(() => expect(registry.currentInstanceId(machine.workspaceComputerId)).toBeUndefined(), {
+    await vi.waitFor(() => expect(registry.currentInstanceId(machine.computerId)).toBeUndefined(), {
       timeout: 5_000,
     });
     releaseSlow?.();
@@ -859,13 +858,11 @@ describe("background and WebSocket tracing", () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
-    const workspaceId = randomUUID();
     const frames: unknown[] = [];
     await registry.register(
       {
         computerId,
-        workspaceComputerId: computerId,
-        workspaceId,
+        installationId: computerId,
         instanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket(frames),
@@ -884,8 +881,7 @@ describe("background and WebSocket tracing", () => {
     const owner = new RuntimeDomainOwner(registry, custody as never, { requestTimeoutMs: 1_000 });
     const context = {
       computerId,
-      workspaceComputerId: computerId,
-      workspaceId,
+      installationId: computerId,
       instanceId,
       signal: new AbortController().signal,
     };
@@ -976,8 +972,7 @@ describe("background and WebSocket tracing", () => {
     await failingRegistry.register(
       {
         computerId: failingComputerId,
-        workspaceComputerId: failingComputerId,
-        workspaceId,
+        installationId: failingComputerId,
         instanceId: failingInstanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket([], new Error("plain Runtime send payload with private prompt")),
@@ -1003,7 +998,9 @@ describe("background and WebSocket tracing", () => {
         custody as never,
       );
       typedFailureRequests.push({ expectedCode, requestId: request.requestId });
-      await expect(typedFailureOwner.requestReconcile(request.computerId, randomUUID(), request)).rejects.toBe(error);
+      await expect(typedFailureOwner.requestReconcile(request.installationId, randomUUID(), request)).rejects.toBe(
+        error,
+      );
       typedFailureOwner.close();
     }
 
@@ -1079,26 +1076,6 @@ describe("HTTP tracing", () => {
     const httpSpans = exporter.getFinishedSpans().filter((span) => span.name === "GET /trace-test/:id");
     expect(httpSpans).toHaveLength(1);
     expect(JSON.stringify(httpSpans[0]?.attributes)).not.toContain("query-secret");
-  });
-
-  it("redacts bearer tokens from retired invitation URLs", async () => {
-    const app = createApp();
-    const previewToken = "P".repeat(43);
-    const acceptToken = "A".repeat(43);
-    await app.inject({ method: "GET", url: `/api/v1/admin-invitations/${previewToken}/preview` });
-    await app.inject({
-      method: "POST",
-      url: `/api/v1/admin-invitations/${acceptToken}/accept`,
-    });
-    await app.close();
-
-    const spans = exporter.getFinishedSpans().filter((span) => span.name.endsWith("unmatched"));
-    expect(spans).toHaveLength(2);
-    const exported = JSON.stringify(spans.map((span) => span.attributes));
-    expect(exported).not.toContain(previewToken);
-    expect(exported).not.toContain(acceptToken);
-    expect(exported).toContain("/api/v1/admin-invitations/[REDACTED]/preview");
-    expect(exported).toContain("/api/v1/admin-invitations/[REDACTED]/accept");
   });
 
   it("does not trace health or readiness probes", async () => {
@@ -1195,12 +1172,12 @@ function runtimeSnapshot(agentId: string): EffectiveRuntimeSnapshot {
   };
 }
 
-function runtimeReconcileRequest(computerId: string): SessionReconcileRequest {
+function runtimeReconcileRequest(installationId: string): SessionReconcileRequest {
   const agentId = randomUUID();
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId,
     sessionId: randomUUID(),
     agentId,
     placementGeneration: 1,

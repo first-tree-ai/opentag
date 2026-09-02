@@ -32,7 +32,7 @@ function composedRuntime(components: {
 
 describe("protected work snapshot", () => {
   it("is zero only when every authoritative owner is idle", () => {
-    const reconciler = new SessionReconciler({ computerId: crypto.randomUUID() });
+    const reconciler = new SessionReconciler({ installationId: crypto.randomUUID() });
     const idle = composedRuntime({
       custodyTurns: 0,
       activeTurns: 0,
@@ -77,7 +77,7 @@ describe("protected work snapshot", () => {
   });
 
   it("exposes the reconciler's authoritative activity and recovery records", () => {
-    const reconciler = new SessionReconciler({ computerId: crypto.randomUUID() });
+    const reconciler = new SessionReconciler({ installationId: crypto.randomUUID() });
     reconciler.setActivity("session-1", { phase: "reporting", deliveryId: "delivery-1", turnId: "turn-1" });
     reconciler.setRecovery("session-2", { deliveryId: "delivery-2", turnId: "turn-2" });
     expect(reconciler.protectedWorkSnapshot()).toEqual({
@@ -94,7 +94,7 @@ describe("protected work snapshot", () => {
       custody: { liveTurnCount: 0 } as never,
       credentialEnvironment: {} as never,
       durabilityMetrics: new RuntimeDurabilityMetrics(),
-      reconciler: new SessionReconciler({ computerId: crypto.randomUUID() }),
+      reconciler: new SessionReconciler({ installationId: crypto.randomUUID() }),
       sessionMessageInbox: { pendingCount: 0 } as never,
       reportOwner: { pendingCount: 0 } as never,
       runner: { activeCount: 0 } as never,

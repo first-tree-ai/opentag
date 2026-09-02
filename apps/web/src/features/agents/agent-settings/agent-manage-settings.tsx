@@ -13,9 +13,9 @@ import {
   KumoInputControl,
   SettingsList,
   SettingsRow,
-  Text,
 } from "../../../ui/design-system.js";
 import type { AgentDetailView } from "../agent-model.js";
+import { AgentSettingsPageHeader } from "./settings-layout.js";
 
 export function AgentManageSettings({
   agent,
@@ -107,21 +107,17 @@ export function AgentManageSettings({
 
   return (
     <section className="grid gap-6">
-      <header className="grid gap-2">
-        <Text as="h1" size="lg" variant="heading">
-          {m.agent_settings_pause_or_delete()}
-        </Text>
-      </header>
+      <AgentSettingsPageHeader title={m.agent_settings_pause_or_delete()} />
 
       <SettingsList>
         <SettingsRow
           description={<span id={statusDescriptionId}>{statusDescription}</span>}
           label={m.agent_settings_agent_status()}
         >
-          <div className="flex justify-start @min-[44rem]/workspace:justify-end">
+          <div className="flex justify-start @min-[44rem]/content:justify-end">
             <Button
               aria-describedby={statusDescriptionId}
-              className="w-full @min-[44rem]/workspace:w-auto"
+              className="w-full @min-[44rem]/content:w-auto"
               disabled={busy}
               ref={pauseButtonRef}
               variant={active ? "secondary" : "primary"}
@@ -155,10 +151,10 @@ export function AgentManageSettings({
           }
           label={m.agent_settings_delete_button()}
         >
-          <div className="flex justify-start @min-[44rem]/workspace:justify-end">
+          <div className="flex justify-start @min-[44rem]/content:justify-end">
             <Button
               aria-describedby={deleteDescriptionId}
-              className="w-full @min-[44rem]/workspace:w-auto"
+              className="w-full @min-[44rem]/content:w-auto"
               disabled={active}
               ref={deleteButtonRef}
               variant="danger"

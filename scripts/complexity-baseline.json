@@ -90,7 +90,7 @@
       "id": "apps/web/src/__tests__/support/app-fixtures.tsx#callback",
       "path": "apps/web/src/__tests__/support/app-fixtures.tsx",
       "symbol": "callback",
-      "complexity": 186
+      "complexity": 180
     },
     {
       "id": "apps/web/src/agent-creation/agent-creation-flow.tsx#AgentCreationFlow",
@@ -235,12 +235,6 @@
       "path": "apps/web/src/onboarding-v2/server-backend.ts",
       "symbol": "callback",
       "complexity": 22
-    },
-    {
-      "id": "apps/web/src/onboarding-v2/server-backend.ts#callback~2",
-      "path": "apps/web/src/onboarding-v2/server-backend.ts",
-      "symbol": "callback",
-      "complexity": 45
     },
     {
       "id": "apps/web/src/onboarding-v2/steps.tsx#AgentNameField",
@@ -840,16 +834,10 @@
       "id": "packages/server/src/services/agents/agent-service.ts#callback",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 21
-    },
-    {
-      "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
-      "path": "packages/server/src/services/agents/agent-service.ts",
-      "symbol": "callback",
       "complexity": 16
     },
     {
-      "id": "packages/server/src/services/agents/agent-service.ts#callback~3",
+      "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
       "complexity": 30
@@ -894,7 +882,7 @@
       "id": "packages/server/src/services/im-bindings/feishu/setup-service.ts#createOrReuse",
       "path": "packages/server/src/services/im-bindings/feishu/setup-service.ts",
       "symbol": "createOrReuse",
-      "complexity": 23
+      "complexity": 19
     },
     {
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#activate",

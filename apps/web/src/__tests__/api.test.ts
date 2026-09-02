@@ -206,6 +206,38 @@ describe("BrowserApi", () => {
     });
   });
 
+  it("preserves the exact binding identity required to recover a cross-Provider conflict", async () => {
+    const currentBindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "IM_BINDING_UNBIND_REQUIRED",
+              category: "deterministic",
+              message: "Unbind the current messaging connection before starting a different Provider",
+              unbindRequired: {
+                currentProvider: "feishu",
+                currentBindingId,
+                requestedProvider: "slack",
+              },
+            },
+          }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        ),
+    );
+
+    const error = await new BrowserApi(fetchImpl)
+      .agentConfig("1a63a21e-f6c7-4474-91ea-4dabf0566a24")
+      .catch((cause) => cause);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      code: "IM_BINDING_UNBIND_REQUIRED",
+      unbindRequired: { currentProvider: "feishu", currentBindingId, requestedProvider: "slack" },
+    });
+  });
+
   it("preserves validated issues and rejects untyped error payloads", async () => {
     const issue = { path: ["name"], code: "invalid_format", message: "Use a lowercase Agent name" };
     const typedFetch = vi.fn<typeof fetch>(

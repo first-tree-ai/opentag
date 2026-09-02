@@ -205,7 +205,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         const [agent] = await transaction
           .select({ id: agents.id })
           .from(agents)
-          .where(eq(agents.id, input.agentId))
+          .where(and(eq(agents.id, input.agentId), eq(agents.status, "active")))
           .limit(1)
           .for("update");
         if (!agent) throw new FeishuOperationError("FEISHU_SETUP_FENCE_STALE");

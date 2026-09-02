@@ -97,6 +97,14 @@ const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
 };
 
 function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): string {
+  if (cause instanceof ApiError && cause.code === "IM_BINDING_UNBIND_REQUIRED" && cause.unbindRequired) {
+    return spaceScriptBoundary(
+      m.onboarding_v2_setup_messaging_switch_required({
+        current: providerTitle(cause.unbindRequired.currentProvider),
+        requested: providerTitle(cause.unbindRequired.requestedProvider),
+      }),
+    );
+  }
   if (action.kind === "unbind-messaging") {
     return spaceScriptBoundary(m.im_disconnect_failed({ providerName: providerTitle(action.provider) }));
   }
@@ -275,6 +283,7 @@ function useSetupActions(
   }, []);
 
   const act = useCallback(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: action lifecycle intentionally stays atomic across navigation, refresh, and stale-tab recovery
     async (action: AgentSetupAction): Promise<boolean> => {
       if (busyRef.current) return false;
       busyRef.current = true;
@@ -294,7 +303,14 @@ function useSetupActions(
         }
         return await read();
       } catch (cause) {
-        if (live()) setActionError(setupActionErrorMessage(action, cause));
+        const message = setupActionErrorMessage(action, cause);
+        // Another tab may have connected a Provider after this snapshot advertised a fresh start.
+        // The structured conflict names that exact current binding; immediately re-read the
+        // canonical snapshot so this tab replaces stale provider buttons with its unbind action.
+        if (cause instanceof ApiError && cause.code === "IM_BINDING_UNBIND_REQUIRED" && cause.unbindRequired) {
+          await read();
+        }
+        if (live()) setActionError(message);
         return false;
       } finally {
         if (live()) {

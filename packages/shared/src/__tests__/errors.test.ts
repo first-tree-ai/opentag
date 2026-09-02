@@ -70,6 +70,17 @@ describe("error contracts", () => {
     ).toMatchObject({ error: { code } });
   });
 
+  it.each([
+    ["FEISHU_APP_ALREADY_BOUND", "deterministic"],
+    ["FEISHU_BINDING_IDENTITY_MISMATCH", "deterministic"],
+    ["IM_BINDING_GENERATION_STALE", "deterministic"],
+    ["IM_BINDING_TEMPORARILY_UNAVAILABLE", "transient"],
+  ])("accepts public IM error code %s", (code, category) => {
+    expect(ErrorEnvelopeSchema.parse({ error: { code, category, message: "Messaging request failed" } })).toMatchObject(
+      { error: { code, category } },
+    );
+  });
+
   it("carries the structured unbind-required identity only on its own code", () => {
     const unbindRequired = {
       currentProvider: "feishu" as const,

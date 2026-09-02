@@ -82,6 +82,32 @@ describe("Onboarding exact-target route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(0);
   });
 
+  it("does not re-resolve or mutate a target after the route boundary resolved zero Agents", async () => {
+    installOnboardingApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installOnboardingApi did not install fetch");
+    let listReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/agents" && init?.method === undefined) {
+        listReads += 1;
+        return listReads === 1 ? json({ agents: [] }) : json({ agents: [agentListItem, secondAgentListItem] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    await waitFor(() => expect(listReads).toBe(1));
+    expect(window.location.search).not.toContain("agentId=");
+    expect(agentCreationPosts()).toHaveLength(0);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => String(path).endsWith("/computer/rebind") && init?.method === "POST"),
+    ).toHaveLength(0);
+  });
+
   it("redirects an un-targeted visit to the canonical exact URL when the Account has one active Agent", async () => {
     installOnboardingApi({ setupCompletedAt: null });
     window.history.replaceState({}, "", "/onboarding");

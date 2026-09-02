@@ -9,7 +9,14 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import { createApp } from "../app.js";
-import { computers, imBindings, imMessages, sessions, slackInstallations } from "../db/schema/index.js";
+import {
+  agents as agentRows,
+  computers,
+  imBindings,
+  imMessages,
+  sessions,
+  slackInstallations,
+} from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -348,6 +355,38 @@ describe("Agent messaging unbind lifecycle", () => {
 });
 
 describe("cross-Provider messaging starts", () => {
+  it("rejects setup reads and writes after the exact Agent is suspended", async () => {
+    const value = await fixture();
+    const bindingId = await value.service.activateFeishu(feishuActivationInput(value.agent.id));
+    await unitDatabase.database.update(agentRows).set({ status: "suspended" }).where(eq(agentRows.id, value.agent.id));
+    const gateway: FeishuRegistrationGateway = { start: vi.fn() };
+    const setup = feishuSetup(value, gateway);
+    const { api, oauth } = slackOAuth(value);
+    try {
+      await expect(setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize")).rejects.toMatchObject({
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
+      });
+      await expect(oauth.start(value.bootstrap.userId, value.agent.id, "create")).rejects.toMatchObject({
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
+      });
+      await expect(
+        value.service.unbindForAgent(value.bootstrap.userId, value.agent.id, { provider: "feishu", bindingId }),
+      ).rejects.toMatchObject({ code: "IM_BINDING_NOT_FOUND", statusCode: 404 });
+      await expect(value.service.activateFeishu(feishuActivationInput(value.agent.id))).rejects.toMatchObject({
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
+      });
+      expect(gateway.start).not.toHaveBeenCalled();
+      expect(api.oauthAccess).not.toHaveBeenCalled();
+      const [binding] = await unitDatabase.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
+      expect(binding).toMatchObject({ status: "active", credentialGeneration: 1 });
+    } finally {
+      await setup.stop();
+    }
+  });
+
   it("fails a Slack start against a Feishu binding with the structured unbind-required identity", async () => {
     const value = await fixture();
     const feishuBindingId = await value.service.activateFeishu(feishuActivationInput(value.agent.id));

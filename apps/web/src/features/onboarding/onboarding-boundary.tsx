@@ -244,6 +244,7 @@ function TargetedOnboarding({
 
   return (
     <OnboardingV2Page
+      emptyAgentSetResolved
       onAgentAvailable={onTarget}
       onComplete={reviewMode ? onReviewFinished : undefined}
       reviewMode={reviewMode}

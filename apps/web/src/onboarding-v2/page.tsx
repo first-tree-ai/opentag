@@ -39,6 +39,7 @@ function localDraft(): AgentDraft {
  */
 export function OnboardingV2Page({
   agentId,
+  emptyAgentSetResolved = false,
   onAgentAvailable,
   onComplete,
   reviewMode = false,
@@ -47,6 +48,8 @@ export function OnboardingV2Page({
 }: {
   /** The exact Agent being set up. Present, the page renders from its canonical setup snapshot. */
   agentId?: string;
+  /** The route boundary already resolved this untargeted visit against exactly zero active Agents. */
+  emptyAgentSetResolved?: boolean;
   /** Canonicalizes the creation flow as soon as the Server returns the exact Agent it created. */
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onComplete?: (agentId: string) => Promise<void> | void;
@@ -67,7 +70,14 @@ export function OnboardingV2Page({
       />
     );
   }
-  return <OnboardingV2CreatePage onAgentAvailable={onAgentAvailable} onComplete={onComplete} reviewMode={reviewMode} />;
+  return (
+    <OnboardingV2CreatePage
+      emptyAgentSetResolved={emptyAgentSetResolved}
+      onAgentAvailable={onAgentAvailable}
+      onComplete={onComplete}
+      reviewMode={reviewMode}
+    />
+  );
 }
 
 /**
@@ -75,17 +85,21 @@ export function OnboardingV2Page({
  * backend is built from it: a readiness read has to ask about the Provider the reader actually
  * chose, and a hook cannot be given that after it runs.
  */
-function OnboardingV2CreatePage({
-  onAgentAvailable,
-  onComplete,
-  reviewMode = false,
-}: {
-  onAgentAvailable?: (agentId: string) => Promise<void> | void;
-  onComplete?: (agentId: string) => Promise<void> | void;
-  reviewMode?: boolean;
-} = {}) {
+function OnboardingV2CreatePage(
+  {
+    emptyAgentSetResolved,
+    onAgentAvailable,
+    onComplete,
+    reviewMode = false,
+  }: {
+    emptyAgentSetResolved: boolean;
+    onAgentAvailable?: (agentId: string) => Promise<void> | void;
+    onComplete?: (agentId: string) => Promise<void> | void;
+    reviewMode?: boolean;
+  } = { emptyAgentSetResolved: false },
+) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
-  const backend = useServerBackend(draft);
+  const backend = useServerBackend(draft, { resumeExistingAgents: !emptyAgentSetResolved });
 
   /*
    * An Agent read back from the Server fills the draft it would have been created from, so the

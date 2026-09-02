@@ -442,6 +442,46 @@ describe("AgentSetupPage transitions", () => {
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
   });
 
+  it("re-reads the canonical snapshot after a stale cross-Provider start is refused", async () => {
+    const initial = createMemorySetupAdapter({ agent: setupAgent() });
+    const current = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack", reachable: true, attention: "provider-error" },
+    });
+    const bindingId = await currentBindingId(current.adapter);
+    let reads = 0;
+    const adapter = scriptedAdapter(
+      (agentId) => {
+        reads += 1;
+        return reads === 1 ? initial.adapter.readSnapshot(agentId) : current.adapter.readSnapshot(agentId);
+      },
+      {
+        startFeishuAttempt: vi.fn(async () => {
+          throw new ApiError(
+            409,
+            "Unbind the current messaging connection before starting a different Provider",
+            "IM_BINDING_UNBIND_REQUIRED",
+            "deterministic",
+            undefined,
+            undefined,
+            undefined,
+            { currentProvider: "slack", currentBindingId: bindingId, requestedProvider: "feishu" },
+          );
+        }),
+      },
+    );
+    renderSetup(adapter);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    await settle(10);
+
+    expect(reads).toBe(2);
+    expect(screen.getByText("Disconnect Slack before connecting Lark.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Slack" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Connect Lark/ })).toBeNull();
+  });
+
   it("refuses a second submission while an action is in flight", async () => {
     const gate = deferred<void>();
     const memory = createMemorySetupAdapter({ agent: setupAgent() });

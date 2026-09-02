@@ -146,6 +146,24 @@ describe("AgentCreationFlow creation intent recovery", () => {
     expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
     expect(window.localStorage.getItem(creationIntentKey)).toBe(stored);
     expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Resumed Agent");
+    expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("requires Check, Retry, or Discard before an ordinary form submission can create", async () => {
+    const record = storeResumedAgentIntent("d0e1f2a3-b4c5-4d6e-8f7a-9b0c1d2e3f4b");
+    const stored = window.localStorage.getItem(creationIntentKey);
+    await renderFlow();
+
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "A different request" } });
+    const create = screen.getByRole("button", { name: "Create Agent" });
+    expect(create.hasAttribute("disabled")).toBe(true);
+    const form = create.closest("form");
+    if (!form) throw new Error("Agent creation form was not rendered");
+    fireEvent.submit(form);
+
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0);
+    expect(window.localStorage.getItem(creationIntentKey)).toBe(stored);
+    expect(window.localStorage.getItem(creationIntentKey)).toContain(record.creationIntentId);
   });
 
   it("routes an exact Check result to canonical onboarding and retires the saved attempt", async () => {

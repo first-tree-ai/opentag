@@ -84,7 +84,11 @@ function readReadiness(computer: AccountComputerSummary, runtime: AgentRuntimePr
  * so a readiness read asks about the Provider the reader actually chose. Taking it as an argument
  * keeps that dependency visible instead of threading it through every call.
  */
-export function useServerBackend(draft: AgentDraft): OnboardingBackend {
+export function useServerBackend(
+  draft: AgentDraft,
+  options: { readonly resumeExistingAgents?: boolean } = {},
+): OnboardingBackend {
+  const resumeExistingAgents = options.resumeExistingAgents ?? true;
   const [computer, setComputer] = useState<AccountComputerSummary>();
   const [selectedComputer, setSelectedComputer] = useState<KnownComputer>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
@@ -135,127 +139,134 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    * that already exists — and the second attempt is refused, because an Account's active Agent
    * names are unique. So the page picks up where the Server says it is.
    */
-  const readAccount = useCallback(async () => {
-    const mine = resumeRun.current + 1;
-    resumeRun.current = mine;
-    const live = () => mounted.current && resumeRun.current === mine;
-    setResumeError(undefined);
-    setResumeBlocked(undefined);
-    setResuming(true);
-    try {
-      {
-        const [{ agents }, { computers }] = await Promise.all([browserApi.agents(), browserApi.computers()]);
-        if (!live()) return;
-        const active = agents.filter((candidate) => candidate.status === "active");
+  const readAccount = useCallback(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: resume projection is one atomic stale-read guarded state machine
+    async () => {
+      const mine = resumeRun.current + 1;
+      resumeRun.current = mine;
+      const live = () => mounted.current && resumeRun.current === mine;
+      setResumeError(undefined);
+      setResumeBlocked(undefined);
+      setResuming(true);
+      try {
+        {
+          const [{ agents }, { computers }] = await Promise.all([
+            resumeExistingAgents ? browserApi.agents() : Promise.resolve({ agents: [] }),
+            browserApi.computers(),
+          ]);
+          if (!live()) return;
+          const active = agents.filter((candidate) => candidate.status === "active");
 
-        /*
-         * Redeeming a Computer command and creating its Agent are separate durable writes. A
-         * refresh can land between them, so inventory must be resumed even when no Agent exists
-         * yet; otherwise the page would forget the connected Computer and issue a second create
-         * command. Prefer the reachable row where legacy data contains more than one.
-         */
-        if (active.length === 0) {
-          const connected = computers.find((candidate) => candidate.connectionStatus === "online") ?? computers[0];
-          if (!connected) return;
-          computerId.current = connected.computerId;
-          setComputer(connected);
-          setSelectedComputer({
-            id: connected.computerId,
-            displayName: connected.displayName,
-            availability: connected.connectionStatus,
-            lastSeen: connected.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
-          });
-          return;
-        }
-
-        /*
-         * The Agent names its Computer, but that is a foreign key rather than a state: it says which
-         * machine connected, not whether it is there now. Asserting a live connection from it
-         * would put "Your computer is connected." on screen while the Server says otherwise, and
-         * hide the command that is the only way to bring the machine back — so the connection is
-         * read, not inferred. One extra round trip buys not saying something untrue.
-         */
-        const byId = new Map(computers.map((one) => [one.computerId, one]));
-        /*
-         * Only an Agent that has a Computer can be resumed here. Adopting an unbound one would
-         * report a connection and then stop at messaging, which refuses an Agent with nowhere to
-         * run. Where the Account has more than one, the Agent whose Computer is actually there is
-         * the one this run can finish; otherwise the first, which is the Server's own order.
-         */
-        const bound = active.flatMap((candidate) =>
-          candidate.computer ? [{ agent: candidate, computer: candidate.computer }] : [],
-        );
-        const existing =
-          bound.find(({ computer }) => byId.get(computer.computerId)?.connectionStatus === "online") ?? bound[0];
-        if (!existing) {
-          const unfinishable = active[0];
-          // Named, because "you have no Agent" would be false and would send the reader into a
-          // creation form that ends at the name it already has.
-          if (unfinishable) {
-            setResumeBlocked({ agentId: unfinishable.id, agentName: unfinishable.displayName });
-          }
-          return;
-        }
-        const { agent: resumed, computer: resumedComputer } = existing;
-        setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
-        creationRef.current = "created";
-        setCreation("created");
-        const connected = byId.get(resumedComputer.computerId);
-        computerId.current = resumedComputer.computerId;
-        setSelectedComputer({
-          id: resumedComputer.computerId,
-          displayName: connected?.displayName ?? resumedComputer.displayName,
-          availability: connected?.connectionStatus ?? "unknown",
-          lastSeen: connected?.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
-        });
-        if (connected) {
-          setComputer(connected);
-        }
-
-        /*
-         * Handoff readiness, not binding state. The Server refuses to complete setup unless the
-         * Agent is genuinely reachable — an active binding, a ready runtime, a ready provider CLI
-         * and an actual observation of the messaging identity. Slack's install marks the binding
-         * active before that observation lands, so treating "installed" as "finished" is how a
-         * real callback ends up asking to complete something the Server will refuse.
-         */
-        const handoff = await browserApi.imBindingHandoff(resumed.id);
-        if (!live()) return;
-        setMessaging(readMessaging(handoff));
-
-        /*
-         * Which app is being waited on. The reader chose it on a page that a Slack install
-         * destroys — the browser leaves for Slack and returns to a fresh mount — so the choice has
-         * to come back from the binding rather than from state that did not survive the trip.
-         * Without it the step knows it is waiting and not what for, and renders nothing.
-         */
-        if (handoff !== undefined) {
           /*
-           * Best effort, and deliberately its own failure. Which app is waiting decides what this
-           * step draws, not whether the run can continue — so a read that fails costs the reader
-           * the branch and nothing else. Letting it join the resume would mean an unrelated
-           * outage on this call strands a returning Account on an error instead.
+           * Redeeming a Computer command and creating its Agent are separate durable writes. A
+           * refresh can land between them, so inventory must be resumed even when no Agent exists
+           * yet; otherwise the page would forget the connected Computer and issue a second create
+           * command. Prefer the reachable row where legacy data contains more than one.
            */
-          try {
-            const binding = await browserApi.imBinding(resumed.id);
-            if (!live()) return;
-            if (binding?.provider === "feishu" || binding?.provider === "slack") {
-              setMessagingProvider(binding.provider);
+          if (active.length === 0) {
+            const connected = computers.find((candidate) => candidate.connectionStatus === "online") ?? computers[0];
+            if (!connected) return;
+            computerId.current = connected.computerId;
+            setComputer(connected);
+            setSelectedComputer({
+              id: connected.computerId,
+              displayName: connected.displayName,
+              availability: connected.connectionStatus,
+              lastSeen: connected.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
+            });
+            return;
+          }
+
+          /*
+           * The Agent names its Computer, but that is a foreign key rather than a state: it says which
+           * machine connected, not whether it is there now. Asserting a live connection from it
+           * would put "Your computer is connected." on screen while the Server says otherwise, and
+           * hide the command that is the only way to bring the machine back — so the connection is
+           * read, not inferred. One extra round trip buys not saying something untrue.
+           */
+          const byId = new Map(computers.map((one) => [one.computerId, one]));
+          /*
+           * Only an Agent that has a Computer can be resumed here. Adopting an unbound one would
+           * report a connection and then stop at messaging, which refuses an Agent with nowhere to
+           * run. Where the Account has more than one, the Agent whose Computer is actually there is
+           * the one this run can finish; otherwise the first, which is the Server's own order.
+           */
+          const bound = active.flatMap((candidate) =>
+            candidate.computer ? [{ agent: candidate, computer: candidate.computer }] : [],
+          );
+          const existing =
+            bound.find(({ computer }) => byId.get(computer.computerId)?.connectionStatus === "online") ?? bound[0];
+          if (!existing) {
+            const unfinishable = active[0];
+            // Named, because "you have no Agent" would be false and would send the reader into a
+            // creation form that ends at the name it already has.
+            if (unfinishable) {
+              setResumeBlocked({ agentId: unfinishable.id, agentName: unfinishable.displayName });
             }
-          } catch {
-            // The step falls back to asking, which is what it did before it could restore anything.
+            return;
+          }
+          const { agent: resumed, computer: resumedComputer } = existing;
+          setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
+          creationRef.current = "created";
+          setCreation("created");
+          const connected = byId.get(resumedComputer.computerId);
+          computerId.current = resumedComputer.computerId;
+          setSelectedComputer({
+            id: resumedComputer.computerId,
+            displayName: connected?.displayName ?? resumedComputer.displayName,
+            availability: connected?.connectionStatus ?? "unknown",
+            lastSeen: connected?.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
+          });
+          if (connected) {
+            setComputer(connected);
+          }
+
+          /*
+           * Handoff readiness, not binding state. The Server refuses to complete setup unless the
+           * Agent is genuinely reachable — an active binding, a ready runtime, a ready provider CLI
+           * and an actual observation of the messaging identity. Slack's install marks the binding
+           * active before that observation lands, so treating "installed" as "finished" is how a
+           * real callback ends up asking to complete something the Server will refuse.
+           */
+          const handoff = await browserApi.imBindingHandoff(resumed.id);
+          if (!live()) return;
+          setMessaging(readMessaging(handoff));
+
+          /*
+           * Which app is being waited on. The reader chose it on a page that a Slack install
+           * destroys — the browser leaves for Slack and returns to a fresh mount — so the choice has
+           * to come back from the binding rather than from state that did not survive the trip.
+           * Without it the step knows it is waiting and not what for, and renders nothing.
+           */
+          if (handoff !== undefined) {
+            /*
+             * Best effort, and deliberately its own failure. Which app is waiting decides what this
+             * step draws, not whether the run can continue — so a read that fails costs the reader
+             * the branch and nothing else. Letting it join the resume would mean an unrelated
+             * outage on this call strands a returning Account on an error instead.
+             */
+            try {
+              const binding = await browserApi.imBinding(resumed.id);
+              if (!live()) return;
+              if (binding?.provider === "feishu" || binding?.provider === "slack") {
+                setMessagingProvider(binding.provider);
+              }
+            } catch {
+              // The step falls back to asking, which is what it did before it could restore anything.
+            }
           }
         }
+      } catch (cause) {
+        // Reading is the only way to tell a returning Account from a new one, so a failed read is
+        // not "you must be new": starting over from here ends at a name collision. It is reported,
+        // and the reader is given the read back rather than a form they cannot submit.
+        if (live()) setResumeError(errorMessage(cause, COPY.errors.resume));
+      } finally {
+        if (live()) setResuming(false);
       }
-    } catch (cause) {
-      // Reading is the only way to tell a returning Account from a new one, so a failed read is
-      // not "you must be new": starting over from here ends at a name collision. It is reported,
-      // and the reader is given the read back rather than a form they cannot submit.
-      if (live()) setResumeError(errorMessage(cause, COPY.errors.resume));
-    } finally {
-      if (live()) setResuming(false);
-    }
-  }, []);
+    },
+    [resumeExistingAgents],
+  );
 
   useEffect(() => {
     void readAccount();

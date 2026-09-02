@@ -265,7 +265,10 @@ export function AgentCreationFlow({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (inFlightRef.current || recovery.checkInFlightRef.current || !selectedRoute) return;
+    // A saved attempt is an explicit Check / Retry / Discard decision. A normal form submit must
+    // never reach getOrCreateCreationIntent while that identity is pending, because an unchanged
+    // request would silently reuse it and make the ordinary Create button behave like Retry.
+    if (inFlightRef.current || recovery.checkInFlightRef.current || recovery.intent || !selectedRoute) return;
     setError(undefined);
     setNameError(undefined);
     const parsedName = AgentNameSchema.safeParse(name);
@@ -423,7 +426,10 @@ export function AgentCreationFlow({
             {m.agent_create_cancel_action()}
           </Button>
         ) : null}
-        <Button disabled={submitting || recovery.checking || refreshing || !selectedRoute} type="submit">
+        <Button
+          disabled={submitting || recovery.checking || recovery.intent !== undefined || refreshing || !selectedRoute}
+          type="submit"
+        >
           {submitting ? (
             <span className="flex items-center gap-1.5">
               <span aria-hidden="true">

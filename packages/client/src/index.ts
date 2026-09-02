@@ -86,6 +86,8 @@ export {
 export {
   type ClientLogBindings,
   type ClientLogger,
+  type CreateLoggerOptions,
+  configureClientLoggerContext,
   configureClientLoggerForService,
   createLogger,
 } from "./observability/logger.js";
@@ -208,6 +210,12 @@ export {
   serializeEnvironment,
 } from "./runtime/im-credential-environment-manager.js";
 export { ImResourceFetcher } from "./runtime/im-resource-fetcher.js";
+export {
+  type IntegrationCliId,
+  type IntegrationCliInstallation,
+  type ProbeIntegrationCliInstallationsOptions,
+  probeIntegrationCliInstallations,
+} from "./runtime/integration-cli-installation.js";
 export {
   inspectLocalComputerConfiguration,
   type LocalComputerConfigurationInspection,

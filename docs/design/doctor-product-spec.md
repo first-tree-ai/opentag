@@ -1,6 +1,6 @@
 # Doctor 产品需求与 P0 技术规格
 
-状态：已实施（P0 基线及 Provider CLI 静态扩展）
+状态：已实施（P0 基线及 Integration CLI install-only 扩展）
 
 最后更新：2026-09-01
 
@@ -194,11 +194,11 @@ P0 只回答以下问题：
 3. 该 Home 记录的唯一 Server 是否通过公开 health endpoint 正常响应？
 4. 当前 CLI 诊断上下文能否找到至少一个受支持的本地 Agent Runtime CLI artifact，
    每个 artifact 从哪里找到？
-5. 当前操作系统账户下的 Feishu/Lark 与 Slack Provider CLI 是否已经存在有效的
-   account-global selection？
+5. 当前 CLI 诊断上下文能否观察到 Lark CLI 与 Slack CLI 的本地安装及其规范路径？
 
 第四项明确属于 **CLI 上下文中的安装观察**。它不能证明已安装 Daemon 拥有相同环境，
-也不能证明 Daemon 能执行该 artifact。输出必须明确说明这一点。
+也不能证明 Daemon 能执行该 artifact。输出必须明确说明这一点。第五项复用同一套
+install-only 观察，非 blocking，也不构成 Integration readiness。
 
 P0 决策如下：
 
@@ -211,7 +211,7 @@ P0 决策如下：
 | Runtime 充分条件 | 至少安装一个受支持 Runtime | P0 没有权威的 Agent-to-Provider 分配视图；缺少其他 Provider 仍需展示，但不 blocking。 |
 | Runtime 观察权威 | 当前 CLI 上下文，并明确披露 | 准确判断已安装 Daemon 的 Provider 解析能力需要单独评审权威契约。 |
 | Runtime 认证 | 不检查 | 凭据存在、Provider 登录状态与可用的已认证执行是不同产品承诺。 |
-| Integration CLI | 只读报告 Feishu/Lark 与 Slack 的 account-global 安装选择，均为 non-blocking | Doctor 可以帮助定位第三方 CLI 安装状态，但不能从静态检查推断 active binding、凭证或真实 handoff readiness。 |
+| Integration CLI | Lark CLI 与 Slack CLI，只做非 blocking 的 install-only 检查 | 与单个 Agent Runtime 第三方 CLI 相同：报告是否安装及规范路径，不引入 Integration 特有的 readiness 或 blocking 契约。 |
 | 自动修复 | 禁止 | 诊断必须保持安全、可重复和只读。 |
 
 ### 4.3 P0 Blocking 检查
@@ -328,23 +328,25 @@ app server、发起模型请求、安装 binary 或修改 Provider 配置。
 [#236](https://github.com/first-tree-ai/opentag/issues/236) 中的缺陷属于独立 Runtime
 正确性修复，不能成为 doctor 声称已检查 Claude Code 认证的理由。
 
-#### F. IM Provider CLI 静态安装状态
+#### F. Integration CLI artifact（非 blocking）
 
-Doctor 分别报告 Feishu/Lark CLI 与 Slack CLI 的 account-global selection。两项均为
-non-blocking：尚未绑定对应 IM provider 的账户不需要预先安装；active binding 对应的
-强制 readiness 由 Server 与 daemon 的 binding-driven reconcile 负责，不由 Doctor 推断。
+Issue [#248](https://github.com/first-tree-ai/opentag/issues/248) 分别报告 Lark CLI 与
+Slack CLI。检查复用当前 Agent Runtime 第三方 CLI 的 install-only discovery，属于
+**CLI 上下文中的安装观察**，并且 **不 blocking**。缺少其中一个或两个 Integration CLI
+只属于信息性结果，不得把进程退出码变成失败，也不得引入 `integration.any-installed`
+或任何 Integration-specific readiness 契约。
 
-静态检查必须复用 `ProviderCliManager.inspect`，并遵守以下边界：
+“已安装”的定义与 Runtime 第三方 CLI 相同：共享 resolver 在不启动该 CLI 的前提下，
+选中了一个普通、可执行的文件，并返回规范路径及来源。Doctor 必须：
 
-- account home 只来自操作系统账户记录，不受调用方 `HOME`、`XDG_*` 或 `OPENTAG_HOME`
-  影响；调用方 `PATH` 只用于展示 global command shadowing，不决定已持久化 selection；
-- 允许执行既有 selection 的 bounded、无凭证 version/help probe；
-- 不得调用 `ensure`、下载或安装 artifact、创建/修复 launcher/shim、写入 selection；
-- 不得读取或投影 binding credential，不得调用 provider auth/message API；
-- `ready` 只表示本地 selection、fingerprint、launcher 与无凭证 probe 一致；不得表述为
-  credential、active binding 或 handoff ready；
-- 缺失 selection 显示为信息项；malformed、unsafe 或无法判断的状态保持可见，但不改变
-  P0 baseline 退出码。
+- 搜索诊断进程的 `PATH`、OpenTag account-global launcher 目录与经过评审的 well-known
+  安装目录；
+- 报告选中的规范路径及来源；
+- 每个 CLI 独立失败，单个 detector 错误不能隐藏另一个 CLI 的结果；
+- 不得运行或解析 `--version`/`--help`，不得检查认证或凭据，不得读取 Provider CLI
+  selection/configuration，不得访问网络，不得安装、修复或执行端到端操作。
+
+Lark CLI 与 Slack CLI 的运行时凭据由 WinTAC 管理并注入；该生命周期不属于 doctor。
 
 ### 4.4 必需输出
 
@@ -377,8 +379,8 @@ Checks
   - Claude Code CLI: not installed
 
 IM Provider CLIs
-  ✓ Lark CLI: managed 1.0.92 selected at /Users/alice/.opentag/provider-cli/...
-  - Slack CLI: not prepared for this account
+  ✓ Lark CLI: installed at /usr/local/bin/lark-cli (caller-path)
+  - Slack CLI: not installed
 
 Baseline checks passed for this OpenTag Home.
 
@@ -387,7 +389,8 @@ Not evaluated
   - Agent Runtime version or protocol compatibility
   - Agent Runtime visibility from the installed daemon environment
   - machine-token authentication or WebSocket registration
-  - Integration CLI credential validity and active-binding readiness
+  - Integration CLI version compatibility, authentication, credentials, installation configuration, or network availability
+  - Integration CLI visibility from the installed daemon environment
   - end-to-end Turn or handoff delivery
 ```
 
@@ -408,6 +411,7 @@ Doctor 只打印指导，不执行任何修改。修复建议必须遵守以下�
 - 不得嵌入 connect code、token、credential 文件内容或直接复制的原始 Provider 错误；
 - 不得代替操作员执行删除、重写、重新连接、重新安装、重启或登录；
 - 未检查 Runtime 认证时，不得建议用户登录 Runtime。
+- 未检查 Integration CLI 认证时，不得建议用户登录 Integration CLI。
 
 ## 5. P0 技术架构
 
@@ -423,16 +427,15 @@ apps/cli command
        -> existing CLI daemon service manager.status()
        -> client Server health checker
        -> client shared Runtime artifact resolver
-       -> client ProviderCliManager.inspect()
+       -> client shared Integration CLI install-only resolver
   -> apps/cli renderer
 ```
 
 Doctor 可以并发协调检查，但依赖关系必须显式：
 
 - 先解析 target，再运行任何检查；
-- local configuration 与 Runtime artifact 检查可以相互独立地启动；
+- local configuration、Runtime artifact 与 Integration CLI artifact 检查可以相互独立地启动；
 - Daemon service status 不依赖 Server health；
-- Provider CLI 静态检查使用 account-global state，与 OpenTag Home 和 Server health 独立；
 - 只有解析出唯一权威 Server 后才启动 Server health；
 - renderer 等待所有独立检查结束，并按固定 section 顺序输出。
 
@@ -448,6 +451,8 @@ Doctor 可以并发协调检查，但依赖关系必须显式：
    Server health。
 5. **不得把 exception 折叠成“未安装”。** 必须区分明确缺失与 detector 无法判断。
 6. **不得让并发完成顺序决定报告顺序。** 先汇总结构化结果，再统一渲染。
+7. **不得把 Provider CLI detector/probe 用于 doctor。** 那些实现会运行版本与 command
+   surface，属于 selection/readiness，不是 install-only 观察。
 
 ### 5.3 稳定检查代码
 
@@ -464,13 +469,12 @@ P0 check code 属于内部契约，也是未来 JSON 接口的基础：
 | `runtime.any-installed` | 是 | 至少找到一个受支持 Runtime artifact |
 | `runtime.codex.installation` | 否 | Codex artifact 观察结果 |
 | `runtime.claude-code.installation` | 否 | Claude Code artifact 观察结果 |
-| `provider-cli.feishu.installation` | 否 | Feishu/Lark account-global selection 观察结果 |
-| `provider-cli.slack.installation` | 否 | Slack account-global selection 观察结果 |
+| `provider-cli.feishu.installation` | 否 | Lark CLI artifact 观察结果 |
+| `provider-cli.slack.installation` | 否 | Slack CLI artifact 观察结果 |
 
 ### 5.4 性能与安全预算
 
-- Agent Runtime 检查不启动 Provider 子进程；Provider CLI 静态检查只允许 bounded、无凭证
-  version/help probe，不发起认证、消息、模型或其他 provider API 请求。
+- 不启动 Provider 子进程，不发起模型/API 请求。
 - Server health deadline：5 秒。
 - Service manager 子进程使用既有显式 deadline。
 - 文件系统检查仅限当前 Home 和经过评审的安装根目录；不得递归扫描整个用户 Home。
@@ -503,10 +507,10 @@ P0 至少需要使用确定性测试覆盖以下场景：
 | 两个 Runtime 都未安装 | Runtime 汇总失败 |
 | 一个 Provider detector 报错，另一个找到 artifact | 仍报告已找到的 Provider；detector error 为 `unknown` |
 | Runtime 只从调用方 `PATH` 找到 | 来源标记为 `caller-path`；Daemon 可见性继续列为未检查 |
-| Provider CLI selection 缺失 | 对应 provider 显示 info；不 blocking，也不安装 |
-| Provider CLI selection ready | 显示 kind、version 与路径，但不声称凭证或 binding ready |
-| Provider CLI state malformed、unsafe 或 inspector 失败 | 显示 fail/unknown；不修复、不隐藏、不改变 baseline 退出码 |
-| Doctor 检查 Provider CLI | 不调用 `ensure`、不下载、不写 selection/launcher/shim、不调用 auth/message API |
+| Lark CLI 或 Slack CLI 已安装 | 对应 Integration 检查为非 blocking pass，并报告规范路径与来源 |
+| Lark CLI 或 Slack CLI 未安装 | 对应检查为非 blocking info；退出码不受影响 |
+| Integration CLI 只从调用方 `PATH` 找到 | 来源标记为 `caller-path`；不得读取 selection/config，不得执行该 CLI |
+| Integration detector 报错 | 对应检查为非 blocking `unknown`；不得变成 blocking 失败 |
 | 任意报告包含 credential | 测试失败 |
 | 所有 blocking P0 检查通过 | Exit `0`，并且只使用 baseline success 文案 |
 | 任意 blocking 检查失败或 unknown | Exit `1`，不得使用 readiness 文案 |
@@ -519,8 +523,8 @@ P0 至少需要使用确定性测试覆盖以下场景：
   ([#247](https://github.com/first-tree-ai/opentag/issues/247))；
 - Agent Runtime version 与 protocol compatibility；
 - 已安装 Daemon effective environment 内的权威 Provider resolution；
-- Integration CLI credential validity、active-binding readiness 的 Doctor 检查，以及任何
-  Doctor 主动安装/修复行为；
+- Integration CLI 的选择、认证、version/protocol compatibility 或交互
+  （[#248](https://github.com/first-tree-ai/opentag/issues/248) 只覆盖 install-only 观察）；
 - machine-token validation、WebSocket registration 或端到端 Turn/handoff delivery；
 - 自动安装、登录、重启、重新连接或修复；
 - 对外公开的 JSON 输出及其兼容性保证；
@@ -530,8 +534,9 @@ P0 至少需要使用确定性测试覆盖以下场景：
 
 ## 8. 当前实现边界
 
-OpenTag `main` 已实现本文 P0 基线。后续 Provider CLI 产品集成又增加了本规格 F 节定义的
-non-blocking、只读 account-global installation 观察；它不改变 baseline 退出码，也不把
+OpenTag `main` 已实现本文 P0 基线。Issue [#248](https://github.com/first-tree-ai/opentag/issues/248)
+进一步增加本规格 F 节定义的 non-blocking、install-only Integration CLI artifact 观察；
+它不改变 baseline 退出码，也不读取 selection/configuration，不执行 CLI，且不把
 credential 或 active-binding readiness 纳入 Doctor。
 
 PR [#246](https://github.com/first-tree-ai/opentag/pull/246) 在
@@ -548,8 +553,9 @@ PR [#246](https://github.com/first-tree-ai/opentag/pull/246) 在
 - 使用 `All required checks passed.` 作为汇总。
 
 后续实现应以本文作为 Doctor source of truth，在合理情况下把共享 Runtime discovery 与 doctor
-presentation 拆分，并继续将 authentication、active-binding readiness 与修复行为留在
-binding-driven daemon 或各自 follow-up issue 中。
+presentation 拆分。Authentication 仍留在 follow-up issue。Integration CLI 的 install-only
+观察由 [#248](https://github.com/first-tree-ai/opentag/issues/248) 覆盖，不得扩展成
+readiness、selection 或端到端契约。
 Runtime discovery issue
 [#237](https://github.com/first-tree-ai/opentag/issues/237) 提供主要 artifact-resolution
 实现范围。Service manager issue #244 继续保持独立代码变更，但必须在 P0 service 结果

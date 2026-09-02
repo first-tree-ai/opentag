@@ -1,6 +1,6 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { ImProviderSchema } from "@opentag/shared/browser";
-import { spaceScriptBoundary } from "../../i18n/format.js";
+import { formatElapsedCompact, spaceScriptBoundary } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { SETUP_COPY } from "../../setup/copy.js";
@@ -13,42 +13,83 @@ import type { AgentSettingsSection } from "./agent-settings/sections.js";
  * The card states what is true and how urgent it is; it carries no exit of its own. Opening the
  * Agent is the single follow-up, and the Agent page is where each failed dependency is explained.
  */
-export function agentCardStatus(agent: AgentListItem): {
+type AgentCardStatus = {
   detail?: string;
   label: string;
   priority: number;
   tone: StatusTone;
-} {
-  const status = agentStatusPresentation(agent);
-  if (agent.status === "suspended") return { label: status.label, priority: 4, tone: status.tone };
-  if (!agent.evidenceConfirmed) {
-    return { detail: "Unable to refresh", label: "Unconfirmed", priority: 1, tone: "neutral" };
+};
+
+export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
+  if (agent.status === "suspended" || agent.availability.state === "suspended") {
+    return { label: m.agents_card_status_paused(), priority: 4, tone: "neutral" };
   }
-  if (agent.availability.state === "unconfirmed") {
-    return { detail: "Unable to confirm readiness", label: status.label, priority: 1, tone: status.tone };
+  if (!agent.evidenceConfirmed || agent.availability.state === "unconfirmed") {
+    return { label: m.agents_card_status_unavailable(), priority: 1, tone: "neutral" };
   }
-  if (agent.availability.state === "action_required") {
-    /*
-     * No recovery exit on the card. What to do about a stuck Agent depends on which dependency
-     * failed, and that explanation lives on the Agent itself; the card states the problem and
-     * lets its own open-the-Agent target carry the viewer to where it can be fixed.
-     */
-    return { detail: "Cannot receive new work", label: status.label, priority: 0, tone: status.tone };
+  if (agent.availability.state === "ready") {
+    return readyAgentCardStatus(agent);
   }
   if (agent.availability.state === "setting_up") {
-    return { detail: "Messaging setup in progress", label: status.label, priority: 2, tone: status.tone };
+    return { label: m.agents_card_status_setting_up_messaging(), priority: 2, tone: "info" };
   }
   if (agent.availability.state === "not_connected") {
-    return { detail: "Cannot receive new work", label: status.label, priority: 2, tone: status.tone };
+    return { label: m.agents_card_status_messaging_not_connected(), priority: 2, tone: "neutral" };
   }
-  if (agent.activity.state === "working") {
+  return blockedAgentCardStatus(agent);
+}
+
+function readyAgentCardStatus(agent: AgentListItem): AgentCardStatus {
+  return {
+    detail:
+      agent.activity.state === "working"
+        ? m.agents_card_activity_working({ elapsed: formatElapsedCompact(agent.activity.startedAt) })
+        : undefined,
+    label: m.agents_card_status_ready(),
+    priority: 3,
+    tone: "success",
+  };
+}
+
+function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
+  if (agent.availability.reason === "computer_not_bound") {
+    return { label: m.agents_card_status_no_computer(), priority: 2, tone: "neutral" };
+  }
+  if (agent.availability.reason === "computer_offline") {
+    return { label: m.agents_card_status_computer_offline(), priority: 0, tone: "warning" };
+  }
+  if (agent.availability.reason === "runtime_unavailable") {
+    return runtimeAgentCardStatus(agent);
+  }
+  if (agent.availability.reason === "im_reauthorization_required") {
+    return { label: m.agents_card_status_messaging_permissions_required(), priority: 0, tone: "warning" };
+  }
+  if (agent.availability.reason === "im_disabled") {
+    return { label: m.agents_card_status_messaging_disconnected(), priority: 2, tone: "neutral" };
+  }
+  if (agent.availability.reason === "handoff_unavailable") {
+    return { label: m.agents_card_status_cannot_receive_messages(), priority: 0, tone: "warning" };
+  }
+  return { label: m.agents_card_status_messaging_connection_failed(), priority: 0, tone: "warning" };
+}
+
+function runtimeAgentCardStatus(agent: AgentListItem): AgentCardStatus {
+  const { provider, status } = agent.availability.dependencies.runtime;
+  const providerName = runtimeProviderName(provider);
+  if (status === "checking") {
+    return { label: m.agents_card_status_runtime_checking({ providerName }), priority: 2, tone: "info" };
+  }
+  if (status === "install") {
+    return { label: m.agents_card_status_runtime_not_installed({ providerName }), priority: 0, tone: "warning" };
+  }
+  if (status === "sign-in") {
     return {
-      label: status.label,
-      priority: 2,
-      tone: status.tone,
+      label: m.agents_card_status_runtime_sign_in_required({ providerName }),
+      priority: 0,
+      tone: "warning",
     };
   }
-  return { label: status.label, priority: 3, tone: status.tone };
+  return { label: m.agents_card_status_runtime_unavailable({ providerName }), priority: 0, tone: "warning" };
 }
 
 /**

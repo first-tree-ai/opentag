@@ -3,6 +3,7 @@ import {
   createDiagnosticEnvelope,
   DiagnosticReporter,
   installWindowDiagnosticHandlers,
+  normalizeError,
   routeTemplate,
 } from "./diagnostics.js";
 
@@ -44,6 +45,14 @@ describe("web diagnostics", () => {
     expect(JSON.stringify(diagnostic)).not.toContain("opaque-json-token");
     expect(JSON.stringify(diagnostic)).not.toContain("opaque-structured-token");
     expect((diagnostic.error as { message: string }).message).toBe("Authorization: [REDACTED]");
+  });
+
+  it("uses a stable code for non-error values instead of localized copy", () => {
+    expect(normalizeError("Translated application failure").code).toBe("unhandled_error");
+    expect(normalizeError(new Error("Translated application failure")).code).toBe("unhandled_error");
+    expect(normalizeError(Object.assign(new Error("request stopped"), { code: "REQUEST_STOPPED" })).code).toBe(
+      "REQUEST_STOPPED",
+    );
   });
 
   it("records unhandled rejections and capture-phase resource failures", () => {

@@ -1,7 +1,7 @@
 # OpenTag
 
 > Canonical source: [README.md](./README.md)
-> Last synced with: 2026-08-26
+> Last synced with: 2026-09-02
 
 OpenTag 是一个全新的独立开源产品，用于连接即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
 阶段：产品工作流仍在开发中，尚不适合生产使用。
@@ -74,6 +74,7 @@ Channel/Thread Session 与 provider CLI 直接交接。更广泛的产品与跨 
 - [Slack App 配置](./docs/zh-CN/slack-app-setup.md)
 - [IM Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md)
 - [Internal Session collaboration](./docs/zh-CN/internal-session-collaboration.md)
+- [任务](./docs/zh-CN/tasks.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [发布指南](./docs/zh-CN/releasing.md)
 - [部署指南](./docs/zh-CN/deploying.md)

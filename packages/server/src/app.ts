@@ -112,6 +112,7 @@ function disableProbeRequestLogging(request: FastifyRequest): boolean {
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
 const DATABASE_READINESS_TIMEOUT_MS = 1_000;
+const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
 
 type SerializedError = { type: string; message: string; stack: string };
 type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
@@ -171,23 +172,35 @@ function withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
+type DatabaseReadinessAttempt = {
+  promise: Promise<void>;
+  startedAt: number;
+};
+
 function createDatabaseReadinessProbe(database: DatabaseClient | undefined): (() => Promise<void>) | undefined {
   if (!database) return undefined;
 
-  let inFlight: Promise<void> | undefined;
+  let inFlight: DatabaseReadinessAttempt | undefined;
   return async () => {
-    if (!inFlight) {
+    const now = Date.now();
+    const current = inFlight;
+    if (!current || now - current.startedAt >= READINESS_ATTEMPT_MAX_AGE_MS) {
+      if (current) {
+        void current.promise.catch(() => undefined);
+      }
       const execution = Promise.resolve()
         .then(() => database.execute(sql`select 1`))
         .then(() => undefined);
+      let attempt: DatabaseReadinessAttempt;
       const settled = execution.finally(() => {
-        if (inFlight === settled) inFlight = undefined;
+        if (inFlight === attempt) inFlight = undefined;
       });
-      inFlight = settled;
+      attempt = { promise: settled, startedAt: now };
+      inFlight = attempt;
     }
     const running = inFlight;
     if (!running) return;
-    await withDeadline(running, DATABASE_READINESS_TIMEOUT_MS);
+    await withDeadline(running.promise, DATABASE_READINESS_TIMEOUT_MS);
   };
 }
 

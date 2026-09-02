@@ -106,4 +106,48 @@ describe("GET /healthz", () => {
     expect(elapsedMs).toBeLessThan(2_000);
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it("recovers after an abandoned probe ages out without fanning out probes", async () => {
+    vi.useFakeTimers({ now: 0 });
+    let rejectFirst: ((reason?: unknown) => void) | undefined;
+    const firstProbe = new Promise<never>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const execute = vi
+      .fn()
+      .mockImplementationOnce(() => firstProbe)
+      .mockResolvedValueOnce([]);
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, readiness });
+    apps.push(app);
+
+    try {
+      const firstRequest = app.inject({ method: "GET", url: "/readyz" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const firstResponse = await firstRequest;
+      expect(firstResponse.statusCode).toBe(503);
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      const inWindowRequests = Promise.all([
+        app.inject({ method: "GET", url: "/readyz" }),
+        app.inject({ method: "GET", url: "/readyz" }),
+      ]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const inWindowResponses = await inWindowRequests;
+      expect(inWindowResponses.every((response) => response.statusCode === 503)).toBe(true);
+      expect(execute).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(8_001);
+      const recovered = await app.inject({ method: "GET", url: "/readyz" });
+      expect(recovered.statusCode).toBe(200);
+      expect(recovered.json()).toEqual({ status: "ready" });
+      expect(execute).toHaveBeenCalledTimes(2);
+
+      rejectFirst?.(new Error("late probe rejection"));
+      await Promise.resolve();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

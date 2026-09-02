@@ -363,6 +363,45 @@ describe("AgentTurnRunner", () => {
     );
   });
 
+  it("logs an unknown reason for a non-Error Turn Report submission rejection", async () => {
+    const logs: RecordedLog[] = [];
+    const submit = vi.fn(() => Promise.reject("boom"));
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "g".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: {
+        updateUnresolved: vi.fn(async () => {
+          throw new Error("disk failed");
+        }),
+      } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      logger: recordingLogger(logs),
+      reportOwner: { create, submit } as unknown as TurnReportOwner,
+      runtimeManager: {} as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+    });
+
+    runner.start(liveOwner({ ...delivery(), deliveryId: "delivery-non-error" }));
+    await runner.settled();
+    await vi.waitFor(() =>
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "Turn Report submission failed",
+          fields: expect.objectContaining({
+            deliveryId: "delivery-non-error",
+            reason: "Unknown Turn Report submission failure",
+          }),
+        }),
+      ),
+    );
+  });
+
   it("keeps unresolved custody when the reporting transition fails", async () => {
     let observer: AgentRuntimeEventSink | undefined;
     const onRuntimeEvent = vi.fn(async () => undefined);

@@ -79,7 +79,7 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.2fr)_minmax(11rem,1fr)_minmax(10.5rem,auto)_1rem] @min-[42rem]/agent-roster:items-center"
+      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.2fr)_minmax(11rem,1fr)_auto_1rem] @min-[42rem]/agent-roster:items-center"
       data-tone={status.tone}
       data-ui="agent-row"
     >
@@ -129,7 +129,7 @@ function AgentUsageSummary({ agent }: { agent: AgentListItem }) {
   const tokens = formatCompactNumber(agent.usage.tokens);
   return (
     <dl
-      className="grid gap-0.5 pl-13 @min-[42rem]/agent-roster:justify-self-end @min-[42rem]/agent-roster:pl-0"
+      className="grid gap-0.5 pl-13 @min-[42rem]/agent-roster:w-48 @min-[42rem]/agent-roster:justify-self-end @min-[42rem]/agent-roster:pl-0"
       data-ui="agent-row-usage"
     >
       <dt className="text-xs text-kumo-subtle">{m.agents_list_usage_window({ days: agent.usage.windowDays })}</dt>

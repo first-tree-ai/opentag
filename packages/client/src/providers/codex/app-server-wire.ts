@@ -353,9 +353,15 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   }
 
   #onStderr(chunk: Buffer): void {
-    if (this.#stderr.byteLength >= this.#maxStderrBytes) return;
-    const remaining = this.#maxStderrBytes - this.#stderr.byteLength;
-    this.#stderr = Buffer.concat([this.#stderr, chunk.subarray(0, remaining)]);
+    if (chunk.byteLength >= this.#maxStderrBytes) {
+      this.#stderr = Buffer.from(chunk.subarray(chunk.byteLength - this.#maxStderrBytes));
+      return;
+    }
+    const combined = Buffer.concat([this.#stderr, chunk]);
+    this.#stderr =
+      combined.byteLength > this.#maxStderrBytes
+        ? combined.subarray(combined.byteLength - this.#maxStderrBytes)
+        : combined;
   }
 
   #exitMessage(prefix = "Codex App Server exited"): string {

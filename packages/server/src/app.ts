@@ -97,11 +97,22 @@ export function ignoreHttpTraceRoute(path: string): boolean {
   );
 }
 
+const MAX_ERROR_STACK_LENGTH = 8_192;
+
+function serializeError(error: Error): { type: string; message: string; stack: string } {
+  return {
+    type: error.name,
+    message: error.message,
+    stack: (error.stack ?? `${error.name}: ${error.message}`).slice(0, MAX_ERROR_STACK_LENGTH),
+  };
+}
+
 function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOptions {
   return {
     level: options.loggerLevel ?? "info",
     ...(options.loggerStream ? { stream: options.loggerStream } : {}),
     serializers: {
+      err: serializeError,
       req: (request) => ({
         method: request.method,
         url: sanitizeRequestUrl(request.url),

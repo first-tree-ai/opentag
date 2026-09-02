@@ -100,4 +100,40 @@ describe("request logging", () => {
     expect(logs).toContain("/api/v1/auth/google/callback");
     expect(logs).toContain("/api/v1/im-bindings/slack/oauth/callback");
   });
+
+  it("whitelists error fields and bounds the serialized stack", async () => {
+    const chunks: string[] = [];
+    const error = Object.assign(new Error("Database write failed"), {
+      detail: "offending-row-secret",
+      where: "complete-database-internal-context",
+    });
+    error.name = "DrizzleQueryError";
+    error.stack = `DrizzleQueryError: Database write failed\n${"stack-frame\n".repeat(2_000)}`;
+    const app = createApp({
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/database-error", async () => {
+      throw error;
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/database-error" });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { err?: Record<string, unknown>; msg?: string })
+      .find((record) => record.msg === "Request failed");
+    expect(failure?.err).toEqual({
+      type: "DrizzleQueryError",
+      message: "Database write failed",
+      stack: error.stack.slice(0, 8_192),
+    });
+    expect(JSON.stringify(failure)).not.toContain("offending-row-secret");
+    expect(JSON.stringify(failure)).not.toContain("complete-database-internal-context");
+  });
 });

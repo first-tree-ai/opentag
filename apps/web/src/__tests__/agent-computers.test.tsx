@@ -75,7 +75,9 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("region", { name: "Reconnect Ada's Mac" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Reconnect Ada's Mac" })).toBeNull();
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
-    expect(screen.getByText("# Run this command in the terminal on Ada's Mac")).toBeTruthy();
+    // The POSIX null command, with the apostrophe closed and reopened so the sentence cannot escape
+    // its quotes: a `#` comment is what an interactive shell rejects when the block is pasted.
+    expect(screen.getByText(": 'Run this command in the terminal on Ada'\\''s Mac'")).toBeTruthy();
     const repairRequests = vi
       .mocked(fetch)
       .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");

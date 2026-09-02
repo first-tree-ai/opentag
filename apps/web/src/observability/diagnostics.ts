@@ -81,10 +81,18 @@ export function routeTemplate(path: string): string {
 
 /** Normalize thrown values without using localized message text as the aggregation key. */
 export function normalizeError(value: unknown, fallbackCode = "unhandled_error"): NormalizedError {
-  const error =
-    value instanceof Error ? value : new Error(typeof value === "string" ? value : "Unknown application error");
+  const error = isErrorValue(value)
+    ? value
+    : new Error(typeof value === "string" ? value : "Unknown application error");
   const code = readStableCode(value) ?? (isAbortError(value) ? "cancelled" : (stableName(error.name) ?? fallbackCode));
   return { error, code };
+}
+
+function isErrorValue(value: unknown): value is Error {
+  if (value instanceof Error) return true;
+  if (!value || typeof value !== "object") return false;
+  const tag = Object.prototype.toString.call(value);
+  return tag === "[object Error]" || tag === "[object DOMException]";
 }
 
 function readStableCode(value: unknown): string | undefined {
@@ -103,7 +111,7 @@ function stableName(name: string): string | undefined {
 }
 
 function isAbortError(value: unknown): boolean {
-  return value instanceof Error && value.name === "AbortError";
+  return isErrorValue(value) && value.name === "AbortError";
 }
 
 /**

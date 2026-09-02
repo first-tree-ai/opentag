@@ -4,7 +4,10 @@ import { createDiagnosticEnvelope, normalizeError as normalizeDiagnosticError } 
 import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
 
-type BoundaryError = Error & { code: string; digest?: string };
+type BoundaryError = {
+  readonly error: Error;
+  readonly code: string;
+};
 type BoundaryErrorInfo = { componentStack?: string | null };
 type BoundaryName = "app" | "route" | "root";
 
@@ -121,10 +124,9 @@ function BoundaryCard({ children, ...props }: { children: ReactNode } & HTMLAttr
   );
 }
 
-function normalizeError(value: unknown): BoundaryError {
+export function normalizeError(value: unknown): BoundaryError {
   // Keep the catalog reference for `m.errors_unknown_application_error`; diagnostics use a literal code.
-  const normalized = normalizeDiagnosticError(value);
-  return Object.assign(normalized.error, { code: normalized.code }) as BoundaryError;
+  return normalizeDiagnosticError(value);
 }
 
 /** Logs diagnostics without copying credential-shaped values into the browser console. */
@@ -134,14 +136,14 @@ export function reportBoundaryError(boundary: BoundaryName, error: unknown, erro
     source: "ui",
     code: normalized.code,
     routeTemplate: "ui",
-    error: { name: normalized.name, message: normalized.message },
+    error: { name: normalized.error.name, message: normalized.error.message },
     componentStack: errorInfo?.componentStack ?? undefined,
   });
   console.error("[OpenTag] Unhandled UI error", {
     boundary,
     error: {
-      name: redactErrorMessage(normalized.name),
-      message: redactErrorMessage(normalized.message),
+      name: redactErrorMessage(normalized.error.name),
+      message: redactErrorMessage(normalized.error.message),
     },
     componentStack: errorInfo?.componentStack ? redactErrorMessage(errorInfo.componentStack) : undefined,
     diagnostic,

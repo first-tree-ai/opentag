@@ -131,7 +131,7 @@ describe("AgentSetupPage stages", () => {
 
     expect(
       screen.getByText(
-        "Review Mac is offline. Start OpenTag on that Computer; this page will continue when it reconnects.",
+        "Review Mac is offline. Run opentag daemon start in a terminal on that Computer; this page will continue when it reconnects.",
       ),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();

@@ -4,6 +4,12 @@ import { BootstrapReadiness } from "../bootstrap-readiness.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 
+function completeReadiness(readiness: BootstrapReadiness): void {
+  for (const stage of ["configuration", "migration", "application", "listen"] as const) {
+    readiness.complete(stage);
+  }
+}
+
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
@@ -28,8 +34,9 @@ describe("GET /readyz", () => {
 });
 
 describe("GET /healthz", () => {
-  it("returns the shared health contract", async () => {
-    const app = createApp();
+  it("returns the shared liveness contract without probing the database", async () => {
+    const execute = vi.fn();
+    const app = createApp({ database: { execute } as never });
     apps.push(app);
 
     const response = await app.inject({ method: "GET", url: "/healthz" });
@@ -39,40 +46,64 @@ describe("GET /healthz", () => {
       status: "ok",
       service: "opentag-server",
     });
+    expect(execute).not.toHaveBeenCalled();
   });
 
-  it("probes the configured database before reporting healthy", async () => {
+  it("probes the configured database before reporting ready", async () => {
     const execute = vi.fn().mockResolvedValue([]);
-    const app = createApp({ database: { execute } as never });
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, readiness });
     apps.push(app);
 
-    const response = await app.inject({ method: "GET", url: "/healthz" });
+    const response = await app.inject({ method: "GET", url: "/readyz" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ status: "ok", service: "opentag-server" });
+    expect(response.json()).toEqual({ status: "ready" });
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the application TaskService database when no explicit probe client is supplied", async () => {
+  it("uses the application TaskService database when no explicit readiness client is supplied", async () => {
     const execute = vi.fn().mockResolvedValue([]);
-    const app = createApp({ taskService: { database: { execute } } as never });
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ readiness, taskService: { database: { execute } } as never });
     apps.push(app);
 
-    const response = await app.inject({ method: "GET", url: "/healthz" });
+    const response = await app.inject({ method: "GET", url: "/readyz" });
 
     expect(response.statusCode).toBe(200);
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("returns unavailable when the database health probe fails", async () => {
+  it("returns not ready when the database readiness probe fails", async () => {
     const execute = vi.fn().mockRejectedValue(new Error("database connection refused"));
-    const app = createApp({ database: { execute } as never });
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, readiness });
     apps.push(app);
 
-    const response = await app.inject({ method: "GET", url: "/healthz" });
+    const response = await app.inject({ method: "GET", url: "/readyz" });
 
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ status: "unhealthy", service: "opentag-server" });
+    expect(response.json()).toMatchObject({ status: "not_ready", ready: true });
     expect(response.body).not.toContain("database connection refused");
+  });
+
+  it("abandons a never-settling database probe at the server deadline", async () => {
+    const execute = vi.fn(() => new Promise<never>(() => undefined));
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, readiness });
+    apps.push(app);
+
+    const startedAt = performance.now();
+    const response = await app.inject({ method: "GET", url: "/readyz" });
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ status: "not_ready", ready: true });
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 });

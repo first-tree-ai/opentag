@@ -1,3 +1,5 @@
+import { redactForLog } from "@opentag/shared";
+import { DrizzleQueryError } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { createApp, sanitizeRequestUrl } from "../app.js";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
@@ -146,10 +148,45 @@ describe("request logging", () => {
     expect(failure?.err).toEqual({
       type: "DrizzleQueryError",
       message: "Database write failed",
-      stack: error.stack.slice(0, 8_192),
+      stack: redactForLog(error.stack),
     });
     expect(JSON.stringify(failure)).not.toContain("offending-row-secret");
     expect(JSON.stringify(failure)).not.toContain("complete-database-internal-context");
+  });
+
+  it("never emits bound parameters from a real DrizzleQueryError", async () => {
+    const chunks: string[] = [];
+    const error = new DrizzleQueryError("select * from accounts where email = $1 and password = $2", [
+      "victim@example.com",
+      "hunter2",
+    ]);
+    const app = createApp({
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/drizzle-query-error", async () => {
+      throw error;
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/drizzle-query-error" });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+
+    const logs = chunks.join("");
+    expect(logs).not.toContain("victim@example.com");
+    expect(logs).not.toContain("hunter2");
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { err?: Record<string, unknown>; msg?: string })
+      .find((record) => record.msg === "Request failed");
+    expect(failure?.err).toEqual({
+      type: "DrizzleQueryError",
+      message: "Database query failed (2 parameters)",
+      stack: "DrizzleQueryError: Database query failed (2 parameters)",
+    });
   });
 
   it("emits classified failures with the status-based level and request context", async () => {

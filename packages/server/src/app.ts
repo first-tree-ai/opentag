@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
-import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
-import { sql } from "drizzle-orm";
+import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
+import { DrizzleQueryError, sql } from "drizzle-orm";
 import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
 import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
@@ -43,7 +43,7 @@ import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
-  /** Drizzle client used by the liveness probe. The production bootstrap also exposes it through TaskService. */
+  /** Drizzle client used by the readiness probe. The production bootstrap also exposes it through TaskService. */
   database?: DatabaseClient;
   authService?: UserAuthService;
   /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
@@ -111,12 +111,83 @@ function disableProbeRequestLogging(request: FastifyRequest): boolean {
 }
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
+const DATABASE_READINESS_TIMEOUT_MS = 1_000;
 
-function serializeError(error: Error): { type: string; message: string; stack: string } {
+type SerializedError = { type: string; message: string; stack: string };
+type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
+
+function hasOwnField(value: object, key: string): boolean {
+  return Object.hasOwn(value, key);
+}
+
+function isDrizzleQueryError(error: unknown): error is DrizzleQueryError | (Error & DrizzleQueryErrorLike) {
+  if (error instanceof DrizzleQueryError) return true;
+  if (typeof error !== "object" || error === null) return false;
+  return hasOwnField(error, "query") && hasOwnField(error, "params");
+}
+
+function redactLogString(value: string): string {
+  const redacted = redactForLog(value);
+  return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_ERROR_STACK_LENGTH);
+}
+
+function serializeError(error: unknown): SerializedError {
+  if (isDrizzleQueryError(error)) {
+    const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
+    const summary = redactLogString(
+      `Database query failed${parameterCount === undefined ? "" : ` (${parameterCount} parameter${parameterCount === 1 ? "" : "s"})`}`,
+    );
+    return {
+      type: "DrizzleQueryError",
+      message: summary,
+      stack: redactLogString(`DrizzleQueryError: ${summary}`),
+    };
+  }
+  if (!(error instanceof Error)) {
+    const summary = redactLogString(String(error));
+    return { type: typeof error, message: summary, stack: summary };
+  }
   return {
     type: error.name,
-    message: error.message,
-    stack: (error.stack ?? `${error.name}: ${error.message}`).slice(0, MAX_ERROR_STACK_LENGTH),
+    message: redactLogString(error.message),
+    stack: redactLogString(error.stack ?? `${error.name}: ${error.message}`),
+  };
+}
+
+class DatabaseReadinessTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Database readiness probe exceeded ${timeoutMs}ms`);
+    this.name = "DatabaseReadinessTimeoutError";
+  }
+}
+
+function withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DatabaseReadinessTimeoutError(timeoutMs)), timeoutMs);
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+function createDatabaseReadinessProbe(database: DatabaseClient | undefined): (() => Promise<void>) | undefined {
+  if (!database) return undefined;
+
+  let inFlight: Promise<void> | undefined;
+  return async () => {
+    if (!inFlight) {
+      const execution = Promise.resolve()
+        .then(() => database.execute(sql`select 1`))
+        .then(() => undefined);
+      const settled = execution.finally(() => {
+        if (inFlight === settled) inFlight = undefined;
+      });
+      inFlight = settled;
+    }
+    const running = inFlight;
+    if (!running) return;
+    await withDeadline(running, DATABASE_READINESS_TIMEOUT_MS);
   };
 }
 
@@ -220,6 +291,7 @@ export function createApp(options: CreateAppOptions = {}) {
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
   const healthDatabase = options.database ?? options.taskService?.database;
+  const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
 
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
@@ -253,15 +325,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (traceId) reply.header("x-trace-id", traceId);
   });
 
-  app.get("/healthz", async (request, reply) => {
-    if (healthDatabase) {
-      try {
-        await healthDatabase.execute(sql`select 1`);
-      } catch (error) {
-        request.log.error({ check: "database", err: error }, "Health check failed");
-        return reply.code(503).send({ status: "unhealthy", service: "opentag-server" });
-      }
-    }
+  app.get("/healthz", async (_request, reply) => {
     const health = ServerHealthSchema.parse({
       status: "ok",
       service: "opentag-server",
@@ -270,10 +334,18 @@ export function createApp(options: CreateAppOptions = {}) {
     return reply.code(200).send(health);
   });
 
-  app.get("/readyz", async (_request, reply) => {
+  app.get("/readyz", async (request, reply) => {
     const snapshot = readiness.snapshot();
     if (!snapshot.ready) {
       return reply.code(503).send({ status: "not_ready", ...snapshot });
+    }
+    if (databaseReadinessProbe) {
+      try {
+        await databaseReadinessProbe();
+      } catch (error) {
+        request.log.warn({ check: "database", err: error }, "Readiness check failed");
+        return reply.code(503).send({ status: "not_ready", ...snapshot });
+      }
     }
     return reply.code(200).send({ status: "ready" });
   });

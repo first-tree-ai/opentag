@@ -58,7 +58,7 @@ const CreationIntentParamsSchema = z.object({ creationIntentId: AgentCreationInt
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
-  computerConnectCode?: { downloadBaseUrl?: string; environment: ChannelName; publicUrl: string };
+  computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;

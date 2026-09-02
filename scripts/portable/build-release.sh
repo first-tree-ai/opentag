@@ -13,7 +13,7 @@ NODE_VERSION_FILE="$SCRIPT_DIR/node-version.txt"
 
 DEFAULT_PLATFORMS=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64")
 DEFAULT_OUT_DIR=".portable-release"
-DEFAULT_DOWNLOAD_BASE_URL="https://download.opentag.build/releases"
+DEFAULT_DOWNLOAD_BASE_URL="https://storage.googleapis.com/opentag-release/releases"
 
 CHANNEL=""
 VERSION=""

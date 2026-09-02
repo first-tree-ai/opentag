@@ -22,6 +22,7 @@ import type { RecordedSteerInput, SessionBindingStore } from "../runtime/session
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("AgentTurnRunner", () => {
   it("compiles only dynamic Session, message, history, and resource context into AgentInput", () => {
@@ -308,6 +309,58 @@ describe("AgentTurnRunner", () => {
     runner.stop();
     runner.start({ ...owner, turnId: "stopped" });
     expect(runner.activeCount).toBe(0);
+  });
+
+  it("logs a failed Turn Report submission without blocking Turn completion", async () => {
+    const logs: RecordedLog[] = [];
+    let rejectSubmit!: (error: Error) => void;
+    const submit = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSubmit = reject;
+        }),
+    );
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "f".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: {
+        updateUnresolved: vi.fn(async () => {
+          throw new Error("disk failed");
+        }),
+      } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      logger: recordingLogger(logs),
+      reportOwner: { create, submit } as unknown as TurnReportOwner,
+      runtimeManager: {} as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+    });
+
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(logs.some((entry) => entry.message === "Turn Report submission failed")).toBe(false);
+
+    rejectSubmit(new Error("report transport failed"));
+    await vi.waitFor(() =>
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "Turn Report submission failed",
+          fields: expect.objectContaining({
+            agentId: "agent-1",
+            deliveryId: "delivery-1",
+            sessionId: "session-1",
+            turnId: "turn-1",
+            reason: "report transport failed",
+          }),
+        }),
+      ),
+    );
   });
 
   it("keeps unresolved custody when the reporting transition fails", async () => {

@@ -86,6 +86,9 @@ const EncryptionKeySchema = z
     return new Uint8Array(decoded);
   });
 
+const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
+export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
+
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
 }
@@ -128,6 +131,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_ENVIRONMENT: z.string().trim().min(1).optional(),
     OPENTAG_OTEL_HEADERS: z.string().default(""),
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
+    OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     /*
      * Defaults to what the refresh token's lifetime was, because that is the number it replaced: how long a client
      * may be idle and still be signed in.
@@ -265,6 +269,7 @@ export interface ServerConfig {
       sampleRate: number;
     };
   };
+  logLevel: ServerLogLevel;
   port: number;
   publicUrl: string;
   /** Lifetime of an Account session, browser and CLI alike. */
@@ -325,6 +330,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_ENVIRONMENT: environment.OPENTAG_OTEL_ENVIRONMENT,
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
+    OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
   });
 
@@ -362,6 +368,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
+    logLevel: parsed.OPENTAG_LOG_LEVEL,
     observability: {
       tracing: {
         endpoint: parsed.OPENTAG_OTEL_ENDPOINT,

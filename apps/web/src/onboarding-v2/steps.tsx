@@ -393,6 +393,7 @@ function MessagingConnection({
    * block creating the Agent at all, which stopped a Slack user over a Feishu dependency.
    */
   const cliState = provider ? messagingCliCheck(readiness?.messagingCli[provider]) : "pending";
+  const slackName = messagingProviderLabel("slack");
   /*
    * Reachability needs more than the binding, and the Server's handoff status carries no reason —
    * so a wait on one of its other conditions would otherwise be an unexplained spinner.
@@ -467,7 +468,7 @@ function MessagingConnection({
         </div>
       ) : provider === "slack" ? (
         <div className={PANEL}>
-          <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_slack_intro()}</p>
+          <p className="text-kumo-subtle m-0">{m.onboarding_v2_messaging_slack_intro({ provider: slackName })}</p>
           {/*
             Installing is a link out: the user finishes in Slack and comes back. So the waiting
             state here is about a page they are not on, not something to watch on this one.
@@ -488,7 +489,7 @@ function MessagingConnection({
             ) : messaging.kind === "away" ? (
               <p className={WAITING_LINE} role="status">
                 <span aria-hidden="true" className="ots-pulse shrink-0" />
-                {m.onboarding_v2_messaging_slack_waiting()}
+                {m.onboarding_v2_messaging_slack_waiting({ provider: slackName })}
               </p>
             ) : (
               /*
@@ -501,7 +502,7 @@ function MessagingConnection({
                 onClick={onSlackInstall}
                 variant="ghost"
               >
-                <img alt={m.onboarding_v2_messaging_slack_action()} src={ADD_TO_SLACK_URL} />
+                <img alt={m.onboarding_v2_messaging_slack_action({ provider: slackName })} src={ADD_TO_SLACK_URL} />
               </Button>
             )}
           </div>

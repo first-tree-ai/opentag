@@ -1,12 +1,15 @@
+import { redactForLog } from "@opentag/shared";
 import type { FastifyBaseLogger } from "fastify";
 import { outcomeAttrs, safeDiagnosticCode } from "./attributes.js";
 import { emitRootSpan } from "./otel-helpers.js";
 
-export function createServerDiagnosticReporter(logger: () => FastifyBaseLogger | undefined): (code: string) => void {
-  return (rawCode) => {
+export function createServerDiagnosticReporter(
+  logger: () => FastifyBaseLogger | undefined,
+): (code: string, context?: Record<string, unknown>) => void {
+  return (rawCode, context) => {
     const code = safeDiagnosticCode(rawCode);
     try {
-      logger()?.error({ code }, "Server diagnostic");
+      logger()?.error(redactForLog({ ...context, code }), "Server diagnostic");
     } catch {
       // A diagnostic logger is never allowed to break the observed operation.
     }

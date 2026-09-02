@@ -3,7 +3,9 @@ import {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,
   DiagnosticEventSchema,
+  redactForLog,
   redactSensitive,
+  STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
   StructuredErrorSchema,
 } from "../structured-errors.js";
 
@@ -174,5 +176,286 @@ describe("structured error redaction", () => {
 
     const minimal = boundedSerialize("x".repeat(20_000), 1);
     expect(new TextEncoder().encode(minimal).byteLength).toBeLessThanOrEqual(1);
+  });
+
+  it("caps every string value by UTF-8 bytes for log payloads", () => {
+    const redacted = redactForLog({ nested: { value: "界".repeat(10_000) } }) as {
+      nested: { value: string };
+    };
+    expect(new TextEncoder().encode(redacted.nested.value).byteLength).toBeLessThanOrEqual(
+      STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
+    );
+    expect(redacted.nested.value).toContain("[TRUNCATED]");
+  });
+
+  it("redacts folded header continuations while preserving the next header", () => {
+    const folded = "Authorization: Bearer first\r\n\tsecond-secret\r\nX-Safe: ok";
+    const redacted = redactForLog({ message: folded }) as { message: string };
+
+    expect(redacted.message).not.toContain("second-secret");
+    expect(redacted.message).not.toContain("first");
+    expect(redacted.message).toContain("X-Safe: ok");
+
+    const cookie = redactForLog({ message: "Set-Cookie: a=1\r\n  b=leaked\r\nContent-Type: text/plain" }) as {
+      message: string;
+    };
+    expect(cookie.message).not.toContain("b=leaked");
+    expect(cookie.message).toContain("Content-Type: text/plain");
+
+    const empty = redactForLog("Authorization:\r\nX-Safe: ok");
+    expect(empty).toContain("X-Safe: ok");
+  });
+
+  it("uses relative indentation for folded headers and preserves equal-indent siblings", () => {
+    const indented = redactForLog("headers:\n  Cookie: session=first-secret; admin=second-secret\nX-Safe: ok");
+    expect(indented).toBe("headers:\n  Cookie: [REDACTED]\nX-Safe: ok");
+    expect(indented).not.toContain("first-secret");
+    expect(indented).not.toContain("second-secret");
+
+    const folded = redactForLog("headers:\n  Cookie: session=first-secret\n    continuation-secret\nX-Safe: ok");
+    expect(folded).toBe("headers:\n  Cookie: [REDACTED]\nX-Safe: ok");
+    expect(folded).not.toContain("continuation-secret");
+
+    const colonContinuation = redactForLog(
+      "Cookie: session=first-secret\n  Looks-Like: continuation-secret\nX-Safe: ok",
+    );
+    expect(colonContinuation).toBe("Cookie: [REDACTED]\nX-Safe: ok");
+    expect(colonContinuation).not.toContain("continuation-secret");
+
+    const siblings = redactForLog("headers:\n  Cookie: x\n  Set-Cookie: y");
+    expect(siblings).toBe("headers:\n  Cookie: [REDACTED]\n  Set-Cookie: [REDACTED]");
+  });
+
+  it("consumes structured credential values and enclosing quoted headers", () => {
+    const array = redactForLog('{"set-cookie":["session=first-secret","admin=second-secret"]}');
+    expect(array).toBe('{"set-cookie":"[REDACTED]"}');
+    expect(() => JSON.parse(array)).not.toThrow();
+    expect(array).not.toContain("first-secret");
+    expect(array).not.toContain("second-secret");
+
+    const nestedHeader = redactForLog('{"headers":"Cookie: session=first-secret; admin=second-secret"}');
+    expect(nestedHeader).toBe('{"headers":"Cookie: [REDACTED]"}');
+    expect(() => JSON.parse(nestedHeader)).not.toThrow();
+    expect(nestedHeader).not.toContain("first-secret");
+    expect(nestedHeader).not.toContain("second-secret");
+
+    const indentedDigest = redactForLog('req:\n\tAuthorization: Digest u="x", nonce="deadbeef"\nX-Safe: ok');
+    expect(indentedDigest).toBe("req:\n\tAuthorization: [REDACTED]\nX-Safe: ok");
+    expect(indentedDigest).not.toContain("deadbeef");
+  });
+
+  it("redacts compound credential headers without swallowing JSON-ish fragments", () => {
+    const cookie = redactForLog("Cookie: session=first-secret; admin=second-secret");
+    expect(cookie).toBe("Cookie: [REDACTED]");
+    expect(cookie).not.toContain("second-secret");
+
+    const authorization = redactForLog('Authorization: Digest username="u", realm="r", nonce="deadbeef"');
+    expect(authorization).toBe("Authorization: [REDACTED]");
+    expect(authorization).not.toContain("realm");
+    expect(authorization).not.toContain("deadbeef");
+
+    expect(redactForLog("{authorization: x, other: y}")).toBe("{authorization: [REDACTED], other: y}");
+  });
+
+  it("redacts inline credential values while preserving JSON and list siblings", () => {
+    const unquoted = redactForLog("{cookie: session=abc123secret, other: keepme}");
+    expect(unquoted).toBe("{cookie: [REDACTED], other: keepme}");
+    expect(unquoted).not.toContain("abc123secret");
+
+    const quoted = redactForLog('{"cookie":"session=abc123secret","other":"keepme"}');
+    expect(quoted).toBe('{"cookie":"[REDACTED]","other":"keepme"}');
+    expect(quoted).not.toContain("abc123secret");
+    expect(quoted).toContain("keepme");
+
+    const semicolonList = redactForLog("ctx: a=1; authorization=tok_live_SECRET; b=2");
+    expect(semicolonList).toBe("ctx: a=1; authorization=[REDACTED]; b=2");
+    expect(semicolonList).not.toContain("tok_live_SECRET");
+    expect(semicolonList).toContain("b=2");
+
+    const escaped = String.raw`{\"cookie\":\"session=first-secret; admin=second-secret\",\"other\":\"keep\"}`;
+    const escapedRedacted = redactForLog(escaped);
+    expect(escapedRedacted).toBe(String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`);
+    expect(escapedRedacted).not.toContain("first-secret");
+    expect(escapedRedacted).not.toContain("second-secret");
+    expect(escapedRedacted).toContain(String.raw`\"other\":\"keep\"`);
+  });
+
+  it("decodes exactly one serialized layer before redacting credential structures", () => {
+    const digest = String.raw`{\"authorization\":\"Digest username=\\\"u\\\", realm=\\\"tenant\\\", nonce=\\\"deep-secret\\\"\",\"other\":\"keep\"}`;
+    const digestRedacted = redactForLog(digest);
+    expect(digestRedacted).toBe(String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`);
+    expect(digestRedacted).not.toContain("deep-secret");
+    expect(digestRedacted).toContain(String.raw`\"other\":\"keep\"`);
+
+    const array = String.raw`{\"set-cookie\":[\"session=first-secret\",\"admin=second-secret\"],\"other\":\"keep\"}`;
+    const arrayRedacted = redactForLog(array);
+    expect(arrayRedacted).toBe(String.raw`{\"set-cookie\":\"[REDACTED]\",\"other\":\"keep\"}`);
+    expect(arrayRedacted).not.toContain("first-secret");
+    expect(arrayRedacted).not.toContain("second-secret");
+    expect(arrayRedacted).toContain(String.raw`\"other\":\"keep\"`);
+
+    const doubleSerialized = String.raw`\\\"cookie\\\":\\\"nested-secret\\\"`;
+    const doubleSerializedRedacted = redactForLog(doubleSerialized);
+    expect(doubleSerializedRedacted).toBe(String.raw`\\\"cookie\\\":\"[REDACTED]\"`);
+    expect(doubleSerializedRedacted).toContain(String.raw`\\\"cookie\\\":`);
+    expect(doubleSerializedRedacted).not.toContain("nested-secret");
+
+    const unterminatedArray = String.raw`{\"set-cookie\":[\"session=first-secret\",\"admin=second-secret\"`;
+    const unterminatedRedacted = redactForLog(unterminatedArray);
+    expect(unterminatedRedacted).not.toContain("first-secret");
+    expect(unterminatedRedacted).not.toContain("second-secret");
+  });
+
+  it.each([
+    [
+      String.raw`{\"cookie\":\"a=1\r\nb=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"cookie\":\"a=1\nb=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"cookie\":\"a=1\n  b=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"authorization\":\"Bearer x\nnonce=deep-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"set-cookie\":[\"a=1\nb=deep-secret\"],\"other\":\"keep\"}`,
+      String.raw`{\"set-cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+  ])("redacts encoded line breaks as content of one serialized credential value", (input, expected) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).not.toContain("deep-secret");
+    expect(redacted).toContain(String.raw`\"other\":\"keep\"`);
+  });
+
+  it.each([
+    [
+      String.raw`{\"cookie\":session=a\nb=deep-secret,\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"cookie\":session=a\r\nb=deep-secret,\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      String.raw`{\"authorization\":Bearer\nx=deep-secret,\"other\":\"keep\"}`,
+      String.raw`{\"authorization\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+  ])("redacts encoded line breaks in unquoted serialized credential values", (input, expected) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).not.toContain("deep-secret");
+    expect(redacted).toContain(String.raw`\"other\":\"keep\"`);
+  });
+
+  it.each([
+    [
+      String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+      String.raw`spawn failed at C:\Users\me\bin: {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      String.raw`C:\Users\me\bin`,
+    ],
+    [
+      String.raw`{\"cookie\":\"session=first-secret\",\"url\":\"https:\/\/api.example.com\/v1\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"url\":\"https:\/\/api.example.com\/v1\"}`,
+      String.raw`https:\/\/api.example.com\/v1`,
+    ],
+    [
+      String.raw`line one
+{\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+      String.raw`line one
+{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      "line one\n",
+    ],
+    [
+      String.raw`col1${"\t"}col2 {\"cookie\":\"session=first-secret\",\"other\":\"keep\"}`,
+      String.raw`col1${"\t"}col2 {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+      "col1\tcol2",
+    ],
+  ])("scopes serialized credential redaction without changing surrounding context", (input, expected, context) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).toContain(context);
+    expect(redacted).not.toContain("first-secret");
+    expect(redacted).not.toBe("[REDACTED]");
+  });
+
+  it.each([
+    [
+      String.raw`prefix {\"cookie\":\"session=first-secret\/tail\",\"other\":\"keep\"} suffix`,
+      String.raw`prefix {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"} suffix`,
+    ],
+    [
+      String.raw`prefix {\\\"cookie\\\":\\\"nested-secret\\\",\\\"other\\\":\\\"keep\\\"} suffix`,
+      String.raw`prefix {\\\"cookie\\\":\"[REDACTED]\",\\\"other\\\":\\\"keep\\\"} suffix`,
+    ],
+    [
+      String.raw`prefix {\"cookie\":\"invalid\q-secret\",\"other\":\"keep\"} suffix`,
+      String.raw`prefix {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"} suffix`,
+    ],
+    [
+      String.raw`prefix {\"cookie\":\"invalid\q-first-secret
+second-secret\",\"other\":\"keep\"} suffix`,
+      String.raw`prefix {\"cookie\":\"[REDACTED]\",\"other\":\"keep\"} suffix`,
+    ],
+  ])("fails closed within a rejected serialized value span", (input, expected) => {
+    const redacted = redactForLog(input);
+    expect(redacted).toBe(expected);
+    expect(redacted).toContain("other");
+    expect(redacted).toContain("keep");
+    expect(redacted).toContain("prefix");
+    expect(redacted).toContain("suffix");
+    expect(redacted).not.toContain("secret");
+  });
+
+  it("redacts list-prefixed headers as complete physical fields", () => {
+    for (const prefix of ["- Cookie", "* Cookie", "+ Cookie", "1. Cookie", "2) Cookie"]) {
+      const input = `headers:\n  ${prefix}: session=first-secret; admin=second-secret\n  X-Safe: ok`;
+      expect(redactForLog(input)).toBe(`headers:\n  ${prefix}: [REDACTED]\n  X-Safe: ok`);
+    }
+
+    const unclear = redactForLog("headers:\n  -- Cookie: session=first-secret; admin=second-secret\n  X-Safe: ok");
+    expect(unclear).toBe("headers:\n  -- Cookie: [REDACTED]\n  X-Safe: ok");
+  });
+
+  it.each([
+    ["Cookie: a=first-secret\r\n  b: second-secret\r\nX-Safe: ok", "Cookie: [REDACTED]\r\nX-Safe: ok"],
+    [
+      String.raw`{\"cookie\":\"session=first-secret; admin=second-secret\",\"other\":\"keep\"}`,
+      String.raw`{\"cookie\":\"[REDACTED]\",\"other\":\"keep\"}`,
+    ],
+    [
+      "headers:\n  Cookie: x-one-secret\n  Set-Cookie: y-two-secret",
+      "headers:\n  Cookie: [REDACTED]\n  Set-Cookie: [REDACTED]",
+    ],
+    [
+      "headers:\n  Cookie: session=first-secret; admin=second-secret\nX-Safe: ok",
+      "headers:\n  Cookie: [REDACTED]\nX-Safe: ok",
+    ],
+    ['{"set-cookie":["session=first-secret","admin=second-secret"]}', '{"set-cookie":"[REDACTED]"}'],
+    ['{"headers":"Cookie: session=first-secret; admin=second-secret"}', '{"headers":"Cookie: [REDACTED]"}'],
+    [
+      'req:\n\tAuthorization: Digest u="x", nonce="deadbeef"\nX-Safe: ok',
+      "req:\n\tAuthorization: [REDACTED]\nX-Safe: ok",
+    ],
+    ["{cookie: session=abc123secret, other: keepme}", "{cookie: [REDACTED], other: keepme}"],
+    ['{"cookie":"session=abc123secret","other":"keepme"}', '{"cookie":"[REDACTED]","other":"keepme"}'],
+    ["ctx: a=1; authorization=tok_live_SECRET; b=2", "ctx: a=1; authorization=[REDACTED]; b=2"],
+    ["Cookie: session=first-secret; admin=second-secret", "Cookie: [REDACTED]"],
+    ["Authorization: Bearer a\r\n\tfolded\r\nX-Safe: ok", "Authorization: [REDACTED]\r\nX-Safe: ok"],
+  ])("keeps the twelve established redaction outputs stable", (input, expected) => {
+    expect(redactForLog(input)).toBe(expected);
+  });
+
+  it("scrubs and caps a bare string, which is how log messages cross the boundary", () => {
+    expect(redactForLog("Authorization: Bearer message-secret")).not.toContain("message-secret");
+    expect(new TextEncoder().encode(redactForLog("x".repeat(20_000))).byteLength).toBeLessThanOrEqual(
+      STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
+    );
   });
 });

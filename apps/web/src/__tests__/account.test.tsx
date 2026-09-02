@@ -1,7 +1,15 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { agentId, installApi, json, openAccountMenu, resetWebAppState, userId } from "./support/app-fixtures.js";
+import {
+  agentId,
+  computerId,
+  installApi,
+  json,
+  openAccountMenu,
+  resetWebAppState,
+  userId,
+} from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
@@ -207,7 +215,7 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/onboarding");
   });
 
-  it("lets an Account with no finished setup connect the unbound Agent without leaving onboarding", async () => {
+  it("binds the sole existing Computer to an unbound Agent without leaving onboarding", async () => {
     /*
      * The recovery for an Agent that has no Computer has to work from inside the setup gate. It
      * once linked to that Agent's Computer settings, which lives under the shell that redirects
@@ -219,17 +227,16 @@ describe("OpenTag Web App Shell", () => {
     installApi({ setupCompletedAt: null, agentUnbound: true });
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
-    expect(await screen.findByText(/opentag connect --server/)).toBeTruthy();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-      "/api/v1/computer-connect-codes",
+      `/api/v1/agents/${agentId}/computer/rebind`,
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ mode: "create", targetAgentId: agentId }),
+        body: JSON.stringify({ computerId }),
       }),
     );
-    // The explicit connect command stays inside the setup gate and names the Agent it will bind.
+    // The unambiguous existing Computer is bound inside the setup gate.
     expect(window.location.pathname).toBe("/onboarding");
   });
 
@@ -239,6 +246,7 @@ describe("OpenTag Web App Shell", () => {
      * and this screen sits inside the setup gate -- so the choice has to be answerable here. A
      * refusal, or a pointer to somewhere behind the gate, would strand an Account that has several.
      */
+    const spareComputerId = "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9";
     installApi({
       setupCompletedAt: null,
       agentUnbound: true,
@@ -251,7 +259,7 @@ describe("OpenTag Web App Shell", () => {
           providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
         },
         {
-          id: "1b2c3d4e-5f60-4718-8293-a4b5c6d7e8f9",
+          id: spareComputerId,
           displayName: "Spare",
           platform: "darwin",
           connectionStatus: "online",
@@ -261,11 +269,27 @@ describe("OpenTag Web App Shell", () => {
     });
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+    expect(await screen.findByText("@Reviewer needs a computer before setup can continue.")).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
-    expect(screen.queryByRole("button", { name: "Use Ada's Mac" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Use Spare" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Use Ada's Mac" })).toBeTruthy();
+    const spare = screen.getByRole("button", { name: "Use Spare" });
+    expect(spare).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([input, init]) => String(input).endsWith("/computer/rebind") && init?.method === "POST"),
+    ).toHaveLength(0);
     expect(await screen.findByText(/opentag connect --server/)).toBeTruthy();
+
+    fireEvent.click(spare);
+    expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      `/api/v1/agents/${agentId}/computer/rebind`,
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ computerId: spareComputerId }),
+      }),
+    );
     expect(window.location.pathname).toBe("/onboarding");
   });
 

@@ -64,6 +64,22 @@ export const agentListItem = {
   activity: { state: "idle" as const },
   usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
 };
+
+function boundComputerFrom(
+  computers: readonly { computerId: unknown; displayName: unknown; platform: unknown }[],
+  computerId: unknown,
+): typeof agentSummary.computer | undefined {
+  const selected = computers.find((candidate) => candidate.computerId === computerId);
+  if (
+    !selected ||
+    typeof selected.computerId !== "string" ||
+    typeof selected.displayName !== "string" ||
+    typeof selected.platform !== "string"
+  )
+    return undefined;
+  return { computerId: selected.computerId, displayName: selected.displayName, platform: selected.platform };
+}
+
 export const taskSummary = {
   id: taskSessionId,
   agent: { id: agentId, name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex" },
@@ -160,6 +176,7 @@ export function installApi(
   // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
   // the Server answers differently once the reader has chosen.
   let agentUnbound = options.agentUnbound ?? false;
+  let assignedComputer = agentSummary.computer;
   let revision = lifecycleStatus === "active" ? 1 : 2;
   const adminConfig = () => ({
     id: agentId,
@@ -171,7 +188,7 @@ export function installApi(
     createdAt: agentSummary.createdAt,
     updatedAt: agentSummary.updatedAt,
     createdByUserId: options.agentCreator?.userId ?? userId,
-    computerId,
+    computerId: assignedComputer.computerId,
     revision,
     runtimeConfig: {
       revision: 1,
@@ -188,6 +205,13 @@ export function installApi(
   let meFailuresRemaining = options.meFailuresAfterProfileUpdate ?? 0;
   let computerConnectCodeIssued = false;
   const connectCodeId = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+  const assignComputer = (
+    computers: readonly { computerId: unknown; displayName: unknown; platform: unknown }[],
+    nextComputerId: unknown,
+  ) => {
+    const selected = boundComputerFrom(computers, nextComputerId);
+    if (selected) assignedComputer = selected;
+  };
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -360,7 +384,7 @@ export function installApi(
                 activity: options.agentActivity ?? agentListItem.activity,
                 status: lifecycleStatus,
                 runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
-                ...(agentUnbound ? { computer: null } : {}),
+                computer: agentUnbound ? null : assignedComputer,
               },
             ],
       });
@@ -503,13 +527,15 @@ export function installApi(
         runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
         activity: options.agentActivity ?? { state: "idle" },
-        ...(agentUnbound ? { computer: null } : {}),
+        computer: agentUnbound ? null : assignedComputer,
       });
     }
     if (path === `/api/v1/agents/${agentId}/config`) {
       return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/computer/rebind` && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { computerId?: unknown };
+      assignComputer(await listComputers(false), body.computerId);
       agentUnbound = false;
       revision += 1;
       return json(adminConfig());

@@ -24,9 +24,10 @@ rows are topics, not Sessions.
 
 The Account's channel Session for a group is therefore never listed as a Task; a top-level request
 that nobody replied to is a topic of one message. A Task reports `sessionKind: "thread"` and its
-thread key only once its topic actually has a reply chain; a private chat and a request nobody
-replied to report `sessionKind: "channel"` with no thread key, so the Web labels them by the
-conversation they came from.
+thread key once a message in its topic carries a thread key, which is the first reply for Slack
+and an ordinary Feishu group, and the root itself in a Feishu topic group; a private chat and a
+request nobody replied to report `sessionKind: "channel"` with no thread key, so the Web labels
+them by the conversation they came from.
 
 ## Executions and status
 

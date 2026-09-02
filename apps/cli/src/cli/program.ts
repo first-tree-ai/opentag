@@ -5,6 +5,7 @@ import { registerComputerCommand } from "../commands/computer/index.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerLoginCommand } from "../commands/login.js";
+import { registerLogsCommand } from "../commands/logs.js";
 import { registerProviderCliCommand } from "../commands/provider-cli.js";
 import { registerSessionCommand } from "../commands/session/index.js";
 import { registerUpgradeCommand } from "../commands/upgrade.js";
@@ -22,6 +23,7 @@ export function createProgram(): Command {
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);
+  registerLogsCommand(program);
   registerProviderCliCommand(program);
   registerSessionCommand(program);
   registerUpgradeCommand(program);

@@ -9,6 +9,7 @@ import {
   ServerHealthResponseError,
   ServerHealthTimeoutError,
 } from "@opentag/client";
+import { StructuredErrorSchema } from "@opentag/shared";
 import { Command, type CommanderError } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerDoctorCommand } from "../commands/doctor.js";
@@ -53,6 +54,65 @@ describe("doctor command target", () => {
     } finally {
       process.exitCode = previousExitCode;
       stdout.mockRestore();
+      run.mockRestore();
+    }
+  });
+
+  it("presents an unhealthy doctor report as a failure envelope in JSON mode", async () => {
+    const program = new Command().name("opentag");
+    registerDoctorCommand(program);
+    const report = {
+      exitCode: 1,
+      message: "OpenTag Doctor\n\nSummary\n  1 blocking baseline check(s) failed for this OpenTag Home.",
+      target: { home: "/tmp/opentag-doctor" },
+      checks: [
+        {
+          code: "daemon.service",
+          scope: "daemon-service",
+          status: "fail",
+          blocking: true,
+          label: "Daemon service",
+          detail: "inactive",
+        },
+      ],
+      nextActions: [],
+      providerCliSetup: "unknown",
+      notEvaluated: [],
+    } as unknown as DoctorResult;
+    const run = vi.spyOn(doctorCore, "runDoctor").mockResolvedValue(report);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await program.parseAsync(["node", "opentag", "doctor", "--json"]);
+      expect(process.exitCode).toBe(1);
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const document = JSON.parse(String(stderr.mock.calls[0]?.[0])) as {
+        ok: boolean;
+        error: unknown;
+        result: { exitCode: number; providerCliSetup: string; checks: unknown[] };
+      };
+      expect(StructuredErrorSchema.safeParse(document.error).success).toBe(true);
+      expect(document.ok).toBe(false);
+      // An unhealthy report is a configuration failure; the shared policy maps that to the
+      // operational-failure exit, so the envelope and the process exit agree.
+      expect(document.error).toEqual({
+        code: "DOCTOR_UNHEALTHY",
+        category: "configuration",
+        retryability: "never",
+        phase: "unknown",
+        message: "1 blocking baseline check(s) failed for this OpenTag Home.",
+      });
+      // The full report stays attached as the bounded partial result, checks included.
+      expect(document.result.exitCode).toBe(1);
+      expect(document.result.providerCliSetup).toBe("unknown");
+      expect(document.result.checks).toHaveLength(1);
+    } finally {
+      process.exitCode = previousExitCode;
+      stdout.mockRestore();
+      stderr.mockRestore();
       run.mockRestore();
     }
   });

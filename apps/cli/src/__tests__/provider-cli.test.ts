@@ -1,4 +1,11 @@
-import { PROVIDER_CLI_CATALOG } from "@opentag/client";
+import { mkdir, writeFile } from "node:fs/promises";
+import {
+  PROVIDER_CLI_CATALOG,
+  type ProviderCliCatalogEntry,
+  providerCliLockFilePath,
+  resolveProviderCliAccountLayout,
+} from "@opentag/client";
+import { StructuredErrorSchema } from "@opentag/shared";
 import { Command, CommanderError } from "commander";
 import { describe, expect, it } from "vitest";
 import { registerProviderCliCommand } from "../commands/provider-cli.js";
@@ -122,7 +129,7 @@ describe("runProviderCliEnsure", () => {
     expect(text).toContain("[lark] ready: selected-existing");
   });
 
-  it("maps lark to feishu and aggregates failures across providers", async () => {
+  it("maps lark to feishu and reports an auto-repairable partial failure as retryable", async () => {
     const accountHome = await makeTempDir("opentag-cli-");
     const bin = `${accountHome}/tools`;
     await writeFakeCli(bin, "feishu", "1.0.92");
@@ -144,8 +151,9 @@ describe("runProviderCliEnsure", () => {
       stdout: (chunk) => stdout.push(chunk),
       stderr: (chunk) => stderr.push(chunk),
     });
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(3);
     expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
     const document = JSON.parse(stderr.join("")) as {
       ok: boolean;
       error: { code: string };
@@ -154,8 +162,18 @@ describe("runProviderCliEnsure", () => {
         nextActions: Array<{ provider: string; command: string; reason: string }>;
       };
     };
+    // A failed install is a dependency that is currently unavailable: exit 3 via the shared
+    // policy. install_incomplete has a rerun nextAction, so the envelope must agree that one
+    // immediate retry is safe rather than claiming the opposite.
+    expect(StructuredErrorSchema.safeParse(document.error).success).toBe(true);
     expect(document.ok).toBe(false);
-    expect(document.error.code).toBe("PROVIDER_CLI_SETUP_INCOMPLETE");
+    expect(document.error).toEqual({
+      code: "PROVIDER_CLI_SETUP_INCOMPLETE",
+      category: "dependency",
+      retryability: "immediate",
+      phase: "provider",
+      message: "One or more Provider CLIs need attention.",
+    });
     expect(document.result.results).toHaveLength(2);
     expect(document.result.results[0]?.provider).toBe("feishu");
     expect(document.result.results[0]?.ok).toBe(true);
@@ -165,6 +183,118 @@ describe("runProviderCliEnsure", () => {
       expect.objectContaining({
         provider: "slack",
         command: expect.stringContaining("provider-cli ensure --provider slack"),
+        reason: "install_incomplete",
+      }),
+    ]);
+  });
+
+  it("reports a manual partial failure as never retryable with no repair next action", async () => {
+    const accountHome = await makeTempDir("opentag-cli-");
+    const bin = `${accountHome}/tools`;
+    await writeFakeCli(bin, "feishu", "1.0.92");
+    const feishuEntry = PROVIDER_CLI_CATALOG.find((entry) => entry.provider === "feishu");
+    const slackEntry = PROVIDER_CLI_CATALOG.find((entry) => entry.provider === "slack");
+    if (!feishuEntry || !slackEntry) throw new Error("catalog entries missing");
+    // slack's catalog offers no artifact for this platform: ensure fails as unsupported_platform
+    // without any download, and no amount of rerunning ensure can change that.
+    const slackWithoutArtifact: ProviderCliCatalogEntry = { ...slackEntry, artifacts: [] };
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const result = await runProviderCliEnsure({
+      provider: "all",
+      json: true,
+      accountHome,
+      env: { PATH: bin },
+      catalog: [feishuEntry, slackWithoutArtifact],
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: (chunk) => stderr.push(chunk),
+    });
+    expect(result.exitCode).toBe(3);
+    expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
+    const document = JSON.parse(stderr.join("")) as {
+      ok: boolean;
+      error: { code: string };
+      result: {
+        results: Array<{ provider: string; ok: boolean; diagnostic?: { code: string } }>;
+        nextActions: Array<{ provider: string; command: string; reason: string }>;
+      };
+    };
+    expect(StructuredErrorSchema.safeParse(document.error).success).toBe(true);
+    expect(document.ok).toBe(false);
+    expect(document.error).toEqual({
+      code: "PROVIDER_CLI_SETUP_INCOMPLETE",
+      category: "dependency",
+      retryability: "never",
+      phase: "provider",
+      message: "One or more Provider CLIs need attention.",
+    });
+    expect(document.result.results).toEqual([
+      expect.objectContaining({ provider: "feishu", ok: true }),
+      expect.objectContaining({
+        provider: "slack",
+        ok: false,
+        diagnostic: expect.objectContaining({ code: "unsupported_platform" }),
+      }),
+    ]);
+    expect(document.result.nextActions).toEqual([]);
+  });
+
+  it("classifies a lock-held partial failure as retryable with backoff and exit 3", async () => {
+    const accountHome = await makeTempDir("opentag-cli-");
+    const bin = `${accountHome}/tools`;
+    await writeFakeCli(bin, "feishu", "1.0.92");
+    // The foreground targeted connect holds the slack provider lock while it installs; the
+    // live holder PID plus an instant retry wait make the contention deterministic.
+    const layout = resolveProviderCliAccountLayout(accountHome);
+    await mkdir(layout.state, { recursive: true });
+    await writeFile(providerCliLockFilePath(layout, "slack"), JSON.stringify({ pid: process.pid, token: "held" }), {
+      mode: 0o600,
+    });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const result = await runProviderCliEnsure({
+      provider: "all",
+      json: true,
+      accountHome,
+      env: { PATH: bin },
+      sleep: () => Promise.resolve(),
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: (chunk) => stderr.push(chunk),
+    });
+    expect(result.exitCode).toBe(3);
+    expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
+    const document = JSON.parse(stderr.join("")) as {
+      ok: boolean;
+      error: { code: string };
+      result: {
+        results: Array<{ provider: string; ok: boolean; diagnostic?: { code: string } }>;
+        nextActions: Array<{ provider: string; command: string; reason: string }>;
+      };
+    };
+    expect(StructuredErrorSchema.safeParse(document.error).success).toBe(true);
+    expect(document.ok).toBe(false);
+    expect(document.error).toEqual({
+      code: "PROVIDER_CLI_SETUP_INCOMPLETE",
+      category: "unavailable",
+      retryability: "backoff",
+      phase: "provider",
+      message: "One or more Provider CLIs need attention.",
+    });
+    expect(document.result.results).toEqual([
+      expect.objectContaining({ provider: "feishu", ok: true }),
+      expect.objectContaining({
+        provider: "slack",
+        ok: false,
+        diagnostic: expect.objectContaining({ code: "operation_in_progress" }),
+      }),
+    ]);
+    expect(document.result.nextActions).toEqual([
+      expect.objectContaining({
+        provider: "slack",
+        command: expect.stringContaining("provider-cli ensure --provider slack"),
+        reason: "operation_in_progress",
       }),
     ]);
   });
@@ -195,7 +325,7 @@ describe("runProviderCliEnsure", () => {
 });
 
 describe("runProviderCliInspect", () => {
-  it("reports absent providers with exit code 1", async () => {
+  it("reports absent providers with the aggregate contract and exit 3", async () => {
     const accountHome = await makeTempDir("opentag-cli-");
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -207,18 +337,63 @@ describe("runProviderCliInspect", () => {
       stdout: (chunk) => stdout.push(chunk),
       stderr: (chunk) => stderr.push(chunk),
     });
-    expect(result.exitCode).toBe(1);
+    expect(result.exitCode).toBe(3);
     expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
     const document = JSON.parse(stderr.join("")) as {
+      ok: boolean;
       error: { code: string };
       result: { results: Record<string, unknown>[]; nextActions: unknown[] };
     };
-    expect(document.error.code).toBe("PROVIDER_CLI_NOT_READY");
+    // not_installed has a rerun-ensure next action, so the envelope agrees it is retryable.
+    expect(StructuredErrorSchema.safeParse(document.error).success).toBe(true);
+    expect(document.ok).toBe(false);
+    expect(document.error).toEqual({
+      code: "PROVIDER_CLI_NOT_READY",
+      category: "dependency",
+      retryability: "immediate",
+      phase: "provider",
+      message: "One or more Provider CLIs need attention.",
+    });
     expect(document.result.results[0]?.provider).toBe("slack");
     expect(document.result.results[0]?.state).toBe("absent");
     expect(document.result.results[0]?.readiness).toBe("install");
     expect(document.result.nextActions).toEqual([
       expect.objectContaining({ command: expect.stringContaining("provider-cli ensure --provider slack") }),
     ]);
+  });
+
+  it("reports an unrepairable inspection as never retryable with no next action", async () => {
+    const accountHome = await makeTempDir("opentag-cli-");
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const result = await runProviderCliInspect({
+      provider: "slack",
+      json: true,
+      accountHome,
+      env: { PATH: "" },
+      platform: "win32",
+      stdout: (chunk) => stdout.push(chunk),
+      stderr: (chunk) => stderr.push(chunk),
+    });
+    expect(result.exitCode).toBe(3);
+    expect(stdout).toEqual([]);
+    expect(stderr).toHaveLength(1);
+    const document = JSON.parse(stderr.join("")) as {
+      ok: boolean;
+      error: { code: string };
+      result: { results: Array<{ diagnostic?: { code: string } }>; nextActions: unknown[] };
+    };
+    expect(StructuredErrorSchema.safeParse(document.error).success).toBe(true);
+    expect(document.ok).toBe(false);
+    expect(document.error).toEqual({
+      code: "PROVIDER_CLI_NOT_READY",
+      category: "dependency",
+      retryability: "never",
+      phase: "provider",
+      message: "One or more Provider CLIs need attention.",
+    });
+    expect(document.result.results[0]?.diagnostic?.code).toBe("unsupported_platform");
+    expect(document.result.nextActions).toEqual([]);
   });
 });

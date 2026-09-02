@@ -22,11 +22,27 @@ import {
   readProviderCliSelection,
 } from "./selection-store.js";
 import { managedArtifactDigest } from "./turn-plan.js";
-import type { ProviderCliInspection, ProviderCliProvider, ProviderCliReadySelection } from "./types.js";
+import type {
+  ProviderCliEnsureResult,
+  ProviderCliInspection,
+  ProviderCliProvider,
+  ProviderCliReadySelection,
+} from "./types.js";
 import type { ProviderCliValidationRequest, ProviderCliValidationRunner } from "./validation-runner.js";
 
 const UNREPAIRABLE = new Set(["unsupported_platform", "global_bin_unavailable"]);
 const GRANT_REPLAY_RETENTION_MS = 60_000;
+
+/**
+ * A foreground targeted connect is the sole first-setup installer and holds the per-provider
+ * lock while it works. A daemon reconcile that loses that race waits the foreground operation
+ * out instead of reporting a verdict: the delay is one lock-acquire budget, and the attempt
+ * bound comfortably covers the installer's own download deadline.
+ */
+export const PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS = 5_000;
+export const PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS = 30;
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface ProviderCliReconcilerOptions {
   readonly connection: Pick<
@@ -36,6 +52,8 @@ export interface ProviderCliReconcilerOptions {
   readonly manager: Pick<ProviderCliManager, "ensure" | "inspect" | "layout">;
   readonly now?: () => number;
   readonly signal?: AbortSignal;
+  /** Test hook: replaces the busy-lock retry wait. */
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly validation: Pick<ProviderCliValidationRunner, "run" | "cleanupAll">;
 }
 
@@ -68,6 +86,7 @@ export class ProviderCliReconciler {
   readonly #providerJobs = new Map<string, Promise<ProviderCliArtifactStatusFrame["status"]>>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
+  readonly #sleep: (ms: number) => Promise<void>;
   readonly #unsubscribe: () => void;
   readonly #validation: ProviderCliReconcilerOptions["validation"];
   #closePromise?: Promise<void>;
@@ -78,6 +97,7 @@ export class ProviderCliReconciler {
     this.#manager = options.manager;
     this.#now = options.now ?? Date.now;
     this.#signal = options.signal;
+    this.#sleep = options.sleep ?? defaultSleep;
     this.#validation = options.validation;
     this.#unsubscribe = this.#connection.subscribeBusinessFrames((frame) => this.#trackFrame(frame));
   }
@@ -247,7 +267,7 @@ export class ProviderCliReconciler {
       let inspection = await this.#manager.inspect(provider);
       if (inspection.readiness !== "ready") {
         if (inspection.diagnostic && UNREPAIRABLE.has(inspection.diagnostic.code)) return "unavailable";
-        await this.#manager.ensure(provider, { mode });
+        await this.#ensureConverging(provider, mode);
         inspection = await this.#manager.inspect(provider);
       }
       if (inspection.readiness === "ready") {
@@ -265,6 +285,39 @@ export class ProviderCliReconciler {
       this.#readySelection.delete(provider);
       return "unavailable";
     }
+  }
+
+  /**
+   * Ensure, waiting out a foreground installer's lock instead of converting the race into a
+   * verdict: losing the cross-process provider lock is transient, so the artifact stays in its
+   * published "checking" state while the foreground operation finishes, and the outcome is then
+   * re-read so the connection converges on a terminal status without waiting for a reconnect.
+   */
+  async #ensureConverging(
+    provider: ProviderCliProvider,
+    mode: "auto" | "managed-only",
+  ): Promise<ProviderCliEnsureResult> {
+    let outcome = await this.#manager.ensure(provider, { mode });
+    for (let attempt = 0; outcome.diagnostic?.code === "operation_in_progress"; attempt += 1) {
+      if (attempt >= PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS || this.#closed || this.#signal?.aborted) break;
+      await this.#sleepBusy();
+      // The shutdown signal may win the wait; do not start another ensure after it.
+      if (this.#closed || this.#signal?.aborted) break;
+      outcome = await this.#manager.ensure(provider, { mode });
+    }
+    return outcome;
+  }
+
+  /** Bounded wait between lock-busy retries; returns early when the daemon is shutting down. */
+  #sleepBusy(): Promise<void> {
+    const signal = this.#signal;
+    const wait = this.#sleep(PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS);
+    if (!signal) return wait;
+    if (signal.aborted) return Promise.resolve();
+    return Promise.race([
+      wait,
+      new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true })),
+    ]);
   }
 
   async #publishCurrentProvider(

@@ -1,10 +1,11 @@
 import type { ProviderCliEnsureResult, ProviderCliManager, ProviderCliPhaseEvent } from "@opentag/client";
-import { CommandError, presentCommand } from "../command/policy.js";
+import { CommandError, type CommandExitCode, commandExitCode, presentCommand } from "../command/policy.js";
 import {
   createProviderCliManager,
   type ProviderCliCommandDeps,
   type ProviderCliNextAction,
   parseProviderCliProvidersOrReport,
+  providerCliAggregateFailure,
   providerCliCanAutoRepair,
   providerCliLabel,
   providerCliRepairCommand,
@@ -30,7 +31,7 @@ export interface ProviderCliEnsureCommandOptions extends ProviderCliCommandDeps 
 }
 
 export interface ProviderCliEnsureCommandResult {
-  readonly exitCode: 0 | 1 | 2;
+  readonly exitCode: CommandExitCode;
   readonly results: readonly ProviderCliEnsureResult[];
   readonly nextActions: readonly ProviderCliNextAction[];
 }
@@ -151,6 +152,7 @@ export async function runProviderCliEnsure(
     return action ? [action] : [];
   });
   const ready = results.every((result) => result.ok);
+  const failure = ready ? undefined : providerCliSetupIncomplete(results);
   const value = { results, nextActions };
   if (!options.json) {
     const write = ready ? writeStdout : writeStderr;
@@ -163,25 +165,35 @@ export async function runProviderCliEnsure(
     }
   } else if (ready) {
     presentCommand({ ok: true, value, exitCode: 0 }, { json: true, stdout: options.stdout, stderr: options.stderr });
-  } else {
+  } else if (failure) {
     presentCommand(
       {
         ok: false,
-        error: new CommandError(
-          {
-            code: "PROVIDER_CLI_SETUP_INCOMPLETE",
-            category: "dependency",
-            retryability: "never",
-            phase: "provider",
-          },
-          "One or more Provider CLIs need attention.",
-        ),
-        exitCode: 1,
+        error: failure.error,
+        exitCode: failure.exitCode,
         value,
       },
       { json: true, stdout: options.stdout, stderr: options.stderr },
     );
   }
 
-  return { exitCode: ready ? 0 : 1, results, nextActions };
+  return { exitCode: failure ? failure.exitCode : 0, results, nextActions };
+}
+
+/** The aggregate failure contract for a run where at least one provider did not become ready. */
+function providerCliSetupIncomplete(results: readonly ProviderCliEnsureResult[]): {
+  readonly error: CommandError;
+  readonly exitCode: ReturnType<typeof commandExitCode>;
+} {
+  const aggregate = providerCliAggregateFailure(results.filter((result) => !result.ok));
+  const error = new CommandError(
+    {
+      code: "PROVIDER_CLI_SETUP_INCOMPLETE",
+      category: aggregate.category,
+      retryability: aggregate.retryability,
+      phase: "provider",
+    },
+    "One or more Provider CLIs need attention.",
+  );
+  return { error, exitCode: commandExitCode(error) };
 }

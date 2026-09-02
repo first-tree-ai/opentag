@@ -1,10 +1,11 @@
 import type { ProviderCliInspection } from "@opentag/client";
-import { CommandError, presentCommand } from "../command/policy.js";
+import { CommandError, type CommandExitCode, commandExitCode, presentCommand } from "../command/policy.js";
 import {
   createProviderCliManager,
   type ProviderCliCommandDeps,
   type ProviderCliNextAction,
   parseProviderCliProvidersOrReport,
+  providerCliAggregateFailure,
   providerCliCanAutoRepair,
   providerCliLabel,
   providerCliRepairCommand,
@@ -24,7 +25,7 @@ export interface ProviderCliInspectCommandOptions extends ProviderCliCommandDeps
 }
 
 export interface ProviderCliInspectCommandResult {
-  readonly exitCode: 0 | 1 | 2;
+  readonly exitCode: CommandExitCode;
   readonly results: readonly ProviderCliInspection[];
   readonly nextActions: readonly ProviderCliNextAction[];
 }
@@ -108,6 +109,7 @@ export async function runProviderCliInspect(
     return action ? [action] : [];
   });
   const ready = results.every((result) => result.state === "ready");
+  const failure = ready ? undefined : providerCliNotReady(results);
   const value = { results, nextActions };
   if (!options.json) {
     const write = ready ? writeStdout : writeStderr;
@@ -120,25 +122,39 @@ export async function runProviderCliInspect(
     }
   } else if (ready) {
     presentCommand({ ok: true, value, exitCode: 0 }, { json: true, stdout: options.stdout, stderr: options.stderr });
-  } else {
+  } else if (failure) {
     presentCommand(
       {
         ok: false,
-        error: new CommandError(
-          {
-            code: "PROVIDER_CLI_NOT_READY",
-            category: "dependency",
-            retryability: "never",
-            phase: "provider",
-          },
-          "One or more Provider CLIs need attention.",
-        ),
-        exitCode: 1,
+        error: failure.error,
+        exitCode: failure.exitCode,
         value,
       },
       { json: true, stdout: options.stdout, stderr: options.stderr },
     );
   }
 
-  return { exitCode: ready ? 0 : 1, results, nextActions };
+  return { exitCode: failure ? failure.exitCode : 0, results, nextActions };
+}
+
+/**
+ * The aggregate failure contract for a read-only inspection that found a provider not ready.
+ * The posture comes from the same classifier as ensure, so inspect never contradicts the repair
+ * path its nextActions point at.
+ */
+function providerCliNotReady(results: readonly ProviderCliInspection[]): {
+  readonly error: CommandError;
+  readonly exitCode: ReturnType<typeof commandExitCode>;
+} {
+  const aggregate = providerCliAggregateFailure(results.filter((result) => result.state !== "ready"));
+  const error = new CommandError(
+    {
+      code: "PROVIDER_CLI_NOT_READY",
+      category: aggregate.category,
+      retryability: aggregate.retryability,
+      phase: "provider",
+    },
+    "One or more Provider CLIs need attention.",
+  );
+  return { error, exitCode: commandExitCode(error) };
 }

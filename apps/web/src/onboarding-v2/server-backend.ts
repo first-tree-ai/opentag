@@ -210,6 +210,20 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, []);
 
   const applyResumeSelection = useCallback((selected: AccountResumeSelection): string | undefined => {
+    // A fresh read replaces what the previous read selected rather than merging into it:
+    // whatever the Account no longer reports is gone, and retaining it would let a stale
+    // Agent answer for — or be deleted in place of — the state the page is showing now.
+    creationRef.current = "idle";
+    computerId.current = undefined;
+    setAgent(undefined);
+    setAgentRestored(false);
+    setResumeBlocked(undefined);
+    setComputerPreviouslyConfirmed(false);
+    setCreation("idle");
+    setMessaging({ kind: "idle" });
+    setMessagingProvider(undefined);
+    setComputer(undefined);
+    setSelectedComputer(undefined);
     if (selected.kind === "none") return undefined;
     if (selected.kind === "computer") {
       computerId.current = selected.computer.computerId;
@@ -457,7 +471,10 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, [agent]);
 
   const discardAgent = useCallback(async (): Promise<boolean> => {
-    const targetId = agent?.id ?? resumeBlocked?.agentId;
+    // The confirmation names exactly one Agent: the blocked screen takes the whole page when
+    // it is shown, and only without it does the Computer step name the restored Agent. Delete
+    // only the Agent that was named — never a stale one retained from an earlier read.
+    const targetId = resumeBlocked?.agentId ?? agent?.id;
     if (!targetId || discardRunning.current) return false;
     discardRunning.current = true;
     setDiscardingAgent(true);
@@ -532,7 +549,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const readiness = liveReadiness ?? (pastComputerStep ? lastPassedReadiness : undefined);
 
   const computerConnectAdapter = useMemo<ComputerConnectAdapter | undefined>(() => {
-    const targetAgentId = agent?.id ?? resumeBlocked?.agentId;
+    // The same displayed recovery target as discardAgent: a blocked screen's Agent first,
+    // then the Agent the Computer step is showing.
+    const targetAgentId = resumeBlocked?.agentId ?? agent?.id;
     if (!targetAgentId) return undefined;
     return {
       issue: (intent) =>

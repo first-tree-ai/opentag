@@ -65,12 +65,12 @@ describe("provider-cli local E2E", () => {
     const harness = makeHarness(accountHome, { env: { PATH: "" } });
 
     await harness.run(["provider-cli", "inspect", "--provider", "lark", "--json"]);
-    expect(harness.exitCode()).toBe(1);
+    expect(harness.exitCode()).toBe(3);
     expect(harness.stdout).toEqual([]);
     expect(harness.stderr).toHaveLength(1);
     expect(JSON.parse(harness.stderr[0] ?? "")).toMatchObject({
       ok: false,
-      error: { code: "PROVIDER_CLI_NOT_READY" },
+      error: { code: "PROVIDER_CLI_NOT_READY", category: "dependency", retryability: "immediate" },
       result: { results: [{ provider: "feishu" }], nextActions: expect.any(Array) },
     });
 

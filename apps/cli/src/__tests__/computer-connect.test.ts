@@ -102,8 +102,20 @@ describe("computer connect", () => {
       service: await managerFixture().status(),
     });
     const ensureSpy = vi.spyOn(providerCliCore, "runProviderCliEnsure").mockResolvedValue({
-      exitCode: 1,
-      results: [],
+      exitCode: 3,
+      results: [
+        {
+          ok: false,
+          provider: "slack",
+          action: "failed",
+          phases: [],
+          candidates: [],
+          readiness: "unavailable",
+          globalCommand: { active: false },
+          warnings: [],
+          diagnostic: { code: "install_incomplete" },
+        },
+      ],
       nextActions: [
         {
           provider: "slack",
@@ -125,7 +137,7 @@ describe("computer connect", () => {
       expect(stderr).toHaveBeenCalledWith(
         'Resume with: "$HOME/.local/bin/opentag-dev" provider-cli ensure --provider slack\n',
       );
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(3);
     } finally {
       process.exitCode = previousExitCode;
       stderr.mockRestore();
@@ -145,8 +157,20 @@ describe("computer connect", () => {
       service: await managerFixture().status(),
     });
     const ensureSpy = vi.spyOn(providerCliCore, "runProviderCliEnsure").mockResolvedValue({
-      exitCode: 1,
-      results: [],
+      exitCode: 3,
+      results: [
+        {
+          ok: false,
+          provider: "feishu",
+          action: "failed",
+          phases: [],
+          candidates: [],
+          readiness: "unavailable",
+          globalCommand: { active: false },
+          warnings: [],
+          diagnostic: { code: "probe_failed" },
+        },
+      ],
       nextActions: [
         {
           provider: "feishu",
@@ -165,7 +189,7 @@ describe("computer connect", () => {
       expect(stderr).toHaveBeenCalledTimes(1);
       const document = JSON.parse(String(stderr.mock.calls[0]?.[0])) as {
         ok: boolean;
-        error: { code: string };
+        error: { code: string; category: string; retryability: string };
         result: { connected: boolean; providerClis: { status: string; nextActions: unknown[] } };
       };
       expect(document).toMatchObject({
@@ -173,9 +197,75 @@ describe("computer connect", () => {
         error: { code: "PROVIDER_CLI_SETUP_INCOMPLETE" },
         result: { connected: true, providerClis: { status: "needs_attention" } },
       });
+      // The envelope must agree with the rerun repair action it carries: a probe failure is
+      // auto-repairable, so the retry posture is immediate and the exit code is the shared
+      // policy's dependency mapping.
+      expect(document.error).toMatchObject({ category: "dependency", retryability: "immediate" });
       expect(document.result.providerClis.nextActions).toHaveLength(1);
       expect(document).not.toHaveProperty("nextActions");
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = previousExitCode;
+      stderr.mockRestore();
+      stdout.mockRestore();
+      ensureSpy.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
+  it("classifies a lock-held partial setup as transient backoff in the connect JSON document", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      computerId: "computer-1",
+      credentialsPath: `${home}/config/computer-credentials.json`,
+      message: "Connected this Computer",
+      service: await managerFixture().status(),
+    });
+    const ensureSpy = vi.spyOn(providerCliCore, "runProviderCliEnsure").mockResolvedValue({
+      exitCode: 3,
+      results: [
+        {
+          ok: false,
+          provider: "slack",
+          action: "failed",
+          phases: [],
+          candidates: [],
+          readiness: "unavailable",
+          globalCommand: { active: false },
+          warnings: [],
+          diagnostic: { code: "operation_in_progress" },
+        },
+      ],
+      nextActions: [
+        {
+          provider: "slack",
+          command: '"$HOME/.local/bin/opentag-dev" provider-cli ensure --provider slack',
+          reason: "operation_in_progress",
+        },
+      ],
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "connect", "code", "--home", home, "--json"]);
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const document = JSON.parse(String(stderr.mock.calls[0]?.[0])) as {
+        ok: boolean;
+        error: { code: string; category: string; retryability: string; phase: string };
+      };
+      expect(document.ok).toBe(false);
+      expect(document.error).toEqual({
+        code: "PROVIDER_CLI_SETUP_INCOMPLETE",
+        category: "unavailable",
+        retryability: "backoff",
+        phase: "provider",
+        message: "Computer connection is active, but local messaging CLI setup needs attention.",
+      });
+      expect(process.exitCode).toBe(3);
     } finally {
       process.exitCode = previousExitCode;
       stderr.mockRestore();

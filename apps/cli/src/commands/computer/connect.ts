@@ -10,6 +10,7 @@ import {
   runComputerConnect,
 } from "../../core/computer/connect.js";
 import * as providerCliCore from "../../core/provider-cli/ensure.js";
+import { providerCliAggregateFailure } from "../../core/provider-cli/shared.js";
 
 type ComputerConnectCommandOptions = {
   home?: string;
@@ -162,18 +163,22 @@ function presentConnectResult(
       commandPolicy.presentCommand({ ok: true, value, exitCode: 0 }, { json: true });
       return;
     }
+    const aggregate = providerCliAggregateFailure(providerClis.results.filter((entry) => !entry.ok));
     const commandError =
       error ??
       new commandPolicy.CommandError(
         {
           code: "PROVIDER_CLI_SETUP_INCOMPLETE",
-          category: "dependency",
-          retryability: "never",
+          category: aggregate.category,
+          retryability: aggregate.retryability,
           phase: "provider",
         },
         "Computer connection is active, but local messaging CLI setup needs attention.",
       );
-    commandPolicy.presentCommand({ ok: false, error: commandError, exitCode: 1, value }, { json: true });
+    commandPolicy.presentCommand(
+      { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError), value },
+      { json: true },
+    );
     return;
   }
   if (providerClis.status === "ready") {

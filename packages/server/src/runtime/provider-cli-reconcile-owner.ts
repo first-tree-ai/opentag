@@ -54,6 +54,8 @@ type ProviderCliCredentialReadiness = ReturnType<ConnectionRegistry["providerCli
 interface CurrentRequest {
   agentId: string;
   artifactRetryAttempt: number;
+  /** True only while a bounded artifact re-dispatch timer is actually armed. */
+  artifactRetryPending: boolean;
   computerId: string;
   installationId: string;
   credentialGeneration: number;
@@ -92,7 +94,9 @@ function isReconcileInFlight(
   artifact: { status: string } | undefined,
   credential: { status: string } | undefined,
 ): boolean {
-  if (artifact?.status === "checking" || artifact?.status === "unavailable") return true;
+  // "unavailable" is a terminal observation, never in-flight work; the caller handles a retained
+  // unavailable artifact explicitly before consulting this check.
+  if (artifact?.status === "checking") return true;
   return credential?.status === "checking" || credential?.status === "unconfirmed" || credential?.status === "retrying";
 }
 
@@ -298,6 +302,7 @@ export class ProviderCliReconcileOwner {
     this.#requests.set(key, {
       agentId: requirement.agentId,
       artifactRetryAttempt: existing && options.force ? existing.artifactRetryAttempt : 0,
+      artifactRetryPending: false,
       computerId,
       credentialGeneration: requirement.credentialGeneration,
       expectedIdentity: requirement.expectedIdentity,
@@ -606,11 +611,16 @@ export class ProviderCliReconcileOwner {
 
   #scheduleArtifactRetry(current: CurrentRequest | undefined): void {
     if (!current) return;
-    if (current.artifactRetryAttempt >= this.#maxRetries) return;
+    if (current.artifactRetryAttempt >= this.#maxRetries) {
+      current.artifactRetryPending = false;
+      return;
+    }
     current.artifactRetryAttempt += 1;
+    current.artifactRetryPending = true;
     this.#armTimer(
       current,
       () => {
+        current.artifactRetryPending = false;
         void this.#dispatchRequirement(
           current.computerId,
           current.installationId,
@@ -727,6 +737,16 @@ export class ProviderCliReconcileOwner {
       current.agentId !== requirement.agentId ||
       current.credentialGeneration !== requirement.credentialGeneration
     ) {
+      await this.#dispatchRequirement(computerId, installationId, instanceId, requirement);
+      return;
+    }
+    // A retained "unavailable" artifact observation is terminal, not in-flight work. While a
+    // bounded retry is armed it is left alone; once the budget is exhausted the demand read is
+    // the recovery path, restarting the requirement with a fresh bounded budget on the same
+    // connection instead of waiting for a reconnect that may never come.
+    if (artifact?.status === "unavailable") {
+      if (current.artifactRetryPending) return;
+      await this.#retireRequest(requestKey(computerId, requirement.integrationId));
       await this.#dispatchRequirement(computerId, installationId, instanceId, requirement);
       return;
     }

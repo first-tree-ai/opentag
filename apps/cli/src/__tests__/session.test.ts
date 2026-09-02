@@ -110,7 +110,7 @@ describe("session CLI", () => {
     try {
       await createProgram().parseAsync(["node", "opentag", "session", "create", "--message", "task", "--json"]);
       expect(stderr).toHaveBeenCalledWith(expect.stringContaining('"status":"rejected"'));
-      expect(process.exitCode).toBe(1);
+      expect(process.exitCode).toBe(2);
     } finally {
       stderr.mockRestore();
       process.exitCode = previousExitCode;

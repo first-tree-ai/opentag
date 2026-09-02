@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   computeFileIdentity,
   computeTargetFingerprint,
+  PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS,
+  PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS,
   type ProviderCliInspection,
   ProviderCliReconciler,
   type ProviderCliReconcilerOptions,
@@ -272,6 +274,82 @@ describe("provider CLI reconciler", () => {
     });
     await runtime.emit(requirement);
     expect(ensure).toHaveBeenCalledWith("slack", { mode: "managed-only" });
+  });
+
+  it("waits out a foreground installer's lock and converges without a reconnect", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const sleep = vi.fn(async () => undefined);
+    const inspect = vi
+      .fn()
+      .mockResolvedValueOnce({ readiness: "install", diagnostic: { code: "not_installed" } })
+      .mockResolvedValue(fixture.inspection);
+    const ensure = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, diagnostic: { code: "operation_in_progress" } })
+      .mockResolvedValueOnce({ ok: false, diagnostic: { code: "operation_in_progress" } })
+      .mockResolvedValue({ ok: true, action: "noop" });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      sleep,
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    await runtime.emit(requirement);
+
+    expect(ensure).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS);
+    const statuses = runtime.send.mock.calls.map((call) => (call[0] as RuntimeBusinessFrame).status);
+    expect(statuses).toEqual(["checking", "ready"]);
+    await reconciler.close();
+  });
+
+  it("reports a terminal unavailable only after the lock-busy budget is exhausted", async () => {
+    const runtime = connection();
+    const sleep = vi.fn(async () => undefined);
+    const inspect = vi.fn().mockResolvedValue({ readiness: "install", diagnostic: { code: "not_installed" } });
+    const ensure = vi.fn().mockResolvedValue({ ok: false, diagnostic: { code: "operation_in_progress" } });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: { root: "/tmp" } as never },
+      sleep,
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    await runtime.emit(requirement);
+
+    expect(ensure).toHaveBeenCalledTimes(1 + PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS);
+    expect(sleep).toHaveBeenCalledTimes(PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS);
+    expect(runtime.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "unavailable" }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("does not invoke another ensure after the shutdown signal wins the lock-busy wait", async () => {
+    const runtime = connection();
+    const shutdown = new AbortController();
+    const sleep = vi.fn(async () => {
+      shutdown.abort();
+    });
+    const inspect = vi.fn().mockResolvedValue({ readiness: "install", diagnostic: { code: "not_installed" } });
+    const ensure = vi.fn().mockResolvedValue({ ok: false, diagnostic: { code: "operation_in_progress" } });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: { root: "/tmp" } as never },
+      signal: shutdown.signal,
+      sleep,
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    await runtime.emit(requirement);
+
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(ensure).toHaveBeenCalledTimes(1);
+    await reconciler.close();
   });
 
   it("publishes unavailable when inspect throws so the Server can retry", async () => {

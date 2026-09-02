@@ -5,7 +5,7 @@ import type {
   ImBindingHandoffStatus,
   ImBindingSummary,
 } from "@opentag/shared/browser";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatCompactNumber, formatElapsedCompact, formatRelativeTime, initials } from "../i18n/format.js";
 import { orderAgentIds } from "./agent-list-order.js";
 import {
@@ -60,6 +60,15 @@ describe("Agent list order", () => {
 });
 
 describe("Agent availability model and presentation", () => {
+  /*
+   * These assertions compare an interval against the clock -- "8m ago", "2m", "1 minute ago" -- so a
+   * live clock makes each one a race it cannot win: a full minute of real delay between building the
+   * fixture and reading the string turns 8m into 9m. Pinning removes the dependency rather than
+   * widening a tolerance around it.
+   */
+  beforeEach(() => vi.setSystemTime(new Date("2026-09-02T12:00:00.000Z")));
+  afterEach(() => vi.useRealTimers());
+
   const boundComputerId = "22222222-2222-4222-8222-222222222222";
   const agent = {
     id: "11111111-1111-4111-8111-111111111111",

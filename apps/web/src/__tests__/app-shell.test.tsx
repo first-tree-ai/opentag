@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
+  afterEach(() => vi.useRealTimers());
 
   it("keeps the Account Agents page local and opens Agent navigation only after selection", async () => {
     installApi();
@@ -139,10 +140,16 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("shows elapsed time without exposing conversation content for a working Agent", async () => {
+    /*
+     * The clock is pinned because the assertion is about a rounded interval: with a live clock the
+     * fixture's "8 minutes ago" becomes "9m ago" the moment 30 seconds pass between building it and
+     * rendering it, which is a wait this test never asked for and cannot control on a loaded machine.
+     */
+    vi.setSystemTime(new Date("2026-09-02T12:00:00.000Z"));
     installApi({
       agentActivity: {
         state: "working",
-        startedAt: new Date(Date.now() - 8 * 60_000).toISOString(),
+        startedAt: new Date("2026-09-02T11:52:00.000Z").toISOString(),
       },
       bound: true,
       handoffReady: true,

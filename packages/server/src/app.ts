@@ -2,12 +2,17 @@ import { randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
-import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
-import Fastify, { type FastifyLoggerOptions, LogController } from "fastify";
+import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
+import { DrizzleQueryError, sql } from "drizzle-orm";
+import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
 import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
-import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
+import {
+  type BrowserAuthRoutesOptions,
+  rateLimitFailureMetadata,
+  registerBrowserAuthRoutes,
+} from "./api/browser-auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
@@ -22,6 +27,7 @@ import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/sla
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentRuntimeTestService, type AgentService, AgentServiceError } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
@@ -37,6 +43,8 @@ import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
+  /** Drizzle client used by the readiness probe. The production bootstrap also exposes it through TaskService. */
+  database?: DatabaseClient;
   authService?: UserAuthService;
   /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
@@ -97,11 +105,125 @@ export function ignoreHttpTraceRoute(path: string): boolean {
   );
 }
 
+function disableProbeRequestLogging(request: FastifyRequest): boolean {
+  const pathname = sanitizeRequestUrl(request.url);
+  return pathname === "/healthz" || pathname === "/readyz";
+}
+
+const MAX_ERROR_STACK_LENGTH = 8_192;
+const DATABASE_READINESS_TIMEOUT_MS = 1_000;
+const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
+const READINESS_MAX_LIVE_ATTEMPTS = 2;
+
+type SerializedError = { type: string; message: string; stack: string };
+type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
+
+function hasOwnField(value: object, key: string): boolean {
+  return Object.hasOwn(value, key);
+}
+
+function isDrizzleQueryError(error: unknown): error is DrizzleQueryError | (Error & DrizzleQueryErrorLike) {
+  if (error instanceof DrizzleQueryError) return true;
+  if (typeof error !== "object" || error === null) return false;
+  return hasOwnField(error, "query") && hasOwnField(error, "params");
+}
+
+function redactLogString(value: string): string {
+  const redacted = redactForLog(value);
+  return (typeof redacted === "string" ? redacted : String(redacted)).slice(0, MAX_ERROR_STACK_LENGTH);
+}
+
+function serializeError(error: unknown): SerializedError {
+  if (isDrizzleQueryError(error)) {
+    const parameterCount = Array.isArray(error.params) ? error.params.length : undefined;
+    const summary = redactLogString(
+      `Database query failed${parameterCount === undefined ? "" : ` (${parameterCount} parameter${parameterCount === 1 ? "" : "s"})`}`,
+    );
+    return {
+      type: "DrizzleQueryError",
+      message: summary,
+      stack: redactLogString(`DrizzleQueryError: ${summary}`),
+    };
+  }
+  if (!(error instanceof Error)) {
+    const summary = redactLogString(String(error));
+    return { type: typeof error, message: summary, stack: summary };
+  }
+  return {
+    type: error.name,
+    message: redactLogString(error.message),
+    stack: redactLogString(error.stack ?? `${error.name}: ${error.message}`),
+  };
+}
+
+class DatabaseReadinessTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Database readiness probe exceeded ${timeoutMs}ms`);
+    this.name = "DatabaseReadinessTimeoutError";
+  }
+}
+
+class DatabaseReadinessAttemptLimitError extends Error {
+  constructor(maxAttempts: number) {
+    super(`Database readiness probe reached the ${maxAttempts}-attempt limit`);
+    this.name = "DatabaseReadinessAttemptLimitError";
+  }
+}
+
+function withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DatabaseReadinessTimeoutError(timeoutMs)), timeoutMs);
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+type DatabaseReadinessAttempt = {
+  promise: Promise<void>;
+  startedAt: number;
+};
+
+function createDatabaseReadinessProbe(database: DatabaseClient | undefined): (() => Promise<void>) | undefined {
+  if (!database) return undefined;
+
+  let inFlight: DatabaseReadinessAttempt | undefined;
+  let liveAttempts = 0;
+  return async () => {
+    const now = Date.now();
+    const current = inFlight;
+    if (!current || now - current.startedAt >= READINESS_ATTEMPT_MAX_AGE_MS) {
+      if (liveAttempts >= READINESS_MAX_LIVE_ATTEMPTS) {
+        throw new DatabaseReadinessAttemptLimitError(READINESS_MAX_LIVE_ATTEMPTS);
+      }
+      if (current) {
+        void current.promise.catch(() => undefined);
+      }
+      liveAttempts += 1;
+      const execution = Promise.resolve()
+        .then(() => database.execute(sql`select 1`))
+        .then(() => undefined);
+      let attempt: DatabaseReadinessAttempt;
+      const settled = execution.finally(() => {
+        liveAttempts -= 1;
+        if (inFlight === attempt) inFlight = undefined;
+      });
+      attempt = { promise: settled, startedAt: now };
+      inFlight = attempt;
+    }
+    const running = inFlight;
+    if (!running) return;
+    await withDeadline(running.promise, DATABASE_READINESS_TIMEOUT_MS);
+  };
+}
+
 function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOptions {
   return {
     level: options.loggerLevel ?? "info",
     ...(options.loggerStream ? { stream: options.loggerStream } : {}),
     serializers: {
+      err: serializeError,
       req: (request) => ({
         method: request.method,
         url: sanitizeRequestUrl(request.url),
@@ -111,6 +233,43 @@ function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOpt
       }),
     },
   };
+}
+
+type ClassifiedFailure = {
+  code: string;
+  category: string;
+  statusCode: number;
+};
+
+const rateLimitLogWindows = new WeakMap<object, Map<string, number>>();
+
+function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailure, error: unknown): void {
+  if (error instanceof AuthServiceError && error.statusCode === 401) return;
+
+  const rateLimit = rateLimitFailureMetadata(error);
+  if (failure.code === "RATE_LIMITED" && rateLimit) {
+    const route = request.routeOptions?.url ?? sanitizeRequestUrl(request.url);
+    const bucket = `${route}:${rateLimit.keyKind}`;
+    const now = Date.now();
+    const limiterWindows = rateLimitLogWindows.get(rateLimit.limiter) ?? new Map<string, number>();
+    const previousResetAt = limiterWindows.get(bucket);
+    if (previousResetAt !== undefined && previousResetAt > now) return;
+    limiterWindows.set(bucket, now + rateLimit.windowMs);
+    rateLimitLogWindows.set(rateLimit.limiter, limiterWindows);
+  }
+
+  const level = failure.statusCode >= 500 ? "error" : [409, 429].includes(failure.statusCode) ? "warn" : "info";
+  request.log[level](
+    {
+      category: failure.category,
+      code: failure.code,
+      err: error,
+      requestId: request.id,
+      statusCode: failure.statusCode,
+      ...(rateLimit ? { keyKind: rateLimit.keyKind } : {}),
+    },
+    "Request failed",
+  );
 }
 
 function contentTypeParserErrorStatus(error: unknown): number | undefined {
@@ -150,11 +309,16 @@ export function createApp(options: CreateAppOptions = {}) {
      * straight into Pino and OTel. Doing the read here keeps the header contract but validates it.
      */
     requestIdHeader: false,
-    logController: new LogController({ requestIdLogLabel: "requestId" }),
+    logController: new LogController({
+      disableRequestLogging: disableProbeRequestLogging,
+      requestIdLogLabel: "requestId",
+    }),
     genReqId: (request) => safeInboundRequestId(request.headers["x-request-id"]) ?? randomUUID(),
     logger: createFastifyLoggerOptions(options),
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
+  const healthDatabase = options.database ?? options.taskService?.database;
+  const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
 
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
@@ -197,10 +361,18 @@ export function createApp(options: CreateAppOptions = {}) {
     return reply.code(200).send(health);
   });
 
-  app.get("/readyz", async (_request, reply) => {
+  app.get("/readyz", async (request, reply) => {
     const snapshot = readiness.snapshot();
     if (!snapshot.ready) {
       return reply.code(503).send({ status: "not_ready", ...snapshot });
+    }
+    if (databaseReadinessProbe) {
+      try {
+        await databaseReadinessProbe();
+      } catch (error) {
+        request.log.warn({ check: "database", err: error }, "Readiness check failed");
+        return reply.code(503).send({ status: "not_ready", ...snapshot });
+      }
     }
     return reply.code(200).send({ status: "ready" });
   });
@@ -312,6 +484,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.setErrorHandler((error, request, reply) => {
     const feishuFailure = feishuPublicFailure(error);
     if (feishuFailure) {
+      logClassifiedFailure(request, feishuFailure, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: feishuFailure.code,
@@ -331,6 +504,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof SlackConfigurationServiceError ||
       error instanceof AccountSetupServiceError
     ) {
+      logClassifiedFailure(request, error, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: error.code,
@@ -342,6 +516,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return reply.code(error.statusCode).send(envelope);
     }
     if (error instanceof SessionCliProofError) {
+      logClassifiedFailure(request, { code: "SESSION_PROOF_INVALID", category: "credential", statusCode: 401 }, error);
       return reply.code(401).send(
         ErrorEnvelopeSchema.parse({
           error: {
@@ -354,6 +529,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
     if (error instanceof SessionServiceError && error.code === "SESSION_CURSOR_INVALID") {
+      logClassifiedFailure(request, { code: error.code, category: "validation", statusCode: 400 }, error);
       return reply.code(400).send(
         ErrorEnvelopeSchema.parse({
           error: {
@@ -366,6 +542,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
     if (error instanceof RequestValidationError) {
+      logClassifiedFailure(request, { code: "VALIDATION_ERROR", category: "validation", statusCode: 400 }, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",
@@ -379,6 +556,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     const statusCode = contentTypeParserErrorStatus(error);
     if (statusCode !== undefined) {
+      logClassifiedFailure(request, { code: "VALIDATION_ERROR", category: "validation", statusCode }, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",

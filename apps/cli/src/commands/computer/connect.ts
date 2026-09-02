@@ -41,8 +41,14 @@ export function registerComputerConnectCommand(computer: Command): void {
           process.stdout.write(`${commandPolicy.redactSecrets(error.connectResult.message)}\n`);
           const reloadFailure = "Daemon service reload failed; machine credentials were preserved.";
           const reloadRetry = `Run ${channelConfig.binName} daemon restart to retry.`;
-          process.stderr.write(`${commandPolicy.redactSecrets(`${reloadFailure} ${reloadRetry}`)}\n`);
-          process.exitCode = 1;
+          const commandError = commandPolicy.toCommandError(
+            new Error(`${reloadFailure} ${reloadRetry}`, { cause: error }),
+            "request",
+          );
+          process.exitCode = commandPolicy.presentCommand(
+            { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
+            { json: options.json === true },
+          );
           return;
         }
         const commandError = commandPolicy.toCommandError(error, "request");

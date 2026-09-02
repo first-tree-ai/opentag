@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { type CommandExitCode, commandExitCode, presentCommand, toCommandError } from "../../core/command/policy.js";
 import {
   createDaemonServiceManager,
   type DaemonServiceManager,
@@ -20,17 +21,20 @@ export async function executeDaemonRefreshService(
     writeError?: (message: string) => void;
     writeOutput?: (message: string) => void;
   } = {},
-): Promise<0 | 1> {
+): Promise<CommandExitCode> {
   const writeOutput = options.writeOutput ?? ((message: string) => process.stdout.write(`${message}\n`));
-  const writeError = options.writeError ?? ((message: string) => process.stderr.write(`${message}\n`));
+  const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
   try {
     const manager = options.manager ?? (await createDaemonServiceManager());
     const info = await manager.refreshDefinition();
     writeOutput(formatDaemonServiceInfo(info));
     return 0;
   } catch (error) {
-    writeError(error instanceof Error ? error.message : String(error));
-    return 1;
+    const commandError = toCommandError(error, "request");
+    return presentCommand(
+      { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
+      { stderr: writeError },
+    );
   }
 }
 

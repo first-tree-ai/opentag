@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const clientMocks = vi.hoisted(() => ({
   configureClientLoggerForService: vi.fn(),
   createClientRuntime: vi.fn(),
+  createLogger: vi.fn(),
   readMachineCredentials: vi.fn(),
   resolveComputerIdentity: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock("@opentag/client", async (importOriginal) => {
   return {
     ...original,
     configureClientLoggerForService: clientMocks.configureClientLoggerForService,
+    createLogger: clientMocks.createLogger.mockImplementation(original.createLogger),
     OpenTagApi: class {},
     createClientRuntime: clientMocks.createClientRuntime,
     readMachineCredentials: clientMocks.readMachineCredentials,
@@ -70,7 +72,24 @@ describe("daemon service runtime", () => {
     expect(entries).toContainEqual(expect.objectContaining({ message: "Malformed daemon environment line ignored" }));
   });
 
-  it("does not configure or touch the service log when daemon ownership is already held", async () => {
+  it("logs an invalid daemon environment at the service entry while returning a clean exit", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-invalid-env-entry-"));
+    directories.push(home);
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "OPENTAG_SERVER_URL=https://example.test\n", { mode: 0o644 });
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+
+    await expect(runDaemonServiceEntry({ home, logger: recordingLogger(entries) })).resolves.toBe(0);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        fields: expect.objectContaining({ category: "configuration", instanceId: expect.any(String) }),
+        message: "Daemon service configuration prevented startup; inspect daemon status",
+      }),
+    );
+  });
+
+  it("configures the service log before reporting an already-held daemon owner", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-log-"));
     directories.push(home);
     process.env.OPENTAG_SERVICE_MODE = "1";
@@ -83,8 +102,7 @@ describe("daemon service runtime", () => {
       await owner.release();
     }
 
-    expect(clientMocks.configureClientLoggerForService).not.toHaveBeenCalled();
-    await expect(access(join(home, "logs", "client.log"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
     expect(entries).toContainEqual(
       expect.objectContaining({
         fields: expect.objectContaining({
@@ -94,6 +112,37 @@ describe("daemon service runtime", () => {
         message: "Daemon is already running; inspect daemon status",
       }),
     );
+  });
+
+  it("uses a dual logger for an already-held daemon owner", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-dual-"));
+    directories.push(home);
+    const owner = await acquireDaemonOwner(home, "existing-instance");
+
+    try {
+      await expect(runDaemonService({ home })).rejects.toThrow("already running");
+    } finally {
+      await owner.release();
+    }
+
+    expect(clientMocks.createLogger).toHaveBeenCalledWith("daemon", { destination: "dual" });
+  });
+
+  it("logs an already-held owner exactly once at the service entry", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-entry-once-"));
+    directories.push(home);
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+    const owner = await acquireDaemonOwner(home, "existing-instance");
+
+    try {
+      await expect(runDaemonServiceEntry({ home, logger: recordingLogger(entries) })).resolves.toBe(0);
+    } finally {
+      await owner.release();
+    }
+
+    expect(
+      entries.filter(({ message }) => message === "Daemon is already running; inspect daemon status"),
+    ).toHaveLength(1);
   });
 
   it("does not start after a signal arrives during startup", async () => {

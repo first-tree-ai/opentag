@@ -274,7 +274,7 @@ export class ComposedClientRuntime {
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
   readonly workspace: AgentWorkspaceManager;
-  readonly #providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): void };
+  readonly #providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
   readonly #providerCliTurnPlans?: { recover(): Promise<void> };
   readonly #runtime: ClientRuntime;
   readonly #refreshCapability: () => Promise<void>;
@@ -302,7 +302,7 @@ export class ComposedClientRuntime {
       refreshCapability: () => Promise<void>;
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
-      providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): void };
+      providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
       providerCliTurnPlans?: { recover(): Promise<void> };
     },
   ) {
@@ -424,7 +424,7 @@ export class ComposedClientRuntime {
       void refresh
         .catch(() => undefined)
         .finally(() => {
-          this.#providerCliReconciler?.refreshPublishedImCliReadiness();
+          void this.#providerCliReconciler?.refreshPublishedImCliReadiness().catch(() => undefined);
           /* v8 ignore else -- only the newest refresh clears the in-flight slot. */
           if (this.#capabilityRefreshInFlight === refresh) this.#capabilityRefreshInFlight = undefined;
         });

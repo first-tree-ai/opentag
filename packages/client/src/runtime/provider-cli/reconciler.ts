@@ -64,7 +64,8 @@ export class ProviderCliReconciler {
   readonly #now: () => number;
   readonly #frameJobs = new Set<Promise<void>>();
   readonly #imCliPublished = new Map<ProviderCliProvider, ImCliReadinessStatus>();
-  readonly #providerJobs = new Map<ProviderCliProvider, Promise<ProviderCliArtifactStatusFrame["status"]>>();
+  readonly #inspectionJobs = new Map<ProviderCliProvider, Promise<ImCliReadinessStatus>>();
+  readonly #providerJobs = new Map<string, Promise<ProviderCliArtifactStatusFrame["status"]>>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
   readonly #unsubscribe: () => void;
@@ -86,12 +87,10 @@ export class ProviderCliReconciler {
     return this.#closePromise;
   }
 
-  /** Re-publish the last prewarm observation so heartbeat freshness does not lapse. */
-  refreshPublishedImCliReadiness(): void {
+  /** Re-inspect each published CLI so heartbeat freshness reflects current local state. */
+  async refreshPublishedImCliReadiness(): Promise<void> {
     if (this.#closed || this.#signal?.aborted) return;
-    for (const [provider, status] of this.#imCliPublished) {
-      this.#connection.setImCliReadiness({ provider, status });
-    }
+    await Promise.all([...this.#imCliPublished.keys()].map((provider) => this.#refreshImCli(provider)));
   }
 
   async #performClose(): Promise<void> {
@@ -99,7 +98,7 @@ export class ProviderCliReconciler {
     this.#unsubscribe();
     this.#imCliPublished.clear();
     this.#abortAll();
-    await Promise.allSettled([...this.#frameJobs]);
+    await Promise.allSettled([...this.#frameJobs, ...this.#inspectionJobs.values()]);
     await this.#validation.cleanupAll();
   }
 
@@ -161,24 +160,27 @@ export class ProviderCliReconciler {
   }
 
   async #prewarmProvider(provider: ProviderCliProvider): Promise<void> {
+    await this.#refreshImCli(provider);
+  }
+
+  async #refreshImCli(provider: ProviderCliProvider): Promise<void> {
     this.#publishImCli(provider, "checking");
-    try {
-      const inspection = await this.#manager.inspect(provider);
-      if (inspection.readiness === "ready") {
-        const status = await this.#reconcileProvider(provider, "auto");
-        this.#publishImCli(provider, status);
-        return;
-      }
-      if (inspection.diagnostic && UNREPAIRABLE.has(inspection.diagnostic.code)) {
-        this.#publishImCli(provider, "unavailable");
-        return;
-      }
-      this.#publishImCli(provider, "install");
-      const status = await this.#reconcileProvider(provider, "auto");
-      this.#publishImCli(provider, status);
-    } catch {
-      this.#publishImCli(provider, "unavailable");
-    }
+    const status = await this.#inspectImCli(provider);
+    this.#publishImCli(provider, status);
+  }
+
+  #inspectImCli(provider: ProviderCliProvider): Promise<ImCliReadinessStatus> {
+    const existing = this.#inspectionJobs.get(provider);
+    if (existing) return existing;
+    const job = this.#manager
+      .inspect(provider)
+      .then((inspection) => inspection.readiness)
+      .catch(() => "unavailable" as const)
+      .finally(() => {
+        if (this.#inspectionJobs.get(provider) === job) this.#inspectionJobs.delete(provider);
+      });
+    this.#inspectionJobs.set(provider, job);
+    return job;
   }
 
   #publishImCli(provider: ProviderCliProvider, status: ImCliReadinessStatus): void {
@@ -227,12 +229,13 @@ export class ProviderCliReconciler {
     provider: ProviderCliProvider,
     mode: "auto" | "managed-only" = "managed-only",
   ): Promise<ProviderCliArtifactStatusFrame["status"]> {
-    const existing = this.#providerJobs.get(provider);
+    const key = `${provider}:${mode}`;
+    const existing = this.#providerJobs.get(key);
     if (existing) return existing;
     const job = this.#runProvider(provider, mode).finally(() => {
-      if (this.#providerJobs.get(provider) === job) this.#providerJobs.delete(provider);
+      if (this.#providerJobs.get(key) === job) this.#providerJobs.delete(key);
     });
-    this.#providerJobs.set(provider, job);
+    this.#providerJobs.set(key, job);
     return job;
   }
 

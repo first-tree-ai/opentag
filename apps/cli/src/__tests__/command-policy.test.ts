@@ -69,6 +69,36 @@ describe("CLI command result policy", () => {
     expect(stdout.join(" ")).not.toContain("access-secret");
   });
 
+  it("keeps safe partial state in the common failure envelope on stderr", () => {
+    const stdout = vi.fn();
+    const stderr = vi.fn();
+    presentCommand(
+      {
+        ok: false,
+        error: new CommandError(
+          { category: "dependency", code: "SETUP_INCOMPLETE", retryability: "never", phase: "provider" },
+          "setup needs attention",
+        ),
+        exitCode: 1,
+        value: { connected: true, nextActions: [{ command: "opentag doctor --json", token: "access-secret" }] },
+      },
+      { json: true, stdout, stderr },
+    );
+
+    expect(stdout).not.toHaveBeenCalled();
+    expect(JSON.parse(String(stderr.mock.calls[0]?.[0]))).toEqual({
+      ok: false,
+      error: {
+        code: "SETUP_INCOMPLETE",
+        category: "dependency",
+        retryability: "never",
+        phase: "provider",
+        message: "setup needs attention",
+      },
+      result: { connected: true, nextActions: [{ command: "opentag doctor --json", token: "[REDACTED]" }] },
+    });
+  });
+
   it("normalizes common thrown errors into the local structured shape", () => {
     expect(toCommandError(new Error("cancelled by signal"))).toMatchObject({
       code: "INTERRUPTED",

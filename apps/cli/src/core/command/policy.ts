@@ -61,9 +61,9 @@ export class CommandError extends Error {
 }
 
 type SuccessCommandResult<T> = { ok: true; value: T; exitCode: typeof EXIT_CODES.success };
-type FailureCommandResultBase = { ok: false; error: CommandError };
-type FailureCommandResult = FailureCommandResultBase & { exitCode: Exclude<CommandExitCode, 0> };
-export type CommandResult<T> = SuccessCommandResult<T> | FailureCommandResult;
+type FailureCommandResultBase<T> = { ok: false; error: CommandError; value?: T };
+type FailureCommandResult<T> = FailureCommandResultBase<T> & { exitCode: Exclude<CommandExitCode, 0> };
+export type CommandResult<T> = SuccessCommandResult<T> | FailureCommandResult<T>;
 type CommandFormatValueOptions<T> = { formatValue?: (value: T) => string };
 type CommandFormatWriterOptions = { stdout?: (chunk: string) => void; stderr?: (chunk: string) => void };
 type CommandFormatOptions<T> = CommandFormatValueOptions<T> & CommandFormatWriterOptions;
@@ -193,6 +193,7 @@ export function presentCommand<T>(
     return EXIT_CODES.success;
   }
   const error = result.error;
+  const value = result.value === undefined ? undefined : redactValue(result.value);
   const output = options.json
     ? JSON.stringify({
         ok: false,
@@ -204,6 +205,7 @@ export function presentCommand<T>(
           ...(error.requestId ? { requestId: error.requestId } : {}),
           message: error.message,
         },
+        ...(value === undefined ? {} : { result: value }),
       })
     : `${error.code}: ${error.message}`;
   stderr(`${output}\n`);

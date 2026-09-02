@@ -691,10 +691,20 @@ describe("OnboardingV2Page", () => {
       expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("helper");
     });
 
-    it("does not offer a back action after the Agent has been created", async () => {
+    it("requires explicit confirmation to delete a created Agent before choosing again", async () => {
       render(<OnboardingV2MockPage />);
       await reachConnectStep();
       expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "Choose a different agent" }));
+      expect(screen.getByRole("alert").textContent).toContain("@opentag");
+      expect(screen.getByRole("alert").textContent).toContain("computers are kept");
+      expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Delete agent and choose again" }));
+      });
+      expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
     });
 
     it("keeps the connected Computer visible until the reader continues", async () => {
@@ -707,7 +717,7 @@ describe("OnboardingV2Page", () => {
       expect(screen.queryByText("Waiting for your computer…")).toBeNull();
     });
 
-    it("has no way back once the Agent has been created", async () => {
+    it("does not return from messaging to durable setup decisions", async () => {
       render(<OnboardingV2MockPage />);
       await reachConnectStep();
       await reachCheckStep();

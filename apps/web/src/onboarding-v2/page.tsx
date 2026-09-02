@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Loader } from "../ui/design-system.js";
 import type { OnboardingBackend } from "./backend.js";
@@ -14,6 +15,7 @@ import {
 import { LabControls } from "./lab-controls.js";
 import { type MockInventory, type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
+import { AgentResetControl } from "./agent-reset-control.js";
 import { useServerBackend } from "./server-backend.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
@@ -49,15 +51,15 @@ export function OnboardingV2Page({
    * pages behind it read as this Account's rather than as a blank form: the name the Agent
    * actually has, on the runtime it actually runs.
    */
-  const resumed = backend.agent;
+  const currentAgent = backend.agent;
   useEffect(() => {
-    if (!resumed) return;
+    if (!currentAgent) return;
     setDraft((current) =>
-      current.name === resumed.name && current.runtime === resumed.runtimeProvider
+      current.name === currentAgent.name && current.runtime === currentAgent.runtimeProvider
         ? current
-        : { ...current, destination: "local", name: resumed.name, runtime: resumed.runtimeProvider },
+        : { ...current, destination: "local", name: currentAgent.name, runtime: currentAgent.runtimeProvider },
     );
-  }, [resumed]);
+  }, [currentAgent]);
 
   /*
    * The read has to show something. This is the only route the setup gate allows, so a read that is
@@ -78,6 +80,39 @@ export function OnboardingV2Page({
           {backend.resumeError}
         </p>
         <Button onClick={backend.retryResume}>{m.onboarding_v2_nav_retry()}</Button>
+      </div>
+    );
+  }
+
+  if (backend.resumeBlocked) {
+    return (
+      <div
+        className="flex min-h-screen flex-col items-center justify-center gap-4 bg-kumo-canvas p-6"
+        data-ui="onboarding-v2-resume-blocked"
+      >
+        <p className="text-sm text-kumo-strong m-0" role="status">
+          {m.onboarding_v2_resume_blocked_title({ agentName: backend.resumeBlocked.agentName })}
+        </p>
+        <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">
+          {m.onboarding_v2_resume_blocked_detail()}
+        </p>
+        {backend.error ? (
+          <p className="text-sm text-kumo-danger m-0" role="alert">
+            {backend.error}
+          </p>
+        ) : null}
+        <div className="w-full max-w-2xl rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
+          <AgentComputerChoice
+            adapter={backend.computerConnectAdapter}
+            agentId={backend.resumeBlocked.agentId}
+            onBound={backend.retryResume}
+          />
+        </div>
+        <AgentResetControl
+          agentName={backend.resumeBlocked.agentName}
+          busy={backend.discardingAgent}
+          onDiscard={backend.discardAgent}
+        />
       </div>
     );
   }
@@ -204,7 +239,7 @@ function OnboardingV2Flow({
    * happen to be valid. An Agent that already exists settles both of them: the decisions they
    * guard were made on a previous visit and cannot be taken back.
    */
-  const resumed = backend.agent !== undefined;
+  const resumed = backend.agentRestored === true;
   const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
 
@@ -313,10 +348,6 @@ function OnboardingV2Flow({
    * only that the step was left, never the machine itself.
    */
   const backToDestination = useCallback(() => setDestinationConfirmed(false), []);
-  const backToAgent = useCallback(() => {
-    setComputerConfirmed(false);
-    setDraftConfirmed(false);
-  }, []);
 
   const startOver = useCallback(() => {
     window.clearTimeout(cloudTimer.current);
@@ -397,15 +428,24 @@ function OnboardingV2Flow({
               onSubmit={submitAgent}
             />
           ) : flow.page === "computer" ? (
-            <ComputerStep
-              adapter={backend.computerConnectAdapter}
-              computer={accountComputer}
-              draft={draft}
-              onBack={resumed ? undefined : backToAgent}
-              onComputerConnected={backend.computerConnected}
-              onContinue={() => setComputerConfirmed(true)}
-              readiness={backend.readiness}
-            />
+            <div className="grid gap-6">
+              <ComputerStep
+                adapter={backend.computerConnectAdapter}
+                computer={accountComputer}
+                draft={draft}
+                onBack={undefined}
+                onComputerConnected={backend.computerConnected}
+                onContinue={() => setComputerConfirmed(true)}
+                readiness={backend.readiness}
+              />
+              {backend.agent ? (
+                <AgentResetControl
+                  agentName={backend.agent.name}
+                  busy={backend.discardingAgent}
+                  onDiscard={backend.discardAgent}
+                />
+              ) : null}
+            </div>
           ) : (
             <MessagingStep
               computerOnline={backend.computerOnline}

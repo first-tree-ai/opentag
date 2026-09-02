@@ -493,6 +493,14 @@ export function useMockBackend(
     [later],
   );
 
+  const discardAgent = useCallback(async () => {
+    clearTimers();
+    setCreation("idle");
+    setAgent(undefined);
+    setMessaging({ kind: "idle" });
+    return true;
+  }, [clearTimers]);
+
   const reset = useCallback(() => {
     clearTimers();
     updateConnectFixture(undefined);
@@ -567,6 +575,8 @@ export function useMockBackend(
         selected?.availability === "online" ? true : selected?.availability === "offline" ? false : undefined,
       createAgent,
       creation,
+      discardAgent,
+      discardingAgent: false,
       error: undefined,
       readiness,
       knownComputers,
@@ -593,6 +603,7 @@ export function useMockBackend(
     computerConnected,
     createAgent,
     creation,
+    discardAgent,
     expireNow,
     knownComputers,
     messaging,

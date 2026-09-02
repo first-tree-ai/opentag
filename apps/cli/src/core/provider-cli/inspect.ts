@@ -1,4 +1,5 @@
 import type { ProviderCliInspection } from "@opentag/client";
+import { CommandError, presentCommand } from "../command/policy.js";
 import {
   createProviderCliManager,
   type ProviderCliCommandDeps,
@@ -14,7 +15,7 @@ import {
 
 /**
  * Reusable orchestration for `opentag provider-cli inspect`: read-only diagnostics for
- * the selected Provider CLI. `--json` emits exactly one document to stdout.
+ * the selected Provider CLI. `--json` emits one common command envelope.
  */
 
 export interface ProviderCliInspectCommandOptions extends ProviderCliCommandDeps {
@@ -85,7 +86,18 @@ export async function runProviderCliInspect(
     usageMessage += chunk;
   });
   if (!providers) {
-    writeProviderUsageError(options, usageMessage);
+    presentCommand(
+      {
+        ok: false,
+        error: new CommandError(
+          { code: "INVALID_PROVIDER", category: "validation", retryability: "never", phase: "validation" },
+          usageMessage.trim(),
+        ),
+        exitCode: 2,
+        value: { results: [], nextActions: [] },
+      },
+      { json: options.json, stdout: options.stdout, stderr: options.stderr },
+    );
     return { exitCode: 2, results: [], nextActions: [] };
   }
   const manager = createProviderCliManager(options);
@@ -95,41 +107,38 @@ export async function runProviderCliInspect(
     const action = nextActionFor(inspection);
     return action ? [action] : [];
   });
+  const ready = results.every((result) => result.state === "ready");
+  const value = { results, nextActions };
   if (!options.json) {
+    const write = ready ? writeStdout : writeStderr;
+    if (!ready) write(options, "PROVIDER_CLI_NOT_READY: One or more Provider CLIs need attention.\n");
     for (const inspection of results) {
       const nextAction = nextActions.find((action) => action.provider === inspection.provider);
       for (const line of renderInspectionLines(inspection, nextAction)) {
-        writeStdout(options, `${line}\n`);
+        write(options, `${line}\n`);
       }
     }
-  }
-
-  if (options.json) {
-    const ok = results.every((result) => result.state === "ready");
-    const document = results.length === 1 ? { ok, ...results[0], nextActions } : { ok, results, nextActions };
-    writeStdout(options, `${JSON.stringify(document, null, 2)}\n`);
-  }
-
-  return { exitCode: results.every((result) => result.state === "ready") ? 0 : 1, results, nextActions };
-}
-
-function writeProviderUsageError(options: ProviderCliInspectCommandOptions, message: string): void {
-  if (!options.json) {
-    writeStderr(options, message);
-    return;
-  }
-  writeStderr(
-    options,
-    `${JSON.stringify({
-      ok: false,
-      error: {
-        code: "INVALID_PROVIDER",
-        category: "validation",
-        retryability: "never",
-        phase: "validation",
-        message: message.trim(),
+  } else if (ready) {
+    presentCommand({ ok: true, value, exitCode: 0 }, { json: true, stdout: options.stdout, stderr: options.stderr });
+  } else {
+    presentCommand(
+      {
+        ok: false,
+        error: new CommandError(
+          {
+            code: "PROVIDER_CLI_NOT_READY",
+            category: "dependency",
+            retryability: "never",
+            phase: "provider",
+          },
+          "One or more Provider CLIs need attention.",
+        ),
+        exitCode: 1,
+        value,
       },
-      nextActions: [],
-    })}\n`,
-  );
+      { json: true, stdout: options.stdout, stderr: options.stderr },
+    );
+  }
+
+  return { exitCode: ready ? 0 : 1, results, nextActions };
 }

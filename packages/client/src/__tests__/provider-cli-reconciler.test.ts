@@ -668,16 +668,14 @@ describe("provider CLI reconciler", () => {
     ).toBe(false);
   });
 
-  it("prewarms both official CLIs independently without credential validation", async () => {
+  it("inspects both official CLIs for setup without installing or validating credentials", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();
-    const ensure = vi.fn().mockResolvedValue({ ok: false, action: "failed" });
+    let feishuInspection = notReadyInspect("feishu", "install", { code: "not_installed" });
+    const ensure = vi.fn();
     const inspect = vi.fn(async (provider: "feishu" | "slack") => {
       if (provider === "slack") return fixture.inspection;
-      if (ensure.mock.calls.some((call) => call[0] === "feishu")) {
-        return notReadyInspect("feishu", "unavailable", { code: "install_incomplete" });
-      }
-      return notReadyInspect("feishu", "install", { code: "not_installed" });
+      return feishuInspection;
     });
     const run = vi.fn();
     const reconciler = new ProviderCliReconciler({
@@ -686,22 +684,52 @@ describe("provider CLI reconciler", () => {
       validation: { run, cleanupAll: vi.fn() },
     });
     await runtime.emit(prewarm);
-    expect(ensure).toHaveBeenCalledWith("feishu", { mode: "auto" });
-    expect(ensure).not.toHaveBeenCalledWith("slack", expect.anything());
+    expect(ensure).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     expect(runtime.send).not.toHaveBeenCalled();
     const published = runtime.setImCliReadiness.mock.calls.map(([observation]) => observation);
     expect(published).toContainEqual({ provider: "feishu", status: "checking" });
     expect(published).toContainEqual({ provider: "feishu", status: "install" });
-    expect(published).toContainEqual({ provider: "feishu", status: "unavailable" });
     expect(published).toContainEqual({ provider: "slack", status: "checking" });
     expect(published).toContainEqual({ provider: "slack", status: "ready" });
     expect(
       published.filter((observation) => observation.provider === "slack" && observation.status === "install"),
     ).toHaveLength(0);
-    reconciler.refreshPublishedImCliReadiness();
+    feishuInspection = notReadyInspect("feishu", "unavailable", { code: "install_incomplete" });
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "feishu", status: "checking" });
+    expect(runtime.setImCliReadiness).toHaveBeenLastCalledWith({ provider: "slack", status: "ready" });
     expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "feishu", status: "unavailable" });
     expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "slack", status: "ready" });
+    await reconciler.close();
+  });
+
+  it("single-flights overlapping periodic inspections per provider", async () => {
+    const runtime = connection();
+    let hold = false;
+    const release: Array<() => void> = [];
+    const inspect = vi.fn((provider: "feishu" | "slack"): Promise<ProviderCliInspection> => {
+      const result = notReadyInspect(provider, "install", { code: "not_installed" });
+      if (!hold) return Promise.resolve(result);
+      return new Promise((resolve) => release.push(() => resolve(result)));
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: { root: "/tmp" } as never },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(prewarm);
+    inspect.mockClear();
+    hold = true;
+
+    const first = reconciler.refreshPublishedImCliReadiness();
+    const second = reconciler.refreshPublishedImCliReadiness();
+    await Promise.resolve();
+    expect(inspect).toHaveBeenCalledTimes(2);
+    for (const complete of release) complete();
+    await Promise.all([first, second]);
+
+    expect(inspect.mock.calls.map(([provider]) => provider).sort()).toEqual(["feishu", "slack"]);
     await reconciler.close();
   });
 

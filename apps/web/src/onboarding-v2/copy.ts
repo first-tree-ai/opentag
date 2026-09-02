@@ -131,6 +131,7 @@ export const COPY = {
     connectCode: "We couldn't get a connection command. Check your network and try again.",
     computers: "We lost contact while waiting for your computer.",
     createAgent: "We couldn't create your agent.",
+    discardAgent: "We couldn't delete this agent. Try again before choosing a different runtime.",
     messaging: "We couldn't start connecting your messaging app.",
     resume: "We couldn't check what your account already has.",
     completeSetup: "Your agent is ready, but we couldn't finish setting up your account.",

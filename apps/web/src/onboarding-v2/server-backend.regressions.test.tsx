@@ -274,7 +274,7 @@ describe("Server-backed onboarding: the defects it had", () => {
     expect(calls).toBe(1);
   });
 
-  it("resumes an unbound Agent with a targeted connect code rather than adopting another machine", async () => {
+  it("offers existing Computers for an unbound Agent and keeps new connect commands targeted", async () => {
     /*
      * The first durable setup write is now the Agent. A refresh between steps must resume that
      * Agent and issue a code whose target is explicit; an unrelated Computer already on the
@@ -290,8 +290,9 @@ describe("Server-backed onboarding: the defects it had", () => {
     const view = mount();
     await settle();
 
-    expect(view.result.current.agent).toMatchObject({ id: AGENT_ID, name: "opentag" });
-    expect(view.result.current.creation).toBe("created");
+    expect(view.result.current.agent).toBeUndefined();
+    expect(view.result.current.creation).toBe("idle");
+    expect(view.result.current.resumeBlocked).toEqual({ agentId: AGENT_ID, agentName: "opentag" });
     expect(view.result.current.selectedComputerId).toBeUndefined();
     expect(view.result.current.computerPreviouslyConfirmed).toBe(false);
     expect(rebind).not.toHaveBeenCalled();

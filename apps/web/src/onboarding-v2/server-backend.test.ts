@@ -106,6 +106,7 @@ describe("useServerBackend", () => {
     expect(view.result.current.computerOnline).toBe(false);
     expect(view.result.current.selectedComputerId).toBe(COMPUTER_ID);
     expect(view.result.current.computerPreviouslyConfirmed).toBe(true);
+    expect(view.result.current.agentRestored).toBe(true);
     expect(issue).not.toHaveBeenCalled();
   });
 
@@ -151,6 +152,7 @@ describe("useServerBackend", () => {
       expect.objectContaining({ computerId: COMPUTER_ID, name: "opentag", runtimeProvider: "codex" }),
     );
     expect(view.result.current.creation).toBe("created");
+    expect(view.result.current.agentRestored).toBe(false);
   });
 
   it("creates the Agent before a Computer exists, then targets it from the connect adapter", async () => {
@@ -176,6 +178,34 @@ describe("useServerBackend", () => {
       await view.result.current.computerConnectAdapter?.issue({ mode: "create" });
     });
     expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: AGENT_ID });
+  });
+
+  it("explicitly deletes an unbound setup Agent while preserving its Computer inventory", async () => {
+    let deleted = false;
+    vi.mocked(browserApi.agents).mockImplementation(async () => ({
+      agents: deleted ? [] : [{ ...existingAgent(), computer: null }],
+    }));
+    vi.mocked(browserApi.computers).mockResolvedValue({ computers: [computer()] });
+    const suspend = vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("already suspended"));
+    const remove = vi.spyOn(browserApi, "deleteAgent").mockImplementation(async () => {
+      deleted = true;
+    });
+    const view = renderHook(() => useServerBackend(draft));
+    await settle();
+
+    expect(view.result.current.resumeBlocked?.agentId).toBe(AGENT_ID);
+    let removed = false;
+    await act(async () => {
+      removed = await view.result.current.discardAgent();
+    });
+
+    expect(removed).toBe(true);
+    expect(suspend).toHaveBeenCalledWith(AGENT_ID);
+    expect(remove).toHaveBeenCalledWith(AGENT_ID);
+    expect(view.result.current.resumeBlocked).toBeUndefined();
+    expect(view.result.current.agent).toBeUndefined();
+    expect(view.result.current.creation).toBe("idle");
+    expect(view.result.current.selectedComputerId).toBe(COMPUTER_ID);
   });
 
   it("preserves the durable selected Computer on Start over", async () => {

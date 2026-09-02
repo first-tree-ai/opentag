@@ -50,7 +50,7 @@ describe("provider-cli command surface", () => {
     expect(JSON.parse(stderr.join(""))).toMatchObject({
       ok: false,
       error: { code: "INVALID_PROVIDER", category: "validation", retryability: "never" },
-      nextActions: [],
+      result: { results: [], nextActions: [] },
     });
   });
 
@@ -92,11 +92,11 @@ describe("runProviderCliEnsure", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(stdout).toHaveLength(1);
-    const document = JSON.parse(stdout[0] ?? "") as Record<string, unknown>;
+    const document = JSON.parse(stdout[0] ?? "") as { ok: boolean; result: { results: Record<string, unknown>[] } };
     expect(document.ok).toBe(true);
-    expect(document.provider).toBe("feishu");
-    expect(document.action).toBe("selected-existing");
-    expect(document.readiness).toBe("ready");
+    expect(document.result.results[0]?.provider).toBe("feishu");
+    expect(document.result.results[0]?.action).toBe("selected-existing");
+    expect(document.result.results[0]?.readiness).toBe("ready");
     // No ANSI or phase chatter leaked into the document stream.
     expect(stdout[0]).not.toContain("[lark]");
     expect(stdout[0]).not.toContain("\u001b");
@@ -133,6 +133,7 @@ describe("runProviderCliEnsure", () => {
     const feishuEntry = PROVIDER_CLI_CATALOG.find((entry) => entry.provider === "feishu");
     expect(feishuEntry).toBeDefined();
     const stdout: string[] = [];
+    const stderr: string[] = [];
     const result = await runProviderCliEnsure({
       provider: "all",
       json: true,
@@ -141,21 +142,26 @@ describe("runProviderCliEnsure", () => {
       catalog: feishuEntry ? [feishuEntry, ...slackFixture.catalog] : slackFixture.catalog,
       fetcher: slackFixture.fetcher,
       stdout: (chunk) => stdout.push(chunk),
-      stderr: () => undefined,
+      stderr: (chunk) => stderr.push(chunk),
     });
     expect(result.exitCode).toBe(1);
-    const document = JSON.parse(stdout.join("")) as {
+    expect(stdout).toEqual([]);
+    const document = JSON.parse(stderr.join("")) as {
       ok: boolean;
-      results: Array<{ provider: string; ok: boolean }>;
-      nextActions: Array<{ provider: string; command: string; reason: string }>;
+      error: { code: string };
+      result: {
+        results: Array<{ provider: string; ok: boolean }>;
+        nextActions: Array<{ provider: string; command: string; reason: string }>;
+      };
     };
     expect(document.ok).toBe(false);
-    expect(document.results).toHaveLength(2);
-    expect(document.results[0]?.provider).toBe("feishu");
-    expect(document.results[0]?.ok).toBe(true);
-    expect(document.results[1]?.provider).toBe("slack");
-    expect(document.results[1]?.ok).toBe(false);
-    expect(document.nextActions).toEqual([
+    expect(document.error.code).toBe("PROVIDER_CLI_SETUP_INCOMPLETE");
+    expect(document.result.results).toHaveLength(2);
+    expect(document.result.results[0]?.provider).toBe("feishu");
+    expect(document.result.results[0]?.ok).toBe(true);
+    expect(document.result.results[1]?.provider).toBe("slack");
+    expect(document.result.results[1]?.ok).toBe(false);
+    expect(document.result.nextActions).toEqual([
       expect.objectContaining({
         provider: "slack",
         command: expect.stringContaining("provider-cli ensure --provider slack"),
@@ -179,9 +185,9 @@ describe("runProviderCliEnsure", () => {
         stderr: () => undefined,
       });
       expect(result.exitCode).toBe(0);
-      const document = JSON.parse(stdout.join("")) as Record<string, unknown>;
-      expect(document.action).toBe("installed-managed");
-      expect(document.readiness).toBe("ready");
+      const document = JSON.parse(stdout.join("")) as { result: { results: Record<string, unknown>[] } };
+      expect(document.result.results[0]?.action).toBe("installed-managed");
+      expect(document.result.results[0]?.readiness).toBe("ready");
     } finally {
       await fixture.close();
     }
@@ -192,20 +198,26 @@ describe("runProviderCliInspect", () => {
   it("reports absent providers with exit code 1", async () => {
     const accountHome = await makeTempDir("opentag-cli-");
     const stdout: string[] = [];
+    const stderr: string[] = [];
     const result = await runProviderCliInspect({
       provider: "slack",
       json: true,
       accountHome,
       env: { PATH: "" },
       stdout: (chunk) => stdout.push(chunk),
-      stderr: () => undefined,
+      stderr: (chunk) => stderr.push(chunk),
     });
     expect(result.exitCode).toBe(1);
-    const document = JSON.parse(stdout.join("")) as Record<string, unknown>;
-    expect(document.provider).toBe("slack");
-    expect(document.state).toBe("absent");
-    expect(document.readiness).toBe("install");
-    expect(document.nextActions).toEqual([
+    expect(stdout).toEqual([]);
+    const document = JSON.parse(stderr.join("")) as {
+      error: { code: string };
+      result: { results: Record<string, unknown>[]; nextActions: unknown[] };
+    };
+    expect(document.error.code).toBe("PROVIDER_CLI_NOT_READY");
+    expect(document.result.results[0]?.provider).toBe("slack");
+    expect(document.result.results[0]?.state).toBe("absent");
+    expect(document.result.results[0]?.readiness).toBe("install");
+    expect(document.result.nextActions).toEqual([
       expect.objectContaining({ command: expect.stringContaining("provider-cli ensure --provider slack") }),
     ]);
   });

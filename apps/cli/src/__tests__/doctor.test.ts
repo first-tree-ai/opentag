@@ -500,6 +500,7 @@ describe("doctor IM Provider CLI observations", () => {
       expect.objectContaining({
         checkCode: "provider-cli.slack.installation",
         command: expect.stringContaining("provider-cli ensure --provider slack"),
+        reason: "provider-cli.slack.installation",
       }),
     );
     expect(result.providerCliSetup).toBe("needs_attention");

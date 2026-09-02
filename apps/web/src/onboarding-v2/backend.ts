@@ -77,6 +77,8 @@ export interface OnboardingBackend {
    */
   readonly computerOnline: boolean | undefined;
   readonly agent: CreatedAgent | undefined;
+  /** True only when this Agent was restored from durable Server state, not created in this visit. */
+  readonly agentRestored?: boolean;
   /**
    * True only when durable Server state restored an Agent that already had a Computer binding.
    * An unbound Agent restored after a refresh must still leave the Computer step explicitly once
@@ -100,8 +102,13 @@ export interface OnboardingBackend {
   readonly resuming: boolean;
   /** Why the Account could not be read, if it could not. */
   readonly resumeError: string | undefined;
+  /** An existing active Agent that cannot resume until it is assigned a Computer. */
+  readonly resumeBlocked?: { readonly agentId: string; readonly agentName: string };
   /** Reads it again. A failed read has to be recoverable: this route is the gate's only exit. */
   readonly retryResume: () => void;
+  /** Explicitly removes the setup Agent so the user can choose its immutable runtime again. */
+  readonly discardAgent: () => Promise<boolean>;
+  readonly discardingAgent: boolean;
   readonly startPlanSignIn: () => void;
   readonly createAgent: (draft: AgentDraft) => void;
   readonly startMessaging: (provider: "feishu" | "slack") => void;

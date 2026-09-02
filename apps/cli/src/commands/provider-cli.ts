@@ -38,7 +38,7 @@ export function registerProviderCliCommand(program: Command, deps: ProviderCliCo
         });
         process.exitCode = result.exitCode;
       } catch (error) {
-        process.exitCode = presentProviderCliFailure(error, options.json === true);
+        process.exitCode = presentProviderCliFailure(error, options.json === true, deps);
       }
     });
 
@@ -69,16 +69,20 @@ export function registerProviderCliCommand(program: Command, deps: ProviderCliCo
           });
           process.exitCode = result.exitCode;
         } catch (error) {
-          process.exitCode = presentProviderCliFailure(error, options.json === true);
+          process.exitCode = presentProviderCliFailure(error, options.json === true, deps);
         }
       },
     );
 }
 
-function presentProviderCliFailure(error: unknown, json: boolean): commandPolicy.CommandExitCode {
+function presentProviderCliFailure(
+  error: unknown,
+  json: boolean,
+  deps: ProviderCliCommandDeps,
+): commandPolicy.CommandExitCode {
   const commandError = commandPolicy.toCommandError(error, "provider");
   return commandPolicy.presentCommand(
     { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
-    { json },
+    { json, stdout: deps.stdout, stderr: deps.stderr },
   );
 }

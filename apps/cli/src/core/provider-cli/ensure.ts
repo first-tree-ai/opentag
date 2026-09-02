@@ -1,4 +1,5 @@
 import type { ProviderCliEnsureResult, ProviderCliManager, ProviderCliPhaseEvent } from "@opentag/client";
+import { CommandError, presentCommand } from "../command/policy.js";
 import {
   createProviderCliManager,
   type ProviderCliCommandDeps,
@@ -16,8 +17,7 @@ import {
  * Reusable orchestration for `opentag provider-cli ensure`.
  *
  * Human mode prints bounded single-line phase updates and never prompts, with or
- * without a TTY. `--json` mode writes exactly one JSON document to stdout — the per
- * provider result, or `{ ok, results }` for `all` — and suppresses phase lines.
+ * without a TTY. `--json` mode writes one common command envelope and suppresses phase lines.
  */
 
 export interface ProviderCliEnsureCommandOptions extends ProviderCliCommandDeps {
@@ -103,14 +103,6 @@ function nextActionFor(result: ProviderCliEnsureResult): ProviderCliNextAction |
   };
 }
 
-function jsonDocument(
-  results: readonly ProviderCliEnsureResult[],
-  nextActions: readonly ProviderCliNextAction[],
-): unknown {
-  if (results.length === 1) return { ...results[0], nextActions };
-  return { ok: results.every((result) => result.ok), results, nextActions };
-}
-
 function ensureOneProvider(
   manager: ProviderCliManager,
   provider: ProviderCliEnsureResult["provider"],
@@ -137,7 +129,18 @@ export async function runProviderCliEnsure(
     usageMessage += chunk;
   });
   if (!providers) {
-    writeProviderUsageError(options, usageMessage);
+    presentCommand(
+      {
+        ok: false,
+        error: new CommandError(
+          { code: "INVALID_PROVIDER", category: "validation", retryability: "never", phase: "validation" },
+          usageMessage.trim(),
+        ),
+        exitCode: 2,
+        value: { results: [], nextActions: [] },
+      },
+      { json: options.json, stdout: options.stdout, stderr: options.stderr },
+    );
     return { exitCode: 2, results: [], nextActions: [] };
   }
   const manager = createProviderCliManager(options);
@@ -147,39 +150,38 @@ export async function runProviderCliEnsure(
     const action = nextActionFor(result);
     return action ? [action] : [];
   });
+  const ready = results.every((result) => result.ok);
+  const value = { results, nextActions };
   if (!options.json) {
+    const write = ready ? writeStdout : writeStderr;
+    if (!ready) write(options, "PROVIDER_CLI_SETUP_INCOMPLETE: One or more Provider CLIs need attention.\n");
     for (const result of results) {
       const nextAction = nextActions.find((action) => action.provider === result.provider);
       for (const line of renderResultLines(result, nextAction)) {
-        writeStdout(options, `${line}\n`);
+        write(options, `${line}\n`);
       }
     }
-  }
-
-  if (options.json) {
-    writeStdout(options, `${JSON.stringify(jsonDocument(results, nextActions), null, 2)}\n`);
-  }
-
-  return { exitCode: results.every((result) => result.ok) ? 0 : 1, results, nextActions };
-}
-
-function writeProviderUsageError(options: ProviderCliEnsureCommandOptions, message: string): void {
-  if (!options.json) {
-    writeStderr(options, message);
-    return;
-  }
-  writeStderr(
-    options,
-    `${JSON.stringify({
-      ok: false,
-      error: {
-        code: "INVALID_PROVIDER",
-        category: "validation",
-        retryability: "never",
-        phase: "validation",
-        message: message.trim(),
+  } else if (ready) {
+    presentCommand({ ok: true, value, exitCode: 0 }, { json: true, stdout: options.stdout, stderr: options.stderr });
+  } else {
+    presentCommand(
+      {
+        ok: false,
+        error: new CommandError(
+          {
+            code: "PROVIDER_CLI_SETUP_INCOMPLETE",
+            category: "dependency",
+            retryability: "never",
+            phase: "provider",
+          },
+          "One or more Provider CLIs need attention.",
+        ),
+        exitCode: 1,
+        value,
       },
-      nextActions: [],
-    })}\n`,
-  );
+      { json: true, stdout: options.stdout, stderr: options.stderr },
+    );
+  }
+
+  return { exitCode: ready ? 0 : 1, results, nextActions };
 }

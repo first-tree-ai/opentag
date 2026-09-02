@@ -147,6 +147,17 @@ async function readMessagingProvider(agentId: string): Promise<MessagingProvider
   }
 }
 
+async function deleteSetupAgent(agentId: string): Promise<void> {
+  // A retry may arrive after suspension already succeeded, so a failed suspend does not prevent
+  // the idempotent delete attempt from recovering the flow. The delete response is authoritative.
+  try {
+    await browserApi.suspendAgent(agentId);
+  } catch {
+    // The Agent may already be suspended after an interrupted earlier attempt.
+  }
+  await browserApi.deleteAgent(agentId);
+}
+
 /**
  * The draft is observed, not owned: the page holds it, and this hook only needs the runtime from it
  * so a readiness read asks about the Provider the reader actually chose. Taking it as an argument
@@ -158,6 +169,9 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   const [agent, setAgent] = useState<CreatedAgent>();
+  const [agentRestored, setAgentRestored] = useState(false);
+  const [resumeBlocked, setResumeBlocked] = useState<{ agentId: string; agentName: string }>();
+  const [discardingAgent, setDiscardingAgent] = useState(false);
   const [computerPreviouslyConfirmed, setComputerPreviouslyConfirmed] = useState(false);
   const [creation, setCreation] = useState<CreationState>("idle");
   const [actionError, setActionError] = useState<string>();
@@ -184,6 +198,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const creationRef = useRef<CreationState>("idle");
   const feishuTimer = useRef(0);
   const mounted = useRef(true);
+  const discardRunning = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -203,10 +218,14 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       return undefined;
     }
     const resumed = selected.agent;
+    if (!selected.boundComputer) {
+      setResumeBlocked({ agentId: resumed.id, agentName: resumed.displayName });
+      return undefined;
+    }
     setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
+    setAgentRestored(true);
     creationRef.current = "created";
     setCreation("created");
-    if (!selected.boundComputer) return undefined;
     setComputerPreviouslyConfirmed(true);
     computerId.current = selected.boundComputer.computerId;
     setSelectedComputer(knownBoundComputer(selected.boundComputer, selected.observedComputer));
@@ -228,6 +247,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     resumeRun.current = mine;
     const live = () => mounted.current && resumeRun.current === mine;
     setResumeError(undefined);
+    setResumeBlocked(undefined);
     setResuming(true);
     try {
       const [{ agents }, { computers }] = await Promise.all([browserApi.agents(), browserApi.computers()]);
@@ -340,6 +360,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
           if (!mounted.current || attempt.current !== mine) return;
           creationRef.current = "created";
           setCreation("created");
+          setAgentRestored(false);
           setAgent({ id: created.id, name: created.name, runtimeProvider: created.runtimeProvider });
         },
         (cause: unknown) => {
@@ -435,6 +456,38 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     );
   }, [agent]);
 
+  const discardAgent = useCallback(async (): Promise<boolean> => {
+    const targetId = agent?.id ?? resumeBlocked?.agentId;
+    if (!targetId || discardRunning.current) return false;
+    discardRunning.current = true;
+    setDiscardingAgent(true);
+    setActionError(undefined);
+    attempt.current += 1;
+    window.clearInterval(feishuTimer.current);
+    try {
+      await deleteSetupAgent(targetId);
+      if (!mounted.current) return false;
+      creationRef.current = "idle";
+      setAgent(undefined);
+      setAgentRestored(false);
+      setResumeBlocked(undefined);
+      setCreation("idle");
+      setMessaging({ kind: "idle" });
+      setMessagingProvider(undefined);
+      setComputerPreviouslyConfirmed(false);
+      setPastComputerStep(false);
+      setLastPassedReadiness(undefined);
+      await readAccount();
+      return true;
+    } catch (cause) {
+      if (mounted.current) setActionError(errorMessage(cause, COPY.errors.discardAgent));
+      return false;
+    } finally {
+      discardRunning.current = false;
+      if (mounted.current) setDiscardingAgent(false);
+    }
+  }, [agent?.id, readAccount, resumeBlocked?.agentId]);
+
   const reset = useCallback(() => {
     attempt.current += 1;
     setComputerPollEpoch((current) => current + 1);
@@ -442,6 +495,8 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     creationRef.current = "idle";
     setMessaging({ kind: "idle" });
     setAgent(undefined);
+    setAgentRestored(false);
+    setResumeBlocked(undefined);
     setComputerPreviouslyConfirmed(false);
     setCreation("idle");
     setResuming(false);
@@ -477,31 +532,35 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const readiness = liveReadiness ?? (pastComputerStep ? lastPassedReadiness : undefined);
 
   const computerConnectAdapter = useMemo<ComputerConnectAdapter | undefined>(() => {
-    if (!agent) return undefined;
+    const targetAgentId = agent?.id ?? resumeBlocked?.agentId;
+    if (!targetAgentId) return undefined;
     return {
       issue: (intent) =>
         browserApi.issueComputerConnectCode(
           intent.mode === "repair"
             ? {
                 mode: "repair",
-                targetAgentId: agent.id,
+                targetAgentId,
                 targetComputerId: intent.target.computerId,
               }
-            : { mode: "create", targetAgentId: agent.id },
+            : { mode: "create", targetAgentId },
         ),
       status: (connectCodeId) => browserApi.computerConnectCodeStatus(connectCodeId),
       computers: () => browserApi.computers(),
     };
-  }, [agent]);
+  }, [agent?.id, resumeBlocked?.agentId]);
 
   return useMemo(
     () => ({
       agent,
+      agentRestored,
       computerConnectAdapter,
       computerOnline,
       computerConnected,
       createAgent,
       creation,
+      discardAgent,
+      discardingAgent,
       error: actionError,
       knownComputers,
       markPastComputerStep,
@@ -512,6 +571,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       reset,
       computerPreviouslyConfirmed,
       resumeError,
+      resumeBlocked,
       resuming,
       retryResume,
       startMessaging,
@@ -522,11 +582,14 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     [
       actionError,
       agent,
+      agentRestored,
       computerConnectAdapter,
       computerOnline,
       computerConnected,
       createAgent,
       creation,
+      discardAgent,
+      discardingAgent,
       knownComputers,
       markPastComputerStep,
       messaging,
@@ -536,6 +599,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       reset,
       computerPreviouslyConfirmed,
       resumeError,
+      resumeBlocked,
       resuming,
       retryResume,
       startMessaging,

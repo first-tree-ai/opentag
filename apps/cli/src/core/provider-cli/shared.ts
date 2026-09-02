@@ -54,8 +54,8 @@ const PROVIDER_CLI_MANUAL_REASONS = new Set([
 ]);
 
 /** False when repeating ensure cannot change the local fact without a user or release change. */
-export function providerCliCanAutoRepair(reason: string | undefined): boolean {
-  return reason === undefined || !PROVIDER_CLI_MANUAL_REASONS.has(reason);
+export function providerCliCanAutoRepair(reason: string): boolean {
+  return !PROVIDER_CLI_MANUAL_REASONS.has(reason);
 }
 
 export interface ProviderCliNextAction {

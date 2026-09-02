@@ -29,7 +29,7 @@ interface ProviderCliSetupProjection {
 export function registerComputerConnectCommand(computer: Command): void {
   computer
     .command("connect")
-    .description("Connect this Computer, start the daemon, and prepare the Lark and Slack CLIs")
+    .description("Connect this Computer and, for targeted onboarding, prepare the Lark and Slack CLIs")
     .argument("<code>", "one-time Computer connect code")
     .option("--server <url>", "OpenTag server URL")
     .option("--home <path>", "OpenTag home directory")
@@ -43,7 +43,7 @@ async function executeComputerConnectCommand(code: string, options: ComputerConn
   const result = await connectOrPresentFailure(code, options);
   if (!result) return;
   if (!shouldPrepareProviderClis(result, options)) {
-    presentConnectResult(result, skippedProviderClis(options), options.json === true);
+    presentConnectResult(result, skippedProviderClis(result, options), options.json === true);
     process.exitCode = 0;
     return;
   }
@@ -131,8 +131,18 @@ function presentUnexpectedProviderCliFailure(result: ComputerConnectResult, erro
   process.exitCode = commandPolicy.commandExitCode(commandError);
 }
 
-function skippedProviderClis(options: ComputerConnectCommandOptions): ProviderCliSetupProjection {
-  const reason = options.start === false ? "daemon_not_started" : "not_requested";
+function skippedProviderClis(
+  result: ComputerConnectResult,
+  options: ComputerConnectCommandOptions,
+): ProviderCliSetupProjection {
+  const reason =
+    options.start === false
+      ? "daemon_not_started"
+      : options.prepareProviderClis === false
+        ? "not_requested"
+        : result.agentId === undefined
+          ? "no_target_agent"
+          : "not_requested";
   return { status: "skipped", results: [], nextActions: [], reason };
 }
 
@@ -143,18 +153,27 @@ function presentConnectResult(
   error?: commandPolicy.CommandError,
 ): void {
   if (json) {
-    const ok = providerClis.status !== "needs_attention" && !error;
-    const document = {
-      ok,
-      result: {
-        connected: true,
-        connection: result,
-        providerClis,
-      },
-      ...(error ? { error: error.toStructuredError() } : {}),
-      nextActions: providerClis.nextActions,
+    const value = {
+      connected: true,
+      connection: result,
+      providerClis,
     };
-    process.stdout.write(`${commandPolicy.redactSecrets(JSON.stringify(document))}\n`);
+    if (providerClis.status !== "needs_attention" && !error) {
+      commandPolicy.presentCommand({ ok: true, value, exitCode: 0 }, { json: true });
+      return;
+    }
+    const commandError =
+      error ??
+      new commandPolicy.CommandError(
+        {
+          code: "PROVIDER_CLI_SETUP_INCOMPLETE",
+          category: "dependency",
+          retryability: "never",
+          phase: "provider",
+        },
+        "Computer connection is active, but local messaging CLI setup needs attention.",
+      );
+    commandPolicy.presentCommand({ ok: false, error: commandError, exitCode: 1, value }, { json: true });
     return;
   }
   if (providerClis.status === "ready") {
@@ -174,23 +193,32 @@ function presentConnectResult(
 function presentServiceFailure(error: ComputerConnectServiceInstallError, json: boolean): void {
   const command = `"$HOME/.local/bin/${channelConfig.binName}" daemon restart`;
   if (json) {
-    process.stdout.write(
-      `${JSON.stringify({
+    const commandError = new commandPolicy.CommandError(
+      {
+        code: "DAEMON_SERVICE_FAILED",
+        category: "dependency",
+        retryability: "immediate",
+        phase: "startup",
+      },
+      "Daemon service reload failed; machine credentials were preserved.",
+    );
+    commandPolicy.presentCommand(
+      {
         ok: false,
-        result: {
+        error: commandError,
+        exitCode: 1,
+        value: {
           connected: true,
           connection: error.connectResult,
-          providerClis: { status: "skipped", results: [], nextActions: [], reason: "daemon_service_failed" },
+          providerClis: {
+            status: "skipped",
+            results: [],
+            nextActions: [{ provider: "all", command, reason: "daemon_service_failed" }],
+            reason: "daemon_service_failed",
+          },
         },
-        error: {
-          code: "DAEMON_SERVICE_FAILED",
-          category: "dependency",
-          retryability: "immediate",
-          phase: "startup",
-          message: "Daemon service reload failed; machine credentials were preserved.",
-        },
-        nextActions: [{ command, reason: "daemon_service_failed" }],
-      })}\n`,
+      },
+      { json: true },
     );
     return;
   }

@@ -739,7 +739,7 @@ describe("ProviderCliReconcileOwner", () => {
     ).toBe(false);
   });
 
-  it("authorizes a one-time prewarm of both official CLIs during first setup", async () => {
+  it("authorizes a one-time inspection of both official CLIs during first setup", async () => {
     const registry = new ConnectionRegistry();
     const shouldPrewarmOfficialProviderClis = vi.fn(async () => true);
     const owner = new ProviderCliReconcileOwner(registry, {
@@ -759,7 +759,7 @@ describe("ProviderCliReconcileOwner", () => {
     expect(JSON.stringify(connection.socket.send.mock.calls[0]?.[0])).not.toContain("appSecret");
   });
 
-  it("does not keep prewarming unselected CLIs after setup is complete", async () => {
+  it("does not keep requesting unselected CLI inspection after setup is complete", async () => {
     const registry = new ConnectionRegistry();
     const owner = new ProviderCliReconcileOwner(registry, {
       listActiveProviderCliRequirements: vi.fn(async () => []),

@@ -20,6 +20,7 @@ export type ComputerConnectIntent =
     };
 
 export interface ComputerConnectProps {
+  readonly adapter?: ComputerConnectAdapter;
   readonly intent: ComputerConnectIntent;
   readonly onConnected?: (computer: AccountComputerSummary) => void;
 }
@@ -184,9 +185,9 @@ async function pollIssuedCommand({
  * Callers choose only create versus a repair target and decide what to do after connection. The
  * module owns every ordering rule inside that seam, including retiring stale issue and poll work.
  */
-export function ComputerConnect({ intent, onConnected }: ComputerConnectProps) {
+export function ComputerConnect({ adapter, intent, onConnected }: ComputerConnectProps) {
   return (
-    <ComputerConnectLifecycleRoot intent={intent} onConnected={onConnected}>
+    <ComputerConnectLifecycleRoot adapter={adapter} intent={intent} onConnected={onConnected}>
       {(lifecycle) => <ComputerConnectPresentation intent={intent} lifecycle={lifecycle} />}
     </ComputerConnectLifecycleRoot>
   );

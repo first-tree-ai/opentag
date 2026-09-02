@@ -156,25 +156,29 @@ describe("computer connect", () => {
       ],
     });
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
       await createProgram().parseAsync(["node", "opentag", "connect", "code", "--home", home, "--json"]);
-      expect(stdout).toHaveBeenCalledTimes(1);
-      const document = JSON.parse(String(stdout.mock.calls[0]?.[0])) as {
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const document = JSON.parse(String(stderr.mock.calls[0]?.[0])) as {
         ok: boolean;
+        error: { code: string };
         result: { connected: boolean; providerClis: { status: string; nextActions: unknown[] } };
-        nextActions: unknown[];
       };
       expect(document).toMatchObject({
         ok: false,
+        error: { code: "PROVIDER_CLI_SETUP_INCOMPLETE" },
         result: { connected: true, providerClis: { status: "needs_attention" } },
       });
       expect(document.result.providerClis.nextActions).toHaveLength(1);
-      expect(document.nextActions).toEqual(document.result.providerClis.nextActions);
+      expect(document).not.toHaveProperty("nextActions");
       expect(process.exitCode).toBe(1);
     } finally {
       process.exitCode = previousExitCode;
+      stderr.mockRestore();
       stdout.mockRestore();
       ensureSpy.mockRestore();
       runSpy.mockRestore();
@@ -246,14 +250,21 @@ describe("computer connect", () => {
       message: "Connected this Computer",
     });
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
       await createProgram().parseAsync(["node", "opentag", "computer", "connect", "code", "--home", home, "--json"]);
-      expect(stdout).toHaveBeenCalledWith(expect.stringContaining('"ok":true'));
+      expect(stderr).not.toHaveBeenCalled();
+      const document = JSON.parse(String(stdout.mock.calls[0]?.[0]));
+      expect(document).toMatchObject({
+        ok: true,
+        result: { connected: true, providerClis: { status: "skipped", reason: "no_target_agent" } },
+      });
       expect(process.exitCode).toBe(0);
     } finally {
       process.exitCode = previousExitCode;
+      stderr.mockRestore();
       stdout.mockRestore();
       runSpy.mockRestore();
     }

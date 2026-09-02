@@ -177,7 +177,7 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
     ? 1
     : 0;
   const nextActions = checks.flatMap((check) =>
-    check.command ? [{ checkCode: check.code, command: check.command, reason: check.detail }] : [],
+    check.command ? [{ checkCode: check.code, command: check.command, reason: check.code }] : [],
   );
   const providerCliSetup = providerCliSetupStatus(checks);
   const report: DoctorReport = {
@@ -546,7 +546,14 @@ function cliInstallationCheck(
 }
 
 function providerFromCheckCode(code: string): "feishu" | "slack" {
-  return code.includes(".feishu.") ? "feishu" : "slack";
+  switch (code) {
+    case "provider-cli.feishu.installation":
+      return "feishu";
+    case "provider-cli.slack.installation":
+      return "slack";
+    default:
+      throw new Error(`Unsupported Provider CLI check code: ${code}`);
+  }
 }
 
 function runtimeProviderUnknown(provider: "codex" | "claude-code", label: string, detail?: string): DoctorCheck {

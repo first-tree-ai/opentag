@@ -34,6 +34,8 @@ const allowedUntranslatedValues = new Set([
   "Slack",
   "Feishu",
   "Lark",
+  "Lark CLI",
+  "Slack CLI",
   "Token",
   "Tokens",
 ]);

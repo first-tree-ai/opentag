@@ -236,21 +236,13 @@ test("the installer only commits a release after it verifies and smoke-tests the
   assert.match(source, /if \[ "\$FORCE" -eq 0 \] && portable_install_is_current "\$VERSION" "\$BIN_NAME"; then/);
 });
 
-test("the installer reports Provider CLI state without provisioning third-party software", async () => {
+test("the installer only installs OpenTag and leaves runtime setup to connect", async () => {
   const source = await readFile(join(portableDir, "install.sh"), "utf8");
-  const inspection = source.slice(
-    source.indexOf("report_provider_cli_state() {"),
-    source.indexOf('WORK_DIR="$(mktemp -d'),
-  );
 
-  assert.ok(inspection.length > 0);
-  assert.match(inspection, /provider-cli inspect --provider all/);
-  assert.doesNotMatch(inspection, /provider-cli ensure/);
-  assert.equal(
-    source.match(/report_provider_cli_state "\$BIN_NAME"/g)?.length,
-    2,
-    "fresh and already-current installs must both report the same read-only state",
-  );
+  assert.doesNotMatch(source, /report_provider_cli_state/);
+  assert.doesNotMatch(source, /provider-cli inspect/);
+  assert.doesNotMatch(source, /provider-cli ensure/);
+  assert.doesNotMatch(source, /daemon ensure-service/);
 });
 
 test("the installer help documents the supported options", () => {

@@ -142,6 +142,10 @@ function setupProjectionOrThrow(
     kind: "bound",
     ...targetBase.computer,
     connectionStatus: "online",
+    imCliReadiness: [
+      { provider: "feishu", status: "ready", observedAt },
+      { provider: "slack", status: "ready", observedAt },
+    ],
     lastSeenAt: observedAt,
     observedAt,
   };

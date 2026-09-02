@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   type AccountComputerConnectCodeIssueRequest,
   type ChannelName,
@@ -8,15 +8,20 @@ import {
   isSupportedClientVersion,
   unsupportedClientVersionMessage,
 } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
+import { agents, computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
 
 export const COMPUTER_CONNECT_CODE_TTL_SECONDS = 15 * 60;
 const COMPUTER_CONNECT_CODE_PREFIX = "otcc_";
+const TARGETED_CONNECT_CODE_RANDOM_BYTES = 16;
+const TARGETED_CONNECT_CODE_PAYLOAD_BYTES = 16 + TARGETED_CONNECT_CODE_RANDOM_BYTES;
 const MACHINE_TOKEN_PREFIX = "otmc_";
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const LEGACY_TARGETED_CONNECT_CODE_PATTERN =
+  /^otcc_[A-Za-z0-9_-]+\.([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 const MACHINE_TOKEN_PATTERN =
   /^otmc_([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{32,})$/i;
 
@@ -53,6 +58,7 @@ export interface ComputerConnectExchangeInput {
 }
 
 export interface ComputerConnectExchangeResult extends ComputerAuthContext {
+  agentId?: string;
   machineToken: string;
 }
 
@@ -91,10 +97,16 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           accountId,
           mode: "repair",
           now,
+          targetAgentId: input.targetAgentId,
           targetComputerId: input.targetComputerId,
         });
       }
-      return this.#insertCode(transaction, { accountId, mode: "create", now });
+      return this.#insertCode(transaction, {
+        accountId,
+        mode: "create",
+        now,
+        targetAgentId: input.targetAgentId,
+      });
     });
   }
 
@@ -151,6 +163,18 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         .limit(1);
       const staged = requireRedeemableConnectCode(stagedConnectCode, now);
       await lockActiveAccount(transaction, staged.issuedByAccountId);
+      const targetAgentId = targetAgentIdFromConnectCode(input.code);
+      if (targetAgentId) {
+        // Removal locks an Agent before its Computer. Preserve that order for targeted repair so
+        // the two lifecycle operations cannot form Agent -> Computer / Computer -> Agent edges.
+        await assertConnectTargetAgent(transaction, {
+          accountId: staged.issuedByAccountId,
+          agentId: targetAgentId,
+          mode: staged.mode,
+          redemption: true,
+          targetComputerId: staged.targetComputerId ?? undefined,
+        });
+      }
       // Removal owns the target Computer before it revokes repair codes. Acquire the same rows in
       // that order, then re-read the code under lock so a queued redemption observes removal's
       // commit instead of forming Computer -> code / code -> Computer deadlock edges.
@@ -170,14 +194,15 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
       }
 
-      let computer: { id: string };
-      if (connectCode.mode === "repair") {
-        if (!repairTarget || connectCode.targetComputerId !== repairTarget.id) {
-          throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-        }
-        computer = await this.#repairComputer(transaction, connectCode, repairTarget, input, now);
-      } else {
-        computer = await this.#createComputer(transaction, connectCode, input, now);
+      const computer = await this.#redeemComputer(transaction, connectCode, repairTarget, input, now);
+      if (targetAgentId) {
+        await bindConnectTargetAgent(transaction, {
+          accountId: connectCode.issuedByAccountId,
+          agentId: targetAgentId,
+          computerId: computer.id,
+          mode: connectCode.mode,
+          now,
+        });
       }
       const credential = await rotateComputerCredentials(transaction, computer.id, connectCode.issuedByAccountId, now);
       const [consumed] = await transaction
@@ -189,6 +214,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
       }
       return {
+        ...(targetAgentId ? { agentId: targetAgentId } : {}),
         credentialId: credential.id,
         computerId: computer.id,
         installationId: input.installationId,
@@ -232,8 +258,17 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       mode: ComputerConnectCodeMode;
       now: Date;
       targetComputerId?: string;
+      targetAgentId?: string;
     },
   ): Promise<IssuedComputerConnectCode> {
+    if (input.targetAgentId) {
+      await assertConnectTargetAgent(transaction, {
+        accountId: input.accountId,
+        agentId: input.targetAgentId,
+        mode: input.mode,
+        targetComputerId: input.targetComputerId,
+      });
+    }
     if (input.mode === "repair") {
       if (!input.targetComputerId) {
         throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
@@ -243,7 +278,9 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw new AuthServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
       }
     }
-    const code = `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}`;
+    const code = input.targetAgentId
+      ? targetedComputerConnectCode(input.targetAgentId)
+      : `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}`;
     const expiresIn = COMPUTER_CONNECT_CODE_TTL_SECONDS;
     const expiresAt = new Date(input.now.getTime() + expiresIn * 1000);
     const [inserted] = await transaction
@@ -296,6 +333,22 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     }
   }
 
+  async #redeemComputer(
+    transaction: DatabaseTransaction,
+    connectCode: ConnectCodeRow,
+    repairTarget: LockedRepairTarget | undefined,
+    input: ComputerConnectExchangeInput,
+    now: Date,
+  ): Promise<{ id: string }> {
+    if (connectCode.mode !== "repair") {
+      return this.#createComputer(transaction, connectCode, input, now);
+    }
+    if (!repairTarget || connectCode.targetComputerId !== repairTarget.id) {
+      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    }
+    return this.#repairComputer(transaction, connectCode, repairTarget, input, now);
+  }
+
   async #repairComputer(
     transaction: DatabaseTransaction,
     connectCode: ConnectCodeRow,
@@ -346,6 +399,120 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
     }
     return target;
+  }
+}
+
+function targetAgentIdFromConnectCode(code: string): string | undefined {
+  if (code.includes(".")) {
+    const legacyTarget = LEGACY_TARGETED_CONNECT_CODE_PATTERN.exec(code)?.[1];
+    if (!legacyTarget) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+    return legacyTarget;
+  }
+  const encoded = code.startsWith(COMPUTER_CONNECT_CODE_PREFIX) ? code.slice(COMPUTER_CONNECT_CODE_PREFIX.length) : "";
+  // Untargeted codes remain the existing 24 random bytes / 32 Base64URL characters.
+  if (encoded.length !== 43) return undefined;
+  if (!/^[A-Za-z0-9_-]+$/u.test(encoded)) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  const payload = Buffer.from(encoded, "base64url");
+  if (payload.byteLength !== TARGETED_CONNECT_CODE_PAYLOAD_BYTES || payload.toString("base64url") !== encoded) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  const target = uuidFromBytes(payload.subarray(0, 16));
+  if (!UUID_PATTERN.test(target)) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  return target;
+}
+
+function targetedComputerConnectCode(agentId: string): string {
+  const agentBytes = uuidBytes(agentId);
+  const payload = Buffer.concat([agentBytes, randomBytes(TARGETED_CONNECT_CODE_RANDOM_BYTES)]);
+  return `${COMPUTER_CONNECT_CODE_PREFIX}${payload.toString("base64url")}`;
+}
+
+function uuidBytes(value: string): Buffer {
+  if (!UUID_PATTERN.test(value)) throw new TypeError("Invalid target Agent id");
+  return Buffer.from(value.replaceAll("-", ""), "hex");
+}
+
+function uuidFromBytes(value: Uint8Array): string {
+  const hex = Buffer.from(value).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function assertConnectTargetAgent(
+  transaction: DatabaseTransaction,
+  input: {
+    accountId: string;
+    agentId: string;
+    mode: ComputerConnectCodeMode;
+    redemption?: boolean;
+    targetComputerId?: string;
+  },
+): Promise<void> {
+  const [agent] = await transaction
+    .select({ computerId: agents.computerId, createdByUserId: agents.createdByUserId, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, input.agentId))
+    .limit(1)
+    .for("update");
+  if (!agent || agent.createdByUserId !== input.accountId || agent.status !== "active") {
+    if (input.redemption) {
+      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code target is no longer valid");
+    }
+    throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
+  }
+  const expectedComputerId = input.mode === "repair" ? input.targetComputerId : undefined;
+  if (
+    (input.mode === "create" && agent.computerId !== null) ||
+    (input.mode === "repair" && agent.computerId !== expectedComputerId)
+  ) {
+    if (input.redemption) {
+      throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code target is no longer valid");
+    }
+    throw new AuthServiceError(
+      "AGENT_LIFECYCLE_CONFLICT",
+      "deterministic",
+      "The target Agent is no longer available for this Computer connection",
+      409,
+    );
+  }
+}
+
+async function bindConnectTargetAgent(
+  transaction: DatabaseTransaction,
+  input: {
+    accountId: string;
+    agentId: string;
+    computerId: string;
+    mode: ComputerConnectCodeMode;
+    now: Date;
+  },
+): Promise<void> {
+  const [agent] = await transaction
+    .select({ computerId: agents.computerId, createdByUserId: agents.createdByUserId, status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, input.agentId))
+    .limit(1)
+    .for("update");
+  const expectedComputerId = input.mode === "repair" ? input.computerId : null;
+  if (
+    !agent ||
+    agent.createdByUserId !== input.accountId ||
+    agent.status !== "active" ||
+    agent.computerId !== expectedComputerId
+  ) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code target is no longer valid");
+  }
+  if (agent.computerId === input.computerId) return;
+  const [bound] = await transaction
+    .update(agents)
+    .set({ computerId: input.computerId, revision: sql`${agents.revision} + 1`, updatedAt: input.now })
+    .where(and(eq(agents.id, input.agentId), eq(agents.createdByUserId, input.accountId), isNull(agents.computerId)))
+    .returning({ id: agents.id });
+  if (!bound) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code target is no longer valid");
   }
 }
 
@@ -433,16 +600,20 @@ function requireRedeemableConnectCode(connectCode: ConnectCodeRow | undefined, n
 
 export function buildComputerConnectCommand(options: {
   code: string;
+  downloadBaseUrl?: string;
   environment: ChannelName;
   publicUrl: string;
 }): string {
   const channel = getChannelConfig(options.environment);
-  const connectArgs = `computer connect --server ${shellArg(options.publicUrl)} -- ${shellArg(options.code)}`;
+  const connectArgs = `connect --server ${shellArg(options.publicUrl)} -- ${shellArg(options.code)}`;
   if (options.environment === "dev") {
     if (!SAFE_SHELL_ARG_PATTERN.test(channel.binName)) throw new TypeError("Invalid channel binary name");
     return `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${connectArgs}`;
   }
-  return `npm i -g ${shellArg(channel.packageName)} && ${shellArg(channel.binName)} ${connectArgs}`;
+  if (!SAFE_SHELL_ARG_PATTERN.test(channel.binName)) throw new TypeError("Invalid channel binary name");
+  const downloadBaseUrl = (options.downloadBaseUrl ?? "https://download.opentag.build/releases").replace(/\/+$/, "");
+  const installerUrl = `${downloadBaseUrl}/${options.environment}/install.sh`;
+  return `curl -fsSL ${shellArg(installerUrl)} | sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${connectArgs}`;
 }
 
 function shellArg(value: string): string {

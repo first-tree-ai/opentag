@@ -35,10 +35,9 @@ describe("ComputerStep repair disclosure", () => {
       <ComputerStep
         adapter={adapter}
         computer={undefined}
-        creation="idle"
         draft={draft}
         onComputerConnected={() => undefined}
-        onCreate={() => undefined}
+        onContinue={() => undefined}
         readiness={undefined}
       />,
     );
@@ -66,10 +65,9 @@ describe("ComputerStep repair disclosure", () => {
       <ComputerStep
         adapter={adapter}
         computer={computer("mac", "offline")}
-        creation="idle"
         draft={draft}
         onComputerConnected={() => undefined}
-        onCreate={() => undefined}
+        onContinue={() => undefined}
         readiness={undefined}
       />,
     );
@@ -82,10 +80,9 @@ describe("ComputerStep repair disclosure", () => {
       <ComputerStep
         adapter={adapter}
         computer={computer("mac", "unknown")}
-        creation="idle"
         draft={draft}
         onComputerConnected={() => undefined}
-        onCreate={() => undefined}
+        onContinue={() => undefined}
         readiness={undefined}
       />,
     );
@@ -96,10 +93,9 @@ describe("ComputerStep repair disclosure", () => {
       <ComputerStep
         adapter={adapter}
         computer={computer("imac", "offline")}
-        creation="idle"
         draft={draft}
         onComputerConnected={() => undefined}
-        onCreate={() => undefined}
+        onContinue={() => undefined}
         readiness={undefined}
       />,
     );
@@ -129,10 +125,9 @@ describe("ComputerStep repair disclosure", () => {
       <ComputerStep
         adapter={adapter}
         computer={undefined}
-        creation="idle"
         draft={draft}
         onComputerConnected={() => undefined}
-        onCreate={() => undefined}
+        onContinue={() => undefined}
         readiness={undefined}
       />,
     );

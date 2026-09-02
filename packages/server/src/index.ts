@@ -294,7 +294,11 @@ export async function startServer(): Promise<void> {
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
-    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, imBindingService);
+    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
+      issueIntegrationCliValidationGrant: (input) => imBindingService.issueIntegrationCliValidationGrant(input),
+      shouldPrewarmOfficialProviderClis: (computerId) => computerService.accountInFirstSetup(computerId),
+    });
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -402,6 +406,7 @@ export async function startServer(): Promise<void> {
         publicUrl: config.publicUrl,
       },
       computerConnectCode: {
+        downloadBaseUrl: config.channelTarget.downloadBaseUrl,
         environment: config.environment,
         publicUrl: config.publicUrl,
       },

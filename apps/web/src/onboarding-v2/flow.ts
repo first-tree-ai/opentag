@@ -87,13 +87,7 @@ export type MessagingState =
   | { readonly kind: "failed" }
   | { readonly kind: "connected" };
 
-/**
- * The Agent is created at the end of Step 4, not at Step 2. Two Server facts force this: an Agent
- * cannot be created without a `computerId`, and its runtime provider is immutable afterwards. So
- * Step 2 stays a local draft, and the commit happens once a runnable route has actually been
- * proven — which also means a failed check never strands a half-built Agent on an immutable
- * runtime the user cannot run.
- */
+/** The Agent is created when its step is submitted, before a Computer is connected and bound. */
 export type CreationState = "idle" | "creating" | "created";
 
 export interface FlowFacts {
@@ -105,6 +99,8 @@ export interface FlowFacts {
    */
   readonly destinationConfirmed: boolean;
   readonly draftConfirmed: boolean;
+  /** The explicit Continue from the Computer step; readiness alone never moves the page. */
+  readonly computerConfirmed: boolean;
   /**
    * The Computer this run is preparing. A run that is connecting a new one has none until the
    * shared ComputerConnect lifecycle reports the exact arrival.
@@ -162,6 +158,7 @@ export function initialFacts(): FlowFacts {
     draft: emptyDraft(),
     destinationConfirmed: false,
     draftConfirmed: false,
+    computerConfirmed: false,
     readiness: undefined,
     cloudComputer: "idle",
     creation: "idle",
@@ -222,7 +219,16 @@ export function readinessIsResolving(readiness: ReadinessFacts | undefined): boo
 }
 
 export function deriveFlowState(facts: FlowFacts): FlowState {
-  const { draft, destinationConfirmed, draftConfirmed, readiness, creation, planSignedIn, messaging } = facts;
+  const {
+    draft,
+    destinationConfirmed,
+    draftConfirmed,
+    computerConfirmed,
+    readiness,
+    creation,
+    planSignedIn,
+    messaging,
+  } = facts;
   const { cloudComputer, selectedComputerId } = facts;
   const destination = draft.destination;
   if (!destination || !destinationConfirmed) {
@@ -249,9 +255,8 @@ export function deriveFlowState(facts: FlowFacts): FlowState {
   }
 
   const done: Record<StepId, boolean> = { agent: false, computer: false, messaging: false };
-  done.agent = draftIsSubmittable(draft) && draftConfirmed;
-  done.computer =
-    done.agent && selectedComputerId !== undefined && readinessPassed(readiness) && creation === "created";
+  done.agent = draftIsSubmittable(draft) && draftConfirmed && creation === "created";
+  done.computer = done.agent && selectedComputerId !== undefined && readinessPassed(readiness) && computerConfirmed;
   done.messaging = done.computer && messaging.kind === "connected";
 
   const currentIndex = STEP_IDS.findIndex((id) => !done[id]);

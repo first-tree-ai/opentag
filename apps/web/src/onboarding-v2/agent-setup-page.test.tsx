@@ -13,7 +13,13 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
 import { AgentSetupPage } from "./agent-setup-page.js";
-import { deferred, SETUP_AGENT_ID, SETUP_OTHER_AGENT_ID, setupAgent } from "./agent-setup-test-fixtures.js";
+import {
+  deferred,
+  SETUP_AGENT_ID,
+  SETUP_COMPUTER_ID,
+  SETUP_OTHER_AGENT_ID,
+  setupAgent,
+} from "./agent-setup-test-fixtures.js";
 import { OnboardingV2Page } from "./page.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
@@ -71,10 +77,10 @@ function renderSetup(
   );
 }
 
-function mockComputerInventory(): void {
+function mockComputerInventory() {
   vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
   // The connect command never lands in these tests: what matters is what the page renders while waiting.
-  vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(() => deferred<never>().promise);
+  return vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(() => deferred<never>().promise);
 }
 
 async function currentBindingId(adapter: AgentSetupAdapter): Promise<string> {
@@ -97,15 +103,17 @@ afterEach(() => {
 
 describe("AgentSetupPage stages", () => {
   it("offers the shared bind surface when the Agent has no Computer", async () => {
-    mockComputerInventory();
+    const issue = mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent({ computer: null }) });
     renderSetup(memory.adapter);
     await settle();
+    await advance(1);
 
     expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
     expect(screen.getByText("Reviewer has no computer yet. Connect the machine it should run on.")).toBeTruthy();
     expect(screen.getByText("Connect your computer")).toBeTruthy();
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe("not-bound");
+    expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: SETUP_AGENT_ID });
   });
 
   it("offers an owned Computer choice when a cross-Account rebind is required", async () => {
@@ -124,6 +132,7 @@ describe("AgentSetupPage stages", () => {
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
+    const issue = mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
     renderSetup(memory.adapter);
@@ -136,6 +145,15 @@ describe("AgentSetupPage stages", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(reads).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    await settle();
+    await advance(1);
+    expect(issue).toHaveBeenCalledWith({
+      mode: "repair",
+      targetAgentId: SETUP_AGENT_ID,
+      targetComputerId: SETUP_COMPUTER_ID,
+    });
 
     // An offline Computer is expected to come back without the page being touched, so it is polled.
     const readsBeforePoll = reads.mock.calls.length;
@@ -150,7 +168,7 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "Prepare Codex" })).toBeTruthy();
     expect(screen.getByText("Codex isn't installed on Review Mac yet.")).toBeTruthy();
-    expect(screen.getByText("opentag doctor --fix")).toBeTruthy();
+    expect(screen.getByText('"$HOME/.local/bin/opentag" doctor --json')).toBeTruthy();
   });
 
   it("waits visibly while the runtime check is still resolving", async () => {
@@ -163,13 +181,20 @@ describe("AgentSetupPage stages", () => {
   });
 
   it("offers exactly the Providers the snapshot permits, and no others", async () => {
-    const memory = createMemorySetupAdapter({ agent: setupAgent() });
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "install", slack: "ready" },
+    });
     renderSetup(memory.adapter);
     await settle();
 
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+    const readiness = document.querySelector('[data-ui="onboarding-v2-im-cli-readiness"]');
+    expect(readiness).not.toBeNull();
+    expect(within(readiness as HTMLElement).getByText("Preparing")).toBeTruthy();
+    expect(within(readiness as HTMLElement).getByText("Ready")).toBeTruthy();
   });
 
   it("shows the Feishu authorization with its QR, expiry, and cancel from the snapshot", async () => {

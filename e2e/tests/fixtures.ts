@@ -135,9 +135,10 @@ async function startDaemon(
     if (!response.ok())
       throw new Error(`Computer connect code failed with HTTP ${response.status()}: ${await response.text()}`);
     const payload = (await response.json()) as { bootstrapCommand: string };
-    const match = /computer connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(
-      payload.bootstrapCommand,
-    );
+    const match =
+      /\b(?:computer\s+)?connect --server\s+'?([^\s']+)'?\s+--\s+'?(otcc_(?:[A-Za-z0-9_-]{32}|[A-Za-z0-9_-]{43}))'?(?:\s|$)/u.exec(
+        payload.bootstrapCommand,
+      );
     if (!match?.[2]) throw new Error(`Unexpected computer connect command: ${payload.bootstrapCommand}`);
     const cli = join(repositoryRoot, "apps/cli/dist/cli/index.mjs");
     await execFileAsync(

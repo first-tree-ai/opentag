@@ -6,7 +6,7 @@
  * true when it was made and is not any more.
  */
 
-import type { AccountComputerSummary, AgentListItem } from "@opentag/shared/browser";
+import type { AccountComputerSummary, AgentAdminConfig, AgentListItem } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
@@ -116,6 +116,11 @@ describe("rebind at ff218a7", () => {
     // Same effect, reached the ordinary way: nothing demotes `connected`, so this is not specific
     // to resume — a daemon that stops while the check is still running does it as well.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue({
+      id: AGENT_ID,
+      name: "opentag",
+      runtimeProvider: "codex",
+    } as AgentAdminConfig);
     // The issued code is redeemed by this exact Computer: that is what settles the wait.
     vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,

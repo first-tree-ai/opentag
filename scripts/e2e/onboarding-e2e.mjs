@@ -545,8 +545,8 @@ async function main() {
       const completedAt = await psql(DATABASE_URL, `select setup_completed_at from users where id = '${USER_ID}'`);
       if (!completedAt) throw new Error("Account admission was not persisted");
       await shot("06-completed");
-      await page.getByRole("button", { name: "Back to agents" }).click();
-      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      await page.getByRole("button", { name: "Back to agent" }).click();
+      await page.waitForURL(`${BASE_URL}/agents/${agentId}`, { timeout: 30_000 });
       return `pending handoff projected while Account admission stayed at ${completedAt}`;
     });
 
@@ -560,7 +560,7 @@ async function main() {
         },
         { timeoutMs: 60_000 },
       );
-      await page.reload({ waitUntil: "networkidle" });
+      await page.goto(`${BASE_URL}/agents`, { waitUntil: "networkidle" });
       await page.getByRole("heading", { name: "Agents" }).waitFor({ timeout: 30_000 });
       await shot("07-runtime-outage");
       const agents = await psql(DATABASE_URL, `select count(*) from agents where created_by_user_id = '${USER_ID}'`);

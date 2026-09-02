@@ -70,7 +70,7 @@ describe("daemon service runtime", () => {
     expect(entries).toContainEqual(expect.objectContaining({ message: "Malformed daemon environment line ignored" }));
   });
 
-  it("does not configure or touch the service log when daemon ownership is already held", async () => {
+  it("configures the service log before reporting an already-held daemon owner", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-log-"));
     directories.push(home);
     process.env.OPENTAG_SERVICE_MODE = "1";
@@ -83,8 +83,7 @@ describe("daemon service runtime", () => {
       await owner.release();
     }
 
-    expect(clientMocks.configureClientLoggerForService).not.toHaveBeenCalled();
-    await expect(access(join(home, "logs", "client.log"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
     expect(entries).toContainEqual(
       expect.objectContaining({
         fields: expect.objectContaining({

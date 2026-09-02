@@ -32,7 +32,7 @@ export interface CredentialInspection {
 }
 
 export interface CredentialMaterialInput {
-  bindingId?: string;
+  slackInstallationId?: string | null;
   provider: "feishu" | "slack";
   encryptedCredential: string | null;
   externalAppId: string | null;
@@ -45,6 +45,7 @@ export interface CredentialMaterialInput {
 
 export interface CredentialDecodeOptions {
   bindingId?: string;
+  slackInstallationId?: string;
   logger?: Pick<ServiceLogger, "warn">;
 }
 
@@ -67,7 +68,11 @@ export function decodeFeishuCredential(
     plaintext = cipher.decrypt(encryptedCredential);
   } catch {
     options.logger?.warn(
-      { bindingId: options.bindingId, code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED" },
+      {
+        bindingId: options.bindingId,
+        slackInstallationId: options.slackInstallationId,
+        code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED",
+      },
       "Feishu credential decrypt failed",
     );
     return undefined;
@@ -77,7 +82,11 @@ export function decodeFeishuCredential(
     payload = JSON.parse(plaintext);
   } catch {
     options.logger?.warn(
-      { bindingId: options.bindingId, code: "IM_BINDING_CREDENTIAL_PAYLOAD_INVALID" },
+      {
+        bindingId: options.bindingId,
+        slackInstallationId: options.slackInstallationId,
+        code: "IM_BINDING_CREDENTIAL_PAYLOAD_INVALID",
+      },
       "Feishu credential payload parse failed",
     );
     return undefined;
@@ -86,7 +95,11 @@ export function decodeFeishuCredential(
     return FeishuCredentialSchema.parse(payload);
   } catch {
     options.logger?.warn(
-      { bindingId: options.bindingId, code: "IM_BINDING_CREDENTIAL_SCHEMA_INVALID" },
+      {
+        bindingId: options.bindingId,
+        slackInstallationId: options.slackInstallationId,
+        code: "IM_BINDING_CREDENTIAL_SCHEMA_INVALID",
+      },
       "Feishu credential schema validation failed",
     );
     return undefined;
@@ -104,7 +117,11 @@ export function decodeSlackCredential(
     plaintext = cipher.decrypt(encryptedCredential);
   } catch {
     options.logger?.warn(
-      { bindingId: options.bindingId, code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED" },
+      {
+        bindingId: options.bindingId,
+        slackInstallationId: options.slackInstallationId,
+        code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED",
+      },
       "Slack credential decrypt failed",
     );
     return undefined;
@@ -114,7 +131,11 @@ export function decodeSlackCredential(
     payload = JSON.parse(plaintext);
   } catch {
     options.logger?.warn(
-      { bindingId: options.bindingId, code: "IM_BINDING_CREDENTIAL_PAYLOAD_INVALID" },
+      {
+        bindingId: options.bindingId,
+        slackInstallationId: options.slackInstallationId,
+        code: "IM_BINDING_CREDENTIAL_PAYLOAD_INVALID",
+      },
       "Slack credential payload parse failed",
     );
     return undefined;
@@ -123,7 +144,11 @@ export function decodeSlackCredential(
     return SlackCredentialSchema.parse(payload);
   } catch {
     options.logger?.warn(
-      { bindingId: options.bindingId, code: "IM_BINDING_CREDENTIAL_SCHEMA_INVALID" },
+      {
+        bindingId: options.bindingId,
+        slackInstallationId: options.slackInstallationId,
+        code: "IM_BINDING_CREDENTIAL_SCHEMA_INVALID",
+      },
       "Slack credential schema validation failed",
     );
     return undefined;
@@ -134,7 +159,7 @@ export function slackInstallationInspectionInput(
   installation: typeof slackInstallations.$inferSelect,
 ): CredentialMaterialInput & { provider: "slack" } {
   return {
-    bindingId: installation.id,
+    slackInstallationId: installation.id,
     provider: "slack",
     encryptedCredential: installation.encryptedCredential,
     externalAppId: installation.externalAppId,
@@ -184,7 +209,8 @@ export function inspectCredentialMaterial(
   if (!materialEnvelopeValid(input)) return invalidInspection(storedCapabilities, requiredCapabilities);
   if (input.provider === "feishu") {
     const credential = decodeFeishuCredential(cipher, input.encryptedCredential, {
-      bindingId: options.bindingId ?? input.bindingId,
+      bindingId: options.bindingId,
+      slackInstallationId: options.slackInstallationId ?? input.slackInstallationId ?? undefined,
       logger: options.logger,
     });
     if (!credential) return invalidInspection(storedCapabilities, requiredCapabilities);
@@ -202,7 +228,8 @@ export function inspectCredentialMaterial(
     };
   }
   const credential = decodeSlackCredential(cipher, input.encryptedCredential, {
-    bindingId: options.bindingId ?? input.bindingId,
+    bindingId: options.bindingId,
+    slackInstallationId: options.slackInstallationId ?? input.slackInstallationId ?? undefined,
     logger: options.logger,
   });
   if (!credential) return invalidInspection(storedCapabilities, requiredCapabilities);
@@ -229,16 +256,19 @@ export function inspectBindingCredentials(
   installation: typeof slackInstallations.$inferSelect | null | undefined,
   options: CredentialDecodeOptions = {},
 ): CredentialInspection {
-  const bindingId = options.bindingId ?? binding.bindingId;
+  const bindingId = options.bindingId;
   if (binding.provider !== "slack") {
-    return inspectCredentialMaterial(cipher, binding, { bindingId, logger: options.logger });
+    return inspectCredentialMaterial(cipher, binding, {
+      bindingId,
+      slackInstallationId: options.slackInstallationId,
+      logger: options.logger,
+    });
   }
   return inspectCredentialMaterial(
     cipher,
     installation
       ? slackInstallationInspectionInput(installation)
       : {
-          bindingId,
           provider: "slack",
           encryptedCredential: null,
           externalAppId: binding.externalAppId,
@@ -248,6 +278,6 @@ export function inspectBindingCredentials(
           credentialSchemaVersion: binding.credentialSchemaVersion,
           grantedCapabilities: binding.grantedCapabilities,
         },
-    { bindingId, logger: options.logger },
+    { bindingId, slackInstallationId: options.slackInstallationId, logger: options.logger },
   );
 }

@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import type { slackInstallations } from "../db/schema/index.js";
 import {
   type CredentialDecodeOptions,
   decodeFeishuCredential,
   decodeSlackCredential,
+  inspectCredentialMaterial,
+  slackInstallationInspectionInput,
 } from "../services/im-bindings/credential-material.js";
 
 const bindingId = "binding-1";
@@ -74,5 +77,41 @@ describe("credential material decoding", () => {
 
     expect(result).toEqual({ appId: "app-id", appSecret: credentialSecret, grantedScopes: ["scope-a"] });
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Slack installation id out of bindingId on installation decrypt failure", () => {
+    const installation = {
+      id: "slack-installation-1",
+      encryptedCredential: ciphertext,
+      externalAppId: "app-id",
+      externalBotId: "bot-id",
+      externalTeamId: "team-id",
+      credentialGeneration: 1,
+      credentialSchemaVersion: 1,
+      grantedCapabilities: ["scope-a"],
+    } as typeof slackInstallations.$inferSelect;
+    const logger = { warn: vi.fn() };
+    const input = slackInstallationInspectionInput(installation);
+
+    expect(input).toMatchObject({ slackInstallationId: installation.id });
+    expect(input).not.toHaveProperty("bindingId");
+    expect(
+      inspectCredentialMaterial(
+        {
+          decrypt: () => {
+            throw new Error("wrong key");
+          },
+        } as never,
+        input,
+        { logger },
+      ),
+    ).toMatchObject({ status: "invalid" });
+
+    const payload = logger.warn.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      code: "IM_BINDING_CREDENTIAL_DECRYPT_FAILED",
+      slackInstallationId: installation.id,
+    });
+    expect(payload.bindingId).toBeUndefined();
   });
 });

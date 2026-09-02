@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, rm } from "node:fs/promises";
+import { createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory, readSecureFile } from "../../storage/durable-file.js";
 import { type ProviderCliAccountLayout, providerCliLockFilePath } from "./account-layout.js";
 import type { ProviderCliProvider } from "./types.js";
@@ -40,6 +41,7 @@ function defaultIsProcessAlive(pid: number): boolean {
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const logger = createLogger("runtime-provider-cli-lock");
 
 interface LockRecord {
   readonly pid: number;
@@ -61,7 +63,8 @@ function parseLockRecord(content: string): LockRecord | undefined {
       return undefined;
     }
     return { pid: record.pid, token: record.token };
-  } catch {
+  } catch (error) {
+    logger.debug({ code: "lock_record_invalid", error: String(error) }, "Provider CLI lock record was invalid");
     return undefined;
   }
 }
@@ -91,7 +94,10 @@ export async function withProviderCliLock<T>(
       acquired = true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = await readSecureFile(lockPath).catch(() => undefined);
+      const existing = await readSecureFile(lockPath).catch((readError: unknown) => {
+        logger.debug({ code: "lock_read_failed", error: String(readError) }, "Provider CLI lock read failed");
+        return undefined;
+      });
       const record = existing === undefined ? undefined : parseLockRecord(existing);
       // A missing, malformed, or dead-holder lock is stale and may be broken.
       if (!record || !isAlive(record.pid)) {
@@ -109,7 +115,10 @@ export async function withProviderCliLock<T>(
     return await run();
   } finally {
     // Only release the lock this operation still owns.
-    const current = await readSecureFile(lockPath).catch(() => undefined);
+    const current = await readSecureFile(lockPath).catch((error: unknown) => {
+      logger.debug({ code: "lock_release_read_failed", error: String(error) }, "Provider CLI lock release read failed");
+      return undefined;
+    });
     const record = current === undefined ? undefined : parseLockRecord(current);
     if (record?.token === token) {
       await rm(lockPath, { force: true });

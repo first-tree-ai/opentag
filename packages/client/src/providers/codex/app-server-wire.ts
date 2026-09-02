@@ -145,6 +145,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         { cwd: options.cwd, env: options.env, detached: process.platform !== "win32" },
       );
     } catch (error) {
+      this.#logger.debug({ code: "spawn_failed", error: String(error) }, "Codex App Server process spawn failed");
       throw new CodexAppServerError(
         "spawn",
         error instanceof Error ? error.message : "Codex could not be started",
@@ -390,7 +391,11 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         for (const listener of this.#serverRequestListeners) {
           try {
             listener(request);
-          } catch {
+          } catch (error) {
+            this.#logger.debug(
+              { code: "server_request_listener_failed", error: String(error) },
+              "Codex server request listener failed",
+            );
             this.#pendingServerRequests.delete(message.id);
             this.#fail(new CodexAppServerError("protocol", "A Codex server request listener failed"));
             return;
@@ -409,7 +414,11 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     for (const listener of this.#listeners) {
       try {
         listener(message);
-      } catch {
+      } catch (error) {
+        this.#logger.debug(
+          { code: "protocol_listener_failed", error: String(error) },
+          "Codex protocol listener failed",
+        );
         this.#fail(new CodexAppServerError("protocol", "A Codex protocol listener rejected a message"));
         return;
       }
@@ -419,13 +428,23 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   async #handleServerRequest(id: number | string, method: string, params: unknown): Promise<void> {
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
       await this.respondServerRequest(id, { decision: "cancel" }).catch(
-        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined,
+        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+          this.#logger.debug(
+            { code: "approval_response_failed", error: String(error) },
+            "Codex approval response failed",
+          );
+        },
       );
       return;
     }
     if (method === "item/tool/requestUserInput") {
       await this.respondServerRequest(id, { answers: {} }).catch(
-        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined,
+        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+          this.#logger.debug(
+            { code: "user_input_response_failed", error: String(error) },
+            "Codex user input response failed",
+          );
+        },
       );
       return;
     }
@@ -435,7 +454,14 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         await this.respondServerRequest(id, {
           contentItems: [{ type: "inputText", text: "OpenTag tool is unavailable." }],
           success: false,
-        }).catch(/* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined);
+        }).catch(
+          /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+            this.#logger.debug(
+              { code: "tool_unavailable_response_failed", error: String(error) },
+              "Codex unavailable tool response failed",
+            );
+          },
+        );
         return;
       }
       try {
@@ -446,16 +472,34 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
           contentItems: [{ type: "inputText", text }],
           success: result.success,
         });
-      } catch {
+      } catch (error) {
+        this.#logger.debug({ code: "tool_request_failed", error: String(error) }, "Codex dynamic tool request failed");
         await this.respondServerRequest(id, {
           contentItems: [{ type: "inputText", text: "OpenTag tool request failed." }],
           success: false,
-        }).catch(/* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined);
+        }).catch(
+          /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (
+            responseError: unknown,
+          ) => {
+            this.#logger.debug(
+              {
+                code: "tool_error_response_failed",
+                error: String(responseError),
+              },
+              "Codex dynamic tool error response failed",
+            );
+          },
+        );
       }
       return;
     }
     await this.rejectServerRequest(id, -32601, "Unsupported unattended server request").catch(
-      /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ () => undefined,
+      /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+        this.#logger.debug(
+          { code: "unsupported_request_response_failed", error: String(error) },
+          "Codex unsupported request response failed",
+        );
+      },
     );
     this.#fail(new CodexAppServerError("protocol", `Codex requested an unsupported method: ${method}`));
   }
@@ -494,7 +538,14 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     for (const listener of this.#listeners) {
       try {
         listener({ method: "opentag/processError", params: { error } });
-      } catch {
+      } catch (listenerError) {
+        this.#logger.debug(
+          {
+            code: "process_error_listener_failed",
+            error: String(listenerError),
+          },
+          "Codex process error listener failed",
+        );
         // The process boundary is already failed; listener failures cannot widen it.
       }
     }

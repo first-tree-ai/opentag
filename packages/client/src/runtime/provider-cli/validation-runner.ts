@@ -27,6 +27,7 @@ import {
 } from "./validation-classify.js";
 
 const execFileAsync = promisify(execFile);
+const defaultValidationLogger = createLogger("provider-cli-validation");
 const PRIVATE_DIRS = ["home", "config", "tmp", "cache", "state", "runtime"] as const;
 
 export function deriveProviderCliValidationRequestKey(requestId: string): string {
@@ -134,6 +135,7 @@ export class ProviderCliValidationRunner {
       const classification = await this.#classifyRequest(request, env, workDir, signal);
       return validationResult(fence, classification);
     } catch (error) {
+      this.#logger.debug({ code: "validation_run_failed", error: String(error) }, "Provider CLI validation run failed");
       return validationFailureResult(fence, error, signal);
     } finally {
       try {
@@ -216,6 +218,10 @@ export class ProviderCliValidationRunner {
       names = await readdir(this.#root);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      this.#logger.debug(
+        { code: "validation_cleanup_scan_failed", error: String(error) },
+        "Provider CLI validation cleanup scan failed",
+      );
       throw error;
     }
     const results = await Promise.allSettled(
@@ -247,6 +253,10 @@ export class ProviderCliValidationRunner {
       });
       return classifyProcessOutput(result, classify, this.#logger);
     } catch (error) {
+      this.#logger.debug(
+        { code: "validation_process_failed", error: String(error) },
+        "Provider CLI validation process failed",
+      );
       return classifyProcessFailure(error, signal, classify, this.#logger);
     }
   }
@@ -320,7 +330,11 @@ async function verifyTargetFingerprint(request: ProviderCliValidationRequest): P
   try {
     const identity = await computeFileIdentity(request.targetPath);
     return computeTargetFingerprint(identity, request.version, request.managedDigest) === request.expectedFingerprint;
-  } catch {
+  } catch (error) {
+    defaultValidationLogger.debug(
+      { code: "validation_target_verification_failed", error: String(error) },
+      "Provider CLI validation target verification failed",
+    );
     return false;
   }
 }
@@ -424,7 +438,11 @@ export async function exchangeFeishuTenantToken(
       body: JSON.stringify({ app_id: grant.appId, app_secret: grant.appSecret }),
       signal: combined,
     });
-  } catch {
+  } catch (error) {
+    defaultValidationLogger.debug(
+      { code: "feishu_token_exchange_request_failed", error: String(error) },
+      "Feishu tenant token exchange request failed",
+    );
     if (combined.aborted && signal?.aborted) throw new FeishuTokenExchangeError("aborted");
     throw new FeishuTokenExchangeError("provider_unreachable");
   }
@@ -434,7 +452,11 @@ export async function exchangeFeishuTenantToken(
   let body: unknown;
   try {
     body = JSON.parse(new TextDecoder().decode(buffer));
-  } catch {
+  } catch (error) {
+    defaultValidationLogger.debug(
+      { code: "feishu_token_exchange_invalid_json", error: String(error) },
+      "Feishu tenant token exchange response was invalid",
+    );
     throw new FeishuTokenExchangeError(response.status >= 500 ? "provider_unreachable" : "invalid");
   }
   if (!response.ok) throw new FeishuTokenExchangeError("credential_rejected");

@@ -583,6 +583,7 @@ function processWith(
   options: {
     expectedCodexHome?: string;
     maxLineBytes?: number;
+    maxStderrBytes?: number;
     requestTimeoutMs?: number;
   } = {},
 ): CodexAppServerProcess {

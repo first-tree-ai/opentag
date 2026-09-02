@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { link, lstat, readdir, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { createLogger } from "../../observability/logger.js";
 import {
   ensurePrivateDirectory,
   RuntimeStorageError,
@@ -35,6 +36,8 @@ import {
   readProviderCliTurnPlan,
 } from "./turn-plan.js";
 import type { ProviderCliProvider, ProviderCliReadySelection } from "./types.js";
+
+const logger = createLogger("runtime-provider-cli-turn-plan-manager");
 
 export interface ProviderCliTurnPlanManagerDeps {
   /** OS account home (from the account record), never caller $HOME. */
@@ -135,6 +138,10 @@ export class ProviderCliTurnPlanManager {
       if (!(await validatePrivateDirectory(this.#layout.root, sessionDir))) return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      logger.debug(
+        { code: "session_plan_directory_validation_failed", error: String(error) },
+        "Provider CLI Turn session directory validation failed",
+      );
       throw mapStorageSafetyError(error);
     }
     await this.#withSessionLock(sessionDir, async () => {
@@ -170,6 +177,10 @@ export class ProviderCliTurnPlanManager {
       entries = await readdir(homeDir, { encoding: "utf8", withFileTypes: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      logger.debug(
+        { code: "home_plan_directory_validation_failed", error: String(error) },
+        "Provider CLI Turn home directory validation failed",
+      );
       throw mapStorageSafetyError(error);
     }
     for (const entry of entries) {
@@ -255,6 +266,7 @@ export class ProviderCliTurnPlanManager {
     try {
       record = await readProviderCliSelection(this.#layout, provider);
     } catch (error) {
+      logger.debug({ code: "selection_read_failed", error: String(error) }, "Provider CLI Turn selection read failed");
       if (error instanceof RuntimeStorageError && error.code === "unsafe") {
         throw new ProviderCliTurnPlanError("unsafe", error.message);
       }
@@ -279,6 +291,10 @@ export class ProviderCliTurnPlanManager {
     const selection = record.selection;
     const storedPath = providerCliSelectionTargetPath(selection);
     const identity = await computeFileIdentity(storedPath).catch((error: unknown) => {
+      logger.debug(
+        { code: "selection_target_identity_failed", error: String(error) },
+        "Provider CLI Turn selection target identity failed",
+      );
       throw mapPrepareTargetError(error);
     });
     if (identity.path !== storedPath) {
@@ -388,7 +404,12 @@ export class ProviderCliTurnPlanManager {
         await releaseSessionLock(candidatePath, lockPath);
       }
     } finally {
-      await rm(candidatePath, { force: true });
+      await rm(candidatePath, { force: true }).catch((error: unknown) => {
+        logger.debug(
+          { code: "session_lock_candidate_cleanup_failed", error: String(error) },
+          "Provider CLI Turn session lock candidate cleanup failed",
+        );
+      });
     }
   }
 }
@@ -420,6 +441,10 @@ async function releaseSessionLock(candidatePath: string, lockPath: string): Prom
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    logger.debug(
+      { code: "session_lock_release_failed", error: String(error) },
+      "Provider CLI Turn session lock release failed",
+    );
   }
 }
 

@@ -17,8 +17,10 @@ import type {
   AgentRuntimeFactory,
   AgentRuntimePolicy,
 } from "../agent-runtime/types.js";
+import { createLogger } from "../observability/logger.js";
 
 const TEST_SYSTEM_PROMPT = "You are running a bounded OpenTag availability test. Reply with only the requested token.";
+const logger = createLogger("runtime-availability-tester");
 
 export interface AgentRuntimeAvailabilityTesterOptions {
   readonly cleanupMs?: number;
@@ -120,7 +122,12 @@ export class AgentRuntimeAvailabilityTester {
             runtime = created;
           } else {
             /* v8 ignore next -- closing a runtime that arrived after cancellation is best-effort. */
-            void created.close().catch(() => undefined);
+            void created.close().catch((error: unknown) => {
+              logger.debug(
+                { code: "late_runtime_close_failed", error: String(error) },
+                "Late availability-test runtime close failed",
+              );
+            });
           }
         },
         (code) => {
@@ -152,8 +159,18 @@ export class AgentRuntimeAvailabilityTester {
       signal.removeEventListener("abort", onCancel);
       await budgetedCleanup(async () => {
         /* v8 ignore next -- probe runtime teardown is best-effort. */
-        await runtime?.close().catch(() => undefined);
-        await rm(workspace, { recursive: true, force: true });
+        await runtime?.close().catch((error: unknown) => {
+          logger.debug(
+            { code: "runtime_cleanup_failed", error: String(error) },
+            "Availability-test runtime cleanup failed",
+          );
+        });
+        await rm(workspace, { recursive: true, force: true }).catch((error: unknown) => {
+          logger.debug(
+            { code: "workspace_cleanup_failed", error: String(error) },
+            "Availability-test workspace cleanup failed",
+          );
+        });
       }, this.#cleanupMs);
     }
   }
@@ -204,6 +221,10 @@ export class AgentRuntimeAvailabilityTester {
       return settleRun(request.requestId, run, sentinel);
     } catch (error) {
       if (toolOrInteraction) return failed(request.requestId, "interaction_or_tool");
+      logger.debug(
+        { code: "availability_prompt_failed", error: String(error) },
+        "Agent Runtime availability prompt failed",
+      );
       throw error;
     }
   }
@@ -235,7 +256,12 @@ async function budgetedCleanup(cleanup: () => Promise<void>, cleanupMs: number):
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      cleanup().catch(/* v8 ignore next -- budgeted cleanup swallows its own failures by contract. */ () => undefined),
+      cleanup().catch((error: unknown) => {
+        logger.debug(
+          { code: "budgeted_cleanup_failed", error: String(error) },
+          "Availability-test budgeted cleanup failed",
+        );
+      }),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, cleanupMs);
         timer.unref();

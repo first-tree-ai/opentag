@@ -44,6 +44,7 @@ import {
   assertJsonValue,
   assertSystemPrompt,
 } from "../../agent-runtime/validation.js";
+import { createLogger } from "../../observability/logger.js";
 import {
   CodexAppServerError,
   type CodexAppServerMessage,
@@ -58,6 +59,7 @@ import {
 const execFileAsync = promisify(execFile);
 const CODEX_BINDING_SCHEMA_VERSION = 1;
 const CODEX_PROVIDER_ID = "codex";
+const logger = createLogger("provider-codex-runtime");
 const CODEX_CAPABILITY_PROBE_INSTRUCTIONS = "OpenTag Provider prompt-surface capability probe.";
 export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "app-server",
@@ -261,6 +263,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return this.#runResult(terminal);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Codex run failed");
+      logger.debug({ code: "provider_run_failed", error: failure.message }, "Codex provider run failed");
       this.#turnIdReady.reject(failure);
       throw failure;
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
@@ -365,6 +368,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       };
       return codexHostedToolResult(await hostedTools.handler(request));
     } catch (error) {
+      logger.debug({ code: "hosted_tool_failed", error: String(error) }, "Codex hosted tool execution failed");
       return {
         success: false,
         text: error instanceof Error ? `OpenTag tool request failed: ${error.message}` : "OpenTag tool request failed.",
@@ -384,6 +388,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       else await this.#handleServerRequest(envelope.request);
     });
     this.#eventTail = next.catch((error: unknown) => {
+      logger.debug({ code: "event_processing_failed", error: String(error) }, "Codex event processing failed");
       this.#failProvider(error instanceof Error ? error : protocolError("Codex event processing failed"));
     });
   }
@@ -590,9 +595,15 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#wireInteractions.delete(requestId);
       await this.#client
         .rejectServerRequest(request.id, -32000, "OpenTag could not deliver the interaction")
-        .catch(
-          /* v8 ignore next -- best-effort rejection while the interaction path is already failing. */ () => undefined,
-        );
+        .catch((rejectionError: unknown) => {
+          logger.debug(
+            {
+              code: "interaction_rejection_failed",
+              error: String(rejectionError),
+            },
+            "Codex interaction rejection failed",
+          );
+        });
       throw error;
     }
   }
@@ -678,7 +689,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     try {
       this.#parseCompletedTurn(record(envelope.message.params));
       this.#context.claimTerminal();
-    } catch {
+    } catch (error) {
+      logger.debug({ code: "terminal_message_invalid", error: String(error) }, "Codex terminal message was rejected");
       // The serial event queue preserves the authoritative fail-closed error path.
     }
   }
@@ -844,10 +856,30 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           return { ...local, experimentalTools: true };
         } finally {
           /* v8 ignore start -- probe teardown is best-effort; close and rm failures must not mask the probe result. */
-          await startClient.close().catch(() => undefined);
-          await bootstrapClient?.close().catch(() => undefined);
-          await resumeClient?.close().catch(() => undefined);
-          await rm(probeHome, { recursive: true, force: true }).catch(() => undefined);
+          await startClient.close().catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_start_close_failed", error: String(error) },
+              "Codex capability probe start client close failed",
+            );
+          });
+          await bootstrapClient?.close().catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_bootstrap_close_failed", error: String(error) },
+              "Codex capability probe bootstrap client close failed",
+            );
+          });
+          await resumeClient?.close().catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_resume_close_failed", error: String(error) },
+              "Codex capability probe resume client close failed",
+            );
+          });
+          await rm(probeHome, { recursive: true, force: true }).catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_home_cleanup_failed", error: String(error) },
+              "Codex capability probe home cleanup failed",
+            );
+          });
           /* v8 ignore stop */
         }
       });
@@ -877,6 +909,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       }
     } catch (error) {
       if (request.signal?.aborted) throw error;
+      logger.debug({ code: "probe_execution_failed", error: String(error) }, "Codex probe execution failed");
       const issue = probeIssue(error);
       if (!issue) throw error;
       issues.push(issue);
@@ -966,7 +999,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         hostedTools: request.hostedTools,
       });
     } catch (error) {
-      await client.close().catch(() => undefined);
+      logger.debug({ code: "runtime_create_failed", error: String(error) }, "Codex runtime creation failed");
+      await client.close().catch((closeError: unknown) => {
+        logger.debug({ code: "provider_close_failed", error: String(closeError) }, "Codex provider close failed");
+      });
       if (error instanceof AgentRuntimeError) throw error;
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Codex ${mode} failed`, {
         cause: error,
@@ -1050,6 +1086,7 @@ async function probeCodex(
     credential = true;
   } catch (error) {
     if (signal?.aborted) throw error;
+    logger.debug({ code: "credential_status_failed", error: String(error) }, "Codex credential status command failed");
   }
   return { appServer: true, credential, version };
 }

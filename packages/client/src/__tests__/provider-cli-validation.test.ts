@@ -185,6 +185,17 @@ describe("provider CLI validation classification", () => {
       "json_output_oversize",
     ]);
   });
+
+  it("does not copy provider credentials into diagnostic fields", () => {
+    const entries: RecordedLog[] = [];
+    const logger = recordingLogger(entries);
+    const secret = "appSecret-provider-token";
+
+    classifySlackAuthTest({ ok: false, error: secret, token: secret }, slackIdentity, logger);
+
+    expect(JSON.stringify(entries)).not.toContain(secret);
+    expect(entries).toEqual([expect.objectContaining({ level: "debug", fields: { code: "slack_ok_not_true" } })]);
+  });
 });
 
 describe("Feishu tenant token exchange", () => {

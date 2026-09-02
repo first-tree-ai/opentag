@@ -6,6 +6,7 @@ import {
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
 
 type ValidationDiagnosticLogger = Pick<ClientLogger, "debug">;
+const defaultValidationLogger = createLogger("provider-cli-validation");
 
 export type ProviderCliValidationClassification =
   | { readonly status: "ready" }
@@ -17,7 +18,7 @@ export type ProviderCliValidationClassification =
 export function extractBoundedJson(
   text: string,
   maxBytes = RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
-  logger: ValidationDiagnosticLogger = createLogger("provider-cli-validation"),
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
 ): unknown {
   if (Buffer.byteLength(text) > maxBytes) {
     logDiagnostic(logger, "json_output_oversize");
@@ -50,7 +51,7 @@ export function extractBoundedJson(
 export function classifySlackAuthTest(
   payload: unknown,
   expected: Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
-  logger: ValidationDiagnosticLogger = createLogger("provider-cli-validation"),
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
 ): ProviderCliValidationClassification {
   if (!isRecord(payload)) {
     logDiagnostic(logger, "slack_payload_not_record");
@@ -85,13 +86,13 @@ export function classifySlackAuthTest(
 export function classifyLarkAuthStatus(
   payload: unknown,
   expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
-  logger: ValidationDiagnosticLogger = createLogger("provider-cli-validation"),
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
 ): ProviderCliValidationClassification {
   if (!isRecord(payload)) {
     logDiagnostic(logger, "lark_payload_not_record");
     return { status: "needs_attention" };
   }
-  const failure = classifyLarkFailure(payload);
+  const failure = classifyLarkFailure(payload, logger);
   if (failure) return failure;
 
   const rawSuccess = payload.code === 0;
@@ -117,7 +118,10 @@ export function classifyLarkAuthStatus(
   return { status: "ready" };
 }
 
-function classifyLarkFailure(payload: Record<string, unknown>): ProviderCliValidationClassification | undefined {
+function classifyLarkFailure(
+  payload: Record<string, unknown>,
+  logger: ValidationDiagnosticLogger,
+): ProviderCliValidationClassification | undefined {
   const error = isRecord(payload.error) ? payload.error : undefined;
   const type = normalizedField(error?.type);
   const subtype = normalizedField(error?.subtype);
@@ -140,8 +144,8 @@ function classifyLarkFailure(payload: Record<string, unknown>): ProviderCliValid
     return { status: "retrying", reason: "provider_unreachable" };
   }
 
-  const scalarError = error ? undefined : stringifyUnknown(payload.error);
-  return classifyProviderFailure([scalarError, stringifyUnknown(payload.code)], payload.missing_scopes);
+  const scalarError = error ? undefined : stringifyUnknown(payload.error, logger);
+  return classifyProviderFailure([scalarError, stringifyUnknown(payload.code, logger)], payload.missing_scopes);
 }
 
 function classifyProviderFailure(
@@ -272,12 +276,13 @@ function isCredentialRejected(error: string | undefined): boolean {
   );
 }
 
-function stringifyUnknown(value: unknown): string | undefined {
+function stringifyUnknown(value: unknown, logger: ValidationDiagnosticLogger): string | undefined {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   if (value === null || typeof value !== "object") return undefined;
   try {
     return JSON.stringify(value);
   } catch {
+    logDiagnostic(logger, "error_value_not_serializable");
     return undefined;
   }
 }

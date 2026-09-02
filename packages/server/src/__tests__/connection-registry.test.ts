@@ -180,10 +180,10 @@ describe("ConnectionRegistry", () => {
   });
 
   it("terminates stale sockets when the injected sweep logger throws", async () => {
-    const logger = loggerFixture();
-    logger.warn.mockImplementation(() => {
+    const warn = vi.fn((_bindings: Record<string, unknown>, _message: string) => {
       throw new Error("logger failed");
     });
+    const logger = { ...loggerFixture(), warn };
     const registry = new ConnectionRegistry();
     const stale = socket();
     await registry.register(
@@ -203,7 +203,7 @@ describe("ConnectionRegistry", () => {
       ),
     ).not.toThrow();
     expect(stale.terminate).toHaveBeenCalledOnce();
-    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
   });
 
   it("advertises credential-grant capability only for the verified current instance", async () => {

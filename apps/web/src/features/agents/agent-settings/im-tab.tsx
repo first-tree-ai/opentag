@@ -216,24 +216,31 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 provider: messagingProviderLabel("feishu"),
                               })}
                             </p>
+                            {/*
+                             * Neither channel is the recommended one — which app a team already lives in decides this,
+                             * not us — so both connect actions share one neutral variant and carry their own mark.
+                             */}
                             <div className="flex flex-wrap gap-3">
                               <Button
-                                loading={feishuSetup.loading}
-                                disabled={feishuSetup.loading}
-                                onClick={(event) => {
-                                  activeFeishuTriggerRef.current = event.currentTarget;
-                                  void connectFeishu();
-                                }}
-                              >
-                                {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
-                              </Button>
-                              <Button
+                                icon={<ProviderIcon className="size-4" provider="slack" />}
                                 loading={slackConfiguration.loading}
                                 disabled={slackConfiguration.loading}
                                 variant="secondary"
                                 onClick={() => void connectSlack()}
                               >
                                 {m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
+                              </Button>
+                              <Button
+                                icon={<ProviderIcon className="size-4" provider="feishu" />}
+                                loading={feishuSetup.loading}
+                                disabled={feishuSetup.loading}
+                                variant="secondary"
+                                onClick={(event) => {
+                                  activeFeishuTriggerRef.current = event.currentTarget;
+                                  void connectFeishu();
+                                }}
+                              >
+                                {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
                               </Button>
                             </div>
                           </>

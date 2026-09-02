@@ -66,6 +66,27 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
   });
 
+  it("presents both messaging channels as equal choices rather than a recommendation", async () => {
+    /*
+     * Which app a team already lives in decides this, so neither channel gets the emphasis styling
+     * that would read as our recommendation. Each carries its own mark instead, and Slack leads.
+     */
+    installApi({ bound: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Connect Slack" });
+    const connect = screen.getAllByRole("button").filter((button) => button.textContent?.startsWith("Connect"));
+    expect(connect.map((button) => button.textContent)).toEqual(["Connect Slack", "Connect Lark"]);
+    const marks = connect.map((button) => {
+      expect(button.className).toContain("bg-kumo-base");
+      expect(button.className).not.toContain("kumo-button-emphasis-bg");
+      return button.querySelector("img")?.getAttribute("src");
+    });
+    expect(marks.every((mark) => mark)).toBe(true);
+    expect(new Set(marks).size).toBe(2);
+  });
+
   it("separates the connected channel from the trigger mode that acts on it", async () => {
     installApi({ bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);

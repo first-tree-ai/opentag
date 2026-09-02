@@ -9,6 +9,7 @@ import {
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
@@ -127,8 +128,10 @@ describe("ConnectionRegistry", () => {
   });
 
   it("terminates only stale sockets and closes all current sockets during shutdown", async () => {
-    const registry = new ConnectionRegistry();
+    const logger = loggerFixture();
+    const registry = new ConnectionRegistry({ logger });
     const stale = socket();
+    const staleSecond = socket();
     const fresh = socket();
     const staleComputerId = randomUUID();
     const freshComputerId = randomUUID();
@@ -146,15 +149,31 @@ describe("ConnectionRegistry", () => {
       {
         installationId: randomUUID(),
         instanceId: randomUUID(),
+        lastHeartbeatAt: 5,
+        socket: staleSecond,
+        computerId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    await registry.register(
+      {
+        installationId: randomUUID(),
+        instanceId: randomUUID(),
         lastHeartbeatAt: 20,
         socket: fresh,
         computerId: freshComputerId,
       },
       async () => undefined,
     );
-    registry.terminateStale(15);
+    expect(registry.terminateStale(15)).toBe(2);
     expect(stale.terminate).toHaveBeenCalledOnce();
+    expect(staleSecond.terminate).toHaveBeenCalledOnce();
     expect(fresh.terminate).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { count: 2, cutoff: 15 },
+      "Stale runtime connection sweep terminated connections",
+    );
     registry.closeAll();
     expect(stale.close).toHaveBeenCalledWith(1001, "Server shutting down");
     expect(fresh.close).toHaveBeenCalledWith(1001, "Server shutting down");
@@ -665,6 +684,15 @@ describe("ConnectionRegistry", () => {
     expect(registry.currentInstanceId(computerId)).toBeUndefined();
   });
 });
+
+function loggerFixture(): ServiceLogger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
 
 function socket(): WebSocket {
   return { close: vi.fn(), terminate: vi.fn() } as unknown as WebSocket;

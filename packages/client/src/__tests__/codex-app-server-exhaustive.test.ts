@@ -60,18 +60,33 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
 
   it("retains a bounded stderr tail on abnormal exit without parsing stderr as protocol", async () => {
     const child = new FakeChild({ exitOnEnd: false });
-    const process = processWith(child, { maxStderrBytes: 9 });
+    const process = processWith(child, { maxStderrBytes: 8 });
     const failure = processFailure(process);
     child.stderr.write('{"id":999,"result":"not stdout"}');
-    child.stderr.write("TAILMARK!");
+    child.stderr.write("TAILMARK");
     child.exit(23, null);
 
     await expect(failure).resolves.toMatchObject({
       code: "exited",
       exitCode: 23,
-      message: "Codex App Server exited: TAILMARK!",
+      message: "Codex App Server exited: TAILMARK",
     });
     expect((await failure).message).not.toContain('{"id":99');
+    await process.close();
+  });
+
+  it("retains the tail when stderr arrives in short chunks", async () => {
+    const child = new FakeChild({ exitOnEnd: false });
+    const process = processWith(child, { maxStderrBytes: 8 });
+    const failure = processFailure(process);
+    child.stderr.write("1234");
+    child.stderr.write("56789");
+    child.exit(23, null);
+
+    await expect(failure).resolves.toMatchObject({
+      code: "exited",
+      message: "Codex App Server exited: 23456789",
+    });
     await process.close();
   });
 

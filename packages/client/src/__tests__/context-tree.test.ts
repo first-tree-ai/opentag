@@ -17,6 +17,13 @@ const managed = { kind: "managed", name: "team-context-tree" } as const;
 const treeReply = (treePath: string) => ({ schemaVersion: 1, tree: { kind: "local", path: treePath } });
 const installReply = { installed: [], schemaVersion: 1, skipped: [], version: "0.1.7" };
 
+/** Record a Computer's Context Tree target, the way `opentag context-tree connect` does. */
+async function writeTarget(home: string, target: unknown): Promise<void> {
+  const layout = resolveOpenTagHomeLayout(home);
+  await mkdir(layout.config, { mode: 0o700, recursive: true });
+  await writeFile(layout.contextTreeConfigFile, `${JSON.stringify({ schemaVersion: 1, target })}\n`, "utf8");
+}
+
 /**
  * One Computer: an OpenTag home holding `target` as its recorded Context Tree, a manager whose
  * packaged CLI is answered by `execFile`, and the Agent workspace path a Session would pass.
@@ -32,12 +39,7 @@ async function computer(
 ): Promise<{ home: string; cwd: string; manager: ContextTreeManager }> {
   const home = await mkdtemp(join(tmpdir(), "opentag-context-tree-"));
   directories.push(home);
-  const layout = resolveOpenTagHomeLayout(home);
-  if (options.target !== undefined) {
-    await mkdir(layout.config, { mode: 0o700, recursive: true });
-    const config = JSON.stringify({ schemaVersion: 1, target: options.target });
-    await writeFile(layout.contextTreeConfigFile, `${config}\n`, "utf8");
-  }
+  if (options.target !== undefined) await writeTarget(home, options.target);
   const root = resolve(home, "pkg");
   const manager = new ContextTreeManager({
     home,
@@ -120,6 +122,35 @@ describe("ContextTreeManager", () => {
     // A second Session for the same Agent must not re-run the CLI.
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/trees/team" });
     expect(calls).toHaveLength(3);
+  });
+
+  it("activates a target recorded after start, and follows every target change", async () => {
+    const calls: string[][] = [];
+    // Answer `connect` from its own arguments, so the returned path proves which target ran.
+    const execFile: ContextTreeExecFile = async (_file, args) => {
+      calls.push(args.slice(1));
+      const connect = args[1] === "connect";
+      const treePath = args[args.indexOf("--tree-path") + 1] ?? "";
+      return { stdout: `${JSON.stringify(connect ? treeReply(treePath) : installReply)}\n` };
+    };
+    const { home, cwd, manager } = await computer({ execFile });
+
+    // `connect` only writes the config file, so an unconfigured answer must never be cached.
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
+
+    await writeTarget(home, { kind: "path", path: "/srv/tree-a" });
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/tree-a" });
+
+    // A Computer pointed at a different tree must not be served the previous one.
+    await writeTarget(home, { kind: "path", path: "/srv/tree-b" });
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/tree-b" });
+    expect(calls.filter(([subcommand]) => subcommand === "connect")).toHaveLength(2);
+
+    // Pointing back at the first tree must reconnect as well: the intervening `connect` rewrote
+    // this workspace's connection store, so an entry recorded for tree A no longer describes it.
+    await writeTarget(home, { kind: "path", path: "/srv/tree-a" });
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/tree-a" });
+    expect(calls.filter(([subcommand]) => subcommand === "connect")).toHaveLength(3);
   });
 
   it.each([

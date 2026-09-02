@@ -87,7 +87,7 @@ tree when none is configured is deferred.
 ### Per-Agent resolution
 
 `ContextTreeManager` (`packages/client/src/runtime/context-tree.ts`) prepares each Agent
-workspace once, cached in memory:
+workspace once per recorded target, cached in memory:
 
 ```text
 cwd = await workspace.cwd(agentId)
@@ -256,6 +256,10 @@ particular reports an unusable tree as `ok: false` with `findings` and no `error
 which is why the failure reader honours both shapes.
 
 - Nothing in the Context Tree path throws into Session start.
+- The configuration is read before the cache is consulted, and a cached entry is only reused while
+  it was recorded under the Computer's current target. `opentag context-tree connect` writes the
+  file and nothing else, so this is what makes a newly configured or retargeted Computer take
+  effect without restarting the daemon.
 - A success is cached per workspace; a failure is not, so a transient fault retries at the next
   Session start.
 - The managed prompt tells the Agent durable memory is inactive and not to repair the tree or

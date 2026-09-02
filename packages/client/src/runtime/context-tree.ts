@@ -142,7 +142,7 @@ export class ContextTreeManager {
   readonly #execFile: ContextTreeExecFile | undefined;
   readonly #platform: NodeJS.Platform;
   readonly #nodePath: string;
-  readonly #ready = new Map<string, ContextTreeStatus>();
+  readonly #ready = new Map<string, { target: string; status: ContextTreeStatus }>();
   #pending: Promise<unknown> = Promise.resolve();
 
   constructor(options: ContextTreeManagerOptions) {
@@ -170,17 +170,23 @@ export class ContextTreeManager {
    * connection from writing into a workspace still mid-migration.
    */
   async ensureAgent(cwd: string): Promise<ContextTreeStatus> {
+    // Read the configuration before consulting the cache. `opentag context-tree connect` only
+    // writes the file, so a Computer configured after this daemon started must still activate,
+    // and an entry recorded under another target must never be served for this one.
+    const config = await this.readConfig();
+    if (!config) return { status: "unconfigured" };
+    const target = formatContextTreeTarget(config.target);
     const cached = this.#ready.get(cwd);
-    if (cached) return cached;
+    if (cached?.target === target) return cached.status;
     // Serialize against other Agents: the CLI's connection store is replaced atomically but
     // without a cross-process lock, so concurrent read-modify-write can lose unrelated records.
     // The catch upholds the class contract — optional memory degrades, Session start does not.
-    const status = await this.#serialize(() => this.#ensureAgentOnce(cwd)).catch((error: unknown) => {
+    const status = await this.#serialize(() => this.#ensureAgentOnce(cwd, config)).catch((error: unknown) => {
       this.#logger.error({ err: describe(error) }, "Context Tree preparation raised an unexpected failure");
       return { status: "unavailable", reason: "CLI_FAILED" } as const;
     });
     // Only a success is cached. A transient failure must retry on the next Session start.
-    if (status.status !== "unavailable") this.#ready.set(cwd, status);
+    if (status.status === "ready") this.#ready.set(cwd, { target, status });
     return status;
   }
 
@@ -195,9 +201,7 @@ export class ContextTreeManager {
     }
   }
 
-  async #ensureAgentOnce(cwd: string): Promise<ContextTreeStatus> {
-    const config = await this.readConfig();
-    if (!config) return { status: "unconfigured" };
+  async #ensureAgentOnce(cwd: string, config: ContextTreeConfig): Promise<ContextTreeStatus> {
     if (!this.#package) return this.#unavailable("PACKAGE_MISSING", config);
     const shim = await this.#writeShim().catch((error: unknown) => {
       this.#logger.warn({ err: describe(error) }, "Context Tree shim could not be created");

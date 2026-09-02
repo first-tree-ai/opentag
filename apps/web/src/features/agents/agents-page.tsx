@@ -1,10 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
-import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
+import { formatCompactNumber, initials } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
+import { slackConfigurationMessage } from "../../im/slack-configuration.js";
 import * as m from "../../paraglide/messages.js";
-import { buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
+import { Banner, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
@@ -16,7 +17,16 @@ import { agentDetailLink } from "./agent-routes.js";
 
 export function AgentsPage() {
   const { me } = useAccount();
+  const [oauthError] = useState(
+    () => new URLSearchParams(window.location.search).get("slack_oauth_error") ?? undefined,
+  );
   const state = useAgentListView(me.user.id);
+  useEffect(() => {
+    if (!oauthError) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("slack_oauth_error");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [oauthError]);
   return (
     <Page
       action={
@@ -26,9 +36,9 @@ export function AgentsPage() {
           </Link>
         </div>
       }
-      description={m.agents_page_description()}
       title={m.agents_title()}
     >
+      {oauthError ? <Banner variant="error" role="alert" description={slackConfigurationMessage(oauthError)} /> : null}
       <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
     </Page>
   );
@@ -58,11 +68,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
   const workingCount = agents.filter((agent) => agent.activity.state === "working").length;
   return (
     <section className="grid gap-4" aria-label={m.agents_title()} data-ui="agent-list">
-      <p className="text-sm text-kumo-subtle">
-        {agents.length === 1
-          ? m.agents_list_summary_single({ count: agents.length, workingCount })
-          : m.agents_list_summary_plural({ count: agents.length, workingCount })}
-      </p>
+      <p className="text-sm text-kumo-subtle">{agentListSummary(agents.length, workingCount)}</p>
       <div className="@container/agent-roster grid gap-3" data-ui="agent-roster">
         {order.map((id) => {
           const agent = byId.get(id);
@@ -76,10 +82,9 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
 export function AgentRow({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
   const channel = agent.availability.dependencies.channel.provider;
-  const statusDetail = agentStatusDetail(agent);
   return (
     <article
-      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.25fr)_minmax(12rem,1fr)_5rem_7rem_1rem] @min-[42rem]/agent-roster:items-center"
+      className="relative grid gap-4 rounded-lg bg-kumo-base px-5 py-4 ring ring-kumo-line transition-colors hover:bg-kumo-tint focus-within:ring-2 focus-within:ring-kumo-focus @min-[42rem]/agent-roster:grid-cols-[minmax(0,1.2fr)_minmax(11rem,1fr)_auto_1rem] @min-[42rem]/agent-roster:items-center"
       data-tone={status.tone}
       data-ui="agent-row"
     >
@@ -93,28 +98,23 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
         </span>
         <div className="grid min-w-0 gap-1">
           <strong className="truncate text-base">{agent.displayName}</strong>
-          <span className="flex items-center gap-1.5 text-sm text-kumo-subtle">
-            {channel ? <ProviderIcon className="size-4" provider={channel} /> : null}
-            {channel ? messagingProviderLabel(channel) : m.agents_messaging_not_connected()}
-          </span>
+          {channel ? (
+            <span className="flex items-center gap-1.5 text-sm text-kumo-subtle">
+              <ProviderIcon className="size-4" provider={channel} />
+              {messagingProviderLabel(channel)}
+            </span>
+          ) : null}
         </div>
       </div>
-      <div className="grid gap-1.5" data-ui="agent-row-status">
+      <div className="grid gap-1.5 pl-13 @min-[42rem]/agent-roster:pl-0" data-ui="agent-row-status">
         <StatusIndicator label={status.label} tone={status.tone} />
-        <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">
-          {statusDetail}
-        </p>
+        {status.detail ? (
+          <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">
+            {status.detail}
+          </p>
+        ) : null}
       </div>
-      <dl className="grid grid-cols-2 gap-4 @min-[42rem]/agent-roster:contents" data-ui="agent-row-facts">
-        <AgentFact
-          label={m.agents_fact_tasks_window({ days: agent.usage.windowDays })}
-          value={formatCompactNumber(agent.usage.tasks)}
-        />
-        <AgentFact
-          label={m.agents_fact_tokens_window({ days: agent.usage.windowDays })}
-          value={formatCompactNumber(agent.usage.tokens)}
-        />
-      </dl>
+      <AgentUsageSummary agent={agent} />
       <Icon
         className="absolute right-5 top-5 text-kumo-subtle @min-[42rem]/agent-roster:static @min-[42rem]/agent-roster:justify-self-end"
         name="chevron-right"
@@ -129,25 +129,39 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
   );
 }
 
-function AgentFact({ label, value }: { label: string; value: string }) {
+function AgentUsageSummary({ agent }: { agent: AgentListItem }) {
+  const tasks = formatCompactNumber(agent.usage.tasks);
+  const tokens = formatCompactNumber(agent.usage.tokens);
   return (
-    <div className="grid gap-0.5">
-      <dt className="text-xs text-kumo-subtle">{label}</dt>
-      <dd className="truncate text-sm font-medium text-kumo-strong">{value}</dd>
-    </div>
+    <dl
+      className="grid gap-0.5 pl-13 @min-[42rem]/agent-roster:w-48 @min-[42rem]/agent-roster:justify-self-end @min-[42rem]/agent-roster:pl-0"
+      data-ui="agent-row-usage"
+    >
+      <dt className="text-xs text-kumo-subtle">{m.agents_list_usage_window({ days: agent.usage.windowDays })}</dt>
+      <dd className="flex items-baseline gap-1.5 whitespace-nowrap text-sm font-medium text-kumo-strong tabular-nums">
+        <span>
+          {agent.usage.tasks === 1
+            ? m.agents_list_usage_task_single({ count: tasks })
+            : m.agents_list_usage_task_plural({ count: tasks })}
+        </span>
+        <span aria-hidden="true" className="text-kumo-subtle">
+          ·
+        </span>
+        <span>
+          {agent.usage.tokens === 1
+            ? m.agents_list_usage_token_single({ count: tokens })
+            : m.agents_list_usage_token_plural({ count: tokens })}
+        </span>
+      </dd>
+    </dl>
   );
 }
 
-function agentStatusDetail(agent: AgentListItem): string {
-  if (!agent.evidenceConfirmed) return m.agents_status_detail_unable_to_refresh();
-  if (agent.availability.state === "unconfirmed") return m.agents_status_detail_unable_to_confirm_readiness();
-  if (agent.availability.state === "action_required" || agent.availability.state === "not_connected") {
-    return m.agents_status_detail_cannot_receive_work();
+function agentListSummary(count: number, workingCount: number): string {
+  if (workingCount > 0) {
+    return count === 1
+      ? m.agents_list_summary_single({ count, workingCount })
+      : m.agents_list_summary_plural({ count, workingCount });
   }
-  if (agent.availability.state === "setting_up") return m.agents_status_detail_messaging_setup();
-  if (agent.activity.state === "working" && agent.availability.state === "ready") {
-    return m.agents_status_detail_working({ elapsed: formatElapsedCompact(agent.activity.startedAt) });
-  }
-  if (agent.availability.state === "ready") return m.agents_status_detail_ready();
-  return m.agents_status_detail_open_status();
+  return count === 1 ? m.agents_list_count_single({ count }) : m.agents_list_count_plural({ count });
 }

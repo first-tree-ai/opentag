@@ -35,19 +35,23 @@ describe("OpenTag Web App Shell", () => {
     expect(agentRow?.parentElement?.classList.contains("@container/agent-roster")).toBe(true);
     expect(agentRow?.className).toContain("/agent-roster:grid-cols-");
     expect(screen.queryByText(/Monitor availability/)).toBeNull();
-    expect(screen.getByText("1 Agent · 0 currently working")).toBeTruthy();
+    expect(screen.getByText("1 Agent")).toBeTruthy();
+    expect(screen.queryByText(/currently working/)).toBeNull();
+    expect(screen.queryByText("Choose an Agent to continue, or create a new one.")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("@reviewer")).toBeNull();
-    expect(within(agentRow as HTMLElement).getByText("Tasks (30d)")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("Tokens (30d)")).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("428K")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).getByText("Last 30 days")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).getByText("32 tasks")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).getByText("428K tokens")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).queryByText("Tasks (30d)")).toBeNull();
+    expect(within(agentRow as HTMLElement).queryByText("Tokens (30d)")).toBeNull();
     expect(within(agentRow as HTMLElement).queryByText("Last checked")).toBeNull();
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-avatar"]')?.classList.contains("size-10")).toBe(
       true,
     );
     const rowState = (agentRow as HTMLElement).querySelector('[data-ui="agent-row-state"]');
-    expect(rowState).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("Messaging disconnected")).toBeTruthy();
-    expect(within(rowState as HTMLElement).getByText("Cannot receive new work")).toBeTruthy();
+    expect(rowState).toBeNull();
+    expect(within(agentRow as HTMLElement).getByText("Messaging not connected")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).queryByText("Cannot receive new work")).toBeNull();
     // The row reports the failure and nothing else; opening the Agent is its only follow-up.
     expect(within(agentRow as HTMLElement).queryByRole("link", { name: "Connect messaging" })).toBeNull();
     expect(
@@ -56,7 +60,6 @@ describe("OpenTag Web App Shell", () => {
         .map((item) => item.getAttribute("href")),
     ).toEqual([`/agents/${agentId}`]);
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-status"] [data-state]')).toBeTruthy();
-    expect(rowState?.closest('[data-ui="agent-row-status"]')).toBeTruthy();
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
     fireEvent.click(agentLink);
@@ -95,6 +98,16 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
   });
 
+  it("surfaces and removes an unscoped Slack callback failure on the Agents landing", async () => {
+    installApi();
+    window.history.replaceState({}, "", "/agents?slack_oauth_error=SLACK_UPSTREAM_UNAVAILABLE");
+    render(<App />);
+
+    expect(await screen.findByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(screen.getByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
+  });
+
   it("shows each unreleased Agent page only when Internal Tools enables it", async () => {
     installApi({
       internalNavigationVisibility: { integrations: false, skills: true },
@@ -128,13 +141,14 @@ describe("OpenTag Web App Shell", () => {
     const agentRow = (await screen.findByRole("link", { name: "Open Reviewer" })).closest('[data-ui="agent-row"]');
     expect(agentRow).toBeTruthy();
     const status = within(agentRow as HTMLElement)
-      .getByText("Working")
+      .getByText("Ready for new work")
       .closest("[data-state]");
     expect(status).toBeTruthy();
+    expect(screen.getByText("1 Agent · 1 working")).toBeTruthy();
     expect(within(agentRow as HTMLElement).getByText("Working now · started 8m ago")).toBeTruthy();
   });
 
-  it("states an offline reason under the Agent name and carries no exit of its own", async () => {
+  it("states an offline reason once and carries no exit of its own", async () => {
     installApi({
       bound: true,
       computerStatus: () => "offline",
@@ -149,7 +163,8 @@ describe("OpenTag Web App Shell", () => {
       .getByText("Computer offline")
       .closest("[data-state]");
     expect(status).toBeTruthy();
-    expect(within(agentRow as HTMLElement).getByText("Cannot receive new work")).toBeTruthy();
+    expect(within(agentRow as HTMLElement).queryByText("Cannot receive new work")).toBeNull();
+    expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-state"]')).toBeNull();
     expect((status as HTMLElement).closest('[data-ui="agent-row-status"]')).toBeTruthy();
     /*
      * No recovery exit beside the reason. Which page repairs an offline Computer is the Agent's

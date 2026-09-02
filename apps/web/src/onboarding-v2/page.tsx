@@ -44,14 +44,20 @@ export function AgentSetupSurface({
   onBackToAgents,
   onAgentAvailable,
   onOpenAgent,
+  onReady,
+  reviewMode = false,
   setupAdapter,
+  slackOAuthError,
 }: {
   accountId?: string;
   agentId?: string;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onOpenAgent?: () => void;
+  onReady?: (agentId: string) => Promise<void> | void;
+  reviewMode?: boolean;
   setupAdapter?: AgentSetupAdapter;
+  slackOAuthError?: string;
 } = {}) {
   if (agentId) {
     return (
@@ -60,6 +66,9 @@ export function AgentSetupSurface({
         agentId={agentId}
         onBackToAgents={onBackToAgents}
         onOpenAgent={onOpenAgent}
+        onReady={onReady}
+        reviewMode={reviewMode}
+        slackOAuthError={slackOAuthError}
       />
     );
   }

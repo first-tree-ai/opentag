@@ -104,6 +104,32 @@ describe("Agent setup contracts", () => {
         },
       },
       {
+        name: "Computer observation failed",
+        snapshot: {
+          agent: agent(computerIdentity),
+          stage: "needs-computer",
+          computer: { kind: "observation-failed", ...computerIdentity },
+          runtime: { kind: "unavailable", provider: "codex", reason: "computer-observation-failed" },
+          messaging: { kind: "not-configured" },
+          blockers: [{ code: "resource-observation-failed", resource: "computer" }],
+          actions: [{ kind: "refresh" }],
+          observedAt,
+        },
+      },
+      {
+        name: "runtime observation failed",
+        snapshot: {
+          agent: agent(computerIdentity),
+          stage: "needs-runtime",
+          computer: boundComputer(),
+          runtime: { kind: "observation-failed", provider: "codex" },
+          messaging: { kind: "not-configured" },
+          blockers: [{ code: "resource-observation-failed", resource: "runtime" }],
+          actions: [{ kind: "refresh" }],
+          observedAt,
+        },
+      },
+      {
         name: "Messaging not configured",
         snapshot: {
           agent: agent(computerIdentity),
@@ -126,12 +152,25 @@ describe("Agent setup contracts", () => {
           stage: "ready",
           computer: boundComputer(),
           runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
-          messaging: { kind: "ready", provider: "slack", bindingId },
+          messaging: { kind: "ready", provider: "slack", bindingId, credentialGeneration: 3 },
           blockers: [],
           actions: [
-            { kind: "reauthorize-messaging", provider: "slack", bindingId },
+            { kind: "reauthorize-messaging", provider: "slack", bindingId, credentialGeneration: 3 },
             { kind: "unbind-messaging", provider: "slack", bindingId },
           ],
+          observedAt,
+        },
+      },
+      {
+        name: "Messaging observation failed",
+        snapshot: {
+          agent: agent(computerIdentity),
+          stage: "needs-messaging",
+          computer: boundComputer(),
+          runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+          messaging: { kind: "observation-failed" },
+          blockers: [{ code: "resource-observation-failed", resource: "messaging" }],
+          actions: [{ kind: "refresh" }],
           observedAt,
         },
       },
@@ -167,7 +206,7 @@ describe("Agent setup contracts", () => {
       stage: "ready",
       computer: boundComputer(),
       runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
-      messaging: { kind: "ready", provider: "slack", bindingId },
+      messaging: { kind: "ready", provider: "slack", bindingId, credentialGeneration: 3 },
       blockers: [],
       actions: [{ kind: "start-messaging", provider: "feishu" }],
       observedAt,
@@ -184,7 +223,7 @@ describe("Agent setup contracts", () => {
       stage: "ready",
       computer: boundComputer(),
       runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
-      messaging: { kind: "ready", provider: "slack", bindingId },
+      messaging: { kind: "ready", provider: "slack", bindingId, credentialGeneration: 3 },
       blockers: [],
       actions: [{ kind: "unbind-messaging", provider: "slack", bindingId: staleBindingId }],
       observedAt,
@@ -192,6 +231,12 @@ describe("Agent setup contracts", () => {
     expect(() => AgentSetupSnapshotSchema.parse(ready)).toThrow(
       "Binding actions must name the current Provider and binding identity",
     );
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({
+        ...ready,
+        actions: [{ kind: "reauthorize-messaging", provider: "slack", bindingId, credentialGeneration: 2 }],
+      }),
+    ).toThrow("Binding authorization actions must name the current credential generation");
     expect(() =>
       AgentSetupSnapshotSchema.parse({
         ...ready,

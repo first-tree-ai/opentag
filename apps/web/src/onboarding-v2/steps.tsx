@@ -1,6 +1,7 @@
 import type { ImProvider } from "@opentag/shared/browser";
 import { type FormEvent, useId, useState } from "react";
-import { messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
+import { spaceScriptBoundary } from "../i18n/format.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Icon, KumoInputControl, Text } from "../ui/design-system.js";
 import { BrandMark } from "./brand-mark.js";
@@ -322,7 +323,7 @@ export function DoneStep({
   provider,
 }: {
   action?: { label: string; onClick: () => void };
-  completion?: { onFinish: () => void };
+  completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
   name: string;
   provider?: ImProvider;
 }) {
@@ -340,14 +341,20 @@ export function DoneStep({
         </Text>
         <p className="text-kumo-subtle m-0">
           {provider
-            ? spaceBrandInSentence(
+            ? spaceScriptBoundary(
                 m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) }),
               )
             : m.onboarding_v2_done_description_any_app({ name })}
         </p>
       </header>
       {completion ? (
-        <Button onClick={completion.onFinish}>{m.onboarding_v2_done_retry_finish()}</Button>
+        <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
+          {completion.state === "ready"
+            ? m.onboarding_v2_done_finish_reboard()
+            : completion.state === "pending"
+              ? m.onboarding_v2_done_finishing()
+              : m.onboarding_v2_done_retry_finish()}
+        </Button>
       ) : action ? (
         <Button onClick={action.onClick}>{action.label}</Button>
       ) : null}

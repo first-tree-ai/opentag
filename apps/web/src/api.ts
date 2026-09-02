@@ -5,6 +5,8 @@ import {
   type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
+  type AgentCreationIntentResult,
+  AgentCreationIntentResultSchema,
   type AgentDetail,
   AgentDetailSchema,
   type AgentRuntimeTestRequest,
@@ -17,6 +19,7 @@ import {
   type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountAgentCreationIntentPath,
   accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,
@@ -51,6 +54,7 @@ import {
   ImBindingDiagnosticsSchema,
   type ImBindingHandoffStatus,
   ImBindingHandoffStatusSchema,
+  type ImBindingMessagingExpectation,
   type ImBindingSummary,
   ImBindingSummarySchema,
   type InternalNavigationVisibility,
@@ -129,6 +133,10 @@ export class BrowserApi {
 
   agents(): Promise<ListAgentsResponse> {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema);
+  }
+
+  agentCreationIntent(creationIntentId: string): Promise<AgentCreationIntentResult> {
+    return this.request(accountAgentCreationIntentPath(creationIntentId), AgentCreationIntentResultSchema);
   }
 
   tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {
@@ -254,10 +262,11 @@ export class BrowserApi {
   createFeishuSetupAttempt(
     agentId: string,
     intent: "create" | "reauthorize" | "replace" = "create",
+    expectedMessaging?: ImBindingMessagingExpectation,
   ): Promise<FeishuSetupAttempt> {
     return this.request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
       method: "POST",
-      body: JSON.stringify({ intent }),
+      body: JSON.stringify({ intent, ...(expectedMessaging ? { expectedMessaging } : {}) }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }

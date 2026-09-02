@@ -30,6 +30,7 @@ const allowedUntranslatedValues = new Set([
   "OpenTag",
   "Codex",
   "Claude Code",
+  "Google",
   "Slack",
   "Feishu",
   "Lark",

@@ -16,6 +16,12 @@ export const AgentSetupComputerStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("not-bound") }).strict(),
   z
     .object({
+      kind: z.literal("observation-failed"),
+      ...AgentSetupComputerIdentityShape,
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal("requires-rebind"),
       ...AgentSetupComputerIdentityShape,
     })
@@ -33,11 +39,18 @@ export const AgentSetupComputerStateSchema = z.discriminatedUnion("kind", [
 
 export const AgentSetupRuntimeUnavailableReasonSchema = z.enum([
   "computer-not-bound",
+  "computer-observation-failed",
   "computer-rebind-required",
   "computer-offline",
 ]);
 
 export const AgentSetupRuntimeStateSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("observation-failed"),
+      provider: AgentSummarySchema.shape.runtimeProvider,
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("unavailable"),
@@ -65,6 +78,7 @@ export const AgentSetupMessagingBlockerCodeSchema = z.enum(AGENT_SETUP_MESSAGING
 
 export const AgentSetupMessagingStateSchema = z.union([
   z.object({ kind: z.literal("not-configured") }).strict(),
+  z.object({ kind: z.literal("observation-failed") }).strict(),
   z
     .object({
       kind: z.literal("authorizing"),
@@ -86,6 +100,7 @@ export const AgentSetupMessagingStateSchema = z.union([
       kind: z.literal("waiting-handoff"),
       provider: ImProviderSchema,
       bindingId: z.string().uuid(),
+      credentialGeneration: z.number().int().positive(),
       progress: ProviderCliHandoffProgressSchema.optional(),
     })
     .strict(),
@@ -94,6 +109,7 @@ export const AgentSetupMessagingStateSchema = z.union([
       kind: z.literal("blocked"),
       provider: ImProviderSchema,
       bindingId: z.string().uuid().optional(),
+      credentialGeneration: z.number().int().nonnegative().optional(),
       code: AgentSetupMessagingBlockerCodeSchema,
       errorCode: z.string().min(1).max(120).nullable(),
     })
@@ -103,6 +119,7 @@ export const AgentSetupMessagingStateSchema = z.union([
       kind: z.literal("ready"),
       provider: ImProviderSchema,
       bindingId: z.string().uuid(),
+      credentialGeneration: z.number().int().positive(),
     })
     .strict(),
 ]);
@@ -145,6 +162,7 @@ export const AgentSetupActionSchema = z.discriminatedUnion("kind", [
       kind: z.literal("reauthorize-messaging"),
       provider: ImProviderSchema,
       bindingId: z.string().uuid(),
+      credentialGeneration: z.number().int().positive(),
     })
     .strict(),
   z
@@ -152,6 +170,7 @@ export const AgentSetupActionSchema = z.discriminatedUnion("kind", [
       kind: z.literal("replace-messaging"),
       provider: z.literal("feishu"),
       bindingId: z.string().uuid(),
+      credentialGeneration: z.number().int().positive(),
     })
     .strict(),
   z
@@ -259,6 +278,7 @@ function validateSetupComputer(snapshot: AgentSetupSnapshotCandidate, addIssue: 
   ) {
     addIssue(["computer"], "The setup Computer must match the exact Agent binding");
   }
+  if (snapshot.computer.kind === "observation-failed") return;
   if (snapshot.computer.kind === "requires-rebind" && snapshot.agent.requiresComputerRebind !== true) {
     addIssue(["computer"], "A requires-rebind setup Computer must be marked on the Agent");
   }
@@ -271,6 +291,7 @@ function expectedRuntimeUnavailableReason(
   computer: AgentSetupSnapshotCandidate["computer"],
 ): AgentSetupRuntimeUnavailableReason | undefined {
   if (computer.kind === "not-bound") return "computer-not-bound";
+  if (computer.kind === "observation-failed") return "computer-observation-failed";
   if (computer.kind === "requires-rebind") return "computer-rebind-required";
   if (computer.connectionStatus === "offline") return "computer-offline";
   return undefined;
@@ -282,7 +303,7 @@ function validateSetupRuntime(snapshot: AgentSetupSnapshotCandidate, addIssue: A
   }
   const unavailableReason = expectedRuntimeUnavailableReason(snapshot.computer);
   if (unavailableReason === undefined) {
-    if (snapshot.runtime.kind !== "observed") {
+    if (snapshot.runtime.kind !== "observed" && snapshot.runtime.kind !== "observation-failed") {
       addIssue(["runtime"], "An online bound Computer must expose its observed runtime readiness");
     }
     return;
@@ -300,6 +321,12 @@ function deriveSetupStage(snapshot: AgentSetupSnapshotCandidate): AgentSetupStag
   return snapshot.messaging.kind === "ready" ? "ready" : "needs-messaging";
 }
 
+function hasObservationBlocker(snapshot: AgentSetupSnapshotCandidate, resource: "computer" | "runtime" | "messaging") {
+  return snapshot.blockers.some(
+    (blocker) => blocker.code === "resource-observation-failed" && blocker.resource === resource,
+  );
+}
+
 function validateSetupStage(snapshot: AgentSetupSnapshotCandidate, addIssue: AgentSetupIssue): void {
   if (snapshot.stage !== deriveSetupStage(snapshot)) {
     addIssue(["stage"], "Stage must be derived from Computer, runtime, and Messaging facts in canonical order");
@@ -310,30 +337,42 @@ function validateSetupStage(snapshot: AgentSetupSnapshotCandidate, addIssue: Age
     addIssue(["blockers"], "A ready Agent setup cannot retain blockers");
     return;
   }
-  if (snapshot.stage === "needs-runtime" && !blockerCodes.has("runtime-not-ready")) {
+  if (
+    snapshot.stage === "needs-runtime" &&
+    !blockerCodes.has("runtime-not-ready") &&
+    !hasObservationBlocker(snapshot, "runtime")
+  ) {
     addIssue(["blockers"], "A needs-runtime setup must name its runtime blocker");
   }
   const hasMessagingBlocker = blockerCodes.has("messaging-not-configured") || blockerCodes.has("messaging-not-ready");
-  if (snapshot.stage === "needs-messaging" && !hasMessagingBlocker) {
+  if (snapshot.stage === "needs-messaging" && !hasMessagingBlocker && !hasObservationBlocker(snapshot, "messaging")) {
     addIssue(["blockers"], "A needs-messaging setup must name its Messaging blocker");
   }
   const hasComputerBlocker =
     blockerCodes.has("computer-not-bound") ||
     blockerCodes.has("computer-rebind-required") ||
     blockerCodes.has("computer-offline");
-  if (snapshot.stage === "needs-computer" && !hasComputerBlocker) {
+  if (snapshot.stage === "needs-computer" && !hasComputerBlocker && !hasObservationBlocker(snapshot, "computer")) {
     addIssue(["blockers"], "A needs-computer setup must name its Computer blocker");
   }
 }
 
 function readCurrentBinding(
   messaging: AgentSetupSnapshotCandidate["messaging"],
-): { provider: "feishu" | "slack"; bindingId: string } | undefined {
+): { provider: "feishu" | "slack"; bindingId: string; credentialGeneration: number } | undefined {
   if (messaging.kind === "waiting-handoff" || messaging.kind === "ready") {
-    return { provider: messaging.provider, bindingId: messaging.bindingId };
+    return {
+      provider: messaging.provider,
+      bindingId: messaging.bindingId,
+      credentialGeneration: messaging.credentialGeneration,
+    };
   }
-  if (messaging.kind === "blocked" && messaging.bindingId) {
-    return { provider: messaging.provider, bindingId: messaging.bindingId };
+  if (messaging.kind === "blocked" && messaging.bindingId && messaging.credentialGeneration !== undefined) {
+    return {
+      provider: messaging.provider,
+      bindingId: messaging.bindingId,
+      credentialGeneration: messaging.credentialGeneration,
+    };
   }
   return undefined;
 }
@@ -364,6 +403,9 @@ function validateSetupAction(
   const currentBinding = readCurrentBinding(snapshot.messaging);
   if (currentBinding?.provider !== action.provider || currentBinding.bindingId !== action.bindingId) {
     addIssue(["actions", index], "Binding actions must name the current Provider and binding identity");
+  }
+  if (action.kind !== "unbind-messaging" && currentBinding?.credentialGeneration !== action.credentialGeneration) {
+    addIssue(["actions", index], "Binding authorization actions must name the current credential generation");
   }
 }
 

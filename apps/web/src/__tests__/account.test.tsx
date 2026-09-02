@@ -305,9 +305,9 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
 
-  it("uses normal Agent Setup and Open agent for a staging re-board", async () => {
+  it("keeps a staging re-board inspectable across its route handoff until it is explicitly finished", async () => {
     installApi({ bound: true, handoffReady: true, internalToolsOffered: true, provider: "slack" });
-    render(<App />);
+    const firstMount = render(<App />);
 
     const { menu } = await openAccountMenu();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Internal tools" }));
@@ -325,8 +325,19 @@ describe("OpenTag Web App Shell", () => {
         .mock.calls.filter(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST"),
     ).toHaveLength(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
+    firstMount.unmount();
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Finish re-board" })).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST"),
+    ).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Finish re-board" }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
     expect(
       vi
         .mocked(fetch)

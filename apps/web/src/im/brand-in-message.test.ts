@@ -9,29 +9,21 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { withLocale } from "../__tests__/support/with-locale.js";
 import { sharedConversationDestination } from "../features/agents/agent-presentation.js";
+import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingCliMissingCopy } from "../onboarding-v2/messaging-readiness-copy.js";
 import * as m from "../paraglide/messages.js";
-import { overwriteGetLocale } from "../paraglide/runtime.js";
-import { messagingProviderLabel, spaceBrandInSentence } from "./provider-label.js";
-
-function withLocale(locale: "en" | "zh", callback: () => void): void {
-  overwriteGetLocale(() => locale);
-  try {
-    callback();
-  } finally {
-    overwriteGetLocale(() => "en");
-  }
-}
+import { messagingProviderLabel } from "./provider-label.js";
 
 /** The settings sentences, composed the way `im-tab.tsx` composes them. */
 function disconnectCopy(provider: "feishu" | "slack") {
   const providerName = messagingProviderLabel(provider);
   return {
-    action: spaceBrandInSentence(m.im_disconnect({ providerName })),
-    title: spaceBrandInSentence(m.im_disconnect_title({ providerName })),
-    failed: spaceBrandInSentence(m.im_disconnect_failed({ providerName })),
-    description: spaceBrandInSentence(m.im_disconnect_description({ providerName })),
+    action: spaceScriptBoundary(m.im_disconnect({ providerName })),
+    title: spaceScriptBoundary(m.im_disconnect_title({ providerName })),
+    failed: spaceScriptBoundary(m.im_disconnect_failed({ providerName })),
+    description: spaceScriptBoundary(m.im_disconnect_description({ providerName })),
   };
 }
 

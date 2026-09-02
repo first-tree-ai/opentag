@@ -63,6 +63,18 @@ function expectedMessagingFromBinding(
     : { kind: "unbound" };
 }
 
+function sameExpectedMessaging(
+  left: AgentSetupExpectedMessagingState,
+  right: AgentSetupExpectedMessagingState,
+): boolean {
+  if (left.kind === "unbound" || right.kind === "unbound") return left.kind === right.kind;
+  return (
+    left.provider === right.provider &&
+    left.bindingId === right.bindingId &&
+    left.credentialGeneration === right.credentialGeneration
+  );
+}
+
 export class SlackOAuthService {
   readonly #api: SlackApiClient;
   readonly #app: SlackOAuthAppConfig;
@@ -92,8 +104,17 @@ export class SlackOAuthService {
     agentId: string,
     intent: SlackConfigurationIntent,
     returnSurface: AgentSetupReturnSurface = "agent-messaging-settings",
+    expectedMessaging?: AgentSetupExpectedMessagingState,
   ): Promise<SlackOAuthStartResult> {
     const expectedBinding = await this.#slack.currentBinding(callerUserId, agentId);
+    const currentMessaging = expectedMessagingFromBinding(expectedBinding);
+    if (expectedMessaging && !sameExpectedMessaging(expectedMessaging, currentMessaging)) {
+      throw new SlackConfigurationServiceError(
+        "SLACK_CONFIGURATION_CONFLICT",
+        409,
+        "The Slack binding changed since it was observed",
+      );
+    }
     if (intent === "create" && expectedBinding) {
       throw new SlackConfigurationServiceError(
         "SLACK_CONFIGURATION_CONFLICT",
@@ -113,7 +134,7 @@ export class SlackOAuthService {
       agentId,
       intent,
       returnSurface,
-      expectedMessaging: expectedMessagingFromBinding(expectedBinding),
+      expectedMessaging: expectedMessaging ?? currentMessaging,
     };
     const issued = await this.#state.issue({ userId: callerUserId, context });
     const now = this.#now();

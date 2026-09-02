@@ -13,13 +13,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
 import { AgentSetupPage } from "./agent-setup-page.js";
-import {
-  deferred,
-  SETUP_AGENT_ID,
-  SETUP_COMPUTER_ID,
-  SETUP_OTHER_AGENT_ID,
-  setupAgent,
-} from "./agent-setup-test-fixtures.js";
+import { deferred, SETUP_AGENT_ID, SETUP_OTHER_AGENT_ID, setupAgent } from "./agent-setup-test-fixtures.js";
 import { AgentSetupSurface } from "./page.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
@@ -56,12 +50,23 @@ function scriptedAdapter(
 
 function renderSetup(
   adapter: AgentSetupAdapter,
-  props: { agentId?: string; onReady?: (agentId: string) => Promise<void> | void } = {},
+  props: {
+    agentId?: string;
+    onReady?: (agentId: string) => Promise<void> | void;
+    reviewMode?: boolean;
+    slackOAuthError?: string;
+  } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <AgentSetupPage adapter={adapter} agentId={props.agentId ?? SETUP_AGENT_ID} onReady={props.onReady} />
+      <AgentSetupPage
+        adapter={adapter}
+        agentId={props.agentId ?? SETUP_AGENT_ID}
+        onReady={props.onReady}
+        reviewMode={props.reviewMode}
+        slackOAuthError={props.slackOAuthError}
+      />
     </QueryClientProvider>,
   );
 }
@@ -100,22 +105,22 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
     expect(screen.getByText("Reviewer has no computer yet. Connect the machine it should run on.")).toBeTruthy();
     expect(screen.getByText("Connect your computer")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Connect a Computer" })).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe("not-bound");
   });
 
-  it("names the exact Computer that must be connected again when a rebind is required", async () => {
-    const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(() => deferred<never>().promise);
+  it("offers an owned Computer choice when a cross-Account rebind is required", async () => {
+    mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent({ requiresComputerRebind: true }) });
     renderSetup(memory.adapter);
     await settle();
 
-    expect(screen.getByText("Review Mac must be connected again before Reviewer can run.")).toBeTruthy();
+    expect(
+      screen.getByText("Review Mac belongs to another Account. Choose a Computer owned by this Account for Reviewer."),
+    ).toBeTruthy();
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe(
       "requires-rebind",
     );
-    // The repair command targets the exact Computer the snapshot names, never a fresh one.
-    expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: SETUP_COMPUTER_ID });
+    expect(screen.getByText("Connect your computer")).toBeTruthy();
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
@@ -169,7 +174,7 @@ describe("AgentSetupPage stages", () => {
 
   it("shows the Feishu authorization with its QR, expiry, and cancel from the snapshot", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     renderSetup(memory.adapter);
     await settle(10);
 
@@ -183,7 +188,7 @@ describe("AgentSetupPage stages", () => {
 
   it("shows the Slack install wait with Provider identity intact", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    await memory.adapter.startSlackInstall(SETUP_AGENT_ID, "create");
+    await memory.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" });
     renderSetup(memory.adapter);
     await settle();
 
@@ -295,6 +300,7 @@ describe("AgentSetupPage transitions", () => {
     memory.controls.scanFeishuCode();
     await advance(POLL_MS + 10);
     expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
 
     memory.controls.completeHandoff();
     await advance(POLL_MS + 10);
@@ -302,10 +308,10 @@ describe("AgentSetupPage transitions", () => {
     expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
   });
 
-  it("cancels the exact open attempt and returns to the fresh choice", async () => {
+  it("cancels the exact open attempt and requires unbind before starting again", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     const cancel = vi.spyOn(memory.adapter, "cancelFeishuAttempt");
-    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     const authorizing = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
     const attemptId =
       authorizing.messaging.kind === "authorizing" && authorizing.messaging.provider === "feishu"
@@ -318,8 +324,13 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(cancel).toHaveBeenCalledWith(attemptId);
-    expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The Lark authorization didn't complete. Disconnect this incomplete connection, then start again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
   });
 
   it("starts the Slack install by leaving for Slack", async () => {
@@ -356,7 +367,12 @@ describe("AgentSetupPage transitions", () => {
       fireEvent.click(screen.getByRole("button", { name: "Update permissions" }));
       await settle();
 
-      expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "reauthorize");
+      expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "reauthorize", {
+        kind: "bound",
+        provider: "slack",
+        bindingId: expect.any(String),
+        credentialGeneration: 1,
+      });
       expect(assign).toHaveBeenCalled();
     } finally {
       Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
@@ -366,7 +382,7 @@ describe("AgentSetupPage transitions", () => {
   it("replaces the current Feishu bot through a same-Provider attempt", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
-      messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "authorization-failed" },
+      messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "reauthorization-required" },
     });
     const start = vi.spyOn(memory.adapter, "startFeishuAttempt");
     renderSetup(memory.adapter);
@@ -375,7 +391,12 @@ describe("AgentSetupPage transitions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
     await settle(10);
 
-    expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "replace");
+    expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "replace", {
+      kind: "bound",
+      provider: "feishu",
+      bindingId: expect.any(String),
+      credentialGeneration: 1,
+    });
     expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
   });
 
@@ -430,7 +451,7 @@ describe("AgentSetupPage transitions", () => {
     const adapter = scriptedAdapter((agentId) => memory.adapter.readSnapshot(agentId), {
       startFeishuAttempt: vi.fn(async () => {
         await gate.promise;
-        await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+        await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
       }),
     });
     renderSetup(adapter);
@@ -520,7 +541,7 @@ describe("AgentSetupPage request fencing", () => {
 
   it("discards a poll that resolves after an action has moved the state on", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     const stale = deferred<AgentSetupSnapshot>();
     const modelRead = memory.adapter.readSnapshot;
     let calls = 0;
@@ -546,6 +567,48 @@ describe("AgentSetupPage request fencing", () => {
     await settle();
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
     expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+  });
+
+  it("waits for a slow poll before scheduling the next one", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
+    const slow = deferred<AgentSetupSnapshot>();
+    const modelRead = memory.adapter.readSnapshot;
+    let calls = 0;
+    vi.spyOn(memory.adapter, "readSnapshot").mockImplementation((agentId) => {
+      calls += 1;
+      if (calls === 2) return slow.promise;
+      return modelRead(agentId);
+    });
+    renderSetup(memory.adapter);
+    await settle();
+
+    await advance(POLL_MS * 4);
+    expect(calls).toBe(2);
+
+    slow.resolve(await modelRead(SETUP_AGENT_ID));
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(3);
+  });
+
+  it("stops polling when an active setup target becomes lifecycle-ineligible", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
+    const modelRead = memory.adapter.readSnapshot;
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (calls > 1) {
+        throw new ApiError(409, "not active", "AGENT_LIFECYCLE_CONFLICT", "deterministic");
+      }
+      return modelRead(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+
+    await advance(POLL_MS + 10);
+    expect(screen.getByRole("heading", { name: "This agent can't be set up here" })).toBeTruthy();
+    await advance(POLL_MS * 3);
+    expect(calls).toBe(2);
   });
 });
 
@@ -577,6 +640,22 @@ describe("AgentSetupPage closed failures and review", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await settle();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+  });
+
+  it("holds a re-board's readiness report until the tester finishes the review", async () => {
+    const onReady = vi.fn();
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack", reachable: true },
+    });
+    renderSetup(memory.adapter, { onReady, reviewMode: true });
+    await settle();
+
+    expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
+    expect(onReady).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Finish re-board" }));
+    await settle();
+    expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
   });
 
   it("retries a refused readiness report a bounded number of times", async () => {

@@ -167,6 +167,19 @@ describe("IM binding contracts", () => {
     expect(
       StartSlackOAuthRequestSchema.parse({ intent: "reauthorize", returnSurface: "agent-messaging-settings" }),
     ).toEqual({ intent: "reauthorize", returnSurface: "agent-messaging-settings" });
+    const expectedMessaging = {
+      kind: "bound" as const,
+      provider: "slack" as const,
+      bindingId: crypto.randomUUID(),
+      credentialGeneration: 4,
+    };
+    expect(StartSlackOAuthRequestSchema.parse({ intent: "reauthorize", expectedMessaging })).toEqual({
+      intent: "reauthorize",
+      expectedMessaging,
+    });
+    expect(() => StartSlackOAuthRequestSchema.parse({ intent: "create", expectedMessaging })).toThrow(
+      "Slack create requires the Agent to be unbound",
+    );
     // No arbitrary return URL: the return surface is a fixed enum, never caller-controlled navigation.
     expect(() =>
       StartSlackOAuthRequestSchema.parse({ intent: "create", returnSurface: "https://evil.example.com/callback" }),

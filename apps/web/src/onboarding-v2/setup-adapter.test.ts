@@ -76,7 +76,17 @@ describe("createHttpSetupAdapter", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/im-binding/feishu/setup-attempts`);
       expect(init?.method).toBe("POST");
-      expect(init?.body).toBe(JSON.stringify({ intent: "replace" }));
+      expect(init?.body).toBe(
+        JSON.stringify({
+          intent: "replace",
+          expectedMessaging: {
+            kind: "bound",
+            provider: "feishu",
+            bindingId: BINDING_ID,
+            credentialGeneration: 3,
+          },
+        }),
+      );
       expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("setup-csrf");
       return jsonResponse({
         id: ATTEMPT_ID,
@@ -92,7 +102,14 @@ describe("createHttpSetupAdapter", () => {
     });
 
     const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
-    await expect(adapter.startFeishuAttempt(SETUP_AGENT_ID, "replace")).resolves.toBeUndefined();
+    await expect(
+      adapter.startFeishuAttempt(SETUP_AGENT_ID, "replace", {
+        kind: "bound",
+        provider: "feishu",
+        bindingId: BINDING_ID,
+        credentialGeneration: 3,
+      }),
+    ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -121,7 +138,18 @@ describe("createHttpSetupAdapter", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/im-binding/slack/oauth/start`);
       expect(init?.method).toBe("POST");
-      expect(init?.body).toBe(JSON.stringify({ intent: "reauthorize", returnSurface: "agent-setup" }));
+      expect(init?.body).toBe(
+        JSON.stringify({
+          intent: "reauthorize",
+          returnSurface: "agent-setup",
+          expectedMessaging: {
+            kind: "bound",
+            provider: "slack",
+            bindingId: BINDING_ID,
+            credentialGeneration: 4,
+          },
+        }),
+      );
       return jsonResponse({
         authorizationUrl: "https://slack.com/oauth/v2/authorize?state=signed",
         expiresAt: "2026-09-01T10:10:00.000Z",
@@ -129,9 +157,14 @@ describe("createHttpSetupAdapter", () => {
     });
 
     const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
-    await expect(adapter.startSlackInstall(SETUP_AGENT_ID, "reauthorize")).resolves.toBe(
-      "https://slack.com/oauth/v2/authorize?state=signed",
-    );
+    await expect(
+      adapter.startSlackInstall(SETUP_AGENT_ID, "reauthorize", {
+        kind: "bound",
+        provider: "slack",
+        bindingId: BINDING_ID,
+        credentialGeneration: 4,
+      }),
+    ).resolves.toBe("https://slack.com/oauth/v2/authorize?state=signed");
   });
 
   it("unbinds the exact current binding", async () => {
@@ -153,7 +186,7 @@ describe("createHttpSetupAdapter", () => {
 describe("Agent Setup adapter alignment", () => {
   it("reads the same snapshot through HTTP that the in-memory model derives", async () => {
     const { adapter: memory, controls } = createMemorySetupAdapter({ agent: setupAgent() });
-    await memory.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await memory.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     controls.scanFeishuCode();
     const expected = await memory.readSnapshot(SETUP_AGENT_ID);
 
@@ -184,7 +217,7 @@ describe("Agent Setup adapter alignment", () => {
     const api = new BrowserApi(vi.fn<typeof fetch>(memoryBackedFetch(memory)));
     const http = createHttpSetupAdapter(api);
 
-    await http.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await http.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     const authorizing = await http.readSnapshot(SETUP_AGENT_ID);
     expect(authorizing.messaging).toMatchObject({ kind: "authorizing", provider: "feishu" });
 
@@ -207,7 +240,7 @@ function memoryBackedFetch(memory: AgentSetupAdapter): typeof fetch {
 }
 
 async function openMemoryAttempt(memory: AgentSetupAdapter): Promise<Response> {
-  await memory.startFeishuAttempt(SETUP_AGENT_ID, "create");
+  await memory.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
   const snapshot = await memory.readSnapshot(SETUP_AGENT_ID);
   const attempt = snapshot.messaging;
   const feishuAttempt = attempt.kind === "authorizing" && attempt.provider === "feishu" ? attempt : undefined;

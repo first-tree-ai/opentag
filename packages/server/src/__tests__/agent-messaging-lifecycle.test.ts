@@ -557,6 +557,69 @@ describe("Feishu setup command fencing", () => {
       await setup.stop();
     }
   });
+
+  it("does not turn a transaction-time stale expectation into a concurrent attempt success", async () => {
+    const value = await fixture();
+    const bindingId = await value.service.activateFeishu(feishuActivationInput(value.agent.id));
+    let releaseQr!: () => void;
+    const qrReady = new Promise<{ url: string; expiresAt: Date }>((resolve) => {
+      releaseQr = () => resolve({ url: "https://feishu.example/qr/fenced", expiresAt: new Date(Date.now() + 60_000) });
+    });
+    const pending = pendingRegistration();
+    const abort = vi.fn();
+    const start = vi.fn(() => ({ qrReady, result: pending.registration.result, abort }));
+    const setup = feishuSetup(value, { start });
+    try {
+      const command = setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize", {
+        kind: "bound",
+        provider: "feishu",
+        bindingId,
+        credentialGeneration: 1,
+      });
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      const concurrentAttemptId = crypto.randomUUID();
+      await unitDatabase.database
+        .update(imBindings)
+        .set({
+          credentialGeneration: 2,
+          setupAttemptId: concurrentAttemptId,
+          setupIntent: "reauthorize",
+          setupState: "awaiting_user",
+          setupOwnerInstanceId: crypto.randomUUID(),
+          setupOwnerHeartbeatAt: new Date(),
+          encryptedSetupContext: value.cipher.encrypt(
+            JSON.stringify({ qrUrl: "https://feishu.example/qr/concurrent" }),
+          ),
+          setupExpiresAt: new Date(Date.now() + 60_000),
+        })
+        .where(eq(imBindings.id, bindingId));
+
+      releaseQr();
+      await expect(command).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT", statusCode: 409 });
+      expect(abort).toHaveBeenCalled();
+    } finally {
+      await setup.stop();
+    }
+  });
+
+  it("lets cancel win while a Feishu attempt is validating", async () => {
+    const value = await fixture();
+    const pending = pendingRegistration();
+    const setup = feishuSetup(value, { start: vi.fn(() => pending.registration) });
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create", { kind: "unbound" });
+      await unitDatabase.database
+        .update(imBindings)
+        .set({ setupState: "validating" })
+        .where(eq(imBindings.setupAttemptId, attempt.id));
+
+      const canceled = await setup.cancel(value.bootstrap.userId, attempt.id);
+      expect(canceled).toMatchObject({ state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" });
+      expect(pending.registration.abort).toHaveBeenCalled();
+    } finally {
+      await setup.stop();
+    }
+  });
 });
 
 describe("Slack OAuth attempt fencing", () => {

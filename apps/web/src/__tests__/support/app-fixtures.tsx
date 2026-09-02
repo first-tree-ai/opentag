@@ -89,6 +89,7 @@ export function json(value: unknown, status = 200) {
 }
 
 const setupBindingId = "9d4e1378-8ff2-4e41-a6dd-e8bf59ed775b";
+const setupCredentialGeneration = 1;
 
 function setupTargetIdOrThrow(path: string, method: string | undefined): string {
   if (method !== undefined) throw new Error(`Unexpected request: ${method} ${path}`);
@@ -148,7 +149,14 @@ function setupProjectionOrThrow(
   if (state.bound && state.bindingReauth) {
     const replace =
       state.provider === "feishu"
-        ? [{ kind: "replace-messaging" as const, provider: "feishu" as const, bindingId: setupBindingId }]
+        ? [
+            {
+              kind: "replace-messaging" as const,
+              provider: "feishu" as const,
+              bindingId: setupBindingId,
+              credentialGeneration: setupCredentialGeneration,
+            },
+          ]
         : [];
     return json({
       agent: target,
@@ -159,6 +167,7 @@ function setupProjectionOrThrow(
         kind: "blocked",
         provider: state.provider,
         bindingId: setupBindingId,
+        credentialGeneration: setupCredentialGeneration,
         code: "reauthorization-required",
         errorCode: null,
       },
@@ -171,7 +180,12 @@ function setupProjectionOrThrow(
         },
       ],
       actions: [
-        { kind: "reauthorize-messaging", provider: state.provider, bindingId: setupBindingId },
+        {
+          kind: "reauthorize-messaging",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          credentialGeneration: setupCredentialGeneration,
+        },
         ...replace,
         { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
       ],
@@ -184,10 +198,20 @@ function setupProjectionOrThrow(
       stage: "ready",
       computer,
       runtime,
-      messaging: { kind: "ready", provider: state.provider, bindingId: setupBindingId },
+      messaging: {
+        kind: "ready",
+        provider: state.provider,
+        bindingId: setupBindingId,
+        credentialGeneration: setupCredentialGeneration,
+      },
       blockers: [],
       actions: [
-        { kind: "reauthorize-messaging", provider: state.provider, bindingId: setupBindingId },
+        {
+          kind: "reauthorize-messaging",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          credentialGeneration: setupCredentialGeneration,
+        },
         { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
       ],
       observedAt,
@@ -199,7 +223,12 @@ function setupProjectionOrThrow(
       stage: "needs-messaging",
       computer,
       runtime,
-      messaging: { kind: "waiting-handoff", provider: state.provider, bindingId: setupBindingId },
+      messaging: {
+        kind: "waiting-handoff",
+        provider: state.provider,
+        bindingId: setupBindingId,
+        credentialGeneration: setupCredentialGeneration,
+      },
       blockers: [
         {
           code: "messaging-not-ready",
@@ -209,7 +238,12 @@ function setupProjectionOrThrow(
         },
       ],
       actions: [
-        { kind: "reauthorize-messaging", provider: state.provider, bindingId: setupBindingId },
+        {
+          kind: "reauthorize-messaging",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          credentialGeneration: setupCredentialGeneration,
+        },
         { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
       ],
       observedAt,

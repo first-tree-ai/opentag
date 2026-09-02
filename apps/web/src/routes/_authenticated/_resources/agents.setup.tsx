@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { AgentSetupBoundary } from "../../../features/agent-setup/agent-setup-boundary.js";
 
 export const Route = createFileRoute("/_authenticated/_resources/agents/setup")({
@@ -10,14 +11,28 @@ export const Route = createFileRoute("/_authenticated/_resources/agents/setup")(
    */
   validateSearch: (
     search: Record<string, unknown>,
-  ): { action?: "create"; agentId?: string; invalid?: true; review?: "reboard" } => {
+  ): {
+    action?: "create";
+    agentId?: string;
+    invalid?: true;
+    review?: "reboard";
+    slackOauth?: "success";
+    slackOauthError?: string;
+  } => {
     const action = search.action === "create" ? "create" : undefined;
     const agentId = typeof search.agentId === "string" ? search.agentId : undefined;
     const invalid =
       (search.action !== undefined && action === undefined) || (action !== undefined && agentId !== undefined)
         ? true
         : undefined;
-    return { action, agentId, invalid, review: search.review === "reboard" ? "reboard" : undefined };
+    return {
+      action,
+      agentId,
+      invalid,
+      review: search.review === "reboard" ? "reboard" : undefined,
+      slackOauth: search.slack_oauth === "success" ? "success" : undefined,
+      slackOauthError: typeof search.slack_oauth_error === "string" ? search.slack_oauth_error : undefined,
+    };
   },
 });
 
@@ -28,6 +43,20 @@ export const Route = createFileRoute("/_authenticated/_resources/agents/setup")(
  * exact-target decision live in the boundary.
  */
 function AgentSetupRoute() {
-  const { action, agentId, invalid, review } = Route.useSearch();
-  return <AgentSetupBoundary action={action} agentId={agentId} invalidSearch={invalid} review={review} />;
+  const { action, agentId, invalid, review, slackOauth, slackOauthError } = Route.useSearch();
+  const navigate = useNavigate();
+  const [callbackError] = useState(slackOauthError);
+  useEffect(() => {
+    if (!slackOauth && !slackOauthError) return;
+    void navigate({ replace: true, search: { agentId, review }, to: "/agents/setup" });
+  }, [agentId, navigate, review, slackOauth, slackOauthError]);
+  return (
+    <AgentSetupBoundary
+      action={action}
+      agentId={agentId}
+      invalidSearch={invalid}
+      review={review}
+      slackOAuthError={callbackError}
+    />
+  );
 }

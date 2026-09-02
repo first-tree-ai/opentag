@@ -21,6 +21,9 @@ export {
   AGENT_USAGE_WINDOW_OPTIONS,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
+  AgentCreationIntentIdSchema,
+  type AgentCreationIntentResult,
+  AgentCreationIntentResultSchema,
   type AgentDetail,
   AgentDetailSchema,
   type AgentDisplayName,
@@ -178,6 +181,7 @@ export {
 } from "./errors.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
+  ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_AGENTS_PATH,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
@@ -200,6 +204,7 @@ export {
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   API_V1_PREFIX,
+  accountAgentCreationIntentPath,
   accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,

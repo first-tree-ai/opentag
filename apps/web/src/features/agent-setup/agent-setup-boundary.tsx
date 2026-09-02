@@ -57,11 +57,13 @@ export function AgentSetupBoundary({
   agentId,
   invalidSearch = false,
   review,
+  slackOAuthError,
 }: {
   action?: "create";
   agentId?: string;
   invalidSearch?: boolean;
   review?: "reboard";
+  slackOAuthError?: string;
 }) {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
@@ -70,10 +72,13 @@ export function AgentSetupBoundary({
     async (adoptedAgentId: string) => {
       await browserApi.completeSetup(adoptedAgentId);
       await refreshMe();
-      if (reviewMode) forgetReboardReview();
     },
-    [refreshMe, reviewMode],
+    [refreshMe],
   );
+  const finishReview = useCallback(async () => {
+    forgetReboardReview();
+    await navigate({ replace: true, to: "/agents" });
+  }, [navigate]);
   const openAgent = useCallback(
     async (targetAgentId: string) => {
       await navigate(agentDetailLink(targetAgentId));
@@ -99,8 +104,11 @@ export function AgentSetupBoundary({
       invalidSearch={invalidSearch}
       onAdopt={adopt}
       onOpenAgent={openAgent}
+      onReviewFinished={finishReview}
       onTarget={openExactTarget}
       review={review}
+      reviewMode={reviewMode}
+      slackOAuthError={slackOAuthError}
     />
   );
 }
@@ -114,8 +122,11 @@ function TargetedAgentSetup({
   onAdopt,
   onBackToAgents,
   onOpenAgent,
+  onReviewFinished,
   onTarget,
   review,
+  reviewMode,
+  slackOAuthError,
 }: {
   accountId: string;
   accountCompleted: boolean;
@@ -125,8 +136,11 @@ function TargetedAgentSetup({
   onAdopt: (agentId: string) => Promise<void>;
   onBackToAgents: () => Promise<void>;
   onOpenAgent: (agentId: string) => Promise<void>;
+  onReviewFinished: (agentId: string) => Promise<void>;
   onTarget: (agentId: string) => Promise<void>;
   review?: "reboard";
+  reviewMode: boolean;
+  slackOAuthError?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [resolution, setResolution] = useState<TargetResolution>({ kind: "loading" });
@@ -260,6 +274,9 @@ function TargetedAgentSetup({
         onAdopt={onAdopt}
         onBackToAgents={onBackToAgents}
         onOpenAgent={onOpenAgent}
+        onReviewFinished={onReviewFinished}
+        reviewMode={reviewMode}
+        slackOAuthError={slackOAuthError}
       />
     );
   }
@@ -286,12 +303,18 @@ function ExactAgentSetup({
   onAdopt,
   onBackToAgents,
   onOpenAgent,
+  onReviewFinished,
+  reviewMode,
+  slackOAuthError,
 }: {
   accountCompleted: boolean;
   agentId: string;
   onAdopt: (agentId: string) => Promise<void>;
   onBackToAgents: () => Promise<void>;
   onOpenAgent: (agentId: string) => Promise<void>;
+  onReviewFinished: (agentId: string) => Promise<void>;
+  reviewMode: boolean;
+  slackOAuthError?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [admission, setAdmission] = useState<AdmissionState>(accountCompleted ? "ready" : "loading");
@@ -349,6 +372,13 @@ function ExactAgentSetup({
   }
 
   return (
-    <AgentSetupSurface agentId={agentId} onBackToAgents={onBackToAgents} onOpenAgent={() => onOpenAgent(agentId)} />
+    <AgentSetupSurface
+      agentId={agentId}
+      onBackToAgents={onBackToAgents}
+      onOpenAgent={() => onOpenAgent(agentId)}
+      onReady={reviewMode ? onReviewFinished : undefined}
+      reviewMode={reviewMode}
+      slackOAuthError={slackOAuthError}
+    />
   );
 }

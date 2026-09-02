@@ -25,6 +25,7 @@ import {
   type AgentSetupStage,
   type AgentSummary,
   type FeishuSetupIntent,
+  type ImBindingMessagingExpectation,
   type ImProvider,
   type ProviderReadinessStatus,
   type SlackConfigurationIntent,
@@ -54,7 +55,8 @@ export type MemoryMessagingModel =
 export interface MemorySetupSeed {
   /**
    * The exact Agent, as the Account summary knows it. `agent.computer` decides the Computer leg:
-   * `null` is not-bound, `requiresComputerRebind` keeps the identity and demands the repair.
+   * `null` is not-bound; `requiresComputerRebind` keeps the stale identity visible while the
+   * reader chooses a Computer that this Account owns.
    */
   readonly agent: AgentSummary;
   /** Only meaningful for a bound Computer; defaults to reachable. */
@@ -62,6 +64,8 @@ export interface MemorySetupSeed {
   /** Defaults to ready, so a seed names only the legs it wants to exercise. */
   readonly runtimeStatus?: ProviderReadinessStatus;
   readonly messaging?: MemoryMessagingModel;
+  /** Keeps one authoritative observation leg failed, for production-parity blocker scenarios. */
+  readonly observationFailure?: "computer" | "runtime" | "messaging";
 }
 
 /** The outside world's moves. Each throws when there is nothing for it to move. */
@@ -85,12 +89,19 @@ export interface MemorySetupAdapter {
 
 type MemoryMessagingState =
   | { kind: "not-configured" }
-  | { kind: "feishu-attempt"; attemptId: string; intent: FeishuSetupIntent; prior: MemoryBoundMessaging }
+  | {
+      kind: "feishu-attempt";
+      attemptId: string;
+      bindingId: string;
+      intent: FeishuSetupIntent;
+      prior: MemoryBoundMessaging;
+    }
   | { kind: "slack-install"; intent: SlackConfigurationIntent; prior: MemoryBoundMessaging }
   | {
       kind: "bound";
       provider: ImProvider;
       bindingId: string;
+      credentialGeneration: number;
       reachable: boolean;
       attention: AgentSetupMessagingBlockerCode | undefined;
     };
@@ -104,6 +115,7 @@ interface MemoryState {
   computerOnline: boolean;
   runtimeStatus: ProviderReadinessStatus;
   messaging: MemoryMessagingState;
+  readonly observationFailure: MemorySetupSeed["observationFailure"];
 }
 
 function now(): string {
@@ -134,13 +146,24 @@ function deriveMessaging(state: MemoryMessagingState): AgentSetupMessagingState 
           kind: "blocked",
           provider: state.provider,
           bindingId: state.bindingId,
+          credentialGeneration: state.credentialGeneration,
           code: state.attention,
           errorCode: null,
         };
       }
       return state.reachable
-        ? { kind: "ready", provider: state.provider, bindingId: state.bindingId }
-        : { kind: "waiting-handoff", provider: state.provider, bindingId: state.bindingId };
+        ? {
+            kind: "ready",
+            provider: state.provider,
+            bindingId: state.bindingId,
+            credentialGeneration: state.credentialGeneration,
+          }
+        : {
+            kind: "waiting-handoff",
+            provider: state.provider,
+            bindingId: state.bindingId,
+            credentialGeneration: state.credentialGeneration,
+          };
   }
 }
 
@@ -150,10 +173,19 @@ function deriveBlockers(
 ): AgentSetupBlocker[] {
   const { computer, runtime, messaging } = snapshot;
   if (computer.kind === "not-bound") return [{ code: "computer-not-bound" }];
+  if (computer.kind === "observation-failed") {
+    return [{ code: "resource-observation-failed", resource: "computer" }];
+  }
   if (computer.kind === "requires-rebind") return [{ code: "computer-rebind-required" }];
   if (computer.connectionStatus === "offline") return [{ code: "computer-offline", computerId: computer.computerId }];
   if (stage === "needs-runtime" && runtime.kind === "observed" && runtime.status !== "ready") {
     return [{ code: "runtime-not-ready", provider: runtime.provider, status: runtime.status }];
+  }
+  if (runtime.kind === "observation-failed") {
+    return [{ code: "resource-observation-failed", resource: "runtime" }];
+  }
+  if (messaging.kind === "observation-failed") {
+    return [{ code: "resource-observation-failed", resource: "messaging" }];
   }
   if (messaging.kind === "not-configured") return [{ code: "messaging-not-configured" }];
   if (messaging.kind === "ready") return [];
@@ -161,7 +193,10 @@ function deriveBlockers(
 }
 
 function messagingBlocker(
-  messaging: Exclude<AgentSetupMessagingState, { kind: "not-configured" } | { kind: "ready" }>,
+  messaging: Exclude<
+    AgentSetupMessagingState,
+    { kind: "not-configured" } | { kind: "observation-failed" } | { kind: "ready" }
+  >,
 ): AgentSetupBlocker {
   if (messaging.kind === "blocked") {
     return {
@@ -171,16 +206,42 @@ function messagingBlocker(
       state: "blocked",
     };
   }
+  if (messaging.kind === "waiting-handoff") {
+    return {
+      code: "messaging-not-ready",
+      provider: messaging.provider,
+      bindingId: messaging.bindingId,
+      state: "waiting-handoff",
+    };
+  }
   return { code: "messaging-not-ready", provider: messaging.provider, state: messaging.kind };
 }
 
 function deriveBoundActions(messaging: MemoryBound): AgentSetupAction[] {
-  if (!messaging.reachable && !messaging.attention) return [{ kind: "refresh" }];
+  if (messaging.attention === "authorization-failed") {
+    return [{ kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId }];
+  }
+  if (!messaging.reachable && !messaging.attention) {
+    return [
+      { kind: "refresh" },
+      { kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
+    ];
+  }
   const actions: AgentSetupAction[] = [
-    { kind: "reauthorize-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
+    {
+      kind: "reauthorize-messaging",
+      provider: messaging.provider,
+      bindingId: messaging.bindingId,
+      credentialGeneration: messaging.credentialGeneration,
+    },
   ];
   if (messaging.provider === "feishu") {
-    actions.push({ kind: "replace-messaging", provider: "feishu", bindingId: messaging.bindingId });
+    actions.push({
+      kind: "replace-messaging",
+      provider: "feishu",
+      bindingId: messaging.bindingId,
+      credentialGeneration: messaging.credentialGeneration,
+    });
   }
   actions.push({ kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId });
   return actions;
@@ -203,21 +264,25 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
 }
 
 function deriveActions(state: MemoryState): AgentSetupAction[] {
-  const { agent, computerOnline, runtimeStatus, messaging } = state;
+  const { agent, computerOnline, observationFailure, runtimeStatus, messaging } = state;
+  if (observationFailure === "computer") return [{ kind: "refresh" }];
   if (agent.computer === null) return [{ kind: "bind-computer" }];
   if (agent.requiresComputerRebind === true) {
-    return [{ kind: "repair-computer", computerId: agent.computer.computerId }];
+    return [{ kind: "bind-computer" }];
   }
   if (!computerOnline) {
     return [{ kind: "refresh" }, { kind: "repair-computer", computerId: agent.computer.computerId }];
   }
+  if (observationFailure === "runtime") return [{ kind: "refresh" }];
   if (runtimeStatus !== "ready") return [{ kind: "refresh" }];
+  if (observationFailure === "messaging") return [{ kind: "refresh" }];
   return deriveMessagingActions(messaging);
 }
 
 function deriveComputerState(state: MemoryState): AgentSetupComputerState {
   const { agent, computerOnline } = state;
   if (agent.computer === null) return { kind: "not-bound" };
+  if (state.observationFailure === "computer") return { kind: "observation-failed", ...agent.computer };
   if (agent.requiresComputerRebind === true) return { kind: "requires-rebind", ...agent.computer };
   return {
     kind: "bound",
@@ -231,10 +296,14 @@ function deriveComputerState(state: MemoryState): AgentSetupComputerState {
 function deriveRuntimeState(state: MemoryState): AgentSetupRuntimeState {
   const provider = state.agent.runtimeProvider;
   if (state.agent.computer === null) return { kind: "unavailable", provider, reason: "computer-not-bound" };
+  if (state.observationFailure === "computer") {
+    return { kind: "unavailable", provider, reason: "computer-observation-failed" };
+  }
   if (state.agent.requiresComputerRebind === true) {
     return { kind: "unavailable", provider, reason: "computer-rebind-required" };
   }
   if (!state.computerOnline) return { kind: "unavailable", provider, reason: "computer-offline" };
+  if (state.observationFailure === "runtime") return { kind: "observation-failed", provider };
   return { kind: "observed", provider, status: state.runtimeStatus, observedAt: now() };
 }
 
@@ -251,7 +320,8 @@ function deriveStage(
 function deriveSnapshot(state: MemoryState): AgentSetupSnapshot {
   const computer = deriveComputerState(state);
   const runtime = deriveRuntimeState(state);
-  const messaging = deriveMessaging(state.messaging);
+  const messaging: AgentSetupMessagingState =
+    state.observationFailure === "messaging" ? { kind: "observation-failed" } : deriveMessaging(state.messaging);
   const stage = deriveStage(computer, runtime, messaging);
   return AgentSetupSnapshotSchema.parse({
     agent: state.agent,
@@ -272,6 +342,22 @@ function readBoundMessaging(state: MemoryState, operation: string): MemoryBound 
   return state.messaging;
 }
 
+function assertExpectedMessaging(state: MemoryState, expected: ImBindingMessagingExpectation, operation: string): void {
+  const current = state.messaging.kind === "bound" ? state.messaging : undefined;
+  if (expected.kind === "unbound") {
+    if (current) throw new Error(`${operation} was decided from a stale unbound state`);
+    return;
+  }
+  if (
+    !current ||
+    current.provider !== expected.provider ||
+    current.bindingId !== expected.bindingId ||
+    current.credentialGeneration !== expected.credentialGeneration
+  ) {
+    throw new Error(`${operation} does not name the current Messaging binding generation`);
+  }
+}
+
 export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdapter {
   const bound = seed.messaging?.kind === "bound" ? seed.messaging : undefined;
   const state: MemoryState = {
@@ -283,10 +369,12 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
           kind: "bound",
           provider: bound.provider,
           bindingId: crypto.randomUUID(),
+          credentialGeneration: 1,
           reachable: bound.reachable ?? false,
           attention: bound.attention,
         }
       : { kind: "not-configured" },
+    observationFailure: seed.observationFailure,
   };
 
   const adapter: AgentSetupAdapter = {
@@ -294,8 +382,9 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       return deriveSnapshot(state);
     },
-    startFeishuAttempt: async (agentId, intent) => {
+    startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
+      assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("feishu")}`);
       const prior = state.messaging.kind === "bound" ? state.messaging : undefined;
       if (intent === "create" && state.messaging.kind !== "not-configured") {
         throw new Error("A Messaging Provider can be started only from not-configured");
@@ -303,17 +392,33 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (intent !== "create" && prior?.provider !== "feishu") {
         throw new Error(`${intent} requires the current ${messagingProviderLabel("feishu")} binding`);
       }
-      state.messaging = { kind: "feishu-attempt", attemptId: crypto.randomUUID(), intent, prior };
+      state.messaging = {
+        kind: "feishu-attempt",
+        attemptId: crypto.randomUUID(),
+        bindingId: prior?.bindingId ?? crypto.randomUUID(),
+        intent,
+        prior,
+      };
     },
     cancelFeishuAttempt: async (attemptId) => {
       if (state.messaging.kind !== "feishu-attempt" || state.messaging.attemptId !== attemptId) {
         throw new Error(`No open ${messagingProviderLabel("feishu")} attempt: ${attemptId}`);
       }
-      const prior = state.messaging.prior;
-      state.messaging = prior ?? { kind: "not-configured" };
+      const { bindingId, prior } = state.messaging;
+      state.messaging =
+        prior ??
+        ({
+          kind: "bound",
+          provider: "feishu",
+          bindingId,
+          credentialGeneration: 0,
+          reachable: false,
+          attention: "authorization-failed",
+        } satisfies MemoryBound);
     },
-    startSlackInstall: async (agentId, intent) => {
+    startSlackInstall: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
+      assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("slack")}`);
       const prior = state.messaging.kind === "bound" ? state.messaging : undefined;
       if (intent === "create" && state.messaging.kind !== "not-configured") {
         throw new Error(
@@ -342,7 +447,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (state.messaging.kind !== "feishu-attempt") {
         throw new Error(`No ${messagingProviderLabel("feishu")} attempt is waiting for a scan`);
       }
-      const { intent, prior } = state.messaging;
+      const { bindingId, intent, prior } = state.messaging;
       // A first connection still owes the Server's observation; a reauthorization or replace
       // returns to the binding it was maintaining, with the attention it was raised to clear gone.
       state.messaging =
@@ -350,18 +455,28 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
           ? {
               kind: "bound",
               provider: "feishu",
-              bindingId: crypto.randomUUID(),
+              bindingId,
+              credentialGeneration: 1,
               reachable: false,
               attention: undefined,
             }
-          : { ...prior, attention: undefined };
+          : { ...prior, credentialGeneration: prior.credentialGeneration + 1, attention: undefined };
     },
     failFeishuAttempt: () => {
       if (state.messaging.kind !== "feishu-attempt") {
         throw new Error(`No ${messagingProviderLabel("feishu")} attempt is open`);
       }
-      const prior = state.messaging.prior;
-      state.messaging = prior ?? { kind: "not-configured" };
+      const { bindingId, prior } = state.messaging;
+      state.messaging =
+        prior ??
+        ({
+          kind: "bound",
+          provider: "feishu",
+          bindingId,
+          credentialGeneration: 0,
+          reachable: false,
+          attention: "authorization-failed",
+        } satisfies MemoryBound);
     },
     completeSlackInstall: () => {
       if (state.messaging.kind !== "slack-install") {
@@ -370,8 +485,15 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       const { intent, prior } = state.messaging;
       state.messaging =
         intent === "create" || prior === undefined
-          ? { kind: "bound", provider: "slack", bindingId: crypto.randomUUID(), reachable: false, attention: undefined }
-          : { ...prior, attention: undefined };
+          ? {
+              kind: "bound",
+              provider: "slack",
+              bindingId: crypto.randomUUID(),
+              credentialGeneration: 1,
+              reachable: false,
+              attention: undefined,
+            }
+          : { ...prior, credentialGeneration: prior.credentialGeneration + 1, attention: undefined };
     },
     completeHandoff: () => {
       const boundState = readBoundMessaging(state, "handoff");

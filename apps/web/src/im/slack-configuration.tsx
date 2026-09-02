@@ -83,7 +83,7 @@ function normalizeSlackConfigurationError(cause: unknown): string {
     : m.im_slack_authorization_failed({ provider: messagingProviderLabel("slack") });
 }
 
-function slackConfigurationMessage(code: string): string {
+export function slackConfigurationMessage(code: string): string {
   // An Agent with no Computer has nowhere to run, so nothing is installed for it and no route is
   // claimed. That is a different repair from a Slack permission problem, and saying so is the only
   // way the reader learns the fix is on the Agent rather than in Slack.

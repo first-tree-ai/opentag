@@ -47,22 +47,3 @@ function assertNeverProvider(provider: never): never {
 export function messagingProviderAlternateBrand(): string {
   return getLocale() === "zh" ? "Lark" : "Feishu";
 }
-
-/**
- * One space between Chinese characters and Latin text, none between Chinese ones.
- *
- * Spacing is a property of the finished sentence, not of the template or the label. The template
- * cannot carry it: the same `{provider}` slot receives 飞书 in one branch and Slack in the next, so
- * a space written into the template is right for one and wrong for the other. The label cannot
- * carry it either: padding a Latin brand is right mid-sentence but leaves a stray space when the
- * slot ends the string ("断开 Slack ") or sits before Chinese punctuation ("...Slack ，请重试").
- * Only the assembled string knows which two scripts actually met, so the rule is applied there.
- *
- * Chinese punctuation is deliberately outside the character ranges below: 。，？ already carry
- * their own width, and spacing them off the brand is the error this is here to avoid. In `en` this
- * returns the text untouched, because English already spaces every word.
- */
-export function spaceBrandInSentence(text: string): string {
-  if (getLocale() !== "zh") return text;
-  return text.replace(/([\u4e00-\u9fff])([A-Za-z0-9])/g, "$1 $2").replace(/([A-Za-z0-9])([\u4e00-\u9fff])/g, "$1 $2");
-}

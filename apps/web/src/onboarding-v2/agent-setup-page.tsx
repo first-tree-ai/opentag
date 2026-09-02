@@ -21,8 +21,9 @@ import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import { ComputerConnect } from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
-import { formatDateTime, formatRelativeTime } from "../i18n/format.js";
-import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
+import { formatDateTime, formatRelativeTime, spaceScriptBoundary } from "../i18n/format.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
+import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
 import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../ui/design-system.js";
@@ -60,6 +61,10 @@ export interface AgentSetupPageProps {
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
   readonly onReady?: (agentId: string) => Promise<void> | void;
+  /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
+  readonly reviewMode?: boolean;
+  /** A Slack callback failure to surface once after the fixed return route remounts. */
+  readonly slackOAuthError?: string;
 }
 
 type SetupPhase =
@@ -79,16 +84,16 @@ function setupReadError(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : m.onboarding_v2_setup_load_failed();
 }
 
+function isTerminalSetupReadError(cause: unknown): boolean {
+  const error = cause instanceof Error ? cause : new Error(String(cause));
+  return isTerminalResourceError(error) || (error instanceof ApiError && error.code === "AGENT_LIFECYCLE_CONFLICT");
+}
+
 function providerTitle(provider: ImProvider): string {
   return messagingProviderLabel(provider);
 }
 
 /* One recovery message per known Server code, then a per-Provider fallback. */
-const SLACK_ACTION_ERRORS: Record<string, () => string> = {
-  SLACK_SCOPE_REAUTH_REQUIRED: () => m.im_slack_permissions_missing({ provider: providerTitle("slack") }),
-  SLACK_TOKEN_REVOKED: () => m.im_slack_permissions_missing({ provider: providerTitle("slack") }),
-  SLACK_UPSTREAM_UNAVAILABLE: () => m.im_slack_unavailable({ provider: providerTitle("slack") }),
-};
 const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
   FEISHU_APP_ALREADY_BOUND: () => m.im_feishu_app_already_connected({ provider: providerTitle("feishu") }),
   FEISHU_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_permissions_missing({ provider: providerTitle("feishu") }),
@@ -98,19 +103,23 @@ const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
 
 function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): string {
   if (action.kind === "unbind-messaging") {
-    return spaceBrandInSentence(m.im_disconnect_failed({ providerName: providerTitle(action.provider) }));
+    return spaceScriptBoundary(m.im_disconnect_failed({ providerName: providerTitle(action.provider) }));
   }
   if (action.kind === "cancel-messaging-attempt") {
-    return spaceBrandInSentence(m.im_feishu_cancel_failed({ provider: providerTitle("feishu") }));
+    return spaceScriptBoundary(m.im_feishu_cancel_failed({ provider: providerTitle("feishu") }));
   }
   const provider = "provider" in action ? action.provider : undefined;
   const code = cause instanceof ApiError ? cause.code : undefined;
-  const known =
-    code === undefined ? undefined : (provider === "slack" ? SLACK_ACTION_ERRORS : FEISHU_ACTION_ERRORS)[code];
-  if (known) return spaceBrandInSentence(known());
+  if (provider === "slack" && code) return spaceScriptBoundary(slackConfigurationMessage(code));
+  const known = code === undefined ? undefined : FEISHU_ACTION_ERRORS[code];
+  if (known) return spaceScriptBoundary(known());
   return provider === "slack"
-    ? spaceBrandInSentence(m.im_slack_authorization_failed({ provider: providerTitle("slack") }))
-    : spaceBrandInSentence(m.im_feishu_authorization_failed({ provider: providerTitle("feishu") }));
+    ? spaceScriptBoundary(m.im_slack_authorization_failed({ provider: providerTitle("slack") }))
+    : spaceScriptBoundary(m.im_feishu_authorization_failed({ provider: providerTitle("feishu") }));
+}
+
+function slackSetupErrorMessage(code: string): string {
+  return spaceScriptBoundary(slackConfigurationMessage(code));
 }
 
 /**
@@ -126,21 +135,36 @@ async function performSetupAction(
   switch (action.kind) {
     case "start-messaging":
       if (action.provider === "feishu") {
-        await adapter.startFeishuAttempt(agentId, "create");
+        await adapter.startFeishuAttempt(agentId, "create", { kind: "unbound" });
         return undefined;
       }
-      return adapter.startSlackInstall(agentId, "create");
+      return adapter.startSlackInstall(agentId, "create", { kind: "unbound" });
     case "cancel-messaging-attempt":
       await adapter.cancelFeishuAttempt(action.attemptId);
       return undefined;
     case "reauthorize-messaging":
       if (action.provider === "feishu") {
-        await adapter.startFeishuAttempt(agentId, "reauthorize");
+        await adapter.startFeishuAttempt(agentId, "reauthorize", {
+          kind: "bound",
+          provider: "feishu",
+          bindingId: action.bindingId,
+          credentialGeneration: action.credentialGeneration,
+        });
         return undefined;
       }
-      return adapter.startSlackInstall(agentId, "reauthorize");
+      return adapter.startSlackInstall(agentId, "reauthorize", {
+        kind: "bound",
+        provider: "slack",
+        bindingId: action.bindingId,
+        credentialGeneration: action.credentialGeneration,
+      });
     case "replace-messaging":
-      await adapter.startFeishuAttempt(agentId, "replace");
+      await adapter.startFeishuAttempt(agentId, "replace", {
+        kind: "bound",
+        provider: "feishu",
+        bindingId: action.bindingId,
+        credentialGeneration: action.credentialGeneration,
+      });
       return undefined;
     case "unbind-messaging":
       await adapter.unbindMessaging(agentId, action.provider, action.bindingId);
@@ -200,7 +224,7 @@ function useSnapshotReader(
    * Over a good snapshot a failed re-read is said beside it; the snapshot itself stays put.
    */
   const failRead = useCallback((cause: unknown) => {
-    if (isTerminalResourceError(cause instanceof Error ? cause : new Error(String(cause)))) {
+    if (isTerminalSetupReadError(cause)) {
       setRefreshError(undefined);
       setPhase({ kind: "unavailable" });
       return;
@@ -313,15 +337,24 @@ function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupC
   const transitional = snapshot !== undefined && setupSnapshotIsTransitional(snapshot);
   useEffect(() => {
     if (!transitional || actions.busyKey !== undefined) return;
-    const timer = window.setInterval(() => void reader.read(), SETUP_POLL_MS);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer = window.setTimeout(async function poll() {
+      await reader.read();
+      // One observation at a time: overlapping reads would continuously retire one another when a
+      // slow Server takes longer than the interval, leaving a transitional screen unable to move.
+      if (!cancelled) timer = window.setTimeout(poll, SETUP_POLL_MS);
+    }, SETUP_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [transitional, actions.busyKey, reader.read]);
 
   const reload = useCallback(() => void reader.read(), [reader.read]);
   return { ...reader, ...actions, reload };
 }
 
-type ReadyReport = { readonly onFinish: () => void } | undefined;
+type ReadyReport = { readonly onFinish: () => void; readonly state: "failed" | "pending" | "ready" } | undefined;
 
 /**
  * Reporting readiness once the stage is `ready`. Reported from the render that first sees it —
@@ -332,13 +365,15 @@ function useReadyReport(
   snapshot: AgentSetupSnapshot | undefined,
   agentId: string,
   onReady: AgentSetupPageProps["onReady"],
+  reviewMode: boolean,
 ): ReadyReport {
   const reported = useRef<string | undefined>(undefined);
   const [reportAttempt, setReportAttempt] = useState(0);
   const [reportFailed, setReportFailed] = useState(false);
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
   useEffect(() => {
     if (snapshot?.stage !== "ready" || !onReady) return;
-    if (reported.current === agentId || reportFailed) return;
+    if (reported.current === agentId || reportFailed || (reviewMode && !reviewConfirmed)) return;
     // Claimed before the call so a re-render cannot report twice, and released if it fails.
     reported.current = agentId;
     let live = true;
@@ -351,7 +386,7 @@ function useReadyReport(
     return () => {
       live = false;
     };
-  }, [snapshot?.stage, agentId, onReady, reportAttempt, reportFailed]);
+  }, [snapshot?.stage, agentId, onReady, reportAttempt, reportFailed, reviewMode, reviewConfirmed]);
 
   if (!onReady) return undefined;
   if (reportFailed) {
@@ -360,12 +395,22 @@ function useReadyReport(
         setReportAttempt(0);
         setReportFailed(false);
       },
+      state: "failed",
     };
   }
+  if (reviewMode) return { onFinish: () => setReviewConfirmed(true), state: reviewConfirmed ? "pending" : "ready" };
   return undefined;
 }
 
-export function AgentSetupPage({ agentId, adapter, onBackToAgents, onOpenAgent, onReady }: AgentSetupPageProps) {
+export function AgentSetupPage({
+  agentId,
+  adapter,
+  onBackToAgents,
+  onOpenAgent,
+  onReady,
+  reviewMode = false,
+  slackOAuthError,
+}: AgentSetupPageProps) {
   const resolvedAdapter = useMemo(() => adapter ?? createHttpSetupAdapter(), [adapter]);
   // Keyed on the exact target: a different Agent's setup is a different task, and remounting is
   // what retires everything the previous one still had in flight.
@@ -377,6 +422,8 @@ export function AgentSetupPage({ agentId, adapter, onBackToAgents, onOpenAgent, 
       onBackToAgents={onBackToAgents}
       onOpenAgent={onOpenAgent}
       onReady={onReady}
+      reviewMode={reviewMode}
+      slackOAuthError={slackOAuthError}
     />
   );
 }
@@ -387,10 +434,13 @@ function AgentSetupPageContent({
   onBackToAgents,
   onOpenAgent,
   onReady,
+  reviewMode = false,
+  slackOAuthError,
 }: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
   const controller = useAgentSetup(agentId, adapter);
+  const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
-  const report = useReadyReport(snapshot, agentId, onReady);
+  const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
@@ -403,6 +453,7 @@ function AgentSetupPageContent({
         ) : null}
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
+        {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
         <SetupPhaseView agentId={agentId} controller={controller} onOpenAgent={onOpenAgent} report={report} />
       </main>
     </div>
@@ -553,14 +604,63 @@ function ComputerSetupSection({
       />
     );
   }
-  return (
-    <BoundComputerSection
-      computer={computer}
-      name={snapshot.agent.displayName}
-      onChanged={onChanged}
-      snapshot={snapshot}
-    />
-  );
+  if (computer.kind === "requires-rebind") {
+    const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
+    return (
+      <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+        <header className={SECTION_HEADER}>
+          <Text as="h2" variant="heading">
+            {m.onboarding_v2_connect_title()}
+          </Text>
+        </header>
+        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
+          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
+            <Icon name="laptop" />
+          </span>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+            <Text as="h3" variant="heading">
+              {computer.displayName}
+            </Text>
+            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
+          </div>
+        </div>
+        <p className={HINT}>
+          {m.onboarding_v2_setup_computer_rebind({
+            computerName: computer.displayName,
+            name: snapshot.agent.displayName,
+          })}
+        </p>
+        {canBind ? (
+          <div className={PANEL}>
+            <AgentComputerChoice agentId={agentId} onBound={onChanged} />
+          </div>
+        ) : null}
+      </section>
+    );
+  }
+  if (computer.kind === "observation-failed") {
+    return (
+      <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+        <header className={SECTION_HEADER}>
+          <Text as="h2" variant="heading">
+            {m.onboarding_v2_connect_title()}
+          </Text>
+        </header>
+        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
+          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
+            <Icon name="laptop" />
+          </span>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+            <Text as="h3" variant="heading">
+              {computer.displayName}
+            </Text>
+            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
+          </div>
+        </div>
+      </section>
+    );
+  }
+  return <BoundComputerSection computer={computer} onChanged={onChanged} snapshot={snapshot} />;
 }
 
 function NotBoundComputerSection({
@@ -615,12 +715,10 @@ function RepairComputerConnect({
 
 function BoundComputerSection({
   computer,
-  name,
   onChanged,
   snapshot,
 }: {
-  readonly computer: Extract<AgentSetupSnapshot["computer"], { kind: "requires-rebind" | "bound" }>;
-  readonly name: string;
+  readonly computer: Extract<AgentSetupSnapshot["computer"], { kind: "bound" }>;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -653,26 +751,15 @@ function BoundComputerSection({
           tone={offline ? "warning" : "success"}
         />
       </div>
-      {computer.kind === "requires-rebind" ? (
-        <p className={HINT}>{m.onboarding_v2_setup_computer_rebind({ computerName: computer.displayName, name })}</p>
-      ) : (
-        <div className="grid gap-1">
-          <p className={HINT}>{m.onboarding_v2_connect_offline_for({ computerName: computer.displayName })}</p>
-          {computer.lastSeenAt ? (
-            <p className={HINT}>
-              {m.onboarding_v2_connect_offline_last_seen({ when: formatRelativeTime(computer.lastSeenAt) })}
-            </p>
-          ) : null}
-        </div>
-      )}
-      {repair && computer.kind === "requires-rebind" ? (
-        <RepairComputerConnect
-          computerId={repair.computerId}
-          displayName={computer.displayName}
-          onChanged={onChanged}
-        />
-      ) : null}
-      {repair && computer.kind === "bound" ? (
+      <div className="grid gap-1">
+        <p className={HINT}>{m.onboarding_v2_connect_offline_for({ computerName: computer.displayName })}</p>
+        {computer.lastSeenAt ? (
+          <p className={HINT}>
+            {m.onboarding_v2_connect_offline_last_seen({ when: formatRelativeTime(computer.lastSeenAt) })}
+          </p>
+        ) : null}
+      </div>
+      {repair ? (
         <div className="grid gap-3">
           <Button
             aria-controls="agent-setup-repair-command"
@@ -766,11 +853,13 @@ function MessagingSetupSection({
       {messaging.kind === "authorizing" && messaging.provider === "slack" ? (
         <SlackAuthorizing messaging={messaging} />
       ) : null}
-      {messaging.kind === "waiting-handoff" ? <MessagingHandoff messaging={messaging} /> : null}
+      {messaging.kind === "waiting-handoff" ? (
+        <MessagingHandoff controller={controller} messaging={messaging} snapshot={snapshot} />
+      ) : null}
       {messaging.kind === "blocked" ? (
         <BlockedMessaging controller={controller} messaging={messaging} snapshot={snapshot} />
       ) : null}
-      {controller.actionError && messaging.kind !== "blocked" ? (
+      {controller.actionError && messaging.kind !== "blocked" && messaging.kind !== "waiting-handoff" ? (
         <Banner variant="error" role="alert" description={controller.actionError} />
       ) : null}
     </section>
@@ -847,7 +936,7 @@ function FeishuAuthorizing({
         {m.onboarding_v2_messaging_waiting()}
       </p>
       <p className={HINT}>
-        {spaceBrandInSentence(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
+        {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
       </p>
       {messaging.qrUrl ? <QrCode value={messaging.qrUrl} /> : null}
       <p className={HINT}>{m.im_feishu_qr_expires({ date: formatDateTime(messaging.expiresAt) })}</p>
@@ -876,7 +965,7 @@ function SlackAuthorizing({
     <>
       <p className={WAITING_LINE} role="status">
         <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {spaceBrandInSentence(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
+        {spaceScriptBoundary(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
       </p>
       <p className={HINT}>
         {m.onboarding_v2_setup_slack_install_expires({ date: formatDateTime(messaging.expiresAt) })}
@@ -886,10 +975,22 @@ function SlackAuthorizing({
 }
 
 function MessagingHandoff({
+  controller,
   messaging,
+  snapshot,
 }: {
+  readonly controller: AgentSetupController;
   readonly messaging: Extract<AgentSetupSnapshot["messaging"], { kind: "waiting-handoff" }>;
+  readonly snapshot: AgentSetupSnapshot;
 }) {
+  const [unbindAsked, setUnbindAsked] = useState(false);
+  const unbindButtonRef = useRef<HTMLButtonElement>(null);
+  const unbind = snapshot.actions.find(
+    (action): action is Extract<AgentSetupAction, { kind: "unbind-messaging" }> =>
+      action.kind === "unbind-messaging" &&
+      action.provider === messaging.provider &&
+      action.bindingId === messaging.bindingId,
+  );
   return (
     <>
       <p className={WAITING_LINE} role="status">
@@ -897,6 +998,31 @@ function MessagingHandoff({
         {m.onboarding_v2_messaging_confirming()}
       </p>
       {messaging.progress ? <p className={HINT}>{providerCliWaitingCopy(messaging.progress)}</p> : null}
+      {unbind ? (
+        <div>
+          <Button
+            disabled={controller.busyKey !== undefined}
+            onClick={() => setUnbindAsked(true)}
+            ref={unbindButtonRef}
+            variant="secondary-destructive"
+          >
+            {m.im_disconnect({ providerName: providerTitle(unbind.provider) })}
+          </Button>
+        </div>
+      ) : null}
+      {controller.actionError && !unbindAsked ? (
+        <Banner variant="error" role="alert" description={controller.actionError} />
+      ) : null}
+      {unbind && unbindAsked ? (
+        <UnbindMessagingDialog
+          action={unbind}
+          busyKey={controller.busyKey}
+          error={controller.actionError}
+          onAct={controller.act}
+          onClose={() => setUnbindAsked(false)}
+          returnFocusRef={unbindButtonRef}
+        />
+      ) : null}
     </>
   );
 }

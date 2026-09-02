@@ -1,5 +1,6 @@
 [
   "ACCOUNT_AGENTS_PATH",
+  "ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE",
   "ACCOUNT_COMPUTERS_PATH",
   "ACCOUNT_COMPUTER_CONNECT_CODES_PATH",
   "ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE",
@@ -39,6 +40,8 @@
   "AccountSetupResetModeSchema",
   "AccountSetupResetRequestSchema",
   "AgentAdminConfigSchema",
+  "AgentCreationIntentIdSchema",
+  "AgentCreationIntentResultSchema",
   "AgentCreationRecoveryActionSchema",
   "AgentDetailSchema",
   "AgentDisplayNameSchema",
@@ -347,6 +350,7 @@
   "UserDisplayNameSchema",
   "UserProfileSchema",
   "ValidationIssueSchema",
+  "accountAgentCreationIntentPath",
   "accountComputerConnectCodePath",
   "agentByIdPath",
   "agentComputerRebindPath",

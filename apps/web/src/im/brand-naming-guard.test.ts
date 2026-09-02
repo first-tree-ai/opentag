@@ -73,17 +73,6 @@ const NAMING_POINT = "im/provider-label.ts";
  */
 const ALLOWED_TEXT = new Map<string, { readonly reason: string; readonly text: ReadonlySet<string> }>([
   [
-    "setup/copy.ts",
-    {
-      reason: "pre-i18n copy that never moved into a catalogue; migration tracked by #241",
-      text: new Set([
-        "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
-        "Add to Slack",
-        "Waiting for you to finish in Slack\u2026",
-      ]),
-    },
-  ],
-  [
     "mock/task-data.ts",
     {
       reason: "demo fixtures standing in for real Task sources, not product copy",

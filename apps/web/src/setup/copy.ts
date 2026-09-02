@@ -2,9 +2,9 @@
  * The strings the setup pieces show, in one place. Copy is reviewed far more often than layout, so
  * it stays out of the components and can be read end to end.
  *
- * Everything here belongs to connecting a computer and connecting a messaging app — the two pieces
- * of work that are the same whether they are met during onboarding or reopened later from an
- * Agent's settings. Copy that only one of those surfaces says stays with that surface.
+ * Everything here belongs to connecting a computer, the one piece of work that reads the same
+ * whether it is met during onboarding or reopened later from an Agent's settings. Copy that only
+ * one surface says stays with that surface.
  */
 
 import { messagingProviderLabel } from "../im/provider-label.js";
@@ -78,34 +78,7 @@ export const SETUP_COPY = {
       `We can't confirm ${computerName} right now. Start OpenTag on that Computer; this page will continue when it reconnects.`,
     generateRepair: "Need to reinstall? Generate a repair command.",
     hideRepair: "Hide repair command",
-    repairCommandComment: (computerName: string) => `# Run this command in the terminal on ${computerName}`,
+    repairCommandComment: (computerName: string) => `Run this command in the terminal on ${computerName}`,
     waitingRepair: (computerName: string) => `Waiting for ${computerName} to connect…`,
-  },
-
-  messaging: {
-    title: "Connect your messaging app",
-    description: "Pick the app your team already works in.",
-    providerLabel: "Messaging app",
-    generating: "Generating QR code…",
-    waiting: "Waiting for you to scan…",
-    preparingCli: "Preparing CLI",
-    checkingCredentials: "Checking credentials",
-    cliUnavailable: "OpenTag could not prepare or validate the messaging CLI on this computer.",
-    needsAttention: {
-      upgrade_required: "Upgrade the OpenTag client on this computer, then reconnect.",
-      credential_rejected: "Reauthorize this messaging app. The current credential was rejected.",
-      identity_mismatch: "Reauthorize this messaging app. The bot identity does not match.",
-      scope_missing: "Grant the missing messaging permissions, then reauthorize.",
-      provider_unreachable:
-        "The messaging provider could not be reached after several attempts. Check the network and try again.",
-      rate_limited: "The messaging provider is rate-limiting checks. Wait a moment, then try again.",
-    } as const,
-    slackIntro: "Install OpenTag in your Slack workspace. We'll take you to Slack and bring you back.",
-    slackAction: "Add to Slack",
-    slackWaiting: "Waiting for you to finish in Slack…",
-    confirming: "Connected. Checking your agent can be reached…",
-    computerOffline: "Your computer is offline. Reconnect it and this will finish on its own.",
-    retry: "Try again",
-    failed: "That didn't work. Try again to get a new code.",
   },
 } as const;

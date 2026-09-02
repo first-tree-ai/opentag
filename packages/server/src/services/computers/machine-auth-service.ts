@@ -539,20 +539,28 @@ function matchesSecretHash(expectedHash: string, secret: string): boolean {
 
 export function buildComputerConnectCommand(options: {
   code: string;
-  downloadBaseUrl?: string;
+  /**
+   * Required rather than defaulted, because a second default here could drift from the one the
+   * Server actually polls and publish an install URL no release was ever written to.
+   */
+  downloadBaseUrl: string;
   environment: ChannelName;
   publicUrl: string;
 }): string {
   const channel = getChannelConfig(options.environment);
-  const connectArgs = `connect --server ${shellArg(options.publicUrl)} -- ${shellArg(options.code)}`;
-  if (options.environment === "dev") {
-    if (!SAFE_SHELL_ARG_PATTERN.test(channel.binName)) throw new TypeError("Invalid channel binary name");
-    return `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${connectArgs}`;
-  }
   if (!SAFE_SHELL_ARG_PATTERN.test(channel.binName)) throw new TypeError("Invalid channel binary name");
-  const downloadBaseUrl = (options.downloadBaseUrl ?? "https://download.opentag.build/releases").replace(/\/+$/, "");
+  const connectArgs = `connect --server ${shellArg(options.publicUrl)} -- ${shellArg(options.code)}`;
+  const connect = `PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${connectArgs}`;
+  if (options.environment === "dev") return `./scripts/dev-install.sh && ${connect}`;
+  const downloadBaseUrl = options.downloadBaseUrl.replace(/\/+$/, "");
   const installerUrl = `${downloadBaseUrl}/${options.environment}/install.sh`;
-  return `curl -fsSL ${shellArg(installerUrl)} | sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${connectArgs}`;
+  /*
+   * A pipeline reports its last command's status, and `sh` succeeds on the empty input a failed
+   * download leaves behind, so `curl … | sh &&` would run whatever Client is already on disk and
+   * report a download failure as an unrelated CLI usage error. Landing the installer in a file
+   * first keeps every step in one `&&` chain, so the command stops at the step that actually broke.
+   */
+  return `opentag_installer="$(mktemp)" && curl -fsSL ${shellArg(installerUrl)} -o "$opentag_installer" && sh "$opentag_installer" && rm -f "$opentag_installer" && ${connect}`;
 }
 
 function shellArg(value: string): string {

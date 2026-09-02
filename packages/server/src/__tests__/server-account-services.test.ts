@@ -568,22 +568,44 @@ describe("machine authentication and Computer services", () => {
     await machine.exchangeConnectCode(exchangeInput(issued.code));
     expect(rotated).toHaveBeenCalledOnce();
     const { buildComputerConnectCommand } = await import("../services/computers/machine-auth-service.js");
-    expect(
-      buildComputerConnectCommand({ code: "abc", environment: "staging", publicUrl: "https://dev.example.com" }),
-    ).toContain('"$HOME/.local/bin/opentag-staging" connect');
+    const mirror = "https://mirror.example/releases/";
     expect(
       buildComputerConnectCommand({
         code: "abc",
-        downloadBaseUrl: "https://mirror.example/releases/",
+        downloadBaseUrl: mirror,
         environment: "staging",
         publicUrl: "https://dev.example.com",
       }),
-    ).toContain("curl -fsSL https://mirror.example/releases/staging/install.sh | sh");
+    ).toContain('"$HOME/.local/bin/opentag-staging" connect');
+    // The installer lands in a file so a failed download stops the chain instead of falling through
+    // to the Client already on disk, which `curl … | sh &&` would do.
     expect(
-      buildComputerConnectCommand({ code: "a'; echo nope", environment: "prod", publicUrl: "https://example.com/a b" }),
+      buildComputerConnectCommand({
+        code: "abc",
+        downloadBaseUrl: mirror,
+        environment: "staging",
+        publicUrl: "https://dev.example.com",
+      }),
+    ).toBe(
+      'opentag_installer="$(mktemp)" && curl -fsSL https://mirror.example/releases/staging/install.sh -o "$opentag_installer"' +
+        ' && sh "$opentag_installer" && rm -f "$opentag_installer"' +
+        ' && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- abc',
+    );
+    expect(
+      buildComputerConnectCommand({
+        code: "a'; echo nope",
+        downloadBaseUrl: mirror,
+        environment: "prod",
+        publicUrl: "https://example.com/a b",
+      }),
     ).toContain("'a'\\''; echo nope'");
     expect(
-      buildComputerConnectCommand({ code: "abc", environment: "dev", publicUrl: "http://127.0.0.1:8000" }),
+      buildComputerConnectCommand({
+        code: "abc",
+        downloadBaseUrl: mirror,
+        environment: "dev",
+        publicUrl: "http://127.0.0.1:8000",
+      }),
     ).toContain("dev-install.sh");
   });
 

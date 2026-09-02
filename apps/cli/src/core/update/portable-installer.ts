@@ -14,7 +14,7 @@ import type { ChannelName } from "@opentag/shared";
  * commit point. A version directory is never rewritten in place.
  */
 
-export const DEFAULT_DOWNLOAD_BASE_URL = "https://download.opentag.build/releases";
+export const DEFAULT_DOWNLOAD_BASE_URL = "https://storage.googleapis.com/opentag-release/releases";
 const PORTABLE_APP_ENTRY = "app/cli/index.mjs";
 const MANIFEST_SCHEMA_VERSION = 1;
 

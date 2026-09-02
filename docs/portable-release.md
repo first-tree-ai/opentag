@@ -18,7 +18,7 @@ identity rewrite, and the same version coordinate as the npm package it accompan
 ## Installing
 
 ~~~bash
-curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh
+curl -fsSL https://storage.googleapis.com/opentag-release/releases/prod/install.sh | sh
 ~~~
 
 The installer resolves the channel's `latest.json`, downloads the tarball for the detected platform, verifies its
@@ -114,7 +114,7 @@ Current version, target, updater state, and the last attempt with its failure re
 ~~~
 
 Default coordinates are the `opentag-release` bucket under the `releases` prefix, served from
-`https://download.opentag.build/releases`.
+`https://storage.googleapis.com/opentag-release/releases`.
 
 Everything under a version prefix is immutable and written with a create-only precondition
 (`--if-generation-match=0`) plus a `--content-md5` digest, so Cloud Storage rejects both a silent overwrite and a
@@ -221,7 +221,7 @@ Required repository variables:
 | `OPENTAG_PORTABLE_GCS_BUCKET` | Bucket name (default `opentag-release`) |
 | `OPENTAG_PORTABLE_GCS_PREFIX` | Object prefix before the channel segment (default `releases`) |
 | `OPENTAG_PORTABLE_GCS_PROJECT` | Project used for `gcloud` calls |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Public base URL (default `https://download.opentag.build/releases`) |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Public base URL (default `https://storage.googleapis.com/opentag-release/releases`) |
 | `OPENTAG_PORTABLE_PLATFORMS` | Optional platform filter for the build |
 
 Publishing uses workload identity federation, so no service-account key is stored in the repository. The service

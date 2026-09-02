@@ -332,7 +332,13 @@ export function installApi(
     internalToolsOffered?: boolean;
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
-    meDelayMsAfterProfileUpdate?: number;
+    /*
+     * Holds the post-save `/api/v1/me` refresh in flight until the test resolves it. This used to be
+     * a wall-clock delay, which made the assertions a race: on a loaded machine the delay could
+     * expire before the test reached them, and the refresh it was meant to catch mid-flight had
+     * already finished. A promise the test controls removes the clock from the question entirely.
+     */
+    meHoldAfterProfileUpdate?: Promise<unknown>;
     meFailuresAfterProfileUpdate?: number;
     /** Answers the `/me` refresh a profile save starts, so a test can hold it across a sign-out. */
     meAfterProfileUpdate?: () => Promise<Response> | Response;
@@ -445,15 +451,17 @@ export function installApi(
       if (loggedOut && options.meAfterLogout) return options.meAfterLogout();
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       if (profileUpdated && options.meAfterProfileUpdate) return options.meAfterProfileUpdate();
-      if (profileUpdated && options.meDelayMsAfterProfileUpdate) {
-        await new Promise((resolve) => setTimeout(resolve, options.meDelayMsAfterProfileUpdate));
-      }
       if (profileUpdated && meFailuresRemaining > 0) {
         meFailuresRemaining -= 1;
         return json(
           { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Account state unavailable" } },
           503,
         );
+      }
+      // After the seeded failures, so the refresh a test holds open is the retry rather than the
+      // first attempt the retry exists to follow.
+      if (profileUpdated && options.meHoldAfterProfileUpdate) {
+        await options.meHoldAfterProfileUpdate;
       }
       return json({
         user: { id: userId, email: "ada@example.com", displayName: currentDisplayName },

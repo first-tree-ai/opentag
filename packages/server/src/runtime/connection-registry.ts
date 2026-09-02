@@ -19,6 +19,7 @@ import {
   runtimeFrameByteLength,
 } from "@opentag/shared";
 import WebSocket from "ws";
+import type { ServiceLogger } from "../observability/service-logger.js";
 
 export class RuntimeRegistrySendError extends Error {
   constructor(
@@ -72,9 +73,18 @@ export interface RuntimeConnectionEntry {
   socket: WebSocket;
 }
 
+export interface ConnectionRegistryOptions {
+  logger?: ServiceLogger;
+}
+
 export class ConnectionRegistry {
   readonly #entries = new Map<string, RuntimeConnectionEntry>();
   readonly #registrationTails = new Map<string, Promise<void>>();
+  readonly #logger?: ServiceLogger;
+
+  constructor(options: ConnectionRegistryOptions = {}) {
+    this.#logger = options.logger;
+  }
 
   async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>, publish?: () => void): Promise<void> {
     const previousRegistration = this.#registrationTails.get(entry.computerId) ?? Promise.resolve();
@@ -375,12 +385,26 @@ export class ConnectionRegistry {
     return this.#entries.delete(computerId);
   }
 
-  terminateStale(cutoff: number): void {
+  terminateStale(cutoff: number, onSweep?: (count: number) => void): number {
+    let count = 0;
     for (const entry of this.#entries.values()) {
       if (entry.lastHeartbeatAt < cutoff) {
         entry.socket.terminate();
+        count += 1;
       }
     }
+    if (count > 0) {
+      if (onSweep) {
+        onSweep(count);
+      } else {
+        try {
+          this.#logger?.warn({ count, cutoff }, "Stale runtime connection sweep terminated connections");
+        } catch {
+          // Logging must never prevent stale connection termination.
+        }
+      }
+    }
+    return count;
   }
 
   async closeComputer(computerId: string): Promise<boolean> {

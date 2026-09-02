@@ -67,7 +67,8 @@ export function registerRuntimeRoutes(
   computerService: ComputerService,
   options: RuntimeRoutesOptions = {},
 ): ConnectionRegistry {
-  const registry = options.registry ?? new ConnectionRegistry();
+  const logger = options.logger ?? createServiceLoggerPort(() => app.log, "runtime-session");
+  const registry = options.registry ?? new ConnectionRegistry({ logger });
   const domainOwner = options.domainOwner;
   const agentRuntimeTestOwner = options.agentRuntimeTestOwner;
   const providerCliReconcileOwner = options.providerCliReconcileOwner;
@@ -83,7 +84,7 @@ export function registerRuntimeRoutes(
     channelTarget: options.channelTarget,
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
-    logger: options.logger ?? createServiceLoggerPort(() => app.log, "runtime-session"),
+    logger,
     now: options.now,
     onRegistered: async (input) => {
       await options.onRegistered?.(input);
@@ -99,7 +100,12 @@ export function registerRuntimeRoutes(
     }).start();
   });
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 90_000;
-  const sweep = setInterval(() => registry.terminateStale(Date.now() - heartbeatTimeoutMs), heartbeatTimeoutMs);
+  const sweep = setInterval(() => {
+    const cutoff = Date.now() - heartbeatTimeoutMs;
+    registry.terminateStale(cutoff, (count) =>
+      logger.warn({ count, cutoff }, "Stale runtime connection sweep terminated connections"),
+    );
+  }, heartbeatTimeoutMs);
   sweep.unref();
   app.addHook("onClose", async () => {
     clearInterval(sweep);

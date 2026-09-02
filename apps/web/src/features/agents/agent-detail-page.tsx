@@ -250,7 +250,7 @@ export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
     >
       <div className="grid gap-1">
         <StatusIndicator label={status.label} tone={status.tone} />
-        <p className="text-sm text-kumo-subtle">{agentRecoveryMessage(agent)}</p>
+        <p className="text-sm text-kumo-subtle">{agentRecoveryMessage()}</p>
       </div>
       {recovery ? (
         <Link

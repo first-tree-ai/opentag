@@ -24,7 +24,6 @@ import {
   agentStatusPresentation,
   agentUseInstruction,
   computerRecoveryMessage,
-  messagingAgentStatusDescription,
   messagingChannelLabel,
   messagingConnectionLabel,
   messagingConnectionTone,
@@ -337,48 +336,19 @@ describe("Agent availability model and presentation", () => {
     expect(agentAvailabilitySummary({ ...base, availability: { ...base.availability, state: "suspended" } })).toBe(
       "Not receiving new work",
     );
-    expect(
-      agentRecoveryMessage({
-        ...base,
-        availability: { ...base.availability, reason: "im_not_connected", state: "not_connected" },
-      }),
-    ).toContain("Connect");
-    expect(
-      agentRecoveryMessage({ ...base, availability: { ...base.availability, reason: null, state: "ready" } }),
-    ).toContain("Available");
+    /*
+     * The notice renders only for a suspended Agent, so this is the only reading it has. The
+     * assertions this replaces called it with `state: "ready"` and `state: "not_connected"` --
+     * states it can never be called in, which is how thirteen unreachable branches kept looking
+     * covered.
+     */
+    expect(agentRecoveryMessage()).toBe("This Agent is paused. Resume it to start receiving messages again.");
     expect(agentUseInstruction(base, "feishu")).toBe(
       "Send @reviewer a direct message, or mention it in a Lark group chat.",
     );
     expect(agentUseInstruction({ ...base, receiveMode: "all_message" }, "slack")).toContain(
       "every message in connected Slack channels",
     );
-    expect(messagingAgentStatusDescription(base, "feishu")).toContain("Ready to receive");
-    expect(
-      messagingAgentStatusDescription(
-        { ...base, activity: { state: "working", startedAt: "2026-08-20T00:00:00.000Z" } },
-        "slack",
-      ),
-    ).toContain("handling a request");
-    for (const reason of ["computer_offline", "runtime_unavailable"] as const) {
-      expect(
-        messagingAgentStatusDescription(
-          { ...base, availability: { ...base.availability, state: "action_required", reason } },
-          "feishu",
-        ),
-      ).toBeTruthy();
-    }
-    expect(
-      messagingAgentStatusDescription(
-        { ...base, availability: { ...base.availability, state: "action_required", reason: "handoff_unavailable" } },
-        "slack",
-      ),
-    ).toContain("Slack is connected");
-    expect(
-      messagingAgentStatusDescription(
-        { ...base, availability: { ...base.availability, state: "not_connected", reason: "im_not_connected" } },
-        "feishu",
-      ),
-    ).toContain("Connect");
     expect(
       agentAvailabilityRecovery({
         ...base,

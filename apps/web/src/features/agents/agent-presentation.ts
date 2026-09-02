@@ -1,11 +1,9 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
-import { ImProviderSchema } from "@opentag/shared/browser";
 import { formatElapsedCompact, spaceScriptBoundary } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
-import { SETUP_COPY } from "../../setup/copy.js";
 import type { StatusTone } from "../../ui/design-system.js";
-import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
+import type { AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
 import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
@@ -284,24 +282,6 @@ export function agentAvailabilitySummary(agent: AgentDetailView): string {
   }[agent.availability.state];
 }
 
-export function messagingAgentStatusDescription(
-  agent: AgentDetailView,
-  provider: ImBindingSummary["provider"],
-): string {
-  if (agent.availability.state === "ready") {
-    return agent.activity.state === "working"
-      ? "This Agent is handling a request and remains connected for new messages."
-      : `Ready to receive new messages from ${messagingProviderLabel(provider)}.`;
-  }
-  if (agent.availability.reason === "computer_offline" || agent.availability.reason === "runtime_unavailable") {
-    return computerRecoveryMessage(agent);
-  }
-  if (agent.availability.reason === "handoff_unavailable") {
-    return `${messagingProviderLabel(provider)} is connected, but messages cannot currently be handed off to this Agent.`;
-  }
-  return agentRecoveryMessage(agent);
-}
-
 export function agentAvailabilityRecovery(
   agent: AgentDetailView,
 ): { label: string; link: AgentSettingsSectionLink } | undefined {
@@ -329,56 +309,23 @@ export function agentAvailabilityRecovery(
   return { label: "View Computer", link: agentSettingsSectionLink(agent.id, "computer") };
 }
 
-/*
- * The channels a reader could connect, named by the helper and joined here. The sentence and its
- * grammar belong to this module; each brand inside it does not, which is why the list is built from
- * the provider schema rather than written out. Adding a provider changes these sentences with it.
- */
-function connectableChannels(): string {
-  return ImProviderSchema.options.map(messagingProviderLabel).join(" or ");
-}
-
-export function agentRecoveryMessage(agent: AgentDetailView): string {
-  const channels = connectableChannels();
-  const messages: Record<NonNullable<AgentAvailability["reason"]>, string> = {
-    agent_suspended: "This Agent is paused. Resume it to start receiving messages again.",
-    agent_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
-    handoff_unconfirmed: "Could not refresh this Agent's status. Retrying automatically.",
-    computer_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
-    runtime_unconfirmed: "Could not confirm the assigned Computer. Retrying automatically.",
-    computer_not_bound: m.agents_computer_not_bound_detail(),
-    computer_offline: "This agent's computer is offline. Retrying automatically.",
-    runtime_unavailable: runtimeRecoveryMessage(agent),
-    im_not_connected: `Connect ${channels} so teammates can send this Agent work.`,
-    im_provisioning: "The messaging connection is still being set up.",
-    im_reauthorization_required: "The messaging connection needs to be re-authorized before it can receive messages.",
-    im_error: `The messaging connection failed. Reconnect ${channels} to receive messages.`,
-    im_disabled: `Messaging is turned off for this Agent. Reconnect ${channels} to receive messages.`,
-    handoff_unavailable: providerCliRecoveryMessage(agent),
-  };
-  return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);
-}
-
 /**
- * The Provider-specific wording tells a viewer what to do on the Computer; one "runtime not
- * available" sentence does not.
+ * The one sentence the lifecycle notice can show.
+ *
+ * This used to map every `AgentAvailability["reason"]` to its own recovery sentence -- fourteen of
+ * them. Only one could ever render: the notice returns null unless the Agent is `suspended`, and
+ * `projectAgentAvailability` pairs that state with `agent_suspended` and nothing else. The other
+ * thirteen read as live copy for years without a reader ever seeing them, and two private helpers
+ * existed solely to build strings that were then discarded on every call.
+ *
+ * Nothing was lost by removing them: a Computer that is offline, a runtime that needs installing,
+ * a channel that is not connected each surface on the detail page through their own dependency row,
+ * which carries the action that repairs them rather than prose about it.
  */
-function runtimeRecoveryMessage(agent: AgentDetailView): string {
-  const { provider, status } = agent.availability.dependencies.runtime;
-  const providerName = runtimeProviderName(provider);
-  if (status === "checking") return `Still checking ${providerName} on this agent's computer.`;
-  if (status === "install") return `Install ${providerName} on this agent's computer.`;
-  if (status === "sign-in") return `Sign in to ${providerName} on this agent's computer.`;
-  return `${providerName} is not available on this agent's computer.`;
+export function agentRecoveryMessage(): string {
+  return m.agents_recovery_suspended();
 }
 
-function providerCliRecoveryMessage(agent: AgentDetailView): string {
-  const progress = agent.availability.dependencies.handoff.providerCli;
-  if (!progress) return "Messages cannot be sent to this Agent.";
-  if (progress.phase === "preparing_cli") return SETUP_COPY.messaging.preparingCli;
-  if (progress.phase === "checking_credentials") return SETUP_COPY.messaging.checkingCredentials;
-  return progress.reason ? SETUP_COPY.messaging.needsAttention[progress.reason] : SETUP_COPY.messaging.cliUnavailable;
-}
 /**
  * The two dependencies an Agent needs to do any work, each presented on its own terms. They are
  * deliberately not collapsed into one verdict: a connected channel can coexist with an offline

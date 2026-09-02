@@ -2,12 +2,7 @@ import type { AgentDetail } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import type { AgentDetailView } from "./agent-model.js";
 import { projectAgentAvailability } from "./agent-model.js";
-import {
-  agentAvailabilityRecovery,
-  agentRecoveryMessage,
-  agentStatusPresentation,
-  computerRecoveryMessage,
-} from "./agent-presentation.js";
+import { agentAvailabilityRecovery, agentStatusPresentation, computerRecoveryMessage } from "./agent-presentation.js";
 
 const agentId = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
 
@@ -42,7 +37,6 @@ describe("An Agent with no Computer, as the viewer reads it", () => {
       label: "Connect a Computer",
       link: { params: { agentId, section: "computer" }, to: "/agents/$agentId/settings/$section" },
     });
-    expect(agentRecoveryMessage(agent)).toBe("This Agent has no Computer. Connect one to give it somewhere to run.");
     // The Computer panel says the same thing without naming a machine, because there is none to name.
     expect(computerRecoveryMessage(agent)).toBe(
       "This Agent is not connected to a Computer yet. Connect one to give it somewhere to run.",

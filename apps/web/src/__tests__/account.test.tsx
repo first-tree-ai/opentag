@@ -123,7 +123,7 @@ describe("OpenTag Web App Shell", () => {
      * assertions below describe what is true *while* it is in flight, so the window has to last
      * exactly as long as they take -- which a fixed 40ms could not guarantee on a loaded machine.
      */
-    let releaseRefresh = () => undefined as void;
+    let releaseRefresh!: () => void;
     const refreshInFlight = new Promise<void>((resolve) => {
       releaseRefresh = resolve;
     });

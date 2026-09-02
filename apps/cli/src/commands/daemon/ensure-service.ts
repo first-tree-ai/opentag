@@ -22,15 +22,11 @@ export async function executeDaemonEnsureService(options: EnsureServiceOptions =
     writeOutput(renderEnsureResult(result, options.json === true));
     return 0;
   } catch (error) {
-    if (options.json) {
-      const commandError = commandPolicy.toCommandError(error, "request");
-      return commandPolicy.presentCommand(
-        { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
-        { json: true, stderr: writeError },
-      );
-    }
-    writeError(commandPolicy.redactSecrets(error instanceof Error ? error.message : String(error)));
-    return 1;
+    const commandError = commandPolicy.toCommandError(error, "request");
+    return commandPolicy.presentCommand(
+      { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
+      { json: options.json === true, stderr: writeError },
+    );
   }
 }
 

@@ -179,6 +179,33 @@ describe("ConnectionRegistry", () => {
     expect(fresh.close).toHaveBeenCalledWith(1001, "Server shutting down");
   });
 
+  it("terminates stale sockets when the injected sweep logger throws", async () => {
+    const logger = loggerFixture();
+    logger.warn.mockImplementation(() => {
+      throw new Error("logger failed");
+    });
+    const registry = new ConnectionRegistry();
+    const stale = socket();
+    await registry.register(
+      {
+        installationId: randomUUID(),
+        instanceId: randomUUID(),
+        lastHeartbeatAt: 10,
+        socket: stale,
+        computerId: randomUUID(),
+      },
+      async () => undefined,
+    );
+
+    expect(() =>
+      registry.terminateStale(15, (count) =>
+        logger.warn({ count, cutoff: 15 }, "Stale runtime connection sweep terminated connections"),
+      ),
+    ).not.toThrow();
+    expect(stale.terminate).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledOnce();
+  });
+
   it("advertises credential-grant capability only for the verified current instance", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();

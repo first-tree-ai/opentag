@@ -394,14 +394,14 @@ export class ConnectionRegistry {
       }
     }
     if (count > 0) {
-      if (onSweep) {
-        onSweep(count);
-      } else {
-        try {
+      try {
+        if (onSweep) {
+          onSweep(count);
+        } else {
           this.#logger?.warn({ count, cutoff }, "Stale runtime connection sweep terminated connections");
-        } catch {
-          // Logging must never prevent stale connection termination.
         }
+      } catch {
+        // Logging must never prevent stale connection termination.
       }
     }
     return count;

@@ -160,6 +160,73 @@ describe("Agent Setup route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(2);
   });
 
+  it("carries a trapped first-Agent creation to the Agent its own request left behind", async () => {
+    /*
+     * The failure this covers is a create that reached the Server without its answer reaching the
+     * browser. The Account has no admitted Agent yet, so this route offers no way out, and every
+     * later press of Create collides with the Agent that already exists. Looking at the Account
+     * again is what a page reload does; doing it on the failure means the reader never has to.
+     */
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let agentExists = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        agentExists = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && agentExists) {
+        return json({ agents: [agentListItem] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    await waitFor(() => expect(window.location.search).toBe(`?agentId=${agentId}`));
+    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(agentCreationPosts()).toHaveLength(1);
+  });
+
+  it("leaves an ordinary creation failure on the form, with nothing to carry the reader to", async () => {
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        throw new TypeError("Connection closed before the result arrived");
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    // No Agent turned up, so the failure is the whole truth and the form keeps saying so.
+    expect(await screen.findByText("Connection closed before the result arrived")).toBeTruthy();
+    expect(window.location.search).toBe("");
+    expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
+  });
+
   it("redirects an un-targeted visit to the canonical exact URL when the Account has one active Agent", async () => {
     installAgentSetupApi({ setupCompletedAt: null });
     window.history.replaceState({}, "", "/agents/setup");

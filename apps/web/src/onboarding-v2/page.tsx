@@ -23,6 +23,7 @@ export function AgentSetupSurface({
   agentId,
   onBackToAgents,
   onAgentAvailable,
+  onCreateFailed,
   onOpenAgent,
   onReady,
   reviewMode = false,
@@ -32,6 +33,8 @@ export function AgentSetupSurface({
   agentId?: string;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
+  /** Asked to look again when a creation fails, in case the failure is an Agent that already exists. */
+  onCreateFailed?: () => Promise<void> | void;
   onOpenAgent?: () => void;
   onReady?: (agentId: string) => Promise<void> | void;
   reviewMode?: boolean;
@@ -50,15 +53,23 @@ export function AgentSetupSurface({
       />
     );
   }
-  return <AgentCreatePage onAgentAvailable={onAgentAvailable} onBackToAgents={onBackToAgents} />;
+  return (
+    <AgentCreatePage
+      onAgentAvailable={onAgentAvailable}
+      onBackToAgents={onBackToAgents}
+      onCreateFailed={onCreateFailed}
+    />
+  );
 }
 
 function AgentCreatePage({
   onAgentAvailable,
   onBackToAgents,
+  onCreateFailed,
 }: {
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
+  onCreateFailed?: () => Promise<void> | void;
 }) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
@@ -90,12 +101,19 @@ function AgentCreatePage({
         await Promise.resolve(onAgentAvailable?.(created.id));
       } catch (cause) {
         setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
+        /*
+         * The failure is stated, and then the Account is looked at again. A request that reached
+         * the Server without its answer reaching here leaves an Agent behind, and every later press
+         * of Create can only collide with it — so the reader is carried to that Agent instead of
+         * being left pressing a button that cannot work.
+         */
+        await Promise.resolve(onCreateFailed?.()).catch(() => undefined);
       } finally {
         createInFlight.current = false;
         setSubmitting(false);
       }
     },
-    [onAgentAvailable],
+    [onAgentAvailable, onCreateFailed],
   );
 
   return (

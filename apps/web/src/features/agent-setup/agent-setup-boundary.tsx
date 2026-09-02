@@ -143,6 +143,27 @@ function TargetedAgentSetup({
   const [resolution, setResolution] = useState<TargetResolution>({ kind: "loading" });
   const retryResolution = useCallback(() => setAttempt((current) => current + 1), []);
 
+  /*
+   * A creation that failed is asked about rather than assumed. The one failure the form cannot
+   * explain is a request that reached the Server without its answer reaching the browser: the
+   * Agent exists, so pressing Create again can only collide with it, and this route holds no exit
+   * for an Account whose first Agent has not been proved yet.
+   *
+   * So the list is read again — the same read a page reload already recovers with. An Agent that
+   * turned up carries the reader to it; nothing new leaves the form exactly as it is, with its own
+   * failure still on screen, because that failure is then the whole truth.
+   */
+  const recheckTargets = useCallback(async () => {
+    // `action=create` asked for a fresh form on purpose and keeps its own way back, so it is left
+    // alone: re-resolving there would answer a question the reader did not ask.
+    if (action === "create") return;
+    const found = await browserApi.agents().then(
+      ({ agents }) => agents.some((candidate) => candidate.status === "active"),
+      () => false,
+    );
+    if (found) setAttempt((current) => current + 1);
+  }, [action]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the explicit retry signal; bumping it must re-run the read even though the effect body never reads it.
   useEffect(() => {
     let live = true;
@@ -280,7 +301,11 @@ function TargetedAgentSetup({
   }
 
   return (
-    <AgentSetupSurface onBackToAgents={accountCompleted ? onBackToAgents : undefined} onAgentAvailable={onTarget} />
+    <AgentSetupSurface
+      onBackToAgents={accountCompleted ? onBackToAgents : undefined}
+      onAgentAvailable={onTarget}
+      onCreateFailed={recheckTargets}
+    />
   );
 }
 

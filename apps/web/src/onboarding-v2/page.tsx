@@ -1,8 +1,10 @@
 import type { CreateAgentRequest } from "@opentag/shared/browser";
+import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
+import { agentDetailLink } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
-import { Banner, Button } from "../ui/design-system.js";
+import { Banner, Button, Icon } from "../ui/design-system.js";
 import { AgentSetupPage } from "./agent-setup-page.js";
 import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
 import "./onboarding-v2.css";
@@ -16,6 +18,24 @@ const CREATE_STEPS: FlowState["steps"] = [
 ];
 
 /**
+ * The Agent an already-refused name belongs to, when this Account still holds it. A read that fails
+ * names nobody rather than guessing: the refusal is still true, and an offer to open the wrong Agent
+ * would be worse than no offer at all.
+ */
+async function agentHoldingName(name: string): Promise<{ id: string; name: string } | undefined> {
+  const wanted = name.trim().toLowerCase();
+  return browserApi.agents().then(
+    ({ agents }) => {
+      const holder = agents.find(
+        (candidate) => candidate.status === "active" && candidate.name.toLowerCase() === wanted,
+      );
+      return holder ? { id: holder.id, name: holder.name } : undefined;
+    },
+    () => undefined,
+  );
+}
+
+/**
  * The one Agent creation/setup surface. Creation is deliberately only the short pre-Agent form;
  * as soon as the Server returns an id, the exact-Agent Issue 437 surface owns every remaining step.
  */
@@ -23,7 +43,6 @@ export function AgentSetupSurface({
   agentId,
   onBackToAgents,
   onAgentAvailable,
-  onCreateFailed,
   onOpenAgent,
   onReady,
   reviewMode = false,
@@ -33,8 +52,6 @@ export function AgentSetupSurface({
   agentId?: string;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
-  /** Asked to look again when a creation fails, in case the failure is an Agent that already exists. */
-  onCreateFailed?: () => Promise<void> | void;
   onOpenAgent?: () => void;
   onReady?: (agentId: string) => Promise<void> | void;
   reviewMode?: boolean;
@@ -53,28 +70,22 @@ export function AgentSetupSurface({
       />
     );
   }
-  return (
-    <AgentCreatePage
-      onAgentAvailable={onAgentAvailable}
-      onBackToAgents={onBackToAgents}
-      onCreateFailed={onCreateFailed}
-    />
-  );
+  return <AgentCreatePage onAgentAvailable={onAgentAvailable} onBackToAgents={onBackToAgents} />;
 }
 
 function AgentCreatePage({
   onAgentAvailable,
   onBackToAgents,
-  onCreateFailed,
 }: {
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
-  onCreateFailed?: () => Promise<void> | void;
 }) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
+  /** The Agent a refused name already belongs to, once it has been found. */
+  const [taken, setTaken] = useState<{ id: string; name: string }>();
   /** One creation at a time. A second press before the first answers would ask for a second Agent. */
   const createInFlight = useRef(false);
 
@@ -102,18 +113,24 @@ function AgentCreatePage({
       } catch (cause) {
         setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
         /*
-         * The failure is stated, and then the Account is looked at again. A request that reached
-         * the Server without its answer reaching here leaves an Agent behind, and every later press
-         * of Create can only collide with it — so the reader is carried to that Agent instead of
-         * being left pressing a button that cannot work.
+         * A refused name is the one failure that names something the reader can go and look at.
+         * The Server says only that the name is taken, so the Agent holding it is found here and
+         * offered — either it is the one they meant, or the name is theirs to change. It is not
+         * opened for them: an Agent this Account already has is not what Create asked for.
+         *
+         * The same refusal answers a request that reached the Server without its answer reaching
+         * here. The reader sees the Agent their own press produced rather than a button that can
+         * never work again.
          */
-        await Promise.resolve(onCreateFailed?.()).catch(() => undefined);
+        if (cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT") {
+          setTaken(await agentHoldingName(request.name));
+        }
       } finally {
         createInFlight.current = false;
         setSubmitting(false);
       }
     },
-    [onAgentAvailable, onCreateFailed],
+    [onAgentAvailable],
   );
 
   return (
@@ -134,12 +151,34 @@ function AgentCreatePage({
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col items-center gap-6 p-6">
         {destinationConfirmed ? <StepRail steps={CREATE_STEPS} /> : null}
         <div className="flex w-full flex-col gap-4">
-          {error ? <Banner description={error} role="alert" variant="error" /> : null}
+          {error ? (
+            <div className="flex flex-col items-start gap-2" data-ui="agent-create-error">
+              <Banner description={error} role="alert" variant="error" />
+              {taken ? (
+                <Link
+                  className="inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
+                  data-ui="agent-create-open-taken-name"
+                  {...agentDetailLink(taken.id)}
+                >
+                  {m.agent_create_open_existing({ name: taken.name })}
+                  <Icon className="size-3.5" name="chevron-right" />
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
           {destinationConfirmed ? (
             <AgentStep
               draft={draft}
               onBack={() => setDestinationConfirmed(false)}
-              onChange={setDraft}
+              onChange={(next) => {
+                // Changing the name is the other way out of a refusal, so the refusal stops being
+                // shown the moment it is no longer about what the form says.
+                if (next.name !== draft.name) {
+                  setError(undefined);
+                  setTaken(undefined);
+                }
+                setDraft(next);
+              }}
               onSubmit={() => {
                 if (selectedRequest) void create(selectedRequest);
               }}

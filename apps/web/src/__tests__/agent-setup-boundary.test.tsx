@@ -153,6 +153,8 @@ describe("Agent Setup route boundary", () => {
     expect(await screen.findByText("Connection closed before the result arrived")).toBeTruthy();
     expect(window.location.search).toBe("?action=create");
     expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
+    // Nothing was refused by name, so there is no Agent to offer and nothing was saved either.
+    expect(screen.queryByRole("link", { name: /^Open @/ })).toBeNull();
     expect(window.localStorage.length).toBe(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -160,12 +162,12 @@ describe("Agent Setup route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(2);
   });
 
-  it("carries a trapped first-Agent creation to the Agent its own request left behind", async () => {
+  it("names the Agent a refused name already belongs to, and offers it", async () => {
     /*
-     * The failure this covers is a create that reached the Server without its answer reaching the
-     * browser. The Account has no admitted Agent yet, so this route offers no way out, and every
-     * later press of Create collides with the Agent that already exists. Looking at the Account
-     * again is what a page reload does; doing it on the failure means the reader never has to.
+     * The refusal covers two situations the Server cannot tell apart: a name the reader has already
+     * used, and a request that reached the Server without its answer reaching the browser. Naming
+     * the Agent answers both — it is either the one they meant, or the one their own press made —
+     * and on this route, where an Account with no proved Agent has no other exit, it is the way out.
      */
     installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
     const fallback = vi.mocked(fetch).getMockImplementation();
@@ -196,35 +198,56 @@ describe("Agent Setup route boundary", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
-    await waitFor(() => expect(window.location.search).toBe(`?agentId=${agentId}`));
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    const open = await screen.findByRole("link", { name: "Open @reviewer" });
+    expect(open.getAttribute("href")).toBe(`/agents/${agentId}`);
+    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    // Nobody is moved: the reader chooses between the Agent that exists and a different name.
+    expect(window.location.search).toBe("");
     expect(agentCreationPosts()).toHaveLength(1);
+
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "helper" } });
+    expect(screen.queryByRole("link", { name: "Open @reviewer" })).toBeNull();
+    expect(screen.queryByText("An active Agent with this name already exists for this Account")).toBeNull();
   });
 
-  it("leaves an ordinary creation failure on the form, with nothing to carry the reader to", async () => {
-    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+  it("offers the same Agent to an Account that asked for an extra one and reused a name", async () => {
+    installAgentSetupApi();
     const fallback = vi.mocked(fetch).getMockImplementation();
     if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       if (input === "/api/v1/agents" && init?.method === "POST") {
-        throw new TypeError("Connection closed before the result arrived");
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
       }
       return fallback(input, init);
     });
-    window.history.replaceState({}, "", "/agents/setup");
+    window.history.replaceState({}, "", "/agents/setup?action=create");
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
-    // No Agent turned up, so the failure is the whole truth and the form keeps saying so.
-    expect(await screen.findByText("Connection closed before the result arrived")).toBeTruthy();
-    expect(window.location.search).toBe("");
-    expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
+    // The Account that deliberately asked for another Agent gets the same two ways forward, and
+    // keeps the exit it already had.
+    expect((await screen.findByRole("link", { name: "Open @reviewer" })).getAttribute("href")).toBe(
+      `/agents/${agentId}`,
+    );
+    expect(window.location.search).toBe("?action=create");
+    expect(screen.getByRole("button", { name: "Back to agents" })).toBeTruthy();
   });
 
   it("redirects an un-targeted visit to the canonical exact URL when the Account has one active Agent", async () => {

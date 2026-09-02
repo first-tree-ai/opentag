@@ -118,7 +118,16 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("lets no new save race an in-flight refresh retry", async () => {
-    installApi({ meFailuresAfterProfileUpdate: 1, meDelayMsAfterProfileUpdate: 40 });
+    /*
+     * The refresh is held open by a promise this test resolves, not by a wall-clock delay. The
+     * assertions below describe what is true *while* it is in flight, so the window has to last
+     * exactly as long as they take -- which a fixed 40ms could not guarantee on a loaded machine.
+     */
+    let releaseRefresh = () => undefined as void;
+    const refreshInFlight = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    installApi({ meFailuresAfterProfileUpdate: 1, meHoldAfterProfileUpdate: refreshInFlight });
     window.history.replaceState({}, "", "/account");
     render(<App />);
 
@@ -140,6 +149,7 @@ describe("OpenTag Web App Shell", () => {
     expect(displayName.disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Refreshing…" }));
     fireEvent.submit(form);
+    releaseRefresh();
 
     expect(await screen.findByText("Account profile saved.")).toBeTruthy();
     expect(

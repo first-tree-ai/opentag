@@ -523,8 +523,8 @@ describe("BrowserApi", () => {
     await expect(new BrowserApi(invalidFetch).agentSetup(agentId)).rejects.toMatchObject({
       name: "ResponseSchemaError",
       code: "invalid_response_schema",
-      message: "The server returned an invalid response",
       routeTemplate: "/api/v1/agents/:id/setup",
+      message: "The server returned an invalid response",
     });
   });
 

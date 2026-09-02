@@ -13,6 +13,7 @@
   "auth_password_label": "密码",
   "auth_password_min_length": "至少需要 {count} 个字符。",
   "auth_provider_dev": "开发者登录",
+  "auth_provider_google": "Google",
   "auth_provider_password": "邮箱密码",
   "auth_sign_in": "登录",
   "auth_sign_in_failed": "登录失败，请重试。",

@@ -9,19 +9,10 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { withLocale } from "../../__tests__/support/with-locale.js";
 import { spaceScriptBoundary } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
-import { overwriteGetLocale } from "../../paraglide/runtime.js";
 import { authProviderLabel } from "./provider-label.js";
-
-function withLocale(locale: "en" | "zh", callback: () => void): void {
-  overwriteGetLocale(() => locale);
-  try {
-    callback();
-  } finally {
-    overwriteGetLocale(() => "en");
-  }
-}
 
 /** Composed the way `LoginProviderLink` composes it. */
 function continueWith(provider: Parameters<typeof authProviderLabel>[0]): string {

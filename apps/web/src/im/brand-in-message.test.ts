@@ -9,21 +9,12 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { withLocale } from "../__tests__/support/with-locale.js";
 import { sharedConversationDestination } from "../features/agents/agent-presentation.js";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingCliMissingCopy } from "../onboarding-v2/messaging-readiness-copy.js";
 import * as m from "../paraglide/messages.js";
-import { overwriteGetLocale } from "../paraglide/runtime.js";
 import { messagingProviderLabel } from "./provider-label.js";
-
-function withLocale(locale: "en" | "zh", callback: () => void): void {
-  overwriteGetLocale(() => locale);
-  try {
-    callback();
-  } finally {
-    overwriteGetLocale(() => "en");
-  }
-}
 
 /** The settings sentences, composed the way `im-tab.tsx` composes them. */
 function disconnectCopy(provider: "feishu" | "slack") {

@@ -13,6 +13,7 @@
   "auth_password_label": "Password",
   "auth_password_min_length": "At least {count} characters.",
   "auth_provider_dev": "Developer sign-in",
+  "auth_provider_google": "Google",
   "auth_provider_password": "Email and password",
   "auth_sign_in": "Sign in",
   "auth_sign_in_failed": "Sign-in failed. Try again.",

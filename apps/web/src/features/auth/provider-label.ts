@@ -12,13 +12,14 @@ export type AuthProviderId = AuthProvidersResponse["providers"][number]["id"];
  * nobody ever decided how it should read.
  *
  * The switch is exhaustive rather than a lookup so that adding a sign-in method fails to compile
- * here until somebody gives it a name. Only `Google` is a brand and stays as written; the others
- * describe a way to sign in, so their words are translated and come from the catalogue.
+ * here until somebody gives it a name. Every word itself comes from the catalogue: `Google` reads
+ * the same in both locales, while the other two describe a *way* to sign in and are translated.
+ * What this function owns is which name an id gets, not the letters of that name.
  */
 export function authProviderLabel(provider: AuthProviderId): string {
   switch (provider) {
     case "google":
-      return "Google";
+      return m.auth_provider_google();
     case "dev":
       return m.auth_provider_dev();
     case "password":

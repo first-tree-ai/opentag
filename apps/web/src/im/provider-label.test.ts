@@ -1,17 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { withLocale } from "../__tests__/support/with-locale.js";
 import { spaceScriptBoundary } from "../i18n/format.js";
-import { overwriteGetLocale } from "../paraglide/runtime.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "./provider-label.js";
-
-/** Mirrors the helper in i18n/format.test.ts: run one assertion under a locale, then restore. */
-function withLocale(locale: "en" | "zh", callback: () => void): void {
-  overwriteGetLocale(() => locale);
-  try {
-    callback();
-  } finally {
-    overwriteGetLocale(() => "en");
-  }
-}
 
 describe("messagingProviderLabel", () => {
   it("names the channels OpenTag supports today", () => {

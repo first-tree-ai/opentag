@@ -76,6 +76,7 @@ cross-Agent collaboration workflows remain under development.
 - [Slack App configuration](./docs/slack-app-setup.md)
 - [IM Channel and Thread Sessions](./docs/thread-sessions.md)
 - [Internal Session collaboration](./docs/internal-session-collaboration.md)
+- [Tasks](./docs/tasks.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)
 - [Deployment guide](./docs/deploying.md)

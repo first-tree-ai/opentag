@@ -35,7 +35,7 @@
       "name": "@opentag/e2e",
       "requiresRootExport": false,
       "requiresFiles": false,
-      "allowedWorkspaceDependencies": []
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
     }
   }
 }

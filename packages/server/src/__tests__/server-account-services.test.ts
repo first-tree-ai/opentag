@@ -137,6 +137,21 @@ function withComputerUpdateFailure(mode: "empty_returning" | "unique_violation")
   return { machine: new MachineAuthService(database as never, { now: () => NOW }) };
 }
 
+/**
+ * Runs a deletion in the gap between a service's preflight reads and its locked write, so tests can
+ * prove the in-transaction recheck is what refuses a target that vanished mid-flight. Every other
+ * call passes through to the real PGlite database.
+ */
+function deletingOnTransaction(deleteBeforeTransaction: () => Promise<void>) {
+  return new Proxy(unit.database, {
+    get(target, property, receiver) {
+      if (property !== "transaction") return Reflect.get(target, property, receiver);
+      return (callback: (transaction: unknown) => Promise<unknown>) =>
+        deleteBeforeTransaction().then(() => target.transaction(callback as never));
+    },
+  }) as never;
+}
+
 describe("bootstrap and account authentication services", () => {
   it("normalizes bootstrap input, issues a hashed connect code, and rejects a second bootstrap", async () => {
     const result = await bootstrapInitialAdmin(
@@ -306,6 +321,139 @@ describe("machine authentication and Computer services", () => {
     expect(await unit.database.select().from(computerCredentials)).toHaveLength(2);
   });
 
+  it("compactly embeds an explicit Agent target and binds it atomically at redemption", async () => {
+    const bootstrap = await account();
+    const [target] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        displayName: "Setup Agent",
+        name: "setup-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!target) throw new Error("Agent insert did not return a row");
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const issued = await machine.issueForAccount(bootstrap.userId, { targetAgentId: target.id });
+    expect(issued.code).toMatch(/^otcc_[A-Za-z0-9_-]{43}$/u);
+    expect(issued.code).toHaveLength(48);
+    expect(issued.code).not.toContain(target.id);
+    expect((await unit.database.select().from(computerConnectCodes))[0]?.tokenHash).toBe(hashSecret(issued.code));
+
+    const connected = await machine.exchangeConnectCode(exchangeInput(issued.code));
+    expect(connected).toMatchObject({ agentId: target.id, computerId: expect.any(String) });
+    const [bound] = await unit.database.select().from(agents).where(eq(agents.id, target.id));
+    expect(bound).toMatchObject({ computerId: connected.computerId, revision: 2 });
+  });
+
+  it("redeems the previous textual targeted-code format during a rolling upgrade", async () => {
+    const bootstrap = await account();
+    const [target] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        displayName: "Legacy Setup Agent",
+        name: "legacy-setup-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!target) throw new Error("Agent insert did not return a row");
+    const legacyCode = `otcc_${"a".repeat(32)}.${target.id}`;
+    await unit.database.insert(computerConnectCodes).values({
+      tokenHash: hashSecret(legacyCode),
+      issuedByAccountId: bootstrap.userId,
+      mode: "create",
+      targetComputerId: null,
+      createdAt: NOW,
+      expiresAt: new Date(NOW.getTime() + 15 * 60 * 1000),
+    });
+
+    const connected = await new MachineAuthService(unit.database, { now: () => NOW }).exchangeConnectCode(
+      exchangeInput(legacyCode),
+    );
+
+    expect(connected.agentId).toBe(target.id);
+    const [bound] = await unit.database.select().from(agents).where(eq(agents.id, target.id));
+    expect(bound?.computerId).toBe(connected.computerId);
+  });
+
+  it("rejects a bound or foreign Agent before issuing a targeted create code", async () => {
+    const bootstrap = await account();
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const generic = await machine.issueForAccount(bootstrap.userId, {});
+    const connected = await machine.exchangeConnectCode(exchangeInput(generic.code));
+    const [bound] = await unit.database
+      .insert(agents)
+      .values({
+        computerId: connected.computerId,
+        createdByUserId: bootstrap.userId,
+        displayName: "Bound Agent",
+        name: "bound-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!bound) throw new Error("bound Agent fixture missing");
+    await expect(machine.issueForAccount(bootstrap.userId, { targetAgentId: bound.id })).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+      statusCode: 409,
+    });
+
+    const [other] = await unit.database
+      .insert(users)
+      .values({ email: "target-owner@example.com", displayName: "Other" })
+      .returning({ id: users.id });
+    if (!other) throw new Error("target owner fixture missing");
+    const [foreign] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: other.id,
+        displayName: "Foreign Agent",
+        name: "foreign-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!foreign) throw new Error("foreign Agent fixture missing");
+    await expect(machine.issueForAccount(bootstrap.userId, { targetAgentId: foreign.id })).rejects.toMatchObject({
+      code: "RESOURCE_NOT_FOUND",
+      statusCode: 404,
+    });
+  });
+
+  it("rolls back Computer creation when a targeted Agent changes before redemption", async () => {
+    const bootstrap = await account();
+    const [target] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        displayName: "Setup Agent",
+        name: "setup-agent",
+        runtimeProvider: "codex",
+      })
+      .returning({ id: agents.id });
+    if (!target) throw new Error("Agent insert did not return a row");
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const targeted = await machine.issueForAccount(bootstrap.userId, { targetAgentId: target.id });
+    const generic = await machine.issueForAccount(bootstrap.userId, {});
+    const existing = await machine.exchangeConnectCode(exchangeInput(generic.code));
+    await unit.database.update(agents).set({ computerId: existing.computerId }).where(eq(agents.id, target.id));
+    const computersBefore = await unit.database.select().from(computers);
+    const credentialsBefore = await unit.database.select().from(computerCredentials);
+
+    await expect(machine.exchangeConnectCode(exchangeInput(targeted.code))).rejects.toMatchObject({
+      code: "AUTH_INVALID_CODE",
+    });
+
+    expect(await unit.database.select().from(computers)).toHaveLength(computersBefore.length);
+    expect(await unit.database.select().from(computerCredentials)).toHaveLength(credentialsBefore.length);
+    const [code] = await unit.database
+      .select()
+      .from(computerConnectCodes)
+      .where(eq(computerConnectCodes.tokenHash, hashSecret(targeted.code)));
+    expect(code?.consumedAt).toBeNull();
+    const [unchanged] = await unit.database.select().from(agents).where(eq(agents.id, target.id));
+    expect(unchanged?.computerId).toBe(existing.computerId);
+  });
+
   it("reports expiry, duplicate installation, and repaired ownership conflicts", async () => {
     const value = await machineFixture();
     const expired = await value.machine.issueForAccount(value.bootstrap.userId, {});
@@ -422,7 +570,15 @@ describe("machine authentication and Computer services", () => {
     const { buildComputerConnectCommand } = await import("../services/computers/machine-auth-service.js");
     expect(
       buildComputerConnectCommand({ code: "abc", environment: "staging", publicUrl: "https://dev.example.com" }),
-    ).toContain("opentag-staging computer connect");
+    ).toContain('"$HOME/.local/bin/opentag-staging" connect');
+    expect(
+      buildComputerConnectCommand({
+        code: "abc",
+        downloadBaseUrl: "https://mirror.example/releases/",
+        environment: "staging",
+        publicUrl: "https://dev.example.com",
+      }),
+    ).toContain("curl -fsSL https://mirror.example/releases/staging/install.sh | sh");
     expect(
       buildComputerConnectCommand({ code: "a'; echo nope", environment: "prod", publicUrl: "https://example.com/a b" }),
     ).toContain("'a'\\''; echo nope'");
@@ -483,6 +639,8 @@ describe("machine authentication and Computer services", () => {
       { getActiveUserById: vi.fn() },
       { now: () => NOW, presenceTimeoutMs: 1000 },
     );
+    expect(await service.accountInFirstSetup(exchange.computerId)).toBe(true);
+    expect(await service.accountInFirstSetup(randomUUID())).toBe(false);
     const frame = {
       type: "computer:register" as const,
       requestId: randomUUID(),
@@ -534,6 +692,8 @@ describe("machine authentication and Computer services", () => {
       providerReadiness: expect.any(Array),
       imCliReadiness: expect.any(Array),
     });
+    await unit.database.update(users).set({ setupCompletedAt: NOW }).where(eq(users.id, value.bootstrap.userId));
+    expect(await service.accountInFirstSetup(exchange.computerId)).toBe(false);
     await expect(service.assertActiveCredential(exchange)).resolves.toBeUndefined();
     await unit.database
       .update(computerCredentials)
@@ -714,7 +874,7 @@ describe("Onboarding reset and setup services", () => {
     });
   });
 
-  it("completes setup only for an owned active Agent with a ready handoff", async () => {
+  it("adopts an owned active Agent with no handoff or runtime gate, and refuses every other target", async () => {
     const bootstrap = await account();
     const machine = new MachineAuthService(unit.database, { now: () => NOW });
     const issued = await machine.issueForAccount(bootstrap.userId, {});
@@ -731,8 +891,9 @@ describe("Onboarding reset and setup services", () => {
       })
       .returning();
     if (!agent) throw new Error("agent fixture missing");
-    const ready = { getHandoffForAgent: vi.fn().mockResolvedValue({ handoffReady: true }) } as never;
-    const setup = new AccountSetupService(unit.database, ready, { now: () => NOW });
+    // No binding, no handoff, no runtime observation exists for this Agent at all: adoption opens
+    // normal app access on ownership and active status alone.
+    const setup = new AccountSetupService(unit.database, { now: () => NOW });
     const [other] = await unit.database
       .insert(users)
       .values({ email: "setup-other@example.com", displayName: "Other" })
@@ -744,18 +905,57 @@ describe("Onboarding reset and setup services", () => {
     await expect(setup.completeForAccount(bootstrap.userId, agent.id)).resolves.toEqual({
       setupCompletedAt: NOW.toISOString(),
     });
+    // Once granted, admission never reopens: suspending the adopted Agent afterwards changes nothing.
+    await unit.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, agent.id));
+    await expect(setup.completeForAccount(bootstrap.userId, agent.id)).resolves.toEqual({
+      setupCompletedAt: NOW.toISOString(),
+    });
+    // A foreign Account cannot adopt someone else's Agent, and a missing id is indistinguishable.
+    await expect(setup.completeForAccount(other.id, agent.id)).rejects.toMatchObject({
+      code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+      statusCode: 404,
+    });
     await expect(setup.completeForAccount(other.id, randomUUID())).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+      statusCode: 404,
     });
-    await unit.database.update(users).set({ setupCompletedAt: null }).where(eq(users.id, bootstrap.userId));
-    const notReady = new AccountSetupService(unit.database, {
-      getHandoffForAgent: vi.fn().mockResolvedValue({ handoffReady: false }),
-    } as never);
-    await expect(notReady.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
-      code: "ACCOUNT_SETUP_NOT_READY",
+    // An inactive target fails closed even for its owner (this Account has not completed setup).
+    const [suspended] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: other.id,
+        name: "retired",
+        displayName: "Retired",
+        runtimeProvider: "codex",
+        status: "suspended",
+      })
+      .returning({ id: agents.id });
+    if (!suspended) throw new Error("suspended Agent fixture missing");
+    await expect(setup.completeForAccount(other.id, suspended.id)).rejects.toMatchObject({
+      code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+      statusCode: 404,
     });
-    expect(new AccountSetupServiceError("ACCOUNT_SETUP_NOT_READY", 409, "x")).toBeInstanceOf(Error);
+    expect(new AccountSetupServiceError("ACCOUNT_SETUP_AGENT_NOT_FOUND", 404, "x")).toBeInstanceOf(Error);
     expect(new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "x")).toBeInstanceOf(Error);
+  });
+
+  it("adopts an owned active Agent that has no Computer bound yet", async () => {
+    const bootstrap = await account();
+    const [unbound] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        name: "unbound",
+        displayName: "Unbound",
+        runtimeProvider: "codex",
+        status: "active",
+      })
+      .returning({ id: agents.id });
+    if (!unbound) throw new Error("unbound Agent fixture missing");
+    const setup = new AccountSetupService(unit.database, { now: () => NOW });
+    await expect(setup.completeForAccount(bootstrap.userId, unbound.id)).resolves.toEqual({
+      setupCompletedAt: NOW.toISOString(),
+    });
   });
 
   it("rechecks the setup Agent under lock before writing the completion marker", async () => {
@@ -774,14 +974,23 @@ describe("Onboarding reset and setup services", () => {
       })
       .returning({ id: agents.id });
     if (!agent) throw new Error("agent fixture missing");
-    const getHandoffForAgent = vi.fn(async () => {
-      await unit.database.delete(agents).where(eq(agents.id, agent.id));
-      return { handoffReady: true };
-    });
-    const setup = new AccountSetupService(unit.database, { getHandoffForAgent } as never, { now: () => NOW });
+    // The Agent vanishes between the preflight ownership read and the locked write, which is the
+    // race the in-transaction recheck exists to refuse.
+    const database = deletingOnTransaction(() =>
+      unit.database
+        .delete(agents)
+        .where(eq(agents.id, agent.id))
+        .then(() => undefined),
+    );
+    const setup = new AccountSetupService(database, { now: () => NOW });
     await expect(setup.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
     });
+    const [surviving] = await unit.database
+      .select({ setupCompletedAt: users.setupCompletedAt })
+      .from(users)
+      .where(eq(users.id, bootstrap.userId));
+    expect(surviving?.setupCompletedAt).toBeNull();
   });
 
   it("rechecks the Account itself under lock before writing the completion marker", async () => {
@@ -800,7 +1009,7 @@ describe("Onboarding reset and setup services", () => {
       })
       .returning({ id: agents.id });
     if (!agent) throw new Error("agent fixture missing");
-    const getHandoffForAgent = vi.fn(async () => {
+    const database = deletingOnTransaction(async () => {
       await unit.database.delete(agents).where(eq(agents.createdByUserId, bootstrap.userId));
       await unit.database.delete(computerCredentials).where(eq(computerCredentials.issuedByUserId, bootstrap.userId));
       await unit.database
@@ -809,9 +1018,8 @@ describe("Onboarding reset and setup services", () => {
       await unit.database.delete(computers).where(eq(computers.ownerAccountId, bootstrap.userId));
       await unit.database.delete(accountCliLoginCodes).where(eq(accountCliLoginCodes.userId, bootstrap.userId));
       await unit.database.delete(users).where(eq(users.id, bootstrap.userId));
-      return { handoffReady: true };
     });
-    const setup = new AccountSetupService(unit.database, { getHandoffForAgent } as never, { now: () => NOW });
+    const setup = new AccountSetupService(database, { now: () => NOW });
     await expect(setup.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
       statusCode: 404,

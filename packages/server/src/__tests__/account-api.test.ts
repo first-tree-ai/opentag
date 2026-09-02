@@ -558,6 +558,35 @@ describe("Account-native management collections", () => {
     expect(service.machineAuthService.issueForAccount).toHaveBeenCalledTimes(2);
   });
 
+  it("forwards an explicit Agent target without letting the client choose Account scope", async () => {
+    const { app, service } = appWith();
+
+    const create = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountComputerConnectCodes,
+      headers: authorization,
+      payload: { mode: "create", targetAgentId: agentId },
+    });
+    const repair = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountComputerConnectCodes,
+      headers: authorization,
+      payload: { mode: "repair", targetAgentId: agentId, targetComputerId: computerId },
+    });
+
+    expect(create.statusCode).toBe(201);
+    expect(repair.statusCode).toBe(201);
+    expect(service.machineAuthService.issueForAccount).toHaveBeenNthCalledWith(1, userId, {
+      mode: "create",
+      targetAgentId: agentId,
+    });
+    expect(service.machineAuthService.issueForAccount).toHaveBeenNthCalledWith(2, userId, {
+      mode: "repair",
+      targetAgentId: agentId,
+      targetComputerId: computerId,
+    });
+  });
+
   it("lists Account-owned collections from authenticated Account authority", async () => {
     const { app, service } = appWith();
 

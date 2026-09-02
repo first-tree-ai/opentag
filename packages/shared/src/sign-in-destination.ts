@@ -31,7 +31,7 @@ export function resolveSignInDestination(value?: string): string | undefined {
     return undefined;
   }
   // An allowlist rather than a "starts with /" test: only these areas are somewhere a sign-in is meant to arrive at.
-  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|onboarding|login)(?:\?[^#]*)?$/.test(next)) {
+  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|login)(?:\?[^#]*)?$/.test(next)) {
     return next;
   }
   return undefined;

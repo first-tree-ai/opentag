@@ -203,9 +203,11 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       throw new Error("CLI doctor smoke mutated its OpenTag Home");
     }
 
+    // Unknown options are Commander usage errors: the common CLI validation contract
+    // exits with EXIT_CODES.usage (2), not a command failure (1).
     const removedDoctorOption = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], {
       env: { OPENTAG_HOME: doctorHome },
-      expectedStatus: 1,
+      expectedStatus: 2,
     });
     if (
       !removedDoctorOption.stderr.includes("unknown option") ||

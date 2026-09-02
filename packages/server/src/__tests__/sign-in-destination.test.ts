@@ -14,7 +14,7 @@ describe("sign-in destinations", () => {
       "/agents/example/runtime",
       "/settings",
       "/settings/profile",
-      "/onboarding",
+      "/agents/setup",
       "/login",
       "/agents?tab=runtime",
     ];

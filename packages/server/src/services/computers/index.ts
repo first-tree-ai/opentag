@@ -13,5 +13,6 @@ export {
 } from "./machine-auth-service.js";
 export {
   type ProviderReadinessSource,
+  projectComputerImCliReadiness,
   projectComputerProviderReadiness,
 } from "./provider-readiness.js";

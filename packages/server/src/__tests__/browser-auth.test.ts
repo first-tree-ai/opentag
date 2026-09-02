@@ -168,7 +168,7 @@ describe("browser authentication routes", () => {
       headers: {
         host: "localhost:8000",
         origin: "http://localhost:5173",
-        referer: "http://localhost:5173/onboarding",
+        referer: "http://localhost:5173/agents/setup",
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "same-origin",

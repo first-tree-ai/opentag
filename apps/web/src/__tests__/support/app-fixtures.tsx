@@ -5,6 +5,7 @@ import { vi } from "vitest";
 export const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 export const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 export const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+export const secondAgentId = "2b74b32f-a7d8-4585-92fb-5ecbf1677b35";
 export const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 export const taskSessionId = "11111111-1111-4111-8111-111111111111";
 export const secondComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
@@ -32,10 +33,10 @@ export const twoReadyComputers = [
   },
 ];
 
-/** Writes one version-3 creation intent, the shape a previous visit would have left behind. */
+/** Writes one current creation intent, the shape an interrupted visit leaves behind. */
 export function storeCreationIntent(record: { creationIntentId: string; request: Record<string, unknown> }) {
-  const stored = { version: 3, accountId: userId, ...record };
-  window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 3, accountId: userId, records: [stored] }));
+  const stored = { version: 4, accountId: userId, ...record };
+  window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 4, accountId: userId, records: [stored] }));
   return stored;
 }
 
@@ -64,6 +65,13 @@ export const agentListItem = {
   activity: { state: "idle" as const },
   usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
 };
+/** A second active Agent the Account could own, for surfaces that resolve cardinality. */
+export const secondAgentListItem = {
+  ...agentListItem,
+  id: secondAgentId,
+  name: "helper",
+  displayName: "Helper",
+};
 export const taskSummary = {
   id: taskSessionId,
   agent: { id: agentId, name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex" },
@@ -78,6 +86,186 @@ export const taskSummary = {
 
 export function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+}
+
+const setupBindingId = "9d4e1378-8ff2-4e41-a6dd-e8bf59ed775b";
+const setupCredentialGeneration = 1;
+
+function setupTargetIdOrThrow(path: string, method: string | undefined): string {
+  if (method !== undefined) throw new Error(`Unexpected request: ${method} ${path}`);
+  const match = /^\/api\/v1\/agents\/([^/]+)\/setup$/.exec(path);
+  if (!match) throw new Error(`Unexpected request: GET ${path}`);
+  return match[1] as string;
+}
+
+function setupProjectionOrThrow(
+  path: string,
+  method: string | undefined,
+  state: {
+    readonly agentUnbound: boolean;
+    readonly bindingReauth: boolean;
+    readonly bindingState: "provisioning" | "active";
+    readonly bound: boolean;
+    readonly handoffReady: boolean;
+    readonly provider: "feishu" | "slack";
+    readonly runtimeProvider: "codex" | "claude-code";
+  },
+): Response {
+  const targetAgentId = setupTargetIdOrThrow(path, method);
+  if (targetAgentId !== agentId && targetAgentId !== secondAgentId) {
+    return json({ error: { code: "RESOURCE_NOT_FOUND", category: "deterministic", message: "Not found" } }, 404);
+  }
+  const targetBase =
+    targetAgentId === secondAgentId
+      ? { ...agentSummary, id: secondAgentId, name: "helper", displayName: "Helper" }
+      : agentSummary;
+  const isUnbound = targetAgentId === agentId && state.agentUnbound;
+  const target = {
+    ...targetBase,
+    runtimeProvider: state.runtimeProvider,
+    ...(isUnbound ? { computer: null } : {}),
+  };
+  const observedAt = "2026-08-20T00:00:00.000Z";
+  if (isUnbound) {
+    return json({
+      agent: target,
+      stage: "needs-computer",
+      computer: { kind: "not-bound" },
+      runtime: { kind: "unavailable", provider: target.runtimeProvider, reason: "computer-not-bound" },
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "computer-not-bound" }],
+      actions: [{ kind: "bind-computer" }],
+      observedAt,
+    });
+  }
+  const computer = {
+    kind: "bound",
+    ...targetBase.computer,
+    connectionStatus: "online",
+    imCliReadiness: [
+      { provider: "feishu", status: "ready", observedAt },
+      { provider: "slack", status: "ready", observedAt },
+    ],
+    lastSeenAt: observedAt,
+    observedAt,
+  };
+  const runtime = { kind: "observed", provider: target.runtimeProvider, status: "ready", observedAt };
+  if (state.bound && state.bindingReauth) {
+    const replace =
+      state.provider === "feishu"
+        ? [
+            {
+              kind: "replace-messaging" as const,
+              provider: "feishu" as const,
+              bindingId: setupBindingId,
+              credentialGeneration: setupCredentialGeneration,
+            },
+          ]
+        : [];
+    return json({
+      agent: target,
+      stage: "needs-messaging",
+      computer,
+      runtime,
+      messaging: {
+        kind: "blocked",
+        provider: state.provider,
+        bindingId: setupBindingId,
+        credentialGeneration: setupCredentialGeneration,
+        code: "reauthorization-required",
+        errorCode: null,
+      },
+      blockers: [
+        {
+          code: "messaging-not-ready",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          state: "blocked",
+        },
+      ],
+      actions: [
+        {
+          kind: "reauthorize-messaging",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          credentialGeneration: setupCredentialGeneration,
+        },
+        ...replace,
+        { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
+      ],
+      observedAt,
+    });
+  }
+  if (state.bound && state.bindingState === "active" && state.handoffReady) {
+    return json({
+      agent: target,
+      stage: "ready",
+      computer,
+      runtime,
+      messaging: {
+        kind: "ready",
+        provider: state.provider,
+        bindingId: setupBindingId,
+        credentialGeneration: setupCredentialGeneration,
+      },
+      blockers: [],
+      actions: [
+        {
+          kind: "reauthorize-messaging",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          credentialGeneration: setupCredentialGeneration,
+        },
+        { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
+      ],
+      observedAt,
+    });
+  }
+  if (state.bound) {
+    return json({
+      agent: target,
+      stage: "needs-messaging",
+      computer,
+      runtime,
+      messaging: {
+        kind: "waiting-handoff",
+        provider: state.provider,
+        bindingId: setupBindingId,
+        credentialGeneration: setupCredentialGeneration,
+      },
+      blockers: [
+        {
+          code: "messaging-not-ready",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          state: "waiting-handoff",
+        },
+      ],
+      actions: [
+        {
+          kind: "reauthorize-messaging",
+          provider: state.provider,
+          bindingId: setupBindingId,
+          credentialGeneration: setupCredentialGeneration,
+        },
+        { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
+      ],
+      observedAt,
+    });
+  }
+  return json({
+    agent: target,
+    stage: "needs-messaging",
+    computer,
+    runtime,
+    messaging: { kind: "not-configured" },
+    blockers: [{ code: "messaging-not-configured" }],
+    actions: [
+      { kind: "start-messaging", provider: "feishu" },
+      { kind: "start-messaging", provider: "slack" },
+    ],
+    observedAt,
+  });
 }
 
 function internalToolsFixtureResponse(input: {
@@ -115,6 +303,8 @@ export function installApi(
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     multipleMemberships?: boolean;
     agentCreateError?: "conflict" | "generic" | "name";
+    /** Exact members of the Account's Agent list, replacing the default single-Agent answer. */
+    agentList?: readonly Record<string, unknown>[];
     /** Serves an Agent the Server says has no Computer, which is not the same as one it cannot read. */
     agentUnbound?: boolean;
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
@@ -188,6 +378,26 @@ export function installApi(
   let meFailuresRemaining = options.meFailuresAfterProfileUpdate ?? 0;
   let computerConnectCodeIssued = false;
   const connectCodeId = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+  /** The Account's Agents, in the Server's own order; an exact list installed by a test wins verbatim. */
+  const serveAgentList = () => {
+    const failureStatus = options.agentListStatus?.();
+    if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
+    if (options.agentList) return json({ agents: options.agentList });
+    return json({
+      agents: options.emptyAgents
+        ? []
+        : [
+            {
+              ...agentListItem,
+              createdBy: options.agentCreator ?? agentListItem.createdBy,
+              activity: options.agentActivity ?? agentListItem.activity,
+              status: lifecycleStatus,
+              runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+              ...(agentUnbound ? { computer: null } : {}),
+            },
+          ],
+    });
+  };
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -347,24 +557,7 @@ export function installApi(
       await options.agentCreate?.(body);
       return json(adminConfig(), 201);
     }
-    if (path === "/api/v1/agents" && init?.method === undefined) {
-      const failureStatus = options.agentListStatus?.();
-      if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
-      return json({
-        agents: options.emptyAgents
-          ? []
-          : [
-              {
-                ...agentListItem,
-                createdBy: options.agentCreator ?? agentListItem.createdBy,
-                activity: options.agentActivity ?? agentListItem.activity,
-                status: lifecycleStatus,
-                runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
-                ...(agentUnbound ? { computer: null } : {}),
-              },
-            ],
-      });
-    }
+    if (path === "/api/v1/agents" && init?.method === undefined) return serveAgentList();
     const normalizeComputer = (computer: Record<string, unknown>) => ({
       computerId: computer.computerId ?? computer.id,
       displayName: computer.displayName,
@@ -594,7 +787,15 @@ export function installApi(
       loggedOut = true;
       return new Response(null, { status: 204 });
     }
-    throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
+    return setupProjectionOrThrow(path, init?.method, {
+      agentUnbound,
+      bindingReauth: options.bindingReauth ?? false,
+      bindingState: options.bindingState ?? (options.bindingReauth ? "provisioning" : "active"),
+      bound: options.bound ?? false,
+      handoffReady: options.handoffReady ?? !options.bindingReauth,
+      provider: options.provider ?? "feishu",
+      runtimeProvider: options.runtimeProvider ?? "codex",
+    });
   });
 }
 

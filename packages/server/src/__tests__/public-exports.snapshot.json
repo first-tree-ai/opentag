@@ -1,6 +1,7 @@
 [
   "AgentService",
   "AgentServiceError",
+  "AgentSetupService",
   "AuthService",
   "AuthServiceError",
   "BootstrapReadiness",

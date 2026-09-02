@@ -44,6 +44,67 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Runtime")).toBeNull();
   });
 
+  it("offers one Continue setup exit for an unfinished Agent and returns to that Agent", async () => {
+    installApi({ agentUnbound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const status = screen.getByRole("region", { name: "Agent status" });
+    const setupLinks = within(status).getAllByRole("link", { name: "Continue setup" });
+    expect(setupLinks).toHaveLength(1);
+    expect(setupLinks[0]?.getAttribute("href")).toBe(`/agents/setup?agentId=${agentId}`);
+
+    fireEvent.click(setupLinks[0] as HTMLElement);
+    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to agent" }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
+  });
+
+  it("routes an unfinished runtime state to Setup", async () => {
+    installApi({
+      computerProviderReadiness: [{ provider: "codex", status: "install", observedAt: null }],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect((await screen.findByRole("link", { name: "Continue setup" })).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}`,
+    );
+  });
+
+  it("routes an unfinished Messaging state to Setup", async () => {
+    installApi();
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect((await screen.findByRole("link", { name: "Continue setup" })).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}`,
+    );
+  });
+
+  it("keeps post-configuration maintenance states in Settings", async () => {
+    installApi({ bound: true, computerStatus: () => "offline" });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect((await screen.findByRole("link", { name: "Open computer setup" })).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/computer`,
+    );
+    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
+  });
+
+  it("keeps Messaging reauthorization in Settings", async () => {
+    installApi({ bindingReauth: true, bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect((await screen.findByRole("link", { name: "Update permissions" })).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/messaging`,
+    );
+    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
+  });
+
   it("shows another Admin's creation identity as audit information, not management ownership", async () => {
     installApi({ agentCreator: { userId: memberUserId, displayName: "Grace" }, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}`);
@@ -169,20 +230,18 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Runtime")).toBeNull();
   });
 
-  it("returns to the Agent home when Messaging was opened from its Manage shortcut", async () => {
+  it("returns to the Agent home when unfinished Messaging was opened from its setup shortcut", async () => {
     installApi({ bindingState: "provisioning", bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
     const status = await screen.findByRole("region", { name: "Agent status" });
     expect(within(status).getByText("Setup in progress")).toBeTruthy();
-    const setupLink = within(status).getByRole("link", { name: "View setup" });
+    const setupLink = within(status).getByRole("link", { name: "Continue setup" });
     expect(setupLink.closest('[data-ui="agent-status-message-channel"]')).toBeTruthy();
     fireEvent.click(setupLink);
-    expect(await screen.findByRole("heading", { name: "Messaging" })).toBeTruthy();
-    const backLink = screen.getByRole("link", { name: "Back to Reviewer" });
-    expect(backLink.getAttribute("href")).toBe(`/agents/${agentId}`);
-    fireEvent.click(backLink);
+    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to agent" }));
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
   });
 

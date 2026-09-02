@@ -1,5 +1,6 @@
 export * from "./account.js";
 export * from "./agent.js";
+export * from "./agent-setup.js";
 export * from "./auth.js";
 export * from "./computer.js";
 export * from "./errors.js";

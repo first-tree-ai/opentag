@@ -68,6 +68,10 @@ describe("OpenTag Web App Shell", () => {
     expect(
       within(coverage).getByText("None of the 4 tasks reported token usage. Totals and charts may be empty."),
     ).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "No token usage" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Token usage over time" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Token breakdown" })).toBeNull();
+    expect(screen.queryByRole("table", { name: "Token breakdown" })).toBeNull();
   });
 
   it("keeps the Usage loading skeleton aligned with the two summary metrics", async () => {

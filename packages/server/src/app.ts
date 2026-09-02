@@ -29,12 +29,21 @@ import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
-import { type AgentRuntimeTestService, type AgentService, AgentServiceError } from "./services/agents/index.js";
+import {
+  type AgentRuntimeTestService,
+  type AgentService,
+  AgentServiceError,
+  type AgentSetupService,
+} from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
-import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
+import {
+  type ImBindingService,
+  ImBindingServiceError,
+  ImBindingUnbindRequiredError,
+} from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
@@ -50,6 +59,7 @@ export interface CreateAppOptions {
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
+  agentSetupService?: AgentSetupService;
   agentRuntimeTestService?: AgentRuntimeTestService;
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
@@ -59,6 +69,7 @@ export interface CreateAppOptions {
     publicUrl: string;
   };
   computerConnectCode?: {
+    downloadBaseUrl?: string;
     environment: ChannelName;
     publicUrl: string;
   };
@@ -86,6 +97,39 @@ export interface CreateAppOptions {
 
 export function sanitizeRequestUrl(url: string): string {
   return url.split("?", 1)[0] ?? "/";
+}
+
+type AccountFacingError =
+  | AuthServiceError
+  | AgentServiceError
+  | ImBindingServiceError
+  | OnboardingResetError
+  | TaskQueryError
+  | SlackConfigurationServiceError
+  | AccountSetupServiceError;
+
+function isAccountFacingError(error: unknown): error is AccountFacingError {
+  return (
+    error instanceof AuthServiceError ||
+    error instanceof AgentServiceError ||
+    error instanceof ImBindingServiceError ||
+    error instanceof OnboardingResetError ||
+    error instanceof TaskQueryError ||
+    error instanceof SlackConfigurationServiceError ||
+    error instanceof AccountSetupServiceError
+  );
+}
+
+function accountFacingErrorEnvelope(error: AccountFacingError, requestId: string) {
+  return ErrorEnvelopeSchema.parse({
+    error: {
+      code: error.code,
+      category: error.category,
+      message: error.message,
+      requestId,
+      ...(error instanceof ImBindingUnbindRequiredError ? { unbindRequired: error.unbindRequired } : {}),
+    },
+  });
 }
 
 export function formatHttpSpanName(request: { method?: string; routeOptions?: { url?: string } }): string {
@@ -426,7 +470,14 @@ export function createApp(options: CreateAppOptions = {}) {
       authOptions,
     });
     if (options.agentService) {
-      registerAgentRoutes(app, authService, options.agentService, authOptions, options.agentRuntimeTestService);
+      registerAgentRoutes(
+        app,
+        authService,
+        options.agentService,
+        authOptions,
+        options.agentRuntimeTestService,
+        options.agentSetupService,
+      );
     }
     if (
       options.agentService ||
@@ -495,25 +546,9 @@ export function createApp(options: CreateAppOptions = {}) {
       });
       return reply.code(feishuFailure.statusCode).send(envelope);
     }
-    if (
-      error instanceof AuthServiceError ||
-      error instanceof AgentServiceError ||
-      error instanceof ImBindingServiceError ||
-      error instanceof OnboardingResetError ||
-      error instanceof TaskQueryError ||
-      error instanceof SlackConfigurationServiceError ||
-      error instanceof AccountSetupServiceError
-    ) {
+    if (isAccountFacingError(error)) {
       logClassifiedFailure(request, error, error);
-      const envelope = ErrorEnvelopeSchema.parse({
-        error: {
-          code: error.code,
-          category: error.category,
-          message: error.message,
-          requestId: request.id,
-        },
-      });
-      return reply.code(error.statusCode).send(envelope);
+      return reply.code(error.statusCode).send(accountFacingErrorEnvelope(error, request.id));
     }
     if (error instanceof SessionCliProofError) {
       logClassifiedFailure(request, { code: "SESSION_PROOF_INVALID", category: "credential", statusCode: 401 }, error);

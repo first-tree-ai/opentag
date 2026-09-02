@@ -1,4 +1,8 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { OpenTagApiError } from "@opentag/client";
+import { StructuredErrorSchema } from "@opentag/shared";
 import { CommanderError } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { resolveCommandContext } from "../core/command/context.js";
@@ -297,6 +301,99 @@ describe("CLI process entrypoint", () => {
       process.exitCode = previousExitCode;
       exit.mockRestore();
       vi.resetModules();
+    }
+  });
+
+  it.each([
+    {
+      argv: ["node", "opentag", "provider-cli", "ensure", "--json"],
+      messagePart: "--provider",
+      label: "missing required --provider option",
+    },
+    {
+      argv: ["node", "opentag", "provider-cli", "ensure", "--provider", "lark", "--json", "--bogus"],
+      messagePart: "--bogus",
+      label: "unknown option",
+    },
+  ])("presents the $label as one JSON failure document when --json is requested", async ({ argv, messagePart }) => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-cli-entry-"));
+    const previousArgv = process.argv;
+    const previousHome = process.env.OPENTAG_HOME;
+    const previousExitCode = process.exitCode;
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null) => {
+      process.exitCode = typeof code === "number" ? code : undefined;
+      return undefined as never;
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      vi.resetModules();
+      // Earlier tests mock the program module; these cases exercise the real Commander wiring.
+      vi.doUnmock("../cli/program.js");
+      process.env.OPENTAG_HOME = home;
+      process.argv = [...argv];
+      await import("../cli/index.js");
+
+      expect(process.exitCode).toBe(2);
+      expect(stdout).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const document = JSON.parse(String(stderr.mock.calls[0]?.[0])) as { ok: boolean; error: unknown };
+      expect(document.ok).toBe(false);
+      expect(document).not.toHaveProperty("result");
+      expect(StructuredErrorSchema.safeParse(document.error).success).toBe(true);
+      expect(document.error).toEqual({
+        code: "USAGE_ERROR",
+        category: "validation",
+        retryability: "never",
+        phase: "validation",
+        message: expect.stringContaining(messagePart),
+      });
+    } finally {
+      process.argv = previousArgv;
+      if (previousHome === undefined) delete process.env.OPENTAG_HOME;
+      else process.env.OPENTAG_HOME = previousHome;
+      process.exitCode = previousExitCode;
+      exit.mockRestore();
+      stdout.mockRestore();
+      stderr.mockRestore();
+      vi.resetModules();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps Commander usage errors human-readable when --json is not requested", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-cli-entry-"));
+    const previousArgv = process.argv;
+    const previousHome = process.env.OPENTAG_HOME;
+    const previousExitCode = process.exitCode;
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null) => {
+      process.exitCode = typeof code === "number" ? code : undefined;
+      return undefined as never;
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      vi.resetModules();
+      vi.doUnmock("../cli/program.js");
+      process.env.OPENTAG_HOME = home;
+      process.argv = ["node", "opentag", "provider-cli", "ensure"];
+      await import("../cli/index.js");
+
+      expect(process.exitCode).toBe(2);
+      expect(stdout).not.toHaveBeenCalled();
+      const text = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(text).toContain("--provider");
+      expect(() => JSON.parse(text)).toThrow();
+    } finally {
+      process.argv = previousArgv;
+      if (previousHome === undefined) delete process.env.OPENTAG_HOME;
+      else process.env.OPENTAG_HOME = previousHome;
+      process.exitCode = previousExitCode;
+      exit.mockRestore();
+      stdout.mockRestore();
+      stderr.mockRestore();
+      vi.resetModules();
+      await rm(home, { recursive: true, force: true });
     }
   });
 });

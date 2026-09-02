@@ -25,6 +25,7 @@ export const toCommandError = commandPolicy.toCommandError;
 export { formatComputerList } from "./core/computer/formatting.js";
 export { listComputers } from "./core/computer/queries.js";
 export {
+  type DoctorNextAction,
   type DoctorOptions,
   type DoctorResult,
   runDoctor,
@@ -39,6 +40,7 @@ export {
   type ProviderCliInspectCommandResult,
   runProviderCliInspect,
 } from "./core/provider-cli/inspect.js";
+export type { ProviderCliNextAction } from "./core/provider-cli/shared.js";
 export {
   formatSessionCommandResult,
   formatSessionList,

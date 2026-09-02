@@ -4,6 +4,7 @@
   "computer_connect_agent_title": "连接电脑",
   "computer_connect_another_description": "在要添加的电脑上执行该命令。",
   "computer_connect_another_title": "连接另一台电脑",
+  "computer_connect_command_intro": "在终端中运行此命令，或将其粘贴到你的编码 Agent 中。",
   "computer_connect_connected": "{computerName} 已连接",
   "computer_connect_copied": "命令已复制",
   "computer_connect_copy": "复制命令",
@@ -15,7 +16,7 @@
   "computer_connect_entry_title": "连接电脑",
   "computer_connect_expired": "此命令已过期。",
   "computer_connect_expired_status": "连接命令已过期。请获取新命令以继续。",
-  "computer_connect_expires_in": "剩余有效时间 {time}",
+  "computer_connect_expires_in": "连接码将在 {time} 后过期",
   "computer_connect_issue_failed": "无法创建电脑连接命令",
   "computer_connect_issuing": "正在准备连接命令…",
   "computer_connect_poll_failed": "无法刷新连接命令状态",
@@ -24,5 +25,5 @@
   "computer_connect_repair_title": "重新连接 {computerName}",
   "computer_connect_retry_issue": "重试",
   "computer_connect_waiting_create": "正在等待电脑连接…",
-  "computer_connect_waiting_repair": "正在等待 {computerName} 连接…"
+  "computer_connect_waiting_repair": "正在等待 {computerName} 重新连接…"
 }

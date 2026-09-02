@@ -170,6 +170,7 @@ vi.mock("../services/agents/index.js", () => ({
     }
   },
   AgentServiceError: class extends Error {},
+  AgentSetupService: class {},
 }));
 vi.mock("../services/auth/index.js", () => ({
   AuthService: class {},

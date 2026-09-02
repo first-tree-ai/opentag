@@ -6,9 +6,14 @@ import type { AgentSettingsSection } from "./agent-settings/sections.js";
  * producing a dead link at runtime.
  */
 export type AgentSettingsSectionLink = ReturnType<typeof agentSettingsSectionLink>;
+export type AgentSetupLink = ReturnType<typeof agentSetupLink>;
 
 export function agentDetailLink(agentId: string) {
   return { params: { agentId }, to: "/agents/$agentId" } as const;
+}
+
+export function agentSetupLink(agentId: string) {
+  return { search: { agentId }, to: "/agents/setup" } as const;
 }
 
 export function agentUsageLink(agentId: string) {

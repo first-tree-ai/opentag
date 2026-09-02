@@ -41,7 +41,7 @@ function InternalToolsRoute() {
               await navigate({
                 replace: true,
                 search: { review: mode === "reboard" ? "reboard" : undefined },
-                to: "/onboarding",
+                to: "/agents/setup",
               });
             }}
           />

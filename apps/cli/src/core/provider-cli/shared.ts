@@ -7,6 +7,7 @@ import {
   type ProviderCliProvider,
   resolveAccountHome,
 } from "@opentag/client";
+import { channelConfig } from "../channel/config.js";
 
 /**
  * Shared plumbing for the `opentag provider-cli` commands: provider flag parsing,
@@ -39,6 +40,68 @@ export function providerCliLabel(provider: ProviderCliProvider): "lark" | "slack
   return provider === "feishu" ? "lark" : "slack";
 }
 
+/** Stable, current-shell-safe repair command for Agent and human output. */
+export function providerCliRepairCommand(provider: ProviderCliProvider | "all"): string {
+  const flag = provider === "all" ? "all" : providerCliLabel(provider);
+  return `"$HOME/.local/bin/${channelConfig.binName}" provider-cli ensure --provider ${flag}`;
+}
+
+const PROVIDER_CLI_MANUAL_REASONS = new Set([
+  "global_bin_unavailable",
+  "integrity_failed",
+  "unsupported_platform",
+  "version_incompatible",
+]);
+
+/** False when repeating ensure cannot change the local fact without a user or release change. */
+export function providerCliCanAutoRepair(reason: string): boolean {
+  return !PROVIDER_CLI_MANUAL_REASONS.has(reason);
+}
+
+/**
+ * Failures that describe another OpenTag process holding the provider lock: transient, safe to
+ * retry with bounded backoff once that operation finishes.
+ */
+const PROVIDER_CLI_TRANSIENT_REASONS = new Set(["operation_in_progress"]);
+
+function isTransientProviderCliReason(reason: string | undefined): boolean {
+  return reason !== undefined && PROVIDER_CLI_TRANSIENT_REASONS.has(reason);
+}
+
+export interface ProviderCliAggregateFailure {
+  readonly category: "unavailable" | "dependency";
+  readonly retryability: "backoff" | "immediate" | "never";
+}
+
+/**
+ * One aggregate posture for a multi-provider run, classified from each failure's diagnostic so
+ * the envelope never contradicts the nextActions: lock contention is transient and retried with
+ * backoff; a failure a nextAction repairs by rerunning ensure is safe to retry immediately; a
+ * manual or unrepairable failure must change before a retry can succeed, so it is never retried
+ * blindly. The most conservative failure wins the aggregate. The exit code is not part of this
+ * verdict: it is derived from the category through the shared command policy.
+ */
+export function providerCliAggregateFailure(
+  failures: readonly { readonly diagnostic?: { readonly code: string } }[],
+): ProviderCliAggregateFailure {
+  const codes = failures.map((failure) => failure.diagnostic?.code);
+  if (codes.length > 0 && codes.every(isTransientProviderCliReason)) {
+    return { category: "unavailable", retryability: "backoff" };
+  }
+  const manual = codes.some(
+    (code) => !isTransientProviderCliReason(code) && (code === undefined || !providerCliCanAutoRepair(code)),
+  );
+  if (codes.length === 0 || manual) return { category: "dependency", retryability: "never" };
+  if (codes.some(isTransientProviderCliReason)) return { category: "dependency", retryability: "backoff" };
+  return { category: "dependency", retryability: "immediate" };
+}
+
+export interface ProviderCliNextAction {
+  readonly provider: ProviderCliProvider | "all";
+  readonly command: string;
+  readonly reason: string;
+}
+
 export interface ProviderCliCommandDeps {
   /** OS account home override; tests inject an isolated account root. */
   readonly accountHome?: string;
@@ -51,6 +114,8 @@ export interface ProviderCliCommandDeps {
   readonly execFile?: ProviderCliExecFile;
   /** Test-only hook: runs inside the provider lock before the winner is persisted. */
   readonly beforeWinnerReverify?: (winner: ProviderCliCandidate) => Promise<void>;
+  /** Test-only hook: replaces the cross-process lock retry wait. */
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly stdout?: (chunk: string) => void;
   readonly stderr?: (chunk: string) => void;
 }
@@ -108,5 +173,6 @@ export function createProviderCliManager(options: ProviderCliCommandDeps): Provi
     ...(options.fetcher ? { fetcher: options.fetcher } : {}),
     ...(options.execFile ? { execFile: options.execFile } : {}),
     ...(options.beforeWinnerReverify ? { beforeWinnerReverify: options.beforeWinnerReverify } : {}),
+    ...(options.sleep ? { sleep: options.sleep } : {}),
   });
 }

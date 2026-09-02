@@ -24,6 +24,12 @@ interface Harness {
   exitCode(): number;
 }
 
+function firstResult<T>(document: string): T {
+  const parsed = JSON.parse(document) as { ok: boolean; result: { results: T[] } };
+  expect(parsed.ok).toBe(true);
+  return parsed.result.results[0] as T;
+}
+
 function makeHarness(accountHome: string, baseDeps: Partial<ProviderCliCommandDeps>): Harness {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -54,6 +60,31 @@ afterEach(() => {
 });
 
 describe("provider-cli local E2E", () => {
+  it("uses one stable stderr envelope for not-ready and invalid requests", async () => {
+    const accountHome = await makeTempDir("opentag-e2e-");
+    const harness = makeHarness(accountHome, { env: { PATH: "" } });
+
+    await harness.run(["provider-cli", "inspect", "--provider", "lark", "--json"]);
+    expect(harness.exitCode()).toBe(3);
+    expect(harness.stdout).toEqual([]);
+    expect(harness.stderr).toHaveLength(1);
+    expect(JSON.parse(harness.stderr[0] ?? "")).toMatchObject({
+      ok: false,
+      error: { code: "PROVIDER_CLI_NOT_READY", category: "dependency", retryability: "immediate" },
+      result: { results: [{ provider: "feishu" }], nextActions: expect.any(Array) },
+    });
+
+    harness.stderr.length = 0;
+    await harness.run(["provider-cli", "inspect", "--provider", "teams", "--json"]);
+    expect(harness.exitCode()).toBe(2);
+    expect(harness.stdout).toEqual([]);
+    expect(JSON.parse(harness.stderr[0] ?? "")).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_PROVIDER" },
+      result: { results: [], nextActions: [] },
+    });
+  });
+
   it("selects an external lark-cli, inspects it, and noops on rerun", async () => {
     const accountHome = await makeTempDir("opentag-e2e-");
     const tools = join(accountHome, "tools");
@@ -63,21 +94,20 @@ describe("provider-cli local E2E", () => {
     await harness.run(["provider-cli", "ensure", "--provider", "lark", "--json"]);
     expect(harness.exitCode()).toBe(0);
     expect(harness.stdout).toHaveLength(1); // one JSON document, nothing else
-    const ensured = JSON.parse(harness.stdout[0] ?? "") as Record<string, unknown>;
-    expect(ensured.ok).toBe(true);
+    const ensured = firstResult<Record<string, unknown>>(harness.stdout[0] ?? "");
     expect(ensured.action).toBe("selected-existing");
 
     harness.stdout.length = 0;
     await harness.run(["provider-cli", "inspect", "--provider", "lark", "--json"]);
     expect(harness.exitCode()).toBe(0);
-    const inspected = JSON.parse(harness.stdout.join("")) as Record<string, unknown>;
+    const inspected = firstResult<Record<string, unknown>>(harness.stdout.join(""));
     expect(inspected.state).toBe("ready");
     expect(inspected.readiness).toBe("ready");
 
     harness.stdout.length = 0;
     await harness.run(["provider-cli", "ensure", "--provider", "lark", "--json"]);
     expect(harness.exitCode()).toBe(0);
-    expect((JSON.parse(harness.stdout[0] ?? "") as Record<string, unknown>).action).toBe("noop");
+    expect(firstResult<Record<string, unknown>>(harness.stdout[0] ?? "").action).toBe("noop");
 
     // The human-facing shim executes the selected external target.
     const shim = join(accountHome, ".local", "bin", "lark-cli");
@@ -97,10 +127,10 @@ describe("provider-cli local E2E", () => {
 
       await harness.run(["provider-cli", "ensure", "--provider", "lark", "--json"]);
       expect(harness.exitCode()).toBe(0);
-      const result = JSON.parse(harness.stdout.join("")) as {
+      const result = firstResult<{
         action: string;
         selected?: { path: string; trust: string };
-      };
+      }>(harness.stdout.join(""));
       expect(result.action).toBe("installed-managed");
       expect(result.selected?.trust).toBe("catalog-verified");
 
@@ -131,18 +161,18 @@ describe("provider-cli local E2E", () => {
       // The foreign CLI is a perfectly good candidate; it wins detection outright.
       await harness.run(["provider-cli", "ensure", "--provider", "lark", "--json"]);
       expect(harness.exitCode()).toBe(0);
-      const selected = JSON.parse(harness.stdout.join("")) as {
+      const selected = firstResult<{
         action: string;
         selected?: { source: string };
         warnings: Array<{ code: string }>;
-      };
+      }>(harness.stdout.join(""));
       expect(selected.action).toBe("selected-existing");
       expect(selected.warnings.map((entry) => entry.code)).toContain("global_command_shadowed");
 
       // With --managed-only, the managed artifact installs despite the external CLI.
       harness.stdout.length = 0;
       await harness.run(["provider-cli", "ensure", "--provider", "lark", "--managed-only", "--json"]);
-      const managed = JSON.parse(harness.stdout.join("")) as { action: string; warnings: Array<{ code: string }> };
+      const managed = firstResult<{ action: string; warnings: Array<{ code: string }> }>(harness.stdout.join(""));
       expect(managed.action).toBe("installed-managed");
       expect(managed.warnings.map((entry) => entry.code)).toContain("global_command_shadowed");
     } finally {
@@ -161,7 +191,7 @@ describe("provider-cli local E2E", () => {
       });
       await harness.run(["provider-cli", "ensure", "--provider", "lark", "--dry-run", "--json"]);
       expect(harness.exitCode()).toBe(0);
-      const result = JSON.parse(harness.stdout.join("")) as Record<string, unknown>;
+      const result = firstResult<Record<string, unknown>>(harness.stdout.join(""));
       expect(result.action).toBe("installed-managed");
       expect(result.dryRun).toBe(true);
       await expect(stat(join(accountHome, ".opentag"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -182,7 +212,7 @@ describe("provider-cli local E2E", () => {
       await harness.run(["provider-cli", "ensure", "--provider", "slack", "--json"]);
       expect(harness.exitCode()).toBe(0);
       expect(harness.stdout).toHaveLength(1);
-      const result = JSON.parse(harness.stdout[0] ?? "") as { action: string };
+      const result = firstResult<{ action: string }>(harness.stdout[0] ?? "");
       expect(result.action).toBe("installed-managed");
       // The Slack launcher prepends the update-check suppression flag transparently.
       const launcher = join(accountHome, ".opentag", "provider-cli", "bin", "slack");

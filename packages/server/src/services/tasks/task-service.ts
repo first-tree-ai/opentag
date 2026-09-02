@@ -338,6 +338,7 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         m.external_message_id,
         m.provider_revision_key,
         m.occurred_at,
+        m.thread_key,
         case
           when ch.conversation_kind = 'dm' then null
           else coalesce(tr.root_external_id, m.thread_key, m.external_message_id)
@@ -466,6 +467,7 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         channel_id,
         topic_key,
         min(occurred_at) as anchor_at,
+        bool_or(thread_key is not null) as has_thread,
         (array_agg(id order by occurred_at asc, provider_revision_key asc, id asc))[1] as anchor_id,
         (array_agg(external_message_id order by occurred_at asc, provider_revision_key asc, id asc))[1] as anchor_external_id
       from topic_messages
@@ -793,12 +795,13 @@ export class TaskService {
           mt.anchor_id,
           mt.anchor_at,
           mt.anchor_external_id,
+          (t.topic_key is not null and mt.has_thread) as is_thread,
           greatest(mt.anchor_at, coalesce(t.last_execution_at, mt.anchor_at)) as last_activity_at
         from topics t
         inner join message_topics mt on ${sameTopic("mt", "t")}
         where true
-          ${options.kind === "channel" ? sql`and t.topic_key is null` : sql``}
-          ${options.kind === "thread" ? sql`and t.topic_key is not null` : sql``}
+          ${options.kind === "channel" ? sql`and not (t.topic_key is not null and mt.has_thread)` : sql``}
+          ${options.kind === "thread" ? sql`and (t.topic_key is not null and mt.has_thread)` : sql``}
           ${
             options.cursor
               ? sql`and (greatest(mt.anchor_at, coalesce(t.last_execution_at, mt.anchor_at)), mt.anchor_id) < (${cursorTimestamp(options.cursor)}::timestamptz, ${options.cursor.id}::uuid)`
@@ -815,9 +818,9 @@ export class TaskService {
         sb.runtime_provider as "runtimeProvider",
         sb.provider,
         coalesce(ch.conversation_kind, 'channel') as "conversationKind",
-        case when p.topic_key is null then 'channel' else 'thread' end as "sessionKind",
+        case when p.is_thread then 'thread' else 'channel' end as "sessionKind",
         p.channel_id as "channelId",
-        p.topic_key as "threadKey",
+        case when p.is_thread then p.topic_key else null end as "threadKey",
         p.anchor_at as "createdAt",
         case when ts.id is not null then ts.ended_at else cs.ended_at end as "endedAt",
         ts.manual_title as "manualTitle",

@@ -275,7 +275,15 @@ describe("TaskService", () => {
     await createDelivery(channel.id, alone.id, { at: minutes(1), reported: true });
 
     await expect(service.list(bootstrap.userId, { limit: 50 })).resolves.toMatchObject({
-      tasks: [{ id: alone.id, title: "Nobody replied", status: "completed", sessionKind: "thread" }],
+      tasks: [
+        {
+          id: alone.id,
+          title: "Nobody replied",
+          status: "completed",
+          sessionKind: "channel",
+          source: { conversationKind: "channel", threadKey: null },
+        },
+      ],
     });
   });
 
@@ -357,17 +365,32 @@ describe("TaskService", () => {
     const privateMessage = await createMessage(binding.id, { channelId: DM, text: "Private", occurredAt: minutes(0) });
     await createDelivery(dm.id, privateMessage.id, { at: minutes(1), reported: true });
     const channel = await createSession(binding.id, { channelId: GROUP });
-    const groupMessage = await createMessage(binding.id, { text: "Group", occurredAt: minutes(2) });
+    const groupMessage = await createMessage(binding.id, {
+      externalMessageId: "om_group",
+      text: "Group",
+      occurredAt: minutes(2),
+    });
     await createDelivery(channel.id, groupMessage.id, { at: minutes(3), reported: true });
+    const groupReply = await createMessage(binding.id, {
+      threadKey: "om_group",
+      text: "Reply",
+      occurredAt: minutes(4),
+    });
+    await createDelivery(channel.id, groupReply.id, { at: minutes(5), reported: true });
+    const alone = await createMessage(binding.id, { text: "Alone", occurredAt: minutes(6) });
+    await createDelivery(channel.id, alone.id, { at: minutes(7), reported: true });
 
     await expect(service.list(bootstrap.userId, { limit: 50, kind: "channel" })).resolves.toMatchObject({
-      tasks: [{ id: privateMessage.id }],
+      tasks: [
+        { id: alone.id, sessionKind: "channel" },
+        { id: privateMessage.id, sessionKind: "channel" },
+      ],
     });
     await expect(service.list(bootstrap.userId, { limit: 50, kind: "thread" })).resolves.toMatchObject({
-      tasks: [{ id: groupMessage.id }],
+      tasks: [{ id: groupMessage.id, sessionKind: "thread", source: { threadKey: "om_group" } }],
     });
     await expect(service.list(bootstrap.userId, { limit: 50, agentId: agent.id })).resolves.toMatchObject({
-      tasks: [{ id: groupMessage.id }, { id: privateMessage.id }],
+      tasks: [{ id: alone.id }, { id: groupMessage.id }, { id: privateMessage.id }],
     });
     await expect(service.list(bootstrap.userId, { limit: 50, agentId: crypto.randomUUID() })).resolves.toEqual({
       tasks: [],

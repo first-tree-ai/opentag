@@ -19,7 +19,9 @@
 - Task id 是话题中最早那条已存储消息的 id。详情接口接受话题内任意一条消息的 id，并返回规范 id。
   `createdAt` 是根消息的时间。
 
-因此群聊的 channel Session 永远不会作为 Task 出现；没有人回复的顶层请求是只有一条消息的话题。
+因此群聊的 channel Session 永远不会作为 Task 出现；没有人回复的顶层请求是只有一条消息的话题。只有当话题
+确实出现了回复链，Task 才报告 `sessionKind: "thread"` 和线程键；私聊和没有人回复的请求报告
+`sessionKind: "channel"` 且没有线程键，Web 因此按它们所在的会话类型来标注。
 
 ## 执行记录与状态
 

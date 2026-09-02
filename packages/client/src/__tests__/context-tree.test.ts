@@ -15,7 +15,7 @@ afterEach(async () => Promise.all(directories.splice(0).map((path) => rm(path, {
 
 const managed = { kind: "managed", name: "team-context-tree" } as const;
 const treeReply = (treePath: string) => ({ schemaVersion: 1, tree: { kind: "local", path: treePath } });
-const installReply = { installed: [], schemaVersion: 1, skipped: [], version: "0.1.7" };
+const installReply = { installed: [], schemaVersion: 1, skipped: [], version: "0.1.8" };
 
 /** Record a Computer's Context Tree target, the way `opentag context-tree connect` does. */
 async function writeTarget(home: string, target: unknown): Promise<void> {

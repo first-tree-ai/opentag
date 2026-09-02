@@ -44,8 +44,8 @@ importers:
   apps/cli:
     dependencies:
       '@first-tree-ai/context-tree':
-        specifier: 0.1.7
-        version: 0.1.7
+        specifier: 0.1.8
+        version: 0.1.8
     devDependencies:
       '@opentag/client':
         specifier: workspace:*
@@ -185,8 +185,8 @@ importers:
         version: 4.5.4
     devDependencies:
       '@first-tree-ai/context-tree':
-        specifier: 0.1.7
-        version: 0.1.7
+        specifier: 0.1.8
+        version: 0.1.8
       '@types/semver':
         specifier: ^7.8.0
         version: 7.8.0
@@ -1111,8 +1111,8 @@ packages:
   '@fastify/websocket@11.3.0':
     resolution: {integrity: sha512-g89ag4BCcD9YP5wBZXixzoLnuf5j89p/sXFcfpCiv2pdEkYYukBEoK3heVzqsp0EAtszVDc2BBZG0KZqeAShIA==}
 
-  '@first-tree-ai/context-tree@0.1.7':
-    resolution: {integrity: sha512-cbCSxD6AB0Z50b4i094unUQ49va/DvRyaTEBQWhTZd8OKD/XpJPnrrLFBpLA2Csh3+DJRXvekMgcdARHiT2tcg==}
+  '@first-tree-ai/context-tree@0.1.8':
+    resolution: {integrity: sha512-etLK47svtL6vOgxfK7M7q8s9tSJJEovgr/FIeRNUPFGVX+rltab8xAaXluDMSSoHZ+XQRF+5a0fLj8IDCxWyKA==}
     engines: {node: '>=22.13.0'}
     hasBin: true
 
@@ -5538,7 +5538,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@first-tree-ai/context-tree@0.1.7':
+  '@first-tree-ai/context-tree@0.1.8':
     dependencies:
       commander: 15.0.0
       mdast-util-from-markdown: 2.0.3

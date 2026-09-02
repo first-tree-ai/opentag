@@ -157,7 +157,8 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     const context = { currentPlatform, daemonEnvironment, gatedRuntimeLogger, home, logger, options, state };
     await runDaemonLifecycle((signal) => createDaemonRuntime(context, signal), signals);
   } catch (error) {
-    const logger = state.terminalLogger ?? (options.logger ?? createLogger("daemon")).child(baseBindings);
+    const logger =
+      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
     logTerminalFailure(logger, error);
     failure = error;
     failed = true;
@@ -170,7 +171,8 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   try {
     await ownership.release();
   } catch (error) {
-    const logger = state.terminalLogger ?? (options.logger ?? createLogger("daemon")).child(baseBindings);
+    const logger =
+      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
     logger.error({ category: "ownership_release" }, "Daemon ownership release failed");
     if (!failed) {
       failure = error;
@@ -190,7 +192,7 @@ async function acquireOwnership(
   try {
     return await acquireDaemonOwner(home, instanceId);
   } catch (error) {
-    const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);
+    const logger = (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
     logTerminalFailure(logger, error);
     throw error;
   }

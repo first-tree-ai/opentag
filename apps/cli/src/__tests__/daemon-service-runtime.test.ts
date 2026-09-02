@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const clientMocks = vi.hoisted(() => ({
   configureClientLoggerForService: vi.fn(),
   createClientRuntime: vi.fn(),
+  createLogger: vi.fn(),
   readMachineCredentials: vi.fn(),
   resolveComputerIdentity: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock("@opentag/client", async (importOriginal) => {
   return {
     ...original,
     configureClientLoggerForService: clientMocks.configureClientLoggerForService,
+    createLogger: clientMocks.createLogger.mockImplementation(original.createLogger),
     OpenTagApi: class {},
     createClientRuntime: clientMocks.createClientRuntime,
     readMachineCredentials: clientMocks.readMachineCredentials,
@@ -93,6 +95,20 @@ describe("daemon service runtime", () => {
         message: "Daemon is already running; inspect daemon status",
       }),
     );
+  });
+
+  it("uses a dual logger for an already-held daemon owner", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-dual-"));
+    directories.push(home);
+    const owner = await acquireDaemonOwner(home, "existing-instance");
+
+    try {
+      await expect(runDaemonService({ home })).rejects.toThrow("already running");
+    } finally {
+      await owner.release();
+    }
+
+    expect(clientMocks.createLogger).toHaveBeenCalledWith("daemon", { destination: "dual" });
   });
 
   it("does not start after a signal arrives during startup", async () => {

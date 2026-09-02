@@ -2,6 +2,14 @@ import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const stderrWrites = vi.hoisted(() => ({ write: vi.fn() }));
+
+vi.mock("../rotating-file-stream.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../rotating-file-stream.js")>();
+  return { ...original, writeStringToFileDescriptor: stderrWrites.write };
+});
+
 import {
   configureClientLoggerContext,
   configureClientLoggerForService,
@@ -14,6 +22,7 @@ const originalLevel = process.env.OPENTAG_LOG_LEVEL;
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  stderrWrites.write.mockReset();
   resetClientLoggerForTests();
   if (originalLevel === undefined) delete process.env.OPENTAG_LOG_LEVEL;
   else process.env.OPENTAG_LOG_LEVEL = originalLevel;
@@ -35,6 +44,21 @@ describe("Client logger", () => {
 
     expect(await pathExists(directory)).toBe(true);
     await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain("First diagnostic");
+  });
+
+  it("writes a terminal daemon failure to stderr and the file sink", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+
+    createLogger("daemon", { destination: "dual" }).warn(
+      { category: "ownership" },
+      "Daemon is already running; inspect daemon status",
+    );
+
+    const message = "Daemon is already running; inspect daemon status";
+    await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain(message);
+    expect(stderrWrites.write).toHaveBeenCalledWith(2, expect.stringContaining(message));
   });
 
   it("redacts and caps the log message, not only the fields", async () => {

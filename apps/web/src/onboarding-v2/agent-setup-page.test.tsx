@@ -143,6 +143,33 @@ describe("AgentSetupPage stages", () => {
     expect(reads.mock.calls.length).toBeGreaterThan(readsBeforePoll);
   });
 
+  it("expands the shared command surface directly when an offline Computer needs reinstalling", async () => {
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand: "opentag computer connect --server https://opentag.example.com -- repair-code",
+      connectCodeId: "repair-code",
+      expiresIn: 900,
+      issuedAt: new Date().toISOString(),
+    });
+    vi.spyOn(browserApi, "computerConnectCodeStatus").mockResolvedValue({
+      computerId: null,
+      connectCodeId: "repair-code",
+      redeemedAt: null,
+      state: "pending",
+    });
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
+    renderSetup(memory.adapter);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    await settle();
+
+    const repairSurface = document.querySelector('[data-ui="computer-connect"]');
+    expect(repairSurface?.parentElement?.id).toBe("agent-setup-repair-command");
+    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(screen.getByText("Expires in 15:00")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("Waiting for Review Mac to reconnect");
+  });
+
   it("points a missing runtime at the repair command on the exact Computer", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "install" });
     renderSetup(memory.adapter);

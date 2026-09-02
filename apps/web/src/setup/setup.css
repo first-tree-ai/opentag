@@ -212,6 +212,18 @@
 
 /* The connection-code metadata keeps its row while the command is issued, so the command does not
    jump when the countdown arrives. */
+.ots-command-lead {
+  min-height: 20px;
+}
+
 .ots-slot--expiry {
   min-height: 20px;
+}
+
+@media (width <= 640px) {
+  .ots-command-lead {
+    flex-direction: column;
+    align-items: flex-start;
+    min-height: 68px;
+  }
 }

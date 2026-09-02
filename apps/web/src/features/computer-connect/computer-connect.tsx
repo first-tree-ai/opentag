@@ -370,8 +370,11 @@ function ComputerConnectPresentation({
     : m.computer_connect_create_command_comment();
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
-      <div className="ots-slot--expiry flex items-center justify-end text-sm" data-ui="computer-connect-expiry">
-        {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
+      <div className="ots-command-lead flex items-center justify-between gap-3" data-ui="computer-connect-command-lead">
+        <p className="text-sm text-kumo-subtle m-0">{m.computer_connect_command_intro()}</p>
+        <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
+          {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
+        </div>
       </div>
       {state.kind === "issuing" ? (
         <div aria-hidden="true" className="ots-command-pending" data-ui="computer-connect-command-skeleton">

@@ -89,14 +89,15 @@ describe("ComputerConnect", () => {
     await flushAsync();
     expect(commandIsShown(COMMAND)).toBe(true);
     expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("Waiting for the Computer to connect");
-    const remaining = screen.getByText("Code expires in 15:00");
+    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("Waiting for your computer");
+    const remaining = screen.getByText("Expires in 15:00");
     expect(remaining.closest('[role="status"]')).toBeNull();
     expect(remaining.parentElement?.getAttribute("data-ui")).toBe("computer-connect-expiry");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    expect(screen.getByText("Code expires in 14:59")).toBeTruthy();
+    expect(screen.getByText("Expires in 14:59")).toBeTruthy();
   });
 
   it("issues repair against the exact target and names it while waiting", async () => {
@@ -115,8 +116,9 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: COMPUTER_ID });
+    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
     expect(screen.getByText(`# Run this command in the terminal on ${computer.displayName}`)).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to connect`);
+    expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
   });
 
   it("adopts only the Computer named by this code's Server verdict", async () => {
@@ -159,7 +161,7 @@ describe("ComputerConnect", () => {
 
     expect(computers).not.toHaveBeenCalled();
     expect(onConnected).not.toHaveBeenCalled();
-    expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to connect`);
+    expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
   });
 
   it.each([
@@ -182,7 +184,7 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(onConnected).not.toHaveBeenCalled();
-    expect(screen.getByRole("status").textContent).toContain("Waiting for the Computer to connect");
+    expect(screen.getByRole("status").textContent).toContain("Waiting for your computer");
   });
 
   it("keeps an issued command through a transient poll failure and clears the error on recovery", async () => {

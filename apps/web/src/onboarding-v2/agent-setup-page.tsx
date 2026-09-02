@@ -696,23 +696,6 @@ function NotBoundComputerSection({
   );
 }
 
-/** Reconnecting the exact Computer the snapshot names, so it keeps its identity. */
-function RepairComputerConnect({
-  computerId,
-  displayName,
-  onChanged,
-}: {
-  readonly computerId: string;
-  readonly displayName: string;
-  readonly onChanged: () => void;
-}) {
-  return (
-    <div className={PANEL}>
-      <ComputerConnect intent={{ mode: "repair", target: { computerId, displayName } }} onConnected={onChanged} />
-    </div>
-  );
-}
-
 function BoundComputerSection({
   computer,
   onChanged,
@@ -773,10 +756,12 @@ function BoundComputerSection({
           </Button>
           {repairing ? (
             <div id="agent-setup-repair-command">
-              <RepairComputerConnect
-                computerId={repair.computerId}
-                displayName={computer.displayName}
-                onChanged={onChanged}
+              <ComputerConnect
+                intent={{
+                  mode: "repair",
+                  target: { computerId: repair.computerId, displayName: computer.displayName },
+                }}
+                onConnected={onChanged}
               />
             </div>
           ) : null}

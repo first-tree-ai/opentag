@@ -130,7 +130,7 @@ function StepNav({
 }
 
 /** A card's copy: the title it is chosen by, and the line that explains it. */
-function CardCopy({
+export function CardCopy({
   badge,
   description,
   disabled = false,
@@ -846,7 +846,7 @@ export function ComputerStep({
               <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
             ))}
           </ol>
-          <ImCliReadinessList readiness={readiness} />
+          <ImCliReadinessList statuses={readiness?.messagingCli} />
           <div className="otv2-slot--outcome flex flex-col justify-start" data-ui="onboarding-v2-check-outcome">
             {resolving ? (
               <p className={WAITING_LINE} role="status">

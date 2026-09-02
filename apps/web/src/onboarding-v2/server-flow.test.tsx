@@ -178,8 +178,9 @@ describe("the onboarding flow against the Server", () => {
       .mockResolvedValueOnce(attempt())
       .mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
     vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
+    const onAgentAvailable = vi.fn();
 
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2Page onAgentAvailable={onAgentAvailable} />);
 
     await settle();
     await reachComputerStep();
@@ -205,6 +206,7 @@ describe("the onboarding flow against the Server", () => {
       mode: "create",
       targetAgentId: AGENT_ID,
     });
+    expect(onAgentAvailable).toHaveBeenCalledExactlyOnceWith(AGENT_ID);
 
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     press(/Lark/);

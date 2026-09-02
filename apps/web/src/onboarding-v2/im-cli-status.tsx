@@ -3,6 +3,8 @@ import * as m from "../paraglide/messages.js";
 import type { MessagingCliStatus } from "../setup/index.js";
 import type { MessagingProvider, ReadinessFacts } from "./flow.js";
 
+export type ImCliStatuses = ReadinessFacts["messagingCli"];
+
 export function imCliStatusCopy(status: MessagingCliStatus | undefined): string {
   if (status === "ready") return m.onboarding_v2_im_cli_status_ready();
   if (status === "unavailable") return m.onboarding_v2_im_cli_status_unavailable();
@@ -31,7 +33,7 @@ export function ImCliStatusText({
   );
 }
 
-export function ImCliReadinessList({ readiness }: { readiness: ReadinessFacts | undefined }) {
+export function ImCliReadinessList({ statuses }: { statuses: ImCliStatuses | undefined }) {
   const rows = [
     ["feishu", `${messagingProviderLabel("feishu")} CLI`],
     ["slack", `${messagingProviderLabel("slack")} CLI`],
@@ -48,7 +50,7 @@ export function ImCliReadinessList({ readiness }: { readiness: ReadinessFacts | 
         >
           <span className="font-medium text-kumo-strong">{label}</span>
           <span className="text-sm text-kumo-subtle">
-            <ImCliStatusText provider={provider} status={readiness?.messagingCli[provider]} />
+            <ImCliStatusText provider={provider} status={statuses?.[provider]} />
           </span>
         </li>
       ))}

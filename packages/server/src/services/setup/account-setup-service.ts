@@ -2,14 +2,13 @@ import type { AccountSetupCompletion } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, users } from "../../db/schema/index.js";
-import type { ImBindingService } from "../im-bindings/index.js";
 
 export class AccountSetupServiceError extends Error {
   readonly category = "deterministic" as const;
 
   constructor(
-    readonly code: "ACCOUNT_SETUP_AGENT_NOT_FOUND" | "ACCOUNT_SETUP_NOT_READY",
-    readonly statusCode: 404 | 409,
+    readonly code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+    readonly statusCode: 404,
     message: string,
   ) {
     super(message);
@@ -17,15 +16,19 @@ export class AccountSetupServiceError extends Error {
   }
 }
 
-/** Owns the one-way transition from first-time setup into normal operations. */
+/**
+ * Owns the one-way transition from first-time setup into normal operations.
+ *
+ * The legal target is an active Agent owned by the Account — and it may be unbound: adopting it
+ * opens normal app access on its own, with no handoff or runtime readiness gate. Foreign,
+ * inactive, and missing targets are indistinguishable and all fail closed as not found.
+ */
 export class AccountSetupService {
   readonly #database: DatabaseClient;
-  readonly #imBindings: ImBindingService;
   readonly #now: () => Date;
 
-  constructor(database: DatabaseClient, imBindings: ImBindingService, options: { now?: () => Date } = {}) {
+  constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
     this.#database = database;
-    this.#imBindings = imBindings;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -33,15 +36,6 @@ export class AccountSetupService {
     const current = await this.#existingCompletion(callerUserId);
     if (current) return current;
     await this.#ownedActiveAgent(callerUserId, agentId);
-
-    const handoff = await this.#imBindings.getHandoffForAgent(callerUserId, agentId);
-    if (!handoff?.handoffReady) {
-      throw new AccountSetupServiceError(
-        "ACCOUNT_SETUP_NOT_READY",
-        409,
-        "The Agent handoff is not ready to complete Account setup",
-      );
-    }
 
     return this.#database.transaction(async (transaction) => {
       const [lockedUser] = await transaction

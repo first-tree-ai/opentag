@@ -5,6 +5,7 @@ import {
   agentCreationPosts,
   agentId,
   computerId,
+  creationIntentKey,
   installApi,
   resetWebAppState,
   secondComputerId,
@@ -188,6 +189,10 @@ describe("OpenTag Web App Shell", () => {
     });
 
     expect(agentCreationPosts()).toHaveLength(0);
+    expect(window.localStorage.getItem(creationIntentKey)).toContain("1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e77");
+    // The saved attempt is a choice, not an instruction: Retry stays parked while its route is not
+    // the one on screen, even now that the machine it names is ready again.
+    expect(screen.getByRole("button", { name: "Retry creation" }).hasAttribute("disabled")).toBe(true);
     const selectedComputer = screen.getByRole("button", { name: /Zulu Tower/ });
     expect(selectedComputer.getAttribute("aria-pressed")).toBe("true");
     expect(selectedComputer.className).toContain("data-[selected=true]:!bg-(--brand-soft)");
@@ -211,11 +216,12 @@ describe("OpenTag Web App Shell", () => {
 
     expect(agentCreationPosts()).toHaveLength(0);
     expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Claude Agent");
+    expect(screen.getByRole("button", { name: "Retry creation" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("resumes a stored creation intent that names the selected route", async () => {
-    // The control: the gate has to refuse an unselected route without disabling resume, which is
-    // the whole reason a creation intent is persisted.
+  it("surfaces a stored creation intent as an explicit choice and only Retry sends it", async () => {
+    // A prior visit's intent is never this visit's instruction: mounting sends nothing and keeps
+    // the record, and the same idempotency identity leaves only when the reader presses Retry.
     const record = storeCreationIntent({
       creationIntentId: "4d3c2b1a-9e8f-4a7b-8c6d-5e4f3a2b1c00",
       request: { name: "resumed-agent", displayName: "Resumed Agent", runtimeProvider: "codex", computerId },
@@ -224,12 +230,23 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
 
+    expect(await screen.findByRole("button", { name: "Check result" })).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(agentCreationPosts()).toHaveLength(0);
+    expect(window.localStorage.getItem(creationIntentKey)).toContain(record.creationIntentId);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry creation" }));
+
     await waitFor(() => expect(agentCreationPosts()).toHaveLength(1));
     expect(JSON.parse(String(agentCreationPosts()[0]?.[1]?.body))).toMatchObject({
       computerId,
       creationIntentId: record.creationIntentId,
       runtimeProvider: "codex",
     });
+    expect(await screen.findByRole("heading", { name: "Connect messaging" })).toBeTruthy();
+    expect(window.localStorage.getItem(creationIntentKey)).toBeNull();
   });
 
   it("refreshes and selects a newly connected Computer in New Agent", async () => {

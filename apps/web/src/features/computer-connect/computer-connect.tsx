@@ -202,6 +202,39 @@ const browserAdapter: ComputerConnectAdapter = {
   computers: () => browserApi.computers(),
 };
 
+type ComputerConnectBrowserApi = Pick<
+  typeof browserApi,
+  "issueComputerConnectCode" | "computerConnectCodeStatus" | "computers"
+>;
+
+/**
+ * Issues every create or repair command for one explicit Agent.
+ *
+ * The Agent id is authority carried by the signed-in Account request and embedded into the opaque
+ * one-time code by the Server. Keeping it in the adapter means every reissue preserves the same
+ * target, including retries after expiry; the presentation cannot accidentally fall back to an
+ * untargeted command.
+ */
+export function createAgentTargetedComputerConnectAdapter(
+  agentId: string,
+  api: ComputerConnectBrowserApi = browserApi,
+): ComputerConnectAdapter {
+  return {
+    issue: (intent) =>
+      api.issueComputerConnectCode(
+        intent.mode === "repair"
+          ? {
+              mode: "repair",
+              targetAgentId: agentId,
+              targetComputerId: intent.target.computerId,
+            }
+          : { mode: "create", targetAgentId: agentId },
+      ),
+    status: (connectCodeId) => api.computerConnectCodeStatus(connectCodeId),
+    computers: () => api.computers(),
+  };
+}
+
 /**
  * Render seam for pages that keep their own layout while sharing the complete connection lifecycle.
  * The adapter is intentionally the only varying dependency: production and Review Lab both drive

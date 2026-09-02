@@ -286,11 +286,24 @@ describe("AgentService", () => {
       runtimeConfig: { model: "gpt-5.6", instructions: "Intent instructions" },
     };
     const created = await service.createForAccount(bootstrap.userId, input);
+    await expect(service.getCreationIntentResultForAccount(bootstrap.userId, input.creationIntentId)).resolves.toEqual({
+      kind: "found",
+      agentId: created.id,
+    });
+    await expect(
+      service.getCreationIntentResultForAccount(crypto.randomUUID(), input.creationIntentId),
+    ).resolves.toEqual({ kind: "not-found" });
+    await expect(service.getCreationIntentResultForAccount(bootstrap.userId, crypto.randomUUID())).resolves.toEqual({
+      kind: "not-found",
+    });
     await expect(service.createForAccount(bootstrap.userId, input)).resolves.toEqual(created);
     await expect(
       service.createForAccount(bootstrap.userId, { ...input, displayName: "Changed" }),
     ).rejects.toMatchObject({ code: "AGENT_CREATION_INTENT_CONFLICT", statusCode: 409 });
     await service.suspendById(bootstrap.userId, created.id);
+    await expect(service.getCreationIntentResultForAccount(bootstrap.userId, input.creationIntentId)).resolves.toEqual({
+      kind: "not-found",
+    });
     await service.deleteById(bootstrap.userId, created.id);
     await expect(service.createForAccount(bootstrap.userId, input)).rejects.toMatchObject({
       code: "AGENT_CREATION_INTENT_CONFLICT",
@@ -559,6 +572,11 @@ describe("AgentService", () => {
     expect(placement).toMatchObject({ computerId: target.id, generation: 2 });
     await expect(service.rebindById(bootstrap.userId, created.id, crypto.randomUUID())).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
+    });
+    await service.suspendById(bootstrap.userId, created.id);
+    await expect(service.rebindById(bootstrap.userId, created.id, computer.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+      statusCode: 409,
     });
   });
 

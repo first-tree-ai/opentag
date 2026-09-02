@@ -1,4 +1,5 @@
 import {
+  accountAgentCreationIntentPath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
@@ -106,6 +107,7 @@ function authService(): UserAuthService {
 function agentService() {
   return {
     createForAccount: vi.fn().mockResolvedValue(agent),
+    getCreationIntentResultForAccount: vi.fn().mockResolvedValue({ kind: "found", agentId }),
     listForAccount: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
     getById: vi.fn().mockResolvedValue(agentDetail),
     getUsageById: vi.fn().mockResolvedValue(agentUsage),
@@ -157,6 +159,16 @@ describe("Agent HTTP API", () => {
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ agents: [agentListItem] });
     expect(service.listForAccount).toHaveBeenCalledWith(userId);
+
+    const reconciled = await app.inject({
+      method: "GET",
+      url: accountAgentCreationIntentPath(creationIntentId),
+      headers: authorization,
+    });
+    expect(reconciled.statusCode).toBe(200);
+    expect(reconciled.headers["cache-control"]).toBe("no-store");
+    expect(reconciled.json()).toEqual({ kind: "found", agentId });
+    expect(service.getCreationIntentResultForAccount).toHaveBeenCalledWith(userId, creationIntentId);
   });
 
   it("gets, CAS-updates, suspends, reactivates, and deletes an Agent", async () => {

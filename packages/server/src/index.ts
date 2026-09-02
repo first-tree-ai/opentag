@@ -25,7 +25,7 @@ import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owne
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
-import { AgentRuntimeTestService, AgentService } from "./services/agents/index.js";
+import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -100,7 +100,7 @@ export {
   RuntimeDurableWorkConflictError,
   type RuntimeDurableWorkStoreOptions,
 } from "./runtime/runtime-durable-work-store.js";
-export { AgentService, AgentServiceError } from "./services/agents/index.js";
+export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-reset/index.js";
@@ -273,7 +273,7 @@ export async function startServer(): Promise<void> {
       onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
       logger: serviceLogger("im-binding"),
     });
-    const accountSetupService = new AccountSetupService(database, imBindingService);
+    const accountSetupService = new AccountSetupService(database);
     const imMessageInbox = new ImMessageInbox(database);
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
@@ -335,6 +335,10 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
     });
+    const agentSetupService = new AgentSetupService(database, agentService, imBindingService, feishuSetupService, {
+      providerReadiness: registry,
+      slackOAuthAvailable: config.slackOAuth !== undefined,
+    });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
@@ -380,6 +384,7 @@ export async function startServer(): Promise<void> {
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,
+      agentSetupService,
       agentRuntimeTestService,
       authService,
       browserAuth: {

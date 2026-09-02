@@ -14,7 +14,10 @@ import type {
 } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
-import type { ComputerConnectAdapter } from "../features/computer-connect/computer-connect.js";
+import {
+  type ComputerConnectAdapter,
+  createAgentTargetedComputerConnectAdapter,
+} from "../features/computer-connect/computer-connect.js";
 import { formatRelativeTime } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
@@ -163,7 +166,11 @@ async function deleteSetupAgent(agentId: string): Promise<void> {
  * so a readiness read asks about the Provider the reader actually chose. Taking it as an argument
  * keeps that dependency visible instead of threading it through every call.
  */
-export function useServerBackend(draft: AgentDraft): OnboardingBackend {
+export function useServerBackend(
+  draft: AgentDraft,
+  options: { readonly resumeExistingAgents?: boolean } = {},
+): OnboardingBackend {
+  const resumeExistingAgents = options.resumeExistingAgents ?? true;
   const [computer, setComputer] = useState<AccountComputerSummary>();
   const [selectedComputer, setSelectedComputer] = useState<KnownComputer>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
@@ -256,35 +263,42 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    * that already exists — and the second attempt is refused, because an Account's active Agent
    * names are unique. So the page picks up where the Server says it is.
    */
-  const readAccount = useCallback(async () => {
-    const mine = resumeRun.current + 1;
-    resumeRun.current = mine;
-    const live = () => mounted.current && resumeRun.current === mine;
-    setResumeError(undefined);
-    setResumeBlocked(undefined);
-    setResuming(true);
-    try {
-      const [{ agents }, { computers }] = await Promise.all([browserApi.agents(), browserApi.computers()]);
-      if (!live()) return;
-      const selected = selectAccountResume(agents, computers);
-      const resumedAgentId = applyResumeSelection(selected);
-      if (!resumedAgentId) return;
+  const readAccount = useCallback(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: resume replacement is one stale-read-guarded state transition
+    async () => {
+      const mine = resumeRun.current + 1;
+      resumeRun.current = mine;
+      const live = () => mounted.current && resumeRun.current === mine;
+      setResumeError(undefined);
+      setResumeBlocked(undefined);
+      setResuming(true);
+      try {
+        const [{ agents }, { computers }] = await Promise.all([
+          resumeExistingAgents ? browserApi.agents() : Promise.resolve({ agents: [] }),
+          browserApi.computers(),
+        ]);
+        if (!live()) return;
+        const selected = selectAccountResume(agents, computers);
+        const resumedAgentId = applyResumeSelection(selected);
+        if (!resumedAgentId) return;
 
-      const handoff = await browserApi.imBindingHandoff(resumedAgentId);
-      if (!live()) return;
-      setMessaging(readMessaging(handoff));
-      if (!handoff) return;
-      const provider = await readMessagingProvider(resumedAgentId);
-      if (live() && provider) setMessagingProvider(provider);
-    } catch (cause) {
-      // Reading is the only way to tell a returning Account from a new one, so a failed read is
-      // not "you must be new": starting over from here ends at a name collision. It is reported,
-      // and the reader is given the read back rather than a form they cannot submit.
-      if (live()) setResumeError(errorMessage(cause, COPY.errors.resume));
-    } finally {
-      if (live()) setResuming(false);
-    }
-  }, [applyResumeSelection]);
+        const handoff = await browserApi.imBindingHandoff(resumedAgentId);
+        if (!live()) return;
+        setMessaging(readMessaging(handoff));
+        if (!handoff) return;
+        const provider = await readMessagingProvider(resumedAgentId);
+        if (live() && provider) setMessagingProvider(provider);
+      } catch (cause) {
+        // Reading is the only way to tell a returning Account from a new one, so a failed read is
+        // not "you must be new": starting over from here ends at a name collision. It is reported,
+        // and the reader is given the read back rather than a form they cannot submit.
+        if (live()) setResumeError(errorMessage(cause, COPY.errors.resume));
+      } finally {
+        if (live()) setResuming(false);
+      }
+    },
+    [applyResumeSelection, resumeExistingAgents],
+  );
 
   useEffect(() => {
     void readAccount();
@@ -553,20 +567,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     // then the Agent the Computer step is showing.
     const targetAgentId = resumeBlocked?.agentId ?? agent?.id;
     if (!targetAgentId) return undefined;
-    return {
-      issue: (intent) =>
-        browserApi.issueComputerConnectCode(
-          intent.mode === "repair"
-            ? {
-                mode: "repair",
-                targetAgentId,
-                targetComputerId: intent.target.computerId,
-              }
-            : { mode: "create", targetAgentId },
-        ),
-      status: (connectCodeId) => browserApi.computerConnectCodeStatus(connectCodeId),
-      computers: () => browserApi.computers(),
-    };
+    return createAgentTargetedComputerConnectAdapter(targetAgentId);
   }, [agent?.id, resumeBlocked?.agentId]);
 
   return useMemo(

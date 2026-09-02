@@ -3,11 +3,15 @@ import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
-import Fastify, { type FastifyLoggerOptions, LogController } from "fastify";
+import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
 import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
-import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
+import {
+  type BrowserAuthRoutesOptions,
+  rateLimitFailureMetadata,
+  registerBrowserAuthRoutes,
+} from "./api/browser-auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
@@ -122,6 +126,41 @@ function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOpt
       }),
     },
   };
+}
+
+type ClassifiedFailure = {
+  code: string;
+  category: string;
+  statusCode: number;
+};
+
+const rateLimitLogWindows = new Map<string, number>();
+
+function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailure, error: unknown): void {
+  if (error instanceof AuthServiceError && error.statusCode === 401) return;
+
+  const rateLimit = rateLimitFailureMetadata(error);
+  if (failure.code === "RATE_LIMITED" && rateLimit) {
+    const route = request.routeOptions?.url ?? sanitizeRequestUrl(request.url);
+    const bucket = `${route}:${rateLimit.keyKind}`;
+    const now = Date.now();
+    const previousResetAt = rateLimitLogWindows.get(bucket);
+    if (previousResetAt !== undefined && previousResetAt > now) return;
+    rateLimitLogWindows.set(bucket, now + rateLimit.windowMs);
+  }
+
+  const level = failure.statusCode >= 500 ? "error" : [409, 429].includes(failure.statusCode) ? "warn" : "info";
+  request.log[level](
+    {
+      category: failure.category,
+      code: failure.code,
+      err: error,
+      requestId: request.id,
+      statusCode: failure.statusCode,
+      ...(rateLimit ? { keyKind: rateLimit.keyKind } : {}),
+    },
+    "Request failed",
+  );
 }
 
 function contentTypeParserErrorStatus(error: unknown): number | undefined {
@@ -323,6 +362,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.setErrorHandler((error, request, reply) => {
     const feishuFailure = feishuPublicFailure(error);
     if (feishuFailure) {
+      logClassifiedFailure(request, feishuFailure, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: feishuFailure.code,
@@ -342,6 +382,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof SlackConfigurationServiceError ||
       error instanceof AccountSetupServiceError
     ) {
+      logClassifiedFailure(request, error, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: error.code,
@@ -353,6 +394,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return reply.code(error.statusCode).send(envelope);
     }
     if (error instanceof SessionCliProofError) {
+      logClassifiedFailure(request, { code: "SESSION_PROOF_INVALID", category: "credential", statusCode: 401 }, error);
       return reply.code(401).send(
         ErrorEnvelopeSchema.parse({
           error: {
@@ -365,6 +407,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
     if (error instanceof SessionServiceError && error.code === "SESSION_CURSOR_INVALID") {
+      logClassifiedFailure(request, { code: error.code, category: "validation", statusCode: 400 }, error);
       return reply.code(400).send(
         ErrorEnvelopeSchema.parse({
           error: {
@@ -377,6 +420,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
     if (error instanceof RequestValidationError) {
+      logClassifiedFailure(request, { code: "VALIDATION_ERROR", category: "validation", statusCode: 400 }, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",
@@ -390,6 +434,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     const statusCode = contentTypeParserErrorStatus(error);
     if (statusCode !== undefined) {
+      logClassifiedFailure(request, { code: "VALIDATION_ERROR", category: "validation", statusCode }, error);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",

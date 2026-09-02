@@ -15,8 +15,9 @@ import {
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 /**
- * The card states what is true and how urgent it is; it carries no exit of its own. Opening the
- * Agent is the single follow-up, and the Agent page is where each failed dependency is explained.
+ * The card states what is true and how urgent it is. It carries no recovery of its own, because
+ * what to do about a broken dependency depends on which one broke, and that explanation lives on
+ * the Agent. The one exception is setup that never finished — see `agentSetupContinuation`.
  */
 type AgentCardStatus = {
   detail?: string;
@@ -397,6 +398,32 @@ export type AgentDependencyStatus = {
 
 function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus["action"]> {
   return { label: m.agents_continue_setup(), link: agentSetupLink(agentId) };
+}
+
+/**
+ * The three things Agent Setup asks for, and so the three reasons it can still answer for: a
+ * Computer, the chosen runtime on that Computer, a messaging app. Each is a stage of the setup
+ * surface, which is why an Agent stopped on one of them has a single destination.
+ */
+const SETUP_REASONS: ReadonlySet<AgentAvailability["reason"]> = new Set([
+  "computer_not_bound",
+  "runtime_unavailable",
+  "im_not_connected",
+]);
+
+/**
+ * Finishing setup, offered from the list rather than only from the Agent.
+ *
+ * An Agent that was left part-way through setup is the one case where the list can act: whichever
+ * of the three is missing, the answer is the same page, so naming the destination costs the reader
+ * nothing and saves them from having to discover it. Every other failure keeps the list's rule —
+ * open the Agent, where the specific dependency is explained.
+ */
+export function agentSetupContinuation(agent: {
+  availability: AgentAvailability;
+  id: string;
+}): AgentDependencyStatus["action"] {
+  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
 }
 
 function settingsAction(

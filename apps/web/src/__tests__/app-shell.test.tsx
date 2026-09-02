@@ -52,13 +52,17 @@ describe("OpenTag Web App Shell", () => {
     expect(rowState).toBeNull();
     expect(within(agentRow as HTMLElement).getByText("Messaging not connected")).toBeTruthy();
     expect(within(agentRow as HTMLElement).queryByText("Cannot receive new work")).toBeNull();
-    // The row reports the failure and nothing else; opening the Agent is its only follow-up.
+    /*
+     * This Agent never finished setup, so the row names the page that finishes it. It does not name
+     * the missing dependency: which one is outstanding is the setup page's business, and an Agent
+     * that is short of two of them would otherwise need two links to say one thing.
+     */
     expect(within(agentRow as HTMLElement).queryByRole("link", { name: "Connect messaging" })).toBeNull();
     expect(
       within(agentRow as HTMLElement)
         .getAllByRole("link")
         .map((item) => item.getAttribute("href")),
-    ).toEqual([`/agents/${agentId}`]);
+    ).toEqual([`/agents/setup?agentId=${agentId}`, `/agents/${agentId}`]);
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-status"] [data-state]')).toBeTruthy();
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
@@ -186,7 +190,7 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("opens the Agent from the row itself rather than from a trailing affordance", async () => {
-    installApi();
+    installApi({ bound: true, handoffReady: true });
     render(<App />);
 
     // The row itself is the target: one link covers the card and carries its accessible name, while
@@ -197,10 +201,21 @@ describe("OpenTag Web App Shell", () => {
     const row = open.closest('[data-ui="agent-row"]');
     expect(row).toBeTruthy();
     expect((row as HTMLElement).querySelector('[data-ui="agent-row-action"]')).toBeNull();
-    /*
-     * Even a card reporting a broken dependency carries no second link. Where the repair lives
-     * depends on which dependency failed, so the row link is the whole answer: open the Agent.
-     */
     expect(within(row as HTMLElement).getAllByRole("link")).toEqual([open]);
+  });
+
+  it("sends an Agent that never finished setup back to the page that finishes it", async () => {
+    installApi();
+    render(<App />);
+
+    const row = (await screen.findByRole("link", { name: "Open Reviewer" })).closest('[data-ui="agent-row"]');
+    const resume = within(row as HTMLElement).getByRole("link", { name: "Continue setup" });
+    expect(resume.getAttribute("href")).toBe(`/agents/setup?agentId=${agentId}`);
+    /*
+     * Above the overlay link that covers the whole card, which is painted last. A link the pointer
+     * can see and never reach is worse than no link at all.
+     */
+    expect(resume.className).toContain("z-10");
+    expect(resume.closest('[data-ui="agent-row-status"]')).toBeTruthy();
   });
 });

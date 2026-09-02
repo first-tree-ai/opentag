@@ -31,8 +31,10 @@ import {
   sessions,
   slackInstallations,
 } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { ApplicationCipher } from "../crypto.js";
 import {
+  type CredentialMaterialInput,
   decodeFeishuCredential,
   decodeSlackCredential,
   type FeishuCredential,
@@ -50,6 +52,7 @@ import {
 } from "./im-binding-provider-cli.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
+type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
 
 export interface VerifiedFeishuBinding {
   agentId: string;
@@ -293,6 +296,7 @@ export class ImBindingService {
   readonly #onActiveBindingChanged:
     | ((input: { agentId: string; computerId: string }) => Promise<void> | void)
     | undefined;
+  readonly #logger?: Pick<ServiceLogger, "warn">;
 
   constructor(
     database: DatabaseClient,
@@ -316,12 +320,14 @@ export class ImBindingService {
         | Promise<{ status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason }>
         | { status: IntegrationCredentialExecutionStatus; reason?: IntegrationCredentialExecutionReason };
       onActiveBindingChanged?: (input: { agentId: string; computerId: string }) => Promise<void> | void;
+      logger?: Pick<ServiceLogger, "warn">;
     } = {},
   ) {
     this.#database = database;
     this.#afterMutationAuthorityLocked = options.afterMutationAuthorityLocked;
     this.#cipher = cipher;
     this.#now = options.now ?? (() => new Date());
+    this.#logger = options.logger;
     this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
     this.#providerCli = new ImBindingProviderCli(database, cipher, {
       artifactReadiness: async (agentId, provider, integrationId, credentialGeneration) =>
@@ -330,6 +336,7 @@ export class ImBindingService {
         (await options.credentialExecutionReadiness?.(agentId, provider, integrationId, credentialGeneration)) ?? {
           status: "unconfirmed",
         },
+      logger: this.#logger,
     });
     this.#onActiveBindingChanged = options.onActiveBindingChanged;
   }
@@ -412,11 +419,11 @@ export class ImBindingService {
     const binding = row.binding;
     const sessionKind = row.sessionKind;
     if (binding.status !== "active") return rejected("binding_inactive");
-    if (binding.provider !== "slack" && this.#inspectCredentialMaterial(binding).status !== "valid") {
+    if (binding.provider !== "slack" && this.#inspectCredentialMaterial(binding, binding.id).status !== "valid") {
       return rejected("credential_stale");
     }
     const issueFeishuGrant = async (): Promise<RuntimeImCredentialGrantResult> => {
-      const credential = this.#decodeFeishuCredential(binding.encryptedCredential);
+      const credential = this.#decodeFeishuCredential(binding.encryptedCredential, binding.id);
       if (!credential || credential.appId !== binding.externalAppId) return rejected("credential_stale");
       if (
         !(await this.#runtimeProviderCliReady(
@@ -456,10 +463,12 @@ export class ImBindingService {
       ) {
         return rejected("binding_inactive");
       }
-      if (this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation)).status !== "valid") {
+      if (
+        this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation), binding.id).status !== "valid"
+      ) {
         return rejected("credential_stale");
       }
-      const credential = this.#decodeSlackCredential(installation.encryptedCredential);
+      const credential = this.#decodeSlackCredential(installation.encryptedCredential, binding.id);
       if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
       if (
         !(await this.#runtimeProviderCliReady(
@@ -571,12 +580,12 @@ export class ImBindingService {
         ),
       )
       .limit(1);
-    return this.#slackInstallationIngressFromRow(row);
+    return this.#slackInstallationIngressFromRow(row, undefined, row?.id);
   }
 
   async findSlackInstallationIngressForAgent(agentId: string): Promise<SlackInstallationIngress | undefined> {
     const [row] = await this.#database
-      .select({ installation: slackInstallations })
+      .select({ installation: slackInstallations, bindingId: imBindings.id })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
@@ -591,7 +600,7 @@ export class ImBindingService {
         ),
       )
       .limit(1);
-    return this.#slackInstallationIngressFromRow(row?.installation);
+    return this.#slackInstallationIngressFromRow(row?.installation, row?.bindingId, row?.installation.id);
   }
 
   async resolveSlackDefaultRoute(installationId: string): Promise<SlackInboundRoute | undefined> {
@@ -638,9 +647,9 @@ export class ImBindingService {
     if (!row?.installation.observedConnectedAt) {
       return undefined;
     }
-    const ingress = this.#slackInstallationIngressFromRow(row.installation);
+    const ingress = this.#slackInstallationIngressFromRow(row.installation, row.imBinding.id, row.installation.id);
     if (!ingress) return undefined;
-    const credential = this.#decodeSlackCredential(row.installation.encryptedCredential);
+    const credential = this.#decodeSlackCredential(row.installation.encryptedCredential, row.imBinding.id);
     if (!credential) return undefined;
     return {
       imBindingId,
@@ -679,8 +688,8 @@ export class ImBindingService {
   ): Promise<FeishuConnectionMaterial | undefined> {
     const imBinding = await this.#activeMaterial(imBindingId, "feishu", transaction);
     if (!imBinding?.externalAppId || !imBinding.externalBotId) return undefined;
-    if (this.#inspectCredentialMaterial(imBinding).status !== "valid") return undefined;
-    const credential = this.#decodeFeishuCredential(imBinding.encryptedCredential);
+    if (this.#inspectCredentialMaterial(imBinding, imBinding.id).status !== "valid") return undefined;
+    const credential = this.#decodeFeishuCredential(imBinding.encryptedCredential, imBindingId);
     if (!credential) return undefined;
     return {
       imBindingId,
@@ -1190,20 +1199,10 @@ export class ImBindingService {
   ): T & { credentialStatus: "valid" | "invalid" } {
     return { ...imBinding, credentialStatus };
   }
-
-  #inspectCredentialMaterial(input: {
-    provider: "feishu" | "slack";
-    encryptedCredential: string | null;
-    externalAppId: string | null;
-    externalBotId: string | null;
-    externalTeamId: string | null;
-    credentialGeneration: number;
-    credentialSchemaVersion: number | null;
-    grantedCapabilities: string[];
-  }): CredentialInspection {
-    return inspectCredentialMaterial(this.#cipher, input);
+  #inspectCredentialMaterial(input: CredentialMaterialWithId, bindingId?: string): CredentialInspection {
+    const options = { bindingId, slackInstallationId: input.slackInstallationId ?? undefined };
+    return inspectCredentialMaterial(this.#cipher, input, { ...options, logger: this.#logger });
   }
-
   async notifyProviderCliRequirementChanged(agentId: string): Promise<void> {
     await this.#notifyActiveBindingChanged(agentId);
   }
@@ -1215,40 +1214,37 @@ export class ImBindingService {
     await this.#onActiveBindingChanged({ agentId, computerId });
   }
 
-  #decodeFeishuCredential(encryptedCredential: string | null): FeishuCredential | undefined {
-    return decodeFeishuCredential(this.#cipher, encryptedCredential);
+  #decodeFeishuCredential(encryptedCredential: string | null, bindingId?: string): FeishuCredential | undefined {
+    return decodeFeishuCredential(this.#cipher, encryptedCredential, { bindingId, logger: this.#logger });
   }
 
-  #decodeSlackCredential(encryptedCredential: string | null): SlackCredential | undefined {
-    return decodeSlackCredential(this.#cipher, encryptedCredential);
+  #decodeSlackCredential(encryptedCredential: string | null, bindingId?: string, slackInstallationId?: string) {
+    const options = { bindingId, slackInstallationId };
+    return decodeSlackCredential(this.#cipher, encryptedCredential, { ...options, logger: this.#logger });
   }
 
   #inspectBindingCredentials(
-    binding: {
-      provider: "feishu" | "slack";
-      encryptedCredential: string | null;
-      externalAppId: string | null;
-      externalBotId: string | null;
-      externalTeamId: string | null;
-      credentialGeneration: number;
-      credentialSchemaVersion: number | null;
-      grantedCapabilities: string[];
-    },
+    binding: CredentialMaterialWithId,
     installation: typeof slackInstallations.$inferSelect | null | undefined,
   ): CredentialInspection {
-    return inspectBindingCredentials(this.#cipher, binding, installation);
+    return inspectBindingCredentials(this.#cipher, binding, installation, {
+      bindingId: binding.id,
+      logger: this.#logger,
+    });
   }
 
   #slackInstallationIngressFromRow(
     installation: typeof slackInstallations.$inferSelect | undefined,
+    bindingId?: string,
+    slackInstallationId?: string,
   ): SlackInstallationIngress | undefined {
     if (
       !installation ||
-      this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation)).status !== "valid"
+      this.#inspectCredentialMaterial(slackInstallationInspectionInput(installation), bindingId).status !== "valid"
     ) {
       return undefined;
     }
-    const credential = this.#decodeSlackCredential(installation.encryptedCredential);
+    const credential = this.#decodeSlackCredential(installation.encryptedCredential, bindingId, slackInstallationId);
     if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return undefined;
     return {
       installationId: installation.id,
@@ -1447,7 +1443,11 @@ export class ImBindingService {
       }
       const existingInstallation = currentAppTeamInstallation ?? currentSameAgentInstallation;
       if (existingInstallation) {
-        const currentCredential = this.#decodeSlackCredential(existingInstallation.encryptedCredential);
+        const currentCredential = this.#decodeSlackCredential(
+          existingInstallation.encryptedCredential,
+          configuredRoute?.id,
+          existingInstallation.id,
+        );
         const sameIdentity =
           existingInstallation.externalAppId === input.appId &&
           existingInstallation.externalTeamId === input.teamId &&

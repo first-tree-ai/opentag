@@ -80,7 +80,7 @@ describe("parseServerConfig", () => {
 
   it("defaults the channel target coordinates to the public release endpoint", () => {
     expect(parseServerConfig(required).channelTarget).toEqual({
-      downloadBaseUrl: "https://download.opentag.build/releases",
+      downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
       pollIntervalMs: 300_000,
     });
     expect(

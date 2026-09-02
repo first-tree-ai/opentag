@@ -41,7 +41,7 @@ export const PORTABLE_PLATFORMS = ["darwin-arm64", "darwin-x64", "linux-arm64", 
 export const PORTABLE_CHANNELS = ["prod", "staging"];
 export const MANIFEST_SCHEMA_VERSION = 1;
 export const APP_ENTRY = "app/cli/index.mjs";
-export const DEFAULT_DOWNLOAD_BASE_URL = "https://download.opentag.build/releases";
+export const DEFAULT_DOWNLOAD_BASE_URL = "https://storage.googleapis.com/opentag-release/releases";
 export const NODE_VERSION_FILE = join(SCRIPT_DIR, "node-version.txt");
 export const INSTALLER_TEMPLATE_FILE = join(SCRIPT_DIR, "install.sh");
 

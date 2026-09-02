@@ -14,6 +14,14 @@ const COPY_FEEDBACK_MS = 1_600;
  * The comment is load-bearing rather than decorative: pasted into a terminal it is inert, and
  * pasted to an agent it becomes the instruction, which is what keeps an agent's behaviour
  * predictable. It is therefore part of the copied text, not page chrome around it.
+ *
+ * Being inert is why it is written as the POSIX null command rather than a `#` line. `#` only
+ * introduces a comment where `interactive_comments` is set, which zsh — the macOS default shell —
+ * leaves off for interactive use, so a pasted `#` line runs and answers `command not found: #`.
+ * That opens a working command with what reads as a failure. `:` ignores its arguments and returns
+ * zero in every POSIX shell, so the sentence stays silent in a terminal and still reads as an
+ * instruction to an agent. The block shows exactly that line, because the manual-selection fallback
+ * copies what is on screen rather than what the copy button would have written.
  */
 export function CommandBlock({
   comment,
@@ -37,6 +45,7 @@ export function CommandBlock({
   /** Renders the block's shape with nothing to act on, while its real contents are still coming. */
   inert?: boolean;
 }) {
+  const commentLine = inertComment(comment);
   const split = command.lastIndexOf(" ") + 1;
   const lead = command.slice(0, split);
   const token = command.slice(split);
@@ -55,7 +64,7 @@ export function CommandBlock({
   }, []);
 
   async function copy() {
-    const payload = `${comment}\n${command}`;
+    const payload = `${commentLine}\n${command}`;
     try {
       await navigator.clipboard.writeText(payload);
       if (!mounted.current) return;
@@ -78,7 +87,7 @@ export function CommandBlock({
       <div className="ots-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
         <pre className="ots-command__code flex-1 min-w-0">
           <code ref={codeRef}>
-            <span className="ots-command__comment">{comment}</span>
+            <span className="ots-command__comment">{commentLine}</span>
             {"\n"}
             {lead}
             {/*
@@ -131,4 +140,9 @@ function selectContents(node: HTMLElement | null): void {
   range.selectNodeContents(node);
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+/** Wraps a sentence as the POSIX null command so a terminal ignores it and an agent still reads it. */
+function inertComment(comment: string): string {
+  return `: '${comment.replace(/'/g, `'\\''`)}'`;
 }

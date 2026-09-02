@@ -78,7 +78,7 @@ export const SETUP_COPY = {
       `We can't confirm ${computerName} right now. Start OpenTag on that Computer; this page will continue when it reconnects.`,
     generateRepair: "Need to reinstall? Generate a repair command.",
     hideRepair: "Hide repair command",
-    repairCommandComment: (computerName: string) => `# Run this command in the terminal on ${computerName}`,
+    repairCommandComment: (computerName: string) => `Run this command in the terminal on ${computerName}`,
     waitingRepair: (computerName: string) => `Waiting for ${computerName} to connect…`,
   },
 } as const;

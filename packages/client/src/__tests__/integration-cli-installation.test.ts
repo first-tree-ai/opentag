@@ -45,6 +45,40 @@ describe("Integration CLI install-only discovery", () => {
     ]);
   });
 
+  it("uses the account home to reject protected macOS candidates before inspecting them", async () => {
+    const accountHome = "/Users/opentag-account";
+    const callerHome = "/Users/opentag-caller";
+    const protectedBin = join(accountHome, "Desktop", "bin");
+    const accessSpy = vi.fn(async () => {
+      throw new Error("protected candidate must not be accessed");
+    });
+    const realpathSpy = vi.fn(async () => {
+      throw new Error("protected candidate must not be resolved");
+    });
+    const statSpy = vi.fn(async () => {
+      throw new Error("protected candidate must not be stat-ed");
+    });
+
+    await expect(
+      probeIntegrationCliInstallations({
+        access: accessSpy,
+        accountHome,
+        desktopAppDirs: () => [],
+        environment: { HOME: callerHome, PATH: protectedBin },
+        platform: "darwin",
+        realpath: realpathSpy,
+        stat: statSpy,
+        wellKnownDirs: () => [],
+      }),
+    ).resolves.toEqual([
+      { cli: "feishu", displayName: "Lark CLI", status: "not-installed" },
+      { cli: "slack", displayName: "Slack CLI", status: "not-installed" },
+    ]);
+    expect(accessSpy).not.toHaveBeenCalled();
+    expect(realpathSpy).not.toHaveBeenCalled();
+    expect(statSpy).not.toHaveBeenCalled();
+  });
+
   it("finds an OpenTag-managed launcher at the reviewed account-global path", async () => {
     const root = await temporaryRoot();
     const bin = join(root, "empty-bin");

@@ -70,6 +70,7 @@ export async function probeIntegrationCliInstallations(
     INTEGRATION_CLIS.map(async ({ cli, displayName, command }): Promise<IntegrationCliInstallation> => {
       const probed = await probeInstalledCliCommand(commands?.[cli] ?? command, environment, {
         ...resolverOptions,
+        home: resolverOptions.home ?? accountHome,
         includeLoginShell: false,
         wellKnownDirs,
       });

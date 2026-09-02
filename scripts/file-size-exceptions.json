@@ -4,7 +4,7 @@
   "exceptions": [
     {
       "path": "apps/web/src/agent-creation/agent-creation-flow.tsx",
-      "lines": 1020,
+      "lines": 853,
       "owner": "@bestony",
       "expires": "2026-10-31"
     },
@@ -28,7 +28,7 @@
     },
     {
       "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
-      "lines": 1995,
+      "lines": 2096,
       "owner": "@bestony",
       "expires": "2026-10-31"
     }

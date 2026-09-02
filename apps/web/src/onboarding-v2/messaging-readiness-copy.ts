@@ -4,7 +4,7 @@ import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import type { MessagingProvider, MessagingState } from "./flow.js";
 
-function providerCliWaitingCopy(progress: ProviderCliHandoffProgress): string {
+export function providerCliWaitingCopy(progress: ProviderCliHandoffProgress): string {
   if (progress.phase === "preparing_cli") return m.onboarding_v2_messaging_cli_preparing();
   if (progress.phase === "checking_credentials") return m.onboarding_v2_messaging_cli_checking_credentials();
   if (!progress.reason) return m.onboarding_v2_messaging_cli_unavailable();

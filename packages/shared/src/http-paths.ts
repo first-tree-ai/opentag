@@ -1,5 +1,6 @@
 export const API_V1_PREFIX = "/api/v1";
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
+export const AGENT_SETUP_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/setup`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
@@ -9,6 +10,7 @@ export const AGENT_COMPUTER_REBIND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/computer/
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
 export const AGENT_IM_BINDING_HANDOFF_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/handoff`;
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
+export const AGENT_IM_BINDING_UNBIND_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/unbind`;
 export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/feishu/setup-attempts`;
 export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/:attemptId`;
 export const AGENT_SLACK_OAUTH_START_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/oauth/start`;
@@ -26,6 +28,7 @@ export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`
  * Account-native management collections. Ownership comes only from the authenticated Account.
  */
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
+export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/creation-intents/:creationIntentId`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_BY_ID_TEMPLATE = `${ACCOUNT_COMPUTERS_PATH}/:computerId`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
@@ -85,6 +88,14 @@ export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
 }
 
+export function accountAgentCreationIntentPath(creationIntentId: string): string {
+  return `${ACCOUNT_AGENTS_PATH}/creation-intents/${encodeURIComponent(creationIntentId)}`;
+}
+
+export function agentSetupPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/setup`;
+}
+
 export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
 }
@@ -120,6 +131,10 @@ export function agentImBindingHandoffPath(agentId: string): string {
 
 export function agentImBindingConfigPath(agentId: string): string {
   return `${agentImBindingPath(agentId)}/config`;
+}
+
+export function agentImBindingUnbindPath(agentId: string): string {
+  return `${agentImBindingPath(agentId)}/unbind`;
 }
 
 export function agentFeishuSetupAttemptsPath(agentId: string): string {

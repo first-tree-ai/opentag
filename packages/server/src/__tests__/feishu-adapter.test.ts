@@ -10,7 +10,7 @@ import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
-import { computerCredentials, computers, imBindings } from "../db/schema/index.js";
+import { agents, computerCredentials, computers, imBindings } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import {
@@ -839,6 +839,30 @@ describe("FeishuConnectionManager", () => {
         appSecret: "secret",
       }),
     ).rejects.toMatchObject({ code: "FEISHU_RUNTIME_TOOL_UNAVAILABLE" });
+
+    await connectionDatabase.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
+    const suspended = fakeConnectionAdapter({ appId: "cli_conn" });
+    await expect(
+      new FeishuConnectionManager({
+        database: connectionDatabase.database,
+        inbox: { ingest: vi.fn() } as never,
+        instanceId: owner,
+        imBindings: value.imBindings,
+        createAdapter: () => suspended.adapter,
+        runtimeReady: () => true,
+      }).activateAtomicAttempt({
+        attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_conn",
+        appSecret: "secret",
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_SETUP_FENCE_STALE" });
+    const [slot] = await connectionDatabase.database
+      .select()
+      .from(imBindings)
+      .where(eq(imBindings.setupAttemptId, attemptId));
+    expect(slot).toMatchObject({ status: "provisioning", setupState: "validating" });
   });
 
   it("claims and renews leases during maintenance, then releases changed bindings", async () => {

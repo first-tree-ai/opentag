@@ -21,6 +21,9 @@ export {
   AGENT_USAGE_WINDOW_OPTIONS,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
+  AgentCreationIntentIdSchema,
+  type AgentCreationIntentResult,
+  AgentCreationIntentResultSchema,
   type AgentDetail,
   AgentDetailSchema,
   type AgentDisplayName,
@@ -66,6 +69,7 @@ export {
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
 } from "./agent.js";
+export * from "./agent-setup.js";
 export {
   type AuthIdentityProvider,
   AuthIdentityProviderSchema,
@@ -177,6 +181,7 @@ export {
 } from "./errors.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
+  ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_AGENTS_PATH,
   ACCOUNT_COMPUTER_BY_ID_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
@@ -191,13 +196,16 @@ export {
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
+  AGENT_IM_BINDING_UNBIND_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
+  AGENT_SETUP_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
   API_V1_PREFIX,
+  accountAgentCreationIntentPath,
   accountComputerByIdPath,
   accountComputerConnectCodePath,
   agentByIdPath,
@@ -207,8 +215,10 @@ export {
   agentImBindingConfigPath,
   agentImBindingHandoffPath,
   agentImBindingPath,
+  agentImBindingUnbindPath,
   agentReactivatePath,
   agentRuntimeTestPath,
+  agentSetupPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,

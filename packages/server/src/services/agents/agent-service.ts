@@ -55,6 +55,13 @@ interface AgentComputer {
   platform: "darwin" | "linux" | "win32";
 }
 
+interface ActiveSessionPlacement {
+  endedAt: Date | null;
+  generation: number;
+  sessionId: string;
+  computerId: string;
+}
+
 interface AgentSafeRow {
   id: string;
   createdByUserId: string;
@@ -326,6 +333,22 @@ export class AgentService {
   async createForAccount(callerUserId: string, rawInput: CreateAgentRequest): Promise<AgentAdminConfig> {
     const input = CreateAgentRequestSchema.parse(rawInput);
     return this.#create(callerUserId, input);
+  }
+
+  /**
+   * Reconciles one exact creation id without replaying its write. A foreign, deleted, or suspended
+   * result is indistinguishable from one that has not completed, and no namesake can satisfy it.
+   */
+  async getCreationIntentResultForAccount(
+    callerUserId: string,
+    creationIntentId: string,
+  ): Promise<{ kind: "found"; agentId: string } | { kind: "not-found" }> {
+    const [result] = await this.#database
+      .select({ agentId: agents.id, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.createdByUserId, callerUserId), eq(agents.creationIntentId, creationIntentId)))
+      .limit(1);
+    return result?.status === "active" ? { kind: "found", agentId: result.agentId } : { kind: "not-found" };
   }
 
   async #create(callerUserId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
@@ -830,6 +853,9 @@ export class AgentService {
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
+      if (scope.agent.status !== "active") {
+        throw this.#lifecycleConflict("Only an active Agent can be rebound to a Computer");
+      }
       const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
       const active = await transaction
         .select({
@@ -855,33 +881,7 @@ export class AgentService {
           previousComputerId: scope.computerId,
         };
       }
-      const sessionIds = active.map((row) => row.sessionId);
-      if (sessionIds.length > 0) {
-        const deliveries = await transaction
-          .select({
-            dispatchRequestId: imMessageDeliveries.dispatchRequestId,
-            placementGeneration: imMessageDeliveries.placementGeneration,
-            reportedAt: imMessageDeliveries.reportedAt,
-            sessionId: imMessageDeliveries.sessionId,
-            state: imMessageDeliveries.state,
-          })
-          .from(imMessageDeliveries)
-          .where(inArray(imMessageDeliveries.sessionId, sessionIds));
-        const blocked = deliveries.some(
-          (delivery) =>
-            delivery.state === "pending" ||
-            (delivery.state === "accepted" && delivery.reportedAt === null) ||
-            (delivery.state === "expired" && delivery.dispatchRequestId !== null),
-        );
-        if (blocked) {
-          throw new AgentServiceError(
-            "AGENT_REBIND_BLOCKED",
-            "deterministic",
-            "The Agent cannot rebind while Sessions have pending delivery, unreported Turns, or uncertain custody",
-            409,
-          );
-        }
-      }
+      await this.#assertSessionsCanRebind(transaction, active);
       const now = this.#now();
       let updated = scope.agent;
       if (changesAgent) {
@@ -892,31 +892,12 @@ export class AgentService {
             revision: sql`${agents.revision} + 1`,
             updatedAt: now,
           })
-          .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
+          .where(and(eq(agents.id, agentId), eq(agents.status, "active")))
           .returning();
         if (!changed) throw resourceNotFound();
         updated = changed;
       }
-      for (const row of active) {
-        if (row.computerId === target.id) continue;
-        const [moved] = await transaction
-          .update(sessionPlacements)
-          .set({
-            computerId: target.id,
-            generation: row.generation + 1,
-            updatedAt: now,
-          })
-          .where(eq(sessionPlacements.sessionId, row.sessionId))
-          .returning({ sessionId: sessionPlacements.sessionId });
-        if (!moved) {
-          throw new AgentServiceError(
-            "AGENT_REBIND_BLOCKED",
-            "deterministic",
-            "The Agent cannot rebind while Sessions have pending delivery, unreported Turns, or uncertain custody",
-            409,
-          );
-        }
-      }
+      await this.#moveSessionPlacements(transaction, active, target.id, now);
       return {
         changedComputer: changesAgent,
         computerId: target.id,
@@ -932,6 +913,52 @@ export class AgentService {
       });
     }
     return result.config;
+  }
+
+  async #assertSessionsCanRebind(transaction: DatabaseTransaction, active: ActiveSessionPlacement[]): Promise<void> {
+    const sessionIds = active.map((row) => row.sessionId);
+    if (sessionIds.length === 0) return;
+    const deliveries = await transaction
+      .select({
+        dispatchRequestId: imMessageDeliveries.dispatchRequestId,
+        reportedAt: imMessageDeliveries.reportedAt,
+        state: imMessageDeliveries.state,
+      })
+      .from(imMessageDeliveries)
+      .where(inArray(imMessageDeliveries.sessionId, sessionIds));
+    const blocked = deliveries.some(
+      (delivery) =>
+        delivery.state === "pending" ||
+        (delivery.state === "accepted" && delivery.reportedAt === null) ||
+        (delivery.state === "expired" && delivery.dispatchRequestId !== null),
+    );
+    if (blocked) throw this.#rebindBlocked();
+  }
+
+  async #moveSessionPlacements(
+    transaction: DatabaseTransaction,
+    active: ActiveSessionPlacement[],
+    computerId: string,
+    now: Date,
+  ): Promise<void> {
+    for (const row of active) {
+      if (row.computerId === computerId) continue;
+      const [moved] = await transaction
+        .update(sessionPlacements)
+        .set({ computerId, generation: row.generation + 1, updatedAt: now })
+        .where(eq(sessionPlacements.sessionId, row.sessionId))
+        .returning({ sessionId: sessionPlacements.sessionId });
+      if (!moved) throw this.#rebindBlocked();
+    }
+  }
+
+  #rebindBlocked(): AgentServiceError {
+    return new AgentServiceError(
+      "AGENT_REBIND_BLOCKED",
+      "deterministic",
+      "The Agent cannot rebind while Sessions have pending delivery, unreported Turns, or uncertain custody",
+      409,
+    );
   }
 
   async deleteById(callerUserId: string, agentId: string): Promise<void> {

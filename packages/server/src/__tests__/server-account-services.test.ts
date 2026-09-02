@@ -138,6 +138,21 @@ function withComputerUpdateFailure(mode: "empty_returning" | "unique_violation")
   return { machine: new MachineAuthService(database as never, { now: () => NOW }) };
 }
 
+/**
+ * Runs a deletion in the gap between a service's preflight reads and its locked write, so tests can
+ * prove the in-transaction recheck is what refuses a target that vanished mid-flight. Every other
+ * call passes through to the real PGlite database.
+ */
+function deletingOnTransaction(deleteBeforeTransaction: () => Promise<void>) {
+  return new Proxy(unit.database, {
+    get(target, property, receiver) {
+      if (property !== "transaction") return Reflect.get(target, property, receiver);
+      return (callback: (transaction: unknown) => Promise<unknown>) =>
+        deleteBeforeTransaction().then(() => target.transaction(callback as never));
+    },
+  }) as never;
+}
+
 describe("bootstrap and account authentication services", () => {
   it("normalizes bootstrap input, issues a hashed connect code, and rejects a second bootstrap", async () => {
     const result = await bootstrapInitialAdmin(
@@ -796,7 +811,7 @@ describe("Onboarding reset and setup services", () => {
     });
   });
 
-  it("completes setup only for an owned active Agent with a ready handoff", async () => {
+  it("adopts an owned active Agent with no handoff or runtime gate, and refuses every other target", async () => {
     const bootstrap = await account();
     const machine = new MachineAuthService(unit.database, { now: () => NOW });
     const issued = await machine.issueForAccount(bootstrap.userId, {});
@@ -813,8 +828,9 @@ describe("Onboarding reset and setup services", () => {
       })
       .returning();
     if (!agent) throw new Error("agent fixture missing");
-    const ready = { getHandoffForAgent: vi.fn().mockResolvedValue({ handoffReady: true }) } as never;
-    const setup = new AccountSetupService(unit.database, ready, { now: () => NOW });
+    // No binding, no handoff, no runtime observation exists for this Agent at all: adoption opens
+    // normal app access on ownership and active status alone.
+    const setup = new AccountSetupService(unit.database, { now: () => NOW });
     const [other] = await unit.database
       .insert(users)
       .values({ email: "setup-other@example.com", displayName: "Other" })
@@ -826,18 +842,57 @@ describe("Onboarding reset and setup services", () => {
     await expect(setup.completeForAccount(bootstrap.userId, agent.id)).resolves.toEqual({
       setupCompletedAt: NOW.toISOString(),
     });
+    // Once granted, admission never reopens: suspending the adopted Agent afterwards changes nothing.
+    await unit.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, agent.id));
+    await expect(setup.completeForAccount(bootstrap.userId, agent.id)).resolves.toEqual({
+      setupCompletedAt: NOW.toISOString(),
+    });
+    // A foreign Account cannot adopt someone else's Agent, and a missing id is indistinguishable.
+    await expect(setup.completeForAccount(other.id, agent.id)).rejects.toMatchObject({
+      code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+      statusCode: 404,
+    });
     await expect(setup.completeForAccount(other.id, randomUUID())).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+      statusCode: 404,
     });
-    await unit.database.update(users).set({ setupCompletedAt: null }).where(eq(users.id, bootstrap.userId));
-    const notReady = new AccountSetupService(unit.database, {
-      getHandoffForAgent: vi.fn().mockResolvedValue({ handoffReady: false }),
-    } as never);
-    await expect(notReady.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
-      code: "ACCOUNT_SETUP_NOT_READY",
+    // An inactive target fails closed even for its owner (this Account has not completed setup).
+    const [suspended] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: other.id,
+        name: "retired",
+        displayName: "Retired",
+        runtimeProvider: "codex",
+        status: "suspended",
+      })
+      .returning({ id: agents.id });
+    if (!suspended) throw new Error("suspended Agent fixture missing");
+    await expect(setup.completeForAccount(other.id, suspended.id)).rejects.toMatchObject({
+      code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+      statusCode: 404,
     });
-    expect(new AccountSetupServiceError("ACCOUNT_SETUP_NOT_READY", 409, "x")).toBeInstanceOf(Error);
+    expect(new AccountSetupServiceError("ACCOUNT_SETUP_AGENT_NOT_FOUND", 404, "x")).toBeInstanceOf(Error);
     expect(new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "x")).toBeInstanceOf(Error);
+  });
+
+  it("adopts an owned active Agent that has no Computer bound yet", async () => {
+    const bootstrap = await account();
+    const [unbound] = await unit.database
+      .insert(agents)
+      .values({
+        createdByUserId: bootstrap.userId,
+        name: "unbound",
+        displayName: "Unbound",
+        runtimeProvider: "codex",
+        status: "active",
+      })
+      .returning({ id: agents.id });
+    if (!unbound) throw new Error("unbound Agent fixture missing");
+    const setup = new AccountSetupService(unit.database, { now: () => NOW });
+    await expect(setup.completeForAccount(bootstrap.userId, unbound.id)).resolves.toEqual({
+      setupCompletedAt: NOW.toISOString(),
+    });
   });
 
   it("rechecks the setup Agent under lock before writing the completion marker", async () => {
@@ -856,14 +911,23 @@ describe("Onboarding reset and setup services", () => {
       })
       .returning({ id: agents.id });
     if (!agent) throw new Error("agent fixture missing");
-    const getHandoffForAgent = vi.fn(async () => {
-      await unit.database.delete(agents).where(eq(agents.id, agent.id));
-      return { handoffReady: true };
-    });
-    const setup = new AccountSetupService(unit.database, { getHandoffForAgent } as never, { now: () => NOW });
+    // The Agent vanishes between the preflight ownership read and the locked write, which is the
+    // race the in-transaction recheck exists to refuse.
+    const database = deletingOnTransaction(() =>
+      unit.database
+        .delete(agents)
+        .where(eq(agents.id, agent.id))
+        .then(() => undefined),
+    );
+    const setup = new AccountSetupService(database, { now: () => NOW });
     await expect(setup.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
     });
+    const [surviving] = await unit.database
+      .select({ setupCompletedAt: users.setupCompletedAt })
+      .from(users)
+      .where(eq(users.id, bootstrap.userId));
+    expect(surviving?.setupCompletedAt).toBeNull();
   });
 
   it("rechecks the Account itself under lock before writing the completion marker", async () => {
@@ -882,7 +946,7 @@ describe("Onboarding reset and setup services", () => {
       })
       .returning({ id: agents.id });
     if (!agent) throw new Error("agent fixture missing");
-    const getHandoffForAgent = vi.fn(async () => {
+    const database = deletingOnTransaction(async () => {
       await unit.database.delete(agents).where(eq(agents.createdByUserId, bootstrap.userId));
       await unit.database.delete(computerCredentials).where(eq(computerCredentials.issuedByUserId, bootstrap.userId));
       await unit.database
@@ -891,9 +955,8 @@ describe("Onboarding reset and setup services", () => {
       await unit.database.delete(computers).where(eq(computers.ownerAccountId, bootstrap.userId));
       await unit.database.delete(accountCliLoginCodes).where(eq(accountCliLoginCodes.userId, bootstrap.userId));
       await unit.database.delete(users).where(eq(users.id, bootstrap.userId));
-      return { handoffReady: true };
     });
-    const setup = new AccountSetupService(unit.database, { getHandoffForAgent } as never, { now: () => NOW });
+    const setup = new AccountSetupService(database, { now: () => NOW });
     await expect(setup.completeForAccount(bootstrap.userId, agent.id)).rejects.toMatchObject({
       code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
       statusCode: 404,

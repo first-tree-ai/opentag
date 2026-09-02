@@ -13,6 +13,9 @@ export const Route = createFileRoute("/_authenticated/_resources/_shell")({
  */
 function AccountShell() {
   const { me } = useAccount();
-  if (!me.setupCompletedAt) return <Redirect replace to="/onboarding" />;
+  const slackOAuthError = new URLSearchParams(window.location.search).get("slack_oauth_error") ?? undefined;
+  if (!me.setupCompletedAt) {
+    return <Redirect replace search={slackOAuthError ? { slack_oauth_error: slackOAuthError } : {}} to="/onboarding" />;
+  }
   return <AppShell />;
 }

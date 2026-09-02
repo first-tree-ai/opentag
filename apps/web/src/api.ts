@@ -5,16 +5,21 @@ import {
   type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
+  type AgentCreationIntentResult,
+  AgentCreationIntentResultSchema,
   type AgentDetail,
   AgentDetailSchema,
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
   AgentRuntimeTestResponseSchema,
+  type AgentSetupSnapshot,
+  AgentSetupSnapshotSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountAgentCreationIntentPath,
   accountComputerByIdPath,
   accountComputerConnectCodePath,
   agentByIdPath,
@@ -24,8 +29,10 @@ import {
   agentImBindingConfigPath,
   agentImBindingHandoffPath,
   agentImBindingPath,
+  agentImBindingUnbindPath,
   agentReactivatePath,
   agentRuntimeTestPath,
+  agentSetupPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -48,8 +55,10 @@ import {
   ImBindingDiagnosticsSchema,
   type ImBindingHandoffStatus,
   ImBindingHandoffStatusSchema,
+  type ImBindingMessagingExpectation,
   type ImBindingSummary,
   ImBindingSummarySchema,
+  type ImBindingUnbindRequiredDetail,
   type InternalNavigationVisibility,
   InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
@@ -72,6 +81,7 @@ import {
   type TaskTitleUpdateRequest,
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
+  type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
@@ -123,6 +133,7 @@ export class ApiError extends Error {
     readonly issues?: readonly ValidationIssue[],
     readonly requestId?: string,
     readonly retryAfterSeconds?: number,
+    readonly unbindRequired?: ImBindingUnbindRequiredDetail,
   ) {
     super(message);
     this.name = "ApiError";
@@ -163,6 +174,10 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema);
   }
 
+  agentCreationIntent(creationIntentId: string): Promise<AgentCreationIntentResult> {
+    return this.request(accountAgentCreationIntentPath(creationIntentId), AgentCreationIntentResultSchema);
+  }
+
   tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {
     const query = new URLSearchParams();
     if (input.cursor) query.set("cursor", input.cursor);
@@ -195,6 +210,14 @@ export class BrowserApi {
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {
     return this.request(agentConfigPath(agentId), AgentAdminConfigSchema);
+  }
+
+  /**
+   * The canonical setup state of one exact Agent. Stage, blockers, and permitted actions all
+   * arrive derived by the Server; callers render them rather than re-deriving them locally.
+   */
+  agentSetup(agentId: string): Promise<AgentSetupSnapshot> {
+    return this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema);
   }
 
   createAgent(input: CreateAgentRequest): Promise<AgentAdminConfig> {
@@ -267,13 +290,22 @@ export class BrowserApi {
     return this.requestOptional(agentImBindingConfigPath(agentId), ImBindingAdminDetailSchema);
   }
 
+  unbindAgentMessaging(agentId: string, input: UnbindAgentMessagingRequest): Promise<void> {
+    return this.requestNoContent(agentImBindingUnbindPath(agentId), {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   createFeishuSetupAttempt(
     agentId: string,
     intent: "create" | "reauthorize" | "replace" = "create",
+    expectedMessaging?: ImBindingMessagingExpectation,
   ): Promise<FeishuSetupAttempt> {
     return this.request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
       method: "POST",
-      body: JSON.stringify({ intent }),
+      body: JSON.stringify({ intent, ...(expectedMessaging ? { expectedMessaging } : {}) }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
@@ -510,6 +542,7 @@ export class BrowserApi {
       error.issues,
       error.requestId ?? requestId,
       error.retryAfterSeconds,
+      error.unbindRequired,
     );
   }
 

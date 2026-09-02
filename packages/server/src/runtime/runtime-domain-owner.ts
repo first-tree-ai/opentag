@@ -22,6 +22,7 @@ import {
   type TurnReportResult,
 } from "@opentag/shared";
 import { outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, tracePromise, withSpan } from "../observability/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "./connection-registry.js";
 import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
@@ -66,6 +67,7 @@ export type RuntimeDispatchAdmission<T> = (
 ) => Promise<{ admitted: false } | { admitted: true; result: Promise<T> }>;
 
 export interface RuntimeDomainOwnerOptions {
+  logger?: ServiceLogger;
   maxPendingRequests?: number;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
   onImCredentialGrant?(
@@ -139,6 +141,7 @@ interface StartingDelivery {
 export class RuntimeDomainOwner {
   readonly #registry: ConnectionRegistry;
   readonly #custody: RuntimeCustodyStore;
+  readonly #logger?: ServiceLogger;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
     Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "prepareReconcile">;
   readonly #pending = new Map<string, PendingRequest>();
@@ -154,6 +157,7 @@ export class RuntimeDomainOwner {
   constructor(registry: ConnectionRegistry, custody: RuntimeCustodyStore, options: RuntimeDomainOwnerOptions = {}) {
     this.#registry = registry;
     this.#custody = custody;
+    this.#logger = options.logger;
     this.#options = {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
@@ -754,6 +758,19 @@ export class RuntimeDomainOwner {
       if (this.#pending.get(request.requestId) !== pending) return;
       this.#pending.delete(request.requestId);
       clearTimeout(timer);
+      try {
+        this.#logger?.warn(
+          {
+            code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
+            computerId,
+            instanceId,
+            requestId: request.requestId,
+          },
+          "Runtime domain request failed",
+        );
+      } catch {
+        // Logging must never replace the request failure.
+      }
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       if (pending.kind === "steer") {
         void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);

@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import { createApp } from "../app.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { type RuntimeBusinessOptions, RuntimeSession } from "../runtime/runtime-session.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -923,6 +924,64 @@ describe("Computer runtime WebSocket", () => {
 });
 
 describe("RuntimeSession direct protocol coverage", () => {
+  it("logs 4401, 4409, and protocol termination with close codes and redacted reasons", async () => {
+    const authLogger = loggerFixture();
+    const authFailure = directRuntimeSession({ logger: authLogger });
+    authFailure.auth.verifyMachineToken.mockRejectedValue(
+      new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "Authorization: Bearer runtime-secret", 401),
+    );
+    await authenticateDirectFailure(authFailure);
+    expect(authLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "AUTH_INVALID_TOKEN", closeCode: 4401 }),
+      "Runtime session terminated",
+    );
+    expect(logReason(authLogger.warn)).not.toContain("runtime-secret");
+
+    const fencingLogger = loggerFixture();
+    const fencingFailure = directRuntimeSession({
+      computers: {
+        register: vi
+          .fn()
+          .mockRejectedValue(new AuthServiceError("COMPUTER_NOT_REGISTERED", "deterministic", "fenced", 409)),
+      },
+      logger: fencingLogger,
+    });
+    await authenticateDirect(fencingFailure);
+    fencingFailure.socket.emit(
+      "message",
+      JSON.stringify(registerFrame(fencingFailure.context.installationId, fencingFailure.instanceId)),
+      false,
+    );
+    await vi.waitFor(() => expect(fencingFailure.socket.closeCode).toBe(4409));
+    expect(fencingLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "COMPUTER_NOT_REGISTERED", closeCode: 4409 }),
+      "Runtime session terminated",
+    );
+
+    const protocolLogger = loggerFixture();
+    const protocolFailure = directRuntimeSession({ logger: protocolLogger });
+    protocolFailure.session.start();
+    protocolFailure.socket.emit("message", "not-json", false);
+    await vi.waitFor(() => expect(protocolFailure.socket.closeCode).toBe(4400));
+    expect(protocolLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "PROTOCOL_ERROR", closeCode: 4400 }),
+      "Runtime session terminated",
+    );
+  });
+
+  it("records transport errors without rethrowing or closing the runtime", () => {
+    const logger = loggerFixture();
+    const runtime = directRuntimeSession({ logger });
+    runtime.session.start();
+
+    expect(() => runtime.socket.emit("error", new Error("Authorization: Bearer socket-secret"))).not.toThrow();
+    expect(runtime.socket.closeCode).toBeUndefined();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ errorType: "Error", reason: "Authorization: [REDACTED]" }),
+      "Runtime socket transport error",
+    );
+  });
+
   it("rejects malformed, binary, and oversized frames before authentication", async () => {
     for (const [data, binary, expected] of [
       ["not-json", false, "PROTOCOL_ERROR"],
@@ -1287,6 +1346,7 @@ function directRuntimeSession(
       heartbeat: ReturnType<typeof vi.fn>;
       disconnect: ReturnType<typeof vi.fn>;
     }>;
+    logger?: ServiceLogger;
   } = {},
 ) {
   const socket = new RuntimeTestSocket();
@@ -1296,7 +1356,7 @@ function directRuntimeSession(
     computerId: randomUUID(),
     installationId: randomUUID(),
   };
-  const auth = { verifyMachineToken: vi.fn().mockResolvedValue(context) } as never;
+  const auth = { verifyMachineToken: vi.fn().mockResolvedValue(context) };
   const computers = {
     assertActiveCredential: input.computers?.assertActiveCredential ?? vi.fn().mockResolvedValue(undefined),
     register: input.computers?.register ?? vi.fn().mockResolvedValue(undefined),
@@ -1304,13 +1364,34 @@ function directRuntimeSession(
     disconnect: input.computers?.disconnect ?? vi.fn().mockResolvedValue(true),
   };
   const registry = new ConnectionRegistry();
-  const session = new RuntimeSession(socket as never, auth, computers as never, registry, {
+  const session = new RuntimeSession(socket as never, auth as never, computers as never, registry, {
     business: input.business,
+    logger: input.logger,
     providerReadiness: input.providerReadiness,
     authTimeoutMs: 5_000,
     registerTimeoutMs: 5_000,
   });
   return { auth, computers, context, frames: () => socket.frames, instanceId, registry, session, socket };
+}
+
+async function authenticateDirectFailure(runtime: ReturnType<typeof directRuntimeSession>): Promise<void> {
+  runtime.session.start();
+  runtime.socket.emit("message", JSON.stringify(authFrame(1)), false);
+  await vi.waitFor(() => expect(runtime.socket.closeCode).toBe(4401));
+}
+
+function loggerFixture(): ServiceLogger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
+
+function logReason(warn: ServiceLogger["warn"]): string {
+  const [bindings] = (warn as ReturnType<typeof vi.fn>).mock.calls[0] as [{ reason?: string }];
+  return bindings.reason ?? "";
 }
 
 async function registerDirect(runtime: ReturnType<typeof directRuntimeSession>): Promise<void> {

@@ -14,6 +14,7 @@ import type {
   AgentSetupSnapshot,
   FeishuSetupAttempt,
   FeishuSetupIntent,
+  ImBindingMessagingExpectation,
   ImProvider,
   SlackConfigurationIntent,
   StartSlackOAuthRequest,
@@ -30,18 +31,30 @@ export interface AgentSetupAdapter {
    * `reauthorize` to renew the current binding's permissions, `replace` to swap its bot. There is
    * deliberately no cross-Provider variant; changing Providers is unbind, then a fresh start.
    */
-  readonly startFeishuAttempt: (agentId: string, intent: FeishuSetupIntent) => Promise<void>;
+  readonly startFeishuAttempt: (
+    agentId: string,
+    intent: FeishuSetupIntent,
+    expectedMessaging: ImBindingMessagingExpectation,
+  ) => Promise<void>;
   /** Cancels the exact open Feishu attempt. Attempts are keyed globally, so no Agent id is taken. */
   readonly cancelFeishuAttempt: (attemptId: string) => Promise<void>;
   /** Starts Slack's install or reauthorization; resolves the URL the browser must be sent to. */
-  readonly startSlackInstall: (agentId: string, intent: SlackConfigurationIntent) => Promise<string>;
+  readonly startSlackInstall: (
+    agentId: string,
+    intent: SlackConfigurationIntent,
+    expectedMessaging: ImBindingMessagingExpectation,
+  ) => Promise<string>;
   /** Disables the exact current binding. A fresh Provider can be started only after this lands. */
   readonly unbindMessaging: (agentId: string, provider: ImProvider, bindingId: string) => Promise<void>;
 }
 
 interface AgentSetupBrowserApi {
   readonly agentSetup: (agentId: string) => Promise<AgentSetupSnapshot>;
-  readonly createFeishuSetupAttempt: (agentId: string, intent: FeishuSetupIntent) => Promise<FeishuSetupAttempt>;
+  readonly createFeishuSetupAttempt: (
+    agentId: string,
+    intent: FeishuSetupIntent,
+    expectedMessaging?: ImBindingMessagingExpectation,
+  ) => Promise<FeishuSetupAttempt>;
   readonly cancelFeishuSetupAttempt: (attemptId: string) => Promise<FeishuSetupAttempt>;
   readonly startSlackOAuth: (agentId: string, input: StartSlackOAuthRequest) => Promise<StartSlackOAuthResponse>;
   readonly unbindAgentMessaging: (agentId: string, input: UnbindAgentMessagingRequest) => Promise<void>;
@@ -51,14 +64,18 @@ interface AgentSetupBrowserApi {
 export function createHttpSetupAdapter(api: AgentSetupBrowserApi = browserApi): AgentSetupAdapter {
   return {
     readSnapshot: (agentId) => api.agentSetup(agentId),
-    startFeishuAttempt: async (agentId, intent) => {
-      await api.createFeishuSetupAttempt(agentId, intent);
+    startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
+      await api.createFeishuSetupAttempt(agentId, intent, expectedMessaging);
     },
     cancelFeishuAttempt: async (attemptId) => {
       await api.cancelFeishuSetupAttempt(attemptId);
     },
-    startSlackInstall: async (agentId, intent) => {
-      const started = await api.startSlackOAuth(agentId, { intent, returnSurface: "agent-setup" });
+    startSlackInstall: async (agentId, intent, expectedMessaging) => {
+      const started = await api.startSlackOAuth(agentId, {
+        intent,
+        returnSurface: "agent-setup",
+        expectedMessaging,
+      });
       return started.authorizationUrl;
     },
     unbindMessaging: async (agentId, provider, bindingId) => {

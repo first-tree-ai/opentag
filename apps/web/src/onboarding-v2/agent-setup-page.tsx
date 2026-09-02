@@ -57,6 +57,8 @@ export interface AgentSetupPageProps {
   readonly onReady?: (agentId: string) => Promise<void> | void;
   /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
   readonly reviewMode?: boolean;
+  /** A Slack callback failure to surface once after the fixed return route remounts. */
+  readonly slackOAuthError?: string;
 }
 
 type SetupPhase =
@@ -74,6 +76,11 @@ export function setupSnapshotIsTransitional(snapshot: AgentSetupSnapshot): boole
 
 function setupReadError(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : m.onboarding_v2_setup_load_failed();
+}
+
+function isTerminalSetupReadError(cause: unknown): boolean {
+  const error = cause instanceof Error ? cause : new Error(String(cause));
+  return isTerminalResourceError(error) || (error instanceof ApiError && error.code === "AGENT_LIFECYCLE_CONFLICT");
 }
 
 function providerTitle(provider: ImProvider): string {
@@ -110,6 +117,11 @@ function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): stri
     : spaceBrandInSentence(m.im_feishu_authorization_failed({ provider: providerTitle("feishu") }));
 }
 
+function slackSetupErrorMessage(code: string): string {
+  const known = SLACK_ACTION_ERRORS[code];
+  return spaceBrandInSentence(known ? known() : m.im_slack_authorization_failed({ provider: providerTitle("slack") }));
+}
+
 /**
  * Performs the write side of an action. `bind-computer` and `repair-computer` are absent: they
  * gate the surfaces that do the work, and those surfaces report back on their own. A Slack answer
@@ -123,21 +135,36 @@ async function performSetupAction(
   switch (action.kind) {
     case "start-messaging":
       if (action.provider === "feishu") {
-        await adapter.startFeishuAttempt(agentId, "create");
+        await adapter.startFeishuAttempt(agentId, "create", { kind: "unbound" });
         return undefined;
       }
-      return adapter.startSlackInstall(agentId, "create");
+      return adapter.startSlackInstall(agentId, "create", { kind: "unbound" });
     case "cancel-messaging-attempt":
       await adapter.cancelFeishuAttempt(action.attemptId);
       return undefined;
     case "reauthorize-messaging":
       if (action.provider === "feishu") {
-        await adapter.startFeishuAttempt(agentId, "reauthorize");
+        await adapter.startFeishuAttempt(agentId, "reauthorize", {
+          kind: "bound",
+          provider: "feishu",
+          bindingId: action.bindingId,
+          credentialGeneration: action.credentialGeneration,
+        });
         return undefined;
       }
-      return adapter.startSlackInstall(agentId, "reauthorize");
+      return adapter.startSlackInstall(agentId, "reauthorize", {
+        kind: "bound",
+        provider: "slack",
+        bindingId: action.bindingId,
+        credentialGeneration: action.credentialGeneration,
+      });
     case "replace-messaging":
-      await adapter.startFeishuAttempt(agentId, "replace");
+      await adapter.startFeishuAttempt(agentId, "replace", {
+        kind: "bound",
+        provider: "feishu",
+        bindingId: action.bindingId,
+        credentialGeneration: action.credentialGeneration,
+      });
       return undefined;
     case "unbind-messaging":
       await adapter.unbindMessaging(agentId, action.provider, action.bindingId);
@@ -197,7 +224,7 @@ function useSnapshotReader(
    * Over a good snapshot a failed re-read is said beside it; the snapshot itself stays put.
    */
   const failRead = useCallback((cause: unknown) => {
-    if (isTerminalResourceError(cause instanceof Error ? cause : new Error(String(cause)))) {
+    if (isTerminalSetupReadError(cause)) {
       setRefreshError(undefined);
       setPhase({ kind: "unavailable" });
       return;
@@ -310,8 +337,17 @@ function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupC
   const transitional = snapshot !== undefined && setupSnapshotIsTransitional(snapshot);
   useEffect(() => {
     if (!transitional || actions.busyKey !== undefined) return;
-    const timer = window.setInterval(() => void reader.read(), SETUP_POLL_MS);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer = window.setTimeout(async function poll() {
+      await reader.read();
+      // One observation at a time: overlapping reads would continuously retire one another when a
+      // slow Server takes longer than the interval, leaving a transitional screen unable to move.
+      if (!cancelled) timer = window.setTimeout(poll, SETUP_POLL_MS);
+    }, SETUP_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [transitional, actions.busyKey, reader.read]);
 
   const reload = useCallback(() => void reader.read(), [reader.read]);
@@ -366,7 +402,13 @@ function useReadyReport(
   return undefined;
 }
 
-export function AgentSetupPage({ agentId, adapter, onReady, reviewMode = false }: AgentSetupPageProps) {
+export function AgentSetupPage({
+  agentId,
+  adapter,
+  onReady,
+  reviewMode = false,
+  slackOAuthError,
+}: AgentSetupPageProps) {
   const resolvedAdapter = useMemo(() => adapter ?? createHttpSetupAdapter(), [adapter]);
   // Keyed on the exact target: a different Agent's setup is a different task, and remounting is
   // what retires everything the previous one still had in flight.
@@ -377,6 +419,7 @@ export function AgentSetupPage({ agentId, adapter, onReady, reviewMode = false }
       key={agentId}
       onReady={onReady}
       reviewMode={reviewMode}
+      slackOAuthError={slackOAuthError}
     />
   );
 }
@@ -386,8 +429,10 @@ function AgentSetupPageContent({
   adapter,
   onReady,
   reviewMode = false,
+  slackOAuthError,
 }: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
   const controller = useAgentSetup(agentId, adapter);
+  const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
 
@@ -397,6 +442,7 @@ function AgentSetupPageContent({
         <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
+        {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
         <SetupPhaseView agentId={agentId} controller={controller} report={report} />
       </main>
     </div>
@@ -521,6 +567,28 @@ function ComputerSetupSection({
         onChanged={onChanged}
         snapshot={snapshot}
       />
+    );
+  }
+  if (computer.kind === "observation-failed") {
+    return (
+      <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+        <header className={SECTION_HEADER}>
+          <Text as="h2" variant="heading">
+            {m.onboarding_v2_connect_title()}
+          </Text>
+        </header>
+        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
+          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
+            <Icon name="laptop" />
+          </span>
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+            <Text as="h3" variant="heading">
+              {computer.displayName}
+            </Text>
+            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
+          </div>
+        </div>
+      </section>
     );
   }
   return (

@@ -327,6 +327,22 @@ export class AgentService {
     return this.#create(callerUserId, input);
   }
 
+  /**
+   * Reconciles one exact creation id without replaying its write. A foreign, deleted, or suspended
+   * result is indistinguishable from one that has not completed, and no namesake can satisfy it.
+   */
+  async getCreationIntentResultForAccount(
+    callerUserId: string,
+    creationIntentId: string,
+  ): Promise<{ kind: "found"; agentId: string } | { kind: "not-found" }> {
+    const [result] = await this.#database
+      .select({ agentId: agents.id, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.createdByUserId, callerUserId), eq(agents.creationIntentId, creationIntentId)))
+      .limit(1);
+    return result?.status === "active" ? { kind: "found", agentId: result.agentId } : { kind: "not-found" };
+  }
+
   async #create(callerUserId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
     const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
     const intentFingerprint = input.creationIntentId ? creationIntentFingerprint(input) : undefined;

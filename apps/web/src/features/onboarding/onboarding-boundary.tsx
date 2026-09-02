@@ -52,7 +52,15 @@ function resolveTargets(agentId: string | undefined, active: readonly ActiveAgen
  * explicitly. A completed Account that arrives without a target is sent to the application; one
  * that arrives with a valid exact target stays — exact onboarding remains accessible after setup.
  */
-export function OnboardingBoundary({ agentId, review }: { agentId?: string; review?: "reboard" }) {
+export function OnboardingBoundary({
+  agentId,
+  review,
+  slackOAuthError,
+}: {
+  agentId?: string;
+  review?: "reboard";
+  slackOAuthError?: string;
+}) {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
   const reviewMode = review === "reboard" || isReboardReviewFor(me.user.id);
@@ -83,6 +91,7 @@ export function OnboardingBoundary({ agentId, review }: { agentId?: string; revi
       onTarget={openExactTarget}
       review={review}
       reviewMode={reviewMode}
+      slackOAuthError={slackOAuthError}
     />
   );
 }
@@ -95,6 +104,7 @@ function TargetedOnboarding({
   onTarget,
   review,
   reviewMode,
+  slackOAuthError,
 }: {
   accountCompleted: boolean;
   agentId?: string;
@@ -103,6 +113,7 @@ function TargetedOnboarding({
   onTarget: (agentId: string) => Promise<void>;
   review?: "reboard";
   reviewMode: boolean;
+  slackOAuthError?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [resolution, setResolution] = useState<TargetResolution>({ kind: "loading" });
@@ -224,6 +235,7 @@ function TargetedOnboarding({
         onAdopt={onAdopt}
         onReviewFinished={onReviewFinished}
         reviewMode={reviewMode}
+        slackOAuthError={slackOAuthError}
       />
     );
   }
@@ -250,12 +262,14 @@ function ExactAgentOnboarding({
   onAdopt,
   onReviewFinished,
   reviewMode,
+  slackOAuthError,
 }: {
   accountCompleted: boolean;
   agentId: string;
   onAdopt: (agentId: string) => Promise<void>;
   onReviewFinished: (agentId: string) => Promise<void>;
   reviewMode: boolean;
+  slackOAuthError?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [admission, setAdmission] = useState<AdmissionState>(accountCompleted ? "ready" : "loading");
@@ -317,6 +331,7 @@ function ExactAgentOnboarding({
       agentId={agentId}
       onComplete={reviewMode ? onReviewFinished : undefined}
       reviewMode={reviewMode}
+      slackOAuthError={slackOAuthError}
     />
   );
 }

@@ -5,12 +5,56 @@
  * and a different Provider is reached only by unbinding first.
  */
 
-import { AgentSetupSnapshotSchema } from "@opentag/shared/browser";
+import {
+  type AgentSetupSnapshot,
+  AgentSetupSnapshotSchema,
+  type ImBindingMessagingExpectation,
+} from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import { SETUP_AGENT_ID, SETUP_COMPUTER_ID, setupAgent } from "./agent-setup-test-fixtures.js";
+import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
 
+function messagingExpectation(snapshot: AgentSetupSnapshot): ImBindingMessagingExpectation {
+  const messaging = snapshot.messaging;
+  if (messaging.kind === "not-configured") return { kind: "unbound" };
+  if (
+    (messaging.kind === "ready" || messaging.kind === "waiting-handoff" || messaging.kind === "blocked") &&
+    messaging.bindingId &&
+    messaging.credentialGeneration !== undefined
+  ) {
+    return {
+      kind: "bound",
+      provider: messaging.provider,
+      bindingId: messaging.bindingId,
+      credentialGeneration: messaging.credentialGeneration,
+    };
+  }
+  throw new Error("The snapshot does not expose a configured Messaging expectation");
+}
+
+async function currentMessagingExpectation(
+  adapter: AgentSetupAdapter,
+  agentId: string,
+): Promise<ImBindingMessagingExpectation> {
+  return messagingExpectation(await adapter.readSnapshot(agentId));
+}
+
 describe("createMemorySetupAdapter", () => {
+  it.each([
+    ["computer", "needs-computer"],
+    ["runtime", "needs-runtime"],
+    ["messaging", "needs-messaging"],
+  ] as const)("models a persistent %s observation failure as a structured blocker", async (resource, stage) => {
+    const agent = setupAgent();
+    const { adapter } = createMemorySetupAdapter({ agent, observationFailure: resource });
+
+    const snapshot = await adapter.readSnapshot(agent.id);
+    expect(snapshot.stage).toBe(stage);
+    expect(snapshot.blockers).toEqual([{ code: "resource-observation-failed", resource }]);
+    expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
+  });
+
   it("derives each stage with its canonical blockers and actions", async () => {
     const unbound = createMemorySetupAdapter({ agent: setupAgent({ computer: null }) });
     const unboundSnapshot = AgentSetupSnapshotSchema.parse(await unbound.adapter.readSnapshot(SETUP_AGENT_ID));
@@ -61,7 +105,7 @@ describe("createMemorySetupAdapter", () => {
     const agent = setupAgent();
     const { adapter, controls } = createMemorySetupAdapter({ agent });
 
-    await adapter.startFeishuAttempt(agent.id, "create");
+    await adapter.startFeishuAttempt(agent.id, "create", { kind: "unbound" });
     const authorizing = await adapter.readSnapshot(agent.id);
     expect(authorizing.messaging).toMatchObject({ kind: "authorizing", provider: "feishu", qrUrl: expect.any(String) });
     expect(authorizing.stage).toBe("needs-messaging");
@@ -76,7 +120,11 @@ describe("createMemorySetupAdapter", () => {
     controls.scanFeishuCode();
     const handoff = await adapter.readSnapshot(agent.id);
     expect(handoff.messaging).toMatchObject({ kind: "waiting-handoff", provider: "feishu" });
-    expect(handoff.actions).toEqual([{ kind: "refresh" }]);
+    const handoffBindingId = handoff.messaging.kind === "waiting-handoff" ? handoff.messaging.bindingId : undefined;
+    expect(handoff.actions).toEqual([
+      { kind: "refresh" },
+      { kind: "unbind-messaging", provider: "feishu", bindingId: handoffBindingId },
+    ]);
 
     controls.completeHandoff();
     const ready = await adapter.readSnapshot(agent.id);
@@ -84,9 +132,10 @@ describe("createMemorySetupAdapter", () => {
     expect(ready.messaging).toMatchObject({ kind: "ready", provider: "feishu" });
     expect(ready.blockers).toEqual([]);
     const bindingId = ready.messaging.kind === "ready" ? ready.messaging.bindingId : undefined;
+    const credentialGeneration = ready.messaging.kind === "ready" ? ready.messaging.credentialGeneration : undefined;
     expect(ready.actions).toEqual([
-      { kind: "reauthorize-messaging", provider: "feishu", bindingId },
-      { kind: "replace-messaging", provider: "feishu", bindingId },
+      { kind: "reauthorize-messaging", provider: "feishu", bindingId, credentialGeneration },
+      { kind: "replace-messaging", provider: "feishu", bindingId, credentialGeneration },
       { kind: "unbind-messaging", provider: "feishu", bindingId },
     ]);
   });
@@ -95,7 +144,7 @@ describe("createMemorySetupAdapter", () => {
     const agent = setupAgent();
     const { adapter } = createMemorySetupAdapter({ agent });
 
-    await adapter.startFeishuAttempt(agent.id, "create");
+    await adapter.startFeishuAttempt(agent.id, "create", { kind: "unbound" });
     const authorizing = await adapter.readSnapshot(agent.id);
     const attemptId =
       authorizing.messaging.kind === "authorizing" && authorizing.messaging.provider === "feishu"
@@ -125,7 +174,7 @@ describe("createMemorySetupAdapter", () => {
     });
     const bindingId = before.messaging.kind === "blocked" ? before.messaging.bindingId : undefined;
 
-    await adapter.startFeishuAttempt(agent.id, "reauthorize");
+    await adapter.startFeishuAttempt(agent.id, "reauthorize", await currentMessagingExpectation(adapter, agent.id));
     const attempt = await adapter.readSnapshot(agent.id);
     expect(attempt.messaging).toMatchObject({ kind: "authorizing", provider: "feishu" });
     const attemptId =
@@ -147,16 +196,28 @@ describe("createMemorySetupAdapter", () => {
     const agent = setupAgent();
     const { adapter, controls } = createMemorySetupAdapter({
       agent,
-      messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "authorization-failed" },
+      messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "reauthorization-required" },
     });
     const before = await adapter.readSnapshot(agent.id);
     const bindingId = before.messaging.kind === "blocked" ? before.messaging.bindingId : "missing";
 
-    await adapter.startFeishuAttempt(agent.id, "reauthorize");
+    await adapter.startFeishuAttempt(agent.id, "reauthorize", await currentMessagingExpectation(adapter, agent.id));
     controls.scanFeishuCode();
     const after = await adapter.readSnapshot(agent.id);
     expect(after.messaging).toMatchObject({ kind: "ready", provider: "feishu", bindingId });
     expect(after.stage).toBe("ready");
+  });
+
+  it("matches production by requiring an explicit unbind after terminal authorization failure", async () => {
+    const agent = setupAgent();
+    const { adapter } = createMemorySetupAdapter({
+      agent,
+      messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "authorization-failed" },
+    });
+
+    const snapshot = await adapter.readSnapshot(agent.id);
+    const bindingId = snapshot.messaging.kind === "blocked" ? snapshot.messaging.bindingId : "missing";
+    expect(snapshot.actions).toEqual([{ kind: "unbind-messaging", provider: "feishu", bindingId }]);
   });
 
   it("refuses a direct cross-Provider install until the current binding is unbound", async () => {
@@ -168,8 +229,8 @@ describe("createMemorySetupAdapter", () => {
     const boundFeishu = await adapter.readSnapshot(agent.id);
     const bindingId = boundFeishu.messaging.kind === "ready" ? boundFeishu.messaging.bindingId : "missing";
 
-    await expect(adapter.startSlackInstall(agent.id, "create")).rejects.toThrow(/unbound/);
-    await expect(adapter.startFeishuAttempt(agent.id, "create")).rejects.toThrow(/not-configured/);
+    await expect(adapter.startSlackInstall(agent.id, "create", { kind: "unbound" })).rejects.toThrow(/unbound/);
+    await expect(adapter.startFeishuAttempt(agent.id, "create", { kind: "unbound" })).rejects.toThrow(/unbound/);
 
     await adapter.unbindMessaging(agent.id, "feishu", bindingId);
     const cleared = await adapter.readSnapshot(agent.id);
@@ -179,7 +240,7 @@ describe("createMemorySetupAdapter", () => {
       { kind: "start-messaging", provider: "slack" },
     ]);
 
-    const url = await adapter.startSlackInstall(agent.id, "create");
+    const url = await adapter.startSlackInstall(agent.id, "create", { kind: "unbound" });
     expect(url).toContain("https://slack.com/");
     const installing = await adapter.readSnapshot(agent.id);
     expect(installing.messaging).toMatchObject({ kind: "authorizing", provider: "slack" });
@@ -205,8 +266,9 @@ describe("createMemorySetupAdapter", () => {
       /not the current binding/,
     );
     await expect(adapter.cancelFeishuAttempt(crypto.randomUUID())).rejects.toThrow(/No open Lark attempt/);
-    await expect(adapter.startSlackInstall(agent.id, "reauthorize")).resolves.toContain("https://slack.com/");
-    await expect(adapter.startFeishuAttempt(agent.id, "reauthorize")).rejects.toThrow(/current Lark binding/);
+    const expected = await currentMessagingExpectation(adapter, agent.id);
+    await expect(adapter.startFeishuAttempt(agent.id, "reauthorize", expected)).rejects.toThrow(/current Lark binding/);
+    await expect(adapter.startSlackInstall(agent.id, "reauthorize", expected)).resolves.toContain("https://slack.com/");
 
     const other = createMemorySetupAdapter({ agent });
     await expect(other.adapter.readSnapshot(crypto.randomUUID())).rejects.toThrow(/No such Agent/);

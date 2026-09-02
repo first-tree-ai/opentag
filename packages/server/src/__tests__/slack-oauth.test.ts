@@ -823,7 +823,7 @@ describe("Slack OAuth HTTP routes", () => {
       expect.arrayContaining([expect.stringContaining("opentag_slack_oauth_context=")]),
     );
     expect(String(started.headers["set-cookie"])).toContain("HttpOnly");
-    expect(slackOAuth.start).toHaveBeenCalledWith(userId, agentId, "create", undefined);
+    expect(slackOAuth.start).toHaveBeenCalledWith(userId, agentId, "create", undefined, undefined);
 
     slackOAuth.start.mockClear();
     const setupStarted = await app.inject({
@@ -833,7 +833,7 @@ describe("Slack OAuth HTTP routes", () => {
       payload: { intent: "create", returnSurface: "agent-setup" },
     });
     expect(setupStarted.statusCode).toBe(200);
-    expect(slackOAuth.start).toHaveBeenCalledWith(userId, agentId, "create", "agent-setup");
+    expect(slackOAuth.start).toHaveBeenCalledWith(userId, agentId, "create", "agent-setup", undefined);
 
     const invalidSurface = await app.inject({
       method: "POST",

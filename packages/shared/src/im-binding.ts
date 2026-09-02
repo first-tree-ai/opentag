@@ -300,8 +300,29 @@ export const StartSlackOAuthRequestSchema = z
   .object({
     intent: SlackConfigurationIntentSchema,
     returnSurface: SlackOAuthReturnSurfaceSchema.optional(),
+    expectedMessaging: ImBindingMessagingExpectationSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    if (request.intent === "create" && request.expectedMessaging?.kind === "bound") {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedMessaging"],
+        message: "Slack create requires the Agent to be unbound",
+      });
+    }
+    if (
+      request.intent === "reauthorize" &&
+      request.expectedMessaging !== undefined &&
+      (request.expectedMessaging.kind !== "bound" || request.expectedMessaging.provider !== "slack")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedMessaging"],
+        message: "Slack reauthorization requires the exact current Slack binding",
+      });
+    }
+  });
 
 export const StartSlackOAuthResponseSchema = z
   .object({

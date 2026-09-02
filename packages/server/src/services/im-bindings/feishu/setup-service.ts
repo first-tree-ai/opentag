@@ -3,6 +3,7 @@ import type { FeishuSetupAttempt, FeishuSetupIntent, ImBindingMessagingExpectati
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
+import { isUniqueViolation } from "../../../db/unique-violation.js";
 import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import {
@@ -227,13 +228,7 @@ export class FeishuSetupService {
         return created;
       });
     } catch (error) {
-      void registration.result.catch(() => undefined);
-      registration.abort();
-      const concurrent = await this.#currentForAgent(agentId);
-      if (concurrent?.setupAttemptId && ["awaiting_user", "validating"].includes(concurrent.setupState ?? "")) {
-        return this.#toAttempt(concurrent);
-      }
-      throw error;
+      return this.#convergeInsertRace(agentId, registration, error);
     }
     if (!row) {
       void registration.result.catch(() => undefined);
@@ -252,6 +247,23 @@ export class FeishuSetupService {
       attemptId,
     );
     return this.#toAttempt(row);
+  }
+
+  async #convergeInsertRace(
+    agentId: string,
+    registration: FeishuRegistration,
+    error: unknown,
+  ): Promise<FeishuSetupAttempt> {
+    void registration.result.catch(() => undefined);
+    registration.abort();
+    // Only the current-binding uniqueness race is convergence. Authority, lifecycle, and stale
+    // expectation errors are deliberate fences and must reach the caller unchanged.
+    if (!isUniqueViolation(error, "im_bindings_agent_current_unique")) throw error;
+    const concurrent = await this.#currentForAgent(agentId);
+    if (concurrent?.setupAttemptId && ["awaiting_user", "validating"].includes(concurrent.setupState ?? "")) {
+      return this.#toAttempt(concurrent);
+    }
+    throw error;
   }
 
   async get(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
@@ -319,7 +331,12 @@ export class FeishuSetupService {
           setupExpiresAt: null,
           updatedAt: now,
         })
-        .where(and(eq(imBindings.setupAttemptId, attemptId), eq(imBindings.setupState, "awaiting_user")))
+        .where(
+          and(
+            eq(imBindings.setupAttemptId, attemptId),
+            inArray(imBindings.setupState, ["awaiting_user", "validating"]),
+          ),
+        )
         .returning();
       return row;
     });

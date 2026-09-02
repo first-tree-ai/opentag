@@ -1,9 +1,12 @@
 import {
+  ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
+  AgentCreationIntentIdSchema,
+  AgentCreationIntentResultSchema,
   type ChannelName,
   CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
@@ -51,6 +54,7 @@ const TaskDetailQuerySchema = z
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
+const CreationIntentParamsSchema = z.object({ creationIntentId: AgentCreationIntentIdSchema }).strict();
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
@@ -113,6 +117,12 @@ export function registerAccountRoutes(
     app.get(HTTP_PATHS.accountAgents, { preHandler }, async (request, reply) => {
       const account = accountId(request);
       return reply.code(200).send(ListAgentsResponseSchema.parse(await agentService.listForAccount(account)));
+    });
+
+    app.get(ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { creationIntentId } = parseRequest(CreationIntentParamsSchema, request.params);
+      const result = await agentService.getCreationIntentResultForAccount(accountId(request), creationIntentId);
+      return reply.header("Cache-Control", "no-store").code(200).send(AgentCreationIntentResultSchema.parse(result));
     });
   }
 

@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { OnboardingBoundary } from "../../../features/onboarding/onboarding-boundary.js";
 
 export const Route = createFileRoute("/_authenticated/_resources/onboarding")({
@@ -8,9 +9,13 @@ export const Route = createFileRoute("/_authenticated/_resources/onboarding")({
    * returns through this route, so a target that arrives in the URL has to survive the trip rather
    * than being dropped on the way in; the boundary decides what the target may resolve to.
    */
-  validateSearch: (search: Record<string, unknown>): { agentId?: string; review?: "reboard" } => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { agentId?: string; review?: "reboard"; slackOauth?: "success"; slackOauthError?: string } => ({
     agentId: typeof search.agentId === "string" ? search.agentId : undefined,
     review: search.review === "reboard" ? "reboard" : undefined,
+    slackOauth: search.slack_oauth === "success" ? "success" : undefined,
+    slackOauthError: typeof search.slack_oauth_error === "string" ? search.slack_oauth_error : undefined,
   }),
 });
 
@@ -21,6 +26,12 @@ export const Route = createFileRoute("/_authenticated/_resources/onboarding")({
  * exact-target decision live in the boundary.
  */
 function OnboardingRoute() {
-  const { agentId, review } = Route.useSearch();
-  return <OnboardingBoundary agentId={agentId} review={review} />;
+  const { agentId, review, slackOauth, slackOauthError } = Route.useSearch();
+  const navigate = useNavigate();
+  const [callbackError] = useState(slackOauthError);
+  useEffect(() => {
+    if (!slackOauth && !slackOauthError) return;
+    void navigate({ replace: true, search: { agentId, review }, to: "/onboarding" });
+  }, [agentId, navigate, review, slackOauth, slackOauthError]);
+  return <OnboardingBoundary agentId={agentId} review={review} slackOAuthError={callbackError} />;
 }

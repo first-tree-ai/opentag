@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentAdminConfigSchema,
+  AgentCreationIntentResultSchema,
   AgentDetailSchema,
   AgentNameSchema,
   AgentRuntimeConfigSchema,
@@ -16,6 +17,7 @@ import {
 } from "../agent.js";
 import { AgentNameSchema as BrowserAgentNameSchema } from "../browser.js";
 import {
+  ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_AGENTS_PATH,
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   ACCOUNT_COMPUTERS_PATH,
@@ -34,6 +36,7 @@ import {
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
+  accountAgentCreationIntentPath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
@@ -374,6 +377,13 @@ describe("Agent contracts", () => {
   });
 
   it("shares route templates and encoded path builders", () => {
+    expect(AgentCreationIntentResultSchema.parse({ kind: "found", agentId: agent.id })).toEqual({
+      kind: "found",
+      agentId: agent.id,
+    });
+    expect(AgentCreationIntentResultSchema.parse({ kind: "not-found" })).toEqual({ kind: "not-found" });
+    expect(ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE).toBe("/api/v1/agents/creation-intents/:creationIntentId");
+    expect(accountAgentCreationIntentPath("intent/value")).toBe("/api/v1/agents/creation-intents/intent%2Fvalue");
     expect(AGENT_BY_ID_TEMPLATE).toBe("/api/v1/agents/:agentId");
     expect(agentByIdPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue");
     expect(AGENT_SUSPEND_TEMPLATE).toBe("/api/v1/agents/:agentId/suspend");

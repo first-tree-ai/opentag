@@ -112,6 +112,7 @@ export function registerSlackOAuthRoutes(app: FastifyInstance, options: SlackOAu
       agentId,
       input.intent,
       input.returnSurface,
+      input.expectedMessaging,
     );
     setSlackOAuthContextCookie(reply, started.sessionBinding, {
       path: SLACK_OAUTH_CALLBACK_PATH,

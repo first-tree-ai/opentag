@@ -56,7 +56,12 @@ function scriptedAdapter(
 
 function renderSetup(
   adapter: AgentSetupAdapter,
-  props: { agentId?: string; onReady?: (agentId: string) => Promise<void> | void; reviewMode?: boolean } = {},
+  props: {
+    agentId?: string;
+    onReady?: (agentId: string) => Promise<void> | void;
+    reviewMode?: boolean;
+    slackOAuthError?: string;
+  } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -66,6 +71,7 @@ function renderSetup(
         agentId={props.agentId ?? SETUP_AGENT_ID}
         onReady={props.onReady}
         reviewMode={props.reviewMode}
+        slackOAuthError={props.slackOAuthError}
       />
     </QueryClientProvider>,
   );
@@ -173,7 +179,7 @@ describe("AgentSetupPage stages", () => {
 
   it("shows the Feishu authorization with its QR, expiry, and cancel from the snapshot", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     renderSetup(memory.adapter);
     await settle(10);
 
@@ -185,7 +191,7 @@ describe("AgentSetupPage stages", () => {
 
   it("shows the Slack install wait with Provider identity intact", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    await memory.adapter.startSlackInstall(SETUP_AGENT_ID, "create");
+    await memory.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" });
     renderSetup(memory.adapter);
     await settle();
 
@@ -307,7 +313,7 @@ describe("AgentSetupPage transitions", () => {
   it("cancels the exact open attempt and returns to the fresh choice", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     const cancel = vi.spyOn(memory.adapter, "cancelFeishuAttempt");
-    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     const authorizing = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
     const attemptId =
       authorizing.messaging.kind === "authorizing" && authorizing.messaging.provider === "feishu"
@@ -358,7 +364,12 @@ describe("AgentSetupPage transitions", () => {
       fireEvent.click(screen.getByRole("button", { name: "Update permissions" }));
       await settle();
 
-      expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "reauthorize");
+      expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "reauthorize", {
+        kind: "bound",
+        provider: "slack",
+        bindingId: expect.any(String),
+        credentialGeneration: 1,
+      });
       expect(assign).toHaveBeenCalled();
     } finally {
       Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
@@ -368,7 +379,7 @@ describe("AgentSetupPage transitions", () => {
   it("replaces the current Feishu bot through a same-Provider attempt", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
-      messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "authorization-failed" },
+      messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "reauthorization-required" },
     });
     const start = vi.spyOn(memory.adapter, "startFeishuAttempt");
     renderSetup(memory.adapter);
@@ -377,7 +388,12 @@ describe("AgentSetupPage transitions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
     await settle(10);
 
-    expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "replace");
+    expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "replace", {
+      kind: "bound",
+      provider: "feishu",
+      bindingId: expect.any(String),
+      credentialGeneration: 1,
+    });
     expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
   });
 
@@ -431,7 +447,7 @@ describe("AgentSetupPage transitions", () => {
     const adapter = scriptedAdapter((agentId) => memory.adapter.readSnapshot(agentId), {
       startFeishuAttempt: vi.fn(async () => {
         await gate.promise;
-        await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+        await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
       }),
     });
     renderSetup(adapter);
@@ -521,7 +537,7 @@ describe("AgentSetupPage request fencing", () => {
 
   it("discards a poll that resolves after an action has moved the state on", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
-    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create");
+    await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
     const stale = deferred<AgentSetupSnapshot>();
     const modelRead = memory.adapter.readSnapshot;
     let calls = 0;
@@ -547,6 +563,48 @@ describe("AgentSetupPage request fencing", () => {
     await settle();
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
     expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
+  });
+
+  it("waits for a slow poll before scheduling the next one", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
+    const slow = deferred<AgentSetupSnapshot>();
+    const modelRead = memory.adapter.readSnapshot;
+    let calls = 0;
+    vi.spyOn(memory.adapter, "readSnapshot").mockImplementation((agentId) => {
+      calls += 1;
+      if (calls === 2) return slow.promise;
+      return modelRead(agentId);
+    });
+    renderSetup(memory.adapter);
+    await settle();
+
+    await advance(POLL_MS * 4);
+    expect(calls).toBe(2);
+
+    slow.resolve(await modelRead(SETUP_AGENT_ID));
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(3);
+  });
+
+  it("stops polling when an active setup target becomes lifecycle-ineligible", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
+    const modelRead = memory.adapter.readSnapshot;
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (calls > 1) {
+        throw new ApiError(409, "not active", "AGENT_LIFECYCLE_CONFLICT", "deterministic");
+      }
+      return modelRead(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+
+    await advance(POLL_MS + 10);
+    expect(screen.getByRole("heading", { name: "This agent can't be set up here" })).toBeTruthy();
+    await advance(POLL_MS * 3);
+    expect(calls).toBe(2);
   });
 });
 

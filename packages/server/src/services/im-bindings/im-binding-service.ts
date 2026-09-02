@@ -116,7 +116,6 @@ interface CredentialInspection {
   requiredCapabilities: string[];
   missingCapabilities: string[];
 }
-
 /**
  * The Messaging facts an Agent setup snapshot must name: the exact binding identity and Provider as
  * stored, the public error code a blocked binding may surface, and the handoff readiness computed
@@ -125,19 +124,19 @@ interface CredentialInspection {
 export interface AgentSetupBindingState {
   bindingId: string;
   provider: "feishu" | "slack";
+  credentialGeneration: number;
   errorCode: string | null;
   handoff: ImBindingHandoffStatus;
 }
-
 interface ObservedAgentBinding {
   id: string;
   provider: "feishu" | "slack";
   status: ImBindingState;
+  credentialGeneration: number;
   lastErrorCode: string | null;
   credential: CredentialInspection;
   readiness: ImBindingReadiness;
 }
-
 interface ActivatedBinding {
   id: string;
   agentId: string;
@@ -147,7 +146,6 @@ interface ActivatedBinding {
   botId: string;
   credentialGeneration: number;
 }
-
 export async function disableImBindingInTransaction(
   transaction: DatabaseTransaction,
   imBindingId: string,
@@ -803,6 +801,7 @@ export class ImBindingService {
     return {
       bindingId: observed.id,
       provider: observed.provider,
+      credentialGeneration: observed.credentialGeneration,
       errorCode: projectedErrorCode({
         credentialStatus: observed.credential.status,
         lastErrorCode: observed.lastErrorCode,
@@ -867,6 +866,7 @@ export class ImBindingService {
       id: row.id,
       provider: row.provider,
       status,
+      credentialGeneration,
       lastErrorCode: row.lastErrorCode,
       credential,
       readiness,

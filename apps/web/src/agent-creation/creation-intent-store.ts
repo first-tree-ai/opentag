@@ -20,9 +20,9 @@ interface CreationIntentStore {
 }
 
 /**
- * The read-only half of recovery: which exact Agent, if any, a saved attempt produced. Only an
- * active Agent whose name matches exactly counts — a suspended namesake or an empty list leaves the
- * attempt open, and more than one match fails closed rather than guessing.
+ * The read-only half of recovery: which exact active Agent, if any, the saved idempotency identity
+ * produced. A namesake is irrelevant; only the Server's Account-scoped creation-intent record can
+ * satisfy this check.
  */
 export type CreationIntentCheck =
   | { readonly kind: "ambiguous" }
@@ -47,16 +47,11 @@ export function createAgentOnce(record: CreationIntentRecord): Promise<AgentAdmi
 }
 
 /**
- * Reconciles a saved attempt against the Server without mutating anything there: the Agents list
- * is a read, and this never creates, updates, or deletes. The answer names the exact Agent the
- * attempt produced, or explains why no exact Agent can be claimed.
+ * Reconciles a saved attempt against the Server without mutating anything there. The answer names
+ * the exact Agent produced by this creation identity, or says no active result exists yet.
  */
 export async function checkCreationIntentResult(record: CreationIntentRecord): Promise<CreationIntentCheck> {
-  const { agents } = await browserApi.agents();
-  const matches = agents.filter((agent) => agent.name === record.request.name && agent.status === "active");
-  if (matches.length > 1) return { kind: "ambiguous" };
-  const found = matches[0];
-  return found ? { kind: "found", agentId: found.id } : { kind: "not-found" };
+  return browserApi.agentCreationIntent(record.creationIntentId);
 }
 
 async function withCreationLock<T>(accountId: string, task: () => Promise<T> | T): Promise<T> {

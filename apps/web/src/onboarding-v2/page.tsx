@@ -43,6 +43,7 @@ export function OnboardingV2Page({
   onComplete,
   reviewMode = false,
   setupAdapter,
+  slackOAuthError,
 }: {
   /** The exact Agent being set up. Present, the page renders from its canonical setup snapshot. */
   agentId?: string;
@@ -52,9 +53,19 @@ export function OnboardingV2Page({
   reviewMode?: boolean;
   /** Review Lab and tests pass the in-memory adapter; production leaves the HTTP default. */
   setupAdapter?: AgentSetupAdapter;
+  /** A callback failure returned by Slack for this exact setup surface. */
+  slackOAuthError?: string;
 } = {}) {
   if (agentId) {
-    return <AgentSetupPage adapter={setupAdapter} agentId={agentId} onReady={onComplete} reviewMode={reviewMode} />;
+    return (
+      <AgentSetupPage
+        adapter={setupAdapter}
+        agentId={agentId}
+        onReady={onComplete}
+        reviewMode={reviewMode}
+        slackOAuthError={slackOAuthError}
+      />
+    );
   }
   return <OnboardingV2CreatePage onAgentAvailable={onAgentAvailable} onComplete={onComplete} reviewMode={reviewMode} />;
 }

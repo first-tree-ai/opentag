@@ -95,6 +95,17 @@ describe("Onboarding exact-target route boundary", () => {
     expect(completions[0]?.[1]?.body).toBe(JSON.stringify({ agentId }));
   });
 
+  it("surfaces and then removes a Slack callback error on the canonical setup URL", async () => {
+    installOnboardingApi({ setupCompletedAt: null });
+    window.history.replaceState({}, "", `/onboarding?agentId=${agentId}&slack_oauth_error=SLACK_UPSTREAM_UNAVAILABLE`);
+    render(<App />);
+
+    expect(await screen.findByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
+    await waitFor(() => expect(window.location.search).toBe(`?agentId=${agentId}`));
+    // Cleaning the one-shot callback parameters must not erase the feedback the reader needs.
+    expect(screen.getByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
+  });
+
   it("asks for an explicit choice when the Account has several active Agents", async () => {
     installOnboardingApi({ agentList: [agentListItem, secondAgentListItem], setupCompletedAt: null });
     window.history.replaceState({}, "", "/onboarding");

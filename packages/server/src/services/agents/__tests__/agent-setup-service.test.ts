@@ -292,7 +292,7 @@ describe("Agent setup projection Computer states", () => {
       computer: { kind: "requires-rebind", computerId, displayName: "workstation", platform: "linux" },
       runtime: { kind: "unavailable", provider: "codex", reason: "computer-rebind-required" },
       blockers: [{ code: "computer-rebind-required" }],
-      actions: [{ kind: "bind-computer" }],
+      actions: [{ kind: "repair-computer", computerId }],
     });
   });
 
@@ -332,6 +332,27 @@ describe("Agent setup projection Computer states", () => {
 });
 
 describe("Agent setup projection runtime readiness", () => {
+  it("turns a persistent runtime observation failure into a structured retry blocker", async () => {
+    const bootstrap = await account();
+    const { service } = harness({
+      runtimeReadiness: {
+        providerReadiness: () => {
+          throw new Error("runtime observer unavailable");
+        },
+      },
+    });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-runtime",
+      runtime: { kind: "observation-failed", provider: "codex" },
+      blockers: [{ code: "resource-observation-failed", resource: "runtime" }],
+      actions: [{ kind: "refresh" }],
+    });
+  });
+
   it.each([
     { name: "no observation yet", readiness: undefined, status: "checking", observedAt: null },
     {
@@ -389,6 +410,32 @@ describe("Agent setup projection Messaging states", () => {
     return { agentId, computerId };
   }
 
+  it("turns a persistent Messaging observation failure into a structured retry blocker", async () => {
+    const bootstrap = await account();
+    const { agentService } = harness();
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+    const service = new AgentSetupService(
+      unitDatabase.database,
+      agentService,
+      {
+        getSetupBindingForAgent: async () => {
+          throw new Error("Messaging observer unavailable");
+        },
+      },
+      { observeForAgent: async () => undefined },
+      { now: () => NOW, providerReadiness: runtimeReadiness("ready") },
+    );
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      messaging: { kind: "observation-failed" },
+      blockers: [{ code: "resource-observation-failed", resource: "messaging" }],
+      actions: [{ kind: "refresh" }],
+    });
+  });
+
   it("offers both Providers only while Messaging is not configured", async () => {
     const bootstrap = await account();
     const { service } = harness({ runtimeReadiness: runtimeReadiness("ready") });
@@ -429,6 +476,46 @@ describe("Agent setup projection Messaging states", () => {
         expiresAt: qrExpiresAt.toISOString(),
       },
       blockers: [{ code: "messaging-not-ready", provider: "feishu", state: "authorizing" }],
+      actions: [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: attempt.id }],
+    });
+  });
+
+  it("projects a live Feishu reauthorization attempt before the binding's prior handoff state", async () => {
+    const bootstrap = await account();
+    const qrExpiresAt = new Date(Date.now() + 60_000);
+    const { feishuSetup, imBindingService, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      registrations: registrationGateway(qrExpiresAt),
+    });
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+    const { imBindingId } = await activateFeishuBinding(imBindingService, agentId);
+    await unitDatabase.database
+      .update(imBindings)
+      .set({ status: "error", lastErrorCode: "FEISHU_SCOPE_REAUTH_REQUIRED" })
+      .where(eq(imBindings.id, imBindingId));
+    const before = await service.getSetupById(bootstrap.userId, agentId);
+    if (before.messaging.kind !== "blocked" || before.messaging.credentialGeneration === undefined) {
+      throw new Error("Feishu reauthorization fixture did not expose its exact binding generation");
+    }
+
+    const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "reauthorize", {
+      kind: "bound",
+      provider: "feishu",
+      bindingId: imBindingId,
+      credentialGeneration: before.messaging.credentialGeneration,
+    });
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      messaging: {
+        kind: "authorizing",
+        provider: "feishu",
+        attemptId: attempt.id,
+        qrUrl: "https://accounts.feishu.cn/device",
+        expiresAt: qrExpiresAt.toISOString(),
+      },
       actions: [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: attempt.id }],
     });
   });
@@ -531,6 +618,7 @@ describe("Agent setup projection Messaging states", () => {
       kind: "waiting-handoff",
       provider: "slack",
       bindingId: expect.any(String),
+      credentialGeneration: 1,
     });
   });
 

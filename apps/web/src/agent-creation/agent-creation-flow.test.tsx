@@ -15,7 +15,6 @@ import { forwardRef, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentId,
-  agentListItem,
   computerId,
   creationIntentKey,
   json,
@@ -114,11 +113,11 @@ async function renderFlow(
   return { created, router, unmount: () => mounted.unmount() };
 }
 
-/** Answers only the Agents list read; any write attempt fails the test that asked for a read. */
-function mockAgentsRead(answer: () => Promise<Response> | Response) {
+/** Answers only the exact creation-intent read; any write attempt fails the read-only test. */
+function mockCreationIntentRead(creationIntentId: string, answer: () => Promise<Response> | Response) {
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
-    if (path === "/api/v1/agents" && init?.method === undefined) return answer();
+    if (path === `/api/v1/agents/creation-intents/${creationIntentId}` && init?.method === undefined) return answer();
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
 }
@@ -150,12 +149,12 @@ describe("AgentCreationFlow creation intent recovery", () => {
   });
 
   it("routes an exact Check result to canonical onboarding and retires the saved attempt", async () => {
-    storeCreationIntent({
+    const record = storeCreationIntent({
       creationIntentId: "d0e1f2a3-b4c5-4d6e-8f7a-9b0c1d2e3f41",
       request: { name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex", computerId },
     });
     // An unbound Agent is still the exact legal target the saved attempt was creating.
-    mockAgentsRead(() => json({ agents: [{ ...agentListItem, computer: null }] }));
+    mockCreationIntentRead(record.creationIntentId, () => json({ kind: "found", agentId }));
     const { router } = await renderFlow();
 
     fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
@@ -172,8 +171,8 @@ describe("AgentCreationFlow creation intent recovery", () => {
       creationIntentId: "d0e1f2a3-b4c5-4d6e-8f7a-9b0c1d2e3f42",
       request: { name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex", computerId },
     });
-    // A suspended namesake is not a legal target: the exact rule fails closed, not onto it.
-    mockAgentsRead(() => json({ agents: [{ ...agentListItem, status: "suspended" }] }));
+    // A missing or inactive result stays open; no Agent name can satisfy this exact identity.
+    mockCreationIntentRead(record.creationIntentId, () => json({ kind: "not-found" }));
     const { router } = await renderFlow();
 
     fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
@@ -186,20 +185,18 @@ describe("AgentCreationFlow creation intent recovery", () => {
     expect(screen.getByRole("button", { name: "Retry creation" })).toBeTruthy();
   });
 
-  it("fails a Check closed when more than one active Agent matches the saved name", async () => {
+  it("does not claim an unrelated active namesake as the result", async () => {
     const record = storeCreationIntent({
       creationIntentId: "d0e1f2a3-b4c5-4d6e-8f7a-9b0c1d2e3f43",
       request: { name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex", computerId },
     });
-    mockAgentsRead(() =>
-      json({ agents: [agentListItem, { ...agentListItem, id: "2b63a21e-f6c7-4474-91ea-4dabf0566a25" }] }),
-    );
+    mockCreationIntentRead(record.creationIntentId, () => json({ kind: "not-found" }));
     const { router } = await renderFlow();
 
     fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
 
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("More than one active Agent is named @reviewer");
+    const outcome = await screen.findByText(/No active Agent named @reviewer exists yet/);
+    expect(outcome.closest('[role="status"]')).not.toBeNull();
     expect(router.state.location.pathname).toBe("/");
     expect(window.localStorage.getItem(creationIntentKey)).toContain(record.creationIntentId);
   });
@@ -209,14 +206,17 @@ describe("AgentCreationFlow creation intent recovery", () => {
       creationIntentId: "d0e1f2a3-b4c5-4d6e-8f7a-9b0c1d2e3f44",
       request: { name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex", computerId },
     });
-    mockAgentsRead(() =>
-      json({ error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Agent list unavailable" } }, 503),
+    mockCreationIntentRead(record.creationIntentId, () =>
+      json(
+        { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Creation result unavailable" } },
+        503,
+      ),
     );
     await renderFlow();
 
     fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain("Agent list unavailable");
+    expect((await screen.findByRole("alert")).textContent).toContain("Creation result unavailable");
     expect(window.localStorage.getItem(creationIntentKey)).toContain(record.creationIntentId);
     // The read failing says nothing about the attempt, so no decision is taken away.
     expect(screen.getByRole("button", { name: "Check result" }).hasAttribute("disabled")).toBe(false);
@@ -225,15 +225,15 @@ describe("AgentCreationFlow creation intent recovery", () => {
   });
 
   it("runs only one Check at a time and parks every other action while it runs", async () => {
-    storeCreationIntent({
+    const record = storeCreationIntent({
       creationIntentId: "d0e1f2a3-b4c5-4d6e-8f7a-9b0c1d2e3f45",
       request: { name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex", computerId },
     });
     let release: () => void = () => undefined;
     const pending = new Promise<Response>((resolve) => {
-      release = () => resolve(json({ agents: [] }));
+      release = () => resolve(json({ kind: "not-found" }));
     });
-    mockAgentsRead(() => pending);
+    mockCreationIntentRead(record.creationIntentId, () => pending);
     const busyChanges: boolean[] = [];
     await renderFlow({ onSubmittingChange: (submitting) => busyChanges.push(submitting) });
 

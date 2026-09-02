@@ -176,7 +176,7 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("preserves structured server error codes for recovery actions", async () => {
+  it("preserves structured server diagnostics for recovery actions", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
         new Response(
@@ -185,6 +185,8 @@ describe("BrowserApi", () => {
               code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
               category: "deterministic",
               message: "Additional scopes are required",
+              requestId: "request-123",
+              retryAfterSeconds: 30,
             },
           }),
           { status: 409, headers: { "content-type": "application/json" } },
@@ -198,6 +200,8 @@ describe("BrowserApi", () => {
       status: 409,
       code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
       category: "deterministic",
+      requestId: "request-123",
+      retryAfterSeconds: 30,
     });
   });
 

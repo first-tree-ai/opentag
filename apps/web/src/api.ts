@@ -89,6 +89,8 @@ export class ApiError extends Error {
     readonly code?: string,
     readonly category?: string,
     readonly issues?: readonly ValidationIssue[],
+    readonly requestId?: string,
+    readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = "ApiError";
@@ -419,7 +421,15 @@ export class BrowserApi {
     const parsed = ErrorEnvelopeSchema.safeParse(body);
     if (!parsed.success) return new ApiError(response.status, "Request failed");
     const { error } = parsed.data;
-    return new ApiError(response.status, error.message, error.code, error.category, error.issues);
+    return new ApiError(
+      response.status,
+      error.message,
+      error.code,
+      error.category,
+      error.issues,
+      error.requestId,
+      error.retryAfterSeconds,
+    );
   }
 
   private csrfHeaders(): HeadersInit {

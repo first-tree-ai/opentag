@@ -61,7 +61,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    expect(screen.getByText("Connect Lark or Slack so teammates can send messages to this Agent.")).toBeTruthy();
+    expect(screen.getByText("Connect Slack or Lark so teammates can send messages to this Agent.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
   });

@@ -211,10 +211,12 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                         ) : (
                           <>
                             <p className="text-sm text-kumo-subtle">
-                              {m.im_messaging_connect_description({
-                                alternateProvider: messagingProviderLabel("slack"),
-                                provider: messagingProviderLabel("feishu"),
-                              })}
+                              {spaceScriptBoundary(
+                                m.im_messaging_connect_description({
+                                  alternateProvider: messagingProviderLabel("feishu"),
+                                  provider: messagingProviderLabel("slack"),
+                                }),
+                              )}
                             </p>
                             {/*
                              * Neither channel is the recommended one — which app a team already lives in decides this,

@@ -70,8 +70,12 @@ describe("OpenTag Web App Shell", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Need to reinstall? Generate a repair command." }));
 
-    expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
+    // The disclosure is one labelled region rather than a heading repeating the name the command
+    // block already carries.
+    expect(screen.getByRole("region", { name: "Reconnect Ada's Mac" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Reconnect Ada's Mac" })).toBeNull();
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
+    expect(screen.getByText("# Run this command in the terminal on Ada's Mac")).toBeTruthy();
     const repairRequests = vi
       .mocked(fetch)
       .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");

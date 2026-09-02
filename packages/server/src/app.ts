@@ -69,7 +69,7 @@ export interface CreateAppOptions {
     publicUrl: string;
   };
   computerConnectCode?: {
-    downloadBaseUrl?: string;
+    downloadBaseUrl: string;
     environment: ChannelName;
     publicUrl: string;
   };

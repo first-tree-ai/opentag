@@ -172,7 +172,11 @@ function appWith(
     taskService: service.taskService as unknown as TaskService,
     computerService: service.computerService as unknown as ComputerService,
     accountSetupService: service.accountSetupService as unknown as AccountSetupService,
-    computerConnectCode: { environment: "dev", publicUrl: "https://opentag.example" },
+    computerConnectCode: {
+      downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+      environment: "dev",
+      publicUrl: "https://opentag.example",
+    },
   });
   apps.push(app);
   return { app, service };

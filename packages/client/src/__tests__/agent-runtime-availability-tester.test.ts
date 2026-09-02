@@ -368,8 +368,11 @@ describe("AgentRuntimeAvailabilityTester", () => {
       cleanupMs: 20,
     });
 
-    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toMatchObject({
-      status: "passed",
+    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toEqual({
+      type: "agent-runtime:test:result",
+      requestId: "11111111-1111-4111-8111-111111111111",
+      status: "failed",
+      code: "provider_failed",
     });
   });
 });

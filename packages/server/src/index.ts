@@ -80,6 +80,7 @@ export {
 } from "./db/migrate.js";
 export {
   ConnectionRegistry,
+  type ConnectionRegistryOptions,
   type RuntimeConnectionEntry,
   RuntimeRegistrySendError,
 } from "./runtime/connection-registry.js";
@@ -129,7 +130,6 @@ export async function startServer(): Promise<void> {
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
-  void serviceLogger;
   const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
     logger: (payload, message) => app?.log.error(payload, message),
     onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
@@ -197,7 +197,7 @@ export async function startServer(): Promise<void> {
     });
     const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database));
     const connectCodeService = new ConnectCodeService(database);
-    const registry = new ConnectionRegistry();
+    const registry = new ConnectionRegistry({ logger: serviceLogger("runtime-registry") });
     const channelTargetPoller = createChannelTargetPoller({
       channel: config.environment,
       downloadBaseUrl: config.channelTarget.downloadBaseUrl,
@@ -287,6 +287,7 @@ export async function startServer(): Promise<void> {
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
+      logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
@@ -353,10 +354,13 @@ export async function startServer(): Promise<void> {
     const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
     });
+    const imDeliveryLogger = serviceLogger("im-delivery");
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
       domain: domainOwner,
+      logger: imDeliveryLogger,
+      onMetric: (metric) => imDeliveryLogger.info({ metric }, "IM delivery worker metric"),
       registry,
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,

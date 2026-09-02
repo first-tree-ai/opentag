@@ -1,5 +1,5 @@
 const DEFAULT_API_URL = "https://api.github.com";
-const DEFAULT_USER_AGENT = "opentag-stale-pull-requests";
+const DEFAULT_USER_AGENT = "opentag-repository-automation";
 const RETRYABLE_STATUSES = new Set([403, 429, 500, 502, 503, 504]);
 const MAX_RETRY_DELAY_MS = 60_000;
 

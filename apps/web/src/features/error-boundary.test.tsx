@@ -7,7 +7,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { createAppRouter } from "../router.js";
 import { Route } from "../routes/__root.js";
-import { AppErrorBoundary, RouteErrorPage, reportBoundaryError, rootErrorHandlers } from "./error-boundary.js";
+import {
+  AppErrorBoundary,
+  normalizeError,
+  RouteErrorPage,
+  reportBoundaryError,
+  rootErrorHandlers,
+} from "./error-boundary.js";
 import { StandaloneNotFoundPage } from "./not-found.js";
 
 function ExplodingChild(): never {
@@ -77,6 +83,28 @@ describe("application error boundaries", () => {
       container.remove();
       Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
     }
+  });
+
+  it("normalizes a frozen Error without mutating or replacing it", () => {
+    const error = Object.freeze(new Error("boom"));
+
+    expect(() => normalizeError(error)).not.toThrow();
+    const normalized = normalizeError(error);
+
+    expect(normalized.error).toBe(error);
+    expect(normalized.code).toBe("unhandled_error");
+  });
+
+  it("normalizes a DOMException without assigning to its read-only code", () => {
+    const error = new DOMException("request stopped", "AbortError");
+    const originalCode = error.code;
+
+    expect(() => normalizeError(error)).not.toThrow();
+    const normalized = normalizeError(error);
+
+    expect(normalized.error).toBe(error);
+    expect(normalized.code).toBe("cancelled");
+    expect(error.code).toBe(originalCode);
   });
 
   it("takes ownership of route error and not-found fallbacks", () => {

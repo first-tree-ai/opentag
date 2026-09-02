@@ -23,6 +23,7 @@ const INTERNAL = new Set([
   "requestNoContent",
   "fetchWithRefresh",
   "apiError",
+  "parseResponse",
   "csrfHeaders",
   "csrfToken",
 ]);

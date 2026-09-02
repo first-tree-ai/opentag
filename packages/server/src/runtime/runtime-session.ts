@@ -153,7 +153,21 @@ export class RuntimeSession {
     this.#armTimeout(this.#options.authTimeoutMs, "RUNTIME_AUTH_TIMEOUT", "Authentication timed out");
     this.#socket.on("message", (data, isBinary) => this.#onMessage(data, isBinary));
     this.#socket.on("close", (code) => void this.#onClose(code));
-    this.#socket.on("error", () => undefined);
+    this.#socket.on("error", (error) => {
+      try {
+        this.#logger?.error(
+          {
+            errorType: error instanceof Error ? error.name : "UnknownError",
+            reason: redactForLog(
+              error instanceof Error ? error.message : "The runtime socket emitted an unknown error",
+            ),
+          },
+          "Runtime socket transport error",
+        );
+      } catch {
+        // Logging must never change ws error-event swallowing semantics.
+      }
+    });
   }
 
   #onMessage(data: RawData, isBinary: boolean): void {

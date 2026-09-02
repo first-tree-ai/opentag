@@ -21,8 +21,8 @@ import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import { ComputerConnect } from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
-import { formatDateTime, formatRelativeTime } from "../i18n/format.js";
-import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
+import { formatDateTime, formatRelativeTime, spaceScriptBoundary } from "../i18n/format.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
@@ -98,23 +98,23 @@ const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
 
 function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): string {
   if (action.kind === "unbind-messaging") {
-    return spaceBrandInSentence(m.im_disconnect_failed({ providerName: providerTitle(action.provider) }));
+    return spaceScriptBoundary(m.im_disconnect_failed({ providerName: providerTitle(action.provider) }));
   }
   if (action.kind === "cancel-messaging-attempt") {
-    return spaceBrandInSentence(m.im_feishu_cancel_failed({ provider: providerTitle("feishu") }));
+    return spaceScriptBoundary(m.im_feishu_cancel_failed({ provider: providerTitle("feishu") }));
   }
   const provider = "provider" in action ? action.provider : undefined;
   const code = cause instanceof ApiError ? cause.code : undefined;
-  if (provider === "slack" && code) return spaceBrandInSentence(slackConfigurationMessage(code));
+  if (provider === "slack" && code) return spaceScriptBoundary(slackConfigurationMessage(code));
   const known = code === undefined ? undefined : FEISHU_ACTION_ERRORS[code];
-  if (known) return spaceBrandInSentence(known());
+  if (known) return spaceScriptBoundary(known());
   return provider === "slack"
-    ? spaceBrandInSentence(m.im_slack_authorization_failed({ provider: providerTitle("slack") }))
-    : spaceBrandInSentence(m.im_feishu_authorization_failed({ provider: providerTitle("feishu") }));
+    ? spaceScriptBoundary(m.im_slack_authorization_failed({ provider: providerTitle("slack") }))
+    : spaceScriptBoundary(m.im_feishu_authorization_failed({ provider: providerTitle("feishu") }));
 }
 
 function slackSetupErrorMessage(code: string): string {
-  return spaceBrandInSentence(slackConfigurationMessage(code));
+  return spaceScriptBoundary(slackConfigurationMessage(code));
 }
 
 /**
@@ -896,7 +896,7 @@ function FeishuAuthorizing({
         {m.onboarding_v2_messaging_waiting()}
       </p>
       <p className={HINT}>
-        {spaceBrandInSentence(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
+        {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
       </p>
       {messaging.qrUrl ? <QrCode value={messaging.qrUrl} /> : null}
       <p className={HINT}>{m.im_feishu_qr_expires({ date: formatDateTime(messaging.expiresAt) })}</p>
@@ -925,7 +925,7 @@ function SlackAuthorizing({
     <>
       <p className={WAITING_LINE} role="status">
         <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {spaceBrandInSentence(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
+        {spaceScriptBoundary(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
       </p>
       <p className={HINT}>
         {m.onboarding_v2_setup_slack_install_expires({ date: formatDateTime(messaging.expiresAt) })}

@@ -165,8 +165,8 @@ export class AgentRuntimeAvailabilityTester {
             "Availability-test runtime cleanup failed",
           );
         });
+        /* v8 ignore next -- filesystem cleanup rejection is an OS-level fault; keep its debug evidence in production. */
         await rm(workspace, { recursive: true, force: true }).catch((error: unknown) => {
-          /* v8 ignore next -- filesystem cleanup rejection is an OS-level fault; keep its debug evidence in production. */
           logger.debug(
             { code: "workspace_cleanup_failed", error: String(error) },
             "Availability-test workspace cleanup failed",
@@ -257,8 +257,8 @@ async function budgetedCleanup(cleanup: () => Promise<void>, cleanupMs: number):
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
+      /* v8 ignore next -- cleanup callback rejection is an OS-level fault; keep its debug evidence in production. */
       cleanup().catch((error: unknown) => {
-        /* v8 ignore next -- cleanup callback rejection is an OS-level fault; keep its debug evidence in production. */
         logger.debug(
           { code: "budgeted_cleanup_failed", error: String(error) },
           "Availability-test budgeted cleanup failed",

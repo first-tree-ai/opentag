@@ -302,6 +302,46 @@ describe("Agent Setup route boundary", () => {
     expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
   });
 
+  it("does not repeat a way back the header already offers", async () => {
+    /*
+     * The bare fallback exists because this page can be the only one an Account can reach. An
+     * admitted Account already has Back to agents in the header, so a second control to the same
+     * destination, worded differently, would read as a different thing while doing the same one.
+     */
+    installAgentSetupApi();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined) {
+        throw new TypeError("Connection closed before the result arrived");
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    expect(await screen.findByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to agents" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Go to your Agents" })).toBeNull();
+  });
+
   it("offers the same Agent to an Account that asked for an extra one and reused a name", async () => {
     installAgentSetupApi();
     const fallback = vi.mocked(fetch).getMockImplementation();

@@ -94,6 +94,20 @@ function AgentCreatePage({
   /** One creation at a time. A second press before the first answers would ask for a second Agent. */
   const createInFlight = useRef(false);
 
+  /*
+   * What a refusal offers, if anything. Naming the Agent is always worth saying: it is somewhere
+   * else to go, not another way to the same place. The bare fallback is not — it exists because
+   * this page can be the only one an Account can reach, so where a way back already sits in the
+   * header, a second control to that same destination is one more thing to read and no more to do.
+   */
+  const offer = useMemo(() => {
+    if (!taken) return undefined;
+    if (taken !== "unnamed") {
+      return { label: m.agent_create_open_existing({ name: taken.name }), link: agentDetailLink(taken.id) };
+    }
+    return onBackToAgents ? undefined : { label: m.agent_create_open_agents(), link: { to: "/agents" } as const };
+  }, [onBackToAgents, taken]);
+
   const selectedRequest = useMemo<CreateAgentRequest | undefined>(() => {
     if (draft.destination !== "local" || !draftIsSubmittable(draft) || !draft.runtime) return undefined;
     const name = draft.name.trim();
@@ -162,15 +176,13 @@ function AgentCreatePage({
           {error ? (
             <div className="flex flex-col items-start gap-2" data-ui="agent-create-error">
               <Banner description={error} role="alert" variant="error" />
-              {taken ? (
+              {offer ? (
                 <Link
                   className="inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
                   data-ui="agent-create-open-taken-name"
-                  {...(taken === "unnamed" ? { to: "/agents" } : agentDetailLink(taken.id))}
+                  {...offer.link}
                 >
-                  {taken === "unnamed"
-                    ? m.agent_create_open_agents()
-                    : m.agent_create_open_existing({ name: taken.name })}
+                  {offer.label}
                   <Icon className="size-3.5" name="chevron-right" />
                 </Link>
               ) : null}

@@ -1,16 +1,13 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
-import { expect, type Page, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
+import { expect, smokeTest as test } from "./fixtures.js";
 import { type UsageVisualFixture, usageVisualFixtures, usageVisualScreenshotEntries } from "./usage-visual-fixtures.js";
 
-const execFileAsync = promisify(execFile);
 const screenshots = join(repositoryRoot, "e2e/screenshots/usage-visual");
-const runtimeFile = join(repositoryRoot, "e2e/.runtime.json");
 
 async function createVisualTestAgent(page: Page): Promise<string> {
   const cookies = await page.context().cookies();
@@ -29,32 +26,6 @@ async function createVisualTestAgent(page: Page): Promise<string> {
   const agent = (await response.json()) as { id: string };
   expect(agent.id).toMatch(/^[0-9a-f-]{36}$/iu);
   return agent.id;
-}
-
-function connectionTarget(url: string): { dsn: string; password: string } {
-  const target = new URL(url);
-  const password = decodeURIComponent(target.password);
-  target.password = "";
-  return { dsn: target.href, password };
-}
-
-async function setSetupComplete(): Promise<void> {
-  const runtime = JSON.parse(await readFile(runtimeFile, "utf8")) as { databaseURL: string; userId: string };
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(runtime.userId)) {
-    throw new Error("The E2E runtime has an invalid user identity");
-  }
-  const { dsn, password } = connectionTarget(runtime.databaseURL);
-  await execFileAsync(
-    "psql",
-    [
-      dsn,
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-Atc",
-      `update users set setup_completed_at = now(), updated_at = now() where id = '${runtime.userId}'`,
-    ],
-    { env: { ...process.env, PGPASSWORD: password } },
-  );
 }
 
 async function installUsageFixture(page: Page, agentId: string, fixture: UsageVisualFixture): Promise<string> {
@@ -115,7 +86,6 @@ function visualContactSheet(): string {
 
 test("Usage renders representative visual states across responsive widths", async ({ page }) => {
   test.setTimeout(180_000);
-  await setSetupComplete();
   const agentId = await createVisualTestAgent(page);
   await rm(screenshots, { recursive: true, force: true });
   await mkdir(screenshots, { recursive: true });

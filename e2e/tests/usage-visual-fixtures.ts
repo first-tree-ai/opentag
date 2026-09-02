@@ -1,27 +1,10 @@
-interface UsageDay {
-  cachedInputTokens: number;
-  date: string;
-  inputTokens: number;
-  measuredTasks: number;
-  outputTokens: number;
-  tasks: number;
-  tokens: number;
-}
+import type { AgentUsageDetail } from "@opentag/shared/browser";
 
-export interface UsageVisualFixture {
-  daily: UsageDay[];
-  endedAt: string;
-  failed: number;
-  inputTokens: number;
-  cachedInputTokens: number;
-  measuredTasks: number;
+export type UsageVisualFixture = AgentUsageDetail & {
   name: string;
-  outputTokens: number;
-  startedAt: string;
-  tasks: number;
-  tokens: number;
-  windowDays: 30;
-}
+};
+
+type UsageDay = AgentUsageDetail["daily"][number];
 
 const START = new Date("2026-08-02T12:00:00.000Z");
 const DAY_COUNT = 31;

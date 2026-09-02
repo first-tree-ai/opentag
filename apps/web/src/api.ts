@@ -77,9 +77,40 @@ import {
   UserProfileSchema,
   type ValidationIssue,
 } from "@opentag/shared/browser";
+import {
+  DiagnosticReporter as ConsoleDiagnosticReporter,
+  type DiagnosticReporter,
+  normalizeError,
+  routeTemplate,
+} from "./observability/diagnostics.js";
 
 interface RuntimeSchema<T> {
-  safeParse(value: unknown): { success: true; data: T } | { success: false };
+  safeParse(
+    value: unknown,
+  ): { success: true; data: T } | { success: false; error: { issues: readonly RuntimeSchemaIssue[] } };
+}
+
+type RuntimeSchemaIssue = { readonly path: readonly PropertyKey[]; readonly code: string };
+
+export class ResponseSchemaError extends Error {
+  readonly code = "invalid_response_schema";
+
+  constructor(
+    readonly routeTemplate: string,
+    readonly issues: readonly RuntimeSchemaIssue[],
+  ) {
+    super("The server returned an invalid response");
+    this.name = "ResponseSchemaError";
+  }
+}
+
+export class CancelledRequestError extends Error {
+  readonly code = "cancelled";
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Request cancelled", { cause });
+    this.name = "AbortError";
+  }
 }
 
 export class ApiError extends Error {
@@ -98,7 +129,10 @@ export class ApiError extends Error {
 }
 
 export class BrowserApi {
-  constructor(readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {}
+  constructor(
+    readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
+    readonly diagnosticReporter: DiagnosticReporter = new ConsoleDiagnosticReporter(),
+  ) {}
 
   me(): Promise<MeResponse> {
     return this.request("/api/v1/me", MeResponseSchema);
@@ -389,9 +423,7 @@ export class BrowserApi {
     const response = await this.fetchWithRefresh(path, init);
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
-    const parsed = schema.safeParse(body);
-    if (!parsed.success) throw new ApiError(503, "The server returned an invalid response");
-    return parsed.data;
+    return this.parseResponse(path, schema, body);
   }
 
   private async requestOptional<T>(path: string, schema: RuntimeSchema<T>): Promise<T | undefined> {
@@ -399,9 +431,7 @@ export class BrowserApi {
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
-    const parsed = schema.safeParse(body);
-    if (!parsed.success) throw new ApiError(503, "The server returned an invalid response");
-    return parsed.data;
+    return this.parseResponse(path, schema, body);
   }
 
   private async requestNoContent(path: string, init: RequestInit): Promise<void> {
@@ -413,13 +443,56 @@ export class BrowserApi {
    * A session renews itself as it is used, so there is nothing left to exchange a `401` for: it now means the session
    * is genuinely gone, and the retry this used to make could only ever have failed a second time.
    */
-  private fetchWithRefresh(path: string, init: RequestInit = {}): Promise<Response> {
-    return this.fetchImpl(path, { ...init, credentials: "same-origin" });
+  private async fetchWithRefresh(path: string, init: RequestInit = {}): Promise<Response> {
+    const method = (init.method ?? "GET").toString().toUpperCase();
+    if (!init.signal?.aborted && !isSafeMethod(method) && !isTokenMintingPath(path) && !hasCsrfHeader(init.headers)) {
+      this.diagnosticReporter.report({
+        source: "api",
+        code: "csrf_token_missing",
+        routeTemplate: routeTemplate(path),
+        method,
+      });
+    }
+
+    try {
+      const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
+      if (!response.ok) {
+        const body = await response
+          .clone()
+          .json()
+          .catch(() => undefined);
+        const error = this.apiError(response, body);
+        this.diagnosticReporter.report({
+          source: "api",
+          code: error.code ?? `http_${response.status}`,
+          routeTemplate: routeTemplate(path),
+          status: response.status,
+          category: error.category,
+          requestId: error.requestId,
+          retryAfterSeconds: error.retryAfterSeconds,
+        });
+      }
+      return response;
+    } catch (cause) {
+      if (init.signal?.aborted || (cause instanceof Error && cause.name === "AbortError")) {
+        throw new CancelledRequestError(cause);
+      }
+      const normalized = normalizeError(cause, "network_error");
+      this.diagnosticReporter.report({
+        source: "api",
+        code: normalized.code,
+        routeTemplate: routeTemplate(path),
+        error: { name: normalized.error.name },
+      });
+      throw cause;
+    }
   }
 
   private apiError(response: Response, body: unknown): ApiError {
     const parsed = ErrorEnvelopeSchema.safeParse(body);
-    if (!parsed.success) return new ApiError(response.status, "Request failed");
+    const requestId = response.headers.get("x-request-id") ?? undefined;
+    if (!parsed.success)
+      return new ApiError(response.status, "Request failed", undefined, undefined, undefined, requestId);
     const { error } = parsed.data;
     return new ApiError(
       response.status,
@@ -427,9 +500,25 @@ export class BrowserApi {
       error.code,
       error.category,
       error.issues,
-      error.requestId,
+      error.requestId ?? requestId,
       error.retryAfterSeconds,
     );
+  }
+
+  private parseResponse<T>(path: string, schema: RuntimeSchema<T>, body: unknown): T {
+    const parsed = schema.safeParse(body);
+    if (parsed.success) return parsed.data;
+    const issues = parsed.error.issues.map(({ path: issuePath, code }) => ({
+      path: issuePath.map((segment) => (typeof segment === "symbol" ? segment.toString() : segment)),
+      code,
+    }));
+    this.diagnosticReporter.report({
+      source: "api",
+      code: "invalid_response_schema",
+      routeTemplate: routeTemplate(path),
+      issues: issues.map(({ path: issuePath, code }) => ({ path: issuePath, code })),
+    });
+    throw new ResponseSchemaError(routeTemplate(path), issues);
   }
 
   private csrfHeaders(): HeadersInit {
@@ -446,6 +535,19 @@ export class BrowserApi {
       return undefined;
     }
   }
+}
+
+function isSafeMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD" || method === "OPTIONS";
+}
+
+function isTokenMintingPath(path: string): boolean {
+  const pathname = path.split(/[?#]/, 1)[0];
+  return pathname === HTTP_PATHS.authEmailSignUp || pathname === HTTP_PATHS.authEmailSignIn;
+}
+
+function hasCsrfHeader(headers: HeadersInit | undefined): boolean {
+  return Boolean(new Headers(headers).get("x-opentag-csrf"));
 }
 
 export const browserApi = new BrowserApi();

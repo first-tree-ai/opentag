@@ -5,8 +5,6 @@ import {
   type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
-  type AgentCreationIntentResult,
-  AgentCreationIntentResultSchema,
   type AgentDetail,
   AgentDetailSchema,
   type AgentRuntimeTestRequest,
@@ -19,7 +17,6 @@ import {
   type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
-  accountAgentCreationIntentPath,
   accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,
@@ -171,10 +168,6 @@ export class BrowserApi {
 
   agents(): Promise<ListAgentsResponse> {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema);
-  }
-
-  agentCreationIntent(creationIntentId: string): Promise<AgentCreationIntentResult> {
-    return this.request(accountAgentCreationIntentPath(creationIntentId), AgentCreationIntentResultSchema);
   }
 
   tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {

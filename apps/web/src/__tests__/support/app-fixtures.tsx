@@ -9,7 +9,6 @@ export const secondAgentId = "2b74b32f-a7d8-4585-92fb-5ecbf1677b35";
 export const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 export const taskSessionId = "11111111-1111-4111-8111-111111111111";
 export const secondComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
-export const creationIntentKey = `opentag.agent-creation.intent:${userId}`;
 
 /** Two Computers an Agent could run on, so a reader has something to choose between. */
 export const twoReadyComputers = [
@@ -32,13 +31,6 @@ export const twoReadyComputers = [
     lastSeenAt: "2026-08-20T00:00:01.000Z",
   },
 ];
-
-/** Writes one current creation intent, the shape an interrupted visit leaves behind. */
-export function storeCreationIntent(record: { creationIntentId: string; request: Record<string, unknown> }) {
-  const stored = { version: 4, accountId: userId, ...record };
-  window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 4, accountId: userId, records: [stored] }));
-  return stored;
-}
 
 export function agentCreationPosts() {
   return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");

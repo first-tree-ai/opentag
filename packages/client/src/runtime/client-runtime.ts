@@ -27,6 +27,7 @@ type ResidualBusinessFrame = Extract<
   ServerRuntimeBusinessFrame,
   {
     type:
+      | "provider-cli:prewarm"
       | "provider-cli:requirement"
       | "provider-cli:validation:grant"
       | "provider-cli:cancel"

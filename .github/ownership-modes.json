@@ -3,11 +3,12 @@
   "documentation": "Review mode per .github/CODEOWNERS rule pattern, enforced by the ownership-gate check. gate = mutual review, no author self-exemption. territory = an owner may self-merge on green CI, anyone else needs an owner approval. exempt = the rule deliberately lists no owners and requires nothing. Patterns must match .github/CODEOWNERS exactly; check-ownership-policy.mjs fails on drift in either direction. A pattern missing from this file resolves to gate at runtime, so the failure mode is fail-safe.",
   "rules": [
     { "pattern": "*", "mode": "gate" },
-    { "pattern": "/pnpm-lock.yaml", "mode": "territory" },
     { "pattern": "/.editorconfig", "mode": "territory" },
     { "pattern": "/.gitignore", "mode": "territory" },
     { "pattern": "/LICENSE", "mode": "territory" },
     { "pattern": "*.md", "mode": "territory" },
+    { "pattern": "package.json", "mode": "exempt" },
+    { "pattern": "/pnpm-lock.yaml", "mode": "exempt" },
     { "pattern": "/.github/", "mode": "gate" },
     { "pattern": "/packages/server/drizzle/", "mode": "gate" },
     { "pattern": "/AGENTS.md", "mode": "gate" },

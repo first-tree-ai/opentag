@@ -36,6 +36,25 @@ describe("SessionCollaborationService", () => {
     });
   });
 
+  it("logs an assembler failure while preserving the runtime_not_ready response", async () => {
+    const fixture = serviceFixture();
+    fixture.assembler.assembleForSession.mockRejectedValue(new Error("assembler failed"));
+
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(fixture.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "SESSION_COLLABORATION_RUNTIME_ASSEMBLY_FAILED",
+        messageId: fixture.messageId,
+        sessionId: fixture.targetSessionId,
+        targetSessionId: fixture.targetSessionId,
+      }),
+      "Session collaboration internal failure",
+    );
+  });
+
   it("records a busy target as unreachable capacity", async () => {
     const fixture = serviceFixture();
     fixture.domain.requestSessionMessageDelivery.mockResolvedValue({
@@ -100,6 +119,14 @@ describe("SessionCollaborationService", () => {
       status: "unknown",
       code: "outcome_write_failed",
     });
+    expect(fixture.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "SESSION_COLLABORATION_OUTCOME_WRITE_FAILED",
+        messageId: fixture.messageId,
+        outcome: "unknown",
+      }),
+      "Session collaboration internal failure",
+    );
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
     );
@@ -205,25 +232,30 @@ function serviceFixture(
     }),
   };
   const onDiagnostic = vi.fn();
+  const logger = { error: vi.fn() };
   const registry = {
     capabilityVersion: vi.fn().mockReturnValue(2),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),
     supportsCapability: vi.fn().mockReturnValue(true),
   };
+  const assembler = { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) };
   return {
+    assembler,
     domain,
     messageId,
     onDiagnostic,
+    logger,
     registry,
     sessions,
     source,
     targetSessionId,
     service: new SessionCollaborationService({
-      assembler: { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) },
+      assembler,
       domain: domain as never,
       onDiagnostic,
       registry,
       sessions: sessions as never,
+      logger,
     }),
   };
 }

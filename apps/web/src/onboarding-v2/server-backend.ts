@@ -6,9 +6,18 @@
  * readiness; issuance, redemption, expiry and reissue belong to ComputerConnect.
  */
 
-import type { AccountComputerSummary, AgentRuntimeProvider, ImBindingHandoffStatus } from "@opentag/shared/browser";
+import type {
+  AccountComputerSummary,
+  AgentListItem,
+  AgentRuntimeProvider,
+  ImBindingHandoffStatus,
+} from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
+import {
+  type ComputerConnectAdapter,
+  createAgentTargetedComputerConnectAdapter,
+} from "../features/computer-connect/computer-connect.js";
 import { formatRelativeTime } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
@@ -79,17 +88,98 @@ function readReadiness(computer: AccountComputerSummary, runtime: AgentRuntimePr
   };
 }
 
+type AccountResumeSelection =
+  | { kind: "none" }
+  | { computer: AccountComputerSummary; kind: "computer" }
+  | {
+      agent: AgentListItem;
+      boundComputer?: NonNullable<AgentListItem["computer"]>;
+      kind: "agent";
+      observedComputer?: AccountComputerSummary;
+    };
+
+function selectAccountResume(
+  agents: readonly AgentListItem[],
+  computers: readonly AccountComputerSummary[],
+): AccountResumeSelection {
+  const active = agents.filter((candidate) => candidate.status === "active");
+  if (active.length === 0) {
+    const computer = computers.find((candidate) => candidate.connectionStatus === "online") ?? computers[0];
+    return computer ? { computer, kind: "computer" } : { kind: "none" };
+  }
+  const byId = new Map(computers.map((computer) => [computer.computerId, computer]));
+  const bound = active.flatMap((agent) => (agent.computer ? [{ agent, computer: agent.computer }] : []));
+  const selected =
+    bound.find(({ computer }) => byId.get(computer.computerId)?.connectionStatus === "online") ?? bound[0];
+  const agent = selected?.agent ?? active[0];
+  if (!agent) return { kind: "none" };
+  return {
+    agent,
+    kind: "agent",
+    ...(selected ? { boundComputer: selected.computer, observedComputer: byId.get(selected.computer.computerId) } : {}),
+  };
+}
+
+function knownComputer(computer: AccountComputerSummary): KnownComputer {
+  return {
+    id: computer.computerId,
+    displayName: computer.displayName,
+    availability: computer.connectionStatus,
+    lastSeen: computer.lastSeenAt ? formatRelativeTime(computer.lastSeenAt) : undefined,
+  };
+}
+
+function knownBoundComputer(
+  computer: NonNullable<AgentListItem["computer"]>,
+  observed: AccountComputerSummary | undefined,
+): KnownComputer {
+  return {
+    id: computer.computerId,
+    displayName: observed?.displayName ?? computer.displayName,
+    availability: observed?.connectionStatus ?? "unknown",
+    lastSeen: observed?.lastSeenAt ? formatRelativeTime(observed.lastSeenAt) : undefined,
+  };
+}
+
+async function readMessagingProvider(agentId: string): Promise<MessagingProvider | undefined> {
+  try {
+    const binding = await browserApi.imBinding(agentId);
+    return binding?.provider === "feishu" || binding?.provider === "slack" ? binding.provider : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function deleteSetupAgent(agentId: string): Promise<void> {
+  // A retry may arrive after suspension already succeeded, so a failed suspend does not prevent
+  // the idempotent delete attempt from recovering the flow. The delete response is authoritative.
+  try {
+    await browserApi.suspendAgent(agentId);
+  } catch {
+    // The Agent may already be suspended after an interrupted earlier attempt.
+  }
+  await browserApi.deleteAgent(agentId);
+}
+
 /**
  * The draft is observed, not owned: the page holds it, and this hook only needs the runtime from it
  * so a readiness read asks about the Provider the reader actually chose. Taking it as an argument
  * keeps that dependency visible instead of threading it through every call.
  */
-export function useServerBackend(draft: AgentDraft): OnboardingBackend {
+export function useServerBackend(
+  draft: AgentDraft,
+  options: { readonly resumeExistingAgents?: boolean } = {},
+): OnboardingBackend {
+  const resumeExistingAgents = options.resumeExistingAgents ?? true;
   const [computer, setComputer] = useState<AccountComputerSummary>();
   const [selectedComputer, setSelectedComputer] = useState<KnownComputer>();
   const [messaging, setMessaging] = useState<MessagingState>({ kind: "idle" });
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
   const [agent, setAgent] = useState<CreatedAgent>();
+  const [agentRestored, setAgentRestored] = useState(false);
+  const [resumeBlocked, setResumeBlocked] = useState<{ agentId: string; agentName: string }>();
+  const [discardingAgent, setDiscardingAgent] = useState(false);
+  const [computerPreviouslyConfirmed, setComputerPreviouslyConfirmed] = useState(false);
   const [creation, setCreation] = useState<CreationState>("idle");
   const [actionError, setActionError] = useState<string>();
   /**
@@ -100,7 +190,6 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const [planSignIn] = useState<PlanSignIn>("idle");
   const [resuming, setResuming] = useState(true);
   const [resumeError, setResumeError] = useState<string>();
-  const [resumeBlocked, setResumeBlocked] = useState<{ agentId: string; agentName: string }>();
   const [pastComputerStep, setPastComputerStep] = useState(false);
   const [lastPassedReadiness, setLastPassedReadiness] = useState<ReadinessFacts>();
   const [computerPollEpoch, setComputerPollEpoch] = useState(0);
@@ -116,6 +205,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   const creationRef = useRef<CreationState>("idle");
   const feishuTimer = useRef(0);
   const mounted = useRef(true);
+  const discardRunning = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -124,6 +214,44 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       attempt.current += 1;
       window.clearInterval(feishuTimer.current);
     };
+  }, []);
+
+  const applyResumeSelection = useCallback((selected: AccountResumeSelection): string | undefined => {
+    // A fresh read replaces what the previous read selected rather than merging into it:
+    // whatever the Account no longer reports is gone, and retaining it would let a stale
+    // Agent answer for — or be deleted in place of — the state the page is showing now.
+    creationRef.current = "idle";
+    computerId.current = undefined;
+    setAgent(undefined);
+    setAgentRestored(false);
+    setResumeBlocked(undefined);
+    setComputerPreviouslyConfirmed(false);
+    setCreation("idle");
+    setMessaging({ kind: "idle" });
+    setMessagingProvider(undefined);
+    setComputer(undefined);
+    setSelectedComputer(undefined);
+    if (selected.kind === "none") return undefined;
+    if (selected.kind === "computer") {
+      computerId.current = selected.computer.computerId;
+      setComputer(selected.computer);
+      setSelectedComputer(knownComputer(selected.computer));
+      return undefined;
+    }
+    const resumed = selected.agent;
+    if (!selected.boundComputer) {
+      setResumeBlocked({ agentId: resumed.id, agentName: resumed.displayName });
+      return undefined;
+    }
+    setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
+    setAgentRestored(true);
+    creationRef.current = "created";
+    setCreation("created");
+    setComputerPreviouslyConfirmed(true);
+    computerId.current = selected.boundComputer.computerId;
+    setSelectedComputer(knownBoundComputer(selected.boundComputer, selected.observedComputer));
+    if (selected.observedComputer) setComputer(selected.observedComputer);
+    return resumed.id;
   }, []);
 
   /**
@@ -135,127 +263,42 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
    * that already exists — and the second attempt is refused, because an Account's active Agent
    * names are unique. So the page picks up where the Server says it is.
    */
-  const readAccount = useCallback(async () => {
-    const mine = resumeRun.current + 1;
-    resumeRun.current = mine;
-    const live = () => mounted.current && resumeRun.current === mine;
-    setResumeError(undefined);
-    setResumeBlocked(undefined);
-    setResuming(true);
-    try {
-      {
-        const [{ agents }, { computers }] = await Promise.all([browserApi.agents(), browserApi.computers()]);
+  const readAccount = useCallback(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: resume replacement is one stale-read-guarded state transition
+    async () => {
+      const mine = resumeRun.current + 1;
+      resumeRun.current = mine;
+      const live = () => mounted.current && resumeRun.current === mine;
+      setResumeError(undefined);
+      setResumeBlocked(undefined);
+      setResuming(true);
+      try {
+        const [{ agents }, { computers }] = await Promise.all([
+          resumeExistingAgents ? browserApi.agents() : Promise.resolve({ agents: [] }),
+          browserApi.computers(),
+        ]);
         if (!live()) return;
-        const active = agents.filter((candidate) => candidate.status === "active");
+        const selected = selectAccountResume(agents, computers);
+        const resumedAgentId = applyResumeSelection(selected);
+        if (!resumedAgentId) return;
 
-        /*
-         * Redeeming a Computer command and creating its Agent are separate durable writes. A
-         * refresh can land between them, so inventory must be resumed even when no Agent exists
-         * yet; otherwise the page would forget the connected Computer and issue a second create
-         * command. Prefer the reachable row where legacy data contains more than one.
-         */
-        if (active.length === 0) {
-          const connected = computers.find((candidate) => candidate.connectionStatus === "online") ?? computers[0];
-          if (!connected) return;
-          computerId.current = connected.computerId;
-          setComputer(connected);
-          setSelectedComputer({
-            id: connected.computerId,
-            displayName: connected.displayName,
-            availability: connected.connectionStatus,
-            lastSeen: connected.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
-          });
-          return;
-        }
-
-        /*
-         * The Agent names its Computer, but that is a foreign key rather than a state: it says which
-         * machine connected, not whether it is there now. Asserting a live connection from it
-         * would put "Your computer is connected." on screen while the Server says otherwise, and
-         * hide the command that is the only way to bring the machine back — so the connection is
-         * read, not inferred. One extra round trip buys not saying something untrue.
-         */
-        const byId = new Map(computers.map((one) => [one.computerId, one]));
-        /*
-         * Only an Agent that has a Computer can be resumed here. Adopting an unbound one would
-         * report a connection and then stop at messaging, which refuses an Agent with nowhere to
-         * run. Where the Account has more than one, the Agent whose Computer is actually there is
-         * the one this run can finish; otherwise the first, which is the Server's own order.
-         */
-        const bound = active.flatMap((candidate) =>
-          candidate.computer ? [{ agent: candidate, computer: candidate.computer }] : [],
-        );
-        const existing =
-          bound.find(({ computer }) => byId.get(computer.computerId)?.connectionStatus === "online") ?? bound[0];
-        if (!existing) {
-          const unfinishable = active[0];
-          // Named, because "you have no Agent" would be false and would send the reader into a
-          // creation form that ends at the name it already has.
-          if (unfinishable) {
-            setResumeBlocked({ agentId: unfinishable.id, agentName: unfinishable.displayName });
-          }
-          return;
-        }
-        const { agent: resumed, computer: resumedComputer } = existing;
-        setAgent({ id: resumed.id, name: resumed.name, runtimeProvider: resumed.runtimeProvider });
-        creationRef.current = "created";
-        setCreation("created");
-        const connected = byId.get(resumedComputer.computerId);
-        computerId.current = resumedComputer.computerId;
-        setSelectedComputer({
-          id: resumedComputer.computerId,
-          displayName: connected?.displayName ?? resumedComputer.displayName,
-          availability: connected?.connectionStatus ?? "unknown",
-          lastSeen: connected?.lastSeenAt ? formatRelativeTime(connected.lastSeenAt) : undefined,
-        });
-        if (connected) {
-          setComputer(connected);
-        }
-
-        /*
-         * Handoff readiness, not binding state. The Server refuses to complete setup unless the
-         * Agent is genuinely reachable — an active binding, a ready runtime, a ready provider CLI
-         * and an actual observation of the messaging identity. Slack's install marks the binding
-         * active before that observation lands, so treating "installed" as "finished" is how a
-         * real callback ends up asking to complete something the Server will refuse.
-         */
-        const handoff = await browserApi.imBindingHandoff(resumed.id);
+        const handoff = await browserApi.imBindingHandoff(resumedAgentId);
         if (!live()) return;
         setMessaging(readMessaging(handoff));
-
-        /*
-         * Which app is being waited on. The reader chose it on a page that a Slack install
-         * destroys — the browser leaves for Slack and returns to a fresh mount — so the choice has
-         * to come back from the binding rather than from state that did not survive the trip.
-         * Without it the step knows it is waiting and not what for, and renders nothing.
-         */
-        if (handoff !== undefined) {
-          /*
-           * Best effort, and deliberately its own failure. Which app is waiting decides what this
-           * step draws, not whether the run can continue — so a read that fails costs the reader
-           * the branch and nothing else. Letting it join the resume would mean an unrelated
-           * outage on this call strands a returning Account on an error instead.
-           */
-          try {
-            const binding = await browserApi.imBinding(resumed.id);
-            if (!live()) return;
-            if (binding?.provider === "feishu" || binding?.provider === "slack") {
-              setMessagingProvider(binding.provider);
-            }
-          } catch {
-            // The step falls back to asking, which is what it did before it could restore anything.
-          }
-        }
+        if (!handoff) return;
+        const provider = await readMessagingProvider(resumedAgentId);
+        if (live() && provider) setMessagingProvider(provider);
+      } catch (cause) {
+        // Reading is the only way to tell a returning Account from a new one, so a failed read is
+        // not "you must be new": starting over from here ends at a name collision. It is reported,
+        // and the reader is given the read back rather than a form they cannot submit.
+        if (live()) setResumeError(errorMessage(cause, COPY.errors.resume));
+      } finally {
+        if (live()) setResuming(false);
       }
-    } catch (cause) {
-      // Reading is the only way to tell a returning Account from a new one, so a failed read is
-      // not "you must be new": starting over from here ends at a name collision. It is reported,
-      // and the reader is given the read back rather than a form they cannot submit.
-      if (live()) setResumeError(errorMessage(cause, COPY.errors.resume));
-    } finally {
-      if (live()) setResuming(false);
-    }
-  }, []);
+    },
+    [applyResumeSelection, resumeExistingAgents],
+  );
 
   useEffect(() => {
     void readAccount();
@@ -328,7 +371,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
 
   const createAgent = useCallback((draft: AgentDraft) => {
     const id = computerId.current;
-    if (!id || !draft.runtime || creationRef.current !== "idle") return;
+    if (!draft.runtime || creationRef.current !== "idle") return;
     const mine = attempt.current;
     creationRef.current = "creating";
     setCreation("creating");
@@ -338,13 +381,14 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
         name: draft.name,
         displayName: draft.name,
         runtimeProvider: draft.runtime,
-        computerId: id,
+        ...(id ? { computerId: id } : {}),
       })
       .then(
         (created) => {
           if (!mounted.current || attempt.current !== mine) return;
           creationRef.current = "created";
           setCreation("created");
+          setAgentRestored(false);
           setAgent({ id: created.id, name: created.name, runtimeProvider: created.runtimeProvider });
         },
         (cause: unknown) => {
@@ -440,6 +484,41 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     );
   }, [agent]);
 
+  const discardAgent = useCallback(async (): Promise<boolean> => {
+    // The confirmation names exactly one Agent: the blocked screen takes the whole page when
+    // it is shown, and only without it does the Computer step name the restored Agent. Delete
+    // only the Agent that was named — never a stale one retained from an earlier read.
+    const targetId = resumeBlocked?.agentId ?? agent?.id;
+    if (!targetId || discardRunning.current) return false;
+    discardRunning.current = true;
+    setDiscardingAgent(true);
+    setActionError(undefined);
+    attempt.current += 1;
+    window.clearInterval(feishuTimer.current);
+    try {
+      await deleteSetupAgent(targetId);
+      if (!mounted.current) return false;
+      creationRef.current = "idle";
+      setAgent(undefined);
+      setAgentRestored(false);
+      setResumeBlocked(undefined);
+      setCreation("idle");
+      setMessaging({ kind: "idle" });
+      setMessagingProvider(undefined);
+      setComputerPreviouslyConfirmed(false);
+      setPastComputerStep(false);
+      setLastPassedReadiness(undefined);
+      await readAccount();
+      return true;
+    } catch (cause) {
+      if (mounted.current) setActionError(errorMessage(cause, COPY.errors.discardAgent));
+      return false;
+    } finally {
+      discardRunning.current = false;
+      if (mounted.current) setDiscardingAgent(false);
+    }
+  }, [agent?.id, readAccount, resumeBlocked?.agentId]);
+
   const reset = useCallback(() => {
     attempt.current += 1;
     setComputerPollEpoch((current) => current + 1);
@@ -447,10 +526,12 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     creationRef.current = "idle";
     setMessaging({ kind: "idle" });
     setAgent(undefined);
+    setAgentRestored(false);
+    setResumeBlocked(undefined);
+    setComputerPreviouslyConfirmed(false);
     setCreation("idle");
     setResuming(false);
     setResumeError(undefined);
-    setResumeBlocked(undefined);
     setActionError(undefined);
     setPastComputerStep(false);
     setLastPassedReadiness(undefined);
@@ -481,13 +562,25 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
   }, [draft.runtime, liveReadiness]);
   const readiness = liveReadiness ?? (pastComputerStep ? lastPassedReadiness : undefined);
 
+  const computerConnectAdapter = useMemo<ComputerConnectAdapter | undefined>(() => {
+    // The same displayed recovery target as discardAgent: a blocked screen's Agent first,
+    // then the Agent the Computer step is showing.
+    const targetAgentId = resumeBlocked?.agentId ?? agent?.id;
+    if (!targetAgentId) return undefined;
+    return createAgentTargetedComputerConnectAdapter(targetAgentId);
+  }, [agent?.id, resumeBlocked?.agentId]);
+
   return useMemo(
     () => ({
       agent,
+      agentRestored,
+      computerConnectAdapter,
       computerOnline,
       computerConnected,
       createAgent,
       creation,
+      discardAgent,
+      discardingAgent,
       error: actionError,
       knownComputers,
       markPastComputerStep,
@@ -496,6 +589,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       planSignIn,
       readiness,
       reset,
+      computerPreviouslyConfirmed,
       resumeError,
       resumeBlocked,
       resuming,
@@ -508,10 +602,14 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
     [
       actionError,
       agent,
+      agentRestored,
+      computerConnectAdapter,
       computerOnline,
       computerConnected,
       createAgent,
       creation,
+      discardAgent,
+      discardingAgent,
       knownComputers,
       markPastComputerStep,
       messaging,
@@ -519,6 +617,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       planSignIn,
       readiness,
       reset,
+      computerPreviouslyConfirmed,
       resumeError,
       resumeBlocked,
       resuming,

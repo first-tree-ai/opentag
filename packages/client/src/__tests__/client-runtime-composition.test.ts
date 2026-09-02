@@ -612,6 +612,41 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     expect(credentialClose).toHaveBeenCalledOnce();
   });
 
+  it("refreshes published IM CLI readiness after a capability refresh and tolerates its failure", async () => {
+    const refreshPublishedImCliReadiness = vi.fn(async () => {
+      throw new Error("published IM CLI readiness refresh failed");
+    });
+    const reconcilerClose = vi.fn(async () => undefined);
+    let finishRuntime!: () => void;
+    const runtimeGate = new Promise<void>((resolveRuntime) => {
+      finishRuntime = resolveRuntime;
+    });
+    const composed = new ComposedClientRuntime(
+      { run: vi.fn(() => runtimeGate), stop: vi.fn() } as never,
+      {
+        bindingStore: {},
+        custody: {},
+        credentialEnvironment: { close: vi.fn(async () => undefined) },
+        collaboration: { close: vi.fn() },
+        sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        reconciler: {},
+        reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        runtimeManager: { close: vi.fn(async () => undefined) },
+        workspace: {},
+        refreshCapability: vi.fn(async () => undefined),
+        capabilityRefreshIntervalMs: 1,
+        capabilityAbort: new AbortController(),
+        providerCliReconciler: { close: reconcilerClose, refreshPublishedImCliReadiness },
+      } as never,
+    );
+    const running = composed.run();
+    await vi.waitFor(() => expect(refreshPublishedImCliReadiness).toHaveBeenCalled());
+    finishRuntime();
+    await expect(running).resolves.toBeUndefined();
+    expect(reconcilerClose).toHaveBeenCalledOnce();
+  });
+
   it("aggregates protected work from every authoritative owner", () => {
     const admission = { pause: vi.fn(), resume: vi.fn() };
     const runtime = new ComposedClientRuntime(

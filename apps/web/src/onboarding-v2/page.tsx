@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Loader } from "../ui/design-system.js";
+import { AgentSetupPage } from "./agent-setup-page.js";
 import type { OnboardingBackend } from "./backend.js";
 import {
   type AgentDraft,
@@ -15,7 +16,9 @@ import {
 import { LabControls } from "./lab-controls.js";
 import { type MockInventory, type MockScenario, type MockSpeed, SCENARIOS, useMockBackend } from "./mock-backend.js";
 import "./onboarding-v2.css";
+import { AgentResetControl } from "./agent-reset-control.js";
 import { useServerBackend } from "./server-backend.js";
+import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, CloudStep, ComputerStep, DestinationStep, DoneStep, MessagingStep, StepRail } from "./steps.js";
 
 /** How many times to ask before telling the reader the Server will not mark setup complete. */
@@ -31,19 +34,73 @@ function localDraft(): AgentDraft {
 /**
  * The redesigned onboarding flow, against the real Server.
  *
- * The draft is held here rather than inside the flow because the backend is built from it: a
- * readiness read has to ask about the Provider the reader actually chose, and a hook cannot be
- * given that after it runs.
+ * With an exact `agentId` the route is the Agent Setup surface, rendered from the canonical
+ * snapshot; without one it is the first-run creation flow. The two are separate components so
+ * switching between them remounts rather than reordering hooks.
  */
 export function OnboardingV2Page({
+  agentId,
+  emptyAgentSetResolved = false,
+  onAgentAvailable,
   onComplete,
   reviewMode = false,
+  setupAdapter,
+  slackOAuthError,
 }: {
+  /** The exact Agent being set up. Present, the page renders from its canonical setup snapshot. */
+  agentId?: string;
+  /** The route boundary already resolved this untargeted visit against exactly zero active Agents. */
+  emptyAgentSetResolved?: boolean;
+  /** Canonicalizes the creation flow as soon as the Server returns the exact Agent it created. */
+  onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onComplete?: (agentId: string) => Promise<void> | void;
   reviewMode?: boolean;
+  /** Review Lab and tests pass the in-memory adapter; production leaves the HTTP default. */
+  setupAdapter?: AgentSetupAdapter;
+  /** A callback failure returned by Slack for this exact setup surface. */
+  slackOAuthError?: string;
 } = {}) {
+  if (agentId) {
+    return (
+      <AgentSetupPage
+        adapter={setupAdapter}
+        agentId={agentId}
+        onReady={onComplete}
+        reviewMode={reviewMode}
+        slackOAuthError={slackOAuthError}
+      />
+    );
+  }
+  return (
+    <OnboardingV2CreatePage
+      emptyAgentSetResolved={emptyAgentSetResolved}
+      onAgentAvailable={onAgentAvailable}
+      onComplete={onComplete}
+      reviewMode={reviewMode}
+    />
+  );
+}
+
+/**
+ * The first-run creation flow. The draft is held here rather than inside the flow because the
+ * backend is built from it: a readiness read has to ask about the Provider the reader actually
+ * chose, and a hook cannot be given that after it runs.
+ */
+function OnboardingV2CreatePage(
+  {
+    emptyAgentSetResolved,
+    onAgentAvailable,
+    onComplete,
+    reviewMode = false,
+  }: {
+    emptyAgentSetResolved: boolean;
+    onAgentAvailable?: (agentId: string) => Promise<void> | void;
+    onComplete?: (agentId: string) => Promise<void> | void;
+    reviewMode?: boolean;
+  } = { emptyAgentSetResolved: false },
+) {
   const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
-  const backend = useServerBackend(draft);
+  const backend = useServerBackend(draft, { resumeExistingAgents: !emptyAgentSetResolved });
 
   /*
    * An Agent read back from the Server fills the draft it would have been created from, so the
@@ -51,6 +108,7 @@ export function OnboardingV2Page({
    * actually has, on the runtime it actually runs.
    */
   const resumed = backend.agent;
+  const announcedAgent = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!resumed) return;
     setDraft((current) =>
@@ -59,6 +117,14 @@ export function OnboardingV2Page({
         : { ...current, destination: "local", name: resumed.name, runtime: resumed.runtimeProvider },
     );
   }, [resumed]);
+
+  useEffect(() => {
+    if (!resumed || !onAgentAvailable || announcedAgent.current === resumed.id) return;
+    announcedAgent.current = resumed.id;
+    void Promise.resolve(onAgentAvailable(resumed.id)).catch(() => {
+      if (announcedAgent.current === resumed.id) announcedAgent.current = undefined;
+    });
+  }, [onAgentAvailable, resumed]);
 
   /*
    * The read has to show something. This is the only route the setup gate allows, so a read that is
@@ -83,13 +149,6 @@ export function OnboardingV2Page({
     );
   }
 
-  /*
-   * An Agent with no Computer is not a run this flow can finish, and pretending otherwise would
-   * report a connection and then stop at messaging. The choice is rendered here rather than linked
-   * to: Settings lives behind the same setup gate that put the reader on this screen, so sending
-   * them there returns them here. Once a Computer is chosen the Agent has one, and the resume that
-   * refused this run can be read again and continue.
-   */
   if (backend.resumeBlocked) {
     return (
       <div
@@ -102,9 +161,23 @@ export function OnboardingV2Page({
         <p className="text-sm text-kumo-subtle m-0 max-w-prose text-center">
           {m.onboarding_v2_resume_blocked_detail()}
         </p>
+        {backend.error ? (
+          <p className="text-sm text-kumo-danger m-0" role="alert">
+            {backend.error}
+          </p>
+        ) : null}
         <div className="w-full max-w-2xl rounded-lg bg-kumo-base p-4 ring ring-kumo-line">
-          <AgentComputerChoice agentId={backend.resumeBlocked.agentId} onBound={backend.retryResume} />
+          <AgentComputerChoice
+            adapter={backend.computerConnectAdapter}
+            agentId={backend.resumeBlocked.agentId}
+            onBound={backend.retryResume}
+          />
         </div>
+        <AgentResetControl
+          agentName={backend.resumeBlocked.agentName}
+          busy={backend.discardingAgent}
+          onDiscard={backend.discardAgent}
+        />
       </div>
     );
   }
@@ -176,6 +249,31 @@ export function OnboardingV2MockPage() {
   );
 }
 
+function OnboardingDone({
+  completionFailed,
+  name,
+  onReviewConfirmed,
+  provider,
+  reviewConfirmed,
+  reviewMode,
+  retryCompletion,
+}: {
+  completionFailed: boolean;
+  name: string;
+  onReviewConfirmed: () => void;
+  provider: MessagingProvider | undefined;
+  reviewConfirmed: boolean;
+  reviewMode: boolean;
+  retryCompletion: () => void;
+}) {
+  let completion: { onFinish: () => void; state: "failed" | "pending" | "ready" } | undefined;
+  if (completionFailed) completion = { onFinish: retryCompletion, state: "failed" };
+  else if (reviewMode) {
+    completion = { onFinish: onReviewConfirmed, state: reviewConfirmed ? "pending" : "ready" };
+  }
+  return <DoneStep completion={completion} name={name} provider={provider} />;
+}
+
 function OnboardingV2Flow({
   backend,
   cloudAvailable,
@@ -200,12 +298,13 @@ function OnboardingV2Flow({
 }) {
   const [destinationConfirmed, setDestinationConfirmed] = useState(destinationPreselected);
   const [draftConfirmed, setDraftConfirmed] = useState(false);
+  const [computerConfirmed, setComputerConfirmed] = useState(false);
   /*
    * The confirmations exist so a page is left deliberately rather than the moment its fields
    * happen to be valid. An Agent that already exists settles both of them: the decisions they
    * guard were made on a previous visit and cannot be taken back.
    */
-  const resumed = backend.agent !== undefined;
+  const resumed = backend.agentRestored === true;
   const [cloudComputer, setCloudComputer] = useState<CloudComputerState>("idle");
   const [messagingProvider, setMessagingProvider] = useState<MessagingProvider>();
 
@@ -221,6 +320,10 @@ function OnboardingV2Flow({
     draft,
     destinationConfirmed: destinationConfirmed || destinationPreselected || resumed,
     draftConfirmed: draftConfirmed || resumed,
+    // A bound Agent restored from the Server has already crossed the durable Computer decision,
+    // so a refresh or Slack callback returns to messaging. Restoring an unbound Agent does not:
+    // once its targeted command connects a Computer, the reader still leaves this step explicitly.
+    computerConfirmed: computerConfirmed || backend.computerPreviouslyConfirmed === true,
     selectedComputerId: backend.selectedComputerId,
     readiness: backend.readiness,
     cloudComputer,
@@ -298,6 +401,11 @@ function OnboardingV2Flow({
     }, ALLOCATE_COMPUTER_MS);
   }, [backend, cloudComputer, draft]);
 
+  const submitAgent = useCallback(() => {
+    setDraftConfirmed(true);
+    backend.createAgent(draft);
+  }, [backend, draft]);
+
   /**
    * Going back undoes the decision that advanced you, rather than moving a separate cursor. That
    * keeps the page a pure function of the facts. Leaving the connect step is the one place this
@@ -305,13 +413,13 @@ function OnboardingV2Flow({
    * only that the step was left, never the machine itself.
    */
   const backToDestination = useCallback(() => setDestinationConfirmed(false), []);
-  const backToAgent = useCallback(() => setDraftConfirmed(false), []);
 
   const startOver = useCallback(() => {
     window.clearTimeout(cloudTimer.current);
     onDraftChange(destinationPreselected ? localDraft() : emptyDraft());
     setDestinationConfirmed(destinationPreselected);
     setDraftConfirmed(false);
+    setComputerConfirmed(false);
     setCloudComputer("idle");
     setMessagingProvider(undefined);
     backend.reset();
@@ -321,7 +429,7 @@ function OnboardingV2Flow({
     <div className={`otv2-shell flex min-h-screen flex-col bg-kumo-canvas ${lab ? "pb-20 sm:pb-0" : ""}`}>
       <header className="flex items-center justify-between p-6">
         <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
-        {reviewMode ? null : (
+        {reviewMode || backend.agent ? null : (
           <Button onClick={startOver} variant="ghost">
             {m.onboarding_v2_start_over()}
           </Button>
@@ -349,16 +457,14 @@ function OnboardingV2Flow({
             </div>
           ) : null}
           {flow.complete ? (
-            <DoneStep
-              completion={
-                completionFailed
-                  ? { onFinish: retryCompletion, state: "failed" }
-                  : reviewMode
-                    ? { onFinish: () => setReviewConfirmed(true), state: reviewConfirmed ? "pending" : "ready" }
-                    : undefined
-              }
+            <OnboardingDone
+              completionFailed={completionFailed}
               name={backend.agent?.name ?? draft.name}
+              onReviewConfirmed={() => setReviewConfirmed(true)}
               provider={messagingProvider ?? backend.messagingProvider}
+              reviewConfirmed={reviewConfirmed}
+              reviewMode={reviewMode}
+              retryCompletion={retryCompletion}
             />
           ) : flow.page === "destination" ? (
             <DestinationStep
@@ -380,22 +486,31 @@ function OnboardingV2Flow({
             />
           ) : flow.page === "agent" ? (
             <AgentStep
+              creation={backend.creation}
               draft={draft}
               onBack={resumed ? undefined : backToDestination}
               onChange={onDraftChange}
-              onSubmit={() => setDraftConfirmed(true)}
+              onSubmit={submitAgent}
             />
           ) : flow.page === "computer" ? (
-            <ComputerStep
-              adapter={backend.computerConnectAdapter}
-              computer={accountComputer}
-              creation={backend.creation}
-              draft={draft}
-              onBack={resumed ? undefined : backToAgent}
-              onComputerConnected={backend.computerConnected}
-              onCreate={() => backend.createAgent(draft)}
-              readiness={backend.readiness}
-            />
+            <div className="grid gap-6">
+              <ComputerStep
+                adapter={backend.computerConnectAdapter}
+                computer={accountComputer}
+                draft={draft}
+                onBack={undefined}
+                onComputerConnected={backend.computerConnected}
+                onContinue={() => setComputerConfirmed(true)}
+                readiness={backend.readiness}
+              />
+              {backend.agent ? (
+                <AgentResetControl
+                  agentName={backend.agent.name}
+                  busy={backend.discardingAgent}
+                  onDiscard={backend.discardAgent}
+                />
+              ) : null}
+            </div>
           ) : (
             <MessagingStep
               computerOnline={backend.computerOnline}

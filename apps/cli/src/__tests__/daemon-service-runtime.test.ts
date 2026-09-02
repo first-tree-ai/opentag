@@ -220,7 +220,7 @@ describe("daemon service runtime", () => {
 
     await expect(
       runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process }),
-    ).rejects.toThrow("run computer connect again");
+    ).rejects.toThrow("run opentag connect again");
     expect(clientMocks.createClientRuntime).not.toHaveBeenCalled();
   });
 

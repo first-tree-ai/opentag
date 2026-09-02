@@ -420,7 +420,7 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(
-      screen.getByText("This Feishu bot is already connected to another Agent. Choose a different bot and try again."),
+      screen.getByText("This Lark bot is already connected to another Agent. Choose a different bot and try again."),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
   });

@@ -39,6 +39,8 @@ describe("Kumo semantic adapter", () => {
     );
     const primary = screen.getByRole("button", { name: "Create" });
     const danger = screen.getByRole("button", { name: "Delete" });
+    expect(primary.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)]");
+    expect(danger.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg)]");
     expect(primary.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-primary-bg)");
     expect(danger.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-danger-bg)");
   });
@@ -163,8 +165,11 @@ describe("Kumo semantic adapter", () => {
     const trigger = screen.getByRole("button", { name: "Open" });
     fireEvent.click(trigger);
     expect(screen.getByRole("dialog")).toBeTruthy();
+    const heading = screen.getByRole("heading", { name: "Example" }).parentElement;
+    await waitFor(() => expect(document.activeElement).toBe(heading));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("keeps icon-only controls discoverable", () => {

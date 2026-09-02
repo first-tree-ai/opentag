@@ -10,6 +10,8 @@ import type { AccountComputerSummary, AgentRuntimeProvider, ImBindingHandoffStat
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { formatRelativeTime } from "../i18n/format.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
+import * as m from "../paraglide/messages.js";
 import type { MessagingCliStatus, RuntimeStatus } from "../setup/checks.js";
 import type { CreatedAgent, KnownComputer, OnboardingBackend, PlanSignIn } from "./backend.js";
 import { COPY } from "./copy.js";
@@ -356,7 +358,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
       );
   }, []);
 
-  /** Lark issues a QR the user scans; Slack has nothing to show until its install is started. */
+  /** Feishu issues a QR the user scans; Slack has nothing to show until its install is started. */
   const startMessaging = useCallback(
     (provider: "feishu" | "slack") => {
       if (provider !== "feishu" || !agent) return;
@@ -405,7 +407,7 @@ export function useServerBackend(draft: AgentDraft): OnboardingBackend {
               if (current.state === "failed" || current.state === "expired" || current.state === "canceled") {
                 window.clearInterval(feishuTimer.current);
                 setMessaging({ kind: "failed" });
-                setActionError(COPY.errors.feishuAttempt);
+                setActionError(m.onboarding_v2_errors_feishu_attempt({ provider: messagingProviderLabel("feishu") }));
                 return;
               }
               if (current.qrUrl) setMessaging({ kind: "waiting", qrValue: current.qrUrl });

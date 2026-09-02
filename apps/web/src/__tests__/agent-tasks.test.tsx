@@ -80,12 +80,15 @@ describe("OpenTag Web App Shell", () => {
   );
 
   it("keeps Skills and Integrations reachable from the object navigation", async () => {
-    installApi();
+    installApi({
+      internalNavigationVisibility: { integrations: true, skills: true },
+      internalToolsOffered: true,
+    });
     window.history.replaceState({}, "", `/agents/${agentId}/skills`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Integrations" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Integrations" }));
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
     expect(screen.getByRole("table", { name: "Demo Integrations" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/integrations`);

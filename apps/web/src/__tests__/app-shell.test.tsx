@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
@@ -31,6 +31,8 @@ describe("OpenTag Web App Shell", () => {
     expect(createAgent.closest('[data-ui="agents-page-action"]')).toBeTruthy();
     const agentRow = agentLink.closest('[data-ui="agent-row"]');
     expect(agentRow).toBeTruthy();
+    expect(agentRow?.parentElement?.classList.contains("@container/agent-roster")).toBe(true);
+    expect(agentRow?.className).toContain("/agent-roster:grid-cols-");
     expect(screen.queryByText(/Monitor availability/)).toBeNull();
     expect(screen.getByText("1 Agent · 0 currently working")).toBeTruthy();
     expect(within(agentRow as HTMLElement).queryByText("@reviewer")).toBeNull();
@@ -68,13 +70,16 @@ describe("OpenTag Web App Shell", () => {
     const switcher = screen.getByRole("button", { name: "Switch Agent, current Agent Reviewer" });
     expect(switcher.closest('[data-sidebar="header"]')).toBeTruthy();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Agent" });
+    expect(workspaceNavigation.closest('[data-sidebar="content"]')?.className).toContain(
+      "md:[&_[data-sidebar=viewport]]:pt-0",
+    );
     expect(
       within(workspaceNavigation)
         .getAllByRole("button")
         .map((item) => item.textContent),
-    ).toEqual(["Home", "Tasks", "Skills", "Integrations", "Usage"]);
+    ).toEqual(["Home", "Tasks", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll("svg");
-    expect(navigationIcons).toHaveLength(5);
+    expect(navigationIcons).toHaveLength(3);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
     expect(within(workspaceNavigation).queryByText("Settings")).toBeNull();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
@@ -87,6 +92,25 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(backToAgents);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
+  });
+
+  it("shows each unreleased Agent page only when Internal Tools enables it", async () => {
+    installApi({
+      internalNavigationVisibility: { integrations: false, skills: true },
+      internalToolsOffered: true,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    const workspaceNavigation = await screen.findByRole("navigation", { name: "Agent" });
+    await waitFor(() =>
+      expect(
+        within(workspaceNavigation)
+          .getAllByRole("button")
+          .map((item) => item.textContent),
+      ).toEqual(["Home", "Tasks", "Skills", "Usage"]),
+    );
+    expect(within(workspaceNavigation).queryByRole("button", { name: "Integrations" })).toBeNull();
   });
 
   it("shows elapsed time without exposing conversation content for a working Agent", async () => {

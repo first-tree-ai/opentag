@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { ProviderReadinessStatus } from "@opentag/shared";
+import type { InternalNavigationVisibility, ProviderReadinessStatus } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -13,6 +13,7 @@ import { agents, computers } from "./db/schema/index.js";
 import {
   createBackgroundFailureSupervisor,
   createServerDiagnosticReporter,
+  createServiceLoggerPort,
   initTelemetry,
   shutdownTelemetry,
 } from "./observability/index.js";
@@ -109,11 +110,26 @@ export {
   SessionService,
 } from "./services/sessions/index.js";
 
+class StagingInternalNavigationVisibilityService {
+  #value: InternalNavigationVisibility = { integrations: false, skills: false };
+
+  read(): InternalNavigationVisibility {
+    return this.#value;
+  }
+
+  update(value: InternalNavigationVisibility): InternalNavigationVisibility {
+    this.#value = { ...value };
+    return this.#value;
+  }
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
+  const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
+  void serviceLogger;
   const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
     logger: (payload, message) => app?.log.error(payload, message),
     onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
@@ -351,7 +367,9 @@ export async function startServer(): Promise<void> {
           registry,
         })
       : undefined;
+    const internalNavigationService = new StagingInternalNavigationVisibilityService();
     app = createApp({
+      loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,
@@ -420,7 +438,7 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      ...(setupResetService ? { setupResetService } : {}),
+      ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,
     });
     feishuSetupService.start();

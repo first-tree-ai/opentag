@@ -26,8 +26,8 @@ describe("OpenTag Web App Shell", () => {
     expect(within(status).getByText("Computer")).toBeTruthy();
     expect(within(status).getByText("Messaging")).toBeTruthy();
     expect(within(status).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
-    expect(within(status).getByText("Feishu · @reviewer")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Feishu · @reviewer" })).toBeNull();
+    expect(within(status).getByText("Lark · @reviewer")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Lark · @reviewer" })).toBeNull();
     const header = screen.getByRole("heading", { name: "Reviewer" }).closest("header");
     expect(
       within(header as HTMLElement)

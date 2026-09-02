@@ -87,7 +87,7 @@ function UsageWindowSelect({
   value: AgentUsageWindowDays;
 }) {
   return (
-    <div className="ml-auto w-40 shrink-0">
+    <div className="ml-auto w-40 shrink-0" data-ui="usage-window-select">
       <Select
         aria-label={m.usage_period_label()}
         className="w-full"
@@ -112,7 +112,7 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
   const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
-    <div className="grid gap-6" data-ui="usage-tab">
+    <div className="@container/usage-tab grid gap-6" data-ui="usage-tab">
       <PageHeader description={m.usage_description()} title={m.usage_title()} titleId="agent-usage-page-heading">
         <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </PageHeader>
@@ -189,11 +189,11 @@ function UsageSummaryState({
 function UsageLoading() {
   return (
     <div aria-label={m.usage_loading()} className="grid gap-4" data-ui="usage-loading" role="status">
-      <LayerCard className="grid divide-y divide-kumo-line p-0 @min-[36rem]/workspace:grid-cols-2 @min-[36rem]/workspace:divide-x @min-[36rem]/workspace:divide-y-0">
+      <LayerCard className="grid grid-cols-2 divide-x divide-kumo-line p-0">
         <UsageMetricSkeleton />
         <UsageMetricSkeleton />
       </LayerCard>
-      <div className="grid gap-4 @min-[48rem]/workspace:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]">
+      <div className="grid gap-4 @min-[42rem]/usage-tab:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]">
         <LayerCard className="grid gap-4 p-4">
           <SkeletonLine blockHeight="1.25rem" maxWidth={40} minWidth={28} />
           <SkeletonLine blockHeight="18rem" maxWidth={100} minWidth={100} />
@@ -221,7 +221,7 @@ function UsageMetricSkeleton() {
 function UsageMetrics({ compact = false, usage }: { compact?: boolean; usage: AgentUsageDetail }) {
   return (
     <dl
-      className="grid divide-y divide-kumo-line @min-[36rem]/workspace:grid-cols-2 @min-[36rem]/workspace:divide-x @min-[36rem]/workspace:divide-y-0"
+      className="grid grid-cols-2 divide-x divide-kumo-line"
       aria-label={m.usage_metrics_label({ window: usageWindowLabel(usage.windowDays) })}
       data-ui="usage-metrics"
     >
@@ -255,13 +255,7 @@ function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
 
 function Metric({ compact = false, label, value }: { compact?: boolean; label: string; value: string }) {
   return (
-    <div
-      className={
-        compact
-          ? "grid gap-1 py-2.5 first:pt-0 last:pb-0 @min-[36rem]/workspace:px-4 @min-[36rem]/workspace:py-0 @min-[36rem]/workspace:first:pl-0 @min-[36rem]/workspace:last:pr-0"
-          : "grid gap-1 p-5"
-      }
-    >
+    <div className={compact ? "grid min-w-0 gap-1 px-4 first:pl-0 last:pr-0" : "grid gap-1 p-5"}>
       <Text as="dt" size="sm" variant="secondary">
         {label}
       </Text>
@@ -280,7 +274,7 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
       </LayerCard>
       <UsageCoverage usage={usage} />
       <div
-        className="grid gap-4 @min-[48rem]/workspace:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]"
+        className="grid gap-4 @min-[42rem]/usage-tab:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]"
         data-ui="usage-analysis"
       >
         <LayerCard

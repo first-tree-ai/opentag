@@ -1,6 +1,11 @@
 services:
   postgres:
     image: postgres:17
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       POSTGRES_DB: opentag
       POSTGRES_USER: opentag

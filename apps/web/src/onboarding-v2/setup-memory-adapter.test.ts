@@ -204,9 +204,9 @@ describe("createMemorySetupAdapter", () => {
     await expect(adapter.unbindMessaging(agent.id, "slack", crypto.randomUUID())).rejects.toThrow(
       /not the current binding/,
     );
-    await expect(adapter.cancelFeishuAttempt(crypto.randomUUID())).rejects.toThrow(/No open Feishu attempt/);
+    await expect(adapter.cancelFeishuAttempt(crypto.randomUUID())).rejects.toThrow(/No open Lark attempt/);
     await expect(adapter.startSlackInstall(agent.id, "reauthorize")).resolves.toContain("https://slack.com/");
-    await expect(adapter.startFeishuAttempt(agent.id, "reauthorize")).rejects.toThrow(/current Feishu binding/);
+    await expect(adapter.startFeishuAttempt(agent.id, "reauthorize")).rejects.toThrow(/current Lark binding/);
 
     const other = createMemorySetupAdapter({ agent });
     await expect(other.adapter.readSnapshot(crypto.randomUUID())).rejects.toThrow(/No such Agent/);

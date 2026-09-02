@@ -117,7 +117,7 @@ describe("the messaging wait at ab76497", () => {
     render(<OnboardingV2Page />);
     await settle();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await settle();
     await tick(POLL_MS * 6);
 
@@ -143,7 +143,7 @@ describe("the messaging wait at ab76497", () => {
 
     render(<OnboardingV2Page />);
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: /Lark/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Feishu/ }));
     await settle();
     await tick(POLL_MS * 6);
 

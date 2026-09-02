@@ -230,6 +230,29 @@ function setupProjectionOrThrow(
   });
 }
 
+function internalToolsFixtureResponse(input: {
+  body: BodyInit | null | undefined;
+  method: string | undefined;
+  offered: boolean | undefined;
+  path: string;
+  readNavigation: () => { integrations: boolean; skills: boolean };
+  resetSetup: () => void;
+  writeNavigation: (value: { integrations: boolean; skills: boolean }) => void;
+}): Response | undefined {
+  if (input.path === "/api/v1/me/setup/reset" && input.method === undefined) {
+    return input.offered ? new Response(null, { status: 204 }) : new Response(null, { status: 404 });
+  }
+  if (input.path === "/api/v1/me/setup/reset" && input.method === "POST" && input.offered) {
+    input.resetSetup();
+    return new Response(null, { status: 204 });
+  }
+  if (input.path !== "/api/v1/internal/navigation-visibility" || !input.offered) return undefined;
+  if (input.method === "PUT") {
+    input.writeNavigation(JSON.parse(String(input.body)) as { integrations: boolean; skills: boolean });
+  }
+  return json(input.readNavigation());
+}
+
 export function installApi(
   options: {
     agentCreator?: { userId: string; displayName: string };
@@ -267,6 +290,7 @@ export function installApi(
     /** Fails only the handoff read, so the binding stays readable and `handoff_unconfirmed` is reachable. */
     handoffEvidenceFails?: boolean;
     initialStatus?: "active" | "suspended";
+    internalNavigationVisibility?: { integrations: boolean; skills: boolean };
     internalToolsOffered?: boolean;
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
@@ -284,6 +308,7 @@ export function installApi(
   } = {},
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
+  let internalNavigationVisibility = options.internalNavigationVisibility ?? { integrations: false, skills: false };
   // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
   // the Server answers differently once the reader has chosen.
   let agentUnbound = options.agentUnbound ?? false;
@@ -401,13 +426,20 @@ export function installApi(
       setupCompletedAt = "2026-08-20T00:10:00.000Z";
       return json({ setupCompletedAt });
     }
-    if (path === "/api/v1/me/setup/reset" && init?.method === undefined) {
-      return options.internalToolsOffered ? new Response(null, { status: 204 }) : new Response(null, { status: 404 });
-    }
-    if (path === "/api/v1/me/setup/reset" && init?.method === "POST" && options.internalToolsOffered) {
-      setupCompletedAt = null;
-      return new Response(null, { status: 204 });
-    }
+    const internalToolsResponse = internalToolsFixtureResponse({
+      body: init?.body,
+      method: init?.method,
+      offered: options.internalToolsOffered,
+      path,
+      readNavigation: () => internalNavigationVisibility,
+      resetSetup: () => {
+        setupCompletedAt = null;
+      },
+      writeNavigation: (value) => {
+        internalNavigationVisibility = value;
+      },
+    });
+    if (internalToolsResponse) return internalToolsResponse;
     if (path === "/api/v1/sessions" || path.startsWith("/api/v1/sessions?")) {
       return json({ tasks: [taskSummary], nextCursor: null });
     }

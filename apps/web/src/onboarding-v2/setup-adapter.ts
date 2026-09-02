@@ -12,11 +12,15 @@
 
 import type {
   AgentSetupSnapshot,
+  FeishuSetupAttempt,
   FeishuSetupIntent,
   ImProvider,
   SlackConfigurationIntent,
+  StartSlackOAuthRequest,
+  StartSlackOAuthResponse,
+  UnbindAgentMessagingRequest,
 } from "@opentag/shared/browser";
-import { type BrowserApi, browserApi } from "../api.js";
+import { browserApi } from "../api.js";
 
 export interface AgentSetupAdapter {
   /** The canonical setup state of one exact Agent — the only read this surface makes. */
@@ -35,13 +39,16 @@ export interface AgentSetupAdapter {
   readonly unbindMessaging: (agentId: string, provider: ImProvider, bindingId: string) => Promise<void>;
 }
 
+interface AgentSetupBrowserApi {
+  readonly agentSetup: (agentId: string) => Promise<AgentSetupSnapshot>;
+  readonly createFeishuSetupAttempt: (agentId: string, intent: FeishuSetupIntent) => Promise<FeishuSetupAttempt>;
+  readonly cancelFeishuSetupAttempt: (attemptId: string) => Promise<FeishuSetupAttempt>;
+  readonly startSlackOAuth: (agentId: string, input: StartSlackOAuthRequest) => Promise<StartSlackOAuthResponse>;
+  readonly unbindAgentMessaging: (agentId: string, input: UnbindAgentMessagingRequest) => Promise<void>;
+}
+
 /** The production adapter: every call is the matching BrowserApi request, nothing more. */
-export function createHttpSetupAdapter(
-  api: Pick<
-    BrowserApi,
-    "agentSetup" | "createFeishuSetupAttempt" | "cancelFeishuSetupAttempt" | "startSlackOAuth" | "unbindAgentMessaging"
-  > = browserApi,
-): AgentSetupAdapter {
+export function createHttpSetupAdapter(api: AgentSetupBrowserApi = browserApi): AgentSetupAdapter {
   return {
     readSnapshot: (agentId) => api.agentSetup(agentId),
     startFeishuAttempt: async (agentId, intent) => {

@@ -9,6 +9,8 @@ export {
   AccountSetupResetRequestSchema,
   type CompleteAccountSetupRequest,
   CompleteAccountSetupRequestSchema,
+  type InternalNavigationVisibility,
+  InternalNavigationVisibilitySchema,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
 } from "./account.js";
@@ -468,7 +470,9 @@ export {
   ErrorRetryabilitySchema,
   RetryabilitySchema,
   redactDiagnostic,
+  redactForLog,
   redactSensitive,
+  STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES,
   STRUCTURED_ERROR_MAX_CAUSE_DEPTH,
   STRUCTURED_ERROR_MESSAGE_MAX_BYTES,
   STRUCTURED_ERROR_REQUEST_ID_MAX_BYTES,

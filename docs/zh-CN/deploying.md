@@ -56,6 +56,26 @@ Workflow 只改变 App 运行哪个镜像。以下都是首次部署前必须在
 - **Container HTTP port** 为 `8000`，与镜像暴露的端口一致。
 - **PostgreSQL**：CapRover 的一键 Postgres App，或主机可达的外部实例。
 - **持久化存储**：server 镜像本身不需要，但数据库 App 需要。
+
+### 容器日志轮转
+
+server 镜像不能控制 Docker 的 logging driver。首次部署前，请在所有可能运行 server 的 Swarm node 上配置 Docker
+daemon，或设置等效的 CapRover logging 选项。Docker daemon 的具体配置入口是 `/etc/docker/daemon.json`：
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+```
+
+修改该文件后，按主机操作系统的要求重启或重新加载 Docker daemon。上面的 `max-size` 与 `max-file` 是 server 的预期
+限制；Docker 不会从镜像 label 读取它们。本仓库 `docker-compose.yml` 中的 `logging:` block 只作用于本地 Postgres
+service，不会配置 CapRover 的 server container。
+
 - App 上的**环境变量**：
 
 | 变量 | Staging 取值 |

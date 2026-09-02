@@ -140,12 +140,12 @@ describe("OpenTag Web App Shell", () => {
 
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
-    await screen.findByText("Computer offline");
+    await screen.findByText("Offline");
     const computerRow = screen
       .getByRole("region", { name: "Agent status" })
       .querySelector('[data-ui="agent-status-computer"]') as HTMLElement;
     expect(computerRow).toBeTruthy();
-    expect(within(computerRow).getByText("Computer offline")).toBeTruthy();
+    expect(within(computerRow).getByText("Offline")).toBeTruthy();
     expect(within(computerRow).getByRole("link", { name: "Open computer setup" })).toBeTruthy();
   });
 
@@ -306,7 +306,7 @@ describe("OpenTag Web App Shell", () => {
       },
       {
         exit: "Open computer setup",
-        label: "Computer offline",
+        label: "Offline",
         options: { computerStatus: () => "offline" as const },
       },
       {
@@ -329,7 +329,7 @@ describe("OpenTag Web App Shell", () => {
         label: "Codex unavailable",
         options: { computerProviderReadiness: readiness("unavailable") },
       },
-      { exit: undefined, label: "Ready", options: { computerProviderReadiness: readiness("ready") } },
+      { exit: undefined, label: "Online", options: { computerProviderReadiness: readiness("ready") } },
     ];
     for (const state of states) {
       installApi({ bound: true, ...state.options });

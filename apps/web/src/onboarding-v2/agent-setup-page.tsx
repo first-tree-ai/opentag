@@ -22,6 +22,7 @@ import { platformLabel } from "../features/agents/agent-presentation.js";
 import { ComputerConnect } from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
 import { formatDateTime, formatRelativeTime } from "../i18n/format.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
 import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../ui/design-system.js";
@@ -76,33 +77,37 @@ function setupReadError(cause: unknown): string {
 }
 
 function providerTitle(provider: ImProvider): string {
-  return provider === "feishu" ? m.onboarding_v2_messaging_lark_title() : m.onboarding_v2_messaging_slack_title();
+  return messagingProviderLabel(provider);
 }
 
 /* One recovery message per known Server code, then a per-Provider fallback. */
 const SLACK_ACTION_ERRORS: Record<string, () => string> = {
-  SLACK_SCOPE_REAUTH_REQUIRED: () => m.im_slack_permissions_missing(),
-  SLACK_TOKEN_REVOKED: () => m.im_slack_permissions_missing(),
-  SLACK_UPSTREAM_UNAVAILABLE: () => m.im_slack_unavailable(),
+  SLACK_SCOPE_REAUTH_REQUIRED: () => m.im_slack_permissions_missing({ provider: providerTitle("slack") }),
+  SLACK_TOKEN_REVOKED: () => m.im_slack_permissions_missing({ provider: providerTitle("slack") }),
+  SLACK_UPSTREAM_UNAVAILABLE: () => m.im_slack_unavailable({ provider: providerTitle("slack") }),
 };
 const FEISHU_ACTION_ERRORS: Record<string, () => string> = {
-  FEISHU_APP_ALREADY_BOUND: () => m.im_feishu_app_already_connected(),
-  FEISHU_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_permissions_missing(),
-  IM_BINDING_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_permissions_missing(),
-  FEISHU_UPSTREAM_UNAVAILABLE: () => m.im_feishu_unavailable(),
+  FEISHU_APP_ALREADY_BOUND: () => m.im_feishu_app_already_connected({ provider: providerTitle("feishu") }),
+  FEISHU_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_permissions_missing({ provider: providerTitle("feishu") }),
+  IM_BINDING_SCOPE_REAUTH_REQUIRED: () => m.im_feishu_permissions_missing({ provider: providerTitle("feishu") }),
+  FEISHU_UPSTREAM_UNAVAILABLE: () => m.im_feishu_unavailable({ provider: providerTitle("feishu") }),
 };
 
 function setupActionErrorMessage(action: AgentSetupAction, cause: unknown): string {
   if (action.kind === "unbind-messaging") {
-    return m.im_disconnect_failed({ providerName: providerTitle(action.provider) });
+    return spaceBrandInSentence(m.im_disconnect_failed({ providerName: providerTitle(action.provider) }));
   }
-  if (action.kind === "cancel-messaging-attempt") return m.im_feishu_cancel_failed();
+  if (action.kind === "cancel-messaging-attempt") {
+    return spaceBrandInSentence(m.im_feishu_cancel_failed({ provider: providerTitle("feishu") }));
+  }
   const provider = "provider" in action ? action.provider : undefined;
   const code = cause instanceof ApiError ? cause.code : undefined;
   const known =
     code === undefined ? undefined : (provider === "slack" ? SLACK_ACTION_ERRORS : FEISHU_ACTION_ERRORS)[code];
-  if (known) return known();
-  return provider === "slack" ? m.im_slack_authorization_failed() : m.im_feishu_authorization_failed();
+  if (known) return spaceBrandInSentence(known());
+  return provider === "slack"
+    ? spaceBrandInSentence(m.im_slack_authorization_failed({ provider: providerTitle("slack") }))
+    : spaceBrandInSentence(m.im_feishu_authorization_failed({ provider: providerTitle("feishu") }));
 }
 
 /**
@@ -773,8 +778,12 @@ function MessagingStartChoice({
               <CardCopy
                 description={
                   action.provider === "feishu"
-                    ? m.onboarding_v2_messaging_lark_description()
-                    : m.onboarding_v2_messaging_slack_description()
+                    ? m.onboarding_v2_messaging_feishu_description({
+                        provider: messagingProviderAlternateBrand(),
+                      })
+                    : m.onboarding_v2_messaging_provider_description({
+                        provider: providerTitle(action.provider),
+                      })
                 }
                 title={providerTitle(action.provider)}
               />
@@ -807,7 +816,9 @@ function FeishuAuthorizing({
         <span aria-hidden="true" className="ots-pulse shrink-0" />
         {m.onboarding_v2_messaging_waiting()}
       </p>
-      <p className={HINT}>{m.onboarding_v2_messaging_lark_intro()}</p>
+      <p className={HINT}>
+        {spaceBrandInSentence(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
+      </p>
       {messaging.qrUrl ? <QrCode value={messaging.qrUrl} /> : null}
       <p className={HINT}>{m.im_feishu_qr_expires({ date: formatDateTime(messaging.expiresAt) })}</p>
       {cancel ? (
@@ -835,7 +846,7 @@ function SlackAuthorizing({
     <>
       <p className={WAITING_LINE} role="status">
         <span aria-hidden="true" className="ots-pulse shrink-0" />
-        {m.onboarding_v2_messaging_slack_waiting()}
+        {spaceBrandInSentence(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
       </p>
       <p className={HINT}>
         {m.onboarding_v2_setup_slack_install_expires({ date: formatDateTime(messaging.expiresAt) })}

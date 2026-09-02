@@ -205,7 +205,7 @@ describe("Kumo integration contract", () => {
       .map((file) => readFileSync(resolve(root, "features/shell", file), "utf8"))
       .join("\n");
     expect(shell).toContain('<Sidebar.Header className="border-b-0">');
-    expect(shell).toContain("<Sidebar.Content>");
+    expect(shell).toMatch(/<Sidebar\.Content(?:\s|>)/);
     expect(shell).toContain("<Sidebar.Menu>");
     expect(shell).toContain("<Sidebar.MenuButton");
     expect(shell).toContain("<Sidebar.Footer>");

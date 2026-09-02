@@ -125,6 +125,10 @@ describe("Tasks view", () => {
     expect(screen.queryByText("Read-only debug view")).toBeNull();
     expect(screen.queryByText("Demo data")).toBeNull();
     expect(screen.queryByRole("button", { name: "Edit title" })).toBeNull();
+    const toolbar = screen.getByRole("form", { name: "Filter Tasks" });
+    expect(toolbar.outerHTML).toContain("@min-[48rem]/content:flex-row");
+    expect(toolbar.outerHTML).toContain("@min-[36rem]/content:w-44");
+    expect(toolbar.outerHTML).not.toContain("/workspace");
 
     fireEvent.click(screen.getByRole("combobox", { name: "Filter by status" }));
     const failedOption = await screen.findByRole("option", { name: "Failed" });
@@ -287,7 +291,7 @@ describe("Tasks view", () => {
     const row = (await screen.findByRole("link", { name: task.title })).closest("tr");
     if (!row) throw new Error("Expected the Task link to be inside a row");
     expect(within(row).getByText(task.agent.displayName)).toBeTruthy();
-    expect(within(row).getByText("Feishu · Direct message")).toBeTruthy();
+    expect(within(row).getByText("Lark · Direct message")).toBeTruthy();
     expect(within(row).getByText("Completed")).toBeTruthy();
     expect(within(row).queryByLabelText(/^Completed, updated/u)).toBeNull();
     expect(within(row).queryByText(task.source.channelId)).toBeNull();
@@ -754,5 +758,35 @@ describe("Tasks view", () => {
     expect(within(activity).queryByText(/attempts/)).toBeNull();
     expect(screen.queryByText(/Internal collaboration/)).toBeNull();
     expect(screen.queryByText("Please verify the deployment state.")).toBeNull();
+  });
+
+  // The provider identifier is the Server's vocabulary, not a name anybody chose for a reader. These
+  // two surfaces used to print it straight, which reads as the lowercase `feishu` today and would
+  // silently name any future channel after whatever casing its id happened to carry.
+  it("names the channel of a listed Task instead of printing its provider id", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [task], nextCursor: null });
+
+    const { container } = await renderInRouter(<TasksPage />);
+    await screen.findByText("Investigate the failed deployment");
+
+    const source = container.querySelector('[data-label="Source"]');
+    expect(source?.textContent).toContain("Lark");
+    expect(source?.textContent).not.toMatch(/feishu/);
+  });
+
+  it("names the channel of a Task's source instead of printing its provider id", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    /*
+     * Anchored on the Source fact rather than the page, because the guarantee is about one field:
+     * the channel reads as the product name and the lowercase identifier never reaches the reader.
+     * `not.toMatch` is case-sensitive, so it pins the raw id specifically rather than a substring.
+     */
+    const sourceTerm = await screen.findByText("Source");
+    const sourceValue = sourceTerm.parentElement?.querySelector("dd");
+    expect(sourceValue?.textContent).toContain("Lark");
+    expect(sourceValue?.textContent).not.toMatch(/feishu/);
   });
 });

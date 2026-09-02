@@ -29,6 +29,7 @@ import {
   type ProviderReadinessStatus,
   type SlackConfigurationIntent,
 } from "@opentag/shared/browser";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 
 /** How long an issued authorization waits for the outside world, matching the Server's attempts. */
@@ -300,13 +301,13 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
         throw new Error("A Messaging Provider can be started only from not-configured");
       }
       if (intent !== "create" && prior?.provider !== "feishu") {
-        throw new Error(`${intent} requires the current Feishu binding`);
+        throw new Error(`${intent} requires the current ${messagingProviderLabel("feishu")} binding`);
       }
       state.messaging = { kind: "feishu-attempt", attemptId: crypto.randomUUID(), intent, prior };
     },
     cancelFeishuAttempt: async (attemptId) => {
       if (state.messaging.kind !== "feishu-attempt" || state.messaging.attemptId !== attemptId) {
-        throw new Error(`No open Feishu attempt: ${attemptId}`);
+        throw new Error(`No open ${messagingProviderLabel("feishu")} attempt: ${attemptId}`);
       }
       const prior = state.messaging.prior;
       state.messaging = prior ?? { kind: "not-configured" };
@@ -315,10 +316,13 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       const prior = state.messaging.kind === "bound" ? state.messaging : undefined;
       if (intent === "create" && state.messaging.kind !== "not-configured") {
-        throw new Error("Slack install requires the Agent to be unbound; unbind before a fresh install");
+        throw new Error(
+          `${messagingProviderLabel("slack")} install requires the Agent to be unbound; unbind before a fresh install`,
+        );
       }
       if (intent === "reauthorize" && prior?.provider !== "slack") {
-        throw new Error("Slack reauthorization requires the current Slack binding");
+        const provider = messagingProviderLabel("slack");
+        throw new Error(`${provider} reauthorization requires the current ${provider} binding`);
       }
       state.messaging = { kind: "slack-install", intent, prior };
       return `https://slack.com/oauth/v2/authorize?state=memory-${encodeURIComponent(agentId)}`;
@@ -335,7 +339,9 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
 
   const controls: MemorySetupControls = {
     scanFeishuCode: () => {
-      if (state.messaging.kind !== "feishu-attempt") throw new Error("No Feishu attempt is waiting for a scan");
+      if (state.messaging.kind !== "feishu-attempt") {
+        throw new Error(`No ${messagingProviderLabel("feishu")} attempt is waiting for a scan`);
+      }
       const { intent, prior } = state.messaging;
       // A first connection still owes the Server's observation; a reauthorization or replace
       // returns to the binding it was maintaining, with the attention it was raised to clear gone.
@@ -351,12 +357,16 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
           : { ...prior, attention: undefined };
     },
     failFeishuAttempt: () => {
-      if (state.messaging.kind !== "feishu-attempt") throw new Error("No Feishu attempt is open");
+      if (state.messaging.kind !== "feishu-attempt") {
+        throw new Error(`No ${messagingProviderLabel("feishu")} attempt is open`);
+      }
       const prior = state.messaging.prior;
       state.messaging = prior ?? { kind: "not-configured" };
     },
     completeSlackInstall: () => {
-      if (state.messaging.kind !== "slack-install") throw new Error("No Slack install is waiting");
+      if (state.messaging.kind !== "slack-install") {
+        throw new Error(`No ${messagingProviderLabel("slack")} install is waiting`);
+      }
       const { intent, prior } = state.messaging;
       state.messaging =
         intent === "create" || prior === undefined

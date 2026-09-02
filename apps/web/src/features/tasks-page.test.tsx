@@ -368,6 +368,47 @@ describe("Tasks view", () => {
     expect(within(activity).queryByText("Human")).toBeNull();
   });
 
+  it("keeps the title alone and lists the status last among the Task details", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue(detail);
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    const heading = await screen.findByRole("heading", { name: task.title });
+    expect(heading.parentElement?.textContent).toBe(task.title);
+    const details = screen.getByLabelText("Task details");
+    expect(
+      within(details)
+        .getAllByRole("term")
+        .map((term) => term.textContent),
+    ).toEqual(["Agent", "Source", "Started", "Last activity", "Status"]);
+    expect(within(details).getByText("Completed")).toBeTruthy();
+  });
+
+  it("names a Turn failure for the reader instead of printing its reason code", async () => {
+    const root = detail.turns[0];
+    if (!root) throw new Error("Expected the Task fixture to include a root Turn");
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      turns: [
+        {
+          ...root,
+          report: {
+            ...root.report,
+            finalText: null,
+            errorReason: "credential_unavailable",
+            outcome: "failed" as const,
+          },
+        },
+      ],
+    });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Credential unavailable")).toBeTruthy();
+    expect(within(activity).queryByText("credential_unavailable")).toBeNull();
+  });
+
   it("announces Task status separately from the last activity time", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detail);
 

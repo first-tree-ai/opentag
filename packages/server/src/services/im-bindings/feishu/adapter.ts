@@ -250,24 +250,51 @@ function parseRawContent(message: RawFeishuMessageEvent["message"]): {
       ],
     };
   }
-  if (message.message_type === "post") {
-    const strings: string[] = [];
-    const visit = (value: unknown): void => {
-      if (typeof value === "object" && value !== null) {
-        if (Array.isArray(value)) {
-          for (const item of value) visit(item);
-        } else {
-          for (const [key, child] of Object.entries(value)) {
-            if ((key === "text" || key === "content") && typeof child === "string") strings.push(child);
-            else visit(child);
-          }
-        }
-      }
-    };
-    visit(content);
-    return { text: strings.join("\n").trim(), resources: [] };
-  }
+  if (message.message_type === "post") return { text: postText(content, message.mentions), resources: [] };
   return { text: `[unsupported:${message.message_type}]`, resources: [] };
+}
+
+type RawFeishuMention = NonNullable<RawFeishuMessageEvent["message"]["mentions"]>[number];
+
+/**
+ * The plain text of a rich-text message, read from its documented shape: paragraphs of tagged
+ * elements under `content`, at the top level or under a locale key. Feishu also sends the same
+ * paragraphs as markdown under `content_v2`; that copy is read only when the tagged form has no
+ * text, so a message is never repeated. Runs of one paragraph stay on one line, and an `@` element
+ * becomes its mention key, the same placeholder a plain-text message carries.
+ */
+function postText(content: Record<string, unknown>, mentions: readonly RawFeishuMention[] = []): string {
+  const tagged = paragraphsText(postParagraphs(content, "content"), mentions);
+  return tagged || paragraphsText(postParagraphs(content, "content_v2"), mentions);
+}
+
+function postParagraphs(content: Record<string, unknown>, key: "content" | "content_v2"): unknown[] {
+  if (Array.isArray(content[key])) return content[key];
+  for (const value of Object.values(content)) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const nested = (value as Record<string, unknown>)[key];
+    if (Array.isArray(nested)) return nested;
+  }
+  return [];
+}
+
+function paragraphsText(paragraphs: readonly unknown[], mentions: readonly RawFeishuMention[]): string {
+  return paragraphs
+    .map((paragraph) => (Array.isArray(paragraph) ? paragraph : [paragraph]))
+    .map((paragraph) => paragraph.map((element) => elementText(element, mentions)).join(""))
+    .join("\n")
+    .trim();
+}
+
+function elementText(element: unknown, mentions: readonly RawFeishuMention[]): string {
+  if (typeof element !== "object" || element === null) return "";
+  const { tag, text, user_id, user_name } = element as Record<string, unknown>;
+  if (tag === "at") {
+    const mention = mentions.find((candidate) => candidate.id.open_id === user_id || candidate.id.user_id === user_id);
+    if (mention) return mention.key;
+    return typeof user_name === "string" && user_name ? `@${user_name}` : "";
+  }
+  return typeof text === "string" ? text : "";
 }
 
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {

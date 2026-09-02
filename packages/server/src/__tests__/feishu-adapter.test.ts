@@ -179,6 +179,67 @@ describe("Feishu adapter", () => {
     expect(received[2]?.resources[0]).toMatchObject({ fileKey: "file_1" });
   });
 
+  it("reads a rich-text message's paragraphs once when Feishu also sends them as markdown", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    // Feishu delivers a `post` twice over: `content` as tagged elements and `content_v2` as
+    // markdown. Every paragraph is in both, so reading both repeats the whole message.
+    const post = rawMessage("ev-post-v2", "om-post-v2", "6");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [[{ tag: "text", text: "检查当前 Agent 的运行状态", style: [] }]],
+      content_v2: [[{ tag: "md", text: "检查当前 Agent 的运行状态" }]],
+    });
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["检查当前 Agent 的运行状态"]);
+  });
+
+  it("keeps the runs of one rich-text paragraph on one line and writes an @ element as its mention key", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-runs", "om-post-runs", "7");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [
+        [
+          { tag: "at", user_id: "ou_bot", user_name: "Atlas" },
+          { tag: "text", text: " please ", style: [] },
+          { tag: "text", text: "fix", style: ["bold"] },
+          { tag: "a", text: " the docs", href: "https://example.com/docs" },
+        ],
+        [{ tag: "img", image_key: "img_1" }],
+        [{ tag: "text", text: "before 5pm", style: [] }],
+      ],
+    });
+    (post.event.message as { mentions?: unknown }).mentions = [
+      { key: "@_user_1", id: { open_id: "ou_bot" }, name: "Atlas", mentioned_type: "app" },
+    ];
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["@_user_1 please fix the docs\n\nbefore 5pm"]);
+  });
+
+  it("falls back to a rich-text message's markdown copy when the tagged paragraphs carry no text", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-md", "om-post-md", "8");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [[{ tag: "img", image_key: "img_1" }]],
+      content_v2: [[{ tag: "md", text: "**检查** 状态" }]],
+    });
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["**检查** 状态"]);
+  });
+
   it("deduplicates a repeated group/thread representation by provider event identity", async () => {
     const received: NormalizedMessage[] = [];
     const dispatcher = createReliableFeishuDispatcher((message) => {

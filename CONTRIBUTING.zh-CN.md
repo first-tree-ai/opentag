@@ -57,9 +57,12 @@ npm 发布、绕开受保护流程创建 production tag，以及回退到 token 
 `apps/web` 之外的 Markdown 为 territory，owner 范围更宽，包括 yuezengwu、bestony、Gandy2025 和 liuchao-001，
 但根目录的策略与 agent 指令文件除外：`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`SECURITY.md` 以及后两者的中文镜像。
 这些文件被拉回 gate，因为 agent 指令文件会改变本仓库中 agent 的行为，属于行为而非文档，而 `CONTRIBUTING.md` 正是本策略
-自身的载体。四个例行杂务路径为 territory：`pnpm-lock.yaml`、`.editorconfig`、`.gitignore` 和 `LICENSE`。
-`packages/server/drizzle/` 带有一个防御性的 gate pin，使不可逆的 migration 始终经过交叉评审。其余一切都受 gate 约束：
-各 package、`apps/cli`、`.github`、`scripts`、`e2e`、根目录的构建与质量门禁配置，以及未来新增的任何目录。
+自身的载体。三个例行杂务路径为 territory：`.editorconfig`、`.gitignore` 和 `LICENSE`。依赖清单为 exempt：任意层级的
+`package.json` 与 `pnpm-lock.yaml` 都不列出 owner，因此 dependabot 的版本升级不会再自动请求 reviewer。自动请求由
+GitHub 发起，只读取 `.github/CODEOWNERS`，无法区分作者，所以同一份豁免也让人工提交的依赖清单改动无需批准即可合并；
+这是该行为的代价，也是豁免范围仅限于依赖清单的原因。`packages/server/drizzle/` 带有一个防御性的 gate pin，使不可逆的
+migration 始终经过交叉评审。其余一切都受 gate 约束：各 package、`apps/cli`、`.github`、`scripts`、`e2e`、根目录其余的
+构建与质量门禁配置，以及未来新增的任何目录。
 
 在逐文件结果之上还有两条规则。当 Pull Request 作者对仓库没有写权限时——外部贡献者、来自 fork，或包括 dependabot 在内的
 bot——无论改动了哪些文件，该 Pull Request 都还需要 `.github/CODEOWNERS` 中列出的任意一位 owner 的批准；`apps/web`

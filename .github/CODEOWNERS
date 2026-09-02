@@ -14,13 +14,34 @@
 *                           @bestony @yuezengwu
 
 # Territory carve-outs: routine chores, owner-author self-merges on green CI.
-/pnpm-lock.yaml             @bestony @yuezengwu
 /.editorconfig              @bestony @yuezengwu
 /.gitignore                 @bestony @yuezengwu
 /LICENSE                    @bestony @yuezengwu
 
 # Docs fast lane: territory. Overrides the gate for markdown anywhere outside web.
 *.md                        @yuezengwu @bestony @Gandy2025 @liuchao-001
+
+# Exempt: dependency manifests, no owners on purpose. GitHub auto-requests a
+# review from the owners of every file a pull request touches, which put a human
+# on the reviewer list of every dependabot bump. Ownerless is the only lever
+# that reaches that behaviour: the auto-request runs off this file alone and
+# cannot tell dependabot from anyone else.
+#
+# `package.json` is depth-agnostic because dependabot bumps the workspace
+# manifests, not only the root one.
+#
+# The block sits BETWEEN *.md and the gate pins, and both edges are load-bearing.
+# Below *.md: a manifest inside a directory whose name ends in .md would
+# otherwise be reached by *.md but named by this rule, and the gate resolves that
+# disagreement by falling back to gate mode over an ownerless rule -- a red check
+# no approval can clear. Above the pins: a manifest ever added under .github/ or
+# packages/server/drizzle/ keeps the pin's gate instead of escaping through here.
+#
+# This does not make a dependabot pull request self-mergeable. The ownership
+# gate separately requires an owner approval from any author without write
+# access, bots included, whatever files the pull request touches.
+package.json
+/pnpm-lock.yaml
 
 # Gate pins. Both sit BELOW *.md because the markdown fast lane would otherwise
 # win for the one markdown file each of them contains, and a pin that a later

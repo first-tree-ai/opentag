@@ -5,6 +5,7 @@ import {
   type RuntimeChannelTarget,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
+  redactForLog,
 } from "@opentag/shared";
 import type { RawData } from "ws";
 import type { ClientLogger } from "../observability/logger.js";
@@ -44,4 +45,12 @@ export function safeJson(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+export function redactRuntimeReason(message: string): string {
+  return redactForLog(message);
+}
+
+export function protocolRejectionFields(attempt: number, state: string, message: string) {
+  return { attempt: attempt + 1, category: "protocol", reason: redactRuntimeReason(message), state };
 }

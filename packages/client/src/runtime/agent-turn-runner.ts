@@ -6,6 +6,7 @@ import {
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
+  redactForLog,
   type TurnFailureReason,
   type TurnReportHashInput,
   type TurnReportRequest,
@@ -309,7 +310,15 @@ export class AgentTurnRunner {
     }
     void this.#reportOwner
       .submit(report, () => this.#custody.recordResult(owner.turnId, report.resultHash))
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        this.#logger.warn(
+          {
+            ...fields,
+            reason: redactForLog(error instanceof Error ? error.message : "Unknown Turn Report submission failure"),
+          },
+          "Turn Report submission failed",
+        );
+      });
   }
 }
 

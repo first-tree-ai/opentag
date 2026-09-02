@@ -179,7 +179,7 @@ describe("the Computer the Account already has", () => {
     expect(machineLine()).toContain("last seen 3 days ago");
     expect(
       screen.getByText(
-        "MacBook Pro is offline. Start OpenTag on that Computer; this page will continue when it reconnects.",
+        "MacBook Pro is offline. Run opentag daemon start in a terminal on that Computer; this page will continue when it reconnects.",
       ),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeTruthy();

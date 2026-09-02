@@ -360,6 +360,18 @@ describe("AgentRuntimeAvailabilityTester", () => {
       code: "cancelled",
     });
   });
+
+  it("keeps a synchronous cleanup failure inside the bounded cleanup diagnostic path", async () => {
+    const factory = scriptedFactory({ closeSyncError: true });
+    const tester = new AgentRuntimeAvailabilityTester({
+      factories: new Map([["codex", factory]]),
+      cleanupMs: 20,
+    });
+
+    await expect(tester.run(testRequest("codex"), new AbortController().signal)).resolves.toMatchObject({
+      status: "passed",
+    });
+  });
 });
 
 function testRequest(provider: "codex" | "claude-code") {
@@ -380,6 +392,7 @@ function completed(text: string): AgentRunResult {
 }
 
 function scriptedFactory(options: {
+  closeSyncError?: boolean;
   create?: (request: CreateAgentRuntimeRequest) => Promise<AgentRuntime>;
   createRequest?: (request: CreateAgentRuntimeRequest) => void;
   prompt?: (request: Parameters<AgentRuntime["prompt"]>[0], sink: AgentRuntimeEventSink) => Promise<AgentRunResult>;
@@ -407,8 +420,10 @@ function scriptedFactory(options: {
     respond: async () => undefined,
     abort: async () => undefined,
     waitForIdle: async () => undefined,
-    close: async () => {
+    close: () => {
+      if (options.closeSyncError) throw new Error("synchronous cleanup failure");
       closed.current = true;
+      return Promise.resolve();
     },
   };
   const factory = {

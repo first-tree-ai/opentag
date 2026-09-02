@@ -257,7 +257,6 @@ async function budgetedCleanup(cleanup: () => Promise<void>, cleanupMs: number):
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      /* v8 ignore next -- cleanup callback rejection is an OS-level fault; keep its debug evidence in production. */
       cleanup().catch((error: unknown) => {
         logger.debug(
           { code: "budgeted_cleanup_failed", error: String(error) },

@@ -113,6 +113,7 @@ function disableProbeRequestLogging(request: FastifyRequest): boolean {
 const MAX_ERROR_STACK_LENGTH = 8_192;
 const DATABASE_READINESS_TIMEOUT_MS = 1_000;
 const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
+const READINESS_MAX_LIVE_ATTEMPTS = 2;
 
 type SerializedError = { type: string; message: string; stack: string };
 type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
@@ -162,6 +163,13 @@ class DatabaseReadinessTimeoutError extends Error {
   }
 }
 
+class DatabaseReadinessAttemptLimitError extends Error {
+  constructor(maxAttempts: number) {
+    super(`Database readiness probe reached the ${maxAttempts}-attempt limit`);
+    this.name = "DatabaseReadinessAttemptLimitError";
+  }
+}
+
 function withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -181,18 +189,24 @@ function createDatabaseReadinessProbe(database: DatabaseClient | undefined): (()
   if (!database) return undefined;
 
   let inFlight: DatabaseReadinessAttempt | undefined;
+  let liveAttempts = 0;
   return async () => {
     const now = Date.now();
     const current = inFlight;
     if (!current || now - current.startedAt >= READINESS_ATTEMPT_MAX_AGE_MS) {
+      if (liveAttempts >= READINESS_MAX_LIVE_ATTEMPTS) {
+        throw new DatabaseReadinessAttemptLimitError(READINESS_MAX_LIVE_ATTEMPTS);
+      }
       if (current) {
         void current.promise.catch(() => undefined);
       }
+      liveAttempts += 1;
       const execution = Promise.resolve()
         .then(() => database.execute(sql`select 1`))
         .then(() => undefined);
       let attempt: DatabaseReadinessAttempt;
       const settled = execution.finally(() => {
+        liveAttempts -= 1;
         if (inFlight === attempt) inFlight = undefined;
       });
       attempt = { promise: settled, startedAt: now };

@@ -150,4 +150,66 @@ describe("GET /healthz", () => {
       vi.useRealTimers();
     }
   });
+
+  it("pins live probes across three aged-out windows", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const execute = vi.fn(() => new Promise<never>(() => undefined));
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, readiness });
+    apps.push(app);
+
+    try {
+      const firstRequest = app.inject({ method: "GET", url: "/readyz" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const firstResponse = await firstRequest;
+
+      await vi.advanceTimersByTimeAsync(9_001);
+      const secondRequest = app.inject({ method: "GET", url: "/readyz" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const secondResponse = await secondRequest;
+
+      await vi.advanceTimersByTimeAsync(9_001);
+      const thirdResponse = await app.inject({ method: "GET", url: "/readyz" });
+
+      expect([firstResponse, secondResponse, thirdResponse].every((response) => response.statusCode === 503)).toBe(
+        true,
+      );
+      expect(execute).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("frees a live-attempt slot when a replacement probe settles", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const firstProbe = new Promise<never>(() => undefined);
+    const execute = vi
+      .fn()
+      .mockImplementationOnce(() => firstProbe)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ database: { execute } as never, readiness });
+    apps.push(app);
+
+    try {
+      const firstRequest = app.inject({ method: "GET", url: "/readyz" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect((await firstRequest).statusCode).toBe(503);
+
+      await vi.advanceTimersByTimeAsync(9_001);
+      const recovered = await app.inject({ method: "GET", url: "/readyz" });
+      expect(recovered.statusCode).toBe(200);
+      expect(execute).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(10_001);
+      const nextProbe = await app.inject({ method: "GET", url: "/readyz" });
+      expect(nextProbe.statusCode).toBe(200);
+      expect(execute).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

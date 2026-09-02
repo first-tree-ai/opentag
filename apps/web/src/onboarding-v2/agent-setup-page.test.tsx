@@ -184,7 +184,7 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });
 
-  it("shows the Slack install wait with Provider identity intact", async () => {
+  it("models the browser-away Slack install wait for Review Lab", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     await memory.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" });
     renderSetup(memory.adapter);

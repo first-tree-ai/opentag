@@ -330,6 +330,7 @@ export async function startServer(): Promise<void> {
     });
     const agentSetupService = new AgentSetupService(database, agentService, imBindingService, feishuSetupService, {
       providerReadiness: registry,
+      slackOAuthAvailable: config.slackOAuth !== undefined,
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({

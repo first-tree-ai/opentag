@@ -239,6 +239,39 @@ describe("Onboarding exact-target route boundary", () => {
     ).toHaveLength(2);
   });
 
+  it("re-resolves the exact target after a deterministic admission refusal", async () => {
+    installOnboardingApi({ setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installOnboardingApi did not install fetch");
+    let targetInvalidated = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/me/setup/complete" && init?.method === "POST") {
+        targetInvalidated = true;
+        return json(
+          {
+            error: {
+              code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+              category: "deterministic",
+              message: "Agent not found",
+            },
+          },
+          404,
+        );
+      }
+      if (String(input) === "/api/v1/agents" && init?.method === undefined && targetInvalidated) {
+        return json({ agents: [] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", `/onboarding?agentId=${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
+    expect(agentListReads()).toHaveLength(2);
+    expect(screen.queryByRole("heading", { name: "Could not open app access" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+  });
+
   it("keeps exact onboarding accessible for a completed Account without adopting again", async () => {
     installOnboardingApi();
     window.history.replaceState({}, "", `/onboarding?agentId=${agentId}`);

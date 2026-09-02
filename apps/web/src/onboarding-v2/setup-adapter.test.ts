@@ -8,7 +8,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, BrowserApi } from "../api.js";
+import { ApiError, BrowserApi, ResponseSchemaError } from "../api.js";
 import { SETUP_AGENT_ID, setupAgent } from "./agent-setup-test-fixtures.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
@@ -58,8 +58,11 @@ describe("createHttpSetupAdapter", () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ stage: "mostly-ready" }));
     const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
     const failure = await adapter.readSnapshot(SETUP_AGENT_ID).catch((cause: unknown) => cause);
-    expect(failure).toBeInstanceOf(ApiError);
-    expect((failure as ApiError).status).toBe(503);
+    expect(failure).toBeInstanceOf(ResponseSchemaError);
+    expect(failure).toMatchObject({
+      code: "invalid_response_schema",
+      routeTemplate: "/api/v1/agents/:id/setup",
+    });
   });
 
   it("surfaces the Server's refusal with its code", async () => {

@@ -352,9 +352,10 @@ function deriveSetupActions(
   switch (stage) {
     case "needs-computer":
       if (computer.kind === "observation-failed") return [{ kind: "refresh" }];
-      return computer.kind === "not-bound"
-        ? [{ kind: "bind-computer" }]
-        : [{ kind: "repair-computer", computerId: computer.computerId }];
+      if (computer.kind === "not-bound" || computer.kind === "requires-rebind") {
+        return [{ kind: "bind-computer" }];
+      }
+      return [{ kind: "refresh" }, { kind: "repair-computer", computerId: computer.computerId }];
     case "needs-runtime":
       return [{ kind: "refresh" }];
     case "needs-messaging":

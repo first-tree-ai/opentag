@@ -88,6 +88,7 @@ describe("Agent setup HTTP API", () => {
 
     const response = await app.inject({ method: "GET", url: agentSetupPath(agentId), headers: authorization });
     expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()).toEqual(snapshot);
     expect(getSetupById).toHaveBeenCalledWith(userId, agentId);
   });

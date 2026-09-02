@@ -43,7 +43,10 @@ function setupSnapshot(targetAgentId: string) {
   };
 }
 
-function installOnboardingApi(options?: Parameters<typeof installApi>[0]) {
+function installOnboardingApi(
+  options?: Parameters<typeof installApi>[0],
+  resolveSetup: (targetAgentId: string) => ReturnType<typeof setupSnapshot> = setupSnapshot,
+) {
   installApi(options);
   const fallback = vi.mocked(fetch).getMockImplementation();
   if (!fallback) throw new Error("installApi did not install fetch");
@@ -51,7 +54,7 @@ function installOnboardingApi(options?: Parameters<typeof installApi>[0]) {
     const path = String(input);
     const match = /^\/api\/v1\/agents\/([^/]+)\/setup$/.exec(path);
     if (match && init?.method === undefined) {
-      const snapshot = setupSnapshot(match[1] ?? "");
+      const snapshot = resolveSetup(match[1] ?? "");
       return snapshot
         ? json(snapshot)
         : json({ error: { code: "RESOURCE_NOT_FOUND", category: "deterministic", message: "Not found" } }, 404);
@@ -93,6 +96,30 @@ describe("Onboarding exact-target route boundary", () => {
       .mock.calls.filter(([path, init]) => path === "/api/v1/me/setup/complete" && init?.method === "POST");
     expect(completions).toHaveLength(1);
     expect(completions[0]?.[1]?.body).toBe(JSON.stringify({ agentId }));
+  });
+
+  it("opens the normal application once the exact Agent snapshot is ready", async () => {
+    const bindingId = "7ec801ba-cb88-4b1d-8be8-5eb9eb9de06e";
+    installOnboardingApi({ setupCompletedAt: null }, (targetAgentId) => {
+      const base = setupSnapshot(targetAgentId);
+      return base
+        ? {
+            ...base,
+            stage: "ready",
+            messaging: { kind: "ready", provider: "slack", bindingId, credentialGeneration: 1 },
+            blockers: [],
+            actions: [
+              { kind: "reauthorize-messaging", provider: "slack", bindingId, credentialGeneration: 1 },
+              { kind: "unbind-messaging", provider: "slack", bindingId },
+            ],
+          }
+        : undefined;
+    });
+    window.history.replaceState({}, "", `/onboarding?agentId=${agentId}`);
+    render(<App />);
+
+    await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
   });
 
   it("surfaces and then removes a Slack callback error on the canonical setup URL", async () => {

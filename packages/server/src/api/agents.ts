@@ -136,6 +136,7 @@ export function registerAgentRoutes(
       const snapshot = AgentSetupSnapshotSchema.parse(
         await agentSetup.getSetupById(authenticatedUserId(request), agentId),
       );
+      reply.header("Cache-Control", "no-store");
       return reply.code(200).send(snapshot);
     });
   }

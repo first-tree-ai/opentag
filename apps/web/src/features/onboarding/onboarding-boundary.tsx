@@ -271,8 +271,12 @@ function ExactAgentOnboarding({
   reviewMode: boolean;
   slackOAuthError?: string;
 }) {
+  const navigate = useNavigate();
   const [attempt, setAttempt] = useState(0);
   const [admission, setAdmission] = useState<AdmissionState>(accountCompleted ? "ready" : "loading");
+  const openApplication = useCallback(async () => {
+    await navigate({ to: "/agents" });
+  }, [navigate]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the explicit retry signal; incrementing it must repeat admission even though the value is not otherwise read.
   useEffect(() => {
@@ -329,7 +333,7 @@ function ExactAgentOnboarding({
   return (
     <OnboardingV2Page
       agentId={agentId}
-      onComplete={reviewMode ? onReviewFinished : undefined}
+      onComplete={reviewMode ? onReviewFinished : openApplication}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
     />

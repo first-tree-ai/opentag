@@ -13,13 +13,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
 import { AgentSetupPage } from "./agent-setup-page.js";
-import {
-  deferred,
-  SETUP_AGENT_ID,
-  SETUP_COMPUTER_ID,
-  SETUP_OTHER_AGENT_ID,
-  setupAgent,
-} from "./agent-setup-test-fixtures.js";
+import { deferred, SETUP_AGENT_ID, SETUP_OTHER_AGENT_ID, setupAgent } from "./agent-setup-test-fixtures.js";
 import { OnboardingV2Page } from "./page.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
@@ -114,18 +108,19 @@ describe("AgentSetupPage stages", () => {
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe("not-bound");
   });
 
-  it("names the exact Computer that must be connected again when a rebind is required", async () => {
-    const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(() => deferred<never>().promise);
+  it("offers an owned Computer choice when a cross-Account rebind is required", async () => {
+    mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent({ requiresComputerRebind: true }) });
     renderSetup(memory.adapter);
     await settle();
 
-    expect(screen.getByText("Review Mac must be connected again before Reviewer can run.")).toBeTruthy();
+    expect(
+      screen.getByText("Review Mac belongs to another Account. Choose a Computer owned by this Account for Reviewer."),
+    ).toBeTruthy();
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe(
       "requires-rebind",
     );
-    // The repair command targets the exact Computer the snapshot names, never a fresh one.
-    expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: SETUP_COMPUTER_ID });
+    expect(screen.getByText("Connect your computer")).toBeTruthy();
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
@@ -303,6 +298,7 @@ describe("AgentSetupPage transitions", () => {
     memory.controls.scanFeishuCode();
     await advance(POLL_MS + 10);
     expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
 
     memory.controls.completeHandoff();
     await advance(POLL_MS + 10);
@@ -310,7 +306,7 @@ describe("AgentSetupPage transitions", () => {
     expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
   });
 
-  it("cancels the exact open attempt and returns to the fresh choice", async () => {
+  it("cancels the exact open attempt and requires unbind before starting again", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent() });
     const cancel = vi.spyOn(memory.adapter, "cancelFeishuAttempt");
     await memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
@@ -326,8 +322,13 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(cancel).toHaveBeenCalledWith(attemptId);
-    expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The Lark authorization didn't complete. Disconnect this incomplete connection, then start again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
   });
 
   it("starts the Slack install by leaving for Slack", async () => {

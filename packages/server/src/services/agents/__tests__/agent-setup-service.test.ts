@@ -292,7 +292,7 @@ describe("Agent setup projection Computer states", () => {
       computer: { kind: "requires-rebind", computerId, displayName: "workstation", platform: "linux" },
       runtime: { kind: "unavailable", provider: "codex", reason: "computer-rebind-required" },
       blockers: [{ code: "computer-rebind-required" }],
-      actions: [{ kind: "repair-computer", computerId }],
+      actions: [{ kind: "bind-computer" }],
     });
   });
 
@@ -326,7 +326,7 @@ describe("Agent setup projection Computer states", () => {
       runtime: { kind: "unavailable", provider: "codex", reason: "computer-offline" },
       messaging: { kind: "ready", provider: "slack", bindingId: imBindingId },
       blockers: [{ code: "computer-offline", computerId }],
-      actions: [{ kind: "repair-computer", computerId }],
+      actions: [{ kind: "refresh" }, { kind: "repair-computer", computerId }],
     });
   });
 });

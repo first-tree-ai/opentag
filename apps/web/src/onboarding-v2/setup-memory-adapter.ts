@@ -55,7 +55,8 @@ export type MemoryMessagingModel =
 export interface MemorySetupSeed {
   /**
    * The exact Agent, as the Account summary knows it. `agent.computer` decides the Computer leg:
-   * `null` is not-bound, `requiresComputerRebind` keeps the identity and demands the repair.
+   * `null` is not-bound; `requiresComputerRebind` keeps the stale identity visible while the
+   * reader chooses a Computer that this Account owns.
    */
   readonly agent: AgentSummary;
   /** Only meaningful for a bound Computer; defaults to reachable. */
@@ -88,7 +89,13 @@ export interface MemorySetupAdapter {
 
 type MemoryMessagingState =
   | { kind: "not-configured" }
-  | { kind: "feishu-attempt"; attemptId: string; intent: FeishuSetupIntent; prior: MemoryBoundMessaging }
+  | {
+      kind: "feishu-attempt";
+      attemptId: string;
+      bindingId: string;
+      intent: FeishuSetupIntent;
+      prior: MemoryBoundMessaging;
+    }
   | { kind: "slack-install"; intent: SlackConfigurationIntent; prior: MemoryBoundMessaging }
   | {
       kind: "bound";
@@ -199,6 +206,14 @@ function messagingBlocker(
       state: "blocked",
     };
   }
+  if (messaging.kind === "waiting-handoff") {
+    return {
+      code: "messaging-not-ready",
+      provider: messaging.provider,
+      bindingId: messaging.bindingId,
+      state: "waiting-handoff",
+    };
+  }
   return { code: "messaging-not-ready", provider: messaging.provider, state: messaging.kind };
 }
 
@@ -253,7 +268,7 @@ function deriveActions(state: MemoryState): AgentSetupAction[] {
   if (observationFailure === "computer") return [{ kind: "refresh" }];
   if (agent.computer === null) return [{ kind: "bind-computer" }];
   if (agent.requiresComputerRebind === true) {
-    return [{ kind: "repair-computer", computerId: agent.computer.computerId }];
+    return [{ kind: "bind-computer" }];
   }
   if (!computerOnline) {
     return [{ kind: "refresh" }, { kind: "repair-computer", computerId: agent.computer.computerId }];
@@ -377,14 +392,29 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (intent !== "create" && prior?.provider !== "feishu") {
         throw new Error(`${intent} requires the current ${messagingProviderLabel("feishu")} binding`);
       }
-      state.messaging = { kind: "feishu-attempt", attemptId: crypto.randomUUID(), intent, prior };
+      state.messaging = {
+        kind: "feishu-attempt",
+        attemptId: crypto.randomUUID(),
+        bindingId: prior?.bindingId ?? crypto.randomUUID(),
+        intent,
+        prior,
+      };
     },
     cancelFeishuAttempt: async (attemptId) => {
       if (state.messaging.kind !== "feishu-attempt" || state.messaging.attemptId !== attemptId) {
         throw new Error(`No open ${messagingProviderLabel("feishu")} attempt: ${attemptId}`);
       }
-      const prior = state.messaging.prior;
-      state.messaging = prior ?? { kind: "not-configured" };
+      const { bindingId, prior } = state.messaging;
+      state.messaging =
+        prior ??
+        ({
+          kind: "bound",
+          provider: "feishu",
+          bindingId,
+          credentialGeneration: 0,
+          reachable: false,
+          attention: "authorization-failed",
+        } satisfies MemoryBound);
     },
     startSlackInstall: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
@@ -417,7 +447,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (state.messaging.kind !== "feishu-attempt") {
         throw new Error(`No ${messagingProviderLabel("feishu")} attempt is waiting for a scan`);
       }
-      const { intent, prior } = state.messaging;
+      const { bindingId, intent, prior } = state.messaging;
       // A first connection still owes the Server's observation; a reauthorization or replace
       // returns to the binding it was maintaining, with the attention it was raised to clear gone.
       state.messaging =
@@ -425,7 +455,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
           ? {
               kind: "bound",
               provider: "feishu",
-              bindingId: crypto.randomUUID(),
+              bindingId,
               credentialGeneration: 1,
               reachable: false,
               attention: undefined,
@@ -436,8 +466,17 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (state.messaging.kind !== "feishu-attempt") {
         throw new Error(`No ${messagingProviderLabel("feishu")} attempt is open`);
       }
-      const prior = state.messaging.prior;
-      state.messaging = prior ?? { kind: "not-configured" };
+      const { bindingId, prior } = state.messaging;
+      state.messaging =
+        prior ??
+        ({
+          kind: "bound",
+          provider: "feishu",
+          bindingId,
+          credentialGeneration: 0,
+          reachable: false,
+          attention: "authorization-failed",
+        } satisfies MemoryBound);
     },
     completeSlackInstall: () => {
       if (state.messaging.kind !== "slack-install") {

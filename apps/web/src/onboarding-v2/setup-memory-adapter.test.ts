@@ -71,7 +71,7 @@ describe("createMemorySetupAdapter", () => {
     expect(rebindSnapshot.stage).toBe("needs-computer");
     expect(rebindSnapshot.computer).toMatchObject({ kind: "requires-rebind", computerId: SETUP_COMPUTER_ID });
     expect(rebindSnapshot.blockers).toEqual([{ code: "computer-rebind-required" }]);
-    expect(rebindSnapshot.actions).toEqual([{ kind: "repair-computer", computerId: SETUP_COMPUTER_ID }]);
+    expect(rebindSnapshot.actions).toEqual([{ kind: "bind-computer" }]);
 
     const offline = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     const offlineSnapshot = await offline.adapter.readSnapshot(SETUP_AGENT_ID);
@@ -121,6 +121,9 @@ describe("createMemorySetupAdapter", () => {
     const handoff = await adapter.readSnapshot(agent.id);
     expect(handoff.messaging).toMatchObject({ kind: "waiting-handoff", provider: "feishu" });
     const handoffBindingId = handoff.messaging.kind === "waiting-handoff" ? handoff.messaging.bindingId : undefined;
+    expect(handoff.blockers).toEqual([
+      { code: "messaging-not-ready", provider: "feishu", bindingId: handoffBindingId, state: "waiting-handoff" },
+    ]);
     expect(handoff.actions).toEqual([
       { kind: "refresh" },
       { kind: "unbind-messaging", provider: "feishu", bindingId: handoffBindingId },
@@ -140,7 +143,7 @@ describe("createMemorySetupAdapter", () => {
     ]);
   });
 
-  it("returns to not-configured when a first attempt is canceled, and starts fresh", async () => {
+  it("matches production by requiring exact unbind after a first attempt is canceled", async () => {
     const agent = setupAgent();
     const { adapter } = createMemorySetupAdapter({ agent });
 
@@ -152,12 +155,18 @@ describe("createMemorySetupAdapter", () => {
         : "missing";
     await adapter.cancelFeishuAttempt(attemptId);
 
+    const blocked = await adapter.readSnapshot(agent.id);
+    expect(blocked.messaging).toMatchObject({
+      kind: "blocked",
+      provider: "feishu",
+      code: "authorization-failed",
+    });
+    const bindingId = blocked.messaging.kind === "blocked" ? blocked.messaging.bindingId : "missing";
+    expect(blocked.actions).toEqual([{ kind: "unbind-messaging", provider: "feishu", bindingId }]);
+
+    await adapter.unbindMessaging(agent.id, "feishu", bindingId ?? "missing");
     const cleared = await adapter.readSnapshot(agent.id);
     expect(cleared.messaging).toEqual({ kind: "not-configured" });
-    expect(cleared.actions).toEqual([
-      { kind: "start-messaging", provider: "feishu" },
-      { kind: "start-messaging", provider: "slack" },
-    ]);
   });
 
   it("restores the exact prior binding when a maintained attempt fails or is canceled", async () => {

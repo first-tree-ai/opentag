@@ -1,10 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, formatElapsedCompact, initials } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
+import { slackConfigurationMessage } from "../../im/slack-configuration.js";
 import * as m from "../../paraglide/messages.js";
-import { Button, Icon, StatusIndicator } from "../../ui/design-system.js";
+import { Banner, Button, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
@@ -17,9 +18,18 @@ import { NewAgentDialog } from "./new-agent-page.js";
 
 export function AgentsPage() {
   const { me } = useAccount();
+  const [oauthError] = useState(
+    () => new URLSearchParams(window.location.search).get("slack_oauth_error") ?? undefined,
+  );
   const [createOpen, setCreateOpen] = useState(false);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
   const state = useAgentListView(me.user.id);
+  useEffect(() => {
+    if (!oauthError) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("slack_oauth_error");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, [oauthError]);
   return (
     <>
       <Page
@@ -33,6 +43,9 @@ export function AgentsPage() {
         description={m.agents_page_description()}
         title={m.agents_title()}
       >
+        {oauthError ? (
+          <Banner variant="error" role="alert" description={slackConfigurationMessage(oauthError)} />
+        ) : null}
         <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
       </Page>
       <NewAgentDialog open={createOpen} returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} />

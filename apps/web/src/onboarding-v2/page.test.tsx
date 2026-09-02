@@ -225,7 +225,11 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByText(/Your AI worker runs on your own computer/)).toBeTruthy();
     expect(screen.getByText("Your code and data never leave your machine.")).toBeTruthy();
     expect(screen.getByText("Run this in your terminal, or paste it to your agent.")).toBeTruthy();
-    expect(screen.getByText("# Install the OpenTag CLI and connect this computer to OpenTag.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "# Agent: install OpenTag, connect this computer, and stay until the Lark and Slack CLI checks finish.",
+      ),
+    ).toBeTruthy();
   });
 
   it("installs through the portable installer, which needs nothing already on the machine", async () => {
@@ -251,7 +255,8 @@ describe("OnboardingV2Page", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /Copy/ })[0] as HTMLElement);
     await act(async () => undefined);
     const payload = writeText.mock.calls[0]?.[0] as string;
-    expect(payload.startsWith("# Install the OpenTag CLI")).toBe(true);
+    expect(payload.startsWith("# Agent: install OpenTag")).toBe(true);
+    expect(payload).toContain("stay until the Lark and Slack CLI checks finish");
     expect(payload).toContain("install.sh | sh");
     await advance(1_600);
     expect(screen.getAllByRole("button", { name: /Copy/ })[0]).toBeTruthy();
@@ -315,9 +320,9 @@ describe("OnboardingV2Page", () => {
 
     expect(screen.getByText("One thing needs fixing before your agent can run.")).toBeTruthy();
     // A light pointer back to the terminal, not a command block: the repair is already running there.
-    expect(screen.getByText("opentag doctor --fix").tagName).toBe("CODE");
+    expect(screen.getByText('"$HOME/.local/bin/opentag" doctor --json').tagName).toBe("CODE");
     expect(screen.getByText(/Continue in your terminal or agent for instructions/)).toBeTruthy();
-    expect(screen.queryByText(/doctor --fix again/)).toBeNull();
+    expect(screen.queryByText(/doctor --json again/)).toBeNull();
     expect(screen.queryByRole("button", { name: /check again/i })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /Copy/ })).toHaveLength(0);
   });
@@ -419,7 +424,7 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByText("We can't find the Codex command on this computer.")).toBeTruthy();
 
     openLab();
-    fireEvent.click(screen.getByRole("button", { name: "Ran doctor --fix" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ran doctor --json" }));
     fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
     await settleCheck();
     expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);

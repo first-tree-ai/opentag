@@ -861,7 +861,7 @@ export function ComputerStep({
                     : m.onboarding_v2_check_failed_one()}
                 </p>
                 <p className="text-sm text-kumo-subtle m-0">
-                  {m.onboarding_v2_check_repair_hint()} <code>opentag doctor --fix</code>{" "}
+                  {m.onboarding_v2_check_repair_hint()} <code>"$HOME/.local/bin/opentag" doctor --json</code>{" "}
                   {m.onboarding_v2_check_repair_hint_suffix()}
                 </p>
               </div>

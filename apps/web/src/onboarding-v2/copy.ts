@@ -107,14 +107,10 @@ export const COPY = {
       count > 1
         ? `${count} things need fixing before your agent can run.`
         : "One thing needs fixing before your agent can run.",
-    /**
-     * By the time this page is read, `doctor --fix` is usually already running on the user's
-     * machine — signing in during the previous step starts it. So this is a pointer back to where
-     * the work is happening, not a command to go and run: one light line, no block, no copy button.
-     */
+    /** Doctor stays read-only; its JSON report gives an Agent exact commands for repairable checks. */
     repairHint: "Continue in your terminal or agent for instructions, or run",
-    repairCommand: "opentag doctor --fix",
-    repairHintSuffix: "to start the repair.",
+    repairCommand: '"$HOME/.local/bin/opentag" doctor --json',
+    repairHintSuffix: "to inspect the remaining issues.",
     creating: "Creating…",
   },
 

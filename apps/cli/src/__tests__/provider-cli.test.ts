@@ -37,6 +37,23 @@ describe("provider-cli command surface", () => {
     expect(stderr.join("")).toContain("Unknown provider");
   });
 
+  it("returns a structured validation error for an unknown provider in JSON mode", async () => {
+    const stderr: string[] = [];
+    const result = await runProviderCliEnsure({
+      provider: "bogus",
+      json: true,
+      accountHome: "/nonexistent",
+      stderr: (chunk) => stderr.push(chunk),
+      stdout: () => undefined,
+    });
+    expect(result.exitCode).toBe(2);
+    expect(JSON.parse(stderr.join(""))).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_PROVIDER", category: "validation", retryability: "never" },
+      nextActions: [],
+    });
+  });
+
   it("exits 2 on commander usage errors and 0 on help", async () => {
     const parse = async (argv: string[]): Promise<CommanderError | undefined> => {
       const program = new Command().name("opentag");
@@ -127,13 +144,23 @@ describe("runProviderCliEnsure", () => {
       stderr: () => undefined,
     });
     expect(result.exitCode).toBe(1);
-    const document = JSON.parse(stdout.join("")) as { ok: boolean; results: Array<{ provider: string; ok: boolean }> };
+    const document = JSON.parse(stdout.join("")) as {
+      ok: boolean;
+      results: Array<{ provider: string; ok: boolean }>;
+      nextActions: Array<{ provider: string; command: string; reason: string }>;
+    };
     expect(document.ok).toBe(false);
     expect(document.results).toHaveLength(2);
     expect(document.results[0]?.provider).toBe("feishu");
     expect(document.results[0]?.ok).toBe(true);
     expect(document.results[1]?.provider).toBe("slack");
     expect(document.results[1]?.ok).toBe(false);
+    expect(document.nextActions).toEqual([
+      expect.objectContaining({
+        provider: "slack",
+        command: expect.stringContaining("provider-cli ensure --provider slack"),
+      }),
+    ]);
   });
 
   it("managed install via fixture catalog writes the launcher and shim", async () => {
@@ -178,5 +205,8 @@ describe("runProviderCliInspect", () => {
     expect(document.provider).toBe("slack");
     expect(document.state).toBe("absent");
     expect(document.readiness).toBe("install");
+    expect(document.nextActions).toEqual([
+      expect.objectContaining({ command: expect.stringContaining("provider-cli ensure --provider slack") }),
+    ]);
   });
 });

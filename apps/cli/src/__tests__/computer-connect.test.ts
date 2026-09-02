@@ -20,6 +20,7 @@ import { formatComputerList } from "../core/computer/formatting.js";
 import * as computerQueries from "../core/computer/queries.js";
 import { listComputers } from "../core/computer/queries.js";
 import type { DaemonServiceManager } from "../core/daemon/service/index.js";
+import * as providerCliCore from "../core/provider-cli/ensure.js";
 
 const homes: string[] = [];
 
@@ -59,23 +60,153 @@ describe("computer connect", () => {
 
   it("exposes connect as the agent-first top-level onboarding command", async () => {
     const home = await temporaryHome();
+    const service = await managerFixture().status();
     const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
       agentId: "11111111-1111-4111-8111-111111111111",
       computerId: "computer-1",
       credentialsPath: `${home}/config/computer-credentials.json`,
       message: "Connected Computer computer-1 and bound Agent 11111111-1111-4111-8111-111111111111",
+      service,
     });
+    const ensureSpy = vi
+      .spyOn(providerCliCore, "runProviderCliEnsure")
+      .mockResolvedValue({ exitCode: 0, results: [], nextActions: [] });
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       await createProgram().parseAsync(["node", "opentag", "connect", "code", "--home", home]);
       expect(runSpy).toHaveBeenCalledWith(
         expect.objectContaining({ code: "code", home, noStart: false, serverUrl: channelServerUrl() }),
       );
+      expect(ensureSpy).toHaveBeenCalledWith(expect.objectContaining({ provider: "all", json: false }));
       expect(stdout).toHaveBeenCalledWith(
         "Connected Computer computer-1 and bound Agent 11111111-1111-4111-8111-111111111111\n",
       );
+      expect(stdout).toHaveBeenCalledWith("Preparing Lark and Slack CLIs…\n");
+      expect(stdout).toHaveBeenCalledWith(
+        "Local messaging CLI setup is ready. Return to OpenTag and choose Lark or Slack.\n",
+      );
     } finally {
       stdout.mockRestore();
+      ensureSpy.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
+  it("keeps the connection active and gives an Agent an idempotent repair command", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      computerId: "computer-1",
+      credentialsPath: `${home}/config/computer-credentials.json`,
+      message: "Connected this Computer",
+      service: await managerFixture().status(),
+    });
+    const ensureSpy = vi.spyOn(providerCliCore, "runProviderCliEnsure").mockResolvedValue({
+      exitCode: 1,
+      results: [],
+      nextActions: [
+        {
+          provider: "slack",
+          command: '"$HOME/.local/bin/opentag-dev" provider-cli ensure --provider slack',
+          reason: "install_incomplete",
+        },
+      ],
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "connect", "code", "--home", home]);
+      expect(stdout).toHaveBeenCalledWith("Connected this Computer\n");
+      expect(stderr).toHaveBeenCalledWith(
+        "Computer connection is active, but local messaging CLI setup needs attention.\n",
+      );
+      expect(stderr).toHaveBeenCalledWith(
+        'Resume with: "$HOME/.local/bin/opentag-dev" provider-cli ensure --provider slack\n',
+      );
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = previousExitCode;
+      stderr.mockRestore();
+      stdout.mockRestore();
+      ensureSpy.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
+  it("returns connected partial success and repair actions as one JSON document", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      computerId: "computer-1",
+      credentialsPath: `${home}/config/computer-credentials.json`,
+      message: "Connected this Computer",
+      service: await managerFixture().status(),
+    });
+    const ensureSpy = vi.spyOn(providerCliCore, "runProviderCliEnsure").mockResolvedValue({
+      exitCode: 1,
+      results: [],
+      nextActions: [
+        {
+          provider: "feishu",
+          command: '"$HOME/.local/bin/opentag-dev" provider-cli ensure --provider lark',
+          reason: "probe_failed",
+        },
+      ],
+    });
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await createProgram().parseAsync(["node", "opentag", "connect", "code", "--home", home, "--json"]);
+      expect(stdout).toHaveBeenCalledTimes(1);
+      const document = JSON.parse(String(stdout.mock.calls[0]?.[0])) as {
+        ok: boolean;
+        result: { connected: boolean; providerClis: { status: string; nextActions: unknown[] } };
+        nextActions: unknown[];
+      };
+      expect(document).toMatchObject({
+        ok: false,
+        result: { connected: true, providerClis: { status: "needs_attention" } },
+      });
+      expect(document.result.providerClis.nextActions).toHaveLength(1);
+      expect(document.nextActions).toEqual(document.result.providerClis.nextActions);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = previousExitCode;
+      stdout.mockRestore();
+      ensureSpy.mockRestore();
+      runSpy.mockRestore();
+    }
+  });
+
+  it("keeps an explicit no-prepare connect bounded to binding and daemon setup", async () => {
+    const home = await temporaryHome();
+    const runSpy = vi.spyOn(computerCore, "runComputerConnect").mockResolvedValue({
+      agentId: "11111111-1111-4111-8111-111111111111",
+      computerId: "computer-1",
+      credentialsPath: `${home}/config/computer-credentials.json`,
+      message: "Connected this Computer",
+      service: await managerFixture().status(),
+    });
+    const ensureSpy = vi.spyOn(providerCliCore, "runProviderCliEnsure");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await createProgram().parseAsync([
+        "node",
+        "opentag",
+        "connect",
+        "code",
+        "--home",
+        home,
+        "--no-prepare-provider-clis",
+      ]);
+      expect(ensureSpy).not.toHaveBeenCalled();
+      expect(stdout).toHaveBeenCalledWith("Connected this Computer\n");
+    } finally {
+      stdout.mockRestore();
+      ensureSpy.mockRestore();
       runSpy.mockRestore();
     }
   });

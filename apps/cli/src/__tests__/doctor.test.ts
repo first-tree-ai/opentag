@@ -57,17 +57,20 @@ describe("doctor command target", () => {
     }
   });
 
-  it("passes doctor failures to Commander for the shared error path", async () => {
+  it("presents unexpected doctor failures through the shared structured error path", async () => {
     const program = new Command().name("opentag");
     registerDoctorCommand(program);
     const run = vi.spyOn(doctorCore, "runDoctor").mockRejectedValue(new Error("doctor unavailable"));
     const previousExitCode = process.exitCode;
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     process.exitCode = undefined;
     try {
-      await expect(program.parseAsync(["node", "opentag", "doctor"])).rejects.toThrow("doctor unavailable");
-      expect(process.exitCode).toBe(1);
+      await program.parseAsync(["node", "opentag", "doctor"]);
+      expect(process.exitCode).toBe(3);
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("INTERNAL_ERROR: doctor unavailable"));
     } finally {
       process.exitCode = previousExitCode;
+      stderr.mockRestore();
       run.mockRestore();
     }
   });
@@ -473,6 +476,7 @@ describe("doctor IM Provider CLI observations", () => {
       path: "/opt/homebrew/bin/slack",
       status: "pass",
     });
+    expect(result.providerCliSetup).toBe("ready");
     expect(result.message).toContain("/usr/local/bin/lark-cli (caller-path)");
     expect(result.message).toContain("/opt/homebrew/bin/slack (well-known)");
     expect(result.exitCode).toBe(0);
@@ -489,8 +493,17 @@ describe("doctor IM Provider CLI observations", () => {
     });
     expect(check(result.checks, "provider-cli.slack.installation")).toMatchObject({
       blocking: false,
+      command: expect.stringContaining("provider-cli ensure --provider slack"),
       status: "info",
     });
+    expect(result.nextActions).toContainEqual(
+      expect.objectContaining({
+        checkCode: "provider-cli.slack.installation",
+        command: expect.stringContaining("provider-cli ensure --provider slack"),
+      }),
+    );
+    expect(result.providerCliSetup).toBe("needs_attention");
+    expect(result.message).toContain("At least one messaging CLI still needs attention.");
     expect(result.message).toContain("Lark CLI: not installed");
     expect(result.exitCode).toBe(0);
   });

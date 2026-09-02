@@ -7,6 +7,7 @@ import {
   type ProviderCliProvider,
   resolveAccountHome,
 } from "@opentag/client";
+import { channelConfig } from "../channel/config.js";
 
 /**
  * Shared plumbing for the `opentag provider-cli` commands: provider flag parsing,
@@ -37,6 +38,30 @@ export function parseProviderCliProviderFlag(value: string): ProviderCliProvider
 /** Short label used in human phase lines, matching the native command name. */
 export function providerCliLabel(provider: ProviderCliProvider): "lark" | "slack" {
   return provider === "feishu" ? "lark" : "slack";
+}
+
+/** Stable, current-shell-safe repair command for Agent and human output. */
+export function providerCliRepairCommand(provider: ProviderCliProvider | "all"): string {
+  const flag = provider === "all" ? "all" : providerCliLabel(provider);
+  return `"$HOME/.local/bin/${channelConfig.binName}" provider-cli ensure --provider ${flag}`;
+}
+
+const PROVIDER_CLI_MANUAL_REASONS = new Set([
+  "global_bin_unavailable",
+  "integrity_failed",
+  "unsupported_platform",
+  "version_incompatible",
+]);
+
+/** False when repeating ensure cannot change the local fact without a user or release change. */
+export function providerCliCanAutoRepair(reason: string | undefined): boolean {
+  return reason === undefined || !PROVIDER_CLI_MANUAL_REASONS.has(reason);
+}
+
+export interface ProviderCliNextAction {
+  readonly provider: ProviderCliProvider | "all";
+  readonly command: string;
+  readonly reason: string;
 }
 
 export interface ProviderCliCommandDeps {

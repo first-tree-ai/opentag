@@ -2,8 +2,11 @@ import type { ProviderCliInspection } from "@opentag/client";
 import {
   createProviderCliManager,
   type ProviderCliCommandDeps,
+  type ProviderCliNextAction,
   parseProviderCliProvidersOrReport,
+  providerCliCanAutoRepair,
   providerCliLabel,
+  providerCliRepairCommand,
   renderProviderCliHumanValue,
   writeStderr,
   writeStdout,
@@ -22,9 +25,13 @@ export interface ProviderCliInspectCommandOptions extends ProviderCliCommandDeps
 export interface ProviderCliInspectCommandResult {
   readonly exitCode: 0 | 1 | 2;
   readonly results: readonly ProviderCliInspection[];
+  readonly nextActions: readonly ProviderCliNextAction[];
 }
 
-function renderInspectionLines(inspection: ProviderCliInspection): string[] {
+function renderInspectionLines(
+  inspection: ProviderCliInspection,
+  nextAction: ProviderCliNextAction | undefined,
+): string[] {
   const label = providerCliLabel(inspection.provider);
   const lines = [`[${label}] state: ${inspection.state}`];
   if (inspection.selection) {
@@ -55,22 +62,43 @@ function renderInspectionLines(inspection: ProviderCliInspection): string[] {
       `[${label}] diagnostic: ${inspection.diagnostic.code}${inspection.diagnostic.remediation ? ` — ${inspection.diagnostic.remediation}` : ""}`,
     );
   }
+  if (nextAction) lines.push(`[${label}] next: ${nextAction.command}`);
   return lines;
+}
+
+function nextActionFor(inspection: ProviderCliInspection): ProviderCliNextAction | undefined {
+  if (inspection.state === "ready") return undefined;
+  const reason = inspection.diagnostic?.code ?? (inspection.readiness === "install" ? "not_installed" : "unavailable");
+  if (!providerCliCanAutoRepair(reason)) return undefined;
+  return {
+    provider: inspection.provider,
+    command: providerCliRepairCommand(inspection.provider),
+    reason,
+  };
 }
 
 export async function runProviderCliInspect(
   options: ProviderCliInspectCommandOptions,
 ): Promise<ProviderCliInspectCommandResult> {
-  const providers = parseProviderCliProvidersOrReport(options.provider, (chunk) => writeStderr(options, chunk));
-  if (!providers) return { exitCode: 2, results: [] };
+  let usageMessage = "";
+  const providers = parseProviderCliProvidersOrReport(options.provider, (chunk) => {
+    usageMessage += chunk;
+  });
+  if (!providers) {
+    writeProviderUsageError(options, usageMessage);
+    return { exitCode: 2, results: [], nextActions: [] };
+  }
   const manager = createProviderCliManager(options);
 
-  const results: ProviderCliInspection[] = [];
-  for (const provider of providers) {
-    const inspection = await manager.inspect(provider);
-    results.push(inspection);
-    if (!options.json) {
-      for (const line of renderInspectionLines(inspection)) {
+  const results = await Promise.all(providers.map((provider) => manager.inspect(provider)));
+  const nextActions = results.flatMap((inspection) => {
+    const action = nextActionFor(inspection);
+    return action ? [action] : [];
+  });
+  if (!options.json) {
+    for (const inspection of results) {
+      const nextAction = nextActions.find((action) => action.provider === inspection.provider);
+      for (const line of renderInspectionLines(inspection, nextAction)) {
         writeStdout(options, `${line}\n`);
       }
     }
@@ -78,9 +106,30 @@ export async function runProviderCliInspect(
 
   if (options.json) {
     const ok = results.every((result) => result.state === "ready");
-    const document = results.length === 1 ? results[0] : { ok, results };
+    const document = results.length === 1 ? { ok, ...results[0], nextActions } : { ok, results, nextActions };
     writeStdout(options, `${JSON.stringify(document, null, 2)}\n`);
   }
 
-  return { exitCode: results.every((result) => result.state === "ready") ? 0 : 1, results };
+  return { exitCode: results.every((result) => result.state === "ready") ? 0 : 1, results, nextActions };
+}
+
+function writeProviderUsageError(options: ProviderCliInspectCommandOptions, message: string): void {
+  if (!options.json) {
+    writeStderr(options, message);
+    return;
+  }
+  writeStderr(
+    options,
+    `${JSON.stringify({
+      ok: false,
+      error: {
+        code: "INVALID_PROVIDER",
+        category: "validation",
+        retryability: "never",
+        phase: "validation",
+        message: message.trim(),
+      },
+      nextActions: [],
+    })}\n`,
+  );
 }

@@ -1,4 +1,5 @@
 import { type Command, CommanderError } from "commander";
+import * as commandPolicy from "../core/command/policy.js";
 import { runProviderCliEnsure } from "../core/provider-cli/ensure.js";
 import { runProviderCliInspect } from "../core/provider-cli/inspect.js";
 import type { ProviderCliCommandDeps } from "../core/provider-cli/shared.js";
@@ -27,14 +28,18 @@ export function registerProviderCliCommand(program: Command, deps: ProviderCliCo
     .command("inspect")
     .description("Read-only Provider CLI diagnostics for this account")
     .requiredOption("--provider <name>", "Provider CLI to inspect: lark, slack, or all")
-    .option("--json", "Emit one JSON document to stdout")
+    .option("--json", "Emit one JSON document with machine-readable next actions")
     .action(async (options: { provider: string; json?: boolean }) => {
-      const result = await runProviderCliInspect({
-        ...deps,
-        provider: options.provider,
-        json: options.json === true,
-      });
-      process.exitCode = result.exitCode;
+      try {
+        const result = await runProviderCliInspect({
+          ...deps,
+          provider: options.provider,
+          json: options.json === true,
+        });
+        process.exitCode = result.exitCode;
+      } catch (error) {
+        process.exitCode = presentProviderCliFailure(error, options.json === true);
+      }
     });
 
   providerCli
@@ -44,7 +49,7 @@ export function registerProviderCliCommand(program: Command, deps: ProviderCliCo
     .option("--managed-only", "Only use reviewed managed artifacts; never select a detected external CLI")
     .option("--no-path-update", "Do not create or refresh the public shim in the account's ~/.local/bin")
     .option("--dry-run", "Detect, rank, and report without selecting or installing")
-    .option("--json", "Emit one JSON document to stdout")
+    .option("--json", "Emit one JSON document with machine-readable next actions")
     .action(
       async (options: {
         provider: string;
@@ -53,15 +58,27 @@ export function registerProviderCliCommand(program: Command, deps: ProviderCliCo
         dryRun?: boolean;
         json?: boolean;
       }) => {
-        const result = await runProviderCliEnsure({
-          ...deps,
-          provider: options.provider,
-          managedOnly: options.managedOnly === true,
-          pathUpdate: options.pathUpdate !== false,
-          dryRun: options.dryRun === true,
-          json: options.json === true,
-        });
-        process.exitCode = result.exitCode;
+        try {
+          const result = await runProviderCliEnsure({
+            ...deps,
+            provider: options.provider,
+            managedOnly: options.managedOnly === true,
+            pathUpdate: options.pathUpdate !== false,
+            dryRun: options.dryRun === true,
+            json: options.json === true,
+          });
+          process.exitCode = result.exitCode;
+        } catch (error) {
+          process.exitCode = presentProviderCliFailure(error, options.json === true);
+        }
       },
     );
+}
+
+function presentProviderCliFailure(error: unknown, json: boolean): commandPolicy.CommandExitCode {
+  const commandError = commandPolicy.toCommandError(error, "provider");
+  return commandPolicy.presentCommand(
+    { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
+    { json },
+  );
 }

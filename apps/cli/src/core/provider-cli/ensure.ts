@@ -2,8 +2,11 @@ import type { ProviderCliEnsureResult, ProviderCliManager, ProviderCliPhaseEvent
 import {
   createProviderCliManager,
   type ProviderCliCommandDeps,
+  type ProviderCliNextAction,
   parseProviderCliProvidersOrReport,
+  providerCliCanAutoRepair,
   providerCliLabel,
+  providerCliRepairCommand,
   renderProviderCliHumanValue,
   writeStderr,
   writeStdout,
@@ -29,6 +32,7 @@ export interface ProviderCliEnsureCommandOptions extends ProviderCliCommandDeps 
 export interface ProviderCliEnsureCommandResult {
   readonly exitCode: 0 | 1 | 2;
   readonly results: readonly ProviderCliEnsureResult[];
+  readonly nextActions: readonly ProviderCliNextAction[];
 }
 
 function renderPhaseLine(event: ProviderCliPhaseEvent): string | undefined {
@@ -43,26 +47,13 @@ function renderPhaseLine(event: ProviderCliPhaseEvent): string | undefined {
   return `[${label}] ${event.phase}: ${detail ?? "completed"}`;
 }
 
-function renderResultLines(result: ProviderCliEnsureResult): string[] {
+function renderResultLines(result: ProviderCliEnsureResult, nextAction: ProviderCliNextAction | undefined): string[] {
   const label = providerCliLabel(result.provider);
-  const lines: string[] = [];
-  if (result.selected) {
-    const source = renderProviderCliHumanValue(result.selected.source);
-    const path = renderProviderCliHumanValue(result.selected.path);
-    lines.push(`[${label}] selected: ${result.selected.version} ${source} ${path} (${result.selected.trust})`);
-  }
-  for (const candidate of result.candidates) {
-    if (candidate.disposition === "ignored") {
-      lines.push(
-        `[${label}] ignored: ${renderProviderCliHumanValue(candidate.path)} (${renderProviderCliHumanValue(candidate.reason)})`,
-      );
-    }
-  }
-  for (const warningEntry of result.warnings) {
-    lines.push(
-      `[${label}] warning: ${warningEntry.code}${warningEntry.remediation ? ` — ${warningEntry.remediation}` : ""}`,
-    );
-  }
+  const lines = [
+    selectedLine(result, label),
+    ...ignoredCandidateLines(result, label),
+    ...warningLines(result, label),
+  ].filter((line): line is string => line !== undefined);
   if (result.ok) {
     const selected = result.selected;
     const readySelection = selected
@@ -73,8 +64,51 @@ function renderResultLines(result: ProviderCliEnsureResult): string[] {
     const code = result.diagnostic?.code ?? "unavailable";
     const remediation = result.diagnostic?.remediation;
     lines.push(`[${label}] failed: ${code}${remediation ? ` — ${remediation}` : ""}`);
+    if (nextAction) lines.push(`[${label}] next: ${nextAction.command}`);
   }
   return lines;
+}
+
+function selectedLine(result: ProviderCliEnsureResult, label: string): string | undefined {
+  if (!result.selected) return undefined;
+  const source = renderProviderCliHumanValue(result.selected.source);
+  const path = renderProviderCliHumanValue(result.selected.path);
+  return `[${label}] selected: ${result.selected.version} ${source} ${path} (${result.selected.trust})`;
+}
+
+function ignoredCandidateLines(result: ProviderCliEnsureResult, label: string): string[] {
+  return result.candidates
+    .filter((candidate) => candidate.disposition === "ignored")
+    .map(
+      (candidate) =>
+        `[${label}] ignored: ${renderProviderCliHumanValue(candidate.path)} (${renderProviderCliHumanValue(candidate.reason)})`,
+    );
+}
+
+function warningLines(result: ProviderCliEnsureResult, label: string): string[] {
+  return result.warnings.map(
+    (warningEntry) =>
+      `[${label}] warning: ${warningEntry.code}${warningEntry.remediation ? ` — ${warningEntry.remediation}` : ""}`,
+  );
+}
+
+function nextActionFor(result: ProviderCliEnsureResult): ProviderCliNextAction | undefined {
+  if (result.ok) return undefined;
+  const reason = result.diagnostic?.code ?? "unavailable";
+  if (!providerCliCanAutoRepair(reason)) return undefined;
+  return {
+    provider: result.provider,
+    command: providerCliRepairCommand(result.provider),
+    reason,
+  };
+}
+
+function jsonDocument(
+  results: readonly ProviderCliEnsureResult[],
+  nextActions: readonly ProviderCliNextAction[],
+): unknown {
+  if (results.length === 1) return { ...results[0], nextActions };
+  return { ok: results.every((result) => result.ok), results, nextActions };
 }
 
 function ensureOneProvider(
@@ -98,26 +132,54 @@ function ensureOneProvider(
 export async function runProviderCliEnsure(
   options: ProviderCliEnsureCommandOptions,
 ): Promise<ProviderCliEnsureCommandResult> {
-  const providers = parseProviderCliProvidersOrReport(options.provider, (chunk) => writeStderr(options, chunk));
-  if (!providers) return { exitCode: 2, results: [] };
+  let usageMessage = "";
+  const providers = parseProviderCliProvidersOrReport(options.provider, (chunk) => {
+    usageMessage += chunk;
+  });
+  if (!providers) {
+    writeProviderUsageError(options, usageMessage);
+    return { exitCode: 2, results: [], nextActions: [] };
+  }
   const manager = createProviderCliManager(options);
 
-  const results: ProviderCliEnsureResult[] = [];
-  for (const provider of providers) {
-    const result = await ensureOneProvider(manager, provider, options);
-    results.push(result);
-    if (!options.json) {
-      for (const line of renderResultLines(result)) {
+  const results = await Promise.all(providers.map((provider) => ensureOneProvider(manager, provider, options)));
+  const nextActions = results.flatMap((result) => {
+    const action = nextActionFor(result);
+    return action ? [action] : [];
+  });
+  if (!options.json) {
+    for (const result of results) {
+      const nextAction = nextActions.find((action) => action.provider === result.provider);
+      for (const line of renderResultLines(result, nextAction)) {
         writeStdout(options, `${line}\n`);
       }
     }
   }
 
   if (options.json) {
-    const ok = results.every((result) => result.ok);
-    const document = results.length === 1 ? results[0] : { ok, results };
-    writeStdout(options, `${JSON.stringify(document, null, 2)}\n`);
+    writeStdout(options, `${JSON.stringify(jsonDocument(results, nextActions), null, 2)}\n`);
   }
 
-  return { exitCode: results.every((result) => result.ok) ? 0 : 1, results };
+  return { exitCode: results.every((result) => result.ok) ? 0 : 1, results, nextActions };
+}
+
+function writeProviderUsageError(options: ProviderCliEnsureCommandOptions, message: string): void {
+  if (!options.json) {
+    writeStderr(options, message);
+    return;
+  }
+  writeStderr(
+    options,
+    `${JSON.stringify({
+      ok: false,
+      error: {
+        code: "INVALID_PROVIDER",
+        category: "validation",
+        retryability: "never",
+        phase: "validation",
+        message: message.trim(),
+      },
+      nextActions: [],
+    })}\n`,
+  );
 }

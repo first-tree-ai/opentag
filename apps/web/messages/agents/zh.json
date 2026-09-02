@@ -9,8 +9,6 @@
   "agents_computer_agent_count_single": "{count} 个 Agent",
   "agents_computer_choice_bind_failed": "无法连接该计算机",
   "agents_computer_choice_binding": "正在把该智能体连接到 {name}…",
-  "agents_computer_choice_connect_first": "连接一台计算机",
-  "agents_computer_choice_connect_new": "连接另一台计算机",
   "agents_computer_choice_existing_heading": "选择该智能体运行在哪台计算机上",
   "agents_computer_choice_loading": "正在查看该账户有哪些计算机…",
   "agents_computer_choice_offline": "离线",

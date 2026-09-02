@@ -100,6 +100,7 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
     expect(screen.getByText("Reviewer has no computer yet. Connect the machine it should run on.")).toBeTruthy();
     expect(screen.getByText("Connect your computer")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect a Computer" })).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe("not-bound");
   });
 
@@ -173,7 +174,9 @@ describe("AgentSetupPage stages", () => {
     await settle(10);
 
     expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
-    expect(screen.getByAltText("Scan this QR code in Lark")).toBeTruthy();
+    const qr = screen.getByAltText("Scan this QR code in Lark");
+    expect(qr.parentElement?.getAttribute("data-ui")).toBe("setup-qr");
+    expect(qr.classList.contains("ots-qr__image")).toBe(true);
     expect(screen.getByText(/QR code expires/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
   });

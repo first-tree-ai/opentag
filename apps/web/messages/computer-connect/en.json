@@ -15,7 +15,7 @@
   "computer_connect_entry_title": "Connect a Computer",
   "computer_connect_expired": "This command has expired.",
   "computer_connect_expired_status": "Connection command expired. Get a new command to continue.",
-  "computer_connect_expires_in": "Expires in {time}",
+  "computer_connect_expires_in": "Code expires in {time}",
   "computer_connect_issue_failed": "Unable to create a Computer connection command",
   "computer_connect_issuing": "Preparing connection command…",
   "computer_connect_poll_failed": "Unable to refresh the connection command status",

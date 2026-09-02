@@ -374,7 +374,7 @@ async function main() {
 
     const chromium = loadChromium();
     browser = await chromium.launch({ executablePath: CHROMIUM_PATH, headless: true, args: ["--no-sandbox"] });
-    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const context = await browser.newContext({ locale: "en-US", viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     const consoleErrors = [];
     page.on("console", (message) => {

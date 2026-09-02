@@ -90,12 +90,13 @@ describe("ComputerConnect", () => {
     expect(commandIsShown(COMMAND)).toBe(true);
     expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("Waiting for the Computer to connect");
-    const remaining = screen.getByText("Expires in 15:00");
+    const remaining = screen.getByText("Code expires in 15:00");
     expect(remaining.closest('[role="status"]')).toBeNull();
+    expect(remaining.parentElement?.getAttribute("data-ui")).toBe("computer-connect-expiry");
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    expect(screen.getByText("Expires in 14:59")).toBeTruthy();
+    expect(screen.getByText("Code expires in 14:59")).toBeTruthy();
   });
 
   it("issues repair against the exact target and names it while waiting", async () => {

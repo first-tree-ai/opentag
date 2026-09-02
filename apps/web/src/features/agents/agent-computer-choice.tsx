@@ -193,9 +193,6 @@ export function AgentComputerChoice({
         </div>
       ) : null}
       <div className="grid gap-2">
-        <Text as="h3" variant="heading">
-          {connected.length > 0 ? m.agents_computer_choice_connect_new() : m.agents_computer_choice_connect_first()}
-        </Text>
         {/*
          * The connect step reports the machine it connected, so what gets bound is the Computer that
          * answered this command rather than whatever a re-read of the inventory happens to find.

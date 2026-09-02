@@ -199,11 +199,19 @@
 
 /* The QR keeps its box whether or not a code has arrived, so the panel never changes height. */
 .ots-qr {
-  width: 208px;
+  width: min(208px, 100%);
   height: 208px;
+  aspect-ratio: 1;
 }
 
 .ots-qr__image {
+  display: block;
   width: 100%;
   height: 100%;
+}
+
+/* The connection-code metadata keeps its row while the command is issued, so the command does not
+   jump when the countdown arrives. */
+.ots-slot--expiry {
+  min-height: 20px;
 }

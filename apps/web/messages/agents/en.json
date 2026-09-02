@@ -9,8 +9,6 @@
   "agents_computer_agent_count_single": "{count} Agent",
   "agents_computer_choice_bind_failed": "Unable to connect this Computer",
   "agents_computer_choice_binding": "Connecting this Agent to {name}…",
-  "agents_computer_choice_connect_first": "Connect a Computer",
-  "agents_computer_choice_connect_new": "Connect another Computer",
   "agents_computer_choice_existing_heading": "Choose the Computer this Agent should run on",
   "agents_computer_choice_loading": "Checking which Computers this Account has…",
   "agents_computer_choice_offline": "Offline",

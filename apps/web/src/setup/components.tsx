@@ -111,11 +111,15 @@ export function QrCode({ value }: { value: string }) {
       active = false;
     };
   }, [value]);
-  return source ? (
-    <img
-      alt={m.im_qr_scan_alt({ provider: messagingProviderLabel("feishu") })}
-      className="ots-qr__image"
-      src={source}
-    />
-  ) : null;
+  return (
+    <div className="ots-qr" data-ui="setup-qr">
+      {source ? (
+        <img
+          alt={m.im_qr_scan_alt({ provider: messagingProviderLabel("feishu") })}
+          className="ots-qr__image"
+          src={source}
+        />
+      ) : null}
+    </div>
+  );
 }

@@ -1,14 +1,10 @@
 import { groupBlocking, STATE_SUCCESS } from "./policy.mjs";
+import { truncateDescription } from "./pull-request.mjs";
 
-export const MAX_DESCRIPTION_LENGTH = 140;
 const MAX_PATHS_PER_GROUP = 20;
 const MAX_LOGINS_IN_DESCRIPTION = 3;
 
-/** Truncates to the commit-status limit, which the API rejects rather than trims. */
-export function truncateDescription(text, limit = MAX_DESCRIPTION_LENGTH) {
-  const value = String(text ?? "");
-  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
-}
+export { MAX_DESCRIPTION_LENGTH, truncateDescription } from "./pull-request.mjs";
 
 /**
  * A repository path is chosen by whoever opened the pull request, and this text
@@ -59,6 +55,12 @@ function describeRequirement(decision) {
   const groups = new Set(groupBlocking(decision.blocking).map((group) => [...group.eligible].sort().join(",")));
   if (decision.externalAuthor.required && !decision.externalAuthor.satisfied) {
     groups.add([...decision.externalAuthor.eligible].sort().join(","));
+  }
+  // An empty eligible set means no approval can clear it -- the rule names no
+  // reviewable owner, or nothing matched. Naming people would send the operator
+  // after the one thing that cannot help.
+  if (groups.has("")) {
+    return " Needs a reviewed fix to .github/CODEOWNERS.";
   }
   if (groups.size === 0) {
     return "";
@@ -154,6 +156,14 @@ function renderPullRequest(result) {
 
   const approvals = decision.approvals.map((login) => `\`${escapeCell(login)}\``).join(", ");
   lines.push("", `Approvals counted: ${approvals.length > 0 ? approvals : "none"}.`);
+
+  const stale = pullRequest.staleApprovals ?? [];
+  if (stale.length > 0) {
+    lines.push(
+      "",
+      `⚠️ Counted against an earlier commit: ${stale.map((login) => `\`${escapeCell(login)}\``).join(", ")}. Approvals are not dismissed on a new push, so these approved a diff that is no longer the one being merged.`,
+    );
+  }
   return lines.join("\n");
 }
 

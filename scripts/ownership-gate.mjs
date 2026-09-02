@@ -31,10 +31,14 @@ const CLI_OPTIONS = {
   repository: { type: "string" },
   "pull-request": { type: "string" },
   "head-sha": { type: "string" },
+  sweep: { type: "boolean" },
   context: { type: "string" },
   root: { type: "string" },
   "dry-run": { type: "boolean" },
 };
+
+/** Bounds one sweep. Exceeding it is logged rather than silently truncated. */
+export const MAX_SWEPT_COMMITS = 60;
 
 export const DEFAULT_CONTEXT = "ownership-gate";
 export const CODEOWNERS_PATH = ".github/CODEOWNERS";
@@ -73,21 +77,26 @@ function optionalSha(raw) {
 }
 
 /**
- * The pull request arrives either as a number (`pull_request_target`,
- * `workflow_dispatch`) or, on `workflow_run`, only as the relay run's head SHA.
- * Exactly one is required.
+ * The pull request arrives either as a number (`pull_request_target`) or, on
+ * `workflow_run`, only as the relay run's head SHA. The sweep gets neither and
+ * enumerates the open pull requests itself. Exactly one of the three is
+ * required.
  */
 export function buildConfig(argv, env = {}) {
   const { values } = parseArgs({ args: argv, options: CLI_OPTIONS, allowPositionals: false });
+  const sweep = values.sweep === true || env.SWEEP === "true";
   const number = optionalPullRequestNumber(values["pull-request"] ?? env.PULL_REQUEST_NUMBER);
   const headSha = optionalSha(values["head-sha"] ?? env.HEAD_SHA);
-  if (number === null && headSha === null) {
-    throw new TypeError("A pull request number or a head SHA is required; set PULL_REQUEST_NUMBER or HEAD_SHA");
+  if (!sweep && number === null && headSha === null) {
+    throw new TypeError(
+      "A pull request number, a head SHA or --sweep is required; set PULL_REQUEST_NUMBER, HEAD_SHA or SWEEP",
+    );
   }
   return {
     repository: values.repository ?? env.GITHUB_REPOSITORY,
-    number,
-    headSha,
+    sweep,
+    number: sweep ? null : number,
+    headSha: sweep ? null : headSha,
     context: values.context ?? env.OWNERSHIP_GATE_CONTEXT ?? DEFAULT_CONTEXT,
     root: resolve(values.root ?? process.cwd()),
     dryRun: values["dry-run"] === true,
@@ -176,7 +185,7 @@ async function collectInputs(client, { owner, name, number, pullRequest, logger 
   const isFork = pullRequest.head?.repo?.full_name !== `${owner}/${name}`;
   const [files, approvals, access] = await Promise.all([
     fetchChangedFiles(client, { owner, name, number, expectedCount: pullRequest.changed_files, logger }),
-    fetchApprovals(client, { owner, name, number, logger }),
+    fetchApprovals(client, { owner, name, number, headSha: pullRequest.head?.sha, logger }),
     fetchAuthorAccess(client, {
       owner,
       name,
@@ -206,7 +215,7 @@ async function judgePullRequest(client, { owner, name, number, policy, logger })
     modeConfig: policy.modeConfig,
     author: pullRequest.user?.login,
     hasWriteAccess: access.hasWriteAccess,
-    approvals,
+    approvals: approvals.logins,
     owners: policy.owners,
   });
 
@@ -227,6 +236,7 @@ async function judgePullRequest(client, { owner, name, number, policy, logger })
       baseRef: pullRequest.base?.ref,
       isFork,
       accessReason: access.reason,
+      staleApprovals: approvals.stale,
     },
   };
 }
@@ -347,6 +357,69 @@ async function reportOperationalFailure({ client, config, env, error, headSha, l
   }
 }
 
+/** The distinct head commits of the open pull requests, newest first. */
+export async function listOpenHeadShas(client, { owner, name, logger }) {
+  const shas = [];
+  for (let page = 1; page <= 10; page += 1) {
+    const batch = await client.rest("GET", `/repos/${owner}/${name}/pulls?state=open&per_page=100&page=${page}`);
+    const received = Array.isArray(batch) ? batch : [];
+    for (const pullRequest of received) {
+      const sha = pullRequest?.head?.sha;
+      if (typeof sha === "string" && sha.length > 0 && !shas.includes(sha)) {
+        shas.push(sha);
+      }
+    }
+    if (received.length < 100) {
+      break;
+    }
+  }
+  logger.info("Collected open pull request heads", { heads: shas.length });
+  return shas;
+}
+
+/**
+ * Re-judges every open pull request from the trusted copy of the policy.
+ *
+ * A published status is only as good as the policy it was computed under, and
+ * two ordinary sequences reopen that question with no event to hang an
+ * evaluation on: a reviewed policy change tightens a path on the default branch
+ * while a pull request already carries a green status computed under the looser
+ * rule, and a pull request that removed the relay never produces the
+ * `workflow_run` that would notice an approval being dismissed. The sweep is the
+ * reconciliation for both. One commit failing does not stop the others -- a
+ * sweep that abandoned the rest on the first error would be worse than no sweep.
+ */
+async function runSweep({ client, config, env, policy, logger }) {
+  const { owner, name } = parseRepository(config.repository);
+  const heads = await listOpenHeadShas(client, { owner, name, logger });
+  const swept = heads.slice(0, MAX_SWEPT_COMMITS);
+  if (heads.length > swept.length) {
+    logger.warn("Sweep capped; the remaining commits wait for the next run", {
+      heads: heads.length,
+      swept: swept.length,
+      cap: MAX_SWEPT_COMMITS,
+    });
+  }
+
+  let failed = 0;
+  for (const sha of swept) {
+    const scoped = { ...config, number: null, headSha: sha };
+    try {
+      const result = await evaluate({ client, config: scoped, policy, logger });
+      if (result !== null) {
+        await report({ client, config: scoped, env, logger, result });
+      }
+    } catch (error) {
+      failed += 1;
+      logger.error("Sweep could not judge a head commit", { sha, message: error?.message });
+      await reportOperationalFailure({ client, config: scoped, env, error, headSha: sha, logger });
+    }
+  }
+
+  logger.info("Sweep finished", { swept: swept.length, failed });
+  return failed > 0 ? 1 : 0;
+}
+
 async function main() {
   const env = process.env;
   const config = buildConfig(process.argv.slice(2), env);
@@ -367,6 +440,9 @@ async function main() {
   try {
     const policy = await loadPolicy(config.root);
     logger.info("Loaded policy", { rules: policy.rules.length, owners: policy.owners });
+    if (config.sweep) {
+      return await runSweep({ client, config, env, policy, logger });
+    }
     const result = await evaluate({ client, config, policy, logger });
     if (result === null) {
       return 0;

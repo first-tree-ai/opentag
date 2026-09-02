@@ -224,17 +224,19 @@ test("approvals are matched case-insensitively", () => {
   assert.equal(result.state, STATE_SUCCESS);
 });
 
-test("a path matching no rule blocks and falls back to any owner", () => {
+test("a path matching no rule blocks and names the remedy rather than a person", () => {
+  // No approval can clear it, so listing owners would send the operator after
+  // the one thing that cannot help.
   const decision = decideFile({
     path: "somewhere",
     rule: null,
     mode: undefined,
     author: "bestony",
     approvals: new Set(),
-    fallbackOwners: ["yuezengwu"],
   });
   assert.equal(decision.satisfied, false);
-  assert.deepEqual(decision.eligible, ["yuezengwu"]);
+  assert.deepEqual(decision.eligible, []);
+  assert.match(decision.reason, /fix \.github\/CODEOWNERS/);
 });
 
 test("a rule whose owners cannot be resolved to reviewers blocks instead of passing", () => {
@@ -454,21 +456,45 @@ test("the privileged workflow asks for the narrowest permissions the gate needs"
   assert.doesNotMatch(workflow, /contents: write/);
 });
 
-test("neither workflow carries a paths filter, which would wedge unrelated pull requests", async () => {
+test("no path filter sits on a trigger that produces a pull request's own verdict", async () => {
   // A workflow skipped by path filtering leaves its required check pending
-  // forever rather than passing it.
-  for (const path of [workflowPath, relayPath]) {
-    const workflow = await readFile(path, "utf8");
-    assert.doesNotMatch(workflow, /^\s*paths(-ignore)?:/m, `${path} must not filter by path`);
-  }
+  // forever rather than passing it. The reconciliation sweep is exempt from that
+  // reasoning: it republishes verdicts other triggers already produced, so
+  // skipping it leaves nothing pending.
+  const relay = await readFile(relayPath, "utf8");
+  assert.doesNotMatch(relay, /^\s*paths(-ignore)?:/m);
+
+  const workflow = await readFile(workflowPath, "utf8");
+  const filters = workflow.split(/\r?\n/).filter((line) => /^\s*paths(-ignore)?:/.test(line));
+  assert.equal(filters.length, 1, "only the sweep may filter by path");
+  assert.match(workflow, /^ {2}push:\n {4}branches: \[main\]\n {4}paths:$/m);
 });
 
-test("the gate accepts either a pull request number or a head SHA", () => {
+test("the sweep also runs on a schedule, so a missing relay only delays reconciliation", async () => {
+  const workflow = await readFile(workflowPath, "utf8");
+  assert.match(workflow, /^ {2}schedule:\n {4}- cron: "[^"]+"$/m);
+  assert.match(workflow, /SWEEP: \$\{\{ github\.event_name == 'push' \|\| github\.event_name == 'schedule' \}\}/);
+});
+
+test("the workflow offers no branch-selectable privileged trigger", async () => {
+  // workflow_dispatch lets the caller choose the ref, and the chosen ref
+  // supplies the workflow body, so a branch could dispatch its own version of
+  // this file with extra steps under `statuses: write`.
+  const workflow = await readFile(workflowPath, "utf8");
+  assert.doesNotMatch(workflow, /^ {2}workflow_dispatch:$/m);
+});
+
+test("the gate accepts a pull request number, a head SHA or a sweep", () => {
   assert.equal(buildConfig([], { PULL_REQUEST_NUMBER: "42" }).number, 42);
   const relayed = buildConfig([], { HEAD_SHA: "a".repeat(40) });
   assert.equal(relayed.number, null);
   assert.equal(relayed.headSha, "a".repeat(40));
-  assert.throws(() => buildConfig([], {}), /pull request number or a head SHA is required/);
+
+  const swept = buildConfig([], { SWEEP: "true", PULL_REQUEST_NUMBER: "42" });
+  assert.equal(swept.sweep, true);
+  assert.equal(swept.number, null, "a sweep enumerates the open pull requests itself");
+
+  assert.throws(() => buildConfig([], {}), /pull request number, a head SHA or --sweep is required/);
   assert.throws(() => buildConfig([], { HEAD_SHA: "nope" }), /40 hexadecimal characters/);
   assert.throws(() => buildConfig([], { PULL_REQUEST_NUMBER: "0" }), /positive integer/);
 });

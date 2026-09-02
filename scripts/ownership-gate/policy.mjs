@@ -34,29 +34,38 @@ function satisfiedBy(candidates, approvals) {
   return candidates.filter((login) => approvals.has(login));
 }
 
-function unresolvableDecision(path, rule, fallbackOwners) {
+/**
+ * These two are unsatisfiable on purpose: no approval clears them, because the
+ * rule that matched cannot name a reviewer, or nothing matched at all. Their
+ * `eligible` list is therefore empty rather than the owner list -- naming people
+ * would tell an operator to do the one thing that cannot help. The remedy is a
+ * reviewed edit to CODEOWNERS, and the reason says so.
+ * `check-ownership-policy.mjs` rejects both shapes offline, so reaching one at
+ * runtime means the policy on the default branch is already broken.
+ */
+function unresolvableDecision(path, rule) {
   return {
     path,
     pattern: rule.pattern,
     line: rule.line,
     mode: MODE_GATE,
     owners: [],
-    eligible: [...fallbackOwners],
+    eligible: [],
     satisfied: false,
-    reason: "the matching rule names no reviewable owner (teams and email owners cannot be resolved)",
+    reason: "the matching rule names no reviewable owner; fix .github/CODEOWNERS to name one",
   };
 }
 
-function unmatchedDecision(path, fallbackOwners) {
+function unmatchedDecision(path) {
   return {
     path,
     pattern: NO_RULE_PATTERN,
     line: null,
     mode: MODE_GATE,
     owners: [],
-    eligible: [...fallbackOwners],
+    eligible: [],
     satisfied: false,
-    reason: "no CODEOWNERS rule matched this path",
+    reason: "no CODEOWNERS rule matched this path; fix .github/CODEOWNERS to cover it",
   };
 }
 
@@ -152,9 +161,9 @@ function effectiveMode(rule, declared, namesPath) {
 }
 
 /** Decides one changed file against the rule that matched it. */
-export function decideFile({ path, rule, mode, author, approvals, fallbackOwners = [], namesPath = true }) {
+export function decideFile({ path, rule, mode, author, approvals, namesPath = true }) {
   if (rule === null) {
-    return unmatchedDecision(path, fallbackOwners);
+    return unmatchedDecision(path);
   }
   const resolved = effectiveMode(rule, mode, namesPath);
   if (resolved === MODE_EXEMPT) {
@@ -162,7 +171,7 @@ export function decideFile({ path, rule, mode, author, approvals, fallbackOwners
   }
   const owners = ownerLogins(rule);
   if (owners.length === 0) {
-    return unresolvableDecision(path, rule, fallbackOwners);
+    return unresolvableDecision(path, rule);
   }
   const context = { path, rule, owners, author, approvals };
   return resolved === MODE_TERRITORY ? territoryDecision(context) : gateDecision(context);
@@ -196,7 +205,6 @@ function uniqueSorted(values) {
 export function decidePullRequest({ files, matcher, modeConfig, author, hasWriteAccess, approvals, owners }) {
   const normalizedAuthor = normalize(author);
   const approvalSet = new Set([...approvals].map(normalize));
-  const fallbackOwners = owners.filter((login) => login !== normalizedAuthor);
 
   const decisions = files.map((path) => {
     // Authority comes from the rule that NAMES the path, not from one that
@@ -211,7 +219,6 @@ export function decidePullRequest({ files, matcher, modeConfig, author, hasWrite
       mode,
       author: normalizedAuthor,
       approvals: approvalSet,
-      fallbackOwners,
       namesPath: named,
     });
   });

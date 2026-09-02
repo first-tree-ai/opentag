@@ -100,6 +100,59 @@ test("a path a rule only reaches as a descendant is reported, because GitHub and
   assertFails(result, /packages\/notes\.md\/index\.ts is reached by \*\.md only as a descendant/);
 });
 
+test("a pin downgraded to territory is reported, even though its ordering is still correct", () => {
+  // Position alone is not the promise. A pin says "mutually reviewed", and the
+  // mode table can take that away without moving a single line of CODEOWNERS.
+  const result = check(
+    {
+      codeowners: [`* ${OWNERS}`, `/.github/ ${OWNERS}`].join("\n"),
+      rules: [
+        { pattern: "*", mode: "gate" },
+        { pattern: "/.github/", mode: "territory" },
+      ],
+      pins: [{ pattern: "/.github/", reason: "the gate itself stays mutually reviewed" }],
+    },
+    [".github/workflows/ci.yml"],
+  );
+  assertFails(result, /pin \/\.github\/ is declared territory; a pin only means anything in gate mode/);
+});
+
+test("a pin on an ownerless rule is reported, because nobody could satisfy it", () => {
+  const result = check(
+    {
+      codeowners: [`* ${OWNERS}`, "/.github/"].join("\n"),
+      rules: [
+        { pattern: "*", mode: "gate" },
+        { pattern: "/.github/", mode: "exempt" },
+      ],
+      pins: [{ pattern: "/.github/", reason: "the gate itself stays mutually reviewed" }],
+    },
+    [".github/workflows/ci.yml"],
+  );
+  assertFails(result, /lists no owners, so nobody can satisfy it/);
+});
+
+test("a pin whose pattern is not in CODEOWNERS is reported", () => {
+  const result = check(
+    {
+      codeowners: `* ${OWNERS}`,
+      rules: [{ pattern: "*", mode: "gate" }],
+      pins: [{ pattern: "/e2e/", reason: "CI-executed code stays mutually reviewed" }],
+    },
+    ["e2e/tests/app.spec.ts"],
+  );
+  assertFails(result, /pin \/e2e\/ has no matching rule/);
+});
+
+test("the shipped pins are gate mode with owners", () => {
+  const result = checkOwnershipPolicy({ repositoryRoot: repoRoot });
+  assert.deepEqual(result.failures, []);
+  assert.deepEqual(
+    result.config.pins.map((pin) => pin.pattern),
+    ["/.github/", "/packages/server/drizzle/"],
+  );
+});
+
 test("a pin that protects nothing is reported", () => {
   const result = check(
     {

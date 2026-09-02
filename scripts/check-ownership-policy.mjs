@@ -10,7 +10,7 @@ import {
   ownerLogin,
   parseCodeowners,
 } from "./ownership-gate/codeowners.mjs";
-import { MODE_EXEMPT, ModeConfigError, modeForPattern, parseModeConfig } from "./ownership-gate/modes.mjs";
+import { MODE_EXEMPT, MODE_GATE, ModeConfigError, modeForPattern, parseModeConfig } from "./ownership-gate/modes.mjs";
 
 export const CODEOWNERS_PATH = ".github/CODEOWNERS";
 export const MODES_PATH = ".github/ownership-modes.json";
@@ -96,8 +96,28 @@ function checkExemptConsistency(rules, config, failures) {
   }
 }
 
-function checkPins(config, matcher, files, failures) {
+function checkPinShape(pin, rules, config, failures) {
+  const rule = rules.find((candidate) => candidate.pattern === pin.pattern);
+  if (rule === undefined) {
+    failures.push(`${MODES_PATH}: pin ${pin.pattern} has no matching rule in ${CODEOWNERS_PATH}`);
+    return;
+  }
+  // A pin promises mutual review. Verifying only its position would let the same
+  // pattern be downgraded to territory in the mode table, which passes every
+  // ordering check and quietly grants its owners a self-merge lane over the very
+  // paths the pin exists to hold.
+  const mode = modeForPattern(config, pin.pattern);
+  if (mode !== MODE_GATE) {
+    failures.push(`${MODES_PATH}: pin ${pin.pattern} is declared ${mode}; a pin only means anything in gate mode`);
+  }
+  if (rule.ownerless) {
+    failures.push(`${CODEOWNERS_PATH}:${rule.line}: pin ${pin.pattern} lists no owners, so nobody can satisfy it`);
+  }
+}
+
+function checkPins(config, rules, matcher, files, failures) {
   for (const pin of config.pins) {
+    checkPinShape(pin, rules, config, failures);
     const pattern = compilePattern(pin.pattern);
     const pinned = files.filter((path) => pattern.test(path));
     if (pinned.length === 0) {
@@ -182,7 +202,7 @@ export function checkOwnershipPolicy({ repositoryRoot = process.cwd(), files } =
 
   const matcher = createMatcher(rules);
   const tracked = files ?? listTrackedFiles(root);
-  checkPins(config, matcher, tracked, failures);
+  checkPins(config, rules, matcher, tracked, failures);
   checkNamingAgreement(matcher, tracked, failures);
   const { counts, unmatched } = resolutionCounts(rules, matcher, tracked);
   checkCoverage(unmatched, failures);

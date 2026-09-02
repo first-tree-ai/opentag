@@ -9,6 +9,7 @@ import {
   postCommitStatus,
   TruncatedFileListError,
 } from "../ownership-gate/pull-request.mjs";
+import { listOpenHeadShas } from "../ownership-gate.mjs";
 
 const silentLogger = createLogger({
   level: "error",
@@ -156,28 +157,28 @@ test("a comment left after an approval does not withdraw it", async () => {
     [review("alice", "APPROVED"), review("bob", "COMMENTED"), review("alice", "COMMENTED")],
   ]);
 
-  assert.deepEqual(await result, new Set(["alice"]));
+  assert.deepEqual((await result).logins, new Set(["alice"]));
 });
 
 test("a dismissal withdraws an earlier approval, and a fresh approval restores it", async () => {
   const dismissed = approvals([[review("alice", "APPROVED"), review("alice", "DISMISSED")]]);
-  assert.deepEqual(await dismissed.result, new Set());
+  assert.deepEqual((await dismissed.result).logins, new Set());
 
   const reapproved = approvals([
     [review("alice", "APPROVED"), review("alice", "DISMISSED"), review("alice", "APPROVED")],
   ]);
-  assert.deepEqual(await reapproved.result, new Set(["alice"]));
+  assert.deepEqual((await reapproved.result).logins, new Set(["alice"]));
 });
 
 test("a pending review never counts and never displaces a submitted verdict", async () => {
   const { result } = approvals([[review("alice", "APPROVED"), review("alice", "PENDING"), review("bob", "PENDING")]]);
 
-  assert.deepEqual(await result, new Set(["alice"]));
+  assert.deepEqual((await result).logins, new Set(["alice"]));
 });
 
 test("a later change request overrides an earlier approval", async () => {
   const { result } = approvals([[review("alice", "APPROVED"), review("alice", "CHANGES_REQUESTED")]]);
-  assert.deepEqual(await result, new Set());
+  assert.deepEqual((await result).logins, new Set());
 });
 
 test("approvals are read from every page of the reviews endpoint", async () => {
@@ -185,13 +186,37 @@ test("approvals are read from every page of the reviews endpoint", async () => {
   firstPage.push(review("alice", "APPROVED"));
   const { result, requests } = approvals([firstPage, [review("bob", "APPROVED")]]);
 
-  assert.deepEqual(await result, new Set(["alice", "bob"]));
+  assert.deepEqual((await result).logins, new Set(["alice", "bob"]));
   assert.equal(requests.length, 2);
+});
+
+test("an approval of an earlier commit still counts but is reported as stale", async () => {
+  // `dismiss_stale_reviews_on_push` is off by policy, so the approval keeps
+  // counting -- but an approval of a diff that is no longer being merged has to
+  // be visible to whoever reads the verdict.
+  const { client } = clientFor(
+    paginated(REVIEWS_PATH, [
+      [
+        { user: { login: "alice" }, state: "APPROVED", commit_id: "old-sha" },
+        { user: { login: "bob" }, state: "APPROVED", commit_id: "head-sha" },
+      ],
+    ]),
+  );
+  const result = await fetchApprovals(client, {
+    owner: "first-tree-ai",
+    name: "opentag",
+    number: 7,
+    headSha: "head-sha",
+    logger: silentLogger,
+  });
+
+  assert.deepEqual(result.logins, new Set(["alice", "bob"]));
+  assert.deepEqual(result.stale, ["alice"]);
 });
 
 test("logins are lowercased and reviews without a user are ignored", async () => {
   const { result } = approvals([[review(null, "APPROVED"), review("Alice-Owner", "APPROVED")]]);
-  assert.deepEqual(await result, new Set(["alice-owner"]));
+  assert.deepEqual((await result).logins, new Set(["alice-owner"]));
 });
 
 // --- Author access ----------------------------------------------------------
@@ -369,6 +394,27 @@ test("a pull request whose author was deleted fails safe without an api call", a
   const { result, requests } = authorAccess(permissionResponse({}), { login: null });
   assert.equal((await result).hasWriteAccess, false);
   assert.equal(requests.length, 0);
+});
+
+// --- Sweep ------------------------------------------------------------------
+
+test("the sweep collects the distinct head commits of every open pull request", async () => {
+  // Two pull requests can share a head commit, and they share one status, so the
+  // sweep judges each commit once rather than each pull request once.
+  const pages = [
+    Array.from({ length: 100 }, (_value, index) => ({ head: { sha: `sha-${index}` } })),
+    [{ head: { sha: "sha-0" } }, { head: { sha: "sha-100" } }, { head: {} }],
+  ];
+  const { client, requests } = clientFor((url) =>
+    fakeResponse(pages[Number(new URL(url).searchParams.get("page")) - 1] ?? []),
+  );
+
+  const heads = await listOpenHeadShas(client, { owner: "first-tree-ai", name: "opentag", logger: silentLogger });
+
+  assert.equal(heads.length, 101);
+  assert.equal(new Set(heads).size, 101, "a shared head commit is swept once");
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /\/pulls\?state=open&per_page=100&page=1$/);
 });
 
 // --- Commit status ----------------------------------------------------------

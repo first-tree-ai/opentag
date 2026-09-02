@@ -6,7 +6,7 @@ const MAX_PAGES = 40;
 const COMMIT_STATUS_STATES = new Set(["success", "failure", "error", "pending"]);
 
 /** GitHub answers 422 rather than truncating an over-long status description. */
-const MAX_DESCRIPTION_LENGTH = 140;
+export const MAX_DESCRIPTION_LENGTH = 140;
 const ELLIPSIS = "…";
 
 /**
@@ -124,7 +124,7 @@ export async function fetchChangedFiles(client, { owner, name, number, expectedC
  * the classic bug and would block the very pull requests an owner just approved.
  * DISMISSED is a deciding state and does revoke.
  */
-export async function fetchApprovals(client, { owner, name, number, logger }) {
+export async function fetchApprovals(client, { owner, name, number, headSha, logger }) {
   const reviews = await collectPages(client, {
     path: `${repositoryPath(owner, name)}/pulls/${number}/reviews`,
     logger,
@@ -140,18 +140,32 @@ export async function fetchApprovals(client, { owner, name, number, logger }) {
     if (NON_DECIDING_REVIEW_STATES.has(state)) {
       continue;
     }
-    verdicts.set(login.toLowerCase(), state);
+    verdicts.set(login.toLowerCase(), { state, commitId: review?.commit_id ?? null });
   }
 
-  const approvals = new Set();
-  for (const [login, state] of verdicts) {
-    if (state === "APPROVED") {
-      approvals.add(login);
+  const logins = new Set();
+  const stale = [];
+  for (const [login, verdict] of verdicts) {
+    if (verdict.state !== "APPROVED") {
+      continue;
+    }
+    logins.add(login);
+    // An approval keeps counting after a later push, because
+    // `dismiss_stale_reviews_on_push` is off. That is the accepted policy, not
+    // an oversight -- but an approval of a diff that no longer exists should at
+    // least be visible to whoever reads the verdict.
+    if (typeof headSha === "string" && verdict.commitId !== null && verdict.commitId !== headSha) {
+      stale.push(login);
     }
   }
 
-  logger.debug("Resolved review approvals", { number, reviews: reviews.length, approvals: approvals.size });
-  return approvals;
+  logger.debug("Resolved review approvals", {
+    number,
+    reviews: reviews.length,
+    approvals: logins.size,
+    stale: stale.length,
+  });
+  return { logins, stale: stale.sort() };
 }
 
 function isBotAuthor(login, isBot) {
@@ -260,13 +274,17 @@ export async function fetchAuthorAccess(
  * unapproved paths and overflows on a wide pull request, and GitHub rejects the
  * whole request rather than trimming it -- which would strand a required check
  * on pending forever.
+ *
+ * It lives here rather than with the other rendering because the 140-character
+ * limit is this endpoint's contract, not a presentation choice: whatever else
+ * changes, nothing may reach the API untruncated.
  */
-function truncateDescription(description) {
+export function truncateDescription(description, limit = MAX_DESCRIPTION_LENGTH) {
   const text = typeof description === "string" ? description : "";
-  if (text.length <= MAX_DESCRIPTION_LENGTH) {
+  if (text.length <= limit) {
     return text;
   }
-  return `${text.slice(0, MAX_DESCRIPTION_LENGTH - ELLIPSIS.length)}${ELLIPSIS}`;
+  return `${text.slice(0, limit - ELLIPSIS.length)}${ELLIPSIS}`;
 }
 
 /**

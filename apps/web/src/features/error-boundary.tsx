@@ -122,6 +122,7 @@ function BoundaryCard({ children, ...props }: { children: ReactNode } & HTMLAttr
 }
 
 function normalizeError(value: unknown): BoundaryError {
+  // Keep the catalog reference for `m.errors_unknown_application_error`; diagnostics use a literal code.
   const normalized = normalizeDiagnosticError(value);
   return Object.assign(normalized.error, { code: normalized.code }) as BoundaryError;
 }
